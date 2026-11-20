@@ -56,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
+    MessagePartlySent,
     PlatformAdapter,
     RemovalFailed,
     RichContentFailed,
@@ -77,6 +78,7 @@ from switch_core.db.models import (
     BridgeMessageMap,
     Message,
     Room,
+    SteeredMessageMark,
     TurnStatusPost,
 )
 from switch_core.db.session_scope import tenant_session
@@ -87,6 +89,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_activity_post_store import (
     ApprovalRequestPostStore,
+    SteeredMessageMarkStore,
     TurnStatusPostStore,
 )
 from switch_core.db.stores.session_activity_store import (
@@ -137,6 +140,10 @@ _TICK_SECONDS = 5.0
 _AFTER_PLATFORM_CLOSE = timedelta(seconds=2)
 _RETRY_MIN_SECONDS = 5.0
 _RETRY_MAX_SECONDS = 600.0
+# How many refusals in a row a publication gets when the platform says such a
+# refusal can clear on its own (a bot not yet in the channel, a post not yet
+# visible). With the backoff above, five attempts span a little over a minute.
+_MAX_REFUSALS = 5
 # How many turns' drawn state one bridge remembers. Forgetting one costs a
 # redraw nobody needed if that turn changes again, not a wrong one.
 _MAX_REMEMBERED_TURNS = 4096
@@ -200,17 +207,25 @@ class _TurnDrawn:
 
 @dataclass
 class _Backoff:
-    """A key's waits between failed attempts: doubling, capped, cleared on success."""
+    """A key's waits between failed attempts: doubling, capped, cleared on
+    success, and how many refusals in a row it has had."""
 
     waits: dict[tuple[str, ...], float] = field(default_factory=dict)
+    refusals: dict[tuple[str, ...], int] = field(default_factory=dict)
 
     def next(self, key: tuple[str, ...]) -> float:
         wait = self.waits.get(key, _RETRY_MIN_SECONDS)
         self.waits[key] = min(wait * 2, _RETRY_MAX_SECONDS)
         return wait
 
+    def refused(self, key: tuple[str, ...]) -> int:
+        """Count one more refusal for `key`, and say how many it has had."""
+        self.refusals[key] = self.refusals.get(key, 0) + 1
+        return self.refusals[key]
+
     def clear(self, key: tuple[str, ...]) -> None:
         self.waits.pop(key, None)
+        self.refusals.pop(key, None)
 
 
 class _ThreadNotMappedYet(Exception):
@@ -254,6 +269,7 @@ class AgentSessionActivityPublisher:
         self._activity = AgentSessionActivityStore()
         self._card_posts = ApprovalRequestPostStore()
         self._turn_posts = TurnStatusPostStore()
+        self._steered_marks_store = SteeredMessageMarkStore()
         self._lanes: tuple[deque[_Key], ...] = (deque(), deque(), deque())
         self._pending: dict[_Key, int] = {}
         self._wake = asyncio.Event()
@@ -345,6 +361,41 @@ class AgentSessionActivityPublisher:
     def _retry_later(self, key: _Key) -> None:
         self._enqueue_later(key, self._retries.next(key), _SOON)
 
+    def _give_up_on(self, key: _Key, error: Exception) -> str | None:
+        """Why a failed publication is not worth another attempt, or None to
+        try it again.
+
+        A refusal the platform calls permanent is given up on at once, and a
+        bounded one after `_MAX_REFUSALS` of them in a row; a transient
+        failure is always tried again.
+        """
+        kind = self._adapter.classify_refusal(error)
+        if kind == "transient":
+            return None
+        if kind == "bounded":
+            refusals = self._retries.refused(key)
+            if refusals < _MAX_REFUSALS:
+                return None
+            reason = f"refused it {refusals} times in a row"
+        else:
+            reason = "refused it, and sending it again would be refused again"
+        self._retries.clear(key)
+        return f"{self._adapter.platform_name} {reason}"
+
+    def _retry_ended_turn(
+        self, key: _Key, error: RichContentFailed, ended: bool
+    ) -> str:
+        """Try an ended turn's refused message again after a wait, unless it is
+        not worth another attempt. Says which, for the log line reporting the
+        refusal."""
+        if not ended:
+            return "The next change to the turn tries again."
+        reason = self._give_up_on(key, error)
+        if reason is not None:
+            return f"The turn has ended and {reason}; dropping it."
+        self._retry_later(key)
+        return "The turn has ended; trying again after a wait."
+
     async def _next(self) -> tuple[_Key, int]:
         """The first key in the most urgent lane holding one, and that lane.
 
@@ -373,7 +424,8 @@ class AgentSessionActivityPublisher:
             except RichContentThrottled as throttled:
                 if lane == _CLOCK:
                     continue
-                logger.warning(
+                # Routine under load: the cooldown logs the workspace-wide hold.
+                logger.debug(
                     "%s asked bridge %s to wait %.1fs; retrying %s then.",
                     self._adapter.platform_name,
                     self._bridge_id,
@@ -383,7 +435,18 @@ class AgentSessionActivityPublisher:
                 self._enqueue_later(key, throttled.retry_after, _SOON)
             except _ThreadNotMappedYet:
                 self._enqueue_later(key, _THREAD_WAIT_SECONDS, lane)
-            except Exception:
+            except Exception as error:
+                reason = self._give_up_on(key, error)
+                if reason is not None:
+                    logger.error(
+                        "Could not publish %s on bridge %s, and %s; dropping it: %s",
+                        key,
+                        self._bridge_id,
+                        reason,
+                        error,
+                        exc_info=error,
+                    )
+                    continue
                 # The delivery loop: one key failing must not stop the rest.
                 delay = self._retries.next(key)
                 logger.exception(
@@ -504,6 +567,7 @@ class AgentSessionActivityPublisher:
                 )
             ).all()
             marked = await self._turn_posts.marked(db, self._bridge_id)
+            steered = await self._steered_marks_store.marked(db, self._bridge_id)
         for agent_id, session_id, request_id in requests:
             self._enqueue(("approval", agent_id, session_id, request_id), _SOON)
         for agent_id, session_id, turn_id, changed, running, drawn_at in turns:
@@ -513,6 +577,8 @@ class AgentSessionActivityPublisher:
                 self._enqueue(("turn", agent_id, session_id, turn_id), _SOON)
         for post in marked:
             self._enqueue(("turn", post.agent_id, post.session_id, post.turn_id), _SOON)
+        for mark in steered:
+            self._enqueue(("turn", mark.agent_id, mark.session_id, mark.turn_id), _SOON)
 
     # ── Where a room's publications go ────────────────────────────────────────
 
@@ -686,6 +752,16 @@ class AgentSessionActivityPublisher:
                 return
             decided_by, responder = await answerer_of(db, row, self._bridge_id)
             turn_row = await self._turn_row(db, agent_id, session_id, row.turn_id)
+            if (
+                post is None
+                and _known_root_turn(turn_row)
+                and not self._adapter.broadcasts_thread_replies
+            ):
+                # Asked in the channel, and this platform cannot show a
+                # threaded card there as well: the card belongs where the
+                # question was, not in a thread whose answers are the only
+                # ones it would hear.
+                target = replace(target, thread_ref=None)
             online = self._agent_online(agent_id)
             asking = post is None and row.state == "open"
             recipient = (
@@ -857,16 +933,27 @@ class AgentSessionActivityPublisher:
             )
             state = (row.state, unavailable_reason)
             if self._card_edit_failures.get(post.token) != state:
-                await self._adapter.admin_message(
-                    post.external_channel_id,
-                    f"The card for request {post.handle} above could not be "
-                    "updated, so it may still be offering buttons that no "
-                    "longer work.",
-                    self._adapter.notice_address(
-                        post.external_post_id, post.thread_ref
-                    ),
-                    drawn=error.text,
-                )
+                try:
+                    await self._adapter.admin_message(
+                        post.external_channel_id,
+                        f"The card for request {post.handle} above could not be "
+                        "updated, so it may still be offering buttons that no "
+                        "longer work.",
+                        self._adapter.notice_address(
+                            post.external_post_id, post.thread_ref
+                        ),
+                        drawn=error.text,
+                    )
+                except MessagePartlySent as partial:
+                    # Part of it is in the channel, with a line saying the rest
+                    # is missing; posting it again would repeat that part.
+                    logger.error(
+                        "The notice that the card for request %s could not be "
+                        "updated reached channel %s only in part: %s",
+                        post.request_id,
+                        post.external_channel_id,
+                        partial,
+                    )
                 self._card_edit_failures[post.token] = state
             raise
         self._card_edit_failures.pop(post.token, None)
@@ -1089,6 +1176,13 @@ class AgentSessionActivityPublisher:
                 await self._platform_ref(db, target.channel_id, view.row.message_id)
                 or target.thread_ref
             )
+            steered_refs = {
+                message_id: await self._platform_ref(db, target.channel_id, message_id)
+                for message_id in view.steered_messages
+            }
+            steered_marks = await self._steered_marks_store.of_turn(
+                db, self._bridge_id, agent_id, session_id, turn_id
+            )
             post = await self._turn_posts.get(
                 db, self._bridge_id, agent_id, session_id, turn_id, for_update=False
             )
@@ -1151,6 +1245,7 @@ class AgentSessionActivityPublisher:
         else:
             await self._redraw_turn(key, post, view, target, content, state, drawn)
             await self._marks(key, post, view, target, waiting_behind=bool(unended))
+        await self._steered_marks(key, view, target, steered_refs, steered_marks)
         if post is not None:
             await self._attention(post, view, target, error_summary, recipient, drawn)
         if post is not None and not view.ended:
@@ -1300,6 +1395,7 @@ class AgentSessionActivityPublisher:
                 )
                 self._enqueue_later(key, failed.retry_after, _SOON)
             else:
+                what_next = self._retry_ended_turn(key, failed, view.ended)
                 logger.error(
                     "%s made the message for turn %s in channel %s but could not "
                     "draw the turn into it: %s. %s",
@@ -1307,26 +1403,22 @@ class AgentSessionActivityPublisher:
                     view.turn.turn_id,
                     target.channel_id,
                     failed,
-                    "The turn has ended; trying again after a wait."
-                    if view.ended
-                    else "The next change to the turn draws into the same message.",
+                    what_next,
                 )
-                if view.ended:
-                    self._retry_later(key)
         except RichContentThrottled:
             raise
         except RichContentFailed as error:
+            what_next = self._retry_ended_turn(key, error, view.ended)
             logger.error(
                 "Could not post the activity for turn %s of session %s in "
                 "channel %s: %s. The channel shows what the agent asked without "
-                "what it did.",
+                "what it did. %s",
                 view.turn.turn_id,
                 view.row.session_id,
                 target.channel_id,
                 error,
+                what_next,
             )
-            if view.ended:
-                self._retry_later(key)
             return None
         closes_in = self._adapter.activity_closes_in(ref)
         drawn.platform_closes_at = (
@@ -1375,6 +1467,7 @@ class AgentSessionActivityPublisher:
             await self._say_wedged(post, view, target)
             return
         except RichContentFailed as error:
+            what_next = self._retry_ended_turn(key, error, view.ended)
             logger.error(
                 "Could not update the activity for turn %s of session %s in "
                 "channel %s: %s. %s",
@@ -1382,12 +1475,8 @@ class AgentSessionActivityPublisher:
                 view.row.session_id,
                 post.external_channel_id,
                 error,
-                "The turn has ended; trying again after a wait."
-                if view.ended
-                else "The next change to the turn will try the same message.",
+                what_next,
             )
-            if view.ended:
-                self._retry_later(key)
             return
         drawn.status_state = state
         drawn.final = view.ended
@@ -1499,6 +1588,130 @@ class AgentSessionActivityPublisher:
             self._unsure_marks.add(key)
         else:
             self._unsure_marks.discard(key)
+
+    async def _steered_marks(
+        self,
+        key: _Key,
+        view: TurnView,
+        target: _Target,
+        refs: dict[str, str | None],
+        stored: list[SteeredMessageMark],
+    ) -> None:
+        """Put the working marker on each message steered into the turn while
+        it runs, and take it off when the turn ends.
+
+        A steered message has no turn of its own to carry a marker, so without
+        this a person who corrected the agent mid-turn would see nothing on
+        their message. Recorded before the platform is asked, as `_marks` does.
+        """
+        if not self._adapter.supports_activity_reactions:
+            return
+        held = {mark.message_id: mark for mark in stored}
+        if view.ended:
+            for mark in held.values():
+                if mark.marked and not await self._release_steered_mark(
+                    mark, target.agent_name
+                ):
+                    self._retry_later(key)
+            return
+        for message_id, ref in refs.items():
+            existing = held.get(message_id)
+            # Not on the platform yet: the next change to the turn tries again.
+            if ref is None or (existing is not None and existing.marked):
+                continue
+            mark = SteeredMessageMark(
+                tenant_id=self._tenant_id,
+                bridge_id=self._bridge_id,
+                agent_id=view.row.agent_id,
+                session_id=view.row.session_id,
+                turn_id=view.turn.turn_id,
+                message_id=message_id,
+                external_channel_id=target.channel_id,
+                reaction_message_ref=ref,
+                marked=True,
+            )
+            await self._record_steered_mark(mark)
+            try:
+                await self._adapter.mark_activity(
+                    target.channel_id,
+                    ref,
+                    agent_name=target.agent_name,
+                    mark="working",
+                    on=True,
+                    force=True,
+                )
+            except ActivityMarkRefused as refusal:
+                logger.warning("%s The steered message goes without the mark.", refusal)
+                mark.marked = False
+                await self._record_steered_mark(mark)
+            except Exception:
+                logger.warning(
+                    "Could not add the working reaction on steered message %s in %s; "
+                    "it is taken off with the turn either way.",
+                    ref,
+                    target.channel_id,
+                    exc_info=True,
+                )
+
+    async def _release_steered_mark(
+        self, mark: SteeredMessageMark, agent_name: str
+    ) -> bool:
+        """Take a steered message's marker off, unless another turn still holds it.
+
+        False when the platform could not be asked, so it is tried again.
+        """
+        async with tenant_session(self._sessions, self._tenant_id) as db:
+            probe = TurnStatusPost(
+                bridge_id=mark.bridge_id,
+                agent_id=mark.agent_id,
+                session_id=mark.session_id,
+                turn_id=mark.turn_id,
+                external_channel_id=mark.external_channel_id,
+                reaction_message_ref=mark.reaction_message_ref,
+            )
+            per_agent = self._adapter.activity_reactions_per_agent
+            turns = await self._turn_posts.other_holders(
+                db, probe, "working", same_agent=per_agent
+            )
+            others = [
+                other
+                for other in await self._steered_marks_store.holders(
+                    db,
+                    mark.bridge_id,
+                    mark.external_channel_id,
+                    mark.reaction_message_ref,
+                )
+                if (other.agent_id, other.session_id, other.turn_id)
+                != (mark.agent_id, mark.session_id, mark.turn_id)
+                and (not per_agent or other.agent_id == mark.agent_id)
+            ]
+        if not turns and not others:
+            try:
+                await self._adapter.mark_activity(
+                    mark.external_channel_id,
+                    mark.reaction_message_ref,
+                    agent_name=agent_name,
+                    mark="working",
+                    on=False,
+                    force=True,
+                )
+            except ActivityMarkRefused as refusal:
+                logger.error("%s The working marker may stay on the message.", refusal)
+            except Exception:
+                logger.warning(
+                    "Could not remove the working reaction on steered message %s in %s.",
+                    mark.reaction_message_ref,
+                    mark.external_channel_id,
+                    exc_info=True,
+                )
+                return False
+        mark.marked = False
+        await self._record_steered_mark(mark)
+        return True
+
+    async def _record_steered_mark(self, mark: SteeredMessageMark) -> None:
+        async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
+            await self._steered_marks_store.record(db, mark)
 
     async def _release_mark(self, post: TurnStatusPost, agent_name: str) -> bool:
         """Take this turn's marker off, unless another turn still holds the same one.

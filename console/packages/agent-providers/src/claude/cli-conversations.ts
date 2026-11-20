@@ -15,6 +15,7 @@ import {
   tagSession as sdkTagSession,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { isProcessAlive } from '../process-alive';
 
 /** The Claude Code conversations started in a folder outside Switch, newest first. */
 export const cliConversationListSchema = z.object({
@@ -116,7 +117,7 @@ const defaultDeps: CliConversationDeps = {
   forkSession: sdkForkSession,
   tagSession: sdkTagSession,
   deleteSession: sdkDeleteSession,
-  processExists,
+  processExists: (pid) => isProcessAlive(pid, 'any-user'),
   processes,
 };
 
@@ -449,16 +450,6 @@ function recordedStart(value: unknown): number | null {
   if (typeof value !== 'string') return null;
   const parsed = Date.parse(`${value.trim()} UTC`);
   return Number.isNaN(parsed) ? null : parsed;
-}
-
-function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM: it exists, as another user's.
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
 }
 
 /**

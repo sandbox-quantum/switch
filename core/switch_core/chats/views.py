@@ -16,13 +16,17 @@ from sqlalchemy import and_, func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from switch_core.agent_runs import TRACE_OPENING
 from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.clients.admin_messages import (
+    platform_on_behalf_of,
+    platform_replies_in_channel,
+)
 from switch_core.db.models import (
     Agent,
     AgentDefinition,
     ChatRead,
     Client,
-    ClientRoom,
     CollaborationBridge,
     Message,
     Room,
@@ -30,27 +34,22 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.addressing import (
     MENTIONS_KEY,
     addressable_text,
     named_agents,
 )
+from switch_core.providers.registry import agent_providers
 
 MESSAGE_EVENT_TYPE = "m.room.message"
 COMMAND_EVENT_TYPE = "com.switch.command"
-# A room command (`!reset @agent`) is shown so its threaded acknowledgement has a visible root.
+# A room command (`!reset @agent`) is shown, as a system line, so its threaded acknowledgement has a visible root.
 SHOWN_EVENT_TYPES = (MESSAGE_EVENT_TYPE, COMMAND_EVENT_TYPE)
 PREVIEW_CHARS = 140
 
 _MESSAGE_STORE = MessageStore()
-
-_PROVIDER_OF_KNOWN_AGENT_TYPE = {
-    "claude-code": "claude",
-    "codex": "codex",
-    "opencode": "opencode",
-    "antigravity": "antigravity",
-    "cursor": "cursor",
-}
+_ROOM_STORE = RoomStore()
 
 
 def _provider(agent: Agent, defined: object) -> str | None:
@@ -59,7 +58,9 @@ def _provider(agent: Agent, defined: object) -> str | None:
         return defined
     metadata = agent.metadata_ if isinstance(agent.metadata_, dict) else {}
     known = metadata.get("known_agent_type")
-    return _PROVIDER_OF_KNOWN_AGENT_TYPE.get(known) if isinstance(known, str) else None
+    if not isinstance(known, str):
+        return None
+    return next((p.id for p in agent_providers() if p.known_agent_type == known), None)
 
 
 class CamelModel(BaseModel):
@@ -119,6 +120,27 @@ class ChatAttachment(CamelModel):
     msgtype: str
 
 
+class ChatKickoff(CamelModel):
+    """A template's kickoff: the request Switch posts for whoever ran the
+    template, so Switch Console can show it as theirs rather than as one of
+    Switch's own notices.
+
+    ``agent_id`` is set when an agent ran it (switch-buddy, say), and ``name``
+    is then the agent's name; otherwise ``name`` is the person's.
+    ``agent_note`` is the run history appended for the agents, split off the
+    body so a person need not read it.
+    """
+
+    name: str
+    agent_id: str | None
+    user_id: str
+    agent_note: str | None
+    # The agent's own label and picture, so the kickoff looks like it even
+    # when the agent is not in the room (switch-buddy rarely is).
+    display_name: str | None = None
+    icon_url: str | None = None
+
+
 class ChatMessage(CamelModel):
     message_id: str
     seq: int
@@ -140,6 +162,8 @@ class ChatMessage(CamelModel):
     # Of a thread's root; 0 and None on a reply and on a message with none.
     thread_reply_count: int
     thread_last_reply_seq: int | None
+    # Set on a template kickoff's request; None on everything else.
+    kickoff: ChatKickoff | None = None
 
 
 class ChatMention(CamelModel):
@@ -229,14 +253,7 @@ async def chat_summaries(
         if bridge_ids
         else {}
     )
-    members: dict[str, list[str]] = {}
-    for room_id, user_id in await session.execute(
-        select(ClientRoom.room_id, Client.user_id)
-        .join(Client, Client.id == ClientRoom.client_id)
-        .where(ClientRoom.room_id.in_(room_ids), Client.type == MEMBER_CLIENT_TYPE)
-    ):
-        if user_id is not None:
-            members.setdefault(room_id, []).append(user_id)
+    members = await _ROOM_STORE.member_users_by_room(session, room_ids)
     viewer_client = (
         select(Client.id)
         .where(Client.user_id == viewer_id, Client.type == MEMBER_CLIENT_TYPE)
@@ -294,7 +311,7 @@ async def chat_summaries(
             channel_name = (
                 room.name[len(prefix) :] if room.name.startswith(prefix) else room.name
             )
-        member_user_ids = sorted(members.get(room.id, []))
+        member_user_ids = sorted(user_id for user_id, _ in members.get(room.id, []))
         last = last_messages.get(room.id)
         summaries.append(
             ChatSummary(
@@ -336,12 +353,30 @@ async def chat_summaries(
     return summaries
 
 
+_COMMAND_LINES = {
+    "reset": "Context reset requested for {agent}",
+    "compact": "Compaction requested for {agent}",
+    "interrupt": "Stop requested for {agent}",
+    "retry": "Retry requested for {agent}",
+}
+
+
 def _command_text(message: Message) -> str:
     if message.event_type != COMMAND_EVENT_TYPE:
         return ""
     command = message.content.get("command")
     args = message.content.get("args")
-    return f"!{command} {args}".strip() if args else f"!{command}"
+    text_args = args if isinstance(args, str) else ""
+    target = text_args.split()[0] if text_args.split() else ""
+    line = _COMMAND_LINES.get(command) if isinstance(command, str) else None
+    if line is not None and target.startswith("@"):
+        text = line.format(agent=target[1:])
+    elif line is not None and "@" not in text_args:
+        # Without an `@` the command addresses every agent in the room.
+        text = line.format(agent="everyone")
+    else:
+        return f"!{command} {args}".strip() if args else f"!{command}"
+    return f"{text} by {message.sender_name}" if message.sender_name else text
 
 
 async def chat_messages(
@@ -390,11 +425,36 @@ async def chat_messages(
             .group_by(Message.thread_root_event_id)
         ):
             threads[root] = (count, last)
+    kickoffs = {
+        message.id: kickoff
+        for message in shown
+        if (kickoff := _kickoff(message)) is not None
+    }
+    runners = {k.agent_id for k in kickoffs.values() if k.agent_id is not None}
+    if runners:
+        for agent_id, display_name, icon_url in await session.execute(
+            select(Agent.id, Agent.display_name, Agent.icon_url).where(
+                Agent.id.in_(runners)
+            )
+        ):
+            for kickoff in kickoffs.values():
+                if kickoff.agent_id == agent_id:
+                    kickoff.display_name = display_name
+                    kickoff.icon_url = icon_url
     out: list[ChatMessage] = []
     for message in shown:
         client = clients.get(message.sender_client_id or "")
         agent = agents.get(message.sender_client_id or "")
-        if agent is not None:
+        if message.event_type == COMMAND_EVENT_TYPE and (
+            # A command a person typed (`!set-alias @helper @h`) is theirs, as
+            # it is on the platform they typed it on. One Switch words for
+            # itself ("Stop requested for helper by alice") stays its line.
+            client is None
+            or client.type not in (MEMBER_CLIENT_TYPE, "user")
+            or not _command_text(message).startswith("!")
+        ):
+            kind, source = "system", "switch"
+        elif agent is not None:
             kind, source = "agent", "switch"
         elif client is not None and client.type == MEMBER_CLIENT_TYPE:
             kind, source = "human", "console"
@@ -404,6 +464,10 @@ async def chat_messages(
             kind, source = "system", "switch"
         format_ = message.content.get("format")
         thread = threads.get(message.transport_event_id)
+        body = message.body or _command_text(message)
+        kickoff = kickoffs.get(message.id) if kind == "system" else None
+        if kickoff is not None and kickoff.agent_note is not None:
+            body = body.split(TRACE_OPENING, 1)[0].rstrip()
         out.append(
             ChatMessage(
                 message_id=message.transport_event_id,
@@ -419,7 +483,7 @@ async def chat_messages(
                     user_id=client.user_id if client is not None else None,
                 ),
                 source=source,
-                body=message.body or _command_text(message),
+                body=body,
                 format=format_ if isinstance(format_, str) else None,
                 thread_root_id=message.thread_root_event_id,
                 attachments=[
@@ -442,9 +506,28 @@ async def chat_messages(
                 mentions=_mentions(message),
                 thread_reply_count=thread[0] if thread is not None else 0,
                 thread_last_reply_seq=thread[1] if thread is not None else None,
+                kickoff=kickoff,
             )
         )
     return out
+
+
+def _kickoff(message: Message) -> ChatKickoff | None:
+    """The kickoff a platform message carries, or None. Only the request
+    itself counts: it is the one platform message on someone's behalf that
+    asks for answers in the channel. Its one-line headline is left a notice."""
+    content = message.content or {}
+    person = platform_on_behalf_of(content)
+    if person is None or not platform_replies_in_channel(content):
+        return None
+    body = message.body or ""
+    _, found, note = body.partition(TRACE_OPENING)
+    return ChatKickoff(
+        name=person.name,
+        agent_id=person.agent_id,
+        user_id=person.user_id,
+        agent_note=f"{TRACE_OPENING}{note}".strip() if found else None,
+    )
 
 
 def _named_user_ids(message: Message) -> list[str]:

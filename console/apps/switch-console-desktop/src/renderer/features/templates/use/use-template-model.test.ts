@@ -34,13 +34,23 @@ function param(overrides: Partial<ParamSpec>): ParamSpec {
 describe('bridgeCandidates', () => {
   it('puts the default app first, then the rest by name, and leaves out stopped ones', () => {
     expect(
-      bridgeCandidates([
-        { displayName: 'Teams', status: 'active', isDefault: false },
-        { displayName: 'Slack', status: 'active', isDefault: true },
-        { displayName: 'Discord', status: 'stopped', isDefault: false },
-        { displayName: 'Mattermost', status: 'active', isDefault: false },
-      ])
+      bridgeCandidates(
+        [
+          { displayName: 'Teams', status: 'active', isDefault: false },
+          { displayName: 'Slack', status: 'active', isDefault: true },
+          { displayName: 'Discord', status: 'stopped', isDefault: false },
+          { displayName: 'Mattermost', status: 'active', isDefault: false },
+        ],
+        false
+      )
     ).toEqual(['Slack', 'Mattermost', 'Teams']);
+  });
+
+  it('adds Switch Console last when the server offers it', () => {
+    const slack = { displayName: 'Slack', status: 'active', isDefault: true };
+    expect(bridgeCandidates([slack], true)).toEqual(['Slack', 'Switch Console']);
+    expect(bridgeCandidates([], true)).toEqual(['Switch Console']);
+    expect(bridgeCandidates([slack], false)).toEqual(['Slack']);
   });
 });
 
@@ -50,6 +60,15 @@ describe('resolveChain', () => {
     expect(resolveChain(p, ['Slack', 'Mattermost'])).toBe('Mattermost');
     expect(resolveChain(p, ['Slack'])).toBe('Slack');
     expect(resolveChain(p, [])).toBeNull();
+  });
+
+  it('never resolves $first to Switch Console, only a chain that names it', () => {
+    const first = param({ type: 'bridge', default: ['$first'] });
+    expect(resolveChain(first, ['Slack', 'Switch Console'])).toBe('Slack');
+    expect(resolveChain(first, ['Switch Console'])).toBeNull();
+    const named = param({ type: 'bridge', default: ['Switch Console', '$first'] });
+    expect(resolveChain(named, ['Slack', 'Switch Console'])).toBe('Switch Console');
+    expect(resolveChain(named, ['Slack'])).toBe('Slack');
   });
 
   it('resolves $new only for a room param when the template describes a room', () => {

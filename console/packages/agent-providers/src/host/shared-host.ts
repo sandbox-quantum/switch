@@ -10,6 +10,7 @@ import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './a
 import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
 import { agentHasOwnUser } from './host-permissions';
+import { describeToolsFor } from './mcp-tool-descriptions';
 import { Redactions } from './redaction';
 import {
   cancelRefusal,
@@ -172,10 +173,9 @@ export function sessionBusy(
 }
 
 /**
- * The Switch tools that put something the agent wrote in front of a room: a
- * turn that called one of them has answered. Each posts to the room the
- * session is connected to (only `send_attachment` can name another), so a
- * call counts whichever room it reached.
+ * The Switch tools that put something the agent wrote in front of a room.
+ * Each posts to the room the session is connected to (only `send_attachment`
+ * can name another), so a refusal counts whichever room it was for.
  */
 export const ROOM_POSTING_TOOLS = new Set([
   'post_message',
@@ -202,6 +202,56 @@ export function postFailure(name: string, result: unknown): string | null {
 /** Whether a Switch tool result is a post that landed. */
 export function postedToRoom(name: string, result: unknown): boolean {
   if (!ROOM_POSTING_TOOLS.has(name)) return false;
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { isError?: unknown }).isError !== true
+  );
+}
+
+/**
+ * The Switch tools that only read: what Switch holds (rooms, context, roles,
+ * agents, templates) or a file copied to this machine. Calling them changes
+ * nothing anyone else can see, so a turn that called only these did nothing
+ * in Switch. Any other Switch tool acts, including one added after this list.
+ */
+export const READ_ONLY_SWITCH_TOOLS = new Set([
+  'connect_to_room',
+  'download_attachment',
+  'get_advanced_config',
+  'get_agent_detail',
+  'get_my_context',
+  'get_role_detail',
+  'get_room_detail',
+  'get_room_group_detail',
+  'get_template',
+  'get_template_guide',
+  'get_template_status',
+  'list_agents',
+  'list_all_references',
+  'list_all_rooms',
+  'list_bridges',
+  'list_linked_rooms',
+  'list_machines',
+  'list_managed_agents',
+  'list_participants',
+  'list_reference_types',
+  'list_references',
+  'list_roles',
+  'list_room_groups',
+  'list_rooms',
+  'list_templates',
+  'load_internal_documents',
+  'read_context',
+]);
+
+/**
+ * Whether a Switch tool call did something in Switch: it succeeded, and the
+ * tool is not one that only reads. Every call through this session's Switch
+ * MCP server is a Switch tool, whatever it is called.
+ */
+export function actedInSwitch(name: string, result: unknown): boolean {
+  if (READ_ONLY_SWITCH_TOOLS.has(name)) return false;
   return (
     typeof result === 'object' &&
     result !== null &&
@@ -269,6 +319,9 @@ export async function runSharedHost(
   let failure: unknown = null;
   let shutdown: Promise<void> | null = null;
   let reporting: Promise<void> | null = null;
+  let finalReport: (() => Promise<void>) | null = null;
+  // Calls to Switch end with execution, except the one last report after it.
+  let callSignal = executionSignal;
   let stopHearingTools: (() => void) | null = null;
 
   const callOnce = async (
@@ -282,11 +335,11 @@ export async function runSharedHost(
         method,
         headers: { authorization: `Bearer ${options.token}`, 'content-type': 'application/json' },
         body: method === 'POST' ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.any([executionSignal, AbortSignal.timeout(5000)]),
+        signal: AbortSignal.any([callSignal, AbortSignal.timeout(5000)]),
         redirect: 'error',
       });
     } catch (error) {
-      if (executionSignal.aborted) throw error;
+      if (callSignal.aborted) throw error;
       throw new TransportError(`Switch unavailable: ${String(error)}`);
     }
     if ([429, 500, 502, 503, 504].includes(response.status))
@@ -311,7 +364,7 @@ export async function runSharedHost(
   const agentSessions = async (path: string, method: 'GET' | 'POST', body: unknown) => {
     let disconnected = false;
     while (true) {
-      executionSignal.throwIfAborted();
+      callSignal.throwIfAborted();
       try {
         const result = await callOnce(`/agent-sessions${path}`, method, body);
         if (disconnected) console.info('Connection to Switch restored.');
@@ -320,7 +373,7 @@ export async function runSharedHost(
         if (!(error instanceof TransportError)) throw error;
         if (!disconnected) console.warn(error.message);
         disconnected = true;
-        await delay(500, undefined, { signal: executionSignal });
+        await delay(500, undefined, { signal: callSignal });
       }
     }
   };
@@ -442,6 +495,7 @@ export async function runSharedHost(
     stopHearingTools =
       parentChannel?.onToolAnswered((name, result) => {
         if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+        if (actedInSwitch(name, result)) hosted.agentActedInSwitch();
         const failure = postFailure(name, result);
         if (failure !== null) hosted.agentPostFailed(failure);
       }) ?? null;
@@ -475,31 +529,54 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
-      console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
-      );
-      await send({ kind: 'activity', row });
-      return true;
-    };
-    // A server that predates `cancelled` refuses a turn row that says it. The
-    // turn goes again as interrupted, which it knows, so it still ends there.
-    const sentAsInterrupted = async (item: Report, error: RequestError): Promise<boolean> => {
-      const interrupted = asInterrupted(item);
-      if (!interrupted || error.status !== 422) return false;
-      console.warn(
-        `Switch refused a cancelled turn, so it is reported to it as interrupted: ${error.message}`
-      );
-      await send(interrupted);
-      return true;
+    // Retry new optional fields independently: a server may predate either
+    // usage or child progress. Preserve the tool row and its terminal status.
+    const sendCompatible = async (item: Report): Promise<void> => {
+      let report = item;
+      for (;;) {
+        try {
+          await send(report);
+          return;
+        } catch (error) {
+          if (
+            !(error instanceof RequestError) ||
+            error.status !== 422 ||
+            report.kind !== 'activity'
+          )
+            throw error;
+          if (report.row.usage) {
+            const { usage: _usage, ...row } = report.row;
+            console.warn(
+              `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+            );
+            report = { kind: 'activity', row };
+          } else if (report.row.delivery) {
+            const { delivery, ...row } = report.row;
+            console.warn(
+              `Switch refused how message ${row.item_id} was delivered, so platforms do not say it was ${delivery}: ${error.message}`
+            );
+            report = { kind: 'activity', row };
+          } else if (report.row.subagent) {
+            const { subagent: _subagent, ...row } = report.row;
+            console.warn(
+              `Switch does not accept subagent metadata; reporting ${row.item_id} as tool activity.`
+            );
+            report = { kind: 'activity', row };
+          } else {
+            const interrupted = asInterrupted(report);
+            if (!interrupted) throw error;
+            console.warn(
+              `Switch refused a cancelled turn, so it is reported to it as interrupted: ${error.message}`
+            );
+            report = interrupted;
+          }
+        }
+      }
     };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
+    finalReport = reportInTurn;
     const report = async () => {
       if (reportingUnsupported) return;
       const { events } = host!.replay(reporter.cursor);
@@ -512,12 +589,10 @@ export async function runSharedHost(
         );
         for (const item of reports) {
           try {
-            await send(item);
+            await sendCompatible(item);
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
-            if (await sentAsInterrupted(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -595,7 +670,13 @@ export async function runSharedHost(
     type Followup = Extract<(typeof state.journal.records)[number], { type: 'followup' }>;
     const followups = (): Followup[] =>
       state.journal.records.filter((record): record is Followup => record.type === 'followup');
-    const followupFor = (command: Command, requesterName: string | null): Followup | null => {
+    const followupFor = (
+      command: Command,
+      requesterName: string | null,
+      direct: boolean
+    ): Followup | null => {
+      // A direct chat's reset is meant to forget the conversation; its placement survives, so nothing is owed.
+      if (direct && command.body.type === 'session.reset') return null;
       const action =
         command.body.type === 'session.reset'
           ? 'reset'
@@ -639,7 +720,8 @@ export async function runSharedHost(
             delivery: 'queue',
           },
         },
-        null
+        null,
+        false
       );
     };
     /** Tells the parent whenever the session's busy state changes. */
@@ -738,7 +820,8 @@ export async function runSharedHost(
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
-      requesterName: string | null
+      requesterName: string | null,
+      direct: boolean
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -757,7 +840,7 @@ export async function runSharedHost(
       // about a conversation a reset or a restart has since replaced.
       if (command.epoch !== host!.snapshot().session.epoch)
         return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
-      const owed = followupFor(command, requesterName);
+      const owed = followupFor(command, requesterName, direct);
       if (owed && !followups().some((record) => record.commandId === command.commandId))
         await state.journal.append(owed);
       const repeated = host!
@@ -872,21 +955,25 @@ export async function runSharedHost(
         }
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
+        const snapshot = host!.snapshot();
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
-          epoch: host!.snapshot().session.epoch,
+          epoch: snapshot.session.epoch,
           roomId: event.roomId,
           message: message.data,
           surface: 'switch-web',
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
+          canSteer: snapshot.session.capabilities.input === 'steer',
         });
+        if (message.data.payload.routed || message.data.payload.follow_up)
+          host!.unaskedRoomTurn(command.commandId);
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null);
+        const outcome = await run(command, null, false);
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
@@ -920,7 +1007,8 @@ export async function runSharedHost(
           },
           body: { type: 'session.reset' },
         },
-        null
+        null,
+        false
       );
       if (typeof outcome === 'string')
         throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
@@ -937,8 +1025,8 @@ export async function runSharedHost(
     parent?.serve({
       // Busy is announced before the reply, so a parent that has the reply has
       // already heard any change the command made.
-      command: async ({ command, requesterName }) => {
-        const outcome = await run(command, requesterName);
+      command: async ({ command, requesterName, direct }) => {
+        const outcome = await run(command, requesterName, direct === true);
         announceBusy();
         if (typeof outcome === 'string') throw new Error(outcome);
         return outcome;
@@ -1099,6 +1187,13 @@ export async function runSharedHost(
     await reporting;
     try {
       await stopExecution();
+      // Stopping ended the open turn; Switch would otherwise show it running until the next start.
+      if (finalReport) {
+        callSignal = AbortSignal.timeout(FINAL_REPORT_MS);
+        await finalReport().catch((error: unknown) =>
+          console.warn(`Could not report this session's last events: ${String(error)}`)
+        );
+      }
       await state.journal.append({ type: 'quiesced' });
     } catch (error) {
       if (failure)
@@ -1138,7 +1233,8 @@ export async function hostSessionProcess(input: {
 }): Promise<void> {
   const { config } = input;
   const parent = connectParent(input.port);
-  const mcp = await startSessionMcp(parent);
+  const describeTools = describeToolsFor(config.start.provider);
+  const mcp = await startSessionMcp(parent, describeTools);
   const redactions = new Redactions();
   parent.onRedactions((values) => redactions.addListed(values));
   const serviceNotices = new ServiceNotices();
@@ -1153,9 +1249,11 @@ export async function hostSessionProcess(input: {
       grants,
       ask: parent.ask,
       redactions,
+      notices: serviceNotices,
       listTimeoutMs: LIST_TIMEOUT_MS,
       callTimeoutMs: CALL_TIMEOUT_MS,
       fetch,
+      describe: describeTools,
     });
     clis = await startVendorClis({
       grants,

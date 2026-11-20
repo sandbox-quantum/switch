@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import owner_only_policy
+from switch_core.bridges.agent import commands
 from switch_core.bridges.agent.commands import (
     COMMANDS_BY_NAME,
     _cmd_assign_agent,
@@ -22,7 +23,19 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import FOLLOW_UPS_OFF_KEY, RoomStore
+from switch_core.room_policy import RoomDecision
 from switch_core.transport import RoomRef
+
+
+@pytest.fixture(autouse=True)
+def _room_policy_allows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Who may change a room is `test_commands_room_permissions`'s; these
+    test what the command does once it may."""
+
+    async def allowed(*_args: object, **_kwargs: object) -> RoomDecision:
+        return RoomDecision(True, None)
+
+    monkeypatch.setattr(commands, "_room_decision", allowed)
 
 
 async def _room(session_factory: async_sessionmaker[AsyncSession]) -> str:
@@ -231,6 +244,41 @@ class TestAssignAgent:
 
         await _unassign(host, "@someone:test")
         assert posted[-1] == "No agent is assigned in this room."
+
+    async def test_assigning_turns_auto_route_off_and_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        ids = await _agents(session_factory, room_id)
+        manager = next(n for n in ids if n.startswith("manager"))
+        async with session_factory() as session:
+            await RoomStore().set_auto_route_on(session, room_id, True)
+            await RoomStore().set_auto_route_fallback(session, room_id, ids[manager])
+            await session.commit()
+        host, posted = _host(session_factory, room_id)
+
+        await _assign(host, f"@{manager}", "@someone:test")
+
+        assert posted[-1].startswith("From now on, every message here goes to")
+        assert "Automatic routing was on, so I turned it off" in posted[-1]
+        async with session_factory() as session:
+            store = RoomStore()
+            assert await store.main_agent_id(session, room_id) == ids[manager]
+            assert not await store.auto_route_on(session, room_id)
+            # The triage agent is kept for when auto-route comes back on.
+            assert await store.auto_route_fallback(session, room_id) == ids[manager]
+
+    async def test_assigning_without_auto_route_says_nothing_about_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        ids = await _agents(session_factory, room_id)
+        manager = next(n for n in ids if n.startswith("manager"))
+        host, posted = _host(session_factory, room_id)
+
+        await _assign(host, f"@{manager}", "@someone:test")
+
+        assert "Automatic routing" not in posted[-1]
 
     async def test_by_alias(
         self, session_factory: async_sessionmaker[AsyncSession]

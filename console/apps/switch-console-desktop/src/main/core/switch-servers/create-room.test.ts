@@ -162,6 +162,32 @@ describe('createRoomOnServer', () => {
     });
   });
 
+  it('shows the server’s reason when the channel is already another room’s', async () => {
+    const detail =
+      'Channel C0123ABCD is already used by a room. A channel can belong to only one room.';
+    fetchMock.mockResolvedValue(response(409, { detail }));
+
+    await expect(
+      createRoomOnServer(SERVER, {
+        ...PARAMS,
+        channel: { kind: 'existing', externalChannelId: 'C0123ABCD' },
+      })
+    ).resolves.toEqual({ kind: 'invalid', message: detail });
+  });
+
+  it('shows the messaging app’s reason when it cannot use an existing channel', async () => {
+    const detail =
+      'The Switch app is not in Slack channel C0123ABCD (not_in_channel). Add it to the channel, then try again.';
+    fetchMock.mockResolvedValue(response(400, { detail }));
+
+    await expect(
+      createRoomOnServer(SERVER, {
+        ...PARAMS,
+        channel: { kind: 'existing', externalChannelId: 'C0123ABCD' },
+      })
+    ).resolves.toEqual({ kind: 'invalid', message: detail });
+  });
+
   it('explains a fault on an existing channel in terms of the id that was typed', async () => {
     fetchMock.mockResolvedValue(response(500, 'Internal Server Error'));
 

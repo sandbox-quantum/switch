@@ -47,6 +47,7 @@ def _client(
     enqueue: list[Any],
     placed: str | None = None,
     relayed: list[Any] | None = None,
+    channel_type: str = "channel_private",
 ) -> SimpleNamespace:
     """Minimal AgentRecipient stand-in for _dispatch_control_command."""
 
@@ -74,7 +75,7 @@ def _client(
             room_id="room-1",
             name="Room",
             bridge_id="b1",
-            channel_type="channel_private",
+            channel_type=channel_type,
         )
 
     @asynccontextmanager
@@ -103,7 +104,7 @@ def _client(
         _connections=SimpleNamespace(
             controllers=SimpleNamespace(is_bound=lambda _agent: False),
             live_connection_ids=lambda: set(),
-            session_in_room=lambda _agent, _room: placed,
+            live_session_in_room=lambda _agent, _room: placed,
             relay_session_command=_relay,
         ),
         _event_buffer=SimpleNamespace(enqueue=_enqueue),
@@ -343,7 +344,38 @@ async def test_a_session_in_the_room_is_sent_the_command_through_its_controller(
         "messageId": "$reset-command",
     }
     assert frame["requesterName"] == "louisa"
+    assert frame["direct"] is False
     assert reply.bodies[-1].startswith("Resetting my session")
+
+
+@pytest.mark.asyncio
+async def test_a_control_in_a_direct_chat_is_relayed_as_direct(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relayed: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", _Reply())
+
+    async def _surface(*_a: Any) -> str:
+        return "console"
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+
+    await _cmd_reset(
+        _client(
+            _Reply(),
+            command_level="session_dependent",
+            enqueue=[],
+            placed="session-1",
+            relayed=relayed,
+            channel_type="direct",
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event(),
+        False,
+    )
+
+    [frame] = relayed
+    assert frame["direct"] is True
 
 
 @pytest.mark.asyncio
@@ -427,6 +459,7 @@ def test_an_interrupt_names_the_current_turn() -> None:
         thread_id=None,
         surface="slack",
         requester_name="louisa",
+        direct=False,
         target_message_id=None,
         target_turn_id=None,
     )
@@ -447,6 +480,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
         thread_id=None,
         surface="switch-web",
         requester_name="louisa",
+        direct=False,
         target_message_id="$m1",
         target_turn_id=None,
     )
@@ -462,6 +496,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
             thread_id=None,
             surface="switch-web",
             requester_name="louisa",
+            direct=False,
             target_message_id=None,
             target_turn_id=None,
         )
@@ -520,6 +555,7 @@ def test_a_cancel_names_the_queued_turn_it_withdraws() -> None:
         thread_id=None,
         surface="slack",
         requester_name="louisa",
+        direct=False,
         target_message_id=None,
         target_turn_id="1a2b3c4d-0000-4000-8000-000000000001",
     )
@@ -539,6 +575,7 @@ def test_a_cancel_names_the_queued_turn_it_withdraws() -> None:
             thread_id=None,
             surface="slack",
             requester_name="louisa",
+            direct=False,
             target_message_id=None,
             target_turn_id=None,
         )

@@ -21,14 +21,15 @@ import type {
   Snapshot,
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { ProviderConversationUnavailableError } from '../adapter';
+import { ProviderConversationUnavailableError, SteerNotSentError, sessionInput } from '../adapter';
 import type {
   ConversationHistoryTurn,
   ProviderAdapter,
   ProviderSessionStartInput,
+  ProviderTurnStartResult,
   TurnAttachment,
 } from '../adapter';
-import type { TokenUsage, TurnOutcome, UserInputAnswers } from '../events';
+import type { TokenUsage, TurnOutcome, UsageLimit, UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector, ITEM_PART_CHARACTERS, itemParts } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
@@ -40,7 +41,13 @@ import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
-  z.object({ type: z.literal('dispatched'), commandId: z.string() }),
+  z.object({
+    type: z.literal('dispatched'),
+    commandId: z.string(),
+    // Withdrawn: the provider confirmed it never took this steered message, so
+    // it was queued instead. A host that predates it reads a plain dispatch.
+    notSent: z.literal(true).optional(),
+  }),
   z.object({
     type: z.literal('finished'),
     commandId: z.string(),
@@ -72,6 +79,8 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
  * records an older host could not read.
  */
 const HISTORY_SETTLED = new Set(['HISTORY_IMPORTED', 'HISTORY_UNAVAILABLE']);
+/** The title of a message sent into a running turn with an outcome nobody knows. */
+const UNKNOWN_DELIVERY = 'Sent to the running turn; the agent may not have received it';
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
   session: Session;
@@ -130,6 +139,13 @@ export class HostedSession {
   private readonly roomReplies = new Set<string>();
   private historyImported = false;
   private readonly postedTurns = new Set<string>();
+  /** Turns in which the agent did something through a Switch tool other than read. */
+  private readonly actedTurns = new Set<string>();
+  /**
+   * Turns started by a room message nobody tagged, which Switch routed here
+   * or following the conversation brought here.
+   */
+  private readonly unaskedTurns = new Set<string>();
   /** Turns whose posts to the room were refused, with the last refusal. */
   private readonly failedPosts = new Map<string, string>();
   private readonly usage = new Map<string, TokenUsage[]>();
@@ -165,6 +181,10 @@ export class HostedSession {
   ) {
     // Every host from this one on runs `message.retry`; one built before says nothing, meaning no.
     config.session.capabilities.retry = true;
+    // What a message sent mid-turn does follows the provider as it is now, not
+    // the config a session saved when it was first started: a session saved
+    // before its provider could steer would otherwise queue every one.
+    config.session.capabilities.input = sessionInput(adapter.capabilities);
     const snapshot: Snapshot = {
       contractVersion: 1,
       throughSequence: 0,
@@ -196,7 +216,10 @@ export class HostedSession {
     }
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
-      if (record.type === 'dispatched') this.dispatched.add(record.commandId);
+      if (record.type === 'dispatched') {
+        if (record.notSent) this.dispatched.delete(record.commandId);
+        else this.dispatched.add(record.commandId);
+      }
       if (record.type === 'finished') {
         this.finished.add(record.commandId);
         if (record.usage) this.usage.set(record.commandId, record.usage);
@@ -216,6 +239,7 @@ export class HostedSession {
       if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
     }
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
+    this.projector.restore(this.replica.snapshot().items);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
       this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());
@@ -261,20 +285,7 @@ export class HostedSession {
       }
       const recovered = events.records.length > 0;
       if (recovered) {
-        const snapshot = host.replica.snapshot();
-        for (const request of snapshot.requests)
-          if (request.state === 'open' || request.state === 'submitting')
-            await host.publish({
-              type: 'request.settled',
-              requestId: request.requestId,
-              revision: request.revision + 1,
-              outcome: 'interrupted',
-              commandId: null,
-              result: null,
-            });
-        for (const turn of snapshot.turns)
-          if (turn.status === 'running' || turn.status === 'queued')
-            await host.publish({ ...turn, status: 'interrupted' });
+        await host.interruptOpenWork();
         for (const command of host.commands.values()) {
           const status = host
             .snapshot()
@@ -747,11 +758,27 @@ export class HostedSession {
   }
 
   /**
-   * The agent posted to a room, through one of the Switch tools: the running
-   * turn has answered, so the host has nothing to post for it.
+   * The agent did something through a Switch tool (posted, or acted in some
+   * other way): the running turn has answered, so the host has nothing to
+   * post for it.
    */
+  agentActedInSwitch(): void {
+    if (this.activeTurn) this.actedTurns.add(this.activeTurn);
+  }
+
+  /** The agent's post to a room landed: a refused post earlier in the turn is not reported. */
   agentPostedToRoom(): void {
     if (this.activeTurn) this.postedTurns.add(this.activeTurn);
+  }
+
+  /**
+   * `commandId` carries a room message nobody tagged, which Switch routed to
+   * this agent or following the conversation brought to it: the agent may
+   * rightly stay silent on it, so a turn it finishes without posting tells
+   * the room nothing.
+   */
+  unaskedRoomTurn(commandId: string): void {
+    this.unaskedTurns.add(commandId);
   }
 
   /** A post to the room in the running turn was refused: why, the last one kept. */
@@ -896,7 +923,13 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    // Run as a turn of its own: steered into whatever turn runs now, it would
+    // join work it was never meant for.
+    return {
+      ...command,
+      origin: original.origin,
+      body: { ...original.body, delivery: 'queue' },
+    };
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
@@ -921,8 +954,14 @@ export class HostedSession {
       );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');
-      if (body.delivery !== 'queue')
-        throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
+      // A steered message is one the provider takes into its running turn;
+      // a provider that cannot take one is sent queued messages only, and a
+      // steer asked of it is refused rather than silently queued, so the
+      // sender learns its session record is wrong.
+      if (body.delivery === 'steer' && !this.adapter.capabilities.steering)
+        throw new Error(
+          'UNSUPPORTED_CAPABILITY: the selected provider cannot steer a running turn.'
+        );
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
       if (body.attachments.length && !this.config.stageAttachments)
@@ -998,32 +1037,27 @@ export class HostedSession {
     });
     try {
       if (body.type === 'message.send') {
-        const turnId = command.commandId;
-        this.projector.bindTurn(turnId, {
+        this.projector.bindTurn(command.commandId, {
           commandId: command.commandId,
           origin: command.origin,
         });
-        await this.publish({
-          type: 'turn.upsert',
-          turnId,
-          commandId: command.commandId,
-          status: 'queued',
-        });
-        await this.publish({
-          type: 'item.upsert',
-          item: {
-            itemId: `user-${command.commandId}`,
-            turnId,
-            revision: 1,
-            kind: 'user-message',
-            status: 'completed',
-            title: '',
-            text: body.text,
-            attachments: body.attachments,
-            origin: command.origin,
-          },
-        });
-        this.queue.push(command);
+        // A steered message the provider took needs no turn of its own. One
+        // it refused is queued like any other, so a message is never lost
+        // to a steering failure.
+        // Into the turn running now, once the provider has it: a message
+        // asked to steer while nothing runs, or before the running turn has
+        // reached the provider, waits as a turn of its own. So does one sent
+        // while the turn waits on a question or an approval: the provider is
+        // blocked on that answer, and a message pushed into it is either read
+        // as the answer or left unread until the turn gives up.
+        const running = this.activeTurn;
+        const taken =
+          body.delivery === 'steer' &&
+          running !== null &&
+          this.dispatched.has(running) &&
+          !this.awaitingAnswer() &&
+          (await this.steerMessage(command, running));
+        if (!taken) await this.queueMessage(command);
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -1252,6 +1286,133 @@ export class HostedSession {
     await this.publishAll(this.projector.cancel(turnId));
   }
 
+  /** Publishes a message as a turn of its own, queued to run after any turn in flight. */
+  private async queueMessage(command: Command): Promise<void> {
+    if (command.body.type !== 'message.send') return;
+    const turnId = command.commandId;
+    const wasQueued = this.activeTurn !== null || this.queue.length > 0;
+    await this.publish({
+      type: 'turn.upsert',
+      turnId,
+      commandId: command.commandId,
+      status: 'queued',
+    });
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId: `user-${command.commandId}`,
+        turnId,
+        revision: 1,
+        kind: 'user-message',
+        status: 'completed',
+        title: '',
+        text: command.body.text,
+        attachments: command.body.attachments,
+        origin: command.origin,
+        ...(wasQueued ? { delivery: 'queued' as const } : {}),
+      },
+    });
+    this.queue.push(command);
+  }
+
+  /**
+   * Hands a message to the provider while a turn is running, so it reaches
+   * that turn instead of waiting for it to finish. Only the turn named by
+   * `expectedTurnId`, the one running when the message was taken, may take
+   * it: the adapter refuses any other with `SteerNotSentError`.
+   *
+   * Returns true when the message joined the turn, and false when it was
+   * provably not sent, so the caller queues it as a turn of its own. Any other
+   * failure leaves the outcome unknown: the message is shown, recorded as
+   * dispatched and never resent.
+   */
+  private awaitingAnswer(): boolean {
+    return this.snapshot().requests.some(
+      (request) => request.state === 'open' || request.state === 'submitting'
+    );
+  }
+
+  private async steerMessage(command: Command, expectedTurnId: string): Promise<boolean> {
+    if (command.body.type !== 'message.send') return false;
+    const body = command.body;
+    const attachments = body.attachments.length
+      ? await this.config.stageAttachments!(body.attachments)
+      : [];
+    if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
+    if (expectedTurnId !== this.activeTurn) return false;
+    await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+    this.dispatched.add(command.commandId);
+    let result: ProviderTurnStartResult;
+    try {
+      if (expectedTurnId !== this.activeTurn)
+        throw new SteerNotSentError('The turn ended before the message was sent.');
+      result = await this.adapter.sendTurn({
+        sessionId: this.config.session.sessionId,
+        turnId: command.commandId,
+        expectedTurnId,
+        text: body.text,
+        attachments,
+      });
+    } catch (error) {
+      if (!(error instanceof SteerNotSentError)) {
+        await this.publishSteered(command, expectedTurnId, UNKNOWN_DELIVERY);
+        throw error;
+      }
+      await this.inbox.append({ type: 'dispatched', commandId: command.commandId, notSent: true });
+      this.dispatched.delete(command.commandId);
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'STEERING_FALLBACK',
+        message: `The message could not be taken into the running turn (${error.message}), so it was queued to run after it.`,
+      });
+      return false;
+    }
+    if (result.steeredInto !== expectedTurnId) {
+      await this.publishSteered(command, expectedTurnId, UNKNOWN_DELIVERY);
+      throw new Error(
+        `The provider did not take the message into turn ${expectedTurnId}${result.steeredInto ? ` but into ${result.steeredInto}` : ''}; it is not resent.`
+      );
+    }
+    // The message belongs to the running turn now, and its completion is
+    // that turn's: this command is finished here, and is never resent.
+    await this.inbox.append({ type: 'finished', commandId: command.commandId });
+    this.finished.add(command.commandId);
+    // The turn now answers this message too: one asked of the agent makes
+    // a turn that was only offered to it owe the room a reply.
+    if (!this.unaskedTurns.delete(command.commandId)) this.unaskedTurns.delete(expectedTurnId);
+    await this.publishSteered(command, expectedTurnId, null);
+    return true;
+  }
+
+  /**
+   * Shows a message sent into a running turn, inside that turn: steered, or,
+   * with `uncertain`, sent with an outcome nobody knows (no delivery is
+   * claimed for it).
+   */
+  private async publishSteered(
+    command: Command,
+    turnId: string,
+    uncertain: string | null
+  ): Promise<void> {
+    if (command.body.type !== 'message.send') return;
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId: `user-${command.commandId}`,
+        turnId,
+        revision: 1,
+        kind: 'user-message',
+        status: uncertain === null ? 'completed' : 'failed',
+        title: uncertain ?? '',
+        text: command.body.text,
+        attachments: command.body.attachments,
+        origin: command.origin,
+        ...(uncertain === null ? { delivery: 'steered' as const } : {}),
+      },
+    });
+  }
+
   private async runNext(): Promise<void> {
     if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
     const command = this.queue.shift();
@@ -1283,18 +1444,26 @@ export class HostedSession {
         code: 'TURN_FAILED',
         message: String(error),
       });
-      await this.replyIfUnposted(command.commandId, 'error', String(error));
+      await this.replyIfUnposted(command.commandId, 'error', String(error), null);
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
     }
   }
 
   /**
-   * Tells the room when a turn a room message started failed without the
-   * agent posting anywhere — a provider that ended on a quota or sign-in
-   * error — since the room would otherwise hear nothing about it. A turn that
-   * simply ended without a post says nothing (`unpostedReply`), and one the
-   * host cut short on purpose (stopping, parking, a reset) is left alone.
+   * Tells the room when a turn a room message started ended without the agent
+   * doing anything in Switch — a provider that failed on a quota or sign-in
+   * error, or an agent that finished with its answer, or a usage-limit
+   * notice, only in its final text — since the room would otherwise hear
+   * nothing about it (`unpostedReply`). A failed turn says so whenever no
+   * post landed. A turn that finished after the agent acted through a Switch
+   * tool says nothing, nor does one someone stopped, nor one that finished on
+   * a message nobody tagged (Switch routed it here, or
+   * following the conversation did), which the agent may rightly leave
+   * alone; one the host cut short on purpose (stopping, parking, a reset) is
+   * left alone too. A turn the provider stopped at its usage limit is told
+   * even when the agent had posted: the room would otherwise read that post
+   * as the agent's last word on the task.
    *
    * Decided once per turn and recorded before the post, so a restart never
    * posts it twice. The post runs beside the session; one that fails is
@@ -1303,13 +1472,17 @@ export class HostedSession {
   private async replyIfUnposted(
     turnId: string,
     outcome: TurnOutcome,
-    detail: string | null
+    detail: string | null,
+    usageLimit: UsageLimit | null
   ): Promise<void> {
     const posted = this.postedTurns.delete(turnId);
+    const acted = this.actedTurns.delete(turnId);
+    const unasked = this.unaskedTurns.delete(turnId);
     const failedPost = this.failedPosts.get(turnId) ?? null;
     this.failedPosts.delete(turnId);
     const reply = this.config.replyToRoom;
-    if (!reply || posted || this.shuttingDown || this.stopped || this.resetting) return;
+    if (!reply || this.shuttingDown || this.stopped || this.resetting) return;
+    if (posted && usageLimit === null) return;
     if (this.roomReplies.has(turnId)) return;
     const origin = this.commands.get(turnId)?.origin;
     if (!origin?.roomId || !origin.messageId) return;
@@ -1317,7 +1490,13 @@ export class HostedSession {
     // A turn whose every post was refused ended in silence as far as the room
     // could tell: it is told that, once, unless the turn failed and says so already.
     const body =
-      unpostedReply(outcome, detail) ?? (failedPost !== null ? postFailedReply(failedPost) : null);
+      usageLimit !== null
+        ? usageLimitReply(usageLimit, detail)
+        : failedPost !== null && outcome !== 'error'
+          ? postFailedReply(failedPost)
+          : (acted || unasked) && outcome === 'completed'
+            ? null
+            : unpostedReply(outcome, detail);
     if (body === null) return;
     await this.inbox.append({ type: 'room-reply', commandId: turnId });
     this.roomReplies.add(turnId);
@@ -1328,7 +1507,10 @@ export class HostedSession {
             type: 'notice',
             level: 'info',
             code: 'ROOM_REPLY_POSTED',
-            message: `The turn ended without the agent posting to room ${roomId}, so the host posted there for it.`,
+            message:
+              usageLimit !== null
+                ? `The provider stopped the turn at its usage limit, so the host told room ${roomId}.`
+                : `The turn ended without the agent posting to room ${roomId}, so the host posted there for it.`,
           }),
         async (error: unknown) => {
           const reason = error instanceof Error ? error.message : String(error);
@@ -1358,19 +1540,7 @@ export class HostedSession {
     )
       return;
     if (event.type === 'session.exited') {
-      for (const request of this.snapshot().requests)
-        if (request.state === 'open' || request.state === 'submitting')
-          await this.publish({
-            type: 'request.settled',
-            requestId: request.requestId,
-            revision: request.revision + 1,
-            outcome: 'interrupted',
-            commandId: null,
-            result: null,
-          });
-      for (const turn of this.snapshot().turns)
-        if (turn.status === 'running' || turn.status === 'queued')
-          await this.publish({ ...turn, status: 'interrupted' });
+      await this.interruptOpenWork();
       this.queue.length = 0;
       this.activeTurn = null;
       this.questions.clear();
@@ -1463,7 +1633,12 @@ export class HostedSession {
     }
     await this.publishAll(this.projector.ingest(event, Date.now()));
     if (event.type === 'turn.completed') {
-      await this.replyIfUnposted(event.turnId, event.outcome, event.message ?? null);
+      await this.replyIfUnposted(
+        event.turnId,
+        event.outcome,
+        event.message ?? null,
+        event.usageLimit ?? null
+      );
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
       void this.refreshContext().catch((error: unknown) => this.fail(error));
@@ -1600,8 +1775,31 @@ export class HostedSession {
       await this.adapter.stopSession(this.config.session.sessionId);
     await this.serial;
     await this.eventSerial;
-    await this.publishing;
-    this.unsubscribe();
+    // The provider's exit is not published while stopping, so its open turn is ended here.
+    try {
+      await this.interruptOpenWork();
+    } finally {
+      await this.publishing;
+      this.unsubscribe();
+    }
+  }
+
+  /** Ends what the provider can no longer finish: open requests and unfinished turns. */
+  private async interruptOpenWork(): Promise<void> {
+    const snapshot = this.snapshot();
+    for (const request of snapshot.requests)
+      if (request.state === 'open' || request.state === 'submitting')
+        await this.publish({
+          type: 'request.settled',
+          requestId: request.requestId,
+          revision: request.revision + 1,
+          outcome: 'interrupted',
+          commandId: null,
+          result: null,
+        });
+    for (const turn of snapshot.turns)
+      if (turn.status === 'running' || turn.status === 'queued')
+        await this.publish({ ...turn, status: 'interrupted' });
   }
 }
 
@@ -1637,13 +1835,15 @@ export function recentTurns(
 }
 
 /**
- * What the host posts for a room turn that ended without the agent posting:
- * only that it failed, and why, so a crash is not silent. A turn that
- * finished, or that someone stopped, posts nothing: the agent chose not to
- * answer, and its final text was never meant for the room.
+ * What the host posts for a room turn that ended without the agent doing
+ * anything in Switch. A failed turn says why, so a crash is not silent. A
+ * finished one says only that: its final text was never screened for the
+ * room, so none of it is posted. A turn someone stopped posts nothing: they
+ * know why it ended.
  */
 export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
-  if (outcome !== 'error') return null;
+  if (outcome === 'interrupted') return null;
+  if (outcome === 'completed') return 'I finished without replying.';
   const hint = REQUEST_TOO_LARGE.test(detail ?? '')
     ? 'Use !reset to start a fresh session, then send your message again. '
     : '';
@@ -1653,6 +1853,23 @@ export function unpostedReply(outcome: TurnOutcome, detail: string | null): stri
 
 const REQUEST_TOO_LARGE =
   /exceeds [\d.]+ ?MB limit|request_too_large|request too large|prompt is too long/i;
+
+/**
+ * What the host posts for a turn the provider stopped at the account's usage
+ * limit: that the agent stopped, when it can carry on if the provider said in
+ * a form the adapter reads, and the provider's own notice, which often names
+ * the reset time in the account's local time.
+ */
+export function usageLimitReply(limit: UsageLimit, detail: string | null): string {
+  const resets = limit.resetsAt === null ? '' : ` It resets at ${formatResetTime(limit.resetsAt)}.`;
+  const notice = detail?.trim() ? `\n\nThe provider said: ${cap(detail.trim(), 1000)}` : '';
+  return `I stopped before finishing: my provider's usage limit was reached.${resets} Address me again after it resets to continue.${notice}`;
+}
+
+function formatResetTime(epochMs: number): string {
+  const iso = new Date(epochMs).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
 
 /** What the host posts for a turn whose every post to the room was refused. */
 export function postFailedReply(reason: string): string {

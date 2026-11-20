@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 
 import pytest
@@ -76,6 +77,8 @@ def _probes(**overrides) -> RuntimeProbes:
         bridges_running=lambda: 2,
         bridges_running_by_platform=lambda: {"slack": 1, "mattermost": 1},
         bridges_configured=lambda: 2,
+        bridges_crashed=lambda: [],
+        bridges_started=lambda: [],
         consumers_running=lambda: 5,
         agents_connected=lambda: {
             ("websocket", "agent-runtime"): 2,
@@ -101,6 +104,7 @@ async def test_health_runs_even_with_nothing_configured(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -119,6 +123,7 @@ async def test_a_dead_database_fails_readiness(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(fail=True),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -138,6 +143,7 @@ async def test_a_crashed_bridge_is_reported_without_taking_the_server_down(
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(bridges_running=lambda: 1, bridges_configured=lambda: 3),
     )
     try:
@@ -162,6 +168,7 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -211,6 +218,7 @@ async def test_the_room_cache_reports_what_it_holds(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(
             room_cache_stats=lambda: RoomCacheStats(bytes=4096, rooms=3, rows=12)
         ),
@@ -235,6 +243,7 @@ async def test_a_start_is_counted_once_so_restarts_line_up(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -259,6 +268,7 @@ async def test_a_pool_that_reports_nothing_produces_no_reading(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(pool_stats=lambda: None),
     )
     try:
@@ -287,6 +297,7 @@ async def test_metrics_reach_the_collector(monkeypatch):
         version="9.9.9",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -304,8 +315,59 @@ async def test_metrics_reach_the_collector(monkeypatch):
         entry["key"]: entry["value"]
         for entry in body["resourceMetrics"][0]["resource"]["attributes"]
     }
-    assert attributes["flint.client_id"] == {"stringValue": DEPLOYMENT_ID}
+    assert attributes["switch_trust.client_id"] == {"stringValue": DEPLOYMENT_ID}
     assert attributes["service.version"] == {"stringValue": "9.9.9"}
+
+
+@pytest.mark.asyncio
+async def test_metrics_and_logs_carry_the_environment_as_flint_env(monkeypatch):
+    """Metrics and logs carry the deployment's `ENVIRONMENT` as `flint_env`,
+    the same on both. `TELEMETRY_ENVIRONMENT` (product telemetry's) plays no
+    part."""
+    posted: list[dict] = []
+
+    async def fake_post(self, signal: str, payload: dict) -> None:
+        posted.append({"signal": signal, "payload": payload})
+
+    monkeypatch.setattr(
+        "switch_core.observability.bootstrap.LOG_EXPORT_INTERVAL_SECONDS", 0.05
+    )
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="0.05",
+            OTLP_LOGS_ENABLED="true",
+            ENVIRONMENT="hosted-v1-test",
+            TELEMETRY_ENVIRONMENT="dev",
+        ),
+        version="9.9.9",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        optional_checks=[],
+        probes=_probes(),
+    )
+    try:
+        monkeypatch.setattr("switch_core.observability.otlp.OtlpClient.post", fake_post)
+        logging.getLogger("switch_core.flint_env_test").warning("a line to ship")
+        await asyncio.sleep(0.3)
+    finally:
+        await observability.aclose()
+
+    environments = {}
+    for post in posted:
+        signal = post["signal"]
+        key = "resourceMetrics" if signal == "metrics" else "resourceLogs"
+        attributes = {
+            entry["key"]: entry["value"]
+            for entry in post["payload"][key][0]["resource"]["attributes"]
+        }
+        environments[signal] = attributes.get("flint_env")
+    assert environments == {
+        "metrics": {"stringValue": "hosted-v1-test"},
+        "logs": {"stringValue": "hosted-v1-test"},
+    }
 
 
 @pytest.mark.asyncio
@@ -320,6 +382,7 @@ async def test_closing_stops_the_loops_and_uninstalls(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     monkeypatch.setattr(
@@ -352,6 +415,7 @@ async def test_the_database_sampler_starts_with_the_metrics_exporter(monkeypatch
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
         db_server_engine=engine,
     )
@@ -360,6 +424,64 @@ async def test_the_database_sampler_starts_with_the_metrics_exporter(monkeypatch
         names = {task.get_name() for task in observability._tasks}
         assert "db-server-sampler" in names
         assert built, "the sampler never built its engine"
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_hosted_sampler_starts_with_hosted_agents(monkeypatch):
+    """With hosted agents on and OTLP configured, the cloud machines' sampler
+    starts, beside the database sampler."""
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+            FEATURE_FLAGS_ENABLED="hosted_agents",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        probes=_probes(),
+        optional_checks=[],
+        db_server_engine=lambda: create_async_engine(
+            "postgresql+asyncpg://u:p@127.0.0.1:1/x", poolclass=NullPool
+        ),
+    )
+    try:
+        names = {task.get_name() for task in observability._tasks}
+        assert "db-server-sampler" in names
+        assert "hosted-sampler" in names
+        # The reconciler watch counts from boot.
+        from switch_core.observability.hosted import reconciler_watch
+
+        assert list(reconciler_watch().readings())
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_without_hosted_agents_no_hosted_sampler_starts(monkeypatch):
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        probes=_probes(),
+        optional_checks=[],
+        db_server_engine=lambda: create_async_engine(
+            "postgresql+asyncpg://u:p@127.0.0.1:1/x", poolclass=NullPool
+        ),
+    )
+    try:
+        names = {task.get_name() for task in observability._tasks}
+        assert "hosted-sampler" not in names
     finally:
         await observability.aclose()
 
@@ -379,6 +501,7 @@ async def test_a_connection_kind_that_empties_out_is_reported_as_zero(monkeypatc
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(agents_connected=lambda: dict(connected)),
     )
     try:
@@ -411,6 +534,7 @@ async def test_one_replica_stays_in_service_with_a_listener_down(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(
             agent_event_listener_connected=lambda: False,
             signal_bus_connected=lambda: False,
@@ -445,6 +569,7 @@ async def test_with_several_replicas_a_dead_listener_takes_the_pod_out(
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(**{dead: lambda: False}),
     )
     try:

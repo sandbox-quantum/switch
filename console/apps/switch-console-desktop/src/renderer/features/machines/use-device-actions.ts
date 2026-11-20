@@ -52,9 +52,9 @@ export function useDeviceActions(serverId: string, machine: MachineDetail, place
       title: `Remove ${machine.name}?`,
       description:
         placed.kind === 'unreadable'
-          ? `${machine.name} stops running agents for you and cannot reconnect. Your agents could not be listed, so this cannot say which are on it: any placed on it stay there and do not run until you move them.`
+          ? `${machine.name} stops running agents for you and cannot reconnect. Your agents could not be listed, so this cannot say which are on it: any on it stop, and run again once you put them on another device.`
           : placed.kind === 'known' && placed.count > 0
-            ? `${machine.name} stops running agents for you and cannot reconnect. ${placed.count === 1 ? 'The agent on it stays placed on it and does not run until you move it.' : `The ${placed.count} agents on it stay placed on it and do not run until you move them.`}`
+            ? `${machine.name} stops running agents for you and cannot reconnect. ${placed.count === 1 ? 'The agent on it stops, and runs again once you put it on another device.' : `The ${placed.count} agents on it stop, and run again once you put them on another device.`}`
             : `${machine.name} stops running agents for you and cannot reconnect. To use it again, enroll it again.`,
       confirmLabel: 'Remove',
       onSuccess: () => {

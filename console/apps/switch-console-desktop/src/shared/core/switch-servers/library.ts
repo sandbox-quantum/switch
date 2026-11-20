@@ -45,6 +45,15 @@ export type LibraryItem = {
   referencesCount: number;
   documentsCount: number;
   createdAt: string;
+  /**
+   * What the viewer may do with it, as the server decides: open its page,
+   * change it, and delete it or change who may see or change it. Undefined
+   * from a server too old to say, where the viewer's own rule stands in
+   * (`libraryPermissions`).
+   */
+  canRead?: boolean;
+  canEdit?: boolean;
+  canManage?: boolean;
 };
 
 /** A document read in full. */
@@ -72,6 +81,9 @@ export type ManagedReferenceType = ReferenceTypeOption & {
   /** A built-in with the same slug hides it: references of that slug use the built-in. */
   shadowedByBuiltin: boolean;
   createdAt: string;
+  /** As on `LibraryItem`; undefined from a server too old to say. */
+  canEdit?: boolean;
+  canManage?: boolean;
 };
 
 /** What a new reference type is made of. The slug cannot change afterwards. */

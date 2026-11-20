@@ -1,12 +1,14 @@
 import { CircleAlert, ExternalLink } from 'lucide-react';
+import { useState } from 'react';
 import { LogTail } from '@renderer/features/switch-servers/log-tail';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
+import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import { requireProvider } from '@shared/core/providers/agent-provider-registry';
-import { linksIn } from '@shared/core/providers/provider-login';
+import { asksForCode, linksIn } from '@shared/core/providers/provider-login';
 import type { BuddyProvider } from './buddy-providers';
 import type { Login, SetupBusy } from './use-provider-setup';
 import type { ThisComputer } from './use-this-computer';
@@ -17,14 +19,25 @@ import type { ThisComputer } from './use-this-computer';
  * hands each its state and handlers from `useProviderSetup`.
  */
 
-export function ComputerNote({ computer }: { computer: ThisComputer }) {
+export function ComputerNote({
+  computer,
+  onRetry,
+}: {
+  computer: ThisComputer;
+  onRetry: () => void;
+}) {
   if (computer.kind === 'ready') return null;
   if (computer.kind === 'failed')
     return (
-      <p role="alert" className="flex items-start gap-2 text-sm text-destructive">
-        <CircleAlert className="mt-0.5 size-4 shrink-0" />
-        <span>{computer.error}</span>
-      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <p role="alert" className="flex items-start gap-2 text-sm text-destructive">
+          <CircleAlert className="mt-0.5 size-4 shrink-0" />
+          <span>{computer.error}</span>
+        </p>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
     );
   return (
     <p className="flex items-center gap-2 text-sm text-foreground-muted">
@@ -91,7 +104,9 @@ export function SelectedPanel({
   onStart,
   onSignIn,
   onCancelSignIn,
+  onSignInCode,
   onInstall,
+  installFailed = false,
   onCheckAgain,
   checked,
 }: {
@@ -103,10 +118,14 @@ export function SelectedPanel({
   onStart: () => void;
   onSignIn: () => void;
   onCancelSignIn: () => void;
+  /** Sends the code a sign-in page showed to the running sign-in command. */
+  onSignInCode: (code: string) => void;
   onInstall: () => void;
+  /** The last install of this provider failed: offer installing it by hand. */
+  installFailed?: boolean;
   onCheckAgain: () => void;
 }) {
-  const loginCommand = requireProvider(provider.id).loginCommand;
+  const { loginCommand, docUrl } = requireProvider(provider.id);
   switch (provider.state) {
     case 'ready':
       return (
@@ -134,15 +153,42 @@ export function SelectedPanel({
               {provider.name} isn’t installed on this computer
             </p>
             <p className="text-xs text-foreground-muted">
-              Switch Console can install it for you. You’ll sign in to it next.
+              {installFailed
+                ? `You can install it yourself instead, then press Check again.`
+                : 'Switch Console can install it for you. You’ll sign in to it next.'}
             </p>
           </div>
-          <div>
-            <Button onClick={onInstall} disabled={busy !== null}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant={installFailed ? 'outline' : 'default'}
+              onClick={onInstall}
+              disabled={busy !== null}
+            >
               {busy === 'install' && <Spinner className="size-3.5" />}
-              {busy === 'install' ? `Installing ${provider.name}…` : `Install ${provider.name}`}
+              {busy === 'install'
+                ? `Installing ${provider.name}…`
+                : installFailed
+                  ? 'Try again'
+                  : `Install ${provider.name}`}
+            </Button>
+            {installFailed && (
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void openExternalUrl(docUrl, `Could not open how to install ${provider.name}`)
+                }
+              >
+                <ExternalLink className="size-3.5" />
+                How to install {provider.name}
+              </Button>
+            )}
+            {/* Also when nothing failed: a CLI installed outside Console is only found on a check. */}
+            <Button variant="ghost" onClick={onCheckAgain} disabled={busy !== null}>
+              {busy === 'check' && <Spinner className="size-3.5" />}
+              Check again
             </Button>
           </div>
+          {checked && <p className="text-xs text-foreground-muted">{checked}</p>}
         </>
       );
     case 'sign-in': {
@@ -200,6 +246,9 @@ export function SelectedPanel({
               ))}
             </div>
           )}
+          {login && running && asksForCode(login.lines) && (
+            <SignInCodeForm onSubmit={onSignInCode} />
+          )}
           {login?.ended && !login.ended.ok && (
             <p className="text-xs text-destructive">
               {login.ended.error ?? `${loginCommand} ended without signing in.`}
@@ -236,4 +285,34 @@ export function SelectedPanel({
         </p>
       );
   }
+}
+
+/** Where to paste the code a sign-in page showed, for the command waiting on it. */
+function SignInCodeForm({ onSubmit }: { onSubmit: (code: string) => void }) {
+  const [code, setCode] = useState('');
+  return (
+    <form
+      className="flex flex-wrap items-center gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!code.trim()) return;
+        onSubmit(code);
+        setCode('');
+      }}
+    >
+      <p className="w-full text-xs text-foreground-muted">
+        Only if the sign-in page shows you a code instead of saying you’re signed in:
+      </p>
+      <Input
+        value={code}
+        onChange={(event) => setCode(event.target.value)}
+        placeholder="Paste the code here"
+        aria-label="Sign-in code"
+        className="h-8 flex-1"
+      />
+      <Button type="submit" size="sm" disabled={!code.trim()}>
+        Send code
+      </Button>
+    </form>
+  );
 }

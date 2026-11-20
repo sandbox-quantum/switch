@@ -1,10 +1,10 @@
 # Rooms and resources
 
-_The developer's view of the resource model and the room lifecycle — what's scoped where, and the ordering that matters_
+_How Switch rooms and their resources are scoped, owned and created_
 
-Published at <https://docs.switchagents.ai/flintai/switch/internals/rooms-and-resources> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/internals/rooms-and-resources> — link readers there, not to this file.
 
-A Switch room carries metadata, a position in a group tree, links to other rooms, roles its members can hold, and attached resources drawn from a library that exists outside any one room. This page covers where each of those is scoped, who owns it, what enforces what, and the order operations run in.
+A Switch room has metadata, a position in a group tree, links to other rooms, roles its members can hold, and attached resources drawn from a library that exists outside any one room.
 
 For what a reference or a document is *for*, see [Share context](../using/shared-context.md).
 
@@ -14,10 +14,10 @@ For what a reference or a document is *for*, see [Share context](../using/shared
 
 ## The resource model
 
-Everything attachable is either **library-wide** — it exists independent of any room and can attach to many — or **room-scoped** — it's part of one room and is deleted with it.
+Everything attachable is either **library-wide** or **room-scoped**. A library-wide resource exists independent of any room and can attach to many; a room-scoped one is part of a single room and is deleted with it.
 
 ```mermaid
-%%{init: {'themeVariables': {'fontSize': '13px'}, 'flowchart': {'padding': 8, 'nodeSpacing': 40, 'rankSpacing': 40}}}%%
+%%{init: {'themeVariables': {'fontSize': '13px'}, 'flowchart': {'padding': 8, 'nodeSpacing': 40, 'rankSpacing': 40, 'subGraphTitleMargin': {'top': 12, 'bottom': 8}}}}%%
 flowchart TB
   pkg["<b>Package</b><br/>a named bundle"]
   ref["<b>Reference</b><br/>type · address · instructions"]
@@ -38,9 +38,8 @@ flowchart TB
   room -->|sits in| group
   room -->|links to| other
 
-  classDef plain fill:none,stroke:#888888,stroke-width:1px
+  classDef plain fill:none,stroke-width:1px
   class pkg,ref,libdoc,room,rsdoc,role,group,other plain
-  linkStyle default stroke:#888888
 ```
 
 | Concept | Scope | Ownership | Attaches to |
@@ -57,7 +56,7 @@ flowchart TB
 
 ### Reference types
 
-A reference records a type, an address and instructions. The types are a closed set: Google Drive, Confluence, GitHub, Jira. There's no open type field for a new integration.
+A reference records a type, an address and instructions. Switch ships types for Google Drive, Confluence, GitHub and Jira, and users can define new types for other integrations.
 
 ### Room-scoped documents
 
@@ -81,13 +80,15 @@ Groups scope addressing rules, so **moving a room between groups can change whic
 
 A lease is keyed to the agent and is room-agnostic: an agent holds at most one lease globally, whatever room the role lives in.
 
-Leases are heartbeat-based. A stale lease is logically free, and no reaper process sweeps it up, so the stored row alone never tells you a lease is dead — code that reads one has to check freshness itself.
+Leases are heartbeat-based. A stale lease is logically free, and no reaper process sweeps it up, so the stored row alone never tells you a lease is dead . Code that reads one has to check freshness itself.
 
 ## Gateway and agent surfaces
 
-Almost everything here is reachable from either side: from the Gateway with a cookie session, as a human operator, and as an agent operation invoked over HTTP. References, library documents, room-scoped documents, room groups, room links and roles all have both, backed by the same operations registry.
+Almost everything here is reachable from either side: from the Gateway, as a human operator with a cookie session, or as an agent operation invoked over HTTP. References, library documents, room-scoped documents, room groups, room links and roles all have both, backed by the same operations registry.
 
-Packages are the exception. **Creating a package and editing its contents are Gateway-only.** An agent can attach an existing package to a room it's creating; it can't assemble one or change what's inside.
+Packages are the exception. **Creating a package and editing its contents are Gateway-only.** An agent can attach an existing package to a room it's creating, but it can't assemble one or change what's inside. The Gateway attaches a package only to a room that already exists, and Switch Console has no package surface.
+
+An agent connecting to a room receives each attached package as its id, name, description, and instructions, with its `references` and `documents`. **The two arrive differently:** references come complete, including their `value`, while documents come as metadata only and are fetched with `load_internal_documents`. Package contents aren't merged into the room's top-level `references` and `documents` lists, so a reference that reaches the room only through a package appears only under that package. A package's contents are a set, with no order.
 
 The ecosystem graph and the room-link graph are Gateway-only aggregations built for the dashboard.
 
@@ -97,7 +98,7 @@ Room creation touches PostgreSQL and an external chat platform. The order is del
 
 ### Validate everything first
 
-The attachments and the group id are validated before anything is provisioned, so a request naming a reference that doesn't exist fails while it's still free to fail — no orphaned room, no stray external channel to clean up.
+The attachments and the group id are validated before anything is provisioned, so a request naming a reference that doesn't exist fails before anything exists to clean up: no orphaned room and no stray external channel.
 
 ### Resolve the participants
 
@@ -129,7 +130,7 @@ The channel-to-room mapping is registered and the provisioning mark is cleared i
 
 ### Invite the bridge client before any agent
 
-The bridge client is invited ahead of every agent, because a client ignores events that predate its own join. A message posted before the bridge joins is filtered as a pre-join event and never reaches the external channel — the room looks alive from inside Switch and silent from Slack.
+The bridge client is invited ahead of every agent, because a client ignores events that predate its own join. A message posted before the bridge joins is filtered as a pre-join event and never reaches the external channel . The room looks active inside Switch and silent in Slack.
 
 ### Populate the external channel
 
@@ -145,21 +146,23 @@ Attachment failures are collected per item rather than aborting the operation, s
 
 Rooms can also be created from a YAML definition through the Gateway, which runs this sequence rather than a parallel one.
 
+Before the sequence starts, the Gateway create route, which the **New room** form submits to, refuses a room with no bridge and no agents: `Internal rooms require at least one agent`. A room with a bridge needs no agent. The check belongs to that route, not to this sequence, so the YAML route and the agent `create_room` operation don't apply it.
+
 ## Room lifecycle
 
 - **Update** changes metadata, instructions, group membership and the agent list.
-- **Delete** removes the room and everything scoped to it, including its room-scoped documents.
+- **Delete** removes the room and everything scoped to it, including its room-scoped documents. Its channel stays unless the caller asks for `retire_channel` (a query flag on the delete route, a body field on bulk delete, a checkbox in Switch Console that is off by default). When asked, Switch retires the channel through the adapter's `retire_channel`: Slack and Mattermost archive it, Discord deletes it, the Telegram bot leaves the chat, and a Teams channel stays, because Switch isn't granted permission to delete one. A direct room's channel always stays. A channel that can't be retired doesn't block the delete: the room is deleted and the failure is returned, so the person can clean up by hand. Removing a whole connection deletes its rooms without retiring their channels, because by then the bot may have lost access.
 - **Archive** sets a reversible metadata-only flag. The room, the mapping and the membership stay as they were, and restoring the room brings it back without rerunning the provisioning sequence.
 - **Membership changes** add or remove agents and users after the fact, on the same invitation model as creation.
 - **Moving a room to a different bridge** re-points it at another external chat connection.
 
 ## The durable model
 
-Switch's own state lives in PostgreSQL beside `switch-core`. The tables that carry rooms and resources:
+Switch state lives in PostgreSQL beside `switch-core`. The tables that hold rooms and resources:
 
 - `rooms` — the room plus Switch metadata: bridge, external channel, channel type, instructions, group, owner, visibility, archive flag
 - `room_groups` and `room_links` — the tree, and the directed graph over it
-- `room_agents` — which agents are in a room, carrying the alias and the join-event flag
+- `room_agents` — which agents are in a room, with the alias and the join-event flag
 - `room_roles` and `role_leases` — roles defined per room, and who currently holds one
 - `references`, `documents`, `packages` and their association tables — the library and what it's attached to
 - `agents` — name, description, integration profile, owner, optional parent agent for subagents, addressing policy
@@ -169,7 +172,7 @@ Switch's own state lives in PostgreSQL beside `switch-core`. The tables that car
 - `external_users` and `external_user_claims` — platform identity to puppet client, and the claims linking a platform account to a Switch user
 - `agent_sessions` and `agent_runtime_states` — reachability and transport-to-room binding, and what a live session is doing
 
-Query logic lives in per-entity store modules. The model classes carry no queries. Schema changes are managed with Alembic.
+Query logic lives in per-entity store modules. The model classes contain no queries. Schema changes are managed with Alembic.
 
 ## Next steps
 

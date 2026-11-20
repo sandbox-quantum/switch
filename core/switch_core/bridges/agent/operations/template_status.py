@@ -21,7 +21,7 @@ from switch_core.bridges.agent.operations.registry import operation
 from switch_core.db.models import Agent, AgentDefinition, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.template_install_store import TemplateInstallStore
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.official_templates import official_template
 from switch_core.template_installs import (
     AGENT_FIELDS,
@@ -75,7 +75,6 @@ async def get_template_status() -> dict[str, Any]:
         }
         official = official_template(
             install.template_id,
-            protocol.config.feature_flags[AGENT_MANAGEMENT],
             protocol.config.feature_flags[SWITCH_BUDDY],
         )
         agent = await session.get(Agent, agent_id)

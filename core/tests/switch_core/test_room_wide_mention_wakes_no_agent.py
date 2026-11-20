@@ -42,6 +42,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.addressing import AddressingResolver, IncomingMessage
 from switch_core.room_wide_mention import ROOM_WIDE_MENTION_MARKER
 from switch_core.transport.content import message_content
+from switch_core.ui_spec import UISpec
 
 
 async def _make_agent(session: AsyncSession, name: str) -> Agent:
@@ -149,6 +150,7 @@ def _service(
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
+        ui: UISpec | None = None,
     ) -> SentMessage:
         sent.append(_Sent(body, extra_content))
         return SentMessage(event_id=f"evt-{len(sent)}", trust=None)

@@ -156,8 +156,8 @@ export function runAgent(params: {
       : entry.autoApprove === true;
   const repo = entry.repoUrl ? interpolate(entry.repoUrl, values) : null;
   const instructions = repo
-    ? `${entry.instructions}\n\nYou work on the repository ${repo}. If your working directory is not a clone of it yet, clone ${repo} into it first.`
-    : entry.instructions;
+    ? `${filled(entry.instructions)}\n\nYou work on the repository ${repo}. If your working directory is not a clone of it yet, clone ${repo} into it first.`
+    : filled(entry.instructions);
   const directory = params.directoryText.trim();
   return {
     slot: params.slot,

@@ -10,12 +10,12 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
-  DialogContentText,
   DialogTitle,
   Divider,
   FormControlLabel,
@@ -26,6 +26,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import SearchablePickerDialog, {
   type PickerOption,
 } from "../../components/SearchablePickerDialog";
@@ -37,38 +38,67 @@ import {
   addRoomAgents,
   addRoomUsers,
   archiveRoom,
+  canArchiveRoom,
   createRoomRole,
   deleteRoom,
   deleteRoomRole,
+  invitableAgents,
   removeRoomAgent,
   setRoomAgentJoinEvents,
   unarchiveRoom,
   updateRoom,
   updateRoomRole,
 } from "../../data/api";
-import { useAgents, useBridgeUsers, useRoom } from "../../data/hooks";
+import { useAgents, useBridgeUsers, useRoom, useRoomAgentCandidates } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
-import { AccessChip, AccessSelect } from "../../components/AccessControls";
-import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
+import { AccessSelect } from "../../components/AccessControls";
+import type { AccessLevel } from "../../data/visibility";
 import {
   EM_DASH,
   MONO_SX,
   channelTypeLabel,
   formatDateTime,
-  titleCase,
-} from "../../theme/hootFormat";
+  sentenceCase,
+} from "../../theme/format";
+import RoomAdminsSection from "./RoomAdminsSection";
+import RoomAutoRouteSection from "./RoomAutoRouteSection";
 import RoomGroupSection from "./RoomGroupSection";
 import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
 import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
-import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
+import type { RoomsNotice } from "./RoomsPage";
+import { RoomAccessChip } from "./RoomAccessChip";
+import {
+  ROOM_STANDING_LABELS,
+  type RoomViewer,
+  roomStanding,
+  roomStandingText,
+} from "./roomStanding";
+import {
+  ROOM_ACCESS_HELPERS,
+  ROOM_ACCESS_LEVELS,
+  ROOM_ACCESS_OPTION_LABELS,
+  type RoomAccessLevel,
+  roomAccessOf,
+} from "./roomAccess";
+import {
+  channelCleanupText,
+  channelKeptText,
+  channelRetiredText,
+  isRetirable,
+  retireChannelLabel,
+} from "./roomDeleteWording";
 
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { canAdminTenant } = useAuth();
-  const { data: room, loading, error, refetch } = useRoom(roomId);
+  const { canAdminTenant, capabilities, session } = useAuth();
+  // Who is looking, to offer taking out their own agent and unlinking their
+  // own resources: the server allows those by ownership alone.
+  const viewerId = session?.user.id ?? null;
+  const { data: room, loading, error, errorStatus, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
   if (loading) {
@@ -87,6 +117,11 @@ export default function RoomDetailPage() {
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {error ?? "Room not found"}
+          {mayBeInAnotherWorkspace(errorStatus) !== null && (
+            <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+              {mayBeInAnotherWorkspace(errorStatus)}
+            </Box>
+          )}
         </Alert>
       </Box>
     );
@@ -98,10 +133,10 @@ export default function RoomDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5" sx={{ flexGrow: 1 }}>
+        <Typography variant="h5" sx={{ flexGrow: 1, minWidth: 0, overflowWrap: "anywhere" }}>
           {room.name}
         </Typography>
         {room.archived && (
@@ -113,13 +148,28 @@ export default function RoomDetailPage() {
         {room.bridge_display_name && (
           <Chip label={room.bridge_display_name} size="small" />
         )}
-        <Button variant="outlined" size="small" onClick={() => setExportOpen(true)}>
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={() => setExportOpen(true)}
+          sx={{ flexShrink: 0 }}
+        >
           Export to YAML
         </Button>
       </Stack>
 
       <Stack spacing={4}>
-        <RoomInfoSection room={room} />
+        <RoomInfoSection
+          room={room}
+          viewer={{
+            id: viewerId,
+            administersOrganization: capabilities.administersOrganization,
+            isOperator: capabilities.isOperator,
+            adminMember:
+              session?.tenants.some((t) => t.id === session.tenant?.id && t.role === "admin") ??
+              false,
+          }}
+        />
         <Divider />
         <RoomGroupSection
           room={room}
@@ -130,6 +180,12 @@ export default function RoomDetailPage() {
         <Divider />
         <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
+        {room.auto_route && (
+          <>
+            <RoomAutoRouteSection room={room} autoRoute={room.auto_route} canWrite={canWrite} />
+            <Divider />
+          </>
+        )}
         <EditableFieldsSection
           room={room}
           canWrite={canWrite}
@@ -137,12 +193,25 @@ export default function RoomDetailPage() {
           onSaved={refetch}
         />
         <Divider />
-        <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <ParticipantsSection
+          room={room}
+          canWrite={canWrite}
+          viewerId={viewerId}
+          onChanged={refetch}
+        />
+        {showRoomAdmins(room) && (
+          <>
+            <Divider />
+            <RoomAdminsSection room={room} viewerId={viewerId} onChanged={refetch} />
+          </>
+        )}
         <Divider />
         <RoomResourcesSection
           roomId={room.id}
-          canWrite={canWrite}
+          canAttach={room.can_attach}
           canUnlink={room.can_unlink}
+          inRoom={room.viewer_is_member}
+          viewerId={viewerId}
         />
         <Divider />
         <RoomLinkedRoomsSection roomId={room.id} canWrite={canWrite} />
@@ -154,13 +223,13 @@ export default function RoomDetailPage() {
             <BridgeSection room={room} />
           </>
         )}
-        {canWrite && (
+        {canArchiveRoom(room) && (
           <>
             <Divider />
             <ArchiveSection room={room} onChanged={refetch} />
           </>
         )}
-        {canManage && (
+        {room.can_transfer && (
           <>
             <Divider />
             <TransferOwnershipSection
@@ -168,10 +237,20 @@ export default function RoomDetailPage() {
               resourceId={room.id}
               resourceLabel={room.name}
               ownerId={room.owner_id}
+              blockedReason={null}
               onTransferred={refetch}
             />
+          </>
+        )}
+        {canManage && (
+          <>
             <Divider />
-            <DangerSection room={room} onDeleted={() => navigate("/rooms")} />
+            <DangerSection
+              room={room}
+              onDeleted={(notice) =>
+                navigate("/rooms", notice ? { state: { notice } satisfies RoomsNotice } : undefined)
+              }
+            />
           </>
         )}
       </Stack>
@@ -186,16 +265,51 @@ export default function RoomDetailPage() {
   );
 }
 
+/** Room admins are shown on servers that have them, to whoever may choose
+ * them or once there are any. */
+function showRoomAdmins(room: RoomDetail): boolean {
+  if (room.room_admins === undefined) return false;
+  return Boolean(room.can_manage_admins) || room.room_admins.length > 0;
+}
+
+/** The names of the room's room admins, to mark them where the room lists
+ * its people by name. */
+function roomAdminNames(room: RoomDetail): Set<string> {
+  return new Set(
+    (room.room_admins ?? []).flatMap((admin) => (admin.name ? [admin.name] : [])),
+  );
+}
+
+function personLabel(name: string, adminNames: Set<string>): string {
+  return adminNames.has(name) ? `${name} · Room admin` : name;
+}
+
 // ── Room info (read-only) ───────────────────────────────────────────────────
 
-function RoomInfoSection({ room }: { room: RoomDetail }) {
+
+/** On a room with a channel, changing who sees the room leaves the channel
+ * as it is on its platform. */
+const BRIDGED_ROOM_ACCESS_HELPERS: Partial<Record<AccessLevel, string>> = Object.fromEntries(
+  ROOM_ACCESS_LEVELS.map((level) => [
+    level,
+    `${ROOM_ACCESS_HELPERS[level]} The linked channel is not changed.`,
+  ]),
+);
+
+function RoomInfoSection({ room, viewer }: { room: RoomDetail; viewer: RoomViewer }) {
+  const standing = roomStanding(room, viewer);
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Room info
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
-        <AccessChip pair={room} />
+        <RoomAccessChip room={room} />
+        <InfoChip
+          label="Owner"
+          value={ownerLabel(room)}
+          mono={room.owner_id !== null && room.owner_name === null}
+        />
         {room.channel_type && (
           <InfoChip
             label="Channel type"
@@ -212,8 +326,18 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
           />
         )}
       </Stack>
+      <Typography variant="body2" color="text.secondary">
+        <strong>Your access:</strong> {ROOM_STANDING_LABELS[standing]}.{" "}
+        {roomStandingText(room, standing)}
+      </Typography>
     </Stack>
   );
+}
+
+/** An owner with no name shows by id, as the rooms list shows them. */
+function ownerLabel(room: RoomDetail): string {
+  if (room.owner_id === null) return "No owner";
+  return room.owner_name ?? room.owner_id;
 }
 
 function InfoChip({
@@ -442,6 +566,7 @@ function RoleRow({
   role,
   canWrite,
   busy,
+  onChanged,
   run,
 }: {
   roomId: string;
@@ -452,6 +577,7 @@ function RoleRow({
   run: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   return (
     <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}>
@@ -483,7 +609,8 @@ function RoleRow({
             <IconButton
               size="small"
               disabled={busy}
-              onClick={() => run(() => deleteRoomRole(roomId, role.name))}
+              onClick={() => setDeleting(true)}
+              aria-label={`Delete role ${role.name}`}
             >
               <DeleteOutline fontSize="small" />
             </IconButton>
@@ -510,6 +637,22 @@ function RoleRow({
           </Box>
         )}
       </Stack>
+      <ConfirmDialog
+        open={deleting}
+        title={`Delete the ${role.name} role?`}
+        description={
+          role.held_by.length > 0
+            ? `Its instructions are deleted with it, and ${role.held_by.join(", ")} stops holding it. This cannot be undone.`
+            : "Its instructions are deleted with it. This cannot be undone."
+        }
+        confirmLabel="Delete role"
+        tone="destructive"
+        onConfirm={async () => {
+          await deleteRoomRole(roomId, role.name);
+          onChanged();
+        }}
+        onClose={() => setDeleting(false)}
+      />
       <RoleEditorDialog
         open={editing}
         mode="edit"
@@ -545,7 +688,7 @@ function EditableFieldsSection({
   const [name, setName] = useState(room.name);
   const [description, setDescription] = useState(room.description);
   const [instructions, setInstructions] = useState(room.instructions ?? "");
-  const [access, setAccess] = useState<AccessLevel>(toAccessLevel(room));
+  const [access, setAccess] = useState<RoomAccessLevel>(roomAccessOf(room));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -553,7 +696,7 @@ function EditableFieldsSection({
     setName(room.name);
     setDescription(room.description);
     setInstructions(room.instructions ?? "");
-    setAccess(toAccessLevel(room));
+    setAccess(roomAccessOf(room));
   }, [room]);
 
   const isBridged = !!room.bridge_id;
@@ -562,7 +705,7 @@ function EditableFieldsSection({
     name !== room.name ||
     description !== room.description ||
     instructions !== (room.instructions ?? "") ||
-    access !== toAccessLevel(room);
+    access !== roomAccessOf(room);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -570,11 +713,10 @@ function EditableFieldsSection({
     try {
       await updateRoom(room.id, {
         name: name !== room.name ? name : undefined,
-        description:
-          !isBridged && description !== room.description ? description : undefined,
+        description: description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
-        ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
+        ...(canManage && access !== roomAccessOf(room) ? { read_visibility: access } : {}),
       });
       onSaved();
     } catch (err) {
@@ -582,19 +724,14 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
+  }, [room, name, description, instructions, access, canManage, onSaved]);
 
   return (
     <Stack spacing={2}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Settings
       </Typography>
-      {!canWrite && (
-        <Alert severity="info">
-          You don't have write access to this room. Only its owner and admins
-          can change these settings.
-        </Alert>
-      )}
+      {!canWrite && <Alert severity="info">{settingsNotice(room)}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
       <TextField
         label="Name"
@@ -614,7 +751,6 @@ function EditableFieldsSection({
         disabled={!canWrite || saving}
         multiline
         rows={2}
-        slotProps={{ input: { readOnly: isBridged } }}
       />
       <TextField
         label="Instructions"
@@ -627,12 +763,18 @@ function EditableFieldsSection({
       />
       <AccessSelect
         value={access}
-        onChange={setAccess}
+        onChange={(level: AccessLevel) => setAccess(level as RoomAccessLevel)}
         disabled={!canManage || saving}
-        helpers={ROOM_ACCESS_HELPERS}
+        levels={ROOM_ACCESS_LEVELS}
+        helpers={isBridged ? BRIDGED_ROOM_ACCESS_HELPERS : ROOM_ACCESS_HELPERS}
         optionLabels={ROOM_ACCESS_OPTION_LABELS}
         sx={{ maxWidth: 360 }}
       />
+      {canWrite && !canManage && (
+        <Typography variant="caption" color="text.secondary">
+          Only the room's owner or a workspace admin can change who can see it.
+        </Typography>
+      )}
       <Box>
         <Button
           variant="contained"
@@ -647,18 +789,35 @@ function EditableFieldsSection({
   );
 }
 
+/** Who may change the settings, naming the owner as Switch Console does. */
+function settingsNotice(room: RoomDetail): string {
+  if (room.owner_id === null) {
+    return "This room has no owner, so only its room admins and workspace admins can change these settings.";
+  }
+  const owner = room.owner_name ?? "this room's owner";
+  return `Only ${owner}, a room admin or a workspace admin can change these settings.`;
+}
+
 // ── Participants ─────────────────────────────────────────────────────────────
 
 function ParticipantsSection({
   room,
   canWrite,
+  viewerId,
   onChanged,
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  viewerId: string | null;
   onChanged: () => void;
 }) {
-  const { data: allAgents, loading: agentsLoading } = useAgents();
+  const { data: allAgents, loading: agentsLoading, error: agentsError } = useAgents();
+  // Only the agents the server's invite rule lets the viewer bring in.
+  const {
+    data: candidates,
+    loading: candidatesLoading,
+    error: candidatesError,
+  } = useRoomAgentCandidates(room.id);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -670,9 +829,20 @@ function ParticipantsSection({
     return m;
   }, [allAgents]);
 
+  // You may always take out an agent you own, whoever owns the room.
+  const ownAgentIds = useMemo(
+    () =>
+      new Set(
+        (allAgents ?? [])
+          .filter((a) => viewerId !== null && a.owner_id === viewerId)
+          .map((a) => a.id),
+      ),
+    [allAgents, viewerId],
+  );
+
   const addableAgentOptions = useMemo<PickerOption[]>(
     () =>
-      (allAgents ?? [])
+      invitableAgents(allAgents ?? [], candidates?.agent_ids)
         .filter((a) => !room.agent_ids.includes(a.id))
         .map((a) => ({
           id: a.id,
@@ -680,7 +850,7 @@ function ParticipantsSection({
           secondary: a.connector_type ?? "",
           search: `${a.name} ${a.connector_type ?? ""}`.toLowerCase(),
         })),
-    [allAgents, room.agent_ids],
+    [allAgents, candidates, room.agent_ids],
   );
 
   // Subagent counts, so the add-agent picker can offer "include subagents"
@@ -736,7 +906,7 @@ function ParticipantsSection({
         onChanged();
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Failed to update join events",
+          err instanceof Error ? err.message : "Failed to update join and leave events",
         );
       } finally {
         setWorking(false);
@@ -762,7 +932,14 @@ function ParticipantsSection({
     [room.id, onChanged],
   );
 
-  const isFixedMembership = room.channel_type === "group" || room.channel_type === "direct";
+  // A direct or group chat takes its members from its platform: the server
+  // refuses changing them, and the page says where they are changed.
+  const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
+  const canInviteAgents = room.can_invite_agents;
+  const canAddPeople = room.can_add_people;
+  const adminNames = roomAdminNames(room);
+  const canRemove = (agentId: string) =>
+    !platformMembership && (room.can_remove_members || ownAgentIds.has(agentId));
 
   return (
     <Stack spacing={3}>
@@ -770,6 +947,11 @@ function ParticipantsSection({
         Participants
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
+      {agentsError && (
+        <Alert severity="error">
+          Couldn't load the agents, so those in the room show by id: {agentsError}
+        </Alert>
+      )}
 
       <Box>
         <Typography variant="body2" gutterBottom>
@@ -784,14 +966,13 @@ function ParticipantsSection({
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
               onToggleJoinEvents={
-                !canWrite || working
+                // Whoever may change the room, or the agent's own owner.
+                !(canWrite || ownAgentIds.has(id)) || working
                   ? undefined
                   : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                !canWrite || isFixedMembership || working
-                  ? undefined
-                  : () => handleRemoveAgent(id)
+                !canRemove(id) || working ? undefined : () => handleRemoveAgent(id)
               }
             />
           ))}
@@ -801,7 +982,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {canWrite && !isFixedMembership && (
+        {canInviteAgents && (
           <>
             <Button
               size="small"
@@ -818,7 +999,8 @@ function ParticipantsSection({
               searchPlaceholder="Search agents…"
               submitLabel="Add"
               options={addableAgentOptions}
-              loading={agentsLoading}
+              loading={agentsLoading || candidatesLoading}
+              loadError={agentsError ?? candidatesError}
               subToggleCount={(id) => childCountByParent.get(id) ?? 0}
               subToggleLabel={(n) => `Also add ${n} subagent(s)`}
               onClose={() => setAddAgentOpen(false)}
@@ -826,21 +1008,42 @@ function ParticipantsSection({
             />
           </>
         )}
-        {isFixedMembership && (
+        {platformMembership && (
           <Typography variant="caption" color="text.secondary">
             Membership for {channelTypeLabel(room.channel_type)} rooms is managed from the messaging platform.
           </Typography>
         )}
       </Box>
 
-      {room.bridge_id && !isFixedMembership && (
+      {room.is_console_chat && !room.bridge_id && (
+        <Box>
+          <Typography variant="body2" gutterBottom>
+            People ({room.connected_user_names.length})
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
+            {/* Two people may share a name, so a name alone does not key a chip. */}
+            {room.connected_user_names.map((name, index) => (
+              <Chip
+                key={`${index}:${name}`}
+                label={personLabel(name, adminNames)}
+                size="small"
+              />
+            ))}
+          </Stack>
+          <Typography variant="caption" color="text.secondary">
+            Members of a Switch Console chat are added and removed in Switch Console.
+          </Typography>
+        </Box>
+      )}
+
+      {room.bridge_id && !platformMembership && (
         <Box>
           <Typography variant="body2" gutterBottom>
             Connected users ({room.connected_user_names.length})
           </Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
             {room.connected_user_names.map((name) => (
-              <Chip key={name} label={name} size="small" />
+              <Chip key={name} label={personLabel(name, adminNames)} size="small" />
             ))}
             {room.connected_user_names.length === 0 && (
               <Typography variant="body2" color="text.secondary">
@@ -848,7 +1051,7 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          {canWrite && (
+          {canAddPeople && (
             <>
               <Button
                 size="small"
@@ -888,7 +1091,7 @@ function BridgeUserPicker({
   onClose: () => void;
   onSubmit: (names: string[]) => Promise<void>;
 }) {
-  const { data: bridgeUsers, loading } = useBridgeUsers(bridgeId);
+  const { data: bridgeUsers, loading, error } = useBridgeUsers(bridgeId);
   const options = useMemo<PickerOption[]>(
     () =>
       (bridgeUsers ?? [])
@@ -909,6 +1112,7 @@ function BridgeUserPicker({
       submitLabel="Add"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />
@@ -923,22 +1127,22 @@ const STATUS_META: Record<
 > = {
   live: {
     label: "Live",
-    color: "var(--hoot-success)",
+    color: "var(--sw-success)",
     description: "Connected and receiving events",
   },
   awaiting_manual_poll: {
     label: "Idle",
-    color: "var(--hoot-warning)",
+    color: "var(--sw-warning)",
     description: "Session open — awaiting manual poll",
   },
   no_session: {
     label: "No session",
-    color: "var(--hoot-muted-foreground)",
+    color: "var(--sw-muted-foreground)",
     description: "Not currently connected to this room",
   },
   disconnected: {
     label: "Disconnected",
-    color: "var(--hoot-destructive)",
+    color: "var(--sw-destructive)",
     description: "Always-on agent is not connected",
   },
 };
@@ -961,8 +1165,8 @@ function AgentRow({
 }) {
   const navigate = useNavigate();
   const meta = (status && STATUS_META[status]) || {
-    label: status ? titleCase(status) : "Unknown",
-    color: "var(--hoot-muted-foreground)",
+    label: status ? sentenceCase(status) : "Unknown",
+    color: "var(--sw-muted-foreground)",
     description: "",
   };
   return (
@@ -997,7 +1201,7 @@ function AgentRow({
       <Typography variant="caption" color="text.secondary">
         {meta.label}
       </Typography>
-      <Tooltip title="When on, this agent is notified when someone joins the room (room_join events) — useful for a welcome/onboarding agent. Does not affect the agent's presence or status.">
+      <Tooltip title="When on, this agent is notified when someone joins or leaves the room (room_join and room_leave events) — useful for a welcome/onboarding or moderator agent. Does not affect the agent's presence or status.">
         <FormControlLabel
           onClick={(e) => e.stopPropagation()}
           labelPlacement="start"
@@ -1008,7 +1212,7 @@ function AgentRow({
               checked={receivesJoinEvents}
               disabled={!onToggleJoinEvents}
               onChange={(e) => onToggleJoinEvents?.(e.target.checked)}
-              slotProps={{ input: { "aria-label": `Notify ${name} when someone joins` } }}
+              slotProps={{ input: { "aria-label": `Notify ${name} when someone joins or leaves` } }}
             />
           }
           label={
@@ -1017,7 +1221,7 @@ function AgentRow({
                 sx={{ fontSize: 15, color: "text.secondary" }}
               />
               <Typography variant="caption" color="text.secondary">
-                Notify on join
+                Notify on join &amp; leave
               </Typography>
             </Stack>
           }
@@ -1078,25 +1282,23 @@ function ArchiveSection({
   room: RoomDetail;
   onChanged: () => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleToggle = useCallback(async () => {
+  // Unarchiving restores the room, so it does not ask first; archiving does.
+  const unarchive = useCallback(async () => {
     setSaving(true);
     setError(null);
     try {
-      if (room.archived) {
-        await unarchiveRoom(room.id);
-      } else {
-        await archiveRoom(room.id);
-      }
+      await unarchiveRoom(room.id);
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update archive state");
+      setError(err instanceof Error ? err.message : "Failed to unarchive the room");
     } finally {
       setSaving(false);
     }
-  }, [room.id, room.archived, onChanged]);
+  }, [room.id, onChanged]);
 
   return (
     <Stack spacing={2}>
@@ -1107,93 +1309,106 @@ function ArchiveSection({
       <Typography variant="body2" color="text.secondary">
         {room.archived
           ? "This room is archived: hidden from the active room list but fully intact and retrievable. Unarchive it to restore it to the active list."
-          : "Archiving hides this room from the active room list while keeping it fully intact — the Matrix room, members, and any bridge channel are untouched. It's reversible at any time."}
+          : "Archiving hides this room from the active room list while keeping it fully intact — its messages, who is in it and any linked channel are untouched. It's reversible at any time."}
       </Typography>
       <Box>
         <Button
           variant="outlined"
           startIcon={room.archived ? <UnarchiveOutlined /> : <ArchiveOutlined />}
-          onClick={handleToggle}
+          onClick={room.archived ? unarchive : () => setConfirming(true)}
           disabled={saving}
         >
           {room.archived ? "Unarchive room" : "Archive room"}
         </Button>
       </Box>
+      <ConfirmDialog
+        open={confirming}
+        title={`Archive ${room.name}?`}
+        description="Archiving hides it from the active room list. Its messages, people and any linked channel are untouched, and you can unarchive it at any time."
+        confirmLabel="Archive room"
+        tone="plain"
+        onConfirm={async () => {
+          await archiveRoom(room.id);
+          onChanged();
+        }}
+        onClose={() => setConfirming(false)}
+      />
     </Stack>
   );
 }
 
 // ── Danger ───────────────────────────────────────────────────────────────────
 
+/** Deleting the room, and with it, if the person asks and the platform
+ * allows, its platform channel. The channel is kept unless they ask: a room
+ * is often deleted to take the agents out of a channel people keep using. */
 function DangerSection({
   room,
   onDeleted,
 }: {
   room: RoomDetail;
-  onDeleted: () => void;
+  // With the notice for a channel left to clean up by hand, if any.
+  onDeleted: (notice: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [retire, setRetire] = useState(false);
+  const outcome = room.channel_on_delete;
+  const platform = room.bridge_display_name ?? "messaging app";
 
   const handleDelete = useCallback(async () => {
-    setDeleting(true);
-    setError(null);
-    try {
-      const ok = await deleteRoom(room.id);
-      if (!ok) throw new Error("Delete returned false");
-      onDeleted();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
-      setDeleting(false);
-    }
-  }, [room.id, onDeleted]);
+    const planned = retire && isRetirable(outcome) ? outcome : null;
+    const result = await deleteRoom(room.id, planned !== null);
+    onDeleted(planned ? channelCleanupText(platform, planned, result.channel) : null);
+  }, [room.id, retire, outcome, platform, onDeleted]);
+
+  const channelText =
+    outcome === null
+      ? null
+      : retire && isRetirable(outcome)
+        ? channelRetiredText(platform, outcome)
+        : channelKeptText(platform, outcome);
 
   return (
     <Stack spacing={2}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Danger zone
       </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
-      {room.bridge_id && (
-        <Alert severity="warning">
-          Deleting this room does not delete the external channel on{" "}
-          {room.bridge_display_name ?? "the messaging platform"}. You will need
-          to remove or archive it manually.
-        </Alert>
-      )}
+      <Typography variant="body2" color="text.secondary">
+        Deleting the room takes everyone out of it and cannot be undone.
+      </Typography>
       <Box>
         <Button
           variant="outlined"
           color="error"
           startIcon={<DeleteOutline />}
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            setRetire(false);
+            setOpen(true);
+          }}
         >
           Delete room
         </Button>
       </Box>
-      <Dialog open={open} onClose={() => setOpen(false)}>
-        <DialogTitle>Delete room?</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Are you sure you want to delete <b>{room.name}</b>? This removes the
-            Matrix room, all client memberships, and any bridge mapping. This
-            cannot be undone.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button
-            color="error"
-            variant="contained"
-            onClick={handleDelete}
-            disabled={deleting}
-            startIcon={deleting ? <CircularProgress size={16} /> : undefined}
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ConfirmDialog
+        open={open}
+        title={`Delete ${room.name}?`}
+        description={
+          <Stack spacing={1.5}>
+            <span>This removes the room and takes everyone out of it. This cannot be undone.</span>
+            {isRetirable(outcome) && (
+              <FormControlLabel
+                control={<Checkbox checked={retire} onChange={(e) => setRetire(e.target.checked)} />}
+                label={retireChannelLabel(platform, outcome)}
+              />
+            )}
+            {channelText && <span>{channelText}</span>}
+          </Stack>
+        }
+        confirmLabel="Delete room"
+        tone="destructive"
+        onConfirm={handleDelete}
+        onClose={() => setOpen(false)}
+      />
     </Stack>
   );
 }

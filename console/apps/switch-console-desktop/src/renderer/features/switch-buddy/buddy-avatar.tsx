@@ -28,7 +28,7 @@ export function BuddyAvatar({
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center justify-center rounded-[22%] bg-background-tertiary',
+        'inline-flex shrink-0 items-center justify-center rounded-[22%] bg-background-tertiary emdark:bg-background-3',
         className
       )}
       style={{ width: size, height: size }}

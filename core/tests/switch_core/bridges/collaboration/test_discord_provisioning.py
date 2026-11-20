@@ -10,6 +10,7 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.models import BridgeOperationError
 
 GUILD_ID = 900
 
@@ -38,8 +39,9 @@ class _FakeMember:
 
 
 class _FakeCreatedChannel:
-    def __init__(self, channel_id: int, guild: _FakeGuild) -> None:
+    def __init__(self, channel_id: int, guild: _FakeGuild, name: str) -> None:
         self.id = channel_id
+        self.name = name
         self.guild = guild
         self.permission_grants: list[tuple[Any, dict[str, Any]]] = []
 
@@ -59,7 +61,7 @@ class _FakeGuild:
     async def create_text_channel(self, **kwargs: Any) -> _FakeCreatedChannel:
         self.created.append(kwargs)
         self._next_channel_id += 1
-        return _FakeCreatedChannel(self._next_channel_id, self)
+        return _FakeCreatedChannel(self._next_channel_id, self, kwargs["name"])
 
     def get_member(self, user_id: int) -> _FakeMember | None:
         return self.members.get(user_id)
@@ -133,9 +135,9 @@ def test_create_public_channel_sanitizes_name_and_sets_topic() -> None:
     guild = _FakeGuild()
     _wire(adapter, guild)
 
-    channel_id = _run(adapter.create_channel("My Feature Room!", "workstream topic"))
+    created = _run(adapter.create_channel("My Feature Room!", "workstream topic"))
 
-    assert channel_id == "101"
+    assert (created.id, created.name) == ("101", "my-feature-room")
     created = guild.created[0]
     assert created["name"] == "my-feature-room"
     assert created["topic"] == "workstream topic"
@@ -152,6 +154,181 @@ def test_create_private_channel_denies_everyone_and_allows_bot() -> None:
     overwrites = guild.created[0]["overwrites"]
     assert overwrites[guild.default_role].view_channel is False
     assert overwrites[guild.me].view_channel is True
+
+
+class _FakeForbiddenResponse:
+    status = 403
+    reason = "Forbidden"
+
+
+class _RefusingGuild(_FakeGuild):
+    """A server whose bot role lacks Manage Channels: Discord answers a channel
+    creation with 403, code 50013, as it did on 2026-11-17 in a bug-bash repro."""
+
+    async def create_text_channel(self, **kwargs: Any) -> _FakeCreatedChannel:
+        raise discord.Forbidden(
+            _FakeForbiddenResponse(), {"code": 50013, "message": "Missing Permissions"}
+        )
+
+
+def test_create_channel_refused_for_missing_permission_names_the_fix() -> None:
+    adapter = _adapter()
+    _wire(adapter, _RefusingGuild())
+
+    with pytest.raises(BridgeOperationError) as raised:
+        _run(adapter.create_channel("Code Review", "t", channel_type="channel_private"))
+
+    message = str(raised.value)
+    assert "#code-review" in message
+    assert "code 50013: Missing Permissions" in message
+    assert "Manage Channels" in message
+
+
+class _NoGuildClient(_FakeClient):
+    """A bot that isn't in the server the connection names."""
+
+    def get_guild(self, guild_id: int) -> None:
+        return None
+
+    async def fetch_guild(self, guild_id: int) -> Any:
+        raise discord.NotFound(
+            _FakeResponse(), {"code": 10004, "message": "Unknown Guild"}
+        )
+
+
+def test_create_channel_without_the_bot_in_the_server_says_so() -> None:
+    adapter = _adapter()
+    adapter._connection._client = _NoGuildClient(_FakeGuild())  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="isn't in the Discord server"):
+        _run(adapter.create_channel("Code Review", "t"))
+
+
+def test_create_channel_with_no_usable_characters_is_refused_before_discord() -> None:
+    adapter = _adapter()
+    guild = _FakeGuild()
+    _wire(adapter, guild)
+
+    with pytest.raises(ValueError, match="can't name a channel"):
+        _run(adapter.create_channel("日本語 ✨", "t"))
+    assert guild.created == []
+
+
+# ── create_dm_channel (a private chat with an agent) ─────────────────────────
+
+
+def _open_private_chat(adapter: DiscordAdapter, user_id: int = 7) -> str:
+    return _run(
+        adapter.create_dm_channel(
+            agent_name="switch-buddy", user_name="ada", user_external_id=str(user_id)
+        )
+    )
+
+
+def test_private_chat_channel_is_private_and_lets_its_person_in() -> None:
+    adapter = _adapter()
+    guild = _FakeGuild()
+    guild.members[7] = _FakeMember(7)
+    _wire(adapter, guild)
+
+    channel_id = _open_private_chat(adapter)
+
+    assert channel_id == "101"
+    assert guild.created[0]["name"] == "switch-buddy-ada"
+    assert guild.created[0]["overwrites"][guild.default_role].view_channel is False
+
+
+def test_private_chat_refused_for_missing_permission_names_the_fix() -> None:
+    adapter = _adapter()
+    _wire(adapter, _RefusingGuild())
+
+    with pytest.raises(BridgeOperationError) as raised:
+        _open_private_chat(adapter)
+
+    message = str(raised.value)
+    assert "#switch-buddy-ada" in message
+    assert "code 50013: Missing Permissions" in message
+    assert "Manage Channels" in message
+
+
+def test_private_chat_without_the_bot_in_the_server_says_so() -> None:
+    adapter = _adapter()
+    adapter._connection._client = _NoGuildClient(_FakeGuild())  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="isn't in the Discord server"):
+        _open_private_chat(adapter)
+
+
+class _DeletableChannel(_FakeCreatedChannel):
+    """A created channel that records being deleted, and refuses to let anyone
+    in when `refuse` is set (a bot role without Manage Roles)."""
+
+    def __init__(
+        self, channel_id: int, guild: _FakeGuild, name: str, refuse: bool
+    ) -> None:
+        super().__init__(channel_id, guild, name)
+        self.refuse = refuse
+        self.deleted = False
+
+    async def set_permissions(self, target: Any, **kwargs: Any) -> None:
+        if self.refuse:
+            raise discord.Forbidden(
+                _FakeForbiddenResponse(),
+                {"code": 50013, "message": "Missing Permissions"},
+            )
+        await super().set_permissions(target, **kwargs)
+
+    async def delete(self, **kwargs: Any) -> None:
+        self.deleted = True
+
+
+class _ChannelKeepingGuild(_FakeGuild):
+    def __init__(self, refuse_permissions: bool = False) -> None:
+        super().__init__()
+        self.refuse_permissions = refuse_permissions
+        self.channels: list[_DeletableChannel] = []
+
+    async def create_text_channel(self, **kwargs: Any) -> _FakeCreatedChannel:
+        self.created.append(kwargs)
+        self._next_channel_id += 1
+        channel = _DeletableChannel(
+            self._next_channel_id, self, kwargs["name"], self.refuse_permissions
+        )
+        self.channels.append(channel)
+        return channel
+
+    async def fetch_member(self, user_id: int) -> _FakeMember:
+        member = self.members.get(user_id)
+        if member is None:
+            raise discord.NotFound(
+                _FakeResponse(), {"code": 10007, "message": "Unknown Member"}
+            )
+        return member
+
+
+def test_private_chat_its_person_cant_be_let_into_is_removed_and_says_why() -> None:
+    adapter = _adapter()
+    guild = _ChannelKeepingGuild(refuse_permissions=True)
+    guild.members[7] = _FakeMember(7)
+    _wire(adapter, guild)
+
+    with pytest.raises(BridgeOperationError) as raised:
+        _open_private_chat(adapter)
+
+    message = str(raised.value)
+    assert "would not add ada to private channel #switch-buddy-ada" in message
+    assert "Manage Roles" in message
+    assert guild.channels[0].deleted
+
+
+def test_private_chat_for_someone_not_in_the_server_is_removed_and_says_why() -> None:
+    adapter = _adapter()
+    guild = _ChannelKeepingGuild()
+    _wire(adapter, guild)
+
+    with pytest.raises(BridgeOperationError, match="ada isn't a member"):
+        _open_private_chat(adapter, user_id=8)
+    assert guild.channels[0].deleted
 
 
 def test_create_group_or_direct_channel_rejected() -> None:

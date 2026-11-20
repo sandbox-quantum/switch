@@ -73,6 +73,12 @@ class _Connection:
     def set_channel_update_handler(self, handler: Any) -> None:
         pass
 
+    def set_member_change_handler(self, handler: Any) -> None:
+        pass
+
+    def set_permission_change_handler(self, handler: Any) -> None:
+        pass
+
     def set_guild_lifecycle_handlers(self, **handlers: Any) -> None:
         pass
 
@@ -159,6 +165,7 @@ async def _with_gateway(
         members=False,
         install_service=AsyncMock(),
         on_connected=attach,
+        feature_flags={},
     )
     connection = _Connection(discord)
     gateway._connection = connection  # type: ignore[assignment]

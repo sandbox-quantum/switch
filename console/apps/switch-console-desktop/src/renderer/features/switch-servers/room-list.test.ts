@@ -24,6 +24,7 @@ function room(extra: Partial<RemoteRoomSummary>): RemoteRoomSummary {
     externalChannelUrl: null,
     ownerId: 'u-2',
     viewerIsMember: false,
+    viewerIsRoomAdmin: false,
     isConsoleChat: false,
     archived: false,
     createdAt: '2026-10-01T09:00:00Z',
@@ -52,7 +53,7 @@ describe('a room as the Rooms page shows it', () => {
       appKey: 'b-acme',
       appLabel: 'Acme Slack',
       groupName: 'Design',
-      access: 'read_only',
+      access: 'public',
       agentCount: 1,
       peopleCount: 6,
       privateChannel: false,
@@ -69,7 +70,54 @@ describe('a room as the Rooms page shows it', () => {
     expect(roomCard(room({ channelType: 'channel_private' }), VIEWER).privateChannel).toBe(true);
   });
 
-  it('puts a Console chat in Switch Console, private to its members, its people not known', () => {
+  it('puts a Console chat in Switch Console, private to its members, counting them', () => {
+    const card = roomCard(
+      room({
+        bridgeId: null,
+        bridgeType: null,
+        bridgeDisplayName: null,
+        isConsoleChat: true,
+        peopleAreMembers: true,
+        connectedUserCount: 3,
+      }),
+      VIEWER
+    );
+    expect(card).toMatchObject({
+      appLabel: 'Switch Console',
+      access: 'private',
+      peopleCount: 3,
+    });
+  });
+
+  it('does not know the people of a room with no app other than a Console chat', () => {
+    const card = roomCard(
+      room({ bridgeId: null, bridgeType: null, bridgeDisplayName: null, connectedUserCount: 0 }),
+      VIEWER
+    );
+    expect(card.peopleCount).toBeNull();
+  });
+
+  it('takes a current server at its word when a Console chat has no members', () => {
+    const card = roomCard(
+      room({
+        bridgeId: null,
+        bridgeType: null,
+        bridgeDisplayName: null,
+        isConsoleChat: true,
+        peopleAreMembers: true,
+        connectedUserCount: 0,
+      }),
+      VIEWER
+    );
+    expect(card.peopleCount).toBe(0);
+  });
+
+  it("counts a bridged Console chat's app accounts, as the server does", () => {
+    const card = roomCard(room({ isConsoleChat: true, connectedUserCount: 4 }), VIEWER);
+    expect(card.peopleCount).toBe(4);
+  });
+
+  it('does not know the people of a Console chat on a server that does not count them', () => {
     const card = roomCard(
       room({
         bridgeId: null,

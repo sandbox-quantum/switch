@@ -86,7 +86,9 @@ class _FakeProvisioning:
     def __init__(self, events: list[Any]) -> None:
         self._events = events
 
-    async def kick_user(self, transport_room_id: str, transport_user_id: str) -> None:
+    async def kick_user(
+        self, transport_room_id: str, transport_user_id: str, **_kwargs: object
+    ) -> None:
         self._events.append(("kick", transport_user_id))
 
     async def delete_room(self, transport_room_id: str) -> None:

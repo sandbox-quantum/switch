@@ -25,6 +25,7 @@
 # serve it with `vite preview` on :4173, whose proxy sends its /gateway requests
 # to :8000 as nginx does in a deployment, and install Playwright's Chromium.
 # SWITCH_E2E_EXPLORE_TIME_LIMIT sets how long the explore lane explores (5m).
+# The browser lane's server has every flag the role matrix's pages need.
 #
 # Ports 4173, 5432, 8000, 8065 and 8081 must be free: stop a local stack first.
 # Logs and the JUnit report go to build/e2e/ephemeral/ (or $E2E_OUT); the env
@@ -75,6 +76,7 @@ SECRETS="$WORK/secrets"
 
 cd "$REPO"
 COMPOSE=(docker compose -p switch-e2e-ephemeral -f deploy/local/docker-compose.yml
+         -f deploy/local/docker-compose.e2e-mattermost.yml
          --env-file "$ENV_FILE" --project-directory .)
 SERVER_PID=""
 CONTROLLER_PID=""
@@ -107,12 +109,15 @@ trap cleanup EXIT
 
 cp "$REPO/.env.example" "$ENV_FILE"
 "$REPO/deploy/local/generate-env-secrets.sh" "$ENV_FILE" e2e
-if [ "$NEEDS_CONTROLLER" = 1 ]; then
-  # Agent management, and the key controllers' access tokens are signed with.
-  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=agent_management|" \
-             -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
+if [ "$LANE" = browser ]; then
+  # Every flag a page of the role matrix (gateway/src/routes/roleMatrix.ts)
+  # needs, so every page is there to open: connectors and the organization's
+  # connector apps (agent management is always on). Not follow-ups, nor their
+  # short window: only the fast lane's follow-ups scenario uses them.
+  FLAGS=service_connections,organization_connector_apps
+  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=$FLAGS|" "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
-else
+elif [ "$NEEDS_CONTROLLER" = 0 ]; then
   # Follow-ups, with a window short enough for a scenario to wait out. Not on
   # the controller lanes: there an untagged answer to a request card, or an
   # agentic scenario's unaddressed setup message, would become a follow-up.
@@ -120,6 +125,11 @@ else
   rm -f "$ENV_FILE.bak"
   printf 'FOLLOW_THE_CONVERSATION_WINDOW_SECONDS=%s\n' "$FOLLOW_WINDOW_SECONDS" >>"$ENV_FILE"
 fi
+# The harness makes its own accounts by signing up, as people do: sign-up on,
+# landing in the default workspace (GATEWAY_SIGNUP_MODE's default), with an
+# hourly cap well above the accounts a run makes, since the cap counts every
+# account created and a --keep stack may be run against again.
+printf 'GATEWAY_SIGNUP_ENABLED=true\nGATEWAY_SIGNUP_MAX_PER_HOUR=1000\n' >>"$ENV_FILE"
 chmod 600 "$ENV_FILE"
 set -a; source "$ENV_FILE"; set +a
 
@@ -161,7 +171,11 @@ echo "Starting switch-core from this checkout…"
 # JSON, so the harness can read back what the server logged during each
 # scenario (SWITCH_E2E_SERVER_LOG): one record per line, timed to the
 # millisecond. `jq -r '"\(.timestamp) \(.status) \(.message)"'` reads it.
-GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
+# The browser lanes serve the UI with `vite preview` on :4173, but the env
+# file's FRONTEND_BASE_URL names the dev server (:5173), so the preview's
+# origin is added for the origin check on cookie requests and sign-in.
+GATEWAY_EXTRA_ORIGINS='["http://127.0.0.1:4173"]' \
+  GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
   >"$OUT/switch-core.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 120); do curl -sf localhost:8000/health >/dev/null && break; sleep 1; done
@@ -202,7 +216,7 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
              '{name: "e2e-controller", kind: "console", version: "e2e",
                platform: {os: $os, arch: $arch, os_version: $osv}}')" \
     http://localhost:8000/gateway/management/controllers)" \
-    || { echo "could not create an agent controller (is agent_management on?)" >&2; exit 1; }
+    || { echo "could not create an agent controller" >&2; exit 1; }
   rm -f "$JAR"
   CONTROLLER_ID="$(jq -r .controller_id <<<"$CONTROLLER")"
   remember_secrets "$(jq -r .credential <<<"$CONTROLLER")"
@@ -266,7 +280,7 @@ status=0
   # Screenshots of failed pages, and agentic transcripts and verdicts.
   export SWITCH_E2E_OUTPUT_DIR="$OUT"
   # The follow-up window the server was started with, for the scenario that waits it out.
-  [ "$NEEDS_CONTROLLER" = 0 ] && export SWITCH_E2E_FOLLOW_WINDOW_SECONDS="$FOLLOW_WINDOW_SECONDS"
+  [ "$NEEDS_CONTROLLER" = 0 ] && [ "$LANE" != browser ] && export SWITCH_E2E_FOLLOW_WINDOW_SECONDS="$FOLLOW_WINDOW_SECONDS"
   SWITCH_E2E_LANE="$LANE" \
   SWITCH_E2E_ENVIRONMENT=ephemeral \
   SWITCH_E2E_STRICT=1 \

@@ -31,6 +31,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.models import CreatedChannel
 from switch_core.db.models import Client, CollaborationBridge, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -63,10 +64,12 @@ class _FakeProvisioning:
 
 
 class _FakeAdapter:
+    adds_creator_to_public_channel = False
+
     async def create_channel(
         self, name: str, topic: str, *, channel_type: str = "channel_public"
-    ) -> str:
-        return f"chan-{uuid.uuid4().hex[:8]}"
+    ) -> CreatedChannel:
+        return CreatedChannel(id=f"chan-{uuid.uuid4().hex[:8]}", name=name)
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]
@@ -117,6 +120,14 @@ class _FakeLifecycle:
 
     def rooms_changed(self, bridge_id: str) -> None:
         self.rooms_changed_for.append(bridge_id)
+
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
 
 
 class _NoRunningClients:
@@ -216,11 +227,15 @@ async def test_create_room_succeeds_for_each_tenants_own_default_bridge(
     # tenant A's own default bridge was never ambiguous on its own.
     with tenant_scope(tenant_a):
         result_a = await svc.create_room(
-            RoomCreateConfig(name="Room A", description="d")
+            RoomCreateConfig(
+                name="Room A", description="d", channel_type="channel_public"
+            )
         )
     with tenant_scope(tenant_b):
         result_b = await svc.create_room(
-            RoomCreateConfig(name="Room B", description="d")
+            RoomCreateConfig(
+                name="Room B", description="d", channel_type="channel_public"
+            )
         )
 
     assert result_a.room.bridge_id == bridge_a

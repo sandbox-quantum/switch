@@ -114,31 +114,35 @@ async def report_session_started(
     The claim is what makes a retried or repeated report count once, across
     restarts too: the host retries until the server answers, and an answer
     lost on the way back is a second report of the same start. Keyed by agent
-    as well as session, so one agent's host cannot spend another's.
+    as well as session, so one agent's host cannot spend another's. Taken
+    only while telemetry is on, since it exists only to stop a report going
+    twice.
 
-    Nothing is claimed while telemetry is off, for the reason
-    `TelemetryService.emit_milestone` gives. Returns whether it was sent.
+    `first_agent_session` is claimed whether telemetry is on or not, as every
+    milestone is (`TelemetryService.emit_milestone`). Returns whether
+    `session_started` was sent.
     """
-    if telemetry is None or not telemetry.enabled:
-        return False
-    if not limiter.admit(agent.id):
-        return False
-    if not await claim_milestone(
-        session_factory, f"{CLAIM_PREFIX}{agent.id}:{session_id}"
-    ):
+    if telemetry is None:
         return False
     known_agent_type = normalise_known_agent_type(agent.metadata_)
-    emit_safely(
-        telemetry,
-        "session_started",
-        {"start_source": start_source, "known_agent_type": known_agent_type},
-    )
+    if telemetry.enabled:
+        if not limiter.admit(agent.id):
+            return False
+        if not await claim_milestone(
+            session_factory, f"{CLAIM_PREFIX}{agent.id}:{session_id}"
+        ):
+            return False
+        emit_safely(
+            telemetry,
+            "session_started",
+            {"start_source": start_source, "known_agent_type": known_agent_type},
+        )
     await telemetry.emit_milestone(
         "first_agent_session",
         known_agent_type=known_agent_type,
         start_source=start_source,
     )
-    return True
+    return telemetry.enabled
 
 
 async def prune_session_start_claims(

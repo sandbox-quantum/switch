@@ -159,6 +159,25 @@ describe('presentTool', () => {
   });
 });
 
+it('reads Codex and OpenCode names for Switch tools as Claude Code ones', () => {
+  for (const title of ['switch.post_message', 'switch_post_message'])
+    expect(presentTool(item(title), null)).toMatchObject({
+      kind: 'switch',
+      verb: 'Posted to the room',
+    });
+  expect(
+    presentTool(
+      item('switch.read_context'),
+      detail({ type: 'mcp_tool_call', toolName: 'read_context' })
+    )
+  ).toMatchObject({ kind: 'switch', verb: 'Read the room' });
+  expect(presentTool(item('switch.list_bridges'), null)).toMatchObject({
+    kind: 'switch',
+    verb: 'Switch: list bridges',
+  });
+  expect(presentTool(item('switchboard'), null)).toMatchObject({ kind: 'other' });
+});
+
 it('keeps the end of a long path, which is the part a reader looks for', () => {
   expect(shortPath('/Users/me/repo/src/stores/chat.ts')).toBe('…/src/stores/chat.ts');
   expect(shortPath('src/a.ts')).toBe('src/a.ts');

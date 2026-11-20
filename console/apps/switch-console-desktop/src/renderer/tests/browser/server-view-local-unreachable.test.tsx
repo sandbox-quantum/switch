@@ -84,8 +84,15 @@ vi.mock('@renderer/features/switch-servers/MessagingAppsCard', () => ({
 vi.mock('@renderer/features/switch-servers/GuardrailsSection', () => ({
   GuardrailsSection: () => null,
 }));
-vi.mock('@renderer/features/switch-servers/server-stat-tiles', () => ({
-  ServerStatTiles: () => null,
+vi.mock('@renderer/features/switch-servers/home/use-ai-connected', () => ({
+  useAiConnected: () => ({ connected: null, buddy: null }),
+}));
+// Stubbed whole: loading the real panels would pull in modules these tests mock only in part.
+vi.mock('@renderer/features/switch-servers/home/home-panels', () => ({
+  SignedOutPanel: () => null,
+  ConnectAiPanel: () => null,
+  AskBuddyPanel: () => null,
+  useHomeChips: () => null,
 }));
 vi.mock('@renderer/features/switch-servers/server-sign-in', () => ({
   ServerSignInFields: () => null,

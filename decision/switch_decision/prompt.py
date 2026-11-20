@@ -1,0 +1,371 @@
+from collections import Counter
+
+from switch_decision.models import DecideRequest, Message
+
+NONE = "none"
+
+SYSTEM = """You decide which single agent in a team chat room, if any, should answer the latest message.
+
+People and AI agents share the room. Nobody tagged an agent in the latest message, so you decide.
+
+If the latest message speaks to an agent by its name or close to it, with or without @
+("hey deploy-bot", "are you here billing bot?", "deploy-bot can you rerun it"), that agent
+should answer. An agent that is only mentioned, talked about, quoted, or named inside code or
+a link is not being spoken to.
+Otherwise choose exactly one agent whose job clearly covers the message, or "none".
+Choose "none" when:
+- people are talking to each other, or the message is meant for a named person who is not an agent
+- an agent is only mentioned or talked about
+- it is small talk, thanks, an acknowledgement or social chatter
+- no agent's description covers it
+Prefer an agent already helping in this conversation when the message continues that topic.
+
+Give a short reason first, then your choice, then your confidence from 0 to 1 that the
+choice is right (for "none", your confidence that no agent should answer)."""
+
+
+def _line(m: Message) -> str:
+    kind = "agent" if m.sender_kind == "agent" else "person"
+    to = f" (to {', '.join(m.addressed)})" if m.addressed else ""
+    return f"- {m.sender} [{kind}]{to}: {m.text}"
+
+
+def _interactions(messages: list[Message]) -> list[str]:
+    pairs: Counter[tuple[str, str]] = Counter()
+    for m in messages:
+        for target in m.addressed:
+            pairs[(m.sender, target)] += 1
+    # A reply right after someone spoke is also an interaction.
+    for prev, cur in zip(messages, messages[1:]):
+        if prev.sender != cur.sender and not cur.addressed:
+            pairs[(cur.sender, prev.sender)] += 1
+    return [f"- {a} -> {b}: {n}" for (a, b), n in pairs.most_common(10)]
+
+
+CONVERSATION_RULE = (
+    "A message right after an agent answered or addressed the sender, in a thread "
+    "or in the room, continues that conversation and is for that agent, even when "
+    'it is short ("continue", "yes", "go ahead", "merged", "you here?"), unless it '
+    "answers or names another person."
+)
+
+# The same rule as the system prompt (Haiku, Bedrock, Ollama) and Gemini's input
+# state it, spelling out that a reply to another person is for nobody: Gemini
+# otherwise gave a colleague's short reply in an agent's thread to that agent.
+# Strands' instructions and the llama.cpp letter prompt keep CONVERSATION_RULE,
+# because with this wording Strands missed real continuations.
+SYSTEM_CONVERSATION_RULE = (
+    "A message right after an agent answered or addressed the sender, in a thread "
+    "or in the room, continues that conversation and is for that agent, even when "
+    'it is short ("continue", "yes", "go ahead", "merged", "you here?"). That holds '
+    "only when the agent's message was to the sender. A message that replies to "
+    "another person is for nobody, even right after an agent spoke or in an agent's "
+    "thread: an answer to a question another person asked, a response to what "
+    "another person just said, or a message that names another person."
+)
+
+
+def _back_and_forth(
+    messages: list[Message], sender: str, agents: set[str]
+) -> tuple[str, int] | None:
+    """The agent the sender has been going back and forth with at the end of
+    `messages`, with nobody else in between, and how many times it spoke. The
+    sender must have spoken in that stretch, or the agent addressed them."""
+    partner = next((m.sender for m in reversed(messages) if m.sender != sender), None)
+    if partner not in agents:
+        return None
+    turns = 0
+    involved = False
+    for m in reversed(messages):
+        if m.sender not in (sender, partner):
+            break
+        turns += m.sender == partner
+        involved = involved or m.sender == sender or sender in m.addressed
+    return (partner, turns) if involved else None
+
+
+def _thread_agent(thread: list[Message], agents: set[str]) -> str | None:
+    """The agent that spoke or was addressed most recently in the thread."""
+    for m in reversed(thread):
+        if m.sender_kind == "agent" and m.sender in agents:
+            return m.sender
+        tagged = [a for a in m.addressed if a in agents]
+        if tagged:
+            return tagged[-1]
+    return None
+
+
+def conversation_state(req: DecideRequest, history_limit: int) -> list[str]:
+    """What the visible conversation says about the sender being mid-exchange
+    with an agent, one line per fact; empty when they aren't."""
+    agents = {a.name for a in req.agents}
+    sender = req.message.sender
+    thread = req.thread[-history_limit:]
+    in_thread = bool(req.message.thread_id and thread)
+    messages = thread if in_thread else req.recent[-history_limit:]
+    lines = []
+    exchange = _back_and_forth(messages, sender, agents)
+    if exchange:
+        agent, turns = exchange
+        lines.append(
+            f"- {sender}'s current back-and-forth with agents, nobody else speaking "
+            f"in between: {agent} ({turns})"
+        )
+    if in_thread and (agent := _thread_agent(thread, agents)):
+        spoke = [i for i, m in enumerate(thread) if m.sender == agent]
+        if not spoke:
+            since = "it has not spoken in the visible thread."
+        else:
+            others = sorted(
+                {m.sender for m in thread[spoke[-1] + 1 :] if m.sender != sender}
+            )
+            since = (
+                f"since then {', '.join(others)} spoke."
+                if others
+                else "nobody else has spoken since."
+            )
+        lines.append(
+            f"- In this thread, the last agent to speak or be addressed is {agent}; {since}"
+        )
+    if messages:
+        last = messages[-1]
+        replied_to = len(messages) >= 2 and messages[-2].sender == sender
+        if (
+            last.sender_kind == "agent"
+            and last.sender in agents
+            and (sender in last.addressed or replied_to)
+        ):
+            lines.append(
+                f"- The message just before this one is from {last.sender}, to {sender}."
+            )
+    return lines
+
+
+def build_state(req: DecideRequest, history_limit: int) -> str:
+    """The room's context as one text block: what a decision model reads."""
+    agents = "\n".join(
+        f"- {a.name}: {a.description}" + (f" (role: {a.role})" if a.role else "")
+        for a in req.agents
+    )
+    recent = req.recent[-history_limit:]
+    thread = req.thread[-history_limit:]
+    parts = [f"Room: {req.room.name}"]
+    if req.room.instructions:
+        parts.append(f"Room instructions:\n{req.room.instructions}")
+    parts.append(f"Agents in the room:\n{agents}")
+    if recent:
+        parts.append(
+            "Recent messages in the room (oldest first):\n"
+            + "\n".join(map(_line, recent))
+        )
+    if thread:
+        parts.append(
+            "The thread this message is in (oldest first):\n"
+            + "\n".join(map(_line, thread))
+        )
+    talked = _interactions(recent + thread)
+    if talked:
+        parts.append("Who talked to whom recently:\n" + "\n".join(talked))
+    state = conversation_state(req, history_limit)
+    if state:
+        parts.append("Conversation state:\n" + "\n".join(state))
+    where = (
+        "in the thread above"
+        if req.message.thread_id
+        else "at the top level of the room"
+    )
+    parts.append(
+        f"Latest message, {where}:\n- {req.message.sender} [person]: {req.message.text}"
+    )
+    return "\n\n".join(parts)
+
+
+_SYSTEM_RULES, _SYSTEM_FORMAT = SYSTEM.split("\n\nGive a short reason first")
+
+
+def system_prompt(req: DecideRequest, history_limit: int) -> str:
+    """SYSTEM, with SYSTEM_CONVERSATION_RULE when the sender is mid-exchange."""
+    if not conversation_state(req, history_limit):
+        return SYSTEM
+    return f"{_SYSTEM_RULES}\n{SYSTEM_CONVERSATION_RULE}\n\nGive a short reason first{_SYSTEM_FORMAT}"
+
+
+def build_messages(req: DecideRequest, history_limit: int) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": system_prompt(req, history_limit)},
+        {"role": "user", "content": build_state(req, history_limit)},
+    ]
+
+
+SPEAKER_QUESTION = "speaker"
+
+SPEAKER_INSTRUCTIONS = (
+    "Which single agent in this room should answer the latest message? If the "
+    "latest message speaks to an agent by its name or close to it, with or without "
+    '@ ("hey deploy-bot", "are you here billing bot?", "deploy-bot can you rerun '
+    'it"), that agent should answer. An agent that is only mentioned, talked about, '
+    "quoted, or named inside code or a link is not being spoken to. Otherwise pick "
+    "the agent whose job clearly covers the message; prefer an agent already "
+    "helping in this conversation when the message continues that topic. Pick none "
+    "when people are talking to each other, the message is for a named person who "
+    "is not an agent, it is small talk or thanks, or no agent's job covers it."
+)
+
+NONE_CRITERION = (
+    "No agent should answer: people talking to each other, a message meant for a "
+    "named person who is not an agent, an agent only mentioned or talked about, "
+    "small talk, thanks or acknowledgement, or nothing any agent covers."
+)
+
+
+def speaker_instructions(req: DecideRequest, history_limit: int) -> str:
+    """SPEAKER_INSTRUCTIONS, with the conversation rule when the sender is mid-exchange."""
+    if not conversation_state(req, history_limit):
+        return SPEAKER_INSTRUCTIONS
+    return f"{SPEAKER_INSTRUCTIONS} {CONVERSATION_RULE}"
+
+
+def systemone_request(req: DecideRequest, model: str, history_limit: int) -> dict:
+    criteria = {
+        a.name: f"{a.name}: {a.description}" + (f" (role: {a.role})" if a.role else "")
+        for a in req.agents
+    }
+    criteria[NONE] = NONE_CRITERION
+    return {
+        "model": model,
+        "state": build_state(req, history_limit),
+        "questions": {
+            SPEAKER_QUESTION: {
+                "type": "choice",
+                "instructions": speaker_instructions(req, history_limit),
+                "criteria": criteria,
+            }
+        },
+    }
+
+
+def output_schema(agent_names: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string"},
+            "agent": {"type": "string", "enum": [*agent_names, NONE]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["reason", "agent", "confidence"],
+    }
+
+
+PICK_TOOL = "pick_speaker"
+
+
+def pick_tool(agent_names: list[str]) -> dict:
+    """A Bedrock Converse tool the model is forced to call: its input is the decision."""
+    return {
+        "toolSpec": {
+            "name": PICK_TOOL,
+            "description": "Record which agent, if any, should answer the latest message.",
+            "inputSchema": {"json": output_schema(agent_names)},
+        }
+    }
+
+
+NONE_LETTER = "N"
+AGENT_LETTERS = "ABCDEFGHIJKLM"  # N is none
+
+
+def lettered_options(agent_names: list[str]) -> dict[str, str]:
+    """Letter -> option name: one single-token letter per agent, and N for none."""
+    if len(agent_names) > len(AGENT_LETTERS):
+        raise ValueError(
+            f"at most {len(AGENT_LETTERS)} agents can be lettered, got {len(agent_names)}"
+        )
+    return {**dict(zip(AGENT_LETTERS, agent_names)), NONE_LETTER: NONE}
+
+
+LETTER_SYSTEM = (
+    SYSTEM.split("Give a short reason first")[0].rstrip()
+    + "\n\nAnswer with the letter of your choice only."
+)
+
+
+def letter_system(req: DecideRequest, history_limit: int) -> str:
+    """LETTER_SYSTEM, with the conversation rule when the sender is mid-exchange."""
+    if not conversation_state(req, history_limit):
+        return LETTER_SYSTEM
+    return LETTER_SYSTEM.replace(
+        "\n\nAnswer with the letter", f"\n{CONVERSATION_RULE}\n\nAnswer with the letter"
+    )
+
+
+def letter_messages(
+    req: DecideRequest, history_limit: int
+) -> tuple[list[dict[str, str]], dict[str, str]]:
+    options = lettered_options([a.name for a in req.agents])
+    by_name = {a.name: a for a in req.agents}
+    lines = []
+    for letter, name in options.items():
+        if name == NONE:
+            lines.append(f"{letter}) none: {NONE_CRITERION}")
+        else:
+            a = by_name[name]
+            lines.append(
+                f"{letter}) {a.name}: {a.description}"
+                + (f" (role: {a.role})" if a.role else "")
+            )
+    user = (
+        build_state(req, history_limit)
+        + "\n\nWho should answer the latest message?\n"
+        + "\n".join(lines)
+        + "\n\nAnswer:"
+    )
+    return [
+        {"role": "system", "content": letter_system(req, history_limit)},
+        {"role": "user", "content": user},
+    ], options
+
+
+# Google's Decisions API (gemini-decision-1) answers one choice question about a
+# plain-text input. It never sees the question key, so the instructions carry the
+# whole question, and every option gets a description. The "nobody" option has a
+# word for a key, not a catch-all like "none_of_the_above": option keys may be
+# sorted alphabetically.
+GEMINI_NOBODY = "nobody"
+
+GEMINI_NOBODY_CRITERION = f"Nobody. {NONE_CRITERION}"
+
+
+def gemini_nobody_key(agent_names: list[str], preferred: str = GEMINI_NOBODY) -> str:
+    """The nobody option's key: `preferred`, unless an agent has that name."""
+    key = preferred
+    while key in agent_names:
+        key += "_"
+    return key
+
+
+def gemini_input(req: DecideRequest, history_limit: int) -> str:
+    """The routing rules (without the answer format, which the API fixes) and
+    the room's state, as one text."""
+    rules = system_prompt(req, history_limit).split("\n\nGive a short reason first")[0]
+    return f"{rules}\n\n{build_state(req, history_limit)}"
+
+
+def gemini_decision_request(
+    req: DecideRequest, model: str, history_limit: int, nobody_key: str
+) -> dict:
+    criteria = {
+        a.name: f"{a.name}: {a.description}" + (f" (role: {a.role})" if a.role else "")
+        for a in req.agents
+    }
+    criteria[nobody_key] = GEMINI_NOBODY_CRITERION
+    return {
+        "model": model,
+        "input": gemini_input(req, history_limit),
+        "questions": {
+            SPEAKER_QUESTION: {
+                "type": "choice",
+                "instructions": speaker_instructions(req, history_limit),
+                "criteria": criteria,
+            }
+        },
+    }

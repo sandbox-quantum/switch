@@ -37,6 +37,7 @@ from switch_core.gateway.hosted_machines import MACHINES_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
 from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
+from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 from tests.telemetry_records import recording_telemetry
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
@@ -58,6 +59,7 @@ async def signup_app(session_factory):
         gateway_signup_open=True,
         gateway_signup_mode="default_tenant",
         gateway_signup_max_per_hour=20,
+        gateway_signup_refused_header=None,
         gateway_password_login_enabled=True,
         gateway_oidc_enabled=False,
         gateway_oidc_provider_label=None,
@@ -66,6 +68,8 @@ async def signup_app(session_factory):
         hosted_agents_enabled=True,
         keyring=TEST_KEYRING,
         gateway_cookie_secure=False,
+        **LOGIN_LIMIT_DEFAULTS,
+        gateway_allow_test_account_reset=False,
     )
     identity: dict[str, User] = {}
 
@@ -498,7 +502,7 @@ async def test_signup_is_refused_once_the_hourly_cap_is_reached(signup_app, capl
     response = await _signup(app, email="third@example.com")
     assert response.status_code == 429, response.text
     assert response.json()["detail"] == (
-        "Too many sign-ups on this server in the last hour. Try again later."
+        "Too many sign-ups in the last hour. Try again later."
     )
     assert 1 <= int(response.headers["Retry-After"]) <= 3600
     assert "2 users created in the last hour (cap 2)" in caplog.text
@@ -532,6 +536,81 @@ async def test_concurrent_signups_cannot_overrun_the_cap(signup_app):
     )
     assert sorted(r.status_code for r in responses) == [201, 429]
     assert await _user_count(app) == 1
+
+
+async def _signup_from(app, address: str, email: str) -> httpx.Response:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app.app, client=(address, 4321)),
+        base_url="https://switch.example.com",
+    ) as client:
+        return await client.post(
+            "/auth/signup", json={"email": email, "password": PASSWORD}
+        )
+
+
+async def test_one_address_cannot_spend_everyones_sign_ups(signup_app):
+    """The hourly cap is one budget for the whole deployment, so a limit per
+    client address stands in front of it: one client's burst leaves the rest
+    of the budget to everyone else."""
+    app = signup_app
+    app.config.gateway_signup_max_per_hour_per_address = 3
+    for n in range(3):
+        response = await _signup_from(app, "203.0.113.7", f"burst{n}@example.com")
+        assert response.status_code == 201, response.text
+
+    refused = await _signup_from(app, "203.0.113.7", "burst3@example.com")
+    assert refused.status_code == 429, refused.text
+    assert refused.json()["detail"] == (
+        "Too many sign-ups from your network. Try again in 60 minutes."
+    )
+    assert 3590 <= int(refused.headers["Retry-After"]) <= 3600
+    newcomer = await _signup_from(app, "198.51.100.9", "newcomer@example.com")
+    assert newcomer.status_code == 201, newcomer.text
+    assert await _user_count(app) == 4
+
+
+async def test_the_deployment_wide_cap_still_holds_across_addresses(signup_app):
+    app = signup_app
+    app.config.gateway_signup_max_per_hour = 2
+    app.config.gateway_signup_max_per_hour_per_address = 5
+    assert (await _signup_from(app, "203.0.113.1", "a@example.com")).status_code == 201
+    assert (await _signup_from(app, "203.0.113.2", "b@example.com")).status_code == 201
+    refused = await _signup_from(app, "203.0.113.3", "c@example.com")
+    assert refused.status_code == 429
+    assert refused.json()["detail"] == (
+        "Too many sign-ups in the last hour. Try again later."
+    )
+
+
+async def test_an_address_signs_up_again_once_its_hour_is_over(signup_app):
+    app = signup_app
+    app.config.gateway_signup_max_per_hour_per_address = 1
+    assert (await _signup_from(app, "203.0.113.7", "a@example.com")).status_code == 201
+    assert (await _signup_from(app, "203.0.113.7", "b@example.com")).status_code == 429
+
+    async with app.factory() as session:
+        await session.execute(
+            text(
+                "UPDATE auth_attempts SET"
+                " window_started_at = window_started_at - interval '61 minutes',"
+                " locked_until = locked_until - interval '61 minutes',"
+                " expires_at = expires_at - interval '61 minutes'"
+            )
+        )
+        await session.commit()
+
+    response = await _signup_from(app, "203.0.113.7", "b@example.com")
+    assert response.status_code == 201, response.text
+
+
+async def test_sign_ups_through_a_proxy_are_left_to_the_deployment_wide_cap(
+    signup_app,
+):
+    """From a private address, every client behind the proxy shares it."""
+    app = signup_app
+    app.config.gateway_signup_max_per_hour_per_address = 1
+    assert (await _signup_from(app, "10.0.0.7", "a@example.com")).status_code == 201
+    assert (await _signup_from(app, "10.0.0.7", "b@example.com")).status_code == 201
 
 
 @pytest.fixture
@@ -601,6 +680,41 @@ async def test_a_sign_up_over_the_hourly_cap_is_reported_as_rate_limited(
     assert reported.events("signup_refused") == [{"reason": "rate_limited"}]
 
 
+REFUSED_HEADER = "x-amzn-waf-signup-refused"
+
+
+async def test_a_sign_up_the_edge_marks_as_refused_creates_no_account(
+    signup_app, reported
+):
+    app = signup_app
+    app.config.gateway_signup_refused_header = REFUSED_HEADER
+    refused = await app.client.post(
+        "/auth/signup",
+        json={"email": "far.away@example.com", "password": PASSWORD},
+        headers={REFUSED_HEADER: "country"},
+    )
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == (
+        "New Switch accounts are not available in your country."
+    )
+    async with app.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 0
+    assert reported.events("signup_refused") == [{"reason": "country"}]
+
+    assert (await _signup(app, email="nearby@example.com")).status_code == 201
+
+
+async def test_the_refused_header_is_ignored_while_no_header_is_configured(
+    signup_app,
+):
+    response = await signup_app.client.post(
+        "/auth/signup",
+        json={"email": "far.away@example.com", "password": PASSWORD},
+        headers={REFUSED_HEADER: "country"},
+    )
+    assert response.status_code == 201
+
+
 async def test_the_owner_stopping_and_starting_their_machine_is_reported(
     signup_app, reported
 ):
@@ -621,7 +735,6 @@ async def test_the_owner_stopping_and_starting_their_machine_is_reported(
         )
         assert started.status_code == 200, started.text
 
-    assert reported.events("cloud_machine_stopped") == [{"reason": "owner"}]
-    assert reported.events("cloud_machine_woken") == [
-        {"trigger": "owner", "stopped_by": "owner"}
-    ]
+    assert reported.events("cloud_machine_stopped") == [{}]
+    assert reported.events("cloud_machine_started") == [{"stopped_by": "owner"}]
+    assert reported.events("cloud_machine_woken") == []

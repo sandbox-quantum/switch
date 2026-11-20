@@ -47,7 +47,7 @@ from starlette.routing import Route
 
 from switch_core.bridges.agent.operations import declared_operations
 from switch_core.config import SwitchConfig
-from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
+from switch_core.feature_flags import KNOWN_FEATURE_FLAGS, without_flag
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import (
     get_authenticated_caller,
@@ -105,6 +105,7 @@ _COLLABORATORS = (
     "resource_service",
     "protocol",
     "user_changes",
+    "trust_connection_check",
 )
 
 
@@ -150,10 +151,8 @@ def gateway_app(config: SwitchConfig) -> FastAPI:
         invite_mailer=None,
         config=config,
     )
-    # `create_management` builds agent management only with its flag on, and
-    # `Management.install` then mounts its gateway routes through this.
-    if config.agent_management_enabled:
-        mount_gateway_routes(app)
+    # `Management.install` mounts agent management's gateway routes through this.
+    mount_gateway_routes(app)
     return app
 
 
@@ -216,7 +215,7 @@ def gateway_routes() -> list[dict[str, Any]]:
     routes = _routes_by_key(gateway_app(_config(every)))
     gated_by: dict[str, list[str]] = {key: [] for key in routes}
     for flag in sorted(every):
-        without = _routes_by_key(gateway_app(_config(every - {flag})))
+        without = _routes_by_key(gateway_app(_config(without_flag(every, flag))))
         unexpected = sorted(set(without) - set(routes))
         if unexpected:
             raise ValueError(

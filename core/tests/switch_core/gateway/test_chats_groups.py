@@ -27,6 +27,7 @@ from switch_core.gateway import chats as chats_module
 from switch_core.gateway import rooms as rooms_module
 from switch_core.gateway.schemas import RoomUpdateRequest
 from switch_core.room_changes import RoomChanges, people_concerned
+from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.user_changes import ROOM
 from tests.switch_core.gateway.conftest import (
     _chat_service,
@@ -914,6 +915,8 @@ def _second_process(chats: _Harness) -> ChatService:
         listener=_FakeListener(),
         activity=_FakeActivityListener(),
         connections=AgentConnectionRegistry(),
+        message_observer=IgnoreParticipantMessages(),
+        telemetry=None,
     )
     return service
 
@@ -1052,49 +1055,6 @@ async def test_a_change_to_one_chat_re_summarises_only_that_chat(
         await events.stream.aclose()  # type: ignore[attr-defined]
     # The add answers with one summary; each of the two streams sends one.
     assert summaries == [room_ids[0]] * 3
-
-
-async def test_group_only_requests_are_refused_while_group_chats_is_off(
-    chats: _Harness,
-) -> None:
-    agent = await chats.agent("helper", owner=chats.alice)
-    other = await chats.agent("other", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
-    chats.service.group_chats_enabled = False
-
-    refusals = [
-        await chats.client.post(
-            "/chats",
-            json={
-                "agentId": agent.id,
-                "memberUserIds": [chats.bob.id],
-                "requestId": "g1",
-            },
-            headers=chats.as_user(chats.alice),
-        ),
-        await chats.client.post(
-            "/chats",
-            json={"agentIds": [], "requestId": "g2"},
-            headers=chats.as_user(chats.alice),
-        ),
-        await _add_agent(chats, chats.alice.id, room_id, other),
-        await chats.client.delete(
-            f"/chats/{room_id}/agents/{agent.id}", headers=chats.as_user(chats.alice)
-        ),
-        await chats.send(
-            chats.alice, room_id, "s1", "@alice", mentionUserIds=[chats.alice.id]
-        ),
-        await _candidates(chats, chats.alice, room_id),
-    ]
-    assert [(r.status_code, _code(r)) for r in refusals] == [
-        (409, "GROUP_CHATS_OFF")
-    ] * len(refusals)
-    # What was there before group chats still works.
-    assert (await chats.send(chats.alice, room_id, "s2", "hi")).status_code == 200
-    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
-
-    chats.service.group_chats_enabled = True
-    assert (await _add_agent(chats, chats.alice.id, room_id, other)).status_code == 200
 
 
 def _utf16(text: str) -> bytes:
@@ -1240,7 +1200,8 @@ class _Published:
     def __init__(self) -> None:
         self.notices: list[tuple[str, str, str]] = []
 
-    def publish(self, tenant_id: str, user_id: str, kind: str, id: str) -> None:
+    def publish(self, tenant_id: str, user_id: str, kind: str, id: str | None) -> None:
+        assert id is not None
         self.notices.append((user_id, kind, id))
 
 
@@ -1249,7 +1210,7 @@ async def test_people_are_told_when_a_room_of_theirs_changes(chats: _Harness) ->
     changes = RoomChanges(
         session_factory=chats.factory, publisher=published, window_seconds=0.0
     )
-    chats.room_service.on_room_changed(changes.room_changed)
+    chats.room_service.on_room_changed(changes.room_changed, changes.rooms_changed)
     chats.service._provisioning.on_membership_changed(changes.room_changed)  # type: ignore[attr-defined]
 
     async def told() -> set[str]:
@@ -1376,7 +1337,10 @@ async def test_renaming_an_agent_in_many_rooms_reads_them_in_one_query(
     monkeypatch.setattr(room_changes_module, "people_concerned", counted)
 
     await chats.service.agent_changed(TENANT, agent.id)
-    assert len(changes._tasks) == 1
+    # With no window the read can finish while `agent_changed` is still
+    # waking chat streams, and a finished task leaves `_tasks`: one task or
+    # none left here, and one read either way.
+    assert len(changes._tasks) <= 1
     await asyncio.gather(*changes._tasks)
     assert reads == [sorted(rooms)]
     expected = {
@@ -1395,7 +1359,9 @@ async def test_only_a_manager_renames_a_group_and_everyone_sees_it(
         return room.name
 
     monkeypatch.setattr(rooms_module, "_build_room_detail", detail)
-    chats.room_service.on_room_changed(chats.service.room_changed)
+    chats.room_service.on_room_changed(
+        chats.service.room_changed, chats.service.rooms_changed
+    )
     created = await chats.client.post(
         "/chats",
         json={"agentIds": [], "memberUserIds": [chats.bob.id], "requestId": "c1"},
@@ -1413,6 +1379,7 @@ async def test_only_a_manager_renames_a_group_and_everyone_sees_it(
                 session,
                 chats.room_service,
                 RoomStore(),
+                None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]

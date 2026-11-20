@@ -7,12 +7,20 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import TENANT_ZERO_ID, OidcIdentity, TenantMember, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    OidcIdentity,
+    OrganizationMember,
+    TenantMember,
+    User,
+)
 from switch_core.db.stores.user_store import (
     OidcIdentityConflictError,
     OidcIdentityRaceError,
+    SignupRefusedError,
     UserStore,
 )
+from switch_core.tenant_context import tenant_scope
 
 _ISS = "https://idp.example.com"
 
@@ -35,6 +43,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -49,6 +58,7 @@ class TestGetOrCreateOidcUser:
                     email_verified=True,
                     join_tenant=True,
                     link_by_email=False,
+                    create_allowed=True,
                 )
         async with session_factory() as session:
             assert (
@@ -73,6 +83,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
             assert created is True
@@ -92,8 +103,90 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             assert (returning.id, created_again) == (user.id, False)
+
+    async def test_a_refused_creation_writes_no_account(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            with pytest.raises(SignupRefusedError):
+                await store.get_or_create_oidc_user(
+                    session,
+                    iss=_ISS,
+                    email="far.away@example.com",
+                    name="Far",
+                    sub="okta|refused",
+                    email_verified=True,
+                    join_tenant=True,
+                    link_by_email=True,
+                    create_allowed=False,
+                )
+            await session.rollback()
+        async with session_factory() as session:
+            assert await store.get_by_email(session, "far.away@example.com") is None
+            assert (
+                await store.get_by_oidc_identity(session, iss=_ISS, sub="okta|refused")
+                is None
+            )
+
+    async def test_a_refused_creation_still_signs_in_a_known_identity(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            user, _ = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="known@example.com",
+                name="Known",
+                sub="okta|known",
+                email_verified=True,
+                join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
+            )
+            await session.commit()
+            again, created = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="known@example.com",
+                name="Known",
+                sub="okta|known",
+                email_verified=True,
+                join_tenant=True,
+                link_by_email=True,
+                create_allowed=False,
+            )
+            assert (again.id, created) == (user.id, False)
+
+    async def test_a_refused_creation_still_links_a_verified_email(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            existing = User(
+                name="Pat",
+                email="pat.linked@example.com",
+                role="user",
+                password_hash="h",
+            )
+            await store.create(session, existing)
+            await session.commit()
+            linked, created = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="pat.linked@example.com",
+                name="Pat",
+                sub="okta|linked",
+                email_verified=True,
+                join_tenant=True,
+                link_by_email=True,
+                create_allowed=False,
+            )
+            assert (linked.id, created) == (existing.id, False)
 
     async def test_new_user_email_is_stored_lowercase(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -112,6 +205,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
             assert user.email == "new.person@example.com"
@@ -130,6 +224,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
             first.role = "admin"
@@ -144,6 +239,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             assert again.id == first.id
             assert again.role == "admin"
@@ -174,6 +270,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -187,6 +284,51 @@ class TestGetOrCreateOidcUser:
                 session, iss=_ISS, sub="okta|42"
             )
             assert by_identity is not None and by_identity.id == existing.id
+
+    async def test_linking_an_operator_in_no_workspace_joins_as_a_member(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """An operator the platform operator added starts in no workspace;
+        signing in through the identity provider on a server that places
+        newcomers in the default workspace puts them there as a member, and
+        a member of its organization: the server's role is no workspace's."""
+        store = UserStore()
+        async with session_factory() as session:
+            operator = User(name="Op", email="op@example.com", role="admin")
+            await store.create_without_membership(session, operator)
+            await session.commit()
+
+            with tenant_scope(TENANT_ZERO_ID):
+                linked, _ = await store.get_or_create_oidc_user(
+                    session,
+                    iss=_ISS,
+                    email="op@example.com",
+                    name="Op",
+                    sub="okta|op",
+                    email_verified=True,
+                    join_tenant=True,
+                    link_by_email=True,
+                    create_allowed=True,
+                )
+                await session.commit()
+
+            assert linked.id == operator.id
+            roles = (
+                await session.execute(
+                    select(TenantMember.tenant_id, TenantMember.role).where(
+                        TenantMember.user_id == operator.id
+                    )
+                )
+            ).all()
+            organization_roles = list(
+                await session.scalars(
+                    select(OrganizationMember.role).where(
+                        OrganizationMember.user_id == operator.id
+                    )
+                )
+            )
+            assert [tuple(row) for row in roles] == [(TENANT_ZERO_ID, "member")]
+            assert organization_roles == ["member"]
 
     async def test_verified_email_links_case_insensitively(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -213,6 +355,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -274,6 +417,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -286,6 +430,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -323,6 +468,7 @@ class TestGetOrCreateOidcUser:
                     email_verified=False,
                     join_tenant=True,
                     link_by_email=True,
+                    create_allowed=True,
                 )
 
     async def test_identity_already_bound_elsewhere_is_never_relinked(
@@ -342,6 +488,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -363,6 +510,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             assert again.id == owner.id
 
@@ -393,6 +541,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             assert got.id == legacy_user.id
 
@@ -432,6 +581,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=False,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             assert got.id == legacy_admin.id
             assert got.role == "admin"
@@ -456,6 +606,7 @@ class TestGetOrCreateOidcUser:
                     email_verified=True,
                     join_tenant=True,
                     link_by_email=True,
+                    create_allowed=True,
                 )
                 await session.commit()
 
@@ -523,6 +674,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await winner_session.commit()
 
@@ -543,6 +695,7 @@ class TestGetOrCreateOidcUser:
                     email_verified=True,
                     join_tenant=True,
                     link_by_email=True,
+                    create_allowed=True,
                 )
 
     async def test_concurrent_creation_of_the_same_identity_resolves_to_the_winner(
@@ -564,6 +717,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await winner_session.commit()
 
@@ -590,6 +744,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             assert resolved.id == winner.id
 
@@ -612,6 +767,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             await winner_session.commit()
 
@@ -636,6 +792,7 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
                 join_tenant=True,
                 link_by_email=True,
+                create_allowed=True,
             )
             assert resolved.id == winner.id
 
@@ -671,6 +828,7 @@ class TestProvisioningWithoutJoiningATenant:
                 email_verified=True,
                 join_tenant=False,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -698,6 +856,7 @@ class TestProvisioningWithoutJoiningATenant:
                 email_verified=True,
                 join_tenant=False,
                 link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 

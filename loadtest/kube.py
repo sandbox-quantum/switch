@@ -2,9 +2,10 @@
 
 `kubectl get` to find the switch-core pods, the Secret holding the admin
 login and the hostnames of the namespace's Ingresses and Services, `kubectl
-exec` to run the sampler inside the pods, and, only with `--via
-port-forward`, `kubectl port-forward` to reach the pods without the tailnet.
-Nothing here creates, changes, scales or restarts a Kubernetes object.
+exec` to run the sampler (and, for the admin-bulk scenario, bulk_rooms.py)
+inside the pods, and, only with `--via port-forward`, `kubectl port-forward`
+to reach the pods without the tailnet. Nothing here creates, changes, scales
+or restarts a Kubernetes object.
 
 With no context, kubectl uses the service account of the pod it runs in, for
 a run from inside the cluster.
@@ -27,6 +28,7 @@ from urllib.parse import urlparse
 CORE_SELECTOR = "app.kubernetes.io/component=switch-core"
 CORE_CONTAINER = "switch-core"
 SAMPLER = Path(__file__).with_name("pod_sampler.py")
+BULK_ROOMS = Path(__file__).with_name("bulk_rooms.py")
 
 # The pilot's namespace and its public hostnames. A load test never goes there.
 PILOT_NAMESPACE = "switch"
@@ -135,6 +137,31 @@ class Kube:
                 raise RuntimeError(f"Secret {secret} has no key {key}")
             values.append(base64.b64decode(data[key]).decode())
         return values[0], values[1]
+
+    def run_script(self, script: Path, *args: str) -> dict:
+        """Run `script` once in a ready switch-core pod, as `python - args`,
+        and return the JSON line it prints last."""
+        pods = [p for p in self.core_pods() if p["ready"]]
+        if not pods:
+            raise RuntimeError(f"no ready switch-core pod in {self.namespace}")
+        out = subprocess.run(
+            [
+                *self.base, "exec", "-i", pods[0]["name"], "-c", CORE_CONTAINER,
+                "--", "python", "-", *args,
+            ],
+            input=script.read_bytes(),
+            capture_output=True,
+            timeout=120,
+        )  # fmt: skip
+        if out.returncode != 0:
+            raise RuntimeError(
+                f"{script.name} {args[0] if args else ''}: "
+                f"{out.stderr.decode(errors='replace').strip()[-300:]}"
+            )
+        lines = out.stdout.decode().strip().splitlines()
+        if not lines:
+            raise RuntimeError(f"{script.name} printed nothing")
+        return json.loads(lines[-1])
 
     def public_urls(self) -> tuple[str | None, str | None]:
         """The gateway and API URLs this release was deployed with

@@ -11,4 +11,45 @@ describe('switch skill', () => {
     expect(SWITCH_SKILL_CONTEXT.startsWith('# Switch Room Workflow\n')).toBe(true);
     expect(SWITCH_SKILL_FILE.endsWith(SWITCH_SKILL_CONTEXT)).toBe(true);
   });
+
+  it('describes messages Switch routes to the agent, and the room command behind them', () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain('without tagging anyone, and Switch picked you to answer');
+    expect(text).toContain('`!auto-route on`');
+    expect(text).toContain('`!auto-route off`');
+    expect(text).toMatch(/not really yours to answer.*stay silent/);
+  });
+
+  it("describes each workspace's decision service, the room notice and the triage agent", () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain('Switch Console → Settings → Message routing');
+    expect(text).toContain('Auto-route is unavailable right now; tag an agent to reach it.');
+    expect(text).toContain('`!auto-route fallback @agent`');
+    expect(text).toContain('`!auto-route fallback off`');
+    expect(text).toContain("came to you as the room's triage agent");
+  });
+
+  it('says where an untagged thread reply goes while the decision service is down', () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain(
+      "while the decision service is down, a reply in your thread that doesn't tag you reaches you only if you are the room's triage agent, and otherwise nobody"
+    );
+  });
+
+  it('says who may turn auto-route on or off, and who may name the triage agent', () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain(
+      "The room's owner, a room admin or a workspace admin may turn it on or off"
+    );
+    expect(text).toContain(
+      "The room's owner, a room admin or a workspace admin can name a triage agent for those messages"
+    );
+  });
+
+  it('says auto-route is only on some servers, and not to suggest it where it is missing', () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain('Automatic routing is a feature only some Switch servers have.');
+    expect(text).toContain('`!auto-route` answers "Unknown command"');
+    expect(text).toMatch(/don't suggest either, and offer what the server does have instead/);
+  });
 });

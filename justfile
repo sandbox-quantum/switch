@@ -56,6 +56,40 @@ down:
 reset:
     docker compose -f deploy/local/docker-compose.yml --project-directory . down -v
 
+# Start the decision service auto-route asks (with its model server): Qwen on
+# CPU by default, `gpu` for Qwen on an NVIDIA GPU, or `strands` for Strands
+# Decider 4B (the production default; an NVIDIA GPU with 24 GB). GPU modes are
+# Linux only. Weights download once into a volume.
+# docs/old/LOCAL_DEVELOPMENT.md, "Auto-route locally".
+decision-up mode="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    service=decision
+    case "{{mode}}" in
+      cpu) profile=decision ;;
+      gpu) profile=decision-gpu ;;
+      strands) profile=decision-strands-gpu service=decision-strands ;;
+      *) echo "usage: just decision-up [cpu|gpu|strands]" >&2; exit 2 ;;
+    esac
+    if [ "$profile" = decision-strands-gpu ]; then
+      echo "Strands Decider: the first start downloads about 17 GB, then loads it;"
+      echo "this waits until the model server is up (minutes)."
+    fi
+    docker compose -f deploy/local/docker-compose.yml --project-directory . --profile "$profile" up -d --build --wait "$service"
+    port="${DECISION_PORT:-8230}"
+    echo "Decision service: http://localhost:$port (curl http://localhost:$port/health)"
+    if [ "$profile" = decision ]; then
+      echo "⚠ CPU model server: each decision takes several seconds, well over the"
+      echo "  one-second target a GPU meets. Fine for trying auto-route out."
+    fi
+    echo "Point switch-core at it in .env, then restart 'just run':"
+    echo "  DECISION_ENDPOINT_URL=http://localhost:$port"
+    echo "  DECISION_TIMEOUT_SECONDS=30"
+    echo "  FEATURE_FLAGS_ENABLED=follow_the_conversation,decision_routing (plus any you had)"
+
+decision-down:
+    docker compose -f deploy/local/docker-compose.yml --project-directory . --profile decision --profile decision-gpu --profile decision-strands-gpu stop decision decision-model decision-model-gpu decision-strands decision-model-strands
+
 # ── Run switch-core locally ────────────────────────────────────────────────────
 # The Python project lives in core/; `--project core` selects that environment
 # while keeping the repo root as the working directory. Tool configs are passed explicitly since the repo root no longer
@@ -82,22 +116,15 @@ local-cloud:
 local-cloud-console:
     cd console && SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
 
-# Made by the gateway admin from .env, so it joins the admin's workspace, as
-# every admin-made account does. Use the admin's domain (switch.local by
-# default) for an account that should be able to join by domain.
-#   just local-cloud-user ada@switch.local "Ada Lovelace" <password>
+# Made with `switch-accounts create`, in no workspace: invite it from one (the
+# e-mail lands in Mailpit), or give it an address at a domain a workspace is
+# open to. The password is asked for twice on a terminal, or read from a
+# pipe; it is never taken from the command line.
+#   just local-cloud-user ada@switch.local "Ada Lovelace"
+#   printf '%s' "$PASSWORD" | just local-cloud-user ada@switch.local "Ada Lovelace"
 # Create an account on `just local-cloud` to sign in with
-local-cloud-user email name password:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    jar="$(mktemp)"
-    trap 'rm -f "$jar"' EXIT
-    curl -fsS -c "$jar" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg e "$GATEWAY_ADMIN_EMAIL" --arg p "$GATEWAY_ADMIN_PASSWORD" '{email: $e, password: $p}')" \
-      http://localhost:8000/gateway/auth/login >/dev/null
-    curl -fsS -b "$jar" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg e '{{ email }}' --arg n '{{ name }}' --arg p '{{ password }}' '{email: $e, name: $n, password: $p}')" \
-      http://localhost:8000/gateway/users | jq .
+local-cloud-user email name:
+    uv run --project core switch-accounts create {{ quote(email) }} --name {{ quote(name) }}
 
 # ── Format code with ruff ──────────────────────────────────────────────────────
 # Run from the repo root so ruff's hierarchical config discovery applies the
@@ -240,22 +267,29 @@ gateway-build:
 gateway-test:
     cd gateway && npm test
 
+# Create the local accounts the dev role switcher signs in as, one per
+# permission level (operator, org admin, workspace admin, member), and save
+# their logins where `just gateway-dev` serves them to it. Needs `just up`
+# and `just run`; safe to run again.
+seed-dev-roles:
+    uv run --project core python scripts/seed_dev_roles.py
+
 # ── Standalone deployment (all-in-one Docker, no host toolchain) ──────────────
 # Repo users build from source: the build override re-adds the `build:` blocks
 # so images come from the working tree, not GHCR. All profiles are enabled to
-# bring up the full all-in-one stack (Mattermost bridge + gateway).
+# bring up the full all-in-one stack (core + gateway).
 standalone-up:
-    docker compose -f deploy/local/standalone-docker-compose.yml -f deploy/local/standalone-docker-compose.build.yml --profile collab --profile gateway --project-directory . up -d --build
+    docker compose -f deploy/local/standalone-docker-compose.yml -f deploy/local/standalone-docker-compose.build.yml --profile gateway --project-directory . up -d --build
 
 standalone-down:
-    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down
 
 standalone-reset:
     #!/usr/bin/env bash
     set -euo pipefail
     read -r -p "⚠️  This deletes ALL standalone data volumes (rooms, messages, agents, users). Continue? [y/N] " ans
     [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
-    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down -v
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down -v
 
 # ── Documentation ──────────────────────────────────────────────────────────────
 # Clones the docs repository unless --source names a checkout of it:
@@ -264,3 +298,7 @@ standalone-reset:
 # Convert the published Switch pages into docs/official as Markdown
 sync-docs *args:
     python3 scripts/sync_docs.py {{ args }}
+
+# Fail when docs/official differs from the published docs (writes nothing)
+check-docs *args:
+    python3 scripts/sync_docs.py --check {{ args }}

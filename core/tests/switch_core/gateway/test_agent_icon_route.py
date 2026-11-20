@@ -314,7 +314,7 @@ class TestWithThirdPartyAvatarsOff:
                 )
 
             assert refused.value.status_code == 400
-            assert "third-party avatars turned off" in str(refused.value.detail)
+            assert "third-party avatars are turned off" in str(refused.value.detail)
             stored = await _AGENT_STORE.get(session, agent.id)
             assert stored is not None
             assert stored.icon_url is None

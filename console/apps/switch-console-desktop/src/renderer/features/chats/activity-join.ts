@@ -5,6 +5,7 @@ import {
 } from '@shared/core/chats/activity';
 import { type ChatMessage, isSessionStartingNotice, turnEndNotice } from '@shared/core/chats/chats';
 import { isControlAck } from './stop-rows';
+import { switchTool } from './tool-presentation';
 
 /**
  * Joining an agent's turns, as Switch's activity feed stores them, to the
@@ -105,16 +106,19 @@ export function settleTurnsByNotices(
 }
 
 /**
- * When a turn's first step happened, or null before it has one. Switch stores
- * a step when the host reports it, which can be well after the step. The host
- * stamps a step with its own clock, at its latest revision, so that time can
- * be late too. The earliest of both holds up against either.
+ * When a step happened. Switch stores a step when the host reports it, which
+ * can be well after the step. The host stamps a step with its own clock, at
+ * its latest revision, so that time can be late too. The earlier of both
+ * holds up against either.
  */
+function stepAt(item: ChatActivityItem): number {
+  return Math.min(Date.parse(item.occurredAt), Date.parse(item.createdAt));
+}
+
+/** When a turn's first step happened, or null before it has one. */
 function firstStepAt(turn: TurnActivity): number | null {
   if (turn.items.length === 0) return null;
-  return Math.min(
-    ...turn.items.flatMap((item) => [Date.parse(item.occurredAt), Date.parse(item.createdAt)])
-  );
+  return Math.min(...turn.items.map(stepAt));
 }
 
 /** One of the agent's own messages in the room, not a host notice or a control acknowledgement. */
@@ -209,6 +213,64 @@ export function placeTurns(
   return placed;
 }
 
+/** One part of a turn's work log, and the message it shows under. */
+export type TurnPart = {
+  anchorId: string;
+  /** The part's steps. Only the last part carries the turn's state (still
+   * thinking, how it ended) and its requests; an earlier one is finished steps. */
+  turn: TurnActivity;
+  /** Whether the turn's reasoning shows with this part. */
+  reasoning: boolean;
+};
+
+/**
+ * A turn's work log, split around the agent's own messages of that turn, so
+ * it reads in the order the agent worked: the steps from before its first
+ * message show where the turn shows (`anchorId`), and the steps after each
+ * message show under that message, by when each happened. A tool call that
+ * asked a question so lands beside the question's card (`placeRequests`).
+ * The turn's state shows after its latest message, as a running turn's always
+ * did, and its reasoning with the steps it led to: the first part, or, while
+ * it runs, the last.
+ */
+export function splitTurn(
+  messages: readonly ChatMessage[],
+  agentId: string,
+  bound: ReadonlyMap<string, TurnActivity>,
+  anchorId: string,
+  turn: TurnActivity
+): TurnPart[] {
+  const start = messages.findIndex((each) => each.messageId === anchorId);
+  const replies: ChatMessage[] = [];
+  for (let next = start + 1; start !== -1 && next < messages.length; next++) {
+    const each = messages[next];
+    // The agent's next turn starts here; what follows is that turn's.
+    if (bound.has(each.messageId) && bound.get(each.messageId) !== turn) break;
+    if (isAgentReply(each, agentId)) replies.push(each);
+  }
+  // `steps[0]` comes before the first reply, `steps[n]` after the nth.
+  const steps: ChatActivityItem[][] = replies.map(() => []);
+  steps.push([]);
+  for (const item of turn.items) {
+    const at = stepAt(item);
+    steps[replies.findLastIndex((reply) => Date.parse(reply.sentAt) <= at) + 1].push(item);
+  }
+  const running = turn.status === 'queued' || turn.status === 'running';
+  const last = replies.length;
+  const parts: TurnPart[] = [];
+  steps.forEach((items, index) => {
+    const reasoning = running ? index === last : index === 0;
+    if (index !== last && items.length === 0 && !reasoning) return;
+    parts.push({
+      anchorId: index === 0 ? anchorId : replies[index - 1].messageId,
+      turn:
+        index === last ? { ...turn, items } : { ...turn, items, status: 'completed', requests: [] },
+      reasoning,
+    });
+  });
+  return parts;
+}
+
 /**
  * The host's notices of turns that ended without a reply, each matched to the
  * turn it reports: the agent's latest turn before it that shows the same
@@ -257,16 +319,44 @@ export function toolState(item: Pick<ChatActivityItem, 'status'>, turn: TurnStat
 
 /** Tool calls whose only output is the room message the user already sees. */
 export function isHiddenTool(item: Pick<ChatActivityItem, 'title'>): boolean {
+  const tool = switchTool(item.title);
   return (
-    /^mcp__switch__post_message(\s|$)/.test(item.title) ||
-    /^mcp__switch__send_targeted_message(\s|$)/.test(item.title) ||
+    tool === 'post_message' ||
+    tool === 'send_targeted_message' ||
     /^ToolSearch(\s|$)/.test(item.title)
   );
 }
 
 /** The tool calls a turn shows. Assistant text is left out: the room message is the copy shown. */
 export function turnTools(turn: TurnActivity): ChatActivityItem[] {
-  return turn.items.filter((item) => item.kind === 'tool-activity' && !isHiddenTool(item));
+  return turn.items.filter(
+    (item) => item.kind === 'tool-activity' && !item.subagent && !isHiddenTool(item)
+  );
+}
+
+export function turnSubagents(turn: TurnActivity): ChatActivityItem[] {
+  return turn.items
+    .filter((item) => item.kind === 'tool-activity' && item.subagent)
+    .sort((a, b) => Number(b.status === 'in-progress') - Number(a.status === 'in-progress'));
+}
+
+/**
+ * The text Switch gives a subagent it settles because the agent's session went
+ * away while it was running. The same words as `ORPHANED_SUBAGENT_TEXT` in
+ * switch-core's `sessions/contract.py`.
+ */
+export const ORPHANED_SUBAGENT_TEXT =
+  "Ended by Switch: the agent's session went away before this subagent finished.";
+
+/**
+ * How a subagent stands, in the words the chat platforms use too. A subagent can
+ * outlive its turn, so one still at work is running whatever the turn says.
+ */
+export function subagentStatus(item: ChatActivityItem): string {
+  if (item.status === 'in-progress') return 'running';
+  if (item.status === 'completed') return 'done';
+  if (item.status === 'declined') return 'stopped';
+  return item.text === ORPHANED_SUBAGENT_TEXT ? 'not confirmed finished' : 'failed';
 }
 
 /** Whether the turn is running with no visible tool currently running. */

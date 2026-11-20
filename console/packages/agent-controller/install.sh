@@ -7,9 +7,9 @@
 #   curl -fsSL <url of this file> | sh -s -- --server <Switch API URL> --code <code> [--name <name>] [--description <text>]
 #
 # Options:
-#   --server <url> --code <code>   Enroll with a one-time code from the Machines page.
+#   --server <url> --code <code>   Enroll with a one-time code from the Devices page.
 #   --name <name>                  The machine's name in Switch (default: the host name).
-#   --description <text>           What the machine is for, shown on the Machines page.
+#   --description <text>           What the machine is for, shown on the Devices page.
 #   --data-dir <dir>               Keep the controller's state here rather than in the default folder.
 #   --no-service                   Enroll, but do not install the service.
 #   --version <x.y.z>              Install this release rather than the newest.
@@ -183,7 +183,7 @@ path_note() {
 
 if [ -z "$SERVER" ]; then
   echo
-  echo "Installed $("$BIN" --version). Next, with a code from the Machines page in Switch:"
+  echo "Installed $("$BIN" --version). Next, with a code from the Devices page in Switch:"
   echo "  switch-agent-controller enroll --server <Switch API URL> --code <code>"
   echo "  switch-agent-controller install-service"
   echo "Check this machine with: switch-agent-controller doctor"

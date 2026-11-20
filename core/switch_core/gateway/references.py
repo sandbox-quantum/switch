@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal, can, can_manage
+from switch_core.authz import Principal, can, can_manage, owns
 from switch_core.bridges.resource.registry import ReferenceValue, is_builtin_type
 from switch_core.bridges.resource.service import (
     ReferenceTypeInUseError,
@@ -49,6 +50,7 @@ def _to_detail(
     ref: Reference,
     reader: Principal,
     *,
+    readable: bool,
     owner_name: str | None = None,
     type_display_name: str | None = None,
     attached_rooms_count: int = 0,
@@ -64,16 +66,23 @@ def _to_detail(
         type=ref.type,
         name=ref.name,
         description=ref.description,
-        instructions=ref.instructions,
-        value=ref.value,
+        instructions=ref.instructions if readable else None,
+        value=ref.value if readable else None,
         attached_rooms_count=attached_rooms_count,
         hidden_rooms_count=hidden_rooms_count,
         packages=packages or [],
         created_at=str(ref.created_at),
         type_display_name=type_display_name,
+        can_read=readable,
         can_edit=can(reader, "write", ref),
         can_manage=can_manage(reader, ref.owner_id),
     )
+
+
+def readable_to(reader: Principal) -> Callable[[Reference], bool]:
+    """What `reader` may read on its own (`can`): everything a route lists
+    that shares nothing beyond that."""
+    return lambda ref: can(reader, "read", ref)
 
 
 async def _enrich(
@@ -82,7 +91,10 @@ async def _enrich(
     resource_service: ResourceService,
     user_store: UserStore,
     reader: Principal,
+    readable: Callable[[Reference], bool],
 ) -> list[ReferenceDetail]:
+    """`refs` as `reader` is shown them, with what is in each where
+    `readable` says so and withheld where it does not."""
     if not refs:
         return []
     counts = await room_counts(
@@ -104,6 +116,7 @@ async def _enrich(
         _to_detail(
             r,
             reader,
+            readable=readable(r),
             owner_name=owners.get(r.owner_id),
             type_display_name=type_names.get(r.type),
             attached_rooms_count=counts[r.id].attached,
@@ -121,7 +134,10 @@ async def _enrich_one(
     user_store: UserStore,
     reader: Principal,
 ) -> ReferenceDetail:
-    results = await _enrich(session, [ref], resource_service, user_store, reader)
+    """One reference the caller has opened, whole."""
+    results = await _enrich(
+        session, [ref], resource_service, user_store, reader, lambda _: True
+    )
     return results[0]
 
 
@@ -312,9 +328,12 @@ async def list_references(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ReferenceDetail]:
-    refs = await resource_service.list_references_for_user(session, user.id)
+    refs = await resource_service.list_references_shown_to(
+        session, user.id, is_admin=is_admin
+    )
+    reader = Principal(user.id, is_admin)
     return await _enrich(
-        session, refs, resource_service, user_store, Principal(user.id, is_admin)
+        session, refs, resource_service, user_store, reader, readable_to(reader)
     )
 
 
@@ -339,6 +358,7 @@ async def create_reference(
             description=req.description,
             instructions=req.instructions,
             value=req.value,
+            created_by_kind="user",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -358,11 +378,8 @@ async def get_reference(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> ReferenceDetail:
     try:
-        ref = await resource_service.get_reference_for_user(
-            session,
-            reference_id,
-            user.id,
-            is_admin=is_admin,
+        ref = await resource_service.open_reference(
+            session, reference_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -446,11 +463,8 @@ async def list_rooms_for_reference(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
     try:
-        await resource_service.get_reference_for_user(
-            session,
-            reference_id,
-            user.id,
-            is_admin=is_admin,
+        resource = await resource_service.open_reference(
+            session, reference_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -460,7 +474,11 @@ async def list_rooms_for_reference(
         session, reference_id, reader_id=user.id, reader_is_admin=is_admin
     )
     return await resource_rooms(
-        session, room_store, rooms, Principal(user.id, is_admin)
+        session,
+        room_store,
+        rooms,
+        Principal(user.id, is_admin),
+        resource_owner_id=resource.owner_id,
     )
 
 
@@ -476,8 +494,14 @@ async def list_room_references(
 ) -> list[ReferenceDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     refs = await resource_service.list_room_references(session, room_id)
+    # Attaching shares: whoever may read the room reads what is attached.
     return await _enrich(
-        session, refs, resource_service, user_store, Principal(user.id, is_admin)
+        session,
+        refs,
+        resource_service,
+        user_store,
+        Principal(user.id, is_admin),
+        lambda _: True,
     )
 
 
@@ -492,7 +516,7 @@ async def attach_reference_to_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> ReferenceDetail:
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    await require_room_access(session, room_store, room_id, user, "attach", is_admin)
     try:
         await resource_service.attach_reference_to_room(
             session,
@@ -524,6 +548,14 @@ async def detach_reference_from_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
-    await require_room_unlink(session, room_store, room_id, user, is_admin)
+    ref = await session.get(Reference, reference_id)
+    await require_room_unlink(
+        session,
+        room_store,
+        room_id,
+        user,
+        is_admin,
+        owns_target=ref is not None and owns(Principal(user.id, False), ref.owner_id),
+    )
     await resource_service.detach_reference_from_room(session, room_id, reference_id)
     await session.commit()

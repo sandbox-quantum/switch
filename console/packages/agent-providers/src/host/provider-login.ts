@@ -1,7 +1,13 @@
 import { join } from 'node:path';
 import { z } from 'zod';
 import { refineVertexCredential } from '../sealed-login';
-import { parseVertexLogin, VERTEX_CREDENTIALS_FILE } from '../vertex-login';
+import {
+  parseVertexLogin,
+  signsInThroughVertex,
+  VERTEX_CREDENTIALS_FILE,
+  VERTEX_PROVIDERS_ONLY,
+  vertexEnvironment,
+} from '../vertex-login';
 
 /** A provider login Switch holds for an agent, as an agent host applies it (`materializeHostedProvider`). */
 export const hostedCredentialSchema = z.discriminatedUnion('status', [
@@ -15,11 +21,11 @@ export const hostedCredentialSchema = z.discriminatedUnion('status', [
       credential: z.string().min(1).max(16384),
     })
     .superRefine((login, context) => {
-      if (login.kind === 'vertex' && login.provider !== 'claude')
+      if (login.kind === 'vertex' && !signsInThroughVertex(login.provider))
         context.addIssue({
           code: 'custom',
           path: ['kind'],
-          message: 'Only Claude signs in through Vertex AI.',
+          message: VERTEX_PROVIDERS_ONLY,
         });
       refineVertexCredential(login, context);
     }),
@@ -30,7 +36,7 @@ export type HostedCredential = z.infer<typeof hostedCredentialSchema>;
  * The environment the sessions of an agent host rooted at `root` run with to
  * use `credential`: the provider's token variable, or the directory
  * `materializeHostedProvider` writes its login file into under `root`, or for
- * Claude on Vertex AI the project, the region and that file. What
+ * Claude or Antigravity on Vertex AI the project, the region and that file. What
  * an agent controller puts in the agent's configuration, so the sessions
  * get it whatever environment they would otherwise inherit.
  */
@@ -38,23 +44,22 @@ export function providerLoginEnvironment(
   root: string,
   credential: Extract<HostedCredential, { status: 'connected' }>
 ): Record<string, string> {
-  if (credential.kind === 'vertex' && credential.provider !== 'claude')
-    throw new Error('Only Claude signs in through Vertex AI.');
+  if (credential.kind === 'vertex' && !signsInThroughVertex(credential.provider))
+    throw new Error(VERTEX_PROVIDERS_ONLY);
   switch (credential.provider) {
     case 'claude': {
       // Blank is unset to Claude Code: a variable the sessions inherit for
       // another way of signing in would otherwise be used instead of this one.
       const cleared = { ANTHROPIC_API_KEY: '', CLAUDE_CODE_OAUTH_TOKEN: '' };
-      if (credential.kind === 'vertex') {
-        const login = parseVertexLogin(credential.credential);
+      if (credential.kind === 'vertex')
         return {
           ...cleared,
-          CLAUDE_CODE_USE_VERTEX: '1',
-          ANTHROPIC_VERTEX_PROJECT_ID: login.project,
-          CLOUD_ML_REGION: login.region,
-          GOOGLE_APPLICATION_CREDENTIALS: join(root, VERTEX_CREDENTIALS_FILE),
+          ...vertexEnvironment(
+            'claude',
+            parseVertexLogin(credential.credential),
+            join(root, VERTEX_CREDENTIALS_FILE)
+          ),
         };
-      }
       return {
         ...cleared,
         CLAUDE_CODE_USE_VERTEX: '',
@@ -70,6 +75,16 @@ export function providerLoginEnvironment(
     case 'opencode':
       return { XDG_DATA_HOME: join(root, 'provider-data') };
     case 'antigravity':
-      return { GEMINI_HOME: join(root, 'provider-home') };
+      // Blank, so a Gemini API key the sessions inherit is not signed in with instead.
+      return credential.kind === 'vertex'
+        ? {
+            GEMINI_API_KEY: '',
+            ...vertexEnvironment(
+              'antigravity',
+              parseVertexLogin(credential.credential),
+              join(root, VERTEX_CREDENTIALS_FILE)
+            ),
+          }
+        : { GEMINI_HOME: join(root, 'provider-home') };
   }
 }

@@ -32,12 +32,14 @@ import {
   UserListField,
 } from '@renderer/features/room-templates/entity-fields';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
@@ -51,16 +53,17 @@ import { Button } from '@renderer/lib/ui/button';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
-import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
+import { newAgentPermissions } from '@shared/core/agents/agents';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
   type AgentProviderId,
   isValidProviderId,
+  providerOffered,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
 import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
-import { NEW } from '@shared/core/switch-servers/room-template-params';
+import { CONSOLE_ROOM, NEW } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { CollapsibleInput } from './use/collapsible-input';
 import {
@@ -315,6 +318,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const params = useViewParams();
   const { serverId, intoRoomId = null } = params;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const serverFlags = useFeatureFlags(serverId || null);
+  // Without the server's group_chats flag there are no Switch Console rooms.
+  const consoleOffered = serverFlags.group_chats;
   const { navigate } = useNavigate();
   const { showModal } = useModalContext();
   const queryClient = useQueryClient();
@@ -513,6 +519,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const bridgeParam = templateParams.find((p) => p.type === 'bridge');
     const picked = bridgeParam ? String(values[bridgeParam.name] ?? '') : '';
     const named = picked !== '' ? picked : (parsed?.bridge ?? null);
+    // A Switch Console room is on no messaging app.
+    if (named === CONSOLE_ROOM) return null;
     if (named) return bridges.find((b) => b.displayName === named) ?? null;
     return bridges.find((b) => b.isDefault) ?? null;
   }, [bridges, parsed, templateParams, values]);
@@ -539,7 +547,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             onSuccess: () => refreshIdentities(),
           })
       : null;
-  const noMessagingApp = parsed !== null && bridgesQuery.data !== undefined && bridges.length === 0;
 
   const lists = useMemo(
     (): EntityLists => ({
@@ -549,6 +556,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       rooms: roomsQuery.data ?? [],
       roomsLoading: roomsQuery.isLoading,
       bridges,
+      consoleOffered,
       identities,
       knownUsers: knownUsersQuery.data ?? [],
       bridgeId: templateBridge?.id ?? null,
@@ -560,6 +568,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       roomsQuery.data,
       roomsQuery.isLoading,
       bridges,
+      consoleOffered,
       identities,
       knownUsersQuery.data,
       templateBridge,
@@ -726,7 +735,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       if (!isChain(param) || chainDecided.current.has(param.name)) continue;
       let candidates: string[] | undefined;
       if (param.type === 'bridge') {
-        candidates = bridgesQuery.data && bridgeCandidates(bridgesQuery.data);
+        candidates = bridgesQuery.data && bridgeCandidates(bridgesQuery.data, consoleOffered);
       } else if (param.type === 'agent') {
         candidates = agents.data?.map((a) => a.name).sort();
       } else if (param.type === 'room') {
@@ -750,7 +759,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         // The providers its machine last reported ready; none to go by until it has a machine.
         const machine = setups[agentIndexOf(param)]?.machine;
         candidates = machine
-          ? machineProviderOptions(machine)
+          ? machineProviderOptions(machine, serverFlags)
               .filter((option) => option.ready)
               .map((option) => option.id)
           : undefined;
@@ -762,7 +771,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             ? availability.data
             : localAvailability.data;
         candidates = list
-          ?.filter((a) => a.available && isValidProviderId(a.agentId))
+          ?.filter(
+            (a) =>
+              a.available && isValidProviderId(a.agentId) && providerOffered(a.agentId, serverFlags)
+          )
           .map((a) => a.agentId);
       }
       if (candidates === undefined) continue; // the list is still loading
@@ -778,6 +790,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     setups,
     hasRoomPart,
     bridgesQuery.data,
+    consoleOffered,
     agents.data,
     roomsQuery.data,
     allowedHosts,
@@ -785,6 +798,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     localAvailability.data,
     machinesQuery.data,
     management,
+    serverFlags,
   ]);
 
   // ── Names: taken, invalid, or still unresolved ──────────────────────────
@@ -955,9 +969,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                           ? null // no room is made, so nothing below applies
                           : creatorBlocked
                             ? 'Link your messaging account first.'
-                            : !isV2 && parsed !== null && noMessagingApp && parsed.usesCreator
-                              ? 'This server has no messaging app, so the room would have no chat.'
-                              : null;
+                            : null;
   // Existing agents in the room whose addressing policy blocks messages from
   // another member. New agents get the template's addressing at creation.
   const handoffBlocked = useMemo(() => {
@@ -1385,7 +1397,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 ? setup.displayName.trim()
                 : null,
             iconUrl: null,
-            ...NEW_AGENT_PERMISSIONS,
+            ...newAgentPermissions(providerId),
             instructions: slot.entry.instructions,
             definitionAttributes: {},
             providerConfig: null,
@@ -1561,6 +1573,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // A short finished state before the page moves on, skipped for a deployer
   // who asked the system for less motion.
   const finish = (detail: string, go: () => void) => {
+    // Every run that succeeds ends here, however it ran, so this is where a
+    // stored or official template's run is counted. A pasted document is no
+    // template's, and is not.
+    if (templateId && workspaceId !== null)
+      void rpc.workspaces.recordTemplateRun({ workspaceId, templateId });
     setDoneDetail(detail);
     setPhase('done');
     const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2204,7 +2221,7 @@ export const templateUseView = {
   MainPanel: TemplateUsePanel,
   canActivate: (params: unknown): GuardResult => {
     const p = params as Partial<Params> | null;
-    if (typeof p?.serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof p?.serverId !== 'string') return homeRedirect();
     if (!p.templateId && !p.yamlText)
       return { ok: false, redirect: 'templates', params: { serverId: p.serverId } };
     return { ok: true };

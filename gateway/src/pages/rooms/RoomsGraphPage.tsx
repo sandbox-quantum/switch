@@ -10,10 +10,15 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import { useNavigate } from "react-router";
-import { useRoomGraph, useRoomGroups, useRooms } from "../../data/hooks";
+import { useAuth } from "../../data/AuthContext";
+import { loadRoomsWithArchived } from "../../data/api";
+import { useRoomGraph, useRoomGroups } from "../../data/hooks";
+import { type ListScope, listScopeOf, roomsInScope } from "../../data/listScope";
+import { useLoad } from "../workspace/useLoad";
 import { branchColor, buildGroupIndex, topAncestor } from "./groupTree";
 import { RoomFilters, filterRooms, useRoomFilterState } from "./roomFilters";
 import { useGraphCanvasTheme } from "../graphCanvasTheme";
+import { graphTooltip } from "../graphTooltip";
 
 interface GraphNode {
   id: string;
@@ -41,19 +46,24 @@ interface LegendEntry {
 
 const UNGROUPED_COLOR = "#5A5F66";
 
+/** `1 room`, `3 rooms`: a count with its noun. */
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 export default function RoomsGraphPage() {
   const navigate = useNavigate();
+  const { capabilities } = useAuth();
   const filters = useRoomFilterState();
 
-  // Nodes come from the same room list the table uses (so the filters apply
-  // identically); the link edges come from the link graph. Group colouring
-  // uses the group tree.
-  const {
-    data: rooms,
-    loading: roomsLoading,
-    error: roomsError,
-  } = useRooms(filters.debouncedSearch || undefined, filters.showArchived);
-  const { data: groups } = useRoomGroups();
+  // Nodes come from the same rooms the list shows, narrowed the same way for
+  // a member, so the graph never shows a room the list
+  // hides; the link edges come from the link graph. Group colouring uses the
+  // group tree.
+  const scope: ListScope = listScopeOf(capabilities);
+  const { data: allRooms, loading: roomsLoading, error: roomsError } = useLoad(loadRoomsWithArchived);
+  const rooms = useMemo(() => (allRooms ? roomsInScope(allRooms, scope) : null), [allRooms, scope]);
+  const { data: groups, error: groupsError } = useRoomGroups();
   const { data: graph, loading: graphLoading, error: graphError } = useRoomGraph();
 
   const loading = roomsLoading || graphLoading;
@@ -78,17 +88,22 @@ export default function RoomsGraphPage() {
   }, []);
 
   const groupList = useMemo(() => groups ?? [], [groups]);
+  const groupIndex = useMemo(() => buildGroupIndex(groupList), [groupList]);
 
+  // Listed field by field: the filter state is a new object every render, and
+  // new graph data restarts the layout.
   const filteredRooms = useMemo(
-    () => filterRooms(rooms ?? [], groupList, filters),
+    () => filterRooms(rooms ?? [], groupIndex, filters),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       rooms,
-      groupList,
+      groupIndex,
+      filters.search,
       filters.showArchived,
-      filters.bridgeFilter,
-      filters.userFilter,
-      filters.groupFilter,
-      filters.ownerFilter,
+      filters.group,
+      filters.owner,
+      filters.bridge,
+      filters.user,
     ],
   );
 
@@ -110,7 +125,7 @@ export default function RoomsGraphPage() {
       degree.set(l.target_room_id, (degree.get(l.target_room_id) ?? 0) + 1);
     }
 
-    const byId = buildGroupIndex(groupList);
+    const byId = groupIndex;
     // Legend: one entry per top-level group actually used by some visible room.
     const usedTopIds = new Set<string>();
     const nodeList: GraphNode[] = filteredRooms.map((r) => {
@@ -138,7 +153,12 @@ export default function RoomsGraphPage() {
       legendList.push({ id: "__ungrouped", name: "Ungrouped", color: UNGROUPED_COLOR });
     }
     return { nodes: nodeList, links: linkList, legend: legendList };
-  }, [filteredRooms, graph, groupList]);
+  }, [filteredRooms, graph, groupList, groupIndex]);
+
+  // Kept stable: the graph restarts its layout whenever it is handed a new
+  // object, so a redraw for any other reason (a resize, the session read
+  // again) would shuffle it.
+  const graphData = useMemo(() => ({ nodes, links }), [nodes, links]);
 
   useEffect(() => {
     if (!fgRef.current) return;
@@ -192,22 +212,29 @@ export default function RoomsGraphPage() {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Rooms graph
         </Typography>
-        <Typography variant="caption" color="text.secondary">
-          {`${nodes.length} rooms · ${links.length} links · ${legend.length} groups`}
-        </Typography>
+        {!loading && error === null && (
+          <Typography variant="caption" color="text.secondary">
+            {[count(nodes.length, "room"), count(links.length, "link"), count(legend.length, "group")].join(" · ")}
+          </Typography>
+        )}
       </Stack>
 
-      <RoomFilters rooms={rooms ?? []} groups={groupList} state={filters} />
+      <RoomFilters rooms={rooms ?? []} groups={groupList} byId={groupIndex} state={filters} />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
+          Couldn't load the rooms graph: {error}
+        </Alert>
+      )}
+      {groupsError && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Couldn't load the room groups, so rooms aren't coloured by group: {groupsError}
         </Alert>
       )}
 
@@ -248,7 +275,7 @@ export default function RoomsGraphPage() {
               p: 1.25,
               borderRadius: "12px",
               backgroundColor: "background.paper",
-              boxShadow: "var(--hoot-shadow-popover)",
+              boxShadow: "var(--sw-shadow-popover)",
               border: "1px solid",
               borderColor: "divider",
               maxWidth: 220,
@@ -286,7 +313,7 @@ export default function RoomsGraphPage() {
             </Stack>
           </Box>
         )}
-        {!loading && nodes.length === 0 && (
+        {!loading && error === null && nodes.length === 0 && (
           <Box
             sx={{
               position: "absolute",
@@ -304,7 +331,7 @@ export default function RoomsGraphPage() {
         )}
         <ForceGraph2D
           ref={fgRef}
-          graphData={{ nodes, links }}
+          graphData={graphData}
           width={dimensions.width}
           height={dimensions.height}
           backgroundColor={canvas.background}
@@ -325,9 +352,7 @@ export default function RoomsGraphPage() {
           onNodeClick={(n) => handleNodeClick(n as GraphNode)}
           nodeLabel={(n) => {
             const node = n as GraphNode;
-            return node.description
-              ? `${node.label}\n${node.description}`
-              : node.label;
+            return graphTooltip(node.label, node.description);
           }}
           cooldownTicks={120}
           enableZoomInteraction

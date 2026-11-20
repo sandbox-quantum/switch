@@ -63,6 +63,7 @@ def _gateway(install_service: Any) -> DiscordGatewayClient:
         members=False,
         install_service=install_service,
         on_connected=_noop_on_connected,
+        feature_flags={},
     )
 
 
@@ -321,6 +322,51 @@ async def test_a_press_from_an_uninstalled_guild_is_refused_ephemerally() -> Non
 
     assert press.response.refusals == [
         ("Switch is not connected to this server.", True)
+    ]
+
+
+def _dm_press(custom_id: str) -> Any:
+    press = _press(None)
+    press.data = {"custom_id": custom_id, "component_type": 2}
+    return press
+
+
+async def test_a_press_on_a_link_prompt_in_a_dm_is_routed_by_the_guild_it_names() -> (
+    None
+):
+    """A DM carries no guild, so a link prompt's button names the one whose
+    bridge sent it; that only picks the bridge, still resolved fresh (G1)."""
+    adapter = _shared_adapter()
+    seen: dict[str, Any] = {}
+
+    async def fake_press(interaction: Any) -> None:
+        seen["tenant_during"] = current_tenant_id()
+        seen["interaction"] = interaction
+
+    adapter.dispatch_interaction = fake_press  # type: ignore[method-assign]
+    service = _FakeInstallService(target=_target(adapter))
+    gateway = _gateway(service)
+
+    press = _dm_press(f"swlnk:{GUILD_ID}:lnk.abc:2")
+    with tenant_scope("tenant-somebody-else"):
+        await gateway._on_interaction(press)
+
+    assert seen["interaction"] is press
+    assert seen["tenant_during"] is None
+    assert service.calls == [("discord", str(GUILD_ID))]
+    assert press.response.refusals == []
+
+
+async def test_any_other_press_in_a_dm_is_still_refused() -> None:
+    service = _FakeInstallService()
+    gateway = _gateway(service)
+    press = _dm_press("sw:tok-1:1")
+
+    await gateway._on_interaction(press)
+
+    assert service.calls == []
+    assert press.response.refusals == [
+        ("This button only works inside a server.", True)
     ]
 
 
