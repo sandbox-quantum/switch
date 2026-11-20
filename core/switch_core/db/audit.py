@@ -229,6 +229,13 @@ class ServerAuditAction(StrEnum):
     # Its revival withdraws that: the revived box reuses the namespace and
     # disk, so the runbook skips an entry with a later cancel for the box.
     HOSTED_BOX_TO_REMOVE_CANCELLED = "hosted.box_to_remove_cancelled"
+    # The move of a person's v1 machine to a v2 box, one entry per step, with
+    # the operator who ran it as the actor.
+    HOSTED_MIGRATION_STARTED = "hosted.migration_started"
+    HOSTED_MIGRATION_STEP = "hosted.migration_step"
+    HOSTED_MIGRATION_DONE = "hosted.migration_done"
+    HOSTED_MIGRATION_ROLLED_BACK = "hosted.migration_rolled_back"
+    HOSTED_MIGRATION_CLEANED = "hosted.migration_cleaned"
     # Operator alerts: one row per raise and per clear, with no actor.
     # `alert.` is one of the operators' log's prefixes; it leaves them out
     # unless asked for.

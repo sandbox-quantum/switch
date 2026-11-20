@@ -22,6 +22,10 @@ _ALLOWED_IMPORTERS = {
     # Builds the module when the agent_management feature flag is on, hands its
     # authenticator to the bearer middleware, and installs its routes.
     "switch_core.main",
+    # `switch-hosted-migration`, the operator's command for moving a person's
+    # v1 machine to a box: its own entry point, run where switch-core runs, so
+    # it wires the controller revoke from agent management as `main` does.
+    "switch_core.hosted_migration_cli",
 }
 
 
