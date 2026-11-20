@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
+import { removeTestRoot } from '../testing/remove-test-root';
 import {
   MAX_HOST_RESTARTS,
   type OpenAgentStream,
@@ -31,7 +32,11 @@ import { SESSION_STARTING_MESSAGE, WatcherControl } from './watcher-tools';
 const paths = vi.hoisted(() => ({ root: '' }));
 const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
 // Longer than `eventually` waits, so a slow machine fails on what it waited for, not the clock.
-vi.setConfig({ testTimeout: 20_000 });
+// Windows gets more of both (as ownership-lock.test.ts already does): its
+// watchers and its file system deliver changes later under a loaded runner
+// than a loaded Linux or macOS one does, and a test here can wait on several
+// of them in a row.
+vi.setConfig({ testTimeout: process.platform === 'win32' ? 60_000 : 20_000 });
 
 vi.mock('./launch', () => ({
   sharedSessionRoot: (id: string) => join(paths.root, id),
@@ -90,7 +95,7 @@ afterEach(async () => {
   supervisors.clear();
   vi.mocked(ensureSharedProcess).mockReset();
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await removeTestRoot(root);
 });
 
 type HostChild = EventEmitter & {

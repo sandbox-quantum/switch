@@ -4743,6 +4743,12 @@ version of their own to them without also giving them a release of their own.
   on this server".** The form checked the name against the server's agent
   list, which picks up the new agent before the dialog closes, so for a moment
   it reported its own agent as a clash.
+- **Changing an agent's definition on Windows no longer fails with "EPERM"
+  while its sessions run.** The agent's host re-read the agent's `config.json`
+  every 30 seconds to check its granted services, and on Windows a read in
+  progress refuses the rename that replaces the file. The check now uses the
+  definition the host last read, which it re-reads whenever the file is
+  replaced.
 
 ### [0.41.1] - 2026-11-18
 

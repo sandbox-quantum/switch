@@ -297,10 +297,27 @@ class TestPerEmail:
             assert ADA not in row.key and CLIENT not in row.key
 
     async def test_attempts_sent_at_once_are_counted_exactly(
-        self, world: World
+        self, world: World, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Counted before the password is checked, so a burst cannot all get
-        past a count none of it has added to yet."""
+        past a count none of it has added to yet.
+
+        The clock stands still for the whole burst: the fourth attempt sets a
+        1-second wait for the rest (`_FIRST_WAIT`), and the 30 are only
+        serialized by the row lock, not by real time, so a busy machine that
+        takes longer than a second to get through all of them would otherwise
+        let a late one see that wait as already expired and through as a
+        free failure, same as the clock PR #2164 stops for the email/no-email
+        comparison below.
+        """
+        at = datetime.now(UTC)
+
+        class _Stopped(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                return at.astimezone(tz) if tz is not None else at.replace(tzinfo=None)
+
+        monkeypatch.setattr(login_limits, "datetime", _Stopped)
         responses = await asyncio.gather(
             *(world.sign_in(ADA, f"guess {n}") for n in range(30))
         )

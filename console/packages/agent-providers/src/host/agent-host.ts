@@ -923,9 +923,22 @@ export async function runAgentHost(
         void pending.catch((error: Error) => fail(error));
       })
     );
+    /**
+     * The watcher's template as it last read it from disk, kept so a timer
+     * (`grantsCheck`) that only needs its stable identity — not anything a
+     * rewrite would change — can use it without opening `config.json` again:
+     * reading that file on an interval unrelated to it ever changing is its
+     * own source of Windows `EPERM`s, racing a legitimate replace for as long
+     * as the interval keeps a read in flight.
+     */
+    let latestTemplate = template;
     /** The watcher's template as it stands now, which admitting a room reads too. */
-    const currentTemplate = async (): Promise<SharedHostConfig> =>
-      sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
+    const currentTemplate = async (): Promise<SharedHostConfig> => {
+      latestTemplate = sharedConfigSchema.parse(
+        JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      );
+      return latestTemplate;
+    };
     /**
      * The shape of the agent's grants as last read (`servicesShape`), which
      * every session's host is compared against: null until first read.
@@ -1651,7 +1664,11 @@ export async function runAgentHost(
       if (checkingGrants || !anyLive()) return;
       checkingGrants = true;
       void (async () => {
-        const shape = await currentServicesShape(await currentTemplate());
+        // `latestTemplate` rather than `currentTemplate()`: this runs on a timer
+        // that has no reason to think `config.json` changed, and reading it
+        // again regardless would be an extra, unsynchronized reader of a file
+        // whoever holds the agent's definition can rewrite at any time.
+        const shape = await currentServicesShape(latestTemplate);
         if (shape === null) return;
         servicesNow = shape;
         redefine();

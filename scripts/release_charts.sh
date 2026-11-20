@@ -55,6 +55,26 @@ rendered_refs() {
     done < <(field "$chart" '.renders[] | tojson') | sort -u
 }
 
+# Pushes <tgz> to <oci-repo> and prints helm's output. Each failure is
+# printed: under `set -e`, a bare `log="$(helm push …)"` exits before anything
+# can echo it, which is how pushes to GHCR failed with nothing but "exit code
+# 1", leaving an untagged manifest behind. A failed push is tried twice more;
+# pushing the same package again is safe, since the same content gets the same
+# digest.
+push_chart() {
+    local tgz="$1" repo="$2" log attempt
+    for attempt in 1 2 3; do
+        if log="$(helm push "$tgz" "$repo" 2>&1)"; then
+            printf '%s\n' "$log"
+            return 0
+        fi
+        echo "::warning::helm push $tgz $repo failed (attempt $attempt of 3): $log" >&2
+        if [ "$attempt" -lt 3 ]; then sleep $((attempt * ${PUSH_RETRY_SECONDS:-10})); fi
+    done
+    echo "::error::Could not push $tgz to $repo: $log" >&2
+    return 1
+}
+
 CHARTS="$(charts_json)"
 command="${1:?usage: release_charts.sh refuse-published|build|publish ...}"
 shift
@@ -108,7 +128,10 @@ publish)
         absent) to_push+=("$chart") ;;
         published)
             pulled="$(mktemp -d)"
-            log="$(helm pull "$ref" --version "$version" --destination "$pulled" 2>&1)"
+            if ! log="$(helm pull "$ref" --version "$version" --destination "$pulled" 2>&1)"; then
+                echo "::error::Could not pull $ref:$version to compare it with this build: $log" >&2
+                exit 1
+            fi
             digest="$(sed -n 's/^Digest: *//p' <<<"$log")"
             rendered_refs "$chart" "$pulled/$chart-$version.tgz" "$registry" >"$pulled/refs"
             if ! diff "$pulled/refs" "$out/$chart.refs" >&2; then
@@ -121,7 +144,7 @@ publish)
         esac
     done
     for chart in ${to_push[@]+"${to_push[@]}"}; do
-        log="$(helm push "$out/$chart-$version.tgz" "$base/charts" 2>&1)"
+        log="$(push_chart "$out/$chart-$version.tgz" "$base/charts")"
         echo "$log" >&2
         digest="$(sed -n 's/^Digest: *//p' <<<"$log")"
         flags+=(--chart-digest "$chart=$digest")
