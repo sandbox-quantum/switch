@@ -214,6 +214,15 @@ def test_a_variable_may_hold_several_handles(workdir):
     ]
 
 
+def test_a_deployment_that_pages_its_channel_names_it_once(workdir):
+    channel = "@slack-example-ops"
+    result = run_apply(
+        workdir, NOTIFY=channel, NOTIFY_SECURITY=channel, NOTIFY_SECURITY_PAGE=channel
+    )
+    assert result.returncode == 0, result.stderr
+    assert set(map(tuple, handles_by_name(result.stdout).values())) == {(channel,)}
+
+
 def test_the_real_monitors_render_with_no_placeholder_left():
     result = run_apply(HERE)
     assert result.returncode == 0, result.stderr

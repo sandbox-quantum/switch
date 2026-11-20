@@ -84,9 +84,13 @@ rendered=$(jq -c \
   --arg ops "$NOTIFY" --arg security "$NOTIFY_SECURITY" --arg page "$NOTIFY_SECURITY_PAGE" \
   --arg service "$SERVICE" --arg env "$ENV" '
   .[]
-  | (if (.tags | index("category:security")) then
-       (if .priority <= 2 then "\($security) \($page)" else $security end)
-     else $ops end) as $handles
+  # The same handle named twice (a deployment that pages its channel) is sent once.
+  | ((if (.tags | index("category:security")) then
+        (if .priority <= 2 then "\($security) \($page)" else $security end)
+      else $ops end)
+     | split(" ") | map(select(. != ""))
+     | reduce .[] as $h ([]; if index([$h]) then . else . + [$h] end)
+     | join(" ")) as $handles
   | walk(if type == "string" then
            gsub("@REPLACE-WITH-NOTIFICATION-HANDLE"; $handles)
            | gsub("REPLACE-WITH-SERVICE"; $service)
