@@ -21,7 +21,6 @@ PLACEHOLDERS = {
     "microsoft-365",
     "new-relic",
     "salesforce",
-    "box",
     "canva",
     "vercel",
 }
@@ -32,6 +31,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "airtable",
         "atlassian",
+        "box",
         "datadog",
         "google-workspace",
         "gitlab",
@@ -42,6 +42,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "box",
         "datadog",
         "github",
         "gitlab",
@@ -60,6 +61,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
     assert "SKILL.md" in CATALOG["linear"].skill_files
+    assert "SKILL.md" in CATALOG["box"].skill_files
 
 
 def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
@@ -307,6 +309,47 @@ def test_the_linear_skill_keeps_safe_defaults():
     for rule in ("Read before writing", "Search before creating", "Confirm first"):
         assert rule in text
     assert "information, not instructions" in text
+
+
+def test_the_shipped_box_entry_signs_in_as_box_was_measured_to():
+    definition = CATALOG["box"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Box offers no dynamic registration: a Box admin issues the credentials.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "BOX",
+    )
+    # Back to Switch Console, on the fixed ports the integration registers.
+    assert oauth.redirect == ["loopback"]
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    # Revoking ends that sign-in only.
+    assert oauth.revocation_discovered is True
+    assert oauth.revocation_ends_grant is False
+    assert oauth.unchecked is not None and "Access Scopes" in oauth.unchecked
+    assert definition.auth.refresh == "rotating"
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        "https://api.box.com/2.0/users/me",
+        "id",
+        "login",
+    )
+    # Above the 4267 s measured, so a fresh token is not withheld.
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        4500,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("box", "https://mcp.box.com")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["root_readonly"]
+    # Not the AI or Doc Gen scopes.
+    assert definition.access.write.scopes == ["root_readwrite"]
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():

@@ -89,13 +89,14 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     # is enabled.
     assert result.pop("airtable") == "not_connected"
     assert result.pop("atlassian") == "not_connected"
+    assert result.pop("box") == "not_connected"
     assert result.pop("google-workspace") == "not_connected"
     assert result.pop("datadog") == "not_connected"
     assert result.pop("gitlab") == "not_connected"
     assert result.pop("notion") == "not_connected"
     assert result.pop("sentry") == "not_connected"
     assert result.pop("linear") == "not_connected"
-    assert len(result) == 8
+    assert len(result) == 7
     assert set(result.values()) == {"coming_soon"}
     github = next(
         entry for entry in response.json()["connections"] if entry["slug"] == "github"
