@@ -37,6 +37,7 @@ const MARK_COLOR: Record<string, string> = {
   box: 'text-[#0061D5] emdark:text-foreground',
   datadog: 'text-[#632CA6] emdark:text-foreground',
   sentry: 'text-[#362D59] emdark:text-foreground',
+  cloudflare: 'text-[#F38020]',
   'new-relic': 'text-foreground emdark:text-[#1CE783]',
   airtable: 'text-foreground emdark:text-[#18BFFF]',
 };
