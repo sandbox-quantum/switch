@@ -134,6 +134,33 @@ def datadog_answering(series_for: Callable[[str, int], list[dict]]) -> r.Datadog
     return dd
 
 
+def test_pool_verdict_uses_the_peak_fraction_from_the_per_pod_graph():
+    start = 1_700_000_000
+    timestamp = start * 1000
+
+    def series_for(query: str, at: int) -> list[dict]:
+        if query == BY_KEY["pool"].queries[0]:
+            return [
+                {"scope": "pod_name:small-pod", "pointlist": [[timestamp, 100]]},
+                {"scope": "pod_name:large-pod", "pointlist": [[timestamp, 25]]},
+            ]
+        if "pool.in_use" in query:
+            return [{"pointlist": [[timestamp, 20]]}]
+        if "pool.size" in query:
+            return [{"pointlist": [[timestamp, 80]]}]
+        return []
+
+    day = r.measure(datadog_answering(series_for), "switch-core", start, start + r.DAY)
+
+    assert day["pool_ratio"] == 1
+    assert r.Line(r.BAD, "Database: peak pool use 100%") in r.lines_for(day)
+
+
+def test_pool_verdict_has_no_data_without_a_per_pod_sample():
+    dd = datadog_answering(lambda query, at: [])
+    assert r.measure(dd, "switch-core", 0, r.DAY)["pool_ratio"] is None
+
+
 def test_a_split_graph_draws_one_line_per_pod_oldest_first():
     start = 1_700_000_000
     pod = "pod_name:switch-switch-core-58f65f47cf-{},service:switch-core"

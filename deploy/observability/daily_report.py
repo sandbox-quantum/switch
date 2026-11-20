@@ -191,13 +191,18 @@ class Day:
         return (self.mean - self.last_week) / self.last_week
 
 
-def featured_graphs(service: str) -> list[Graph]:
+def pool_usage_query(service: str) -> str:
     s = f"service:{service}"
-    streams = "!route:/gateway/chats/events,!route:/gateway/chats/activity/events"
-    pool = (
+    return (
         f"100 * max:switch.db.pool.in_use{{{s}}} by {{pod_name}}"
         f" / max:switch.db.pool.size{{{s}}} by {{pod_name}}"
     )
+
+
+def featured_graphs(service: str) -> list[Graph]:
+    s = f"service:{service}"
+    streams = "!route:/gateway/chats/events,!route:/gateway/chats/activity/events"
+    pool = pool_usage_query(service)
     return [
         Graph(
             "delivery",
@@ -640,8 +645,7 @@ def measure(dd: Datadog, service: str, start: int, end: int) -> dict[str, float 
         return how(values) if values else None
 
     last = lambda xs: xs[-1]  # noqa: E731
-    in_use = dd.points(f"max:switch.db.pool.in_use{{{s}}}", start, end)
-    size = dd.points(f"max:switch.db.pool.size{{{s}}}", start, end)
+    pool_percent = agg(pool_usage_query(service), max)
     return {
         "agents_now": agg(f"sum:switch.agents.connected{{{s}}}", last),
         "bridges_min": agg(f"min:switch.health.check{{{s},check:bridges}}", min),
@@ -663,7 +667,7 @@ def measure(dd: Datadog, service: str, start: int, end: int) -> dict[str, float 
             f"sum:switch.messages.delivery_failures{{{s}}}.as_count()", sum
         )
         or 0,
-        "pool_ratio": max(in_use) / max(size) if in_use and size else None,
+        "pool_ratio": pool_percent / 100 if pool_percent is not None else None,
         "loop_lag_max": agg(f"max:switch.runtime.event_loop_lag{{{s}}}", max),
         "old_connection": agg(f"sum:switch.agents.connected{{{s},transport:sse}}", max)
         or 0,
