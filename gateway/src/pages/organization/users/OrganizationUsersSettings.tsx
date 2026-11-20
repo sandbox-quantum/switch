@@ -44,6 +44,11 @@ import WorkspaceRoleDialog from "./WorkspaceRoleDialog";
 type Row = OrganizationMemberEntry & { id: string };
 
 const ROLE_LABELS = { org_admin: "Org admin", member: "Member" } as const;
+// Switch stores `member` either way. Where the members come from the
+// organization's WorkOS account, the roles are shown as Switch Trust names
+// them, so the two products use one word for each.
+const DIRECTORY_ROLE_LABELS = { org_admin: "Org Admin", member: "Viewer" } as const;
+type RoleLabels = typeof ROLE_LABELS | typeof DIRECTORY_ROLE_LABELS;
 
 /** Kept stable: a fresh array on each render rebuilds the grid's columns. */
 const PINNED_ACTIONS = ["actions"];
@@ -54,13 +59,25 @@ const USER_SEARCH = {
     `${row.name} ${row.email} ${row.workspaces.map((w) => w.name).join(" ")}`,
 };
 
-const ROLE_FILTER = {
-  value: (row: OrganizationMemberEntry) => ROLE_LABELS[row.role],
-  options: [
-    { value: "Org admin", label: "Org admin" },
-    { value: "Member", label: "Member" },
-  ],
-};
+function roleFilter(labels: RoleLabels) {
+  return {
+    value: (row: OrganizationMemberEntry) => labels[row.role],
+    options: [
+      { value: labels.org_admin, label: labels.org_admin },
+      { value: labels.member, label: labels.member },
+    ],
+  };
+}
+
+/** What a change also does in Switch Trust, which reads the same WorkOS
+ * membership, said where the change is sent there. */
+function trustNote(kind: "promote" | "demote" | "remove", self: boolean): string {
+  const they = self ? "You" : "They";
+  if (kind === "promote") return ` ${they} also become Org Admin in Switch Trust, with billing permissions.`;
+  if (kind === "demote")
+    return ` ${they} become Viewer in Switch Trust. ${self ? "Your" : "Their"} earlier Switch Trust role is not kept.`;
+  return ` ${they} are also removed from the organization in Switch Trust, and ${self ? "your" : "their"} Switch Trust API keys are revoked.`;
+}
 
 const WORKSPACE_FILTER = {
   value: (row: OrganizationMemberEntry) =>
@@ -137,6 +154,9 @@ export default function OrganizationUsersSettings({
   const selfId = session?.user.id ?? "";
   const asOperator = !organization.administers;
   const lockedOut = asOperator && !organization.can_manage_members;
+  const labels: RoleLabels = organization.members_from_directory ? DIRECTORY_ROLE_LABELS : ROLE_LABELS;
+  const toTrust =
+    organization.members_from_directory && organization.directory_takes_changes && !asOperator;
   const loadMembers = useCallback(
     () => (lockedOut ? Promise.resolve(null) : fetchOrganizationMembers()),
     [lockedOut],
@@ -202,14 +222,14 @@ export default function OrganizationUsersSettings({
       if (row.can_change_role || row.change_role_blocked_reason !== null) {
         if (row.role === "org_admin") {
           actions.push({
-            label: self ? "Step down to Member" : "Make Member",
+            label: self ? `Step down to ${labels.member}` : `Make ${labels.member}`,
             icon: <ManageAccountsOutlined fontSize="small" />,
             onClick: () => setPending({ kind: "demote", member: row }),
             disabledReason: row.change_role_blocked_reason,
           });
         } else {
           actions.push({
-            label: "Make Org admin",
+            label: `Make ${labels.org_admin}`,
             icon: <AdminPanelSettingsOutlined fontSize="small" />,
             onClick: () => setPending({ kind: "promote", member: row }),
             disabledReason: row.can_grant_org_admin
@@ -227,7 +247,7 @@ export default function OrganizationUsersSettings({
         const orgAdminStays =
           row.change_role_blocked_reason !== null
             ? `An org admin stays in every workspace while they are one. ${row.change_role_blocked_reason}`
-            : "An org admin stays in every workspace while they are one. Make them a Member first.";
+            : `An org admin stays in every workspace while they are one. Make them a ${labels.member} first.`;
         actions.push(
           {
             label: "Add to a workspace",
@@ -312,13 +332,13 @@ export default function OrganizationUsersSettings({
         field: "role",
         headerName: "Organization role",
         width: 170,
-        valueGetter: (_value, row) => ROLE_LABELS[row.role],
-        filter: ROLE_FILTER,
+        valueGetter: (_value, row) => labels[row.role],
+        filter: roleFilter(labels),
         renderCell: ({ row }) =>
           row.role === "org_admin" ? (
-            <Chip label="Org admin" size="small" color="primary" />
+            <Chip label={labels.org_admin} size="small" color="primary" />
           ) : (
-            <Chip label="Member" size="small" variant="outlined" />
+            <Chip label={labels.member} size="small" variant="outlined" />
           ),
       },
       {
@@ -344,7 +364,7 @@ export default function OrganizationUsersSettings({
         },
       },
     ];
-  }, [organization.administers, selfId, openWorkspaceIds, noOpenWorkspace]);
+  }, [organization.administers, selfId, openWorkspaceIds, noOpenWorkspace, labels]);
 
   const close = () => setPending(null);
   const openWorkspaces = (workspaces.data ?? []).filter((w) => w.archived_at === null);
@@ -447,9 +467,12 @@ export default function OrganizationUsersSettings({
       {pending?.kind === "promote" && (
         <ConfirmDialog
           open
-          title="Make Org admin"
-          description={`${pending.member.name} will administer all of ${organization.name}: every workspace, every user and the organization's settings.`}
-          confirmLabel="Make Org admin"
+          title={`Make ${labels.org_admin}`}
+          description={
+            `${pending.member.name} will administer all of ${organization.name}: every workspace, every user and the organization's settings.` +
+            (toTrust ? trustNote("promote", pending.member.user_id === selfId) : "")
+          }
+          confirmLabel={`Make ${labels.org_admin}`}
           tone="plain"
           onConfirm={() => changes.act({ userId: pending.member.user_id, role: "org_admin" })}
           onClose={close}
@@ -458,13 +481,16 @@ export default function OrganizationUsersSettings({
       {pending?.kind === "demote" && (
         <ConfirmDialog
           open
-          title={pending.member.user_id === selfId ? "Step down to Member?" : "Make Member"}
-          description={
-            pending.member.user_id === selfId
-              ? `You'll stop administering ${organization.name} and its workspaces, keeping only your own role in each. What you held in workspaces you were in only as an org admin is taken away.`
-              : `${pending.member.name} stops administering ${organization.name} and its workspaces, keeping only their own role in each. What they held in workspaces they were in only as an org admin is taken away.`
+          title={
+            pending.member.user_id === selfId ? `Step down to ${labels.member}?` : `Make ${labels.member}`
           }
-          confirmLabel={pending.member.user_id === selfId ? "Step down" : "Make Member"}
+          description={
+            (pending.member.user_id === selfId
+              ? `You'll stop administering ${organization.name} and its workspaces, keeping only your own role in each. What you held in workspaces you were in only as an org admin is taken away.`
+              : `${pending.member.name} stops administering ${organization.name} and its workspaces, keeping only their own role in each. What they held in workspaces they were in only as an org admin is taken away.`) +
+            (toTrust ? trustNote("demote", pending.member.user_id === selfId) : "")
+          }
+          confirmLabel={pending.member.user_id === selfId ? "Step down" : `Make ${labels.member}`}
           tone="plain"
           onConfirm={() => changes.act({ userId: pending.member.user_id, role: "member" })}
           onClose={close}
@@ -477,9 +503,10 @@ export default function OrganizationUsersSettings({
             pending.member.user_id === selfId ? `Leave ${organization.name}?` : "Remove from organization"
           }
           description={
-            pending.member.user_id === selfId
+            (pending.member.user_id === selfId
               ? `You'll no longer be part of ${organization.name}.`
-              : `${pending.member.name} is no longer part of ${organization.name}.`
+              : `${pending.member.name} is no longer part of ${organization.name}.`) +
+            (toTrust ? trustNote("remove", pending.member.user_id === selfId) : "")
           }
           confirmLabel={pending.member.user_id === selfId ? "Leave" : "Remove"}
           tone="destructive"
