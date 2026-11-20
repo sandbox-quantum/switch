@@ -3,15 +3,20 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from slack_sdk.errors import SlackApiError
+from slack_sdk.socket_mode.request import SocketModeRequest
 
 from switch_core.bridges.collaboration.collaboration_core import _no_agents_notice
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
+    InboundChannelRemoved,
     InboundCommand,
     InboundMessage,
+    InboundMessageDeleted,
+    InboundMessageEdited,
 )
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -347,21 +352,252 @@ def test_file_share_subtype_is_processed() -> None:
     assert [a.filename for a in captured[0].attachments] == ["p.png"]
 
 
-def test_message_changed_subtype_is_skipped() -> None:
+class _Takebacks:
+    def __init__(self, adapter: SlackAdapter) -> None:
+        self.deleted: list[InboundMessageDeleted] = []
+        self.edited: list[InboundMessageEdited] = []
+        self.removed: list[InboundChannelRemoved] = []
+        adapter.set_takeback_handlers(
+            on_message_deleted=self._on_deleted,
+            on_message_edited=self._on_edited,
+            on_channel_removed=self._on_removed,
+        )
+
+    async def _on_deleted(self, event: InboundMessageDeleted) -> None:
+        self.deleted.append(event)
+
+    async def _on_edited(self, event: InboundMessageEdited) -> None:
+        self.edited.append(event)
+
+    async def _on_removed(self, event: InboundChannelRemoved) -> None:
+        self.removed.append(event)
+
+
+def _dispatch(adapter: SlackAdapter, event: dict[str, Any]) -> None:
+    _run(adapter.dispatch_event(envelope_type="events_api", payload={"event": event}))
+
+
+def test_a_deleted_post_is_reported_by_the_ref_it_came_in_with() -> None:
     adapter = _adapter()
+    takebacks = _Takebacks(adapter)
     captured = _capture_messages(adapter)
 
-    event = {
-        "channel": "C123",
-        "ts": "400.4",
-        "user": "U1",
-        "text": "edited",
-        "channel_type": "channel",
-        "subtype": "message_changed",
-    }
-    _run(adapter._handle_message_event(event))
+    _dispatch(
+        adapter,
+        {
+            "type": "message",
+            "subtype": "message_deleted",
+            "channel": "C123",
+            "ts": "401.1",
+            "deleted_ts": "400.4",
+            "hidden": True,
+            "previous_message": {"type": "message", "ts": "400.4", "text": "hi"},
+        },
+    )
 
+    assert takebacks.deleted == [
+        InboundMessageDeleted(channel_id="C123", message_ref="C123:400.4")
+    ]
     assert captured == []
+
+
+def test_an_edited_post_is_reported_with_its_new_words() -> None:
+    adapter = _adapter()
+    takebacks = _Takebacks(adapter)
+    captured = _capture_messages(adapter)
+
+    _dispatch(
+        adapter,
+        {
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C123",
+            "ts": "401.1",
+            "hidden": True,
+            "message": {
+                "type": "message",
+                "user": "U1",
+                "ts": "400.4",
+                "text": "after",
+            },
+            "previous_message": {
+                "type": "message",
+                "user": "U1",
+                "ts": "400.4",
+                "text": "before",
+            },
+        },
+    )
+
+    assert takebacks.edited == [
+        InboundMessageEdited(
+            channel_id="C123", message_ref="C123:400.4", content="after"
+        )
+    ]
+    assert takebacks.deleted == []
+    assert captured == []
+
+
+def test_an_edited_app_post_is_read_from_its_blocks_like_a_new_one() -> None:
+    adapter = _adapter()
+    takebacks = _Takebacks(adapter)
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "resolved"}}]
+
+    _dispatch(
+        adapter,
+        {
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C123",
+            "ts": "401.1",
+            "message": {
+                "type": "message",
+                "bot_id": "BAPP",
+                "ts": "400.4",
+                "text": "",
+                "blocks": blocks,
+            },
+            "previous_message": {
+                "type": "message",
+                "bot_id": "BAPP",
+                "ts": "400.4",
+                "text": "firing",
+            },
+        },
+    )
+
+    assert [e.content for e in takebacks.edited] == [
+        adapter._extract_rich_text({"blocks": blocks})
+    ]
+
+
+def test_a_link_unfurling_is_not_an_edit() -> None:
+    adapter = _adapter()
+    takebacks = _Takebacks(adapter)
+    text = "see <https://example.com>"
+
+    _dispatch(
+        adapter,
+        {
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C123",
+            "ts": "401.1",
+            "message": {
+                "type": "message",
+                "user": "U1",
+                "ts": "400.4",
+                "text": text,
+                "attachments": [
+                    {"title": "Example", "from_url": "https://example.com"}
+                ],
+            },
+            "previous_message": {
+                "type": "message",
+                "user": "U1",
+                "ts": "400.4",
+                "text": text,
+            },
+        },
+    )
+
+    assert takebacks.edited == []
+    assert takebacks.deleted == []
+
+
+def test_a_thread_root_deleted_under_its_replies_is_reported_deleted() -> None:
+    adapter = _adapter()
+    takebacks = _Takebacks(adapter)
+
+    _dispatch(
+        adapter,
+        {
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C123",
+            "ts": "401.1",
+            "message": {
+                "type": "message",
+                "subtype": "tombstone",
+                "ts": "400.4",
+                "thread_ts": "400.4",
+                "text": "This message was deleted.",
+            },
+            "previous_message": {
+                "type": "message",
+                "user": "U1",
+                "ts": "400.4",
+                "text": "root",
+            },
+        },
+    )
+
+    assert takebacks.deleted == [
+        InboundMessageDeleted(channel_id="C123", message_ref="C123:400.4")
+    ]
+    assert takebacks.edited == []
+
+
+@pytest.mark.parametrize(
+    ("event_type", "deleted"),
+    [
+        ("channel_deleted", True),
+        ("group_deleted", True),
+        ("channel_archive", False),
+        ("group_archive", False),
+    ],
+)
+def test_a_channel_deleted_or_archived_is_reported(
+    event_type: str, deleted: bool
+) -> None:
+    adapter = _adapter()
+    takebacks = _Takebacks(adapter)
+
+    _dispatch(adapter, {"type": event_type, "channel": "C123", "user": "U1"})
+
+    assert takebacks.removed == [
+        InboundChannelRemoved(channel_id="C123", deleted=deleted)
+    ]
+
+
+def test_a_takeback_that_fails_is_left_for_slack_to_send_again() -> None:
+    adapter = _adapter()
+    takebacks = _Takebacks(adapter)
+    refusals = [RuntimeError("the database refused the delete")]
+
+    async def on_deleted(event: InboundMessageDeleted) -> None:
+        if refusals:
+            raise refusals.pop()
+        takebacks.deleted.append(event)
+
+    adapter._on_message_deleted = on_deleted
+    acknowledged: list[str] = []
+    socket = AsyncMock()
+    socket.send_socket_mode_response.side_effect = lambda response: acknowledged.append(
+        response.envelope_id
+    )
+
+    def envelope(envelope_id: str) -> SocketModeRequest:
+        return SocketModeRequest(
+            type="events_api",
+            envelope_id=envelope_id,
+            payload={
+                "event": {
+                    "type": "message",
+                    "subtype": "message_deleted",
+                    "channel": "C123",
+                    "ts": "401.1",
+                    "deleted_ts": "400.4",
+                }
+            },
+        )
+
+    with pytest.raises(RuntimeError):
+        _run(adapter._handle_socket_event(socket, envelope("envelope-1")))
+    _run(adapter._handle_socket_event(socket, envelope("envelope-2")))
+
+    assert acknowledged == ["envelope-2"]
+    assert [e.message_ref for e in takebacks.deleted] == ["C123:400.4"]
 
 
 def test_third_party_bot_message_is_bridged() -> None:

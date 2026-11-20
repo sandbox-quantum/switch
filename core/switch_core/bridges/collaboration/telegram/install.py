@@ -196,7 +196,13 @@ def _chat_of(payload: Mapping[str, object]) -> dict[str, Any] | None:
     member = _as_dict(payload.get("my_chat_member"))
     if member is not None:
         return _as_dict(member.get("chat"))
-    message = _message_of(payload)
+    # An edit routes like the message it edits, but is never read as a claim
+    # or a migration, so it is not one of `_message_of`'s.
+    message = (
+        _message_of(payload)
+        or _as_dict(payload.get("edited_message"))
+        or _as_dict(payload.get("edited_channel_post"))
+    )
     return _as_dict(message.get("chat")) if message is not None else None
 
 
