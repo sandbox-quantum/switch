@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 import pytest
 import pytest_asyncio
+import requests
+from docker.errors import DockerException
 from sqlalchemy import insert, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
@@ -211,12 +213,35 @@ def postgres_url() -> Iterator[str]:
     container = PostgresContainer("postgres:16-alpine").with_command(
         "postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
     )
-    with container as pg:
+    pg = container.start()
+    try:
         host = pg.get_container_host_ip()
         port = pg.get_exposed_port(5432)
         yield (
             f"postgresql+asyncpg://{pg.username}:{pg.password}"
             f"@{host}:{port}/{pg.dbname}"
+        )
+    finally:
+        _remove(pg)
+
+
+def _remove(container: PostgresContainer) -> None:
+    """Delete the session's container, without failing a run over it.
+
+    Every test has run by now. After a whole shard the container's data is
+    large, and a busy CI runner's Docker has taken longer than its client's
+    60 s to delete it: the shard then failed though every test passed. The
+    reaper testcontainers starts with the session (Ryuk) removes the container
+    once the session ends anyway, so a removal that doesn't answer in time is
+    only a warning.
+    """
+    try:
+        container.stop()
+    except (DockerException, requests.exceptions.RequestException) as exc:
+        warnings.warn(
+            f"the test database's container was not removed ({exc!r}); "
+            "the testcontainers reaper removes it when the session ends",
+            stacklevel=2,
         )
 
 
