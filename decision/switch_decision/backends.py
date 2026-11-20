@@ -29,15 +29,18 @@ from botocore.exceptions import (
 from switch_decision.config import Settings
 from switch_decision.models import DecideRequest
 from switch_decision.prompt import (
+    GEMINI_NOBODY,
     NONE,
     PICK_TOOL,
     SPEAKER_QUESTION,
-    SYSTEM,
     build_messages,
     build_state,
+    gemini_decision_request,
+    gemini_nobody_key,
     letter_messages,
     output_schema,
     pick_tool,
+    system_prompt,
     systemone_request,
 )
 
@@ -264,7 +267,7 @@ def bedrock_request(req: DecideRequest, settings: Settings) -> dict:
     names = [a.name for a in req.agents]
     body: dict[str, Any] = {
         "modelId": settings.model,
-        "system": [{"text": SYSTEM}],
+        "system": [{"text": system_prompt(req, settings.history_limit)}],
         "messages": [
             {
                 "role": "user",
@@ -309,8 +312,11 @@ async def ask_bedrock(settings: Settings, req: DecideRequest) -> ModelAnswer:
     options = [a.name for a in req.agents] + [NONE]
     where = f"Bedrock {settings.model} in {settings.aws_region}"
     try:
+        request = bedrock_request(req, settings)
+        # The client is made in the thread too: the first one resolves AWS
+        # credentials, which can block on the network.
         body = await asyncio.to_thread(
-            bedrock_client(settings).converse, **bedrock_request(req, settings)
+            lambda: bedrock_client(settings).converse(**request)
         )
     except (BotoCoreError, ClientError) as exc:
         code = (
@@ -382,7 +388,7 @@ def anthropic_request(req: DecideRequest, settings: Settings) -> dict:
     return {
         "model": settings.model,
         "max_tokens": 256,
-        "system": SYSTEM,
+        "system": system_prompt(req, settings.history_limit),
         "messages": [
             {"role": "user", "content": build_state(req, settings.history_limit)}
         ],
@@ -482,6 +488,126 @@ async def ask_anthropic(
     return read_anthropic(message, options)
 
 
+# ── Google's Decisions API (gemini-decision-1) ──────────────────────────────
+
+# What a 400 from the Decisions API says when it blocked the input.
+_GEMINI_BLOCKED = {
+    "safety",
+    "prohibited_content",
+    "blocklist",
+    "image_safety",
+    "content_blocked",
+}
+# What a Google API's 400 says about a key it will not take.
+_GOOGLE_KEY_REFUSED = {"API_KEY_INVALID", "API_KEY_SERVICE_BLOCKED", "API_KEY_EXPIRED"}
+
+
+def kind_of_gemini_status(status: int, body: object) -> ErrorKind:
+    """An error status from the Decisions API, classified. Google answers 400
+    both for a key it won't take and for an input it blocked: both are refusals.
+    Any other 400 is a request we got wrong."""
+    if status != 400:
+        return kind_of_status(status)
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return "model_server_error"
+    code = str(error.get("code", "")).lower()
+    reasons = {
+        d.get("reason")
+        for d in error.get("details") or []
+        if isinstance(d, dict) and d.get("reason")
+    }
+    if code in _GEMINI_BLOCKED or reasons & _GOOGLE_KEY_REFUSED:
+        return "backend_refused"
+    return "model_server_error"
+
+
+def read_gemini_decision(
+    body: object, agent_names: list[str], nobody_key: str
+) -> ModelAnswer:
+    """Map a Decisions API answer to a choice, the chosen option's probability
+    and the runner-up's. The nobody option reads back as NONE."""
+    try:
+        answer = body["answers"][SPEAKER_QUESTION]  # type: ignore[index]
+        raw_choice = answer["choice"]
+        raw_probs = answer.get("probabilities") or {}
+    except (KeyError, TypeError) as exc:
+        raise ModelServerError(
+            f"Decisions API response has no '{SPEAKER_QUESTION}' answer",
+            kind="model_server_error",
+        ) from exc
+    if not isinstance(raw_probs, dict):
+        raw_probs = {}
+
+    def option(key: object) -> str:
+        return NONE if key == nobody_key else str(key)
+
+    probabilities = {
+        option(k): float(v) for k, v in raw_probs.items() if isinstance(v, (int, float))
+    }
+    choice = option(raw_choice)
+    confidence = probabilities.get(choice, answer.get("confidence"))
+    if raw_choice != nobody_key and raw_choice not in agent_names:
+        raise InvalidChoiceError(raw_choice, _confidence_of(confidence))
+    if not isinstance(confidence, (int, float)):
+        raise ModelServerError(
+            f"Decisions API response has no probability for {raw_choice!r}",
+            kind="model_server_error",
+        )
+    return ModelAnswer(
+        choice=choice,
+        confidence=float(confidence),
+        reason="",
+        runner_up=_runner_up(probabilities, choice) if probabilities else None,
+    )
+
+
+async def ask_gemini_decision(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    req: DecideRequest,
+    api_key: str | None = None,
+) -> ModelAnswer:
+    """One Decisions API call. The key is the request's own, else the
+    service's (GEMINI_DECISION_API_KEY); it travels in a header that is never logged."""
+    key = api_key or settings.gemini_decision_api_key
+    if not key:
+        raise ModelServerError(
+            "GEMINI_DECISION_API_KEY is not set", kind="credentials_missing"
+        )
+    names = [a.name for a in req.agents]
+    nobody = gemini_nobody_key(names, GEMINI_NOBODY)
+    url = settings.gemini_decision_url
+    where = f"Decisions API ({settings.model})"
+    try:
+        r = await client.post(
+            url,
+            json=gemini_decision_request(
+                req, settings.model, settings.history_limit, nobody
+            ),
+            headers={"x-goog-api-key": key},
+            timeout=settings.timeout_s,
+        )
+    except httpx.HTTPError as exc:
+        raise ModelServerError(
+            f"{where} at {url} unreachable: {type(exc).__name__}: {exc}",
+            kind=kind_of_httpx_error(exc),
+        ) from exc
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    if r.status_code != 200:
+        raise ModelServerError(
+            f"{where} returned {r.status_code}: {r.text[:300]}",
+            kind=kind_of_gemini_status(r.status_code, body),
+            log_text=f"{where} returned {r.status_code}",
+        )
+    if body is None:
+        raise ModelServerError(f"{where} returned non-JSON", kind="model_server_error")
+    return read_gemini_decision(body, names, nobody)
+
+
 def model_server(settings: Settings) -> str:
     if settings.backend == "bedrock":
         return f"bedrock:{settings.aws_region}"
@@ -489,6 +615,8 @@ def model_server(settings: Settings) -> str:
         return settings.llamacpp_url
     if settings.backend == "anthropic":
         return "api.anthropic.com"
+    if settings.backend == "gemini_decision":
+        return httpx.URL(settings.gemini_decision_url).host
     return (
         settings.systemone_url
         if settings.backend == "systemone"
@@ -508,12 +636,16 @@ async def ask(
     client: httpx.AsyncClient,
     settings: Settings,
     req: DecideRequest,
-    anthropic_key: str | None = None,
+    api_key: str | None = None,
 ) -> ModelAnswer:
+    """Ask the configured backend. `api_key` is a per-request key for the
+    anthropic or gemini_decision backend; None uses the service's own."""
     if settings.backend == "bedrock":
         return await ask_bedrock(settings, req)
     if settings.backend == "anthropic":
-        return await ask_anthropic(settings, req, anthropic_key)
+        return await ask_anthropic(settings, req, api_key)
+    if settings.backend == "gemini_decision":
+        return await ask_gemini_decision(client, settings, req, api_key)
     if settings.backend == "llamacpp":
         messages, letters = letter_messages(req, settings.history_limit)
         url = f"{settings.llamacpp_url}/v1/chat/completions"
@@ -600,6 +732,12 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise ModelServerError(
                 "ANTHROPIC_API_KEY is not set", kind="credentials_missing"
+            )
+        return {"status": "api key set"}
+    if settings.backend == "gemini_decision":
+        if not settings.gemini_decision_api_key:
+            raise ModelServerError(
+                "GEMINI_DECISION_API_KEY is not set", kind="credentials_missing"
             )
         return {"status": "api key set"}
     if settings.backend == "bedrock":

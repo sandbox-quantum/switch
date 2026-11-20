@@ -8,6 +8,7 @@ change (`db/session_version_ddl.py`) is the one under test, not a stand-in.
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Annotated
@@ -91,6 +92,7 @@ def _token(user_id: str, email: str, role: str, version: int) -> str:
         None,
         session_version=version,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
     )
 
 
@@ -293,60 +295,3 @@ class TestSigningOutEverywhere:
                 )
             ).all()
         assert actions == ["user.sessions_ended"]
-
-    async def test_the_operator_can_sign_someone_out_everywhere(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        operator_id = await _seed_user(
-            session_factory, "operator@example.invalid", role="admin"
-        )
-        person = "person@example.invalid"
-        person_id = await _seed_user(session_factory, person)
-        app = _app(session_factory)
-        person_token = _token(person_id, person, "user", 0)
-
-        operator = _token(operator_id, "operator@example.invalid", "admin", 0)
-        async with _client(app, operator) as client:
-            ended = await client.post(f"/users/{person_id}/sessions/revoke")
-        assert ended.status_code == 200, ended.text
-
-        assert await _status(app, person_token) == 401
-        assert await _status(app, operator) == 200
-        async with session_factory() as session:
-            event = (
-                await session.scalars(
-                    select(ServerAuditEvent).where(
-                        ServerAuditEvent.target_id == person_id
-                    )
-                )
-            ).one()
-        assert (event.action, event.actor_user_id) == (
-            "user.sessions_ended",
-            operator_id,
-        )
-
-    async def test_only_the_operator_can_sign_someone_else_out(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        mallory = "mallory@example.invalid"
-        mallory_id = await _seed_user(session_factory, mallory)
-        victim = "victim@example.invalid"
-        victim_id = await _seed_user(session_factory, victim)
-        app = _app(session_factory)
-
-        async with _client(app, _token(mallory_id, mallory, "user", 0)) as client:
-            refused = await client.post(f"/users/{victim_id}/sessions/revoke")
-        assert refused.status_code == 403
-        assert await _version(session_factory, victim_id) == 0
-
-    async def test_the_operator_naming_no_account_gets_404(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        operator_id = await _seed_user(
-            session_factory, "op404@example.invalid", role="admin"
-        )
-        app = _app(session_factory)
-        token = _token(operator_id, "op404@example.invalid", "admin", 0)
-        async with _client(app, token) as client:
-            missing = await client.post("/users/no-such-user/sessions/revoke")
-        assert missing.status_code == 404

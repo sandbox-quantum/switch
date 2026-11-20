@@ -56,6 +56,7 @@ function settingsWith(gatewayUiDir: string | null): Record<string, string> {
     telemetryInternal: false,
     telemetryEndpoint: 'https://relay.example.test',
     gatewayUiDir,
+    fromCheckout: false,
   });
 }
 

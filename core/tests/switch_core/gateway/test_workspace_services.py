@@ -13,7 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapterError
@@ -22,6 +22,7 @@ from switch_core.db.audit import AuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AuditEvent,
+    ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
     TenantMember,
@@ -118,6 +119,8 @@ async def _granted(
             external_identity=owner.name,
             encrypted_secret=TEST_KEYRING.encrypt("{}"),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         grant = await STORE.save_grant(
             session,
@@ -250,6 +253,7 @@ class TestResults:
             "github",
             "gitlab",
             "google-workspace",
+            "linear",
             "notion",
             "sentry",
         }
@@ -258,10 +262,9 @@ class TestResults:
             "name": "Datadog",
             "category": "Observability",
             "description": (
-                "Query Datadog metrics, logs, traces, monitors and incidents, "
-                "with your keys."
+                "Query Datadog metrics, logs, traces, monitors and incidents, as you."
             ),
-            "auth_type": "api_key",
+            "auth_type": "oauth",
             "enabled": on_by_default,
             "decided_by": "workspace_default",
             "organization_locked": False,
@@ -271,13 +274,10 @@ class TestResults:
             "workspace_set": False,
             "updated_at": None,
             "app_source": "server",
-            # The harness's Datadog key has no expiry, so it is never handed
-            # out: why, whatever the switch says.
-            "unavailable_reason": (
-                "Datadog keys do not expire and only Datadog can revoke them, "
-                "so Switch does not hand them to agents."
-            ),
-            "unavailable_code": "key_never_expires",
+            # The harness has no Datadog app, so nobody can sign in to it:
+            # why, whatever the switch says.
+            "unavailable_reason": "Datadog is not set up here.",
+            "unavailable_code": "not_set_up",
             "connected_members": 0,
             "granted_agents": 0,
         }
@@ -391,6 +391,34 @@ class TestResults:
         admin = await _person(harness.session_factory, "admin", member_role="admin")
         listed = await _get(harness, admin)
         assert listed.json()["organization_name"] is None
+
+    async def test_a_connection_that_needs_reconnecting_is_not_counted(
+        self, harness: Harness, vendor: FakeVendor
+    ) -> None:
+        """Counted as each member's own Connectors page reads it: one marked
+        for reconnecting, and one made through an app since replaced, reach
+        nothing until reconnected."""
+        admin = await _person(harness.session_factory, "admin", member_role="admin")
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        cy = await add_member(harness.session_factory, "cy")
+        for person, account in ((ada, "1001"), (bob, "1002"), (cy, "1003")):
+            await connect(harness.session_factory, person.id, account_id=account)
+        async with harness.session_factory() as session:
+            await STORE.mark_needs_reauthorization(
+                session, bob.id, "github", "refresh_refused"
+            )
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == cy.id)
+                .values(oauth_client_id="old-client")
+            )
+            await session.commit()
+        vendor.client_id = "new-client"
+
+        services = _by_slug(await _get(harness, admin))
+
+        assert services["github"]["connected_members"] == 1
 
 
 class TestSwitchingOff:

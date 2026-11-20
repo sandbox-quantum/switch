@@ -27,6 +27,10 @@ function returns<T>(data: T) {
   return { data, loading: false, error: null, refetch: vi.fn() };
 }
 
+function fails(error: string) {
+  return { data: null, loading: false, error, refetch: vi.fn() };
+}
+
 // The server says, per document, whether the viewer may remove it: unlink it
 // if attached, delete it if room-scoped.
 function roomDocuments({ canRemove }: { canRemove: boolean }) {
@@ -50,12 +54,12 @@ describe("RoomResourcesSection", () => {
   beforeEach(() => {
     vi.mocked(hooks.useRoomReferences).mockReturnValue(
       returns([
-        { id: "ref1", name: "Runbook", description: "", type: "confluence", type_display_name: "Confluence", packages: [] },
+        { id: "ref1", name: "Runbook", description: "", type: "confluence", type_display_name: "Confluence", packages: [], owner_id: "u-me" },
       ]) as never,
     );
     roomDocuments({ canRemove: true });
     vi.mocked(hooks.useRoomPackages).mockReturnValue(
-      returns([{ id: "p1", name: "Starter kit", description: "" }]) as never,
+      returns([{ id: "p1", name: "Starter kit", description: "", owner_id: "u-other" }]) as never,
     );
     vi.mocked(hooks.useReferences).mockReturnValue(
       returns([
@@ -74,13 +78,13 @@ describe("RoomResourcesSection", () => {
   });
 
   it("offers attaching to writers and unlinking to those taking part", () => {
-    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach inRoom canUnlink />);
 
     for (const name of [...ATTACH, ...UNLINK, ...REMOVE]) screen.getByRole("button", { name });
   });
 
   it("lets someone taking part unlink without write access, but not attach", () => {
-    render(<RoomResourcesSection roomId="r1" canWrite={false} canUnlink />);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach={false} inRoom canUnlink />);
 
     for (const name of [...UNLINK, ...REMOVE]) screen.getByRole("button", { name });
     for (const name of ATTACH) expect(button(name)).toBeNull();
@@ -88,22 +92,35 @@ describe("RoomResourcesSection", () => {
 
   it("follows the server on which documents the viewer may remove", () => {
     roomDocuments({ canRemove: false });
-    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach inRoom canUnlink />);
 
     for (const name of REMOVE) expect(button(name)).toBeNull();
     for (const name of UNLINK) screen.getByRole("button", { name });
   });
 
+  it("lets someone in the room unlink what they own, and only that", () => {
+    render(<RoomResourcesSection roomId="r1" viewerId="u-me" canAttach inRoom canUnlink={false} />);
+
+    expect(button("Unlink Runbook")).not.toBeNull();
+    expect(button("Unlink Starter kit")).toBeNull();
+  });
+
+  it("doesn't let someone outside the room unlink what they own", () => {
+    render(<RoomResourcesSection roomId="r1" viewerId="u-me" canAttach={false} inRoom={false} canUnlink={false} />);
+
+    expect(button("Unlink Runbook")).toBeNull();
+  });
+
   it("lists what is attached, with nothing to change, to a reader", () => {
     roomDocuments({ canRemove: false });
-    render(<RoomResourcesSection roomId="r1" canWrite={false} canUnlink={false} />);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach={false} inRoom canUnlink={false} />);
 
     for (const item of ["Runbook", "Spec", "Notes", "Starter kit"]) screen.getByText(item);
     for (const name of [...ATTACH, ...UNLINK, ...REMOVE]) expect(button(name)).toBeNull();
   });
 
   it("loads what can be attached only when a picker opens", async () => {
-    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach inRoom canUnlink />);
 
     expect(hooks.useReferences).not.toHaveBeenCalled();
     expect(hooks.useDocuments).not.toHaveBeenCalled();
@@ -125,7 +142,7 @@ describe("RoomResourcesSection", () => {
         { id: "p2", name: "Secret kit", description: "", can_read: false },
       ]) as never,
     );
-    render(<RoomResourcesSection roomId="r1" canWrite={false} canUnlink={false} />);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach={false} inRoom canUnlink={false} />);
 
     fireEvent.click(screen.getByTestId("room-package-p1"));
     expect(navigate).toHaveBeenLastCalledWith("/resources/packages/p1");
@@ -136,7 +153,7 @@ describe("RoomResourcesSection", () => {
   });
 
   it("asks before deleting a room document, which cannot be undone", async () => {
-    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach inRoom canUnlink />);
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Notes" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Notes?" });
@@ -145,5 +162,29 @@ describe("RoomResourcesSection", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete document" }));
     await waitFor(() => expect(api.detachDocumentFromRoom).toHaveBeenCalledWith("r1", "d2"));
+  });
+
+  it("says a list could not be loaded, rather than that nothing is attached", () => {
+    vi.mocked(hooks.useRoomPackages).mockReturnValue(fails("500 Internal Server Error") as never);
+    vi.mocked(hooks.useRoomReferences).mockReturnValue(fails("Room not found") as never);
+    vi.mocked(hooks.useRoomDocuments).mockReturnValue(fails("Not allowed") as never);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach inRoom canUnlink />);
+
+    screen.getByText("Couldn't load the packages: 500 Internal Server Error");
+    screen.getByText("Couldn't load the references: Room not found");
+    screen.getByText("Couldn't load the documents: Not allowed");
+    expect(screen.queryByText("No packages attached.")).toBeNull();
+    expect(screen.queryByText("No references attached.")).toBeNull();
+    expect(screen.queryByText("No documents attached.")).toBeNull();
+  });
+
+  it("says what can be attached could not be loaded, rather than offering nothing", async () => {
+    vi.mocked(hooks.usePackages).mockReturnValue(fails("503 Service Unavailable") as never);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach inRoom canUnlink />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Attach package" }));
+
+    await screen.findByText("Couldn't load what to choose from: 503 Service Unavailable");
+    expect(screen.queryByText("Nothing to choose from.")).toBeNull();
   });
 });

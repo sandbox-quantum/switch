@@ -24,6 +24,7 @@ import {
   summariseValues,
 } from '@renderer/features/locations/components/settings-view/sections/advanced-config-disclosure';
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
+import { MidTurnDeliveryRow } from '@renderer/features/locations/components/settings-view/sections/mid-turn-delivery-section';
 import {
   AutoApproveRow,
   AutoModeRow,
@@ -54,6 +55,7 @@ import {
 import {
   isValidProviderId,
   providerDisplayName,
+  providerSupportsAutoMode,
 } from '@shared/core/providers/agent-provider-registry';
 import { catalogueAsReported } from './catalogue-as-reported';
 import { InlineEditableText } from './inline-editable-text';
@@ -321,16 +323,18 @@ function ManagedAgentPageContent({
             />
             <section className="flex flex-col gap-6">
               <SectionLabel>General</SectionLabel>
-              <AutoModeRow
-                overridden={draft.autoApprove}
-                control={
-                  <Switch
-                    aria-label={PERMISSION_COPY.autoMode.title}
-                    checked={draft.autoMode}
-                    onCheckedChange={(checked) => setValue('autoMode', checked)}
-                  />
-                }
-              />
+              {providerSupportsAutoMode(agent.definition.provider) && (
+                <AutoModeRow
+                  overridden={draft.autoApprove}
+                  control={
+                    <Switch
+                      aria-label={PERMISSION_COPY.autoMode.title}
+                      checked={draft.autoMode}
+                      onCheckedChange={(checked) => setValue('autoMode', checked)}
+                    />
+                  }
+                />
+              )}
               <AutoApproveRow
                 control={
                   <Switch
@@ -345,6 +349,7 @@ function ManagedAgentPageContent({
                 agentId={agent.agentId}
                 agentName={null}
               />
+              <MidTurnDeliveryRow workspaceId={agent.workspaceId} agentId={agent.agentId} />
               <AddressingPolicyRow
                 workspaceId={agent.workspaceId}
                 serverId={agent.serverId}
@@ -409,7 +414,7 @@ function ManagedAgentPageContent({
                 <SettingRow
                   title="Runs in its own process"
                   info={null}
-                  description="Switch cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
+                  description="Switch Cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
                   control={null}
                 />
               ) : (

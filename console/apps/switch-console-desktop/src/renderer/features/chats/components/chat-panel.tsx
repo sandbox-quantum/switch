@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { SERVER_TOO_OLD_FOR_ACTIVITY } from '@shared/core/chats/activity';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
+import { Entrance, useChatEntrance } from '../chat-entrance';
 import { useChatPeople } from '../chat-people';
 import { readThroughSeq } from '../read-progress';
 import { directChats } from '../start-direct-chat';
@@ -96,6 +97,7 @@ export const ChatPanel = observer(function ChatPanel({
   const people = useChatPeople(serverId, chat);
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const lost = timeline.accessLost || chatsStore.removed.has(roomId);
+  const entrance = useChatEntrance(roomId);
 
   useEffect(() => {
     if (!timeline.loaded && !lost && !timeline.notMember) void timeline.load();
@@ -181,9 +183,15 @@ export const ChatPanel = observer(function ChatPanel({
                 people={people.known}
                 activities={activities}
                 onReply={setReplyTo}
+                entrance={entrance}
               />
             )}
-            {timeline.loaded && afterMessages}
+            {/* Under the first message, it comes in just after it. */}
+            {timeline.loaded && (
+              <Entrance play={entrance.firstAgent} order={1}>
+                {afterMessages}
+              </Entrance>
+            )}
             {timeline.loaded && timeline.messages.length === 0 && timeline.pending.length === 0 && (
               <p className="mt-10 text-center text-sm text-foreground-muted">
                 No messages yet. Say what you need below.

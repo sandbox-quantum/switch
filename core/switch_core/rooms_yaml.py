@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -40,12 +41,20 @@ import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from switch_core.agent_runs import AgentOrigin, kickoff_fingerprint
-from switch_core.authz import Principal, can, require_group_filing
+from switch_core.authz import Principal, require_group_filing
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
+from switch_core.db.models import User, require_tenant_id
+from switch_core.names import Name
+from switch_core.room_invites import (
+    require_agent_may_add_to_new_room,
+    require_user_may_add_to_new_room,
+)
+from switch_core.room_policy import visible_from_outside
 from switch_core.room_service import RoleSpec, RoomCreateConfig
+from switch_core.telemetry import TelemetryService, emit_after_commit
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -450,17 +459,33 @@ class DocSpec(BaseModel):
     content: str
 
 
+# The most rooms a group document creates, and agents and people a room
+# document names. Each is created or added on its own, with platform calls, by
+# the request that asked.
+GROUP_ROOMS_MAX = 50
+ROOM_AGENTS_MAX = 50
+ROOM_USERS_MAX = 200
+
+
 class RoomSpec(BaseModel):
-    name: str
+    name: Name
     description: str
     instructions: str | None = None
     # Collaboration bridge display name; omit for an internal-only room.
     bridge: str | None = None
-    channel_type: Literal["channel_public", "channel_private"] = "channel_public"
-    read_visibility: str = "public"
-    write_visibility: str = "public"
-    agents: list[str] = []
-    users: list[str] = []
+    # Omitted, the room is private (`RoomService.create_room`); a public room
+    # has to be asked for.
+    channel_type: Literal["channel_public", "channel_private"] | None = None
+    # Omitted, the room follows its channel (`room_policy.visibility_for_channel`).
+    read_visibility: str | None = None
+    # Kept for templates that set it. A template's room never falls back to a
+    # public channel for a creator with no linked account: they are refused.
+    require_private: bool = False
+    # Accepted from older templates and ignored: a room has no write
+    # visibility of its own.
+    write_visibility: str | None = None
+    agents: list[str] = Field(default=[], max_length=ROOM_AGENTS_MAX)
+    users: list[str] = Field(default=[], max_length=ROOM_USERS_MAX)
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     packages: list[PackageEntry] = []
@@ -485,14 +510,14 @@ class GroupLinkSpec(BaseModel):
 
 class GroupMeta(BaseModel):
     model_config = {"extra": "forbid"}
-    name: str
+    name: Name
     description: str | None = None
     color: str | None = None
 
 
 class GroupSpec(BaseModel):
     group: GroupMeta
-    rooms: list[RoomSpec]
+    rooms: list[RoomSpec] = Field(max_length=GROUP_ROOMS_MAX)
     links: list[GroupLinkSpec] = []
 
 
@@ -508,7 +533,7 @@ class GroupTemplateDocument(BaseModel):
     """Top-level shape of a group template file."""
 
     group: GroupMeta
-    rooms: list[RoomSpec]
+    rooms: list[RoomSpec] = Field(max_length=GROUP_ROOMS_MAX)
     links: list[GroupLinkSpec] = []
     params: dict[str, ParamSpec] | None = None
 
@@ -568,6 +593,41 @@ def _str_representer(dumper: yaml.SafeDumper, data: str) -> Any:
 _SpecDumper.add_representer(str, _str_representer)
 
 
+# The value of a room's ``bridge`` (a `bridge` param's value or a literal)
+# that puts the room in Switch Console rather than on a messaging app: an
+# internal room with the person who runs the template as a member, so it is
+# one of their Switch Console chats. An agent running a template puts its
+# owner there.
+CONSOLE_ROOM = "Switch Console"
+
+
+@dataclass(frozen=True)
+class ConsoleRooms:
+    """What a template needs to put a room in Switch Console: the chat
+    service's way to add a person to a room (``add_member``) and to say
+    beforehand why it would refuse them (``require_can_join``)."""
+
+    add_member: Callable[[str, User, str, str], Awaitable[Room]]
+    require_can_join: Callable[[str, str], Awaitable[None]]
+
+
+def is_console_room(bridge: str | None) -> bool:
+    return bridge == CONSOLE_ROOM
+
+
+def _refuse_console_users(spec: RoomSpec, creator: str) -> None:
+    """A Switch Console room's people are its members, not a messaging app's
+    users. The person who runs the template is put in it anyway, so naming
+    them (``{$creator}``, which is their Switch name there) changes nothing;
+    anyone else is refused."""
+    others = [u for u in spec.users if u != creator]
+    if others:
+        raise ValueError(
+            f"Room {spec.name!r} is in Switch Console, so it names no users "
+            f"(they are a messaging app's): leave out {', '.join(others)}"
+        )
+
+
 class RoomYamlService:
     """Parse / provision / export rooms as YAML. Free of HTTP concerns so it
     is unit-testable and reusable for future MCP / CLI surfaces."""
@@ -584,9 +644,12 @@ class RoomYamlService:
         room_role_store: RoomRoleStore,
         session_factory: async_sessionmaker[AsyncSession],
         room_group_store: RoomGroupStore,
+        console_rooms: ConsoleRooms | None,
         client_lifecycle: ClientLifecycleService | None = None,
+        telemetry: TelemetryService | None,
     ) -> None:
         self._rooms = room_service
+        self._telemetry = telemetry
         self._resources = resource_service
         self._room_store = room_store
         self._agent_store = agent_store
@@ -596,6 +659,7 @@ class RoomYamlService:
         self._room_groups = room_group_store
         self._session_factory = session_factory
         self._client_lifecycle = client_lifecycle
+        self._console_rooms = console_rooms
 
     # ── Parse ─────────────────────────────────────────────────────────────
 
@@ -731,6 +795,11 @@ class RoomYamlService:
         raw_rooms = body["rooms"]
         if not isinstance(raw_rooms, list) or not raw_rooms:
             raise ValueError("'rooms:' must be a non-empty list")
+        if len(raw_rooms) > GROUP_ROOMS_MAX:
+            raise ValueError(
+                f"A group creates at most {GROUP_ROOMS_MAX} rooms; this one "
+                f"lists {len(raw_rooms)}"
+            )
         rooms: list[RoomSpec] = []
         for i, entry in enumerate(raw_rooms):
             try:
@@ -801,6 +870,12 @@ class RoomYamlService:
                     b.display_name: b for b in await self._bridge_store.get_all(session)
                 }
                 for param, value in wanted["bridge"]:
+                    if is_console_room(value):
+                        try:
+                            self._require_console_rooms()
+                        except ValueError as e:
+                            raise ValueError(f"param {param!r}: {e}") from e
+                        continue
                     bridge = bridges.get(value)
                     if bridge is None:
                         raise ValueError(
@@ -890,9 +965,12 @@ class RoomYamlService:
                 if spec.type not in names:
                     names[spec.type] = await self._names_of(session, spec.type, reader)
                 have = names[spec.type]
+                # `$first` is the first messaging app, never Switch Console,
+                # which a template only gets by naming it.
+                firsts = [n for n in have if not is_console_room(n)]
                 for candidate in spec.default:  # type: ignore[union-attr]
-                    if candidate == FIRST and have:
-                        filled[name] = have[0]
+                    if candidate == FIRST and firsts:
+                        filled[name] = firsts[0]
                         break
                     if candidate in have:
                         filled[name] = candidate
@@ -909,13 +987,15 @@ class RoomYamlService:
                 for b in await self._bridge_store.get_all(session)
                 if b.status == "active"
             ]
-            return sorted(
+            names = sorted(
                 (b.display_name for b in active),
                 key=lambda n: (
                     not any(b.display_name == n and b.is_default for b in active),
                     n,
                 ),
             )
+            # Offered last; `$first` never picks it (`resolve_defaults`).
+            return names + ([CONSOLE_ROOM] if self._console_offered() else [])
         if param_type == "agent":
             return sorted(a.name for a in await self._agent_store.get_all(session))
         return sorted(await self._readable_room_names(session, reader))
@@ -937,7 +1017,7 @@ class RoomYamlService:
         return [
             r.name
             for r in await self._room_store.get_all(session)
-            if r.id in member_of or can(reader.principal, "read", r)
+            if r.id in member_of or visible_from_outside(reader.principal, r)
         ]
 
     async def builtins_for(
@@ -1026,6 +1106,8 @@ class RoomYamlService:
             bridge = filled
         if bridge is not None and not isinstance(bridge, str):
             return None
+        if is_console_room(bridge):
+            return None
         try:
             return await self._resolve_bridge_id(bridge)
         except ValueError:
@@ -1044,8 +1126,13 @@ class RoomYamlService:
         group_id: str | None = None,
         origin: AgentOrigin | None = None,
         template_name: str | None = None,
+        on_room_made: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> ProvisionResult:
         """Create the room and everything the spec attaches to it.
+
+        ``on_room_made`` is called with the room's name and id as soon as it
+        exists, before its kickoff: a template run opens its agents to the room
+        there, so the kickoff reaches them.
 
         ``kickoff`` is posted once the room exists, by the platform on the
         creator's behalf (see ``_send_kickoff``); ``creator_name`` is how the
@@ -1054,16 +1141,42 @@ class RoomYamlService:
 
         With ``origin`` an agent is creating the room: it is recorded in that
         agent's run (see ``agent_runs``), and the kickoff carries the agent's
-        authority, not its owner's, with the run so far appended. The checks
-        that can refuse an agent's room have run before this is called.
-        ``template_name`` is what the room's run is listed under.
+        authority, not its owner's, with the run so far appended. The run's
+        guards that can refuse an agent's room have run before this is
+        called; the invite rule is asked here, of every caller
+        (``_require_invitable``). ``template_name`` is what the room's run is
+        listed under.
         """
-        bridge_id = await self._resolve_bridge_id(spec.bridge)
-        if spec.users and bridge_id is None:
+        console = is_console_room(spec.bridge)
+        owner: User | None = None
+        if console:
+            console_rooms = self._require_console_rooms()
+            async with self._session_factory() as session:
+                owner = await session.get(User, user_id)
+            if owner is None:
+                raise ValueError(f"No user {user_id!r} to put in the room")
+            _refuse_console_users(spec, owner.name)
+            try:
+                await console_rooms.require_can_join(require_tenant_id(), owner.id)
+            except Exception as e:
+                raise ValueError(
+                    f"{owner.name} cannot join a Switch Console room here: "
+                    f"{getattr(e, 'message', e)}"
+                ) from e
+            bridge_id = None
+        else:
+            bridge_id = await self._resolve_bridge_id(spec.bridge)
+        if spec.users and bridge_id is None and not console:
             raise ValueError(
                 "Cannot attach users to a room with no bridge "
                 "(users live on a collaboration bridge)"
             )
+        await self._require_invitable(
+            spec,
+            user_id=user_id,
+            agent_id=origin.agent_id if origin is not None else None,
+            group_id=group_id,
+        )
 
         attached_ref_ids, inline_refs = await self._resolve_references(
             spec.references, user_id=user_id, is_admin=is_admin
@@ -1076,13 +1189,16 @@ class RoomYamlService:
             name=spec.name,
             description=spec.description,
             instructions=spec.instructions,
-            channel_type=cast(ChannelType, spec.channel_type),
+            channel_type=cast(ChannelType | None, spec.channel_type),
             agent_names=spec.agents or None,
-            user_names=spec.users or None,
+            user_names=None if console else (spec.users or None),
             bridge_id=bridge_id,
+            internal_only=console,
             group_id=group_id,
             created_by=user_id,
+            created_by_kind="agent" if origin is not None else "user",
             from_template=True,
+            channel_type_is_default=not spec.require_private,
             created_by_agent_id=origin.agent_id if origin else None,
             parent_room_id=origin.parent_room_id if origin else None,
             run_id=origin.run_id if origin else None,
@@ -1092,7 +1208,6 @@ class RoomYamlService:
             acting_user_id=user_id,
             acting_is_admin=is_admin,
             read_visibility=spec.read_visibility,
-            write_visibility=spec.write_visibility,
             roles=spec.roles or None,
             reference_ids=attached_ref_ids or None,
             package_ids=attached_package_ids or None,
@@ -1100,13 +1215,27 @@ class RoomYamlService:
         )
         result = await self._rooms.create_room(config)
         room_id = result.room.id
+        if console:
+            assert owner is not None and self._console_rooms is not None
+            await self._add_console_owner(result.room, owner, self._console_rooms)
+        if on_room_made is not None:
+            await on_room_made(result.room.name, room_id)
         failures: list[dict[str, Any]] = list(result.failed_attachments)
 
         created_ref_ids = await self._create_inline_references(
-            room_id, inline_refs, user_id=user_id, is_admin=is_admin, failures=failures
+            room_id,
+            inline_refs,
+            user_id=user_id,
+            is_admin=is_admin,
+            created_by_kind="agent" if origin is not None else "system",
+            failures=failures,
         )
         created_doc_ids = await self._create_inline_docs(
-            room_id, spec.docs, user_id=user_id, failures=failures
+            room_id,
+            spec.docs,
+            user_id=user_id,
+            created_by_kind="agent" if origin is not None else "system",
+            failures=failures,
         )
 
         if kickoff:
@@ -1145,6 +1274,7 @@ class RoomYamlService:
         creator_name: str | None = None,
         origin: AgentOrigin | None = None,
         template_name: str | None = None,
+        on_room_made: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> GroupProvisionResult:
         """Provision a room group, its rooms, and the links between them.
 
@@ -1158,6 +1288,13 @@ class RoomYamlService:
         is made.
         """
         require_group_filing(is_admin)
+        for room_spec in spec.rooms:
+            await self._require_invitable(
+                room_spec,
+                user_id=user_id,
+                agent_id=origin.agent_id if origin is not None else None,
+                group_id=None,
+            )
         async with self._session_factory() as session:
             group = await self._room_groups.create(
                 session,
@@ -1165,6 +1302,9 @@ class RoomYamlService:
                 description=spec.group.description,
                 color=spec.group.color,
                 parent_group_id=None,
+            )
+            emit_after_commit(
+                session, self._telemetry, "room_group_created", {"has_parent": False}
             )
             await session.commit()
             group_id = group.id
@@ -1184,6 +1324,7 @@ class RoomYamlService:
                     origin=origin,
                     template_name=template_name,
                     group_id=group_id,
+                    on_room_made=on_room_made,
                 )
             except Exception as e:  # noqa: BLE001 - reported, not swallowed
                 errors.append(
@@ -1227,16 +1368,21 @@ class RoomYamlService:
             errors=errors,
         )
 
-    async def check_bridges(self, parsed: ParsedTemplate) -> None:
+    async def check_bridges(self, parsed: ParsedTemplate, *, creator: str) -> None:
         """Every messaging app the rooms name must exist, checked before
         anything is created: a run that creates agents first would otherwise
-        find out only once they exist."""
+        find out only once they exist. ``creator`` is ``{$creator}``, which a
+        Switch Console room may name."""
         specs = (
             list(parsed.spec.rooms)
             if isinstance(parsed.spec, GroupSpec)
             else [parsed.spec]
         )
         for spec in specs:
+            if is_console_room(spec.bridge):
+                self._require_console_rooms()
+                _refuse_console_users(spec, creator)
+                continue
             bridge_id = await self._resolve_bridge_id(spec.bridge)
             if spec.users and bridge_id is None:
                 raise ValueError(
@@ -1244,6 +1390,91 @@ class RoomYamlService:
                     "it is on no messaging app: none is set up here. Leave "
                     "users out, or make them depend on a bridge."
                 )
+
+    async def check_invites(
+        self, parsed: ParsedTemplate, *, user_id: str, agent_id: str | None
+    ) -> None:
+        """Raise `InviteRefused` unless every agent the rooms name may be put
+        in them, checked before anything is created: a run that creates agents
+        first would otherwise find out only once they exist. ``provision``
+        asks it again of each room as it makes it.
+
+        Arguments as ``_require_invitable``. A name no agent has yet is left
+        to provisioning: one the run creates is ``user_id``'s, and any other
+        fails there as unknown."""
+        specs = (
+            list(parsed.spec.rooms)
+            if isinstance(parsed.spec, GroupSpec)
+            else [parsed.spec]
+        )
+        for spec in specs:
+            await self._require_invitable(
+                spec, user_id=user_id, agent_id=agent_id, group_id=None
+            )
+
+    async def _require_invitable(
+        self,
+        spec: RoomSpec,
+        *,
+        user_id: str,
+        agent_id: str | None,
+        group_id: str | None,
+    ) -> None:
+        """The invite rule every way into a room asks (`room_invites`), for
+        the agents a room made from a template names. Its maker owns the new
+        room, so is in it; what is left is whether they may address each
+        agent. ``agent_id`` is the agent provisioning for its owner
+        ``user_id``, judged as its ``create_room`` is; None when ``user_id``
+        provisions it themselves. ``group_id`` is the group the room goes
+        in, None for one that does not exist yet."""
+        if not spec.agents:
+            return
+        async with self._session_factory() as session:
+            targets = await self._agent_store.get_by_names(session, spec.agents)
+            if agent_id is None:
+                await require_user_may_add_to_new_room(
+                    session,
+                    self._external_users,
+                    targets=targets,
+                    user_id=user_id,
+                    group_id=group_id,
+                )
+                return
+            caller = await self._agent_store.get(session, agent_id)
+            if caller is None:
+                raise ValueError(f"Unknown agent: {agent_id}")
+            await require_agent_may_add_to_new_room(
+                session,
+                self._external_users,
+                targets=targets,
+                caller=caller,
+                group_id=group_id,
+            )
+
+    def _console_offered(self) -> bool:
+        return self._console_rooms is not None
+
+    def _require_console_rooms(self) -> ConsoleRooms:
+        if self._console_rooms is None:
+            raise ValueError(
+                "this server does not offer Switch Console rooms: choose a "
+                "messaging app"
+            )
+        return self._console_rooms
+
+    async def _add_console_owner(
+        self, room: Room, owner: User, console_rooms: ConsoleRooms
+    ) -> None:
+        """Put the person the room was made for in it. A Switch Console room
+        they are not in is not what was asked for, so a failure deletes it."""
+        try:
+            await console_rooms.add_member(room.tenant_id, owner, room.id, owner.id)
+        except Exception as e:
+            await self._rooms.delete_room(room.id, retire_channel=False)
+            raise ValueError(
+                f"Room {room.name!r} not created: {owner.name} could not be added "
+                f"to it: {getattr(e, 'message', e)}"
+            ) from e
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
         if bridge_name is None:
@@ -1348,8 +1579,13 @@ class RoomYamlService:
         *,
         user_id: str,
         is_admin: bool,
+        created_by_kind: Literal["agent", "system"],
         failures: list[dict[str, Any]],
     ) -> list[str]:
+        """The references a template declares inline, made and attached to
+        the room. `created_by_kind` is who ran the template: an agent, or
+        Switch on the person's behalf, since the person asked for the room
+        rather than for each reference in it."""
         created: list[str] = []
         async with self._session_factory() as session:
             for entry in entries:
@@ -1365,6 +1601,7 @@ class RoomYamlService:
                         description=entry.description,
                         instructions=entry.instructions,
                         value=entry.value,
+                        created_by_kind=created_by_kind,
                     )
                     await self._resources.attach_reference_to_room(
                         session, room_id, ref.id, user_id=user_id, is_admin=is_admin
@@ -1383,6 +1620,7 @@ class RoomYamlService:
         docs: list[DocSpec],
         *,
         user_id: str,
+        created_by_kind: Literal["agent", "system"],
         failures: list[dict[str, Any]],
     ) -> list[str]:
         created: list[str] = []
@@ -1397,6 +1635,7 @@ class RoomYamlService:
                         description=doc.description,
                         instructions=doc.instructions,
                         content=doc.content,
+                        created_by_kind=created_by_kind,
                     )
                     created.append(created_doc.id)
                 except Exception as e:
@@ -1561,7 +1800,6 @@ class RoomYamlService:
                 data["bridge"] = bridge_display_name
             data["channel_type"] = room.channel_type
             data["read_visibility"] = room.read_visibility
-            data["write_visibility"] = room.write_visibility
 
             if agents:
                 agent_ids = await self._room_store.get_agent_ids(session, room.id)

@@ -11,6 +11,7 @@ import {
   type ProviderSendTurnInput,
   type ProviderSession,
   ProviderSessionError,
+  SteerNotSentError,
   ProviderConversationUnavailableError,
   type ProviderSessionStartInput,
   type ProviderTurnStartResult,
@@ -578,11 +579,19 @@ export class CodexAdapter implements ProviderAdapter {
     const codexInput = toCodexInput(input.text, input.attachments);
 
     const active = state.activeNativeTurnId;
+    if (
+      input.expectedTurnId &&
+      (!active || state.turnIdByNative.get(active) !== input.expectedTurnId)
+    )
+      throw new SteerNotSentError('The authorized turn is no longer running.');
     if (active) {
       const steered = await this.trySteer(state, active, codexInput);
       if (steered) {
         return { turnId: input.turnId, steeredInto: state.turnIdByNative.get(steered) ?? steered };
       }
+      // A steer is for one turn only: the host queues it rather than have
+      // Codex start it as a turn the host is not tracking.
+      if (input.expectedTurnId) throw new SteerNotSentError('Codex refused to steer the turn.');
     }
 
     state.unboundTurnIds.push(input.turnId);

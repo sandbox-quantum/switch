@@ -7,6 +7,7 @@ from sqlalchemy import (
     ColumnElement,
     DateTime,
     Text,
+    and_,
     cast,
     delete,
     exists,
@@ -14,12 +15,14 @@ from sqlalchemy import (
     or_,
     select,
     true,
+    union,
     update,
 )
 from sqlalchemy import func as sa_func
 from sqlalchemy import tuple_ as sa_tuple
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from switch_core.authz import require_group_filing
 from switch_core.chats import MEMBER_CLIENT_TYPE
@@ -30,13 +33,17 @@ from switch_core.db.models import (
     ClientRoom,
     ExternalUser,
     ExternalUserClaim,
+    Message,
     Room,
+    RoomAdmin,
     RoomGroup,
+    TenantMember,
     User,
     require_tenant_id,
     room_agents,
 )
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
+from switch_core.room_policy import PRIVATE_CHANNELS
 
 # Where a room's name came from, in its `metadata`. Both "channel" and
 # "created" follow the linked channel's renames:
@@ -97,6 +104,14 @@ class Membership:
     room_id: str
     transport_room_id: str
     joined_at: datetime
+
+
+class AgentRoom(NamedTuple):
+    """A room an agent is a member of, as its list of rooms names it."""
+
+    room_id: str
+    name: str
+    archived: bool
 
 
 class RoomStore:
@@ -350,6 +365,21 @@ class RoomStore:
         result = await session.execute(stmt.limit(limit))
         return [row[0] for row in result.all()]
 
+    async def count(self, session: AsyncSession, shown: ColumnElement[bool]) -> int:
+        """How many rooms the bound tenant has that are not archived and
+        `shown` (`readable_by`) admits, as the rooms list shows them."""
+        return (
+            await session.scalar(
+                select(sa_func.count())
+                .select_from(Room)
+                .where(
+                    Room.tenant_id == require_tenant_id(),
+                    Room.archived_at.is_(None),
+                    shown,
+                )
+            )
+        ) or 0
+
     async def get_all(
         self, session: AsyncSession, *, include_archived: bool = False
     ) -> list[Room]:
@@ -378,9 +408,11 @@ class RoomStore:
         may read (as `list_readable`; every room for a workspace admin) and
         those `member_agent_id` is in. An agent with no owner sees public
         rooms and its own."""
-        stmt = select(Room)
-        if not reader_is_admin:
-            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
+        stmt = select(Room).where(
+            visible_to_agent(
+                reader_id, reader_is_admin=reader_is_admin, agent_id=member_agent_id
+            )
+        )
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         if name_contains:
@@ -403,9 +435,11 @@ class RoomStore:
         include_archived: bool,
     ) -> list[Room]:
         """Every room an agent may see, as `page_all` filters them, unpaged."""
-        stmt = select(Room)
-        if not reader_is_admin:
-            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
+        stmt = select(Room).where(
+            visible_to_agent(
+                reader_id, reader_is_admin=reader_is_admin, agent_id=member_agent_id
+            )
+        )
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         return list((await session.execute(stmt)).scalars().all())
@@ -441,6 +475,21 @@ class RoomStore:
         )
         return set(result.scalars().all())
 
+    async def visible_names(
+        self,
+        session: AsyncSession,
+        room_ids: Collection[str],
+        visible: ColumnElement[bool],
+    ) -> dict[str, str]:
+        """Of `room_ids`, the names of the rooms `visible` holds for, keyed by
+        room id."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(Room.id, Room.name).where(any_of(Room.id, room_ids), visible)
+        )
+        return {room_id: name for room_id, name in result.tuples()}
+
     async def involved_room_ids(
         self, session: AsyncSession, user_id: str, room_ids: Collection[str]
     ) -> set[str]:
@@ -451,6 +500,176 @@ class RoomStore:
             select(Room.id).where(Room.id.in_(room_ids), involves(user_id))
         )
         return set(result.scalars().all())
+
+    async def last_message_at(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, datetime]:
+        """When each of `room_ids` last had a message, from any platform; a
+        room with none is left out. One newest-row lookup per room on
+        `ix_messages_room_sent_at`, not a scan of its history."""
+        if not room_ids:
+            return {}
+        newest = (
+            select(Message.sent_at)
+            .where(Message.room_id == Room.id, Message.event_type == "m.room.message")
+            .order_by(Message.sent_at.desc())
+            .limit(1)
+            .correlate(Room)
+            .scalar_subquery()
+        )
+        result = await session.execute(
+            select(Room.id, newest).where(Room.id.in_(room_ids))
+        )
+        return {room_id: at for room_id, at in result.all() if at is not None}
+
+    async def admin_room_ids(
+        self, session: AsyncSession, user_id: str, room_ids: Collection[str]
+    ) -> set[str]:
+        """Of `room_ids`, the rooms `user_id` is a room admin of. Only while
+        they take part in it: a grant left behind by someone who has gone
+        counts for nothing."""
+        if not room_ids:
+            return set()
+        result = await session.execute(
+            select(Room.id).where(
+                Room.id.in_(room_ids),
+                involves(user_id),
+                exists().where(
+                    RoomAdmin.room_id == Room.id, RoomAdmin.user_id == user_id
+                ),
+                _still_a_member(user_id),
+            )
+        )
+        return set(result.scalars().all())
+
+    async def people_present(self, session: AsyncSession, room_id: str) -> set[str]:
+        """The transport ids of the people present in the room: the platform
+        accounts and Switch Console members with a membership row. Agents and
+        Switch's own clients (the admin, the bridges) are not people."""
+        result = await session.execute(
+            select(Client.transport_user_id)
+            .join(ClientRoom, ClientRoom.client_id == Client.id)
+            .where(
+                ClientRoom.room_id == room_id,
+                or_(
+                    Client.type == MEMBER_CLIENT_TYPE,
+                    exists().where(ExternalUser.client_id == Client.id),
+                ),
+            )
+        )
+        return set(result.scalars().all())
+
+    async def people_in_room(
+        self, session: AsyncSession, room_id: str
+    ) -> list[tuple[str, str]]:
+        """(user id, name) of every workspace member who takes part in the
+        room, by name: who could be made a room admin.
+
+        The same four ways in as `involves`, read from the room's own rows
+        rather than tested for every member of the workspace, so a large
+        workspace costs no more than a small one."""
+        ways_in = union(
+            select(Room.owner_id.label("user_id")).where(Room.id == room_id),
+            select(Client.user_id).where(
+                ClientRoom.room_id == room_id,
+                ClientRoom.client_id == Client.id,
+                Client.type == MEMBER_CLIENT_TYPE,
+            ),
+            select(ExternalUserClaim.user_id).where(
+                ClientRoom.room_id == room_id,
+                ClientRoom.client_id == ExternalUser.client_id,
+                ExternalUser.id == ExternalUserClaim.external_user_id,
+            ),
+            select(Agent.owner_id).where(
+                room_agents.c.room_id == room_id,
+                room_agents.c.agent_id == Agent.id,
+            ),
+        ).subquery()
+        result = await session.execute(
+            select(User.id, User.name)
+            .join(ways_in, ways_in.c.user_id == User.id)
+            .join(
+                TenantMember,
+                (TenantMember.user_id == User.id)
+                & (TenantMember.tenant_id == require_tenant_id()),
+            )
+            .order_by(User.name, User.id)
+        )
+        return [(uid, name) for uid, name in result.tuples()]
+
+    async def list_admins(self, session: AsyncSession, room_id: str) -> list[RoomAdmin]:
+        """The room's room admins who still take part in it, longest-standing
+        first."""
+        result = await session.execute(
+            select(RoomAdmin)
+            .join(Room, Room.id == RoomAdmin.room_id)
+            .where(
+                RoomAdmin.room_id == room_id,
+                involves(RoomAdmin.user_id),
+                _still_a_member(RoomAdmin.user_id),
+            )
+            .order_by(RoomAdmin.granted_at, RoomAdmin.user_id)
+        )
+        return list(result.scalars().all())
+
+    async def add_admin(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        user_id: str,
+        *,
+        granted_by: str | None,
+    ) -> bool:
+        """Make `user_id` a room admin of `room_id`, and say whether this call
+        did (False when they already were). Whether they may be one is the
+        caller's to check (`room_admins.grant`)."""
+        added = await session.scalar(
+            pg_insert(RoomAdmin)
+            .values(
+                tenant_id=require_tenant_id(),
+                room_id=room_id,
+                user_id=user_id,
+                granted_by=granted_by,
+            )
+            .on_conflict_do_nothing()
+            .returning(RoomAdmin.user_id)
+        )
+        await session.flush()
+        return added is not None
+
+    async def remove_admin(
+        self, session: AsyncSession, room_id: str, user_id: str
+    ) -> bool:
+        """Take `user_id` off `room_id`'s room admins, and say whether they
+        were on it."""
+        removed = await session.scalar(
+            delete(RoomAdmin)
+            .where(RoomAdmin.room_id == room_id, RoomAdmin.user_id == user_id)
+            .returning(RoomAdmin.user_id)
+        )
+        await session.flush()
+        return removed is not None
+
+    async def prune_admins(self, session: AsyncSession, room_id: str) -> list[str]:
+        """Drop the room admins of `room_id` who no longer take part in it,
+        and return their user ids. Called when someone leaves the room, and
+        before anyone joins it, so leaving takes the role with it rather than
+        keeping it for a return. Reads (`admin_room_ids`, `list_admins`) also
+        ignore a grant its holder has outlived, for the ways of leaving that
+        happen elsewhere."""
+        gone = (
+            select(Room.id)
+            .where(Room.id == room_id, involves(RoomAdmin.user_id))
+            .exists()
+        )
+        result = await session.execute(
+            delete(RoomAdmin)
+            .where(RoomAdmin.room_id == room_id, ~gone)
+            .returning(RoomAdmin.user_id)
+        )
+        removed = list(result.scalars().all())
+        await session.flush()
+        return removed
 
     async def delete(self, session: AsyncSession, room_id: str) -> None:
         await session.execute(delete(ClientRoom).where(ClientRoom.room_id == room_id))
@@ -519,13 +738,14 @@ class RoomStore:
         """Add agents to a room.
 
         `join_event_listeners` is the subset of `agent_ids` that should receive
-        `room_join` events in this room. Any agent not in that set keeps the
+        `room_join` and `room_leave` events in this room. Any agent not in that set keeps the
         column default (off) — agents are opted in to join events explicitly.
         An agent already in the room is left as it is, so two concurrent adds
         of the same agent both succeed.
         """
         if not agent_ids:
             return
+        await self.prune_admins(session, room_id)
         listeners = join_event_listeners or set()
         await session.execute(
             pg_insert(room_agents).on_conflict_do_nothing(),
@@ -543,7 +763,7 @@ class RoomStore:
     async def set_receives_join_events(
         self, session: AsyncSession, room_id: str, agent_id: str, value: bool
     ) -> None:
-        """Toggle whether `agent_id` receives `room_join` events in `room_id`.
+        """Toggle whether `agent_id` receives `room_join` and `room_leave` events in `room_id`.
 
         Raises ValueError if the agent is not a member of the room.
         """
@@ -562,7 +782,7 @@ class RoomStore:
     async def get_receives_join_events(
         self, session: AsyncSession, room_id: str, agent_id: str
     ) -> bool:
-        """Whether `agent_id` is configured to receive `room_join` events in
+        """Whether `agent_id` is configured to receive `room_join` and `room_leave` events in
         `room_id`. Returns False if the agent is not a member."""
         result = await session.execute(
             select(room_agents.c.receives_join_events).where(
@@ -575,7 +795,7 @@ class RoomStore:
     async def get_join_event_listeners(
         self, session: AsyncSession, room_id: str
     ) -> list[str]:
-        """Agent ids in `room_id` configured to receive `room_join` events."""
+        """Agent ids in `room_id` configured to receive `room_join` and `room_leave` events."""
         result = await session.execute(
             select(room_agents.c.agent_id).where(
                 room_agents.c.room_id == room_id,
@@ -586,10 +806,11 @@ class RoomStore:
 
     async def remove_agents(
         self, session: AsyncSession, room_id: str, agent_ids: list[str]
-    ) -> None:
+    ) -> int:
+        """Take agents out of a room. Returns how many were in it."""
         if not agent_ids:
-            return
-        await session.execute(
+            return 0
+        result = await session.execute(
             delete(room_agents).where(
                 room_agents.c.room_id == room_id,
                 room_agents.c.agent_id.in_(agent_ids),
@@ -601,6 +822,9 @@ class RoomStore:
         if room is not None and main_agent_in(room.metadata_) in agent_ids:
             await self.set_main_agent(session, room_id, None)
         await session.flush()
+        # Someone who took part only through an agent has left with it.
+        await self.prune_admins(session, room_id)
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def get_rooms_for_agent(
         self, session: AsyncSession, agent_id: str, *, include_archived: bool = False
@@ -631,6 +855,36 @@ class RoomStore:
         )
         for agent_id, room_id in result.all():
             by_agent[agent_id].add(room_id)
+        return by_agent
+
+    async def rooms_of_agents(
+        self,
+        session: AsyncSession,
+        agent_ids: Collection[str],
+        visible: ColumnElement[bool],
+    ) -> dict[str, list[AgentRoom]]:
+        """The rooms each agent is a member of that `visible` holds for,
+        archived rooms included, in one query. Every agent asked about has a
+        key.
+
+        Reads only the agents' own rooms, and only what a membership names, so
+        its cost follows how many rooms those agents are in, not how many the
+        reader could see."""
+        by_agent: dict[str, list[AgentRoom]] = {agent_id: [] for agent_id in agent_ids}
+        if not by_agent:
+            return by_agent
+        # Aliased: `visible` may ask about `room_agents` in a subquery of its
+        # own (an agent's own rooms, a room with an agent the reader owns),
+        # which would otherwise be correlated to this membership row.
+        member = room_agents.alias("member")
+        result = await session.execute(
+            select(member.c.agent_id, Room.id, Room.name, Room.archived_at)
+            .select_from(member)
+            .join(Room, Room.id == member.c.room_id)
+            .where(any_of(member.c.agent_id, by_agent), visible)
+        )
+        for agent_id, room_id, name, archived_at in result.tuples():
+            by_agent[agent_id].append(AgentRoom(room_id, name, archived_at is not None))
         return by_agent
 
     async def get_agent_ids(self, session: AsyncSession, room_id: str) -> list[str]:
@@ -748,6 +1002,10 @@ class RoomStore:
         else does: two writers racing for one membership must not greet the
         room twice.
         """
+        # Before the arrival: someone coming back doesn't bring back a role
+        # they lost by leaving in a way nothing pruned (an account unlinked,
+        # an agent deleted or handed on).
+        await self.prune_admins(session, room_id)
         recorded = await session.scalar(
             pg_insert(ClientRoom)
             .values(client_id=client_id, room_id=room_id)
@@ -764,14 +1022,25 @@ class RoomStore:
 
     async def remove_client(
         self, session: AsyncSession, client_id: str, room_id: str
-    ) -> None:
-        await session.execute(
-            delete(ClientRoom).where(
+    ) -> bool:
+        """Delete a membership, and say whether this call deleted it.
+
+        Whoever deletes it writes the departure that announces it, the mirror
+        of `add_client`: two writers racing to remove one member must not tell
+        the room twice that they left.
+        """
+        removed = await session.scalar(
+            delete(ClientRoom)
+            .where(
                 ClientRoom.client_id == client_id,
                 ClientRoom.room_id == room_id,
             )
+            .returning(ClientRoom.client_id)
         )
         await session.flush()
+        if removed is not None:
+            await self.prune_admins(session, room_id)
+        return removed is not None
 
     async def get_for_client(self, session: AsyncSession, client_id: str) -> list[Room]:
         """The rooms a client is a member of.
@@ -975,6 +1244,20 @@ class RoomStore:
             room.archived_at = None
         await session.flush()
 
+    async def set_archived_many(
+        self, session: AsyncSession, room_ids: Collection[str], archived: bool
+    ) -> None:
+        """`set_archived` for many rooms in one statement. An id with no room
+        changes nothing."""
+        if not room_ids:
+            return
+        await session.execute(
+            update(Room)
+            .where(any_of(Room.id, room_ids))
+            .values(archived_at=datetime.now(UTC) if archived else None)
+            .execution_options(synchronize_session=False)
+        )
+
     async def update_fields(
         self,
         session: AsyncSession,
@@ -985,7 +1268,6 @@ class RoomStore:
         instructions: str | None = None,
         admin_mode: bool | None = None,
         read_visibility: str | None = None,
-        write_visibility: str | None = None,
     ) -> None:
         room = await session.get(Room, room_id)
         if room is None:
@@ -1002,8 +1284,6 @@ class RoomStore:
             room.admin_mode = admin_mode
         if read_visibility is not None:
             room.read_visibility = read_visibility
-        if write_visibility is not None:
-            room.write_visibility = write_visibility
         await session.flush()
 
     async def set_platform_name(
@@ -1177,22 +1457,48 @@ class AttachedRooms(NamedTuple):
 
 
 def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
-    """True for a `Room` row the user may read: publicly readable, or one they
-    take part in (`involves`). Every room, for a tenant admin; only public ones
-    for a reader with no user (an agent nobody owns), who takes part in none."""
+    """True for a `Room` row the user may read: open to the workspace
+    (`open_to_workspace`), or one they take part in (`involves`). Every room,
+    for a tenant admin; only open ones for a reader with no user (an agent
+    nobody owns), who takes part in none."""
     if is_admin:
         return true()
     if user_id is None:
-        return Room.read_visibility == "public"
-    return or_(Room.read_visibility == "public", involves(user_id))
+        return open_to_workspace()
+    return or_(open_to_workspace(), involves(user_id))
+
+
+def open_to_workspace() -> ColumnElement[bool]:
+    """True for a `Room` row people not in it may see: `room_policy.open_to_workspace`
+    as a query. Never NULL, so a room it does not hold for is never let in."""
+    return and_(
+        Room.read_visibility == "public",
+        or_(
+            and_(Room.channel_type.is_(None), Room.external_channel_id.is_(None)),
+            and_(
+                Room.channel_type.is_not(None),
+                Room.channel_type.not_in(PRIVATE_CHANNELS),
+            ),
+        ),
+    )
+
+
+def visible_to_agent(
+    reader_id: str | None, *, reader_is_admin: bool, agent_id: str
+) -> ColumnElement[bool]:
+    """True for a `Room` row an agent may see: every room when its owner
+    `reader_id` is a workspace admin, otherwise as `_visible_to_agent`."""
+    if reader_is_admin:
+        return true()
+    return _visible_to_agent(reader_id, agent_id)
 
 
 def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[bool]:
     """True for a `Room` row an agent may see when its owner is not a
-    workspace admin: public, one the owner takes part in, or one the agent is
-    in. An agent with no owner sees public rooms and its own."""
+    workspace admin: open to the workspace, one the owner takes part in, or one
+    the agent is in. An agent with no owner sees open rooms and its own."""
     visible = [
-        Room.read_visibility == "public",
+        open_to_workspace(),
         exists().where(
             room_agents.c.room_id == Room.id,
             room_agents.c.agent_id == agent_id,
@@ -1203,29 +1509,57 @@ def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[boo
     return or_(*visible)
 
 
-def involves(user_id: str) -> ColumnElement[bool]:
+def _still_a_member(
+    user_id: "str | ColumnElement[str] | InstrumentedAttribute[str]",
+) -> ColumnElement[bool]:
+    """True while the user is a member of the bound workspace: a room admin
+    grant counts only then, so someone removed from the workspace who is
+    still in a channel through a claimed account changes nothing."""
+    return (
+        exists()
+        .where(
+            TenantMember.tenant_id == require_tenant_id(),
+            TenantMember.user_id == user_id,
+        )
+        .correlate_except(TenantMember)
+    )
+
+
+def involves(
+    user_id: "str | ColumnElement[str] | InstrumentedAttribute[str]",
+) -> ColumnElement[bool]:
     """True for a `Room` row the user takes part in: they own it, their Switch
     Console member client or a platform account they have claimed is in it,
     or an agent they own is. It grants reading and listing, and unlinking
     resources (`authz.can_unlink_from_room`); no write or configuration
-    access."""
+    access.
+
+    `user_id` may be a column of an enclosing query (`RoomAdmin.user_id`,
+    `User.id`): each test correlates everything but its own tables, so it
+    reads that row rather than taking the column's table in as its own."""
     return or_(
         Room.owner_id == user_id,
-        exists().where(
+        exists()
+        .where(
             ClientRoom.room_id == Room.id,
             ClientRoom.client_id == Client.id,
             Client.user_id == user_id,
             Client.type == MEMBER_CLIENT_TYPE,
-        ),
-        exists().where(
+        )
+        .correlate_except(ClientRoom, Client),
+        exists()
+        .where(
             ClientRoom.room_id == Room.id,
             ClientRoom.client_id == ExternalUser.client_id,
             ExternalUser.id == ExternalUserClaim.external_user_id,
             ExternalUserClaim.user_id == user_id,
-        ),
-        exists().where(
+        )
+        .correlate_except(ClientRoom, ExternalUser, ExternalUserClaim),
+        exists()
+        .where(
             room_agents.c.room_id == Room.id,
             room_agents.c.agent_id == Agent.id,
             Agent.owner_id == user_id,
-        ),
+        )
+        .correlate_except(room_agents, Agent),
     )

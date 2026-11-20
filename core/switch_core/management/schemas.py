@@ -28,6 +28,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management.advanced_config import validate_advanced_config
+from switch_core.management.device_identity import DEVICE_ID_PATTERN
 from switch_core.management.sealed_logins import PublicKey, key_id
 from switch_core.process_lease import ProcessLeases
 from switch_core.providers.registry import AgentProviderId
@@ -149,6 +150,9 @@ class ControllerDescription(_ControllerBody):
     )
     platform: Platform
     version: str
+    # Which machine, OS account and data folder it runs from (`management/device_identity.py`);
+    # absent from a controller that cannot tell, or is older than this field.
+    device_id: str | None = Field(default=None, pattern=DEVICE_ID_PATTERN)
 
     @field_validator("name")
     @classmethod
@@ -179,6 +183,11 @@ class StatusControllerInfo(_StatusBody):
     # names, or Switch Console, which runs it (on an SSH host, say) and
     # replaces its bundle. Absent from a controller older than this field.
     updated_by: Literal["self", "console"] | None = None
+    # When this controller process started, so a restart shows as a new start
+    # time: a cloud machine's controller naming a new one is counted as a
+    # restart (`switch.hosted.controller_restarts`). Absent from a controller
+    # older than this field.
+    started_at: datetime | None = None
 
 
 class MachineStatus(_StatusBody):
@@ -192,6 +201,11 @@ class MachineStatus(_StatusBody):
     # The absolute directory the controller makes agents' workspaces in. A
     # controller older than this field does not send it.
     workspaces_dir: str | None = None
+    # Which machine, OS account and data folder it runs from (`management/device_identity.py`),
+    # kept as the controller's `device_hash` and not in its stored status.
+    # Checked where it is used, not here: a malformed one must not cost the
+    # rest of the report.
+    device_id: str | None = None
 
 
 class ProviderStatus(_StatusBody):
@@ -336,6 +350,8 @@ class ConsoleControllerRequest(_GatewayBody):
     platform: Platform
     version: str
     public_key: PublicKey | None = None
+    # As a controller enrolling by code says it (`ControllerDescription`).
+    device_id: str | None = Field(default=None, pattern=DEVICE_ID_PATTERN)
 
     @field_validator("name")
     @classmethod
@@ -446,18 +462,24 @@ def stored_definition(definition: dict[str, Any]) -> dict[str, Any]:
     return {**definition, "auto_mode": definition.get("auto_mode", False)}
 
 
-def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
+def assignment_entry(
+    row: AgentDefinitionRow, agent: Agent, *, workspace_archived: bool
+) -> dict[str, Any]:
     """An `AgentAssignment`: the stored v1 definition, plus the agent's `name`,
     `display_name` and `icon_url` read from its own row.
 
     The definition is the v1 shape, `directory` included, rather than the
     target contract's (which nests it as `local.directory` and adds fields v1
-    does not have); `agent-controllers-v1.md` defines it this way."""
+    does not have); `agent-controllers-v1.md` defines it this way.
+
+    In an archived workspace every agent is assigned stopped, whatever its
+    owner set, and kept: the controller stops it and starts it again once the
+    workspace is restored, where leaving it out would have it removed."""
     definition = row.definition
     return {
         "agent_id": row.agent_id,
         "revision": row.revision,
-        "desired_state": row.desired_state,
+        "desired_state": "stopped" if workspace_archived else row.desired_state,
         "definition": {
             "name": agent.name,
             "display_name": agent.display_name,

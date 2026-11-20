@@ -41,14 +41,16 @@ FLAG_OFF_REASON = (
     "Auto-route isn't switched on here. Whoever runs Switch turns it on "
     "with the decision_routing feature flag."
 )
+#: Where in Switch Console a workspace admin chooses the decision service.
+DECISION_ROUTING_PAGE = "Switch Console → Settings → Message routing"
+
 NO_BACKEND_REASON = (
     "Auto-route needs a decision service. A workspace admin can set one up in "
-    "Switch Console → Admin → Decision routing."
+    f"{DECISION_ROUTING_PAGE}."
 )
 WORKSPACE_OFF_REASON = (
     "This workspace's admins turned auto-route off by choosing no decision "
-    "service. A workspace admin can choose one in Switch Console → Admin → "
-    "Decision routing."
+    f"service. A workspace admin can choose one in {DECISION_ROUTING_PAGE}."
 )
 
 

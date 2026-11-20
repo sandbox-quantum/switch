@@ -105,6 +105,7 @@ _COLLABORATORS = (
     "resource_service",
     "protocol",
     "user_changes",
+    "trust_connection_check",
 )
 
 
@@ -150,10 +151,8 @@ def gateway_app(config: SwitchConfig) -> FastAPI:
         invite_mailer=None,
         config=config,
     )
-    # `create_management` builds agent management only with its flag on, and
-    # `Management.install` then mounts its gateway routes through this.
-    if config.agent_management_enabled:
-        mount_gateway_routes(app)
+    # `Management.install` mounts agent management's gateway routes through this.
+    mount_gateway_routes(app)
     return app
 
 

@@ -145,7 +145,7 @@ is the name; keep it a plain identifier.
 | `boolean` | `true` or `false`. | |
 | `enum` | One of the strings in `enum:`. | |
 | `agent` | The name of an agent the server has. | The server checks it exists. |
-| `bridge` | The display name of a messaging app set up on the server. | The server checks it exists. |
+| `bridge` | The display name of a messaging app set up on the server, or `Switch Console`. | The server checks it exists. |
 | `room` | The name of a room on the server. | The server checks it exists. |
 | `user` | A username on the room's messaging app. | The server looks it up on the app. |
 | `provider` | A coding agent id: `claude`, `codex`, `opencode`, `antigravity`, `cursor`, `deepseek-harness`, `pi` or `mistral-vibe`. | Read when the agents are created; never in the room document. |
@@ -179,6 +179,13 @@ bridge:
   type: bridge
   default: [Slack, Mattermost, $first]   # Slack if set up, else Mattermost, else the default app
 ```
+
+**Switch Console.** A room whose `bridge` is `Switch Console` is on no
+messaging app. The person who runs the template is in it, so it shows up in
+their Switch Console chats; when an agent runs the template, that's the
+agent's owner. It names no `users`. A `bridge` param offers it after the
+messaging apps, and `$first` never picks it, so a template gets it only by
+naming it, as a value or in a chain (`default: [Switch Console, $first]`).
 
 A chain with no hit leaves the input empty. With `required: true` that
 blocks creation, and the message names the candidates that were tried.
@@ -394,7 +401,7 @@ deploying a template already has it, or it could not create agents at all.
 Only on a server with agent management.
 
 **`connections`**. The deployer's own connections (GitHub, Atlassian, and
-the rest of Settings, Connections) granted to the agent once it exists.
+the rest of Connectors) granted to the agent once it exists.
 Each entry is a service name, or `{service, access, repos}`: `access` is
 `read` (the default) or `write`, and `repos` lists the GitHub repositories,
 as `owner/name`, a GitHub grant reaches; they must all be reachable through
@@ -458,8 +465,9 @@ is missing, ambiguous or not the deployer's to read stops the run; an entry
 with `type`, `name`, `description`, `instructions` and `value: {urls: [...]}`
 creates a new one (private unless `read_visibility` / `write_visibility` say
 otherwise). `docs:` are documents created in the room, each
-`{name, description, instructions, content}`; any agent in the room may
-update or delete them. An exported room writes roles
+`{name, description, instructions, content}`; an agent in the room whose
+owner can edit the room may update or delete them, as for its roles. An
+exported room writes roles
 and docs in full and references by `id`.
 
 `agents:` names agents that exist on the server, plus the ones this
@@ -678,7 +686,7 @@ Switch, under `official:` ids (`official:switch-expert`), first in every
 listing, to people and agents alike. Their source is in the repository
 (`core/switch_core/official_templates/`, the Switch expert copied from
 `switch-expert/`); where a template has a version for servers without agent
-management, the `agent_management` feature flag picks which one is served.
+management, Switch Console serves it to those older servers.
 Nobody can change or delete an official template: save a copy under another
 name to change it.
 

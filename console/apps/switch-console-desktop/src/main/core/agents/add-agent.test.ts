@@ -1,6 +1,6 @@
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
+import { agentAvatarUrlForName, agentAvatarUrlForNewAgent } from '@shared/core/agents/agent-avatar';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
 const inspectRemoteDir = vi.hoisted(() => vi.fn());
@@ -321,11 +321,19 @@ describe('addAgent', () => {
     });
   });
 
-  it('falls back to the name-generated avatar when nothing was chosen and the server allows it', async () => {
+  it('falls back to the new-agent avatar when nothing was chosen and the server allows it', async () => {
     await addAgent(params({ iconUrl: null }));
     expect(h.registerAgentIdentity).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ iconUrl: agentAvatarUrlForName('codex-agent') })
+      expect.objectContaining({ iconUrl: agentAvatarUrlForNewAgent('codex-agent') })
+    );
+  });
+
+  it('never registers a new agent with its name in the icon URL', async () => {
+    await addAgent(params({ iconUrl: null }));
+    expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ iconUrl: expect.not.stringContaining('codex-agent') })
     );
   });
 

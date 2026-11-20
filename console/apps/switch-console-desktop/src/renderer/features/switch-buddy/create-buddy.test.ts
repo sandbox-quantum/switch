@@ -25,7 +25,6 @@ const input = {
   machineId: 'm-1',
   provider: 'claude',
   person: { name: 'Max Tam', email: 'max@example.com' },
-  entryPoint: 'onboarding' as const,
 };
 
 function created(name: string) {
@@ -61,9 +60,11 @@ describe('createBuddy', () => {
       filled: {},
       templateName: 'switch-buddy',
       templateId: 'official:switch-buddy',
-      entryPoint: 'onboarding',
+      entryPoint: 'switch_buddy',
     });
-    expect(report).toHaveBeenCalledWith('buddy_step', { action: 'created', provider: 'claude' });
+    // The template run reports the new buddy as `agent_created`; a second
+    // report of the same buddy would count it twice.
+    expect(report).not.toHaveBeenCalled();
     expect(recordTemplateRun).toHaveBeenCalledExactlyOnceWith({
       workspaceId: 'ws-1',
       templateId: 'official:switch-buddy',
@@ -78,6 +79,8 @@ describe('createBuddy', () => {
       name: 'switch-buddy-max',
     });
     expect(runTemplateDocument).not.toHaveBeenCalled();
+    // Opened, not made: counting it as created would count a buddy twice.
+    expect(report).not.toHaveBeenCalled();
     expect(recordTemplateRun).not.toHaveBeenCalled();
   });
 
@@ -139,10 +142,13 @@ describe('createBuddy', () => {
   });
 
   it('reports a provider telemetry does not know as none', async () => {
-    runTemplateDocument.mockResolvedValue(created('switch-buddy-max-tam'));
+    runTemplateDocument.mockResolvedValue(refused({ code: 'invalid', message: 'No.' }));
 
-    await createBuddy({ ...input, provider: 'something-new' });
+    await expect(createBuddy({ ...input, provider: 'something-new' })).rejects.toThrow();
 
-    expect(report).toHaveBeenCalledWith('buddy_step', { action: 'created', provider: 'none' });
+    expect(report).toHaveBeenCalledWith('buddy_step', {
+      action: 'create_failed',
+      provider: 'none',
+    });
   });
 });

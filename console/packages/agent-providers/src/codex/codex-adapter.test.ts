@@ -2,7 +2,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ProviderConversationUnavailableError, type RuntimeMode } from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  type RuntimeMode,
+  SteerNotSentError,
+} from '../adapter';
 import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
 import { FakeAppServer, type FakeJsonRpcMessage } from './fake-app-server';
 
@@ -584,9 +588,18 @@ describe('CodexAdapter', () => {
     await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'count' });
     server.notify('turn/started', turnNotification('native-a', 'inProgress'));
 
+    await expect(
+      adapter.sendTurn({
+        sessionId: 'session-1',
+        turnId: 'stale',
+        expectedTurnId: 'other',
+        text: 'wrong',
+      })
+    ).rejects.toThrow('authorized turn');
     const steered = await adapter.sendTurn({
       sessionId: 'session-1',
       turnId: 'caller-2',
+      expectedTurnId: 'caller-1',
       text: 'stop',
     });
     expect(steered).toEqual({ turnId: 'caller-2', steeredInto: 'caller-1' });
@@ -703,6 +716,27 @@ describe('CodexAdapter', () => {
         .map((message) => message.params)
     ).toEqual([{ threadId: THREAD, processId: 'stop' }]);
     await adapter.stopAll();
+  });
+
+  it('refuses an authorized steer Codex declines instead of starting a turn of its own', async () => {
+    const { adapter, server } = await start();
+    server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
+    server.on('message', (message: FakeJsonRpcMessage) => {
+      if (message.method !== 'turn/steer' || message.id === undefined) return;
+      server.send({ id: message.id, error: { code: -32600, message: 'turn is not steerable' } });
+    });
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'count' });
+    server.notify('turn/started', turnNotification('native-a', 'inProgress'));
+
+    await expect(
+      adapter.sendTurn({
+        sessionId: 'session-1',
+        turnId: 'caller-2',
+        expectedTurnId: 'caller-1',
+        text: 'stop',
+      })
+    ).rejects.toBeInstanceOf(SteerNotSentError);
+    expect(server.received.filter((message) => message.method === 'turn/start')).toHaveLength(1);
   });
 
   it('interrupts the active turn, not a turn that was queued behind it', async () => {

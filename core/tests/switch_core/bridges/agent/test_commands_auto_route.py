@@ -10,7 +10,13 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent import commands
-from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_auto_route
+from switch_core.bridges.agent.commands import (
+    COMMANDS_BY_NAME,
+    _cmd_auto_route,
+    _cmd_help,
+    commands_for,
+    dispatch_admin_command,
+)
 from switch_core.bridges.collaboration.own_app_setup import slack_manifest
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -31,6 +37,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery.addressing import SenderPrincipal
+from switch_core.feature_flags import DECISION_ROUTING
 from switch_core.transport import RoomRef
 
 
@@ -145,10 +152,83 @@ def test_is_a_room_command_the_switch_app_runs() -> None:
 
 
 def test_the_slack_manifest_lists_it() -> None:
-    commands = {c["command"]: c for c in slack_manifest()["features"]["slash_commands"]}
+    manifest = slack_manifest({DECISION_ROUTING: True})
+    commands = {c["command"]: c for c in manifest["features"]["slash_commands"]}
 
     assert "/auto-route" in commands
     assert commands["/auto-route"]["usage_hint"] == "<state>"
+
+
+def test_it_exists_only_where_the_server_has_decision_routing() -> None:
+    assert COMMANDS_BY_NAME["auto-route"].flag == DECISION_ROUTING
+    assert "auto-route" not in {c.name for c in commands_for({})}
+    assert "auto-route" not in {c.name for c in commands_for({DECISION_ROUTING: False})}
+    assert "auto-route" in {c.name for c in commands_for({DECISION_ROUTING: True})}
+
+
+class TestWithTheFlagOff:
+    """A server without auto-route has no `!auto-route`: the Switch app
+    answers it as any command it does not have, and `!help` leaves it out."""
+
+    @staticmethod
+    def _admin(
+        flags: dict[str, bool], room_id: str = "room"
+    ) -> tuple[SimpleNamespace, list[str]]:
+        posted: list[str] = []
+
+        async def _reply_command(_room_id: str, body: str, **_kw: object) -> None:
+            posted.append(body)
+
+        async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
+            return SimpleNamespace(room_id=room_id, name="room")
+
+        async def _is_direct_room(_transport_room_id: str) -> bool:
+            return False
+
+        host = SimpleNamespace(
+            feature_flags=flags,
+            reply_command=_reply_command,
+            _resolve_room_meta=_resolve_room_meta,
+            _is_direct_room=_is_direct_room,
+        )
+        return host, posted
+
+    @pytest.mark.parametrize("args", ["on", "off", "", "fallback @helper"])
+    async def test_every_form_is_an_unknown_command(
+        self, session_factory: async_sessionmaker[AsyncSession], args: str
+    ) -> None:
+        room_id = await _room(session_factory)
+        host, posted = self._admin({DECISION_ROUTING: False}, room_id)
+        event = SimpleNamespace(
+            command="auto-route", args=args, thread_id=None, user_id="@sender:test"
+        )
+
+        await dispatch_admin_command(host, RoomRef(room_id="!t:test"), event)  # type: ignore[arg-type]
+
+        assert posted == ["Unknown command: `auto-route`"]
+        async with session_factory() as session:
+            room = await RoomStore().get(session, room_id)
+            assert room is not None
+            assert AUTO_ROUTE_ON_KEY not in (room.metadata_ or {})
+            assert AUTO_ROUTE_FALLBACK_KEY not in (room.metadata_ or {})
+
+    async def test_help_leaves_it_out(self) -> None:
+        host, posted = self._admin({DECISION_ROUTING: False})
+        event = SimpleNamespace(command="help", args="", thread_id=None)
+
+        await _cmd_help(host, RoomRef(room_id="!t:test"), event, False)  # type: ignore[arg-type]
+
+        assert "`!auto-route`" not in posted[-1]
+        assert "`!follow-ups`" in posted[-1]
+        assert "`!assign-agent`" in posted[-1]
+
+    async def test_help_lists_it_with_the_flag_on(self) -> None:
+        host, posted = self._admin({DECISION_ROUTING: True})
+        event = SimpleNamespace(command="help", args="", thread_id=None)
+
+        await _cmd_help(host, RoomRef(room_id="!t:test"), event, False)  # type: ignore[arg-type]
+
+        assert "`!auto-route`" in posted[-1]
 
 
 class TestAutoRouteCommand:
@@ -219,7 +299,7 @@ class TestAutoRouteCommand:
         await _run(host, "on")
 
         assert posted[-1].startswith("Auto-route needs a decision service.")
-        assert "Switch Console → Admin → Decision routing" in posted[-1]
+        assert "Switch Console → Settings → Message routing" in posted[-1]
         assert "Nothing was changed" in posted[-1]
         assert not await _on(session_factory, room_id)
 
@@ -342,7 +422,7 @@ class TestTheTriageAgent:
         assert "no longer has a triage agent" in posted[-1]
         assert await _fallback(session_factory, room_id) is None
 
-    async def test_a_member_turns_it_on_and_off(
+    async def test_a_member_cannot_turn_it_on_or_off_but_may_see_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         room_id = await _room(session_factory)
@@ -350,12 +430,14 @@ class TestTheTriageAgent:
         host, posted = _host(session_factory, room_id, sender=member)
 
         await _run(host, "on")
-        assert "Automatic routing is **on**" in posted[-1]
-        assert await _on(session_factory, room_id)
-
-        await _run(host, "off")
-        assert "Automatic routing is **off**" in posted[-1]
+        assert posted[-1] == (
+            "Only the room's owner, a room admin or a workspace admin can change "
+            "this room's settings. Nothing was changed."
+        )
         assert not await _on(session_factory, room_id)
+
+        await _run(host, "")
+        assert "Automatic routing is **off**" in posted[-1]
 
     async def test_a_member_cannot_name_or_clear_it_but_may_see_it(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -367,7 +449,7 @@ class TestTheTriageAgent:
 
         await _run(host, "fallback @triage")
         assert posted[-1].startswith(
-            "Only the room's owner or a workspace admin can name or clear"
+            "Only the room's owner, a room admin or a workspace admin can change"
         )
         assert "Nothing was changed" in posted[-1]
         assert await _fallback(session_factory, room_id) is None
@@ -375,7 +457,9 @@ class TestTheTriageAgent:
         owner, _ = _host(session_factory, room_id)
         await _run(owner, "fallback @triage")
         await _run(host, "fallback off")
-        assert posted[-1].startswith("Only the room's owner or a workspace admin")
+        assert posted[-1].startswith(
+            "Only the room's owner, a room admin or a workspace admin"
+        )
         assert await _fallback(session_factory, room_id) == agents["triage"].id
 
         await _run(host, "fallback")
@@ -433,3 +517,53 @@ class TestTheTriageAgent:
 
         assert posted[-1].startswith("Usage: `!auto-route on`")
         assert "`!auto-route fallback @agent`" in posted[-1]
+
+
+class TestAssignedAgentOrAutoRoute:
+    """An assigned agent and auto-route can't both be on: turning auto-route
+    on is refused while an agent is assigned; a room that has both from
+    before is told auto-route is not acting."""
+
+    async def _assign(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        room_id: str,
+        agent: Agent,
+    ) -> None:
+        async with session_factory() as session:
+            await RoomStore().set_main_agent(session, room_id, agent.id)
+            await session.commit()
+
+    async def test_on_is_refused_while_an_agent_is_assigned(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        agents = await _agents(session_factory, room_id)
+        await self._assign(session_factory, room_id, agents["helper"])
+        host, posted = _host(session_factory, room_id)
+
+        await _run(host, "on")
+
+        assert "**helper**" in posted[-1]
+        assert "`!unassign-agent` first" in posted[-1]
+        assert "Nothing was changed" in posted[-1]
+        assert not await _on(session_factory, room_id)
+
+    async def test_off_still_works_and_a_room_with_both_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        agents = await _agents(session_factory, room_id)
+        async with session_factory() as session:
+            await RoomStore().set_auto_route_on(session, room_id, True)
+            await session.commit()
+        await self._assign(session_factory, room_id, agents["helper"])
+        host, posted = _host(session_factory, room_id)
+
+        await _run(host, "")
+        assert "on** in this room but not acting" in posted[-1]
+        assert "**helper**" in posted[-1]
+
+        await _run(host, "off")
+        assert "Automatic routing is **off**" in posted[-1]
+        assert not await _on(session_factory, room_id)

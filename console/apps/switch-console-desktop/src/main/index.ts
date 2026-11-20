@@ -46,9 +46,9 @@ import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
+import { clearDashboardWindowSessions } from './core/switch-servers/dashboard-window-sessions';
 import { retireDashboardFallbacks } from './core/switch-servers/server-address';
 import { bridgeSessionEndedToRenderer } from './core/switch-servers/session-ended-bridge';
-import { startActivationTracking } from './core/telemetry/activation';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
@@ -80,8 +80,8 @@ if (import.meta.env.DEV) {
 serverVersionChoice();
 
 const LOCAL_HOST_SHUTDOWN_MS = 5000;
-/** Long enough for switch-core's own stop grace, PostgreSQL and Mattermost's
- * containers; the window is gone by then, so nobody watches it. */
+/** Long enough for switch-core's own stop grace and PostgreSQL's container;
+ * the window is gone by then, so nobody watches it. */
 const LOCAL_SERVER_SHUTDOWN_MS = 30_000;
 
 if (process.platform === 'linux') {
@@ -183,7 +183,6 @@ void app.whenReady().then(async () => {
   registerTelemetryListeners();
   telemetryService.setInternalSource(currentInternalFlag);
   void reportLaunch(readThisLaunch);
-  startActivationTracking();
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below
@@ -240,6 +239,12 @@ void app.whenReady().then(async () => {
   // for the same reason as the reconcile: it asks every external server.
   void retireDashboardFallbacks().catch((error: unknown) => {
     log.error('Could not check which servers still need a separate dashboard address:', error);
+  });
+
+  // Dashboard pages used to open in a window of Console's own, holding a copy
+  // of Console's session cookie; they open in the browser now.
+  void clearDashboardWindowSessions().catch((error: unknown) => {
+    log.warn('Could not clear the sessions the old dashboard windows kept:', error);
   });
 
   // A signed-in call refused with 401 tells the window to re-check that server's

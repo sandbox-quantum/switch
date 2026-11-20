@@ -1,6 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type AddressingPolicy, type AgentDetail, OWNER_ONLY_POLICY } from "../../data/api";
+import {
+  type AddressingPolicy,
+  type AddressingRule,
+  type AgentDetail,
+  OWNER_ONLY_POLICY,
+} from "../../data/api";
 import AddressingPolicySection from "./AddressingPolicySection";
 
 const agent = {
@@ -11,7 +16,11 @@ const agent = {
 
 /** The section for an agent saved with `policy`. Reads answer empty; the
  * save answers `saveAnswer`, and what was sent is recorded. */
-function show(policy: AddressingPolicy | null, saveAnswer: [number, unknown] = [200, agent]) {
+function show(
+  policy: AddressingPolicy | null,
+  saveAnswer: [number, unknown] = [200, agent],
+  canWiden = true,
+) {
   const sent: unknown[] = [];
   vi.stubGlobal(
     "fetch",
@@ -28,6 +37,7 @@ function show(policy: AddressingPolicy | null, saveAnswer: [number, unknown] = [
     <AddressingPolicySection
       agent={{ ...agent, addressing_policy: policy }}
       canEdit
+      canWiden={canWiden}
       onUpdated={onUpdated}
     />,
   );
@@ -54,7 +64,6 @@ describe("AddressingPolicySection", () => {
   it("names why a rule can never let anyone in, as the server would, and holds Save", () => {
     show(OWNER_ONLY_POLICY);
     fireEvent.click(screen.getByRole("checkbox", { name: "Its owner" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Its owner's other agents" }));
     expect(
       screen.getByText(
         /can never let anyone in: it lets in no people, no agents, not the owner and not the platform/,
@@ -98,5 +107,50 @@ describe("AddressingPolicySection", () => {
     expect(
       await screen.findByText("These rules can never let anyone in: rule 1: it names no rooms."),
     ).toBeTruthy();
+  });
+
+  describe("for someone who may only narrow it, not its owner", () => {
+    const someone = (): AddressingRule => ({
+      rooms: "*",
+      room_groups: "*",
+      users: ["u1"],
+      agents: [],
+    });
+    const twoRules: AddressingPolicy = { rules: [OWNER_ONLY_POLICY.rules[0]!, someone()] };
+
+    it("offers no way to let anyone else in", () => {
+      show(twoRules, [200, agent], false);
+      expect(screen.getByRole("radio", { name: /Open/ })).toHaveProperty("disabled", true);
+      expect(screen.queryByRole("button", { name: "Add rule" })).toBeNull();
+      for (const box of screen.getAllByRole("checkbox")) {
+        expect(box).toHaveProperty("disabled", true);
+      }
+      expect(screen.getByText(/Only its owner can let more people or agents/)).toBeTruthy();
+    });
+
+    it("may remove a rule", async () => {
+      const { sent } = show(twoRules, [200, agent], false);
+      fireEvent.click(screen.getAllByRole("button", { name: "Remove rule" })[1]!);
+      fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+      await waitFor(() => expect(sent).toHaveLength(1));
+      expect(sent[0]).toEqual({ policy: { rules: [OWNER_ONLY_POLICY.rules[0]] } });
+    });
+
+    it("may restrict it to its owner", async () => {
+      const { sent } = show({ rules: [someone()] }, [200, agent], false);
+      fireEvent.click(screen.getByRole("button", { name: "Restrict to its owner" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+      await waitFor(() => expect(sent).toHaveLength(1));
+      expect(sent[0]).toEqual({ policy: OWNER_ONLY_POLICY });
+    });
+
+    it("may restrict an open agent, which starts at its owner alone", async () => {
+      const { sent } = show(null, [200, agent], false);
+      expect(screen.getByRole("radio", { name: /Open/ })).toHaveProperty("disabled", false);
+      fireEvent.click(screen.getByRole("radio", { name: /Restricted/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+      await waitFor(() => expect(sent).toHaveLength(1));
+      expect(sent[0]).toEqual({ policy: OWNER_ONLY_POLICY });
+    });
   });
 });

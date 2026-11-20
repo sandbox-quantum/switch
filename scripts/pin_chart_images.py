@@ -10,11 +10,11 @@ it, and what runs is reproducible from that one pin.
 
 Two charts are published:
 
-* `switch` (deploy/remote/helm/switch): switch-core, gateway, setup and the
+* `switch` (deploy/remote/helm/switch): switch-core, gateway and the
   optional decision service (switch-decision), with its Strands Decider model
   server (switch-decision-strands).
 * `switch-hosted-controller` (deploy/hosted/chart): the controller that runs
-  Switch cloud machines, and its one image.
+  Switch Cloud machines, and its one image.
 
 Packaging and publishing them is scripts/release_charts.sh, which reads `charts`.
 
@@ -154,9 +154,6 @@ IMAGES: dict[str, Image] = {
         "deploy/shared_resources/images/Dockerfile.gateway",
         ".",
         False,
-    ),
-    "setup": Image(
-        "switch", "setup", "deploy/shared_resources/images/Dockerfile.setup", ".", False
     ),
     # The decision service behind auto-route; the chart runs it with
     # decision.enabled.

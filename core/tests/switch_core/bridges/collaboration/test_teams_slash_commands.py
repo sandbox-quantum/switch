@@ -72,7 +72,7 @@ def _deliver(adapter: TeamsAdapter, text: str, *, targeted: bool = False) -> Non
             message_ref="m-1",
             root_id=None,
             channel_name="general",
-            is_targeted=targeted,
+            addressed=targeted,
         )
     )
 

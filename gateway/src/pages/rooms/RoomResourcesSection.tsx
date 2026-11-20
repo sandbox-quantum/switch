@@ -32,17 +32,32 @@ import {
   useRoomPackages,
   useRoomReferences,
 } from "../../data/hooks";
+import { REQUESTS_AT_ONCE, allAtMost } from "../../data/inBatches";
 import { LockedMark, OpensMark } from "../../components/RowAccess";
 
 interface Props {
   roomId: string;
-  // Attaching takes write access to the room; unlinking takes part in it.
-  canWrite: boolean;
+  // Attaching is for anyone in the room; unlinking for its owner or an
+  // admin, or a resource's own owner while they are in the room.
+  canAttach: boolean;
   canUnlink: boolean;
+  inRoom: boolean;
+  viewerId: string | null;
 }
 
-export default function RoomResourcesSection({ roomId, canWrite, canUnlink }: Props) {
-  const { data: roomPackages, refetch: refetchPackages } = useRoomPackages(roomId);
+export default function RoomResourcesSection({
+  roomId,
+  canAttach,
+  canUnlink,
+  inRoom,
+  viewerId,
+}: Props) {
+  const {
+    data: roomPackages,
+    loading: packagesLoading,
+    error: packagesError,
+    refetch: refetchPackages,
+  } = useRoomPackages(roomId);
   const attachedPackageIds = useMemo(
     () => new Set((roomPackages ?? []).map((p) => p.id)),
     [roomPackages],
@@ -66,24 +81,30 @@ export default function RoomResourcesSection({ roomId, canWrite, canUnlink }: Pr
       </Typography>
       <RoomReferences
         roomId={roomId}
-        canWrite={canWrite}
+        canAttach={canAttach}
         canUnlink={canUnlink}
+        inRoom={inRoom}
+        viewerId={viewerId}
         attachedPackageIds={attachedPackageIds}
         readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomDocuments
         roomId={roomId}
-        canWrite={canWrite}
+        canAttach={canAttach}
         attachedPackageIds={attachedPackageIds}
         readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomPackages
         roomId={roomId}
-        canWrite={canWrite}
+        canAttach={canAttach}
         canUnlink={canUnlink}
+        inRoom={inRoom}
+        viewerId={viewerId}
         packages={roomPackages ?? []}
+        loading={packagesLoading}
+        loadError={packagesError}
         refetch={refetchPackages}
       />
     </Stack>
@@ -128,15 +149,19 @@ function PackageChips({
 
 function RoomReferences({
   roomId,
-  canWrite,
+  canAttach,
   canUnlink,
+  inRoom,
+  viewerId,
   attachedPackageIds,
   readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
-  canWrite: boolean;
+  canAttach: boolean;
   canUnlink: boolean;
+  inRoom: boolean;
+  viewerId: string | null;
   attachedPackageIds: Set<string>;
   readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
@@ -159,7 +184,7 @@ function RoomReferences({
     setBusy(true);
     setError(null);
     try {
-      await Promise.all(ids.map((id) => attachReferenceToRoom(roomId, id)));
+      await allAtMost(ids, (id) => attachReferenceToRoom(roomId, id), REQUESTS_AT_ONCE);
       refetch();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to attach");
@@ -187,11 +212,11 @@ function RoomReferences({
       <Typography variant="body2" sx={{ fontWeight: 500 }}>
         References
       </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
+      {error && <Alert severity="error">Couldn't load the references: {error}</Alert>}
       {error_ && <Alert severity="error">{error_}</Alert>}
       {loading ? (
         <CircularProgress size={20} />
-      ) : (attached ?? []).length === 0 ? (
+      ) : error ? null : (attached ?? []).length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           No references attached.
         </Typography>
@@ -223,7 +248,7 @@ function RoomReferences({
                 readablePackageIds={readablePackageIds}
                 packageDescriptions={packageDescriptions}
               />
-              {canUnlink && (
+              {(canUnlink || (inRoom && viewerId !== null && ref.owner_id === viewerId)) && (
                 <Button
                   size="small"
                   onClick={() => handleDetach(ref.id)}
@@ -237,7 +262,7 @@ function RoomReferences({
           ))}
         </Stack>
       )}
-      <AttachControl canWrite={canWrite} label="Attach reference">
+      <AttachControl canAttach={canAttach} label="Attach reference">
         {(close) => (
           <ReferencePicker
             attachedIds={attachedIds}
@@ -252,13 +277,13 @@ function RoomReferences({
 
 function RoomDocuments({
   roomId,
-  canWrite,
+  canAttach,
   attachedPackageIds,
   readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
-  canWrite: boolean;
+  canAttach: boolean;
   attachedPackageIds: Set<string>;
   readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
@@ -286,7 +311,7 @@ function RoomDocuments({
     setBusy(true);
     setError(null);
     try {
-      await Promise.all(ids.map((id) => attachDocumentToRoom(roomId, id)));
+      await allAtMost(ids, (id) => attachDocumentToRoom(roomId, id), REQUESTS_AT_ONCE);
       refetch();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to attach");
@@ -318,11 +343,11 @@ function RoomDocuments({
       <Typography variant="body2" sx={{ fontWeight: 500 }}>
         Documents
       </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
+      {error && <Alert severity="error">Couldn't load the documents: {error}</Alert>}
       {error_ && <Alert severity="error">{error_}</Alert>}
       {loading ? (
         <CircularProgress size={20} />
-      ) : (attached ?? []).length === 0 ? (
+      ) : error ? null : (attached ?? []).length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           No documents attached.
         </Typography>
@@ -422,7 +447,7 @@ function RoomDocuments({
           )}
         </Stack>
       )}
-      <AttachControl canWrite={canWrite} label="Attach document">
+      <AttachControl canAttach={canAttach} label="Attach document">
         {(close) => (
           <DocumentPicker
             attachedIds={attachedIds}
@@ -450,15 +475,29 @@ function RoomDocuments({
 
 function RoomPackages({
   roomId,
-  canWrite,
+  canAttach,
   canUnlink,
+  inRoom,
+  viewerId,
   packages,
+  loading,
+  loadError,
   refetch,
 }: {
   roomId: string;
-  canWrite: boolean;
+  canAttach: boolean;
   canUnlink: boolean;
-  packages: Array<{ id: string; name: string; description: string; can_read?: boolean }>;
+  inRoom: boolean;
+  viewerId: string | null;
+  packages: Array<{
+    id: string;
+    name: string;
+    description: string;
+    can_read?: boolean;
+    owner_id?: string;
+  }>;
+  loading: boolean;
+  loadError: string | null;
   refetch: () => void;
 }) {
   const navigate = useNavigate();
@@ -471,7 +510,7 @@ function RoomPackages({
     setBusy(true);
     setError(null);
     try {
-      await Promise.all(ids.map((id) => attachPackageToRoom(roomId, id)));
+      await allAtMost(ids, (id) => attachPackageToRoom(roomId, id), REQUESTS_AT_ONCE);
       refetch();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to attach");
@@ -499,8 +538,11 @@ function RoomPackages({
       <Typography variant="body2" sx={{ fontWeight: 500 }}>
         Packages
       </Typography>
+      {loadError && <Alert severity="error">Couldn't load the packages: {loadError}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
-      {packages.length === 0 ? (
+      {loading ? (
+        <CircularProgress size={20} />
+      ) : loadError ? null : packages.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           No packages attached.
         </Typography>
@@ -533,7 +575,7 @@ function RoomPackages({
               {!p.can_read && <LockedMark />}
               <span style={{ flexGrow: 1 }} />
               {p.can_read && <OpensMark />}
-              {canUnlink && (
+              {(canUnlink || (inRoom && viewerId !== null && p.owner_id === viewerId)) && (
                 <Button
                   size="small"
                   onClick={(e) => {
@@ -550,7 +592,7 @@ function RoomPackages({
           ))}
         </Stack>
       )}
-      <AttachControl canWrite={canWrite} label="Attach package">
+      <AttachControl canAttach={canAttach} label="Attach package">
         {(close) => (
           <PackagePicker
             attachedIds={attachedIds}
@@ -567,16 +609,16 @@ function RoomPackages({
 // picker is mounted only while open, so the list it offers loads only when
 // someone attaches.
 function AttachControl({
-  canWrite,
+  canAttach,
   label,
   children,
 }: {
-  canWrite: boolean;
+  canAttach: boolean;
   label: string;
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  if (!canWrite) return null;
+  if (!canAttach) return null;
   return (
     <>
       <Button
@@ -600,7 +642,7 @@ interface PickerProps {
 }
 
 function ReferencePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
-  const { data, loading } = useReferences();
+  const { data, loading, error } = useReferences();
   const options = useMemo<PickerOption[]>(
     () =>
       (data ?? [])
@@ -628,6 +670,7 @@ function ReferencePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
       submitLabel="Attach"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />
@@ -635,7 +678,7 @@ function ReferencePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
 }
 
 function DocumentPicker({ attachedIds, onClose, onSubmit }: PickerProps) {
-  const { data, loading } = useDocuments();
+  const { data, loading, error } = useDocuments();
   const options = useMemo<PickerOption[]>(
     () =>
       (data ?? [])
@@ -655,6 +698,7 @@ function DocumentPicker({ attachedIds, onClose, onSubmit }: PickerProps) {
       submitLabel="Attach"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />
@@ -662,7 +706,7 @@ function DocumentPicker({ attachedIds, onClose, onSubmit }: PickerProps) {
 }
 
 function PackagePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
-  const { data, loading } = usePackages();
+  const { data, loading, error } = usePackages();
   const options = useMemo<PickerOption[]>(
     () =>
       (data ?? [])
@@ -683,6 +727,7 @@ function PackagePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
       submitLabel="Attach"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />

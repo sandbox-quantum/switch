@@ -116,22 +116,15 @@ local-cloud:
 local-cloud-console:
     cd console && SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
 
-# Made by the gateway admin from .env, so it joins the admin's workspace, as
-# every admin-made account does. Use the admin's domain (switch.local by
-# default) for an account that should be able to join by domain.
-#   just local-cloud-user ada@switch.local "Ada Lovelace" <password>
+# Made with `switch-accounts create`, in no workspace: invite it from one (the
+# e-mail lands in Mailpit), or give it an address at a domain a workspace is
+# open to. The password is asked for twice on a terminal, or read from a
+# pipe; it is never taken from the command line.
+#   just local-cloud-user ada@switch.local "Ada Lovelace"
+#   printf '%s' "$PASSWORD" | just local-cloud-user ada@switch.local "Ada Lovelace"
 # Create an account on `just local-cloud` to sign in with
-local-cloud-user email name password:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    jar="$(mktemp)"
-    trap 'rm -f "$jar"' EXIT
-    curl -fsS -c "$jar" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg e "$GATEWAY_ADMIN_EMAIL" --arg p "$GATEWAY_ADMIN_PASSWORD" '{email: $e, password: $p}')" \
-      http://localhost:8000/gateway/auth/login >/dev/null
-    curl -fsS -b "$jar" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg e '{{ email }}' --arg n '{{ name }}' --arg p '{{ password }}' '{email: $e, name: $n, password: $p}')" \
-      http://localhost:8000/gateway/users | jq .
+local-cloud-user email name:
+    uv run --project core switch-accounts create {{ quote(email) }} --name {{ quote(name) }}
 
 # ── Format code with ruff ──────────────────────────────────────────────────────
 # Run from the repo root so ruff's hierarchical config discovery applies the
@@ -224,11 +217,6 @@ e2e-provider *args:
 e2e-browser *args:
     SWITCH_E2E_LANE=browser console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
 
-# As e2e-browser, with the dashboard's new layout turned on (gateway_v2): the
-# same scenarios, the role matrix checked against the new layout's pages.
-e2e-browser-v2 *args:
-    SWITCH_E2E_LANE=browser SWITCH_E2E_GATEWAY_LAYOUT=v2 console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
-
 # ── End-to-end harness, explore lane, on a throwaway stack ─────────────────────
 # As e2e-browser, but Bombadil drives the gateway UI at random for
 # SWITCH_E2E_EXPLORE_TIME_LIMIT (default 5m), checking the properties in
@@ -281,28 +269,27 @@ gateway-test:
 
 # Create the local accounts the dev role switcher signs in as, one per
 # permission level (operator, org admin, workspace admin, member), and save
-# their logins where `just gateway-dev` serves them to it. The switcher shows
-# with the `gateway_v2` flag on. Needs `just up` and `just run`; safe to run
-# again.
+# their logins where `just gateway-dev` serves them to it. Needs `just up`
+# and `just run`; safe to run again.
 seed-dev-roles:
     uv run --project core python scripts/seed_dev_roles.py
 
 # ── Standalone deployment (all-in-one Docker, no host toolchain) ──────────────
 # Repo users build from source: the build override re-adds the `build:` blocks
 # so images come from the working tree, not GHCR. All profiles are enabled to
-# bring up the full all-in-one stack (Mattermost bridge + gateway).
+# bring up the full all-in-one stack (core + gateway).
 standalone-up:
-    docker compose -f deploy/local/standalone-docker-compose.yml -f deploy/local/standalone-docker-compose.build.yml --profile collab --profile gateway --project-directory . up -d --build
+    docker compose -f deploy/local/standalone-docker-compose.yml -f deploy/local/standalone-docker-compose.build.yml --profile gateway --project-directory . up -d --build
 
 standalone-down:
-    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down
 
 standalone-reset:
     #!/usr/bin/env bash
     set -euo pipefail
     read -r -p "⚠️  This deletes ALL standalone data volumes (rooms, messages, agents, users). Continue? [y/N] " ans
     [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
-    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down -v
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down -v
 
 # ── Documentation ──────────────────────────────────────────────────────────────
 # Clones the docs repository unless --source names a checkout of it:
@@ -311,3 +298,7 @@ standalone-reset:
 # Convert the published Switch pages into docs/official as Markdown
 sync-docs *args:
     python3 scripts/sync_docs.py {{ args }}
+
+# Fail when docs/official differs from the published docs (writes nothing)
+check-docs *args:
+    python3 scripts/sync_docs.py --check {{ args }}

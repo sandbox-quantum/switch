@@ -119,6 +119,8 @@ class AdminMessageType(StrEnum):
     TRUST_ERRORED = "trust_errored"
     AGENT_LIFECYCLE = "agent_lifecycle"
     AUTO_ROUTE_UNAVAILABLE = "auto_route_unavailable"
+    # A change an admin made to the room's settings, told in the room.
+    ROOM_SETTINGS_NOTICE = "room_settings_notice"
 
 
 def admin_extra_content(message_type: AdminMessageType | None) -> dict[str, object]:

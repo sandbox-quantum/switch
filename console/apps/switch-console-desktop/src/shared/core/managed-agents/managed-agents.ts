@@ -65,12 +65,15 @@ export type ManagedMachine = {
   state: 'online' | 'offline' | 'unknown' | 'revoked';
 };
 
-/** Whether the machine is the owner's Switch cloud machine: Switch enrolls its controller as kind `ec2`. */
+/** Whether the machine is the owner's Switch Cloud machine: Switch enrolls its controller as kind `ec2`. */
 export function isCloudMachine(machine: Pick<ManagedMachine, 'kind'>): boolean {
   return machine.kind === 'ec2';
 }
 
 /** A provider on a machine, as the machine last reported it. */
+/** `MachineProvider.problem` for a provider whose CLI the machine did not find. */
+export const PROVIDER_NOT_INSTALLED = 'not installed';
+
 export type MachineProvider = {
   /** The Switch definition provider id (`claude`, `codex`, …). */
   provider: string;
@@ -94,7 +97,7 @@ export type ThisComputerReport = { serverId: string; providers: MachineProvider[
 /**
  * A provider login to give a machine: a key or token typed in, this
  * computer's own sign-in for the provider, read from its file, or (Claude
- * only) Google Vertex AI, with a service account key pasted or picked, or this
+ * and Antigravity) Google Vertex AI, with a service account key pasted or picked, or this
  * computer's Google application-default sign-in.
  */
 export type MachineLoginInput =
@@ -122,7 +125,7 @@ export type OwnedMachine = ManagedMachine & {
   providers: MachineProvider[];
   /** It can be given a provider login sealed to its key: its controller registered one. */
   acceptsLogins: boolean;
-  /** The owner's Switch cloud machine, offered as "Switch cloud" rather than by name. */
+  /** The owner's Switch Cloud machine, offered as "Switch Cloud" rather than by name. */
   cloud: boolean;
   /**
    * Where the machine makes agents' workspaces (an agent's is `<workspacesDir>/<name>`);
@@ -131,6 +134,8 @@ export type OwnedMachine = ManagedMachine & {
   workspacesDir: string | null;
   /** Its operating system as it enrolled (`macos`, `linux`, `windows`); null when not known. */
   os: string | null;
+  /** When it last reported its status; null when it never has. */
+  lastSeenAt: string | null;
   local: MachineLocal;
 };
 

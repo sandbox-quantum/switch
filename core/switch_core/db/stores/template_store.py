@@ -1,13 +1,38 @@
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Literal
 
-from sqlalchemy import ColumnElement, delete, func, or_, select
+from sqlalchemy import ColumnElement, delete, exists, func, or_, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Template, TemplateRunRecord, require_tenant_id
+from switch_core.db.models import (
+    HiddenOfficialTemplate,
+    Template,
+    TemplateRunRecord,
+    require_tenant_id,
+)
 
 _LIKE_ESCAPE = "\\"
+
+
+# How long a person's own report of a run is not believed again for the same
+# template: a report is only a report, so without this a reader could count
+# as many runs as they liked. Long enough to cover the report Switch Console
+# sends straight after a run the server already counted.
+REPORTED_RUN_WINDOW = timedelta(minutes=10)
+
+
+class _Keep(Enum):
+    KEEP = "keep"
+
+
+# What `update_fields` is given for a nullable field it should leave alone,
+# where None means "clear it".
+KEEP = _Keep.KEEP
 
 
 class TemplateNameTaken(ValueError):
@@ -43,6 +68,7 @@ class TemplateListing:
     name: str
     description: str
     kind: str
+    use_case: str | None
     read_visibility: str
     write_visibility: str
     version: int
@@ -50,6 +76,14 @@ class TemplateListing:
     created_at: object
     updated_at: object
     created_by_agent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class TemplateRuns:
+    """How often a template has been run in this tenant, and when last."""
+
+    count: int
+    last_run_at: datetime
 
 
 class TemplateStore:
@@ -124,6 +158,7 @@ class TemplateStore:
                 Template.name,
                 Template.description,
                 Template.kind,
+                Template.use_case,
                 Template.read_visibility,
                 Template.write_visibility,
                 Template.version,
@@ -143,6 +178,21 @@ class TemplateStore:
         # say nothing about it.
         return [TemplateListing(**row) for row in result.mappings()]
 
+    async def documents(
+        self, session: AsyncSession, template_ids: Collection[str]
+    ) -> list[tuple[str, int, str]]:
+        """The stored document of each of these templates, with its id and
+        revision: for the few a caller has not already read at that revision,
+        never the whole catalogue (see ``TemplateListing``)."""
+        if not template_ids:
+            return []
+        result = await session.execute(
+            select(Template.id, Template.version, Template.content).where(
+                Template.id.in_(template_ids)
+            )
+        )
+        return list(result.tuples())
+
     async def update_fields(
         self,
         session: AsyncSession,
@@ -152,6 +202,7 @@ class TemplateStore:
         description: str | None = None,
         kind: str | None = None,
         content: str | None = None,
+        use_case: str | None | Literal[_Keep.KEEP] = KEEP,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
         guard: Callable[[Template], None] | None = None,
@@ -162,6 +213,9 @@ class TemplateStore:
         refuse the change. Authorization belongs here rather than on a row
         read earlier: an access change committed before the lock is taken
         is seen here and not by an earlier read.
+
+        ``use_case`` may be cleared, so it is left alone by ``KEEP`` rather
+        than by None.
 
         Metadata-only edits leave the revision alone: the document someone
         fetched is still the document they would fetch now.
@@ -209,6 +263,8 @@ class TemplateStore:
             template.description = description
         if kind is not None:
             template.kind = kind
+        if use_case is not KEEP:
+            template.use_case = use_case
         if read_visibility is not None:
             template.read_visibility = read_visibility
         if write_visibility is not None:
@@ -261,27 +317,67 @@ class TemplateStore:
         await session.delete(template)
         await session.flush()
 
-    async def record_run(self, session: AsyncSession, template_id: str) -> None:
-        """Count one run of a template, official or stored, in this tenant."""
-        session.add(TemplateRunRecord(template_id=template_id))
+    async def record_run(
+        self, session: AsyncSession, template_id: str, *, run_by: str | None
+    ) -> None:
+        """Count one run of a template, official or stored, in this tenant,
+        that the server made itself: an agent's (``run_by`` None) or a
+        person's. Always counted, since it happened."""
+        session.add(TemplateRunRecord(template_id=template_id, run_by=run_by))
         await session.flush()
 
-    async def run_counts(
+    async def record_reported_run(
+        self, session: AsyncSession, template_id: str, user_id: str
+    ) -> bool:
+        """Count a run a person's client reports, unless a run of this
+        template was counted for them in the last ``REPORTED_RUN_WINDOW``,
+        whether reported or made by the server. True when it was counted.
+
+        Two reports side by side are taken one at a time, held to the commit,
+        so both cannot find nothing and both count."""
+        tenant_id = require_tenant_id()
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"template-run-report:{tenant_id}:{template_id}:{user_id}"},
+        )
+        recent = await session.scalar(
+            select(
+                exists().where(
+                    TemplateRunRecord.tenant_id == tenant_id,
+                    TemplateRunRecord.template_id == template_id,
+                    TemplateRunRecord.run_by == user_id,
+                    TemplateRunRecord.created_at > func.now() - REPORTED_RUN_WINDOW,
+                )
+            )
+        )
+        if recent:
+            return False
+        await self.record_run(session, template_id, run_by=user_id)
+        return True
+
+    async def run_stats(
         self, session: AsyncSession, template_ids: Collection[str]
-    ) -> dict[str, int]:
+    ) -> dict[str, TemplateRuns]:
         """How many times each of these templates has been run in this tenant,
-        by id. A template never run is absent."""
+        and when last, by id. A template never run is absent."""
         if not template_ids:
             return {}
         result = await session.execute(
-            select(TemplateRunRecord.template_id, func.count())
+            select(
+                TemplateRunRecord.template_id,
+                func.count(),
+                func.max(TemplateRunRecord.created_at),
+            )
             .where(
                 TemplateRunRecord.tenant_id == require_tenant_id(),
                 TemplateRunRecord.template_id.in_(template_ids),
             )
             .group_by(TemplateRunRecord.template_id)
         )
-        return {template_id: count for template_id, count in result.tuples()}
+        return {
+            template_id: TemplateRuns(count=count, last_run_at=last)
+            for template_id, count, last in result.tuples()
+        }
 
     async def run_count(self, session: AsyncSession, template_id: str) -> int:
         result = await session.execute(
@@ -291,3 +387,26 @@ class TemplateStore:
             )
         )
         return int(result.scalar_one())
+
+    # ── Official templates removed from the workspace ──────────────────────
+    # Named by tenant as well as left to the policy: these also run on the
+    # owner connection the policy does not apply to.
+
+    async def hidden_official_slugs(self, session: AsyncSession) -> set[str]:
+        result = await session.execute(
+            select(HiddenOfficialTemplate.slug).where(
+                HiddenOfficialTemplate.tenant_id == require_tenant_id()
+            )
+        )
+        return set(result.scalars().all())
+
+    async def hide_official(
+        self, session: AsyncSession, slug: str, hidden_by: str
+    ) -> None:
+        """Remove an official template from the bound workspace; removing it
+        again changes nothing."""
+        await session.execute(
+            insert(HiddenOfficialTemplate)
+            .values(tenant_id=require_tenant_id(), slug=slug, hidden_by=hidden_by)
+            .on_conflict_do_nothing()
+        )

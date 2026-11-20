@@ -98,7 +98,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.budgets import BudgetExceeded
 from switch_core.config import SwitchConfig
-from switch_core.content_disposition import content_disposition
+from switch_core.content_disposition import untrusted_file_headers
 from switch_core.db.models import Agent
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.known_agents import known_agent
@@ -528,15 +528,10 @@ async def download_media(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
-    headers = {}
-    if filename:
-        headers["Content-Disposition"] = content_disposition(
-            "inline", filename, "attachment"
-        )
     return Response(
         content=data,
         media_type=content_type or "application/octet-stream",
-        headers=headers,
+        headers=untrusted_file_headers(filename, content_type, "attachment"),
     )
 
 
@@ -1533,7 +1528,7 @@ async def poll_notifications(
 ) -> EventResponse | Response:
     """Long-poll the agent's notification stream across all its rooms.
 
-    Returns notifiable events only (addressed messages and the room_join
+    Returns notifiable events only (addressed messages and the room_join / room_leave
     events the agent listens for). Backed by a separate queue, so it never
     drains the per-room event queues live session pollers consume. Used by the
     auto_session watcher to decide when to spawn a session.

@@ -249,6 +249,25 @@ describe("DataTable toolbar", () => {
     ).toThrow(/has no filter/);
   });
 
+  it("shows a select filter's choice with no label over it, named for assistive technology", () => {
+    const { container } = render(
+      table({ quickFilters: [], selectFilters: [{ field: "status", label: "State", allLabel: "All states" }] }),
+    );
+    expect(screen.getByRole("combobox", { name: "State" }).textContent).toBe("All states");
+    expect(container.querySelector("label")).toBeNull();
+  });
+
+  it("says when none of the viewer's own rows match, for a list of only theirs", async () => {
+    render(table({ yours: true }));
+    await act(async () => fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "zzz" } }));
+    expect(await screen.findByText("None of your agents match the current filters.")).toBeTruthy();
+    cleanup();
+
+    render(table());
+    await act(async () => fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "zzz" } }));
+    expect(await screen.findByText("No agents match the current filters.")).toBeTruthy();
+  });
+
   it("refuses to pin a column without a fixed width", () => {
     expect(() => render(table({ pinnedRight: ["name"] }))).toThrow(/needs a fixed width/);
   });

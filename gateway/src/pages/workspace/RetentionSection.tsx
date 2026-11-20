@@ -33,7 +33,9 @@ const CUSTOM = "custom";
 type Mode = "forever" | "window";
 
 export function describeRetention(days: number | null): string {
-  if (days === null) return "Messages are kept forever.";
+  if (days === null) {
+    return "No retention policy is set, so Switch keeps every message and the files attached to it.";
+  }
   return `Messages older than ${days} ${days === 1 ? "day" : "days"} are deleted.`;
 }
 
@@ -154,6 +156,7 @@ export default function RetentionSection({
                 <TextField
                   select
                   size="small"
+                  fullWidth={false}
                   value={preset}
                   disabled={mode !== "window" || !canSetWindow}
                   onChange={(event) => setPreset(event.target.value)}
@@ -170,6 +173,7 @@ export default function RetentionSection({
                 {preset === CUSTOM && (
                   <TextField
                     size="small"
+                    fullWidth={false}
                     label="Days"
                     value={customDays}
                     disabled={mode !== "window" || !canSetWindow}

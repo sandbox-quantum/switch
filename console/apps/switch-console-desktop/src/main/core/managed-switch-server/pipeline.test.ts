@@ -54,8 +54,7 @@ vi.mock('./secrets', () => ({
   clearSecrets: vi.fn(),
 }));
 vi.mock('./ports', () => ({
-  resolvePorts: () =>
-    Promise.resolve({ gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 }),
+  resolvePorts: () => Promise.resolve({ gateway: 3300, api: 8000, postgres: 5432 }),
   clearPorts: vi.fn(),
 }));
 vi.mock('./env-file', () => ({
@@ -96,7 +95,7 @@ vi.mock('./managed-upgrade', () => ({
 }));
 
 const { startStack } = await import('./pipeline');
-const { currentFlintEnv } = await import('../telemetry/config');
+const { currentTelemetryEnv } = await import('../telemetry/config');
 const { ENV_FILE_NAME } = await import('./constants');
 
 function options() {
@@ -185,7 +184,7 @@ describe('startStack version guard', () => {
 
     expect(buildEnvFileMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        telemetryEnvironment: currentFlintEnv(),
+        telemetryEnvironment: currentTelemetryEnv(),
         telemetryInternal: true,
       })
     );

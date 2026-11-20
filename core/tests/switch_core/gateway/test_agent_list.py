@@ -221,7 +221,7 @@ class TestDevice:
     async def test_each_device_carries_its_own_owner_not_the_agents(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Two people's devices can share a name, as every Switch cloud device
+        """Two people's devices can share a name, as every Switch Cloud device
         does; what tells them apart is whose each is, read from the device."""
         async with session_factory() as session:
             ada = await add_user(session, name="ada")
@@ -229,9 +229,9 @@ class TestDevice:
             admin = await add_user(session, name="admin")
             first = await add_agent(session, name="first", owner_id=ada.id)
             second = await add_agent(session, name="second", owner_id=ada.id)
-            await _place(session, first, ada, name="Switch cloud")
+            await _place(session, first, ada, name="Switch Cloud")
             # Placed on Grace's device though Ada owns it.
-            await _place(session, second, grace, name="Switch cloud")
+            await _place(session, second, grace, name="Switch Cloud")
 
             listed = await _listed(session, admin, admin=True)
 

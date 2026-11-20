@@ -100,13 +100,13 @@ def test_resource_carries_the_deployment_id_and_omits_what_is_unknown():
     ).attributes()
     assert full == {
         "service.name": "switch-decision",
-        "flint.client_id": DEPLOYMENT_ID,
+        "switch_trust.client_id": DEPLOYMENT_ID,
         "service.version": "0.1.0",
         "service.instance.id": "decision-0-abcd1234",
         "deployment.environment": "pilot",
     }
     bare = OtlpResource("switch-decision", None, None, DEPLOYMENT_ID, None)
-    assert set(bare.attributes()) == {"service.name", "flint.client_id"}
+    assert set(bare.attributes()) == {"service.name", "switch_trust.client_id"}
     scope = build_logs_payload([], bare)["resourceLogs"][0]["scopeLogs"][0]["scope"]
     assert scope == {"name": "switch-decision"}
 
@@ -522,7 +522,7 @@ def test_decide_lines_reach_the_collector_with_their_request_id(monkeypatch, col
         for a in collector.posts[0]["resourceLogs"][0]["resource"]["attributes"]
     }
     assert resource["service.name"] == app_module.log_settings.service_name
-    assert resource["flint.client_id"] == DEPLOYMENT_ID
+    assert resource["switch_trust.client_id"] == DEPLOYMENT_ID
     assert resource["service.instance.id"] == app_module.process_id
     assert collector.headers[0]["dd-api-key"] == "placeholder"
     assert collector.headers[0]["User-Agent"] == "switch-decision"

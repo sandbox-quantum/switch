@@ -1,13 +1,13 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import ContentCopy from "@mui/icons-material/ContentCopy";
+import ContentCopyOutlined from "@mui/icons-material/ContentCopyOutlined";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import Download from "@mui/icons-material/Download";
 import {
   Alert,
   Box,
   Button,
-  Chip,
   CircularProgress,
   Divider,
   IconButton,
@@ -18,8 +18,11 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
+import { useAuth } from "../../data/AuthContext";
 import {
+  ApiError,
   type TemplateDetail,
+  type TemplateUseCase,
   deleteTemplate,
   fetchTemplate,
   fetchTemplateContent,
@@ -32,22 +35,36 @@ import {
   toAccessLevel,
 } from "../../data/visibility";
 import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
+import { duplicateDraft } from "../templates/duplicate";
+import { UseInConsoleDialog } from "../templates/OpenInConsoleDialog";
+import { TemplateKindChip, UseTemplateButton } from "../templates/TemplateCard";
+import { consoleRunLink, createsLine, useCaseLabel } from "../templates/templateRows";
+import UseCaseSelect from "../templates/UseCaseSelect";
+import CreateTemplateDialog, { type TemplateDraft } from "./CreateTemplateDialog";
 import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import TemplateFindings from "./TemplateFindings";
 import { formatBytes, templateFilename } from "./templateFormat";
 import { useTemplateValidation } from "./useTemplateValidation";
 
-// The Templates page in the new layout; in today's, where it is a Resources
-// tab, the route redirects there.
 const LIST_URL = "/templates";
+
+/** What the server's 404 means here. It does not say which, on purpose: a
+ * private template is reported as missing to anyone who may not see it. */
+export const NOT_AVAILABLE =
+  "This template isn’t available to you. Its owner may keep it private, or it may have been deleted.";
 
 export default function TemplateDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { user, session } = useAuth();
+  const workspace = session?.tenant ?? null;
   const [template, setTemplate] = useState<TemplateDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [useOpen, setUseOpen] = useState(false);
+  const [copy, setCopy] = useState<TemplateDraft | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -62,9 +79,16 @@ export default function TemplateDetailPage() {
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        // The server's reason, shown as is: a private template the caller may
+        // A template the caller may not see is reported as not found; any
+        // other failure keeps the server's reason, since a template they may
         // not see and a server that is down are different problems.
-        setFetchError(e instanceof Error ? e.message : "Could not load this template");
+        setFetchError(
+          e instanceof ApiError && e.status === 404
+            ? NOT_AVAILABLE
+            : e instanceof Error
+              ? e.message
+              : "Could not load this template",
+        );
         setLoading(false);
       });
     return () => {
@@ -97,19 +121,47 @@ export default function TemplateDetailPage() {
   // a workspace admin whose global role is plain "user" may still manage
   // every template here, and an open template is edited by anyone.
   const canEdit = template.can_edit;
+  // On an official template, managing it means only removing it from the workspace.
   const canManage = template.can_manage;
+  const official = template.official;
+
+  const duplicate = async () => {
+    setCopyError(null);
+    try {
+      if (user === null) throw new Error("you are not signed in");
+      setCopy(await duplicateDraft(template, user.id));
+    } catch (e) {
+      setCopyError(`Could not copy “${template.name}”: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate(LIST_URL)} size="small" aria-label="Back">
+      <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 2 }}>
+        <IconButton onClick={() => navigate(LIST_URL)} size="small" aria-label="Back to templates">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5" sx={{ flexGrow: 1 }}>
+        <Typography variant="h5" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
           {template.name || "Template"}
         </Typography>
-        <Chip size="small" variant="outlined" label={template.kind} />
+        <TemplateKindChip template={template} />
+        <Box sx={{ flexGrow: 1 }} />
+        <Button variant="outlined" startIcon={<ContentCopyOutlined />} onClick={() => void duplicate()}>
+          Duplicate as my own
+        </Button>
+        <UseTemplateButton
+          template={template}
+          label="Use template"
+          accessibleName="Use template"
+          variant="contained"
+          onUse={() => setUseOpen(true)}
+        />
       </Stack>
+      {copyError && (
+        <Alert severity="error" onClose={() => setCopyError(null)} sx={{ mb: 2 }}>
+          {copyError}
+        </Alert>
+      )}
 
       <Stack spacing={4}>
         <InfoSection template={template} />
@@ -117,31 +169,39 @@ export default function TemplateDetailPage() {
         <DocumentSection
           template={template}
           canEdit={canEdit}
-          canManage={canManage}
+          canManage={canManage && !official}
           onSaved={setTemplate}
         />
         {canManage && (
           <>
+            {!official && (
+              <>
+                <Divider />
+                <TransferOwnershipSection
+                  kind="template"
+                  resourceId={id}
+                  resourceLabel={template.name || id}
+                  ownerId={template.owner_id}
+                  blockedReason={null}
+                  onTransferred={() => navigate(0)}
+                />
+              </>
+            )}
             <Divider />
-            <TransferOwnershipSection
-              kind="template"
-              resourceId={id}
-              resourceLabel={template.name || id}
-              ownerId={template.owner_id}
-              blockedReason={null}
-              onTransferred={() => navigate(0)}
-            />
-            <Divider />
-            <DangerSection onDelete={() => setDeleteOpen(true)} />
+            <DangerSection official={official} onDelete={() => setDeleteOpen(true)} />
           </>
         )}
       </Stack>
 
       <ConfirmDialog
         open={deleteOpen}
-        title="Delete template"
-        description={`Delete “${template.name || id}”? Agents and rooms already made from it keep working. This can’t be undone.`}
-        confirmLabel="Delete"
+        title={official ? "Remove template" : "Delete template"}
+        description={
+          official
+            ? `Remove “${template.name || id}” from this workspace? It comes with Switch, so other workspaces keep it. Agents and rooms already made from it keep working. This can’t be undone.`
+            : `Delete “${template.name || id}”? Agents and rooms already made from it keep working. This can’t be undone.`
+        }
+        confirmLabel={official ? "Remove" : "Delete"}
         tone="destructive"
         onConfirm={async () => {
           await deleteTemplate(id);
@@ -149,6 +209,26 @@ export default function TemplateDetailPage() {
         }}
         onClose={() => setDeleteOpen(false)}
       />
+      {useOpen && workspace && (
+        <UseInConsoleDialog
+          templateName={template.name}
+          link={consoleRunLink(template.id, workspace.id, window.location.origin)}
+          onClose={() => setUseOpen(false)}
+        />
+      )}
+      {copy && (
+        <CreateTemplateDialog
+          open
+          title="Duplicate template"
+          submitLabel="Save copy"
+          initial={copy}
+          onClose={() => setCopy(null)}
+          onCreated={(created) => {
+            setCopy(null);
+            navigate(`/templates/${encodeURIComponent(created)}`);
+          }}
+        />
+      )}
     </Box>
   );
 }
@@ -171,11 +251,23 @@ function InfoSection({ template }: { template: TemplateDetail }) {
       <Typography variant="body2" color="text.secondary" component="div">
         <strong>Access:</strong> <AccessChip pair={template} />
       </Typography>
+      <InfoLine label="Use case" value={template.use_case ? useCaseLabel(template.use_case) : null} />
+      <InfoLine label="Creates" value={createsLine(template)} />
       <InfoLine label="Revision" value={String(template.version)} />
       <InfoLine label="Runs" value={String(template.run_count)} />
+      <InfoLine
+        label="Last used"
+        value={template.last_run_at === null ? "Never" : formatDateTime(template.last_run_at)}
+      />
       <InfoLine label="Size" value={formatBytes(template.size_bytes)} />
-      <InfoLine label="Created" value={formatDateTime(template.created_at)} />
-      <InfoLine label="Updated" value={formatDateTime(template.updated_at)} />
+      {/* One that comes with Switch changes only with a release, so it has
+          no dates of its own. */}
+      {!template.official && (
+        <>
+          <InfoLine label="Created" value={formatDateTime(template.created_at)} />
+          <InfoLine label="Updated" value={formatDateTime(template.updated_at)} />
+        </>
+      )}
     </Stack>
   );
 }
@@ -220,6 +312,7 @@ function DocumentSection({
   const [name, setName] = useState(template.name);
   const [description, setDescription] = useState(template.description);
   const [kind, setKind] = useState(template.kind);
+  const [useCase, setUseCase] = useState<TemplateUseCase | null>(template.use_case);
   const [access, setAccess] = useState<AccessLevel>(toAccessLevel(template));
   const [content, setContent] = useState(template.content);
   const [saving, setSaving] = useState(false);
@@ -236,9 +329,10 @@ function DocumentSection({
       name !== template.name ||
       description !== template.description ||
       kind !== template.kind ||
+      useCase !== template.use_case ||
       content !== template.content ||
       access !== toAccessLevel(template),
-    [name, description, kind, content, access, template],
+    [name, description, kind, useCase, content, access, template],
   );
 
   const handleSave = async () => {
@@ -251,6 +345,7 @@ function DocumentSection({
         ...(name !== template.name ? { name } : {}),
         ...(description !== template.description ? { description } : {}),
         ...(kind !== template.kind ? { kind } : {}),
+        ...(useCase !== template.use_case ? { use_case: useCase } : {}),
         ...(content !== template.content ? { content } : {}),
         // Sent only by someone allowed to change it; the server refuses it otherwise.
         ...(canManage && access !== toAccessLevel(template) ? fromAccessLevel(access) : {}),
@@ -259,6 +354,7 @@ function DocumentSection({
       setName(updated.name);
       setDescription(updated.description);
       setKind(updated.kind);
+      setUseCase(updated.use_case);
       setContent(updated.content);
       setAccess(toAccessLevel(updated));
     } catch (e) {
@@ -363,6 +459,7 @@ function DocumentSection({
         disabled={!canEdit || saving}
         sx={{ maxWidth: 320 }}
       />
+      <UseCaseSelect value={useCase} onChange={setUseCase} disabled={!canEdit || saving} sx={{ maxWidth: 320 }} />
       {/* Who may see and change an official template is not anyone's to
           choose, and its helper text would speak to an owner it has not got. */}
       {!template.official && (
@@ -386,21 +483,25 @@ function DocumentSection({
       />
       <TemplateFindings result={validation} checking={checking} />
       {error && <Alert severity="error">{error}</Alert>}
-      <Box>
-        <Button
-          variant="contained"
-          onClick={handleSave}
-          disabled={!canEdit || !dirty || saving || checking || !!validation?.blocked}
-          startIcon={saving ? <CircularProgress size={16} /> : undefined}
-        >
-          Save
-        </Button>
-      </Box>
+      {/* Only for someone who may save: for anyone else the banner above
+          says why it is read-only, and a greyed Save would only repeat it. */}
+      {canEdit && (
+        <Box>
+          <Button
+            variant="contained"
+            onClick={handleSave}
+            disabled={!dirty || saving || checking || !!validation?.blocked}
+            startIcon={saving ? <CircularProgress size={16} /> : undefined}
+          >
+            Save
+          </Button>
+        </Box>
+      )}
     </Stack>
   );
 }
 
-function DangerSection({ onDelete }: { onDelete: () => void }) {
+function DangerSection({ official, onDelete }: { official: boolean; onDelete: () => void }) {
   return (
     <Stack spacing={1}>
       <Typography
@@ -416,7 +517,7 @@ function DangerSection({ onDelete }: { onDelete: () => void }) {
         onClick={onDelete}
         sx={{ alignSelf: "flex-start" }}
       >
-        Delete template
+        {official ? "Remove from this workspace" : "Delete template"}
       </Button>
     </Stack>
   );

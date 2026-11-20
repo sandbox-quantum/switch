@@ -6,6 +6,7 @@ const COPY: TemplateDraft = {
   name: "Standup (copy)",
   description: "A daily standup room",
   kind: "room",
+  use_case: "support",
   access: "private",
   content: "room:\n  name: standup\n",
 };
@@ -68,6 +69,7 @@ describe("CreateTemplateDialog", () => {
         description: "A daily standup room",
         kind: "room",
         content: COPY.content,
+        use_case: "support",
         read_visibility: "private",
         write_visibility: "private",
       },
@@ -89,6 +91,22 @@ describe("CreateTemplateDialog", () => {
     showWith(null);
     expect(value("Name")).toBe("");
     expect(value("Kind")).toBe("room");
+    expect(screen.getByLabelText("Use case").textContent).toBe("None");
     expect(screen.getByLabelText("Access").textContent).toMatch(/read only/i);
+  });
+
+  it("saves the use case picked for it", async () => {
+    const { created, onCreated } = showWith(null);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Pipeline" } });
+    fireEvent.change(screen.getByLabelText("Document"), { target: { value: "room:\n  name: r\n" } });
+    fireEvent.mouseDown(screen.getByLabelText("Use case"));
+    fireEvent.click(await screen.findByRole("option", { name: "Sales" }));
+
+    const create = screen.getByRole("button", { name: "Create" });
+    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 });
+    fireEvent.click(create);
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("new-1"));
+    expect(created).toMatchObject([{ name: "Pipeline", use_case: "sales" }]);
   });
 });
