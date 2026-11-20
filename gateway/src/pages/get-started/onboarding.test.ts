@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudMachine, Controller } from "../../data/management";
+import { LONG_REQUEST_TIMEOUT_MS } from "../../data/gatewayFetch";
 import { answerFetch } from "../../test/answerFetch";
 import {
   createBuddy,
@@ -190,6 +191,31 @@ describe("startOver", () => {
       "POST /auth/me/start-over",
     ]);
     expect(calls[2]!.body).toEqual({ email: "ada@example.com" });
+  });
+});
+
+describe("startOver while the server is slow", () => {
+  it("asks again when one ask outlasts its wait, as the server carries on", async () => {
+    vi.useFakeTimers();
+    let asked = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        asked += 1;
+        if (asked === 1)
+          return new Promise((_resolve, reject) =>
+            init.signal!.addEventListener("abort", () => reject(init.signal!.reason)),
+          );
+        return Promise.resolve(
+          new Response(JSON.stringify({ finished: true, waiting: null }), { status: 200 }),
+        );
+      }),
+    );
+    const done = startOver({ buddyId: null, controller: null, email: "ada@example.com" });
+    await vi.advanceTimersByTimeAsync(LONG_REQUEST_TIMEOUT_MS + START_OVER_POLL_MS);
+    await done;
+    vi.useRealTimers();
+    expect(asked).toBe(2);
   });
 });
 

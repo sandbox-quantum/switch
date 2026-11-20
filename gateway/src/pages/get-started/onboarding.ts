@@ -11,6 +11,7 @@ import {
   managementError,
 } from "../../data/management";
 import { deleteAgent, startOverTestAccount } from "../../data/api";
+import { ServerTimeout } from "../../data/gatewayFetch";
 import { webChatsClient } from "../chats/webChatClient";
 
 /**
@@ -282,8 +283,13 @@ export async function startOver(input: {
         );
   const until = Date.now() + START_OVER_LIMIT_MS;
   for (;;) {
-    const progress = await startOverTestAccount(input.email);
-    if (progress.finished) return;
+    // An ask that outlasts its wait carries on at the server: the next one
+    // finds it further along, or done.
+    const progress = await startOverTestAccount(input.email).catch((caught: unknown) => {
+      if (caught instanceof ServerTimeout) return null;
+      throw caught;
+    });
+    if (progress?.finished) return;
     if (Date.now() >= until)
       throw new Error(
         "Your Switch Cloud is still being removed. Try Start over again in a few minutes.",

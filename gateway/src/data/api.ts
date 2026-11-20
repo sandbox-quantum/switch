@@ -1695,7 +1695,17 @@ export interface StartOverProgress {
 }
 
 export async function startOverTestAccount(email: string): Promise<StartOverProgress> {
-  return jsonRequest<StartOverProgress>("/auth/me/start-over", "POST", { email });
+  const res = await gatewayFetch(
+    `${BASE}/auth/me/start-over`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    },
+    LONG_REQUEST_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await failure(res);
+  return (await res.json()) as StartOverProgress;
 }
 
 /** A sign-in link Switch Console handed this browser, as its page asks about
