@@ -1,4 +1,4 @@
-"""The boot of a Switch cloud machine that runs one agent controller per workspace."""
+"""The boot of a Switch Cloud machine that runs one agent controller per workspace."""
 
 from __future__ import annotations
 
@@ -622,7 +622,7 @@ def test_a_fresh_machine_enrolls_then_runs_its_agents_as_users_of_their_own(mach
         "/opt/switch/controller/bin/switch-agent-controller",
     ]
     assert enroll[enroll.index("--code") + 1] == CODE
-    assert enroll[enroll.index("--name") + 1] == "Switch cloud"
+    assert enroll[enroll.index("--name") + 1] == "Switch Cloud"
     assert enroll[enroll.index("--data-dir") + 1] == str(machine / ".switch-controller")
     [setup] = commands.ran("install-service")
     assert setup[:2] == [

@@ -41,7 +41,9 @@ import {
   moveChecklist,
   notSetUpSentence,
   primaryAction,
+  readOnlySentence,
   secretSummary,
+  setUpLine,
   stateLabel,
   usedBy,
 } from "./connectorApps";
@@ -150,20 +152,28 @@ function ManageHereDialog({
 export default function ConnectorAppCard({
   app,
   publicUrl,
+  openSetup,
   checkFailure,
   onCheckFailure,
+  onChecked,
   onChanged,
 }: {
   app: ConnectorApp;
   /** GATEWAY_PUBLIC_URL; while it is unset the vendor has nowhere to send people back. */
   publicUrl: string | null;
+  /** Open the setup dialog on mount, where setting it up is what the card offers. */
+  openSetup: boolean;
   checkFailure: string | null;
   onCheckFailure: (message: string | null) => void;
+  /** After a check: the server keeps what the vendor said of the app, so the apps are read again. */
+  onChecked: () => void;
   onChanged: (message: string) => void;
 }) {
   const scope = useConnectorAppScope();
   const [menu, setMenu] = useState<HTMLElement | null>(null);
-  const [setup, setSetup] = useState<SetupMode | null>(null);
+  const [setup, setSetup] = useState<SetupMode | null>(() =>
+    openSetup && primaryAction(app, checkFailure) === "set_up" && !changeBlocked(app, publicUrl) ? "set_up" : null,
+  );
   const [updating, setUpdating] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [managing, setManaging] = useState(false);
@@ -177,6 +187,8 @@ export default function ConnectorAppCard({
   const actions = menuActions(app);
   const summary = secretSummary(app);
   const blocked = changeBlocked(app, publicUrl);
+  const setUp = setUpLine(app, formatDate);
+  const readOnly = readOnlySentence(app);
 
   const check = async () => {
     setChecking(true);
@@ -185,6 +197,7 @@ export default function ConnectorAppCard({
       const result = await checkConnectorApp(scope, app.slug);
       setChecks(result.checks);
       onCheckFailure(result.ok ? null : (result.checks.find((c) => !c.ok)?.message ?? null));
+      onChecked();
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -237,19 +250,18 @@ export default function ConnectorAppCard({
           </Typography>
         )}
         {needs && <Alert severity={needs.cause === "stale" ? "info" : "warning"}>{needs.sentence}</Alert>}
+        {readOnly && <Alert severity="warning">{readOnly}</Alert>}
         {needs?.cause === "saved_ignored" && app.saved_client_id && (
           <Row label="Saved here">{app.saved_client_id}</Row>
         )}
 
         {app.client_id && <Row label="Client ID">{app.client_id}</Row>}
         {app.fields.slug && <Row label="App">{app.fields.slug}</Row>}
-        {summary && (
-          <Row label="Secret">
-            {summary}
-            {app.updated_by_name && app.updated_at
-              ? ` · updated by ${app.updated_by_name}, ${formatDate(app.updated_at)}`
-              : ""}
-          </Row>
+        {summary && <Row label="Secret">{summary}</Row>}
+        {setUp && (
+          <Typography variant="body2" color="text.secondary">
+            {setUp}
+          </Typography>
         )}
         {app.source !== "none" && (
           <Typography variant="body2" color="text.secondary">

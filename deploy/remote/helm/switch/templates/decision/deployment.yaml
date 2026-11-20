@@ -147,6 +147,10 @@ spec:
             - name: DECISION_CONFIDENCE_THRESHOLD
               value: {{ . | quote }}
             {{- end }}
+            {{- with $d.minLead }}
+            - name: DECISION_MIN_LEAD
+              value: {{ . | quote }}
+            {{- end }}
             - name: DECISION_BEDROCK_ENABLED
               value: {{ ternary "1" "0" $d.bedrock.enabled | quote }}
             {{- with $d.bedrock.model }}

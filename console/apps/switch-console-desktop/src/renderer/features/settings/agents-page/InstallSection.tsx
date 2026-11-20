@@ -114,6 +114,7 @@ export const InstallSection = observer(function InstallSection({
     if (isChecking || vm.isInstalling) return 'checking';
     if (selectedInstall?.status === 'available') return 'found';
     if (isOverrideRef(selectedSource) && isOverrideEmpty) return 'uninstalled';
+    if (installOptions.length === 0 && !isOverrideRef(selectedSource)) return 'unavailable';
     return 'not-found';
   })();
 

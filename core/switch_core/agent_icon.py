@@ -29,6 +29,7 @@ fetch happens, so a caller that actually retrieves the URL must guard there too
 rather than treating storage validation as sufficient.
 """
 
+import hashlib
 import ipaddress
 import re
 from typing import NoReturn
@@ -153,13 +154,39 @@ GENERATED_ICON_CHOICES = 10
 
 
 def generated_icon_url(seed: str) -> str:
-    """The generated icon for `seed`: the same seed always draws the same face."""
+    """The generated icon for `seed`: the same seed always draws the same face.
+
+    For an icon generated from now on, use `new_icon_url`, which keeps the name
+    out of the URL. Seeding with a name directly is kept only for agents that
+    already wear the face their name draws, so their icon does not change.
+    """
     query = [
         ("seed", seed),
         ("size", str(_GENERATED_ICON_PIXELS)),
         ("scale", _GENERATED_ICON_SCALE),
     ]
     return f"{_GENERATED_ICON_BASE}?{urlencode(query, quote_via=quote)}"
+
+
+# Hex digits of a name's SHA-256 used as a new icon's seed: enough that two
+# names never share a face in practice, short enough for Slack's URL limit.
+_NAME_SEED_LENGTH = 32
+
+
+def name_seed(name: str) -> str:
+    """The seed a new icon for `name` is drawn from: a digest, not the name.
+
+    DiceBear receives the seed in the URL, as does every platform and client
+    that loads it, so the name itself never goes there. Switch Console builds
+    the same digest (`agentNameSeed` in `agent-avatar.ts`).
+    """
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:_NAME_SEED_LENGTH]
+
+
+def new_icon_url(name: str) -> str:
+    """The icon generated for an agent called `name` from now on, drawn from a
+    digest of the name (`name_seed`) so the name is not in the URL."""
+    return generated_icon_url(name_seed(name))
 
 
 # The robot every client generated before gaze, in exactly the shape they built
@@ -285,14 +312,15 @@ def drop_third_party_avatar(
 def generated_icon_choices(agent_name: str, page: int) -> list[str]:
     """One page of icons to choose from for an agent called `agent_name`.
 
-    Page 0 leads with the icon its name generates, which is what a new agent
-    gets when nobody picks one; every page is the same each time it is asked
+    Page 0 leads with the icon a new agent called `agent_name` gets when nobody
+    picks one (`new_icon_url`); each choice is drawn from a digest, so none
+    carries the name; every page is the same each time it is asked
     for, so a picker does not reshuffle under the person choosing.
     """
     seeds = [f"{agent_name}-{page}-{index}" for index in range(GENERATED_ICON_CHOICES)]
     if page == 0:
         seeds = [agent_name, *seeds[: GENERATED_ICON_CHOICES - 1]]
-    return [generated_icon_url(seed) for seed in seeds]
+    return [new_icon_url(seed) for seed in seeds]
 
 
 def normalise_icon_url(url: str | None) -> str | None:

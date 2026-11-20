@@ -1,0 +1,2540 @@
+{
+ "room": {
+  "name": "product-eng",
+  "instructions": null
+ },
+ "agents": [
+  {
+   "name": "worker-remote",
+   "description": "Coding worker"
+  },
+  {
+   "name": "worker-local",
+   "description": "Claude Code running in a worker container"
+  },
+  {
+   "name": "workforce-manager",
+   "description": "Manager of the workforce hub: assigns tasks to worker agents and tracks their status."
+  },
+  {
+   "name": "pm-agent",
+   "description": "Personal agent with PM skills: tracks user feedback, writes PRDs and status updates."
+  },
+  {
+   "name": "releaser",
+   "description": "Cuts releases: tags core and desktop builds, opens pin-bump PRs, reports when they ship."
+  },
+  {
+   "name": "dev-2",
+   "description": "Engineering agent that implements tickets."
+  },
+  {
+   "name": "team-lead",
+   "description": "Team lead agent: plans and splits work for the platform team."
+  }
+ ],
+ "scenarios": [
+  {
+   "id": "fu-what-else",
+   "expect": [
+    "workforce-manager"
+   ],
+   "note": "Short follow-up in the manager's thread, right after it answered.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "manager whats up",
+     "addressed": [
+      "workforce-manager"
+     ]
+    },
+    {
+     "sender": "workforce-manager",
+     "sender_kind": "agent",
+     "text": "Nothing new from me. One ticket is still waiting at the plan gate, about a day now.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "ok what else",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-you-here",
+   "expect": [
+    "workforce-manager"
+   ],
+   "note": "Nudge after a follow-up got no answer.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "manager whats up",
+     "addressed": [
+      "workforce-manager"
+     ]
+    },
+    {
+     "sender": "workforce-manager",
+     "sender_kind": "agent",
+     "text": "Nothing new from me. One ticket is still waiting at the plan gate, about a day now.",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "ok what else",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "you here ?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-what-about",
+   "expect": [
+    "workforce-manager"
+   ],
+   "note": "Question about what the manager just said.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "manager whats up",
+     "addressed": [
+      "workforce-manager"
+     ]
+    },
+    {
+     "sender": "workforce-manager",
+     "sender_kind": "agent",
+     "text": "Nothing new from me. One ticket is still waiting at the plan gate, about a day now.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "what was that about ?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-which-ticket",
+   "expect": [
+    "workforce-manager"
+   ],
+   "note": "Follow-up on the manager's answer.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "manager whats up",
+     "addressed": [
+      "workforce-manager"
+     ]
+    },
+    {
+     "sender": "workforce-manager",
+     "sender_kind": "agent",
+     "text": "Nothing new from me. One ticket is still waiting at the plan gate, about a day now.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "which ticket is it",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-when-happen",
+   "expect": [
+    "worker-remote"
+   ],
+   "note": "Pushes back on the worker's answer.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "please check why names go to the avatar service",
+     "addressed": [
+      "worker-remote"
+     ]
+    },
+    {
+     "sender": "worker-remote",
+     "sender_kind": "agent",
+     "text": "It's the avatar fallback: an agent with no icon gets a generated face from an outside service, and the bridge sends people's initials to another one.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "the bridge posts for someone who isn't an agent? when does that ever happen??",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-hello",
+   "expect": [
+    "worker-remote"
+   ],
+   "note": "Nudge after a question in the worker's thread got no answer.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "please check why names go to the avatar service",
+     "addressed": [
+      "worker-remote"
+     ]
+    },
+    {
+     "sender": "worker-remote",
+     "sender_kind": "agent",
+     "text": "It's the avatar fallback: an agent with no icon gets a generated face from an outside service, and the bridge sends people's initials to another one.",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "when does that ever happen??",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "hello ?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-can-we-change",
+   "expect": [
+    "worker-remote"
+   ],
+   "note": "Asks the worker for a change based on its answer.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "please check why names go to the avatar service",
+     "addressed": [
+      "worker-remote"
+     ]
+    },
+    {
+     "sender": "worker-remote",
+     "sender_kind": "agent",
+     "text": "It's the avatar fallback: an agent with no icon gets a generated face from an outside service, and the bridge sends people's initials to another one.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "ok we should never do that, can we change it and use hashes instead?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-still-used",
+   "expect": [
+    "worker-remote"
+   ],
+   "note": "Follow-up question on the worker's answer.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "please check why names go to the avatar service",
+     "addressed": [
+      "worker-remote"
+     ]
+    },
+    {
+     "sender": "worker-remote",
+     "sender_kind": "agent",
+     "text": "It's the avatar fallback: an agent with no icon gets a generated face from an outside service, and the bridge sends people's initials to another one.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "are we still using it ??",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-where-from",
+   "expect": [
+    "pm-agent"
+   ],
+   "note": "Asks the agent that just posted the summary.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "post the feedback summary here",
+     "addressed": [
+      "pm-agent"
+     ]
+    },
+    {
+     "sender": "pm-agent",
+     "sender_kind": "agent",
+     "text": "Feedback summary: 9 resolved, 4 in progress, 3 open. Biggest open item: workspace verification is too manual.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "where does this feedback summary come from ??",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-which-users",
+   "expect": [
+    "pm-agent"
+   ],
+   "note": "Follow-up on the summary the agent posted.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "post the feedback summary here",
+     "addressed": [
+      "pm-agent"
+     ]
+    },
+    {
+     "sender": "pm-agent",
+     "sender_kind": "agent",
+     "text": "Feedback summary: 9 resolved, 4 in progress, 3 open. Biggest open item: workspace verification is too manual.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "pia",
+    "text": "which users said that?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-yes-do-that",
+   "expect": [
+    "worker-local"
+   ],
+   "note": "Answers the worker's offer.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "make the wording changes listed above",
+     "addressed": [
+      "worker-local"
+     ]
+    },
+    {
+     "sender": "worker-local",
+     "sender_kind": "agent",
+     "text": "Done: the PR has all 14 wording changes. Want me to also take screenshots of each page?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "sam",
+    "text": "yes, do that please while I review",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-also-docs",
+   "expect": [
+    "worker-local"
+   ],
+   "note": "Adds to the request the worker is working on.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "make the wording changes listed above",
+     "addressed": [
+      "worker-local"
+     ]
+    },
+    {
+     "sender": "worker-local",
+     "sender_kind": "agent",
+     "text": "Done: the PR has all 14 wording changes. Want me to also take screenshots of each page?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "sam",
+    "text": "and fix the broken docs link in the same PR",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-merged",
+   "expect": [
+    "releaser"
+   ],
+   "note": "Tells the releaser the PR it was waiting on is merged.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "new canary of core, then a desktop canary with it pinned",
+     "addressed": [
+      "releaser"
+     ]
+    },
+    {
+     "sender": "releaser",
+     "sender_kind": "agent",
+     "text": "Core rc.5 is built and published. The pin-bump PR is up for the desktop app; merge it and I'll cut the canary.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "merged",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-released-right",
+   "expect": [
+    "releaser"
+   ],
+   "note": "Asks the releaser about the build it reported.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "new canary of core, then a desktop canary with it pinned",
+     "addressed": [
+      "releaser"
+     ]
+    },
+    {
+     "sender": "releaser",
+     "sender_kind": "agent",
+     "text": "Core rc.5 is built and published. The pin-bump PR is up for the desktop app; merge it and I'll cut the canary.",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "merged",
+     "addressed": []
+    },
+    {
+     "sender": "releaser",
+     "sender_kind": "agent",
+     "text": "Canary 9 is building; the x64 leg is in notarization.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "its released right ?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-why-slow",
+   "expect": [
+    "releaser"
+   ],
+   "note": "Asks about the build the releaser reported.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "new canary of core, then a desktop canary with it pinned",
+     "addressed": [
+      "releaser"
+     ]
+    },
+    {
+     "sender": "releaser",
+     "sender_kind": "agent",
+     "text": "Core rc.5 is built and published. The pin-bump PR is up for the desktop app; merge it and I'll cut the canary.",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "merged",
+     "addressed": []
+    },
+    {
+     "sender": "releaser",
+     "sender_kind": "agent",
+     "text": "Canary 9 is building.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "why is the x64 taking so long now ?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-stop-processing",
+   "expect": [
+    "dev-2"
+   ],
+   "note": "Speaks to the agent that just took the feedback, by a short form of its name.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "1. the add participant button should be its own button 2. sort rooms by latest activity",
+     "addressed": []
+    },
+    {
+     "sender": "dev-2",
+     "sender_kind": "agent",
+     "text": "Got both, checking the code so I can tell you what each one costs.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "dev don't process the feedback yet please",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "fu-name-spaced",
+   "expect": [
+    "dev-2"
+   ],
+   "note": "Spoken form of the agent's name, after it got no reply.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "1. the add participant button should be its own button 2. sort rooms by latest activity",
+     "addressed": []
+    },
+    {
+     "sender": "dev-2",
+     "sender_kind": "agent",
+     "text": "Got both, checking the code so I can tell you what each one costs.",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "don't process the feedback yet please",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "dev 2 ??",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "top-yes",
+   "expect": [
+    "worker-local"
+   ],
+   "note": "One-word answer to the worker's question to him, at the top level.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    },
+    {
+     "sender": "worker-local",
+     "sender_kind": "agent",
+     "text": "@sam PR 1967 has all the wording changes. Want screenshots of each page too?",
+     "addressed": [
+      "sam"
+     ]
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "sam",
+    "text": "yes",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "top-add-screens",
+   "expect": [
+    "worker-local"
+   ],
+   "note": "Answers the worker's offer at the top level.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    },
+    {
+     "sender": "worker-local",
+     "sender_kind": "agent",
+     "text": "@sam PR 1967 has all the wording changes. Want screenshots of each page too?",
+     "addressed": [
+      "sam"
+     ]
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "sam",
+    "text": "add screenshots please.",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "top-fix-them",
+   "expect": [
+    "dev-2"
+   ],
+   "note": "Answers the agent's question at the top level.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    },
+    {
+     "sender": "dev-2",
+     "sender_kind": "agent",
+     "text": "@ivy two review comments on 1302 are from the bot; want me to fix them?",
+     "addressed": [
+      "ivy"
+     ]
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "ivy",
+    "text": "yeah fix them ofc!",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "top-rebase",
+   "expect": [
+    "dev-2"
+   ],
+   "note": "Adds to the agent's task at the top level.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    },
+    {
+     "sender": "dev-2",
+     "sender_kind": "agent",
+     "text": "@ivy two review comments on 1302 are from the bot; want me to fix them?",
+     "addressed": [
+      "ivy"
+     ]
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "ivy",
+    "text": "rebase the pr too",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "top-merged",
+   "expect": [
+    "releaser"
+   ],
+   "note": "Tells the releaser at the top level that the PR it asked for is merged.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "cut a canary please",
+     "addressed": [
+      "releaser"
+     ]
+    },
+    {
+     "sender": "releaser",
+     "sender_kind": "agent",
+     "text": "@nora the pin-bump PR is up; merge it and I'll cut the canary.",
+     "addressed": [
+      "nora"
+     ]
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "nora",
+    "text": "merged",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "pp-lets-do-that",
+   "expect": [
+    null
+   ],
+   "note": "Answers a colleague's question; the agent only logged it.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "do you still want the brainstorm session tomorrow or push it to next week?",
+     "addressed": []
+    },
+    {
+     "sender": "pm-agent",
+     "sender_kind": "agent",
+     "text": "Added it to the open items.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "tom",
+    "text": "yes let's do that",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "pp-done-thanks",
+   "expect": [
+    null
+   ],
+   "note": "Thanks a colleague for approving the merge.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "eli",
+     "sender_kind": "person",
+     "text": "monitoring PR is up",
+     "addressed": []
+    },
+    {
+     "sender": "team-lead",
+     "sender_kind": "agent",
+     "text": "This reads as a PR announcement, so I'm not taking any action.",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "we'll move the dashboards out later",
+     "addressed": []
+    },
+    {
+     "sender": "eli",
+     "sender_kind": "person",
+     "text": "ok to merge based on this?",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "yeah",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "eli",
+    "text": "Done, thank you",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "pp-yeah",
+   "expect": [
+    null
+   ],
+   "note": "Answers a colleague's question about merging.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "eli",
+     "sender_kind": "person",
+     "text": "monitoring PR is up",
+     "addressed": []
+    },
+    {
+     "sender": "team-lead",
+     "sender_kind": "agent",
+     "text": "Not taking any action on this.",
+     "addressed": []
+    },
+    {
+     "sender": "eli",
+     "sender_kind": "person",
+     "text": "ok to merge this one?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "yeah",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "pp-makes-sense",
+   "expect": [
+    null
+   ],
+   "note": "Agrees with a colleague's point in the worker's thread.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "make the wording changes listed above",
+     "addressed": [
+      "worker-local"
+     ]
+    },
+    {
+     "sender": "worker-local",
+     "sender_kind": "agent",
+     "text": "Done: the PR has all 14 wording changes. Want me to also take screenshots of each page?",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "the colours aren't clear for colour-blind people, I'd drop the status line",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "Makes sense ok, I would remove the line then",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "pp-reply-to-colleague",
+   "expect": [
+    null
+   ],
+   "note": "Answers a colleague's question about the release.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "worker-remote",
+     "sender_kind": "agent",
+     "text": "Home page branch is rebased.",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "is the home page going in with tomorrow's release?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "nora",
+    "text": "if we can make it today yes, otherwise no",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "pp-colleague-question",
+   "expect": [
+    null
+   ],
+   "note": "Asks a colleague back.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "workforce-manager",
+     "sender_kind": "agent",
+     "text": "Release scope doc updated.",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "best way is to test it end to end locally, wdyt?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "tom",
+    "text": "how do i know what is done or not? we are still discussing changes",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "pp-categories",
+   "expect": [
+    null
+   ],
+   "note": "Answers a colleague's question.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "dev-2",
+     "sender_kind": "agent",
+     "text": "Template page shipped.",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "do we have categories on the template page? if not we can remove them right?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "tom",
+    "text": "if we dont have categories let's remove them, thanks",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "pp-ack-colleague",
+   "expect": [
+    null
+   ],
+   "note": "Volunteers for a task a colleague offered to anyone.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [
+    {
+     "sender": "workforce-manager",
+     "sender_kind": "agent",
+     "text": "New task posted: free trial message.",
+     "addressed": []
+    },
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "whoever wants to pick this up, feel free",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "ivy",
+    "text": "I'll give it a shot",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "nm-manager-hi",
+   "expect": [
+    "workforce-manager"
+   ],
+   "note": "Greets the manager by its role name.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "nora",
+    "text": "hi manager whats up",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "nm-remote-agent",
+   "expect": [
+    "worker-remote"
+   ],
+   "note": "Speaks to the remote worker by description.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "nora",
+    "text": "remote worker please check this one out, an avatar service is sending names outside",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "nm-pm",
+   "expect": [
+    "pm-agent"
+   ],
+   "note": "Speaks to the PM agent by a short name.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "pia",
+    "text": "pm can you add Alex's feedback to the tracker",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "nm-releaser",
+   "expect": [
+    "releaser"
+   ],
+   "note": "Speaks to the releaser by name.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "nora",
+    "text": "releaser new canary please",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "nm-dev-two",
+   "expect": [
+    "dev-2"
+   ],
+   "note": "Spoken form of the agent's name.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "tom",
+    "text": "dev 2 can you take the sorting change",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "an-pr-own-agent",
+   "expect": [
+    null
+   ],
+   "note": "A PR announcement for reviewers.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "eli",
+    "text": "Hosted agents v1: monitoring, alerts and a dashboard, PR 1911. What: we now report on the cloud machines behind hosted agents.",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "an-pr-small",
+   "expect": [
+    null
+   ],
+   "note": "Asks people for a review.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "ivy",
+    "text": "Small changelog PR that needs approval: PR 1847",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "an-sick",
+   "expect": [
+    null
+   ],
+   "note": "Status for colleagues.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "tom",
+    "text": "a bit under the weather today so I might be slow",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "an-cla",
+   "expect": [
+    null
+   ],
+   "note": "Asks people to clear a check and review.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "ivy",
+    "text": "The CLA check is red on 1832 and 1835, can someone clear it and review 1832?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "job-release-status",
+   "expect": [
+    "releaser"
+   ],
+   "note": "Release status is the releaser's job.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "nora",
+    "text": "did the canary from this morning ship?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "job-feedback",
+   "expect": [
+    "pm-agent"
+   ],
+   "note": "Feedback tracking is the PM agent's job.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "pia",
+    "text": "what are the top three open feedback items right now?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "job-who-on-ticket",
+   "expect": [
+    "workforce-manager"
+   ],
+   "note": "Task tracking is the manager's job.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "sam",
+    "text": "who is working on the permissions ticket?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "ab-about-manager",
+   "expect": [
+    null
+   ],
+   "note": "Talks about the manager.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "tom",
+    "text": "the manager agent has been really useful for tracking tickets",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "ab-compare",
+   "expect": [
+    null
+   ],
+   "note": "Compares two agents.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "nora",
+    "text": "I think the remote worker is faster than the local one for reviews",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "ab-dream",
+   "expect": [
+    null
+   ],
+   "note": "A comment about the product.",
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ivy",
+     "sender_kind": "person",
+     "text": "home page PR is up, screenshots in the description",
+     "addressed": []
+    },
+    {
+     "sender": "pia",
+     "sender_kind": "person",
+     "text": "I'll collect the onboarding feedback by friday",
+     "addressed": []
+    },
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "permissions work is almost done, then I can pick up the next one",
+     "addressed": []
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "nice, thanks all",
+     "addressed": []
+    }
+   ],
+   "thread": [],
+   "message": {
+    "sender": "eli",
+    "text": "picking up which agent you're talking to without a tag has been my dream",
+    "thread_id": null
+   }
+  }
+ ]
+}

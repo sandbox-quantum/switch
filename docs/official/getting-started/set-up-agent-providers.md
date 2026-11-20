@@ -1,55 +1,84 @@
 # Set up agent providers
 
-_Make sure the agent providers you use are installed and can reach Switch_
+_Check that the AI coding agent you use is installed and signed in, so Switch can start it_
 
-Published at <https://docs.switchagents.ai/flintai/switch/getting-started/set-up-agent-providers> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/getting-started/set-up-agent-providers> — link readers there, not to this file.
 
-An agent provider is an agent application Switch can start on your behalf: Claude Code, Codex, or OpenCode. Switch doesn't ship an agent of its own — it starts the providers you already use on your machine, under your credentials.
+Switch works with these AI coding agents: Claude Code, OpenCode, Codex, Cursor, and Antigravity. We call the one you choose your **agent provider**.
 
-If you already use one of these tools, the agent provider is installed and there is nothing more to add to it: Switch Console gives every session it starts the Switch tools and the instructions for using them. If you don't, Switch Console can install the provider for you.
+Switch doesn't include its own AI agent. Instead, it starts your chosen provider under your own account, on a machine you control: this computer, or a remote host you've onboarded, such as a virtual machine or another machine you reach over SSH.
 
 **Note**
 
-An agent provider is the application that Switch uses to run an agent, not the model that agent uses. Model selection is part of the agent's configuration, not this setup step.
+This is different from an agent you build and run in a hosted platform, such as Salesforce Agentforce or Microsoft Copilot Studio. Those agents run on their platform and aren't agent providers that Switch can start.
 
-## Set up an agent provider
+What **Auto mode** lets an agent do without asking depends on the provider. See [Let the agent act without asking](agent-settings.md#let-the-agent-act-without-asking).
 
-### Open provider settings
+## Before you begin
 
-Select **Settings** at the bottom of the sidebar, then **Agent providers**.
+Switch starts the provider wherever the agent runs. For an agent on this computer, set the provider up here. For an agent on a remote host, set it up on the host. See [Run an agent on the host](../deploy/host-remotely.md#run-an-agent-on-the-host).
 
-### Find your provider
+## Check your agent provider
 
-The list shows the agent providers Switch supports. Each provider's row reports its status: **Installed** or **Not installed**. Filter the list by **Installed** or **Not installed** to find a provider faster.
+At the bottom of the sidebar, select **Settings**, then **Agent providers**. The list is headed **All agents** and shows every provider Switch supports. The line under each provider's name says whether it's ready:
 
-If your provider isn't listed, choose one that is. Switch Console can't start a provider it doesn't define.
+| Line under the name | What to do |
+| :-- | :-- |
+| **Signed in** | The provider is ready. See [Confirm the setup](#confirm-the-setup). |
+| **CLI not installed** | [Install the provider](#install-the-provider). |
+| **Not signed in** | [Sign in to the provider](#sign-in-to-the-provider). |
 
-**Tip**
-
-The list shows what Switch found when it was loaded. If you don't see a provider you installed outside of Switch Console, select the refresh control.
+Go by the line under the name, not the **Installed** or **Not installed** badge. A row can read **Installed** while the provider still isn't ready.
 
 ### Install the provider
 
-Switch Console selects an installation method and shows the command it will run. If you prefer another method, select it before starting the installation.
+Select the provider to open its details. If it isn't installed, Switch Console offers to install it there. If Switch Console can't install it on your computer, install the provider's command-line tool (CLI) the way its own documentation describes. Then, on **Agent providers**, select the refresh icon. Switch Console checks `~/.local/bin` each time you refresh, so it finds a CLI installed there without a restart.
+
+If the line still reads **CLI not installed**, the installer put the CLI somewhere else. Quit Switch Console completely and open it again, so it rereads your PATH:
+
+### macOS
+
+Press Command+Q. Closing the window leaves Switch Console running.
+
+### Windows
+
+Close the Switch Console window, which quits it, then open Switch Console again. If it doesn't open again, see [Switch Console doesn't open right after you close it](../resources/troubleshooting.md#window-doesnt-quit).
+
+### Linux
+
+Close the Switch Console window, which quits it, then open Switch Console again. If it doesn't open again, see [Switch Console doesn't open right after you close it](../resources/troubleshooting.md#window-doesnt-quit).
+
+If it still reads **CLI not installed** after you reopen Switch Console, see [Getting an agent running](../resources/troubleshooting.md#getting-an-agent-running).
+
+### Sign in to the provider
+
+Select the provider to open its details. Under **Run in a terminal on this computer, then Recheck**, the details show the provider's sign-in command, with a **Copy** button. Run the command in a terminal, sign in, then select **Recheck**. For a provider on a remote host, sign in from the host instead. See [Run an agent on the host](../deploy/host-remotely.md#run-an-agent-on-the-host).
+
+Switch uses the account the provider is signed in to, whether that's a subscription or an API key. When you first set up switch-buddy, its setup runs the sign-in for you. From **Agent providers**, Switch Console can't sign you in itself. If the sign-in command doesn't work for you, see the provider's own documentation.
+
+## Confirm the setup
+
+You're ready to add an agent when:
+
+- The line under the provider's name reads **Signed in**.
+- The card in its details reads **Signed in** and **CLI installed**.
+
+For example, a Claude Code setup that's ready reads **Signed in** under the name. Its card reads **Claude Code · Signed in**, with **On this computer · CLI installed** beneath.
 
 **Note**
 
-Skip this step if the provider already says **Installed**.
+Claude Code and Codex may ask you to confirm that you trust a folder the first time they work in it. A session can't start while it waits for this confirmation.
 
-**Note**
+Switch Console confirms it for you before launch. **Auto-trust worktree directories**, under **General** in **Settings**, is on by default.
 
-You don't enter credentials here. Switch asks for those when you add an agent to a server.
+If a session still doesn't start, see [Troubleshooting](../resources/troubleshooting.md).
 
-To add another, return to **Settings** and select **Agent providers**.
+## Update the provider
 
-## Confirm it worked
+Switch Console also shows when a newer version of the provider CLI is available. In the provider's details, the **Installation** section reads **Newer version available**, with the command it runs and an **Update** button.
 
-The provider's row reports **Installed**.
-
-**Note**
-
-Claude Code and Codex ask you to confirm you trust a folder the first time they work in one, and a session waiting on that confirmation never starts. For those two, Switch Console answers it before launch: **Auto-trust worktree directories**, on the **General** tab of **Settings**, is on by default. If a session never starts, see [Troubleshooting](../resources/troubleshooting.md).
+This updates your provider, not Switch.
 
 ## Next steps
 
-- [Onboard your agents](onboard-your-agents.md) — Register an agent so you can invite it into any room on your server
+- [Add a custom agent](add-a-second-agent.md) — Register an agent so you can invite it into any room on your server

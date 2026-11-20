@@ -6,6 +6,7 @@ import { confirmLeaveChat } from '@renderer/features/chats/components/chat-actio
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
@@ -79,7 +80,13 @@ const ChatConfiguration = observer(function ChatConfiguration({
               permissions={{
                 canWrite: chat.canManage,
                 canChangeMembers: chat.canManage,
+                canInviteAgents: chat.canManage,
+                canAddPeople: chat.canManage,
+                canAttach: chat.canManage,
+                canRemoveMembers: chat.canManage,
                 canManage: chat.canManage,
+                canArchive: chat.canManage,
+                canManageAdmins: false,
                 canUnlink: chat.canManage,
               }}
             />
@@ -178,8 +185,8 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
           )}
           {!permissions.canWrite && (
             <Notice icon={<Lock className="size-3.5" />}>
-              Only {room.ownerName ?? 'the room’s owner'} or a workspace admin can change this
-              room’s settings.
+              Only {room.ownerName ?? 'the room’s owner'}, a room admin or a workspace admin can
+              change this room’s settings.
             </Notice>
           )}
           {/* Keyed on the room so the drafts below belong to the room on screen:
@@ -204,7 +211,8 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
               room={room}
               autoRoute={room.autoRoute}
               canWrite={permissions.canWrite}
-              canManage={permissions.canManage}
+              // Its owner's or an admin's on a server that predates room admins.
+              canChooseTriage={permissions.canManage || room.viewerIsRoomAdmin}
             />
           )}
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
@@ -247,7 +255,6 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
   room: RemoteRoomDetail;
 }) {
   const showDeleteRoomModal = useShowModal('deleteRoomModal');
-  const { navigate } = useNavigate();
 
   if (!switchRoomsStore.canDeleteRoom(workspaceId, room)) return null;
 
@@ -274,7 +281,7 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
               roomName: roomTitle(room),
               // The page this is on is the deleted room's own, so staying would
               // leave a settings form for something that no longer exists.
-              onSuccess: () => navigate('home'),
+              onSuccess: () => navigateHome(),
             })
           }
         >
@@ -531,13 +538,13 @@ const AutoRouteSection = observer(function AutoRouteSection({
   room,
   autoRoute,
   canWrite,
-  canManage,
+  canChooseTriage,
 }: {
   workspaceId: string;
   room: RemoteRoomDetail;
   autoRoute: NonNullable<RemoteRoomDetail['autoRoute']>;
   canWrite: boolean;
-  canManage: boolean;
+  canChooseTriage: boolean;
 }) {
   const remoteAgents = useWorkspaceAgents(workspaceId);
   const remoteById = new Map((remoteAgents.data ?? []).map((a) => [a.id, a]));
@@ -552,7 +559,7 @@ const AutoRouteSection = observer(function AutoRouteSection({
       autoRoute={autoRoute}
       agents={agents}
       canWrite={canWrite}
-      canManage={canManage}
+      canChooseTriage={canChooseTriage}
       detailKey={roomDetailKey(workspaceId, room.id)}
     />
   );

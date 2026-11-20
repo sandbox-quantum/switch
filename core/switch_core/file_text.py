@@ -28,7 +28,6 @@ import io
 import json
 import logging
 import posixpath
-import resource
 import sys
 import weakref
 import zipfile
@@ -568,8 +567,15 @@ async def _read_in_worker(kind: DocumentKind, data: bytes, filename: str) -> Fil
 def _limit_memory(limit: int) -> None:
     # Only Linux enforces an address-space limit; elsewhere the time limit
     # is the only bound.
-    if sys.platform.startswith("linux"):
-        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+    # `resource` is Unix-only: importing it at module level stops switch-core
+    # from starting on Windows (CHOO-4461).
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import resource
+    except ImportError:
+        return
+    resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
 
 def _worker_main(kind: str, memory_limit: int) -> None:

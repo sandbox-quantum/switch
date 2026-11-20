@@ -4,6 +4,9 @@ WORKDIR /app
 COPY gateway/package.json gateway/package-lock.json ./
 RUN npm ci
 COPY gateway/ .
+# A dashboard test imports this Console module to check the links Console opens;
+# `tsc -b` compiles tests, so it sits where that relative import expects it.
+COPY console/apps/switch-console-desktop/src/shared/core/switch-servers/dashboard-pages.ts /console/apps/switch-console-desktop/src/shared/core/switch-servers/
 RUN npm run build
 
 FROM nginx:alpine

@@ -54,6 +54,14 @@ class DocumentStore:
         )
         return list(result.scalars().all())
 
+    async def list_library(self, session: AsyncSession) -> list[Document]:
+        """Every library document in the bound tenant, whoever owns it: none
+        of a room's own."""
+        result = await session.execute(
+            select(Document).where(Document.room_id.is_(None))
+        )
+        return list(result.scalars().all())
+
     async def update_fields(
         self,
         session: AsyncSession,
@@ -127,14 +135,16 @@ class DocumentStore:
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, document_id: str
-    ) -> None:
-        await session.execute(
+    ) -> bool:
+        """Detach it from a room, saying whether it was attached."""
+        result = await session.execute(
             delete(room_documents).where(
                 room_documents.c.room_id == room_id,
                 room_documents.c.document_id == document_id,
             )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def list_for_room(
         self, session: AsyncSession, room_id: str

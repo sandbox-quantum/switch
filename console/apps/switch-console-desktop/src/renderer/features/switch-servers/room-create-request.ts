@@ -49,7 +49,7 @@ export type RoomCreateOptions = {
 };
 
 export const DEFAULT_ROOM_OPTIONS: RoomCreateOptions = {
-  channel: { kind: 'new', private: false },
+  channel: { kind: 'new', private: true },
   groupId: null,
   access: null,
 };
@@ -118,7 +118,8 @@ function roomOptionsParams(options: RoomCreateOptions, bridgeType: string) {
   return {
     channel,
     groupId: options.groupId,
-    access: options.access,
+    // A room on a messaging app takes its access from its channel.
+    access: null,
   };
 }
 

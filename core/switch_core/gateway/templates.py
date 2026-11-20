@@ -13,11 +13,16 @@ already answered — agreeing right up until the day it did not.
 
 from __future__ import annotations
 
+import logging
+from collections import OrderedDict
+from collections.abc import Sequence
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.agent_templates import TemplateCounts, template_counts
 from switch_core.authz import (
     Action,
     Principal,
@@ -28,15 +33,17 @@ from switch_core.authz import (
     validate_visibility_pair,
 )
 from switch_core.config import SwitchConfig
-from switch_core.content_disposition import content_disposition
+from switch_core.content_disposition import UNTRUSTED_FILE_CSP, content_disposition
 from switch_core.db.models import Template, User
 from switch_core.db.stores.template_store import (
+    KEEP,
     TemplateListing,
     TemplateNameTaken,
+    TemplateRuns,
     TemplateStore,
 )
 from switch_core.db.stores.user_store import UserStore
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     current_telemetry,
@@ -50,6 +57,7 @@ from switch_core.gateway.schemas import (
     TemplateDeleteResponse,
     TemplateDetail,
     TemplateFinding,
+    TemplateRunRecorded,
     TemplateSummary,
     TemplateUpdateRequest,
     TemplateValidateRequest,
@@ -61,22 +69,16 @@ from switch_core.official_templates import (
     matches,
     official_template,
     official_templates,
+    slug_of,
 )
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_days
+from switch_core.telemetry.snapshot import normalise_template_kind
 from switch_core.template_lint import lint_template
 
-
-def _kind(value: str | None) -> str:
-    """A template's kind as the catalogue spells it.
-
-    The column is free text, so only the three the product uses are named and
-    an operator's own kind reports as `other`.
-    """
-    return value if value in ("room", "group", "agent") else "other"
-
-
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def _size_bytes(content: str) -> int:
@@ -84,8 +86,70 @@ def _size_bytes(content: str) -> int:
     return len(content.encode("utf-8"))
 
 
+def _counts_or_none(template_id: str, content: str) -> TemplateCounts | None:
+    """What a document creates, or None for one that does not parse: a card
+    without counts, and a warning, rather than a catalogue that fails to
+    list."""
+    try:
+        return template_counts(content)
+    except ValueError as e:
+        logger.warning(
+            "Template %s does not parse, so it is listed without counts: %s",
+            template_id,
+            e,
+        )
+        return None
+
+
+# What a stored template creates follows from its document, and a document
+# changes only with its revision, so each revision is parsed once in this
+# process: a listing reads only the documents it has not counted yet, rather
+# than every document in the catalogue every time (see `TemplateListing`).
+_COUNTED_REVISIONS = 4096
+_counted: OrderedDict[tuple[str, int], TemplateCounts | None] = OrderedDict()
+
+
+def _revision_counts(
+    template_id: str, version: int, content: str
+) -> TemplateCounts | None:
+    key = (template_id, version)
+    if key not in _counted:
+        _counted[key] = _counts_or_none(template_id, content)
+        while len(_counted) > _COUNTED_REVISIONS:
+            _counted.popitem(last=False)
+    _counted.move_to_end(key)
+    return _counted[key]
+
+
+async def _stored_counts(
+    session: AsyncSession, store: TemplateStore, rows: Sequence[TemplateListing]
+) -> dict[str, TemplateCounts | None]:
+    """Each listed template's counts, by id, reading the documents of only
+    those whose revision has not been counted."""
+    counts = {
+        row.id: _counted[(row.id, row.version)]
+        for row in rows
+        if (row.id, row.version) in _counted
+    }
+    unread = [row.id for row in rows if row.id not in counts]
+    for template_id, version, content in await store.documents(session, unread):
+        counts[template_id] = _revision_counts(template_id, version, content)
+    return counts
+
+
+@lru_cache(maxsize=64)
+def _official_counts(template_id: str, content: str) -> TemplateCounts | None:
+    """By content as well as id: one official id serves a different
+    document with agent management on and off."""
+    return _counts_or_none(template_id, content)
+
+
 def _summary(
-    row: TemplateListing, owner_name: str | None, principal: Principal
+    row: TemplateListing,
+    owner_name: str | None,
+    principal: Principal,
+    runs: TemplateRuns | None,
+    counts: TemplateCounts | None,
 ) -> TemplateSummary:
     return TemplateSummary(
         id=row.id,
@@ -94,10 +158,16 @@ def _summary(
         name=row.name,
         description=row.description,
         kind=row.kind,
+        use_case=row.use_case,  # type: ignore[arg-type]
+        agent_count=counts.agents if counts else None,
+        room_count=counts.rooms if counts else None,
         read_visibility=row.read_visibility,
         write_visibility=row.write_visibility,
         can_edit=can(principal, "write", row),
         can_manage=can_manage(principal, row.owner_id),
+        run_blocked_reason=None,
+        run_count=runs.count if runs else 0,
+        last_run_at=runs.last_run_at if runs else None,
         version=row.version,
         size_bytes=row.size_bytes,
         created_at=str(row.created_at),
@@ -105,7 +175,10 @@ def _summary(
     )
 
 
-def _official_detail(template: OfficialTemplate) -> TemplateDetail:
+def _official_detail(
+    template: OfficialTemplate, is_admin: bool, runs: TemplateRuns | None
+) -> TemplateDetail:
+    counts = _official_counts(template.id, template.content)
     return TemplateDetail(
         id=template.id,
         owner_id=None,
@@ -113,11 +186,18 @@ def _official_detail(template: OfficialTemplate) -> TemplateDetail:
         name=template.name,
         description=template.description,
         kind=template.kind,
+        use_case=template.use_case,
+        agent_count=counts.agents if counts else None,
+        room_count=counts.rooms if counts else None,
         read_visibility=template.read_visibility,
         write_visibility=template.write_visibility,
         official=True,
         can_edit=False,
-        can_manage=False,
+        # A workspace admin may remove it from the workspace, nothing more.
+        can_manage=template.removable and is_admin,
+        run_blocked_reason=template.run_blocked_reason,
+        run_count=runs.count if runs else 0,
+        last_run_at=runs.last_run_at if runs else None,
         version=template.version,
         size_bytes=_size_bytes(template.content),
         created_at="",
@@ -126,19 +206,21 @@ def _official_detail(template: OfficialTemplate) -> TemplateDetail:
     )
 
 
-def _official_or_none(
-    template_id: str, config: SwitchConfig
+async def _official_or_none(
+    template_id: str, config: SwitchConfig, session: AsyncSession, store: TemplateStore
 ) -> OfficialTemplate | None:
     """The official template an ``official:`` id names, or a 404 for one
-    this release does not ship; None for any other id."""
+    this release does not ship or this workspace removed; None for any
+    other id."""
     if not is_official(template_id):
         return None
     template = official_template(
         template_id,
-        config.feature_flags[AGENT_MANAGEMENT],
         config.feature_flags[SWITCH_BUDDY],
     )
-    if template is None:
+    if template is None or slug_of(template_id) in await store.hidden_official_slugs(
+        session
+    ):
         raise HTTPException(
             status_code=404, detail=f"Template not found: {template_id}"
         )
@@ -154,7 +236,7 @@ async def readable_template(
     config: SwitchConfig,
 ) -> Template | OfficialTemplate:
     """A template the caller may read, official or saved; 404 otherwise."""
-    official = _official_or_none(template_id, config)
+    official = await _official_or_none(template_id, config, session, store)
     if official is not None:
         return official
     return await _load_for("read", session, store, template_id, user, is_admin)
@@ -172,8 +254,12 @@ def _refuse_official(template_id: str) -> None:
 
 
 def _detail(
-    template: Template, owner_name: str | None, principal: Principal
+    template: Template,
+    owner_name: str | None,
+    principal: Principal,
+    runs: TemplateRuns | None,
 ) -> TemplateDetail:
+    counts = _revision_counts(template.id, template.version, template.content)
     return TemplateDetail(
         id=template.id,
         owner_id=template.owner_id,
@@ -181,16 +267,28 @@ def _detail(
         name=template.name,
         description=template.description,
         kind=template.kind,
+        use_case=template.use_case,  # type: ignore[arg-type]
+        agent_count=counts.agents if counts else None,
+        room_count=counts.rooms if counts else None,
         read_visibility=template.read_visibility,
         write_visibility=template.write_visibility,
         can_edit=can(principal, "write", template),
         can_manage=can_manage(principal, template.owner_id),
+        run_blocked_reason=None,
+        run_count=runs.count if runs else 0,
+        last_run_at=runs.last_run_at if runs else None,
         version=template.version,
         size_bytes=_size_bytes(template.content),
         created_at=str(template.created_at),
         updated_at=str(template.updated_at),
         content=template.content,
     )
+
+
+async def _runs_of(
+    session: AsyncSession, store: TemplateStore, template_id: str
+) -> TemplateRuns | None:
+    return (await store.run_stats(session, [template_id])).get(template_id)
 
 
 async def _owner_names(
@@ -306,19 +404,34 @@ async def list_templates(
     names = await _owner_names(session, user_store, {r.owner_id for r in rows})
     principal = Principal(user.id, is_admin)
     # The ones that come with Switch first, as nobody's own.
-    official = (
+    hidden = await template_store.hidden_official_slugs(session)
+    shipped = (
         []
         if owner_id
         else [
-            TemplateSummary(**_official_detail(t).model_dump(exclude={"content"}))
+            t
             for t in official_templates(
-                config.feature_flags[AGENT_MANAGEMENT],
                 config.feature_flags[SWITCH_BUDDY],
             )
-            if matches(t, q, kind)
+            if matches(t, q, kind) and slug_of(t.id) not in hidden
         ]
     )
-    return official + [_summary(r, names.get(r.owner_id), principal) for r in rows]
+    runs = await template_store.run_stats(
+        session, [t.id for t in shipped] + [r.id for r in rows]
+    )
+    counts = await _stored_counts(session, template_store, rows)
+    official = [
+        TemplateSummary(
+            **_official_detail(t, is_admin, runs.get(t.id)).model_dump(
+                exclude={"content"}
+            )
+        )
+        for t in shipped
+    ]
+    return official + [
+        _summary(r, names.get(r.owner_id), principal, runs.get(r.id), counts.get(r.id))
+        for r in rows
+    ]
 
 
 @router.post("/templates", status_code=201)
@@ -343,6 +456,7 @@ async def create_template(
                 description=req.description,
                 kind=req.kind,
                 content=req.content,
+                use_case=req.use_case,
                 read_visibility=req.read_visibility,
                 write_visibility=req.write_visibility,
             ),
@@ -354,12 +468,15 @@ async def create_template(
     # brings rooms and agents with it is a different thing from one that
     # carries neither, and that shape is reportable where the name is not.
     emit_safely(
-        current_telemetry(), "template_created", {"template_kind": _kind(req.kind)}
+        current_telemetry(),
+        "template_created",
+        {"template_kind": normalise_template_kind(req.kind)},
     )
     return _detail(
         template,
         await _owner_name(session, user_store, user.id),
         Principal(user.id, is_admin),
+        None,
     )
 
 
@@ -412,9 +529,11 @@ async def get_template(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TemplateDetail:
-    official = _official_or_none(template_id, config)
+    official = await _official_or_none(template_id, config, session, template_store)
     if official is not None:
-        return _official_detail(official)
+        return _official_detail(
+            official, is_admin, await _runs_of(session, template_store, template_id)
+        )
     template = await _load_for(
         "read", session, template_store, template_id, user, is_admin
     )
@@ -422,6 +541,7 @@ async def get_template(
         template,
         await _owner_name(session, user_store, template.owner_id),
         Principal(user.id, is_admin),
+        await _runs_of(session, template_store, template_id),
     )
 
 
@@ -435,8 +555,8 @@ async def get_template_content(
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> Response:
     """The stored document itself, byte for byte, with no envelope around it."""
-    template: Template | OfficialTemplate | None = _official_or_none(
-        template_id, config
+    template: Template | OfficialTemplate | None = await _official_or_none(
+        template_id, config, session, template_store
     )
     if template is None:
         template = await _load_for(
@@ -452,7 +572,39 @@ async def get_template_content(
             # The bytes are whatever someone uploaded, so a browser must not be
             # talked into sniffing them into something it will render.
             "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": UNTRUSTED_FILE_CSP,
         },
+    )
+
+
+@router.post("/templates/{template_id}/runs", status_code=201)
+async def record_template_run(
+    template_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> TemplateRunRecorded:
+    """Count a run of a template the caller may read, as Switch Console
+    reports once a whole run has succeeded, however it ran: through the
+    server or with agents it made itself. It is refused, as not found, for a
+    template the caller could not have run.
+
+    Nothing checks that a run happened, so a person's report is believed at
+    most once per template in ``REPORTED_RUN_WINDOW``, and not at all within
+    that window of a run the server counted for them itself
+    (``from-template-document`` with the template's id), which Console
+    reports as well. ``counted`` says whether this one was."""
+    await readable_template(
+        template_id, session, template_store, user, is_admin, config
+    )
+    counted = await template_store.record_reported_run(session, template_id, user.id)
+    await session.commit()
+    return TemplateRunRecorded(
+        template_id=template_id,
+        run_count=await template_store.run_count(session, template_id),
+        counted=counted,
     )
 
 
@@ -510,6 +662,7 @@ async def patch_template(
             description=req.description,
             kind=req.kind,
             content=req.content,
+            use_case=req.use_case if "use_case" in req.model_fields_set else KEEP,
             read_visibility=req.read_visibility,
             write_visibility=req.write_visibility,
             guard=still_allowed,
@@ -527,6 +680,7 @@ async def patch_template(
         template,
         await _owner_name(session, user_store, template.owner_id),
         Principal(user.id, is_admin),
+        await _runs_of(session, template_store, template_id),
     )
 
 
@@ -537,12 +691,16 @@ async def delete_template(
     template_store: Annotated[TemplateStore, Depends(get_template_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TemplateDeleteResponse:
-    _refuse_official(template_id)
+    if is_official(template_id):
+        return await _remove_official(
+            template_id, session, template_store, user, is_admin, config
+        )
     template = await _load_for(
         "delete", session, template_store, template_id, user, is_admin
     )
-    kind, age = _kind(template.kind), age_days(template.created_at)
+    kind, age = normalise_template_kind(template.kind), age_days(template.created_at)
     try:
         await template_store.delete(session, template_id)
     except ValueError as e:
@@ -553,4 +711,37 @@ async def delete_template(
         "template_deleted",
         {"template_kind": kind, "age_days": age},
     )
+    return TemplateDeleteResponse(deleted_id=template_id)
+
+
+async def _remove_official(
+    template_id: str,
+    session: AsyncSession,
+    store: TemplateStore,
+    user: User,
+    is_admin: bool,
+    config: SwitchConfig,
+) -> TemplateDeleteResponse:
+    """Remove an official template from this workspace, for an admin. It stays
+    on every other workspace, and nothing made from it changes."""
+    official = official_template(
+        template_id,
+        config.feature_flags[SWITCH_BUDDY],
+    )
+    if official is None:
+        raise HTTPException(
+            status_code=404, detail=f"Template not found: {template_id}"
+        )
+    if not official.removable:
+        _refuse_official(template_id)
+    if not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This template comes with Switch. Only a workspace admin can "
+                "remove it from the workspace."
+            ),
+        )
+    await store.hide_official(session, slug_of(template_id), user.id)
+    await session.commit()
     return TemplateDeleteResponse(deleted_id=template_id)

@@ -8,29 +8,30 @@ import { SCREEN_READER_ONLY } from "../screenReaderOnly";
  * The state is in words, "Enabled" or "Disabled", so everyone reads the same
  * line. The switch follows only for someone who may change it; nobody gets a
  * greyed-out switch, since someone who can't change it has nothing to press.
- * A connector the level above has turned off says so in place of both: it
- * can't be switched back on from here.
+ * A connector the switch can't decide (the level above has turned it off, or
+ * it can't be used here at all) says why in place of both.
  */
 export default function ConnectorAvailability({
   available,
   connectorName,
   scopeName,
-  turnedOffBy,
+  blocked,
   onChange,
 }: {
   available: boolean;
   connectorName: string;
   /** The level this decides for, as the switch names it: "… available in Acme". */
   scopeName: string;
-  /** The level above that has the connector off ("Off for SandboxAQ"), or null. */
-  turnedOffBy: string | null;
+  /** Why the switch can't decide it here ("Off for SandboxAQ", "Switch's app
+   * isn't set up"), said in its place; null where it can. */
+  blocked: string | null;
   /** Null when the viewer may not change it: then there is no switch. */
   onChange: ((available: boolean) => void) | null;
 }) {
-  if (turnedOffBy !== null) {
+  if (blocked !== null) {
     return (
       <Typography variant="body2" color="text.secondary">
-        Off for {turnedOffBy}
+        {blocked}
       </Typography>
     );
   }

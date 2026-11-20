@@ -87,7 +87,7 @@ describe('the replay onboarding row', () => {
 
     expect(onboardingStore.rehearsal).toBe(true);
     expect(onboardingStore.page).toBe('welcome');
-    expect(state.navigate).toHaveBeenCalledWith('home');
+    expect(state.navigate).toHaveBeenCalledWith('noServer');
   });
 
   it('asks before a fresh install, and does nothing until confirmed', async () => {

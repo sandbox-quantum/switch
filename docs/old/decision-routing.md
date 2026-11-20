@@ -11,9 +11,23 @@ does when there is none or it fails.
 ## Turning it on for a server
 
 Auto-route needs two feature flags, `follow_the_conversation` and
-`decision_routing`, in `FEATURE_FLAGS_ENABLED`. With the flag off nothing is
-ever sent to a decision service, `!auto-route` says the feature is off, and
-the room toggle shows it unavailable.
+`decision_routing`, in `FEATURE_FLAGS_ENABLED`. With the flag off the server
+offers nothing of auto-route, so a deployment can run a release that has it
+without anyone seeing it:
+
+- nothing is ever sent to a decision service;
+- the decision settings routes (`/gateway/decision-settings`, its `/test`) and
+  `PUT /gateway/rooms/{id}/auto-route` are not mounted, so they answer 404;
+- a room's detail carries no `auto_route`, so Console and the dashboard show
+  no auto-route section;
+- Console offers no **Admin → Decision routing**;
+- `!auto-route` is not a command: it gets "Unknown command", and it is missing
+  from `!help`, Console chat's command list, the Slack manifest Switch offers
+  for a team's own app, and the Discord and Telegram command menus.
+
+Turning the flag off deletes nothing. A workspace's choice of backend and each
+room's auto-route and triage agent are kept, and apply again once the flag is
+back on.
 
 ## The server default
 
@@ -84,7 +98,10 @@ workspace (`decision_settings`); no row means the server default.
 - **Haiku on Bedrock**: offered only where the operator set
   `DECISION_BEDROCK_ENABLED`; no key is stored.
 - **Confidence threshold**: between 0 and 1, sent to the service as the
-  confidence it needs to name an agent. Empty leaves it to the service.
+  confidence it needs to name an agent. Empty leaves it to the service. Where
+  the service picks by lead instead (`DECISION_MIN_LEAD`, see the decision
+  service's README), a workspace threshold puts that workspace's decisions
+  back on the threshold.
 
 A saved key is encrypted under the server's keys (`SECRET_KEYS`, re-encrypted
 on rotation like every other stored secret) and only its last four characters
@@ -110,8 +127,9 @@ only: `GET`, `PUT` and `DELETE /gateway/decision-settings`, and
 `!auto-route on` and the auto-route toggle on the room page (Console and the
 gateway, `PUT /gateway/rooms/{id}/auto-route`) set the same switch. Turning it
 on is refused, with the reason and who can fix it, where it cannot act: the
-flag is off, or the workspace resolves to no backend. A room's detail reports
-`auto_route: {on, available, reason, fallback_agent, fallback_agent_name}`.
+workspace resolves to no backend. A room's detail reports
+`auto_route: {on, available, reason, fallback_agent, fallback_agent_name}`,
+or null on a server with the flag off.
 
 ### Who can change it
 

@@ -8,7 +8,6 @@ import logging
 import re
 import time
 from contextlib import AbstractContextManager, nullcontext
-from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -28,10 +27,12 @@ from switch_core.db.stores.user_store import (
     SignupRefusedError,
     UserStore,
 )
+from switch_core.gateway.admission import writes_on_get
 from switch_core.gateway.auth import (
     SIGNUP_REFUSED_DETAIL,
     initial_tenant_claim,
     set_session_cookie,
+    signed_in_now,
     signup_refused_by_edge,
 )
 from switch_core.gateway.dependencies import (
@@ -271,7 +272,9 @@ async def _bring_in_organizations(
         )
 
 
-@router.get("/auth/oidc/callback", name="oidc_callback")
+@router.get(
+    "/auth/oidc/callback", name="oidc_callback", dependencies=[Depends(writes_on_get)]
+)
 async def oidc_callback(
     request: Request,
     config: Annotated[SwitchConfig, Depends(get_config)],
@@ -479,7 +482,7 @@ async def oidc_callback(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        datetime.now(UTC),
+        signed_in_now(),
     )
     return response
 
@@ -524,6 +527,6 @@ async def oidc_exchange(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        datetime.now(UTC),
+        signed_in_now(),
     )
     return response

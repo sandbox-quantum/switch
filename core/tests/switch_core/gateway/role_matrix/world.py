@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.connections.flows import KIND as SERVICE_FLOW
 from switch_core.db.models import (
     Agent,
@@ -37,6 +38,7 @@ from switch_core.db.models import (
     Reference,
     ReferenceType,
     Room,
+    RoomAdmin,
     RoomGroup,
     RoomLink,
     RoomRole,
@@ -258,6 +260,34 @@ class World:
 
         return str(await self._once("sub_agent_parented", make))
 
+    async def open_agent(self) -> str:
+        """An agent of the owner's that anyone may address, so whoever may
+        invite agents into a room may invite it."""
+
+        async def make(session: AsyncSession) -> str:
+            agent_id = await self._agent("open-agent")(session)
+            agent = await session.get(Agent, agent_id)
+            assert agent is not None
+            agent.addressing_policy = addressing_policy_for("anyone")
+            await session.flush()
+            return agent_id
+
+        return str(await self._once("open_agent", make))
+
+    async def restricted_agent(self) -> str:
+        """An agent of the owner's that only the owner may address, so only
+        the owner may open it to anyone else."""
+
+        async def make(session: AsyncSession) -> str:
+            agent_id = await self._agent("restricted-agent")(session)
+            agent = await session.get(Agent, agent_id)
+            assert agent is not None
+            agent.addressing_policy = addressing_policy_for("owner_only")
+            await session.flush()
+            return agent_id
+
+        return str(await self._once("restricted_agent", make))
+
     async def other_agent(self) -> str:
         return str(await self._once("other_agent", self._agent("other-agent")))
 
@@ -333,10 +363,6 @@ class World:
         remove from it."""
         return await self._person("org-target", workspace=False, organization=True)
 
-    async def user_target(self) -> str:
-        """An account in no workspace, for the operator to delete."""
-        return await self._person("user-target", workspace=False, organization=False)
-
     # ── Rooms and resources ──────────────────────────────────────────────
 
     async def room(self) -> str:
@@ -360,6 +386,62 @@ class World:
             return room.id
 
         return str(await self._once("readable_room", make))
+
+    async def joined_room(self) -> str:
+        """A private room of the owner's that the member takes part in, through
+        an agent of theirs in it: the room policy's "in the room" tier, with
+        the owner's reference attached and the owner's agent in it."""
+        return await self._joined_room("joined-room", room_admin=False)
+
+    async def administered_room(self) -> str:
+        """`joined_room`, where the owner has made the member a room admin:
+        the room policy's "room admin" tier."""
+        return await self._joined_room("administered-room", room_admin=True)
+
+    async def _joined_room(self, kind: str, *, room_admin: bool) -> str:
+        reference_id = await self.reference()
+        agent_id = await self.agent()
+
+        async def make(session: AsyncSession) -> str:
+            room = Room(
+                transport_room_id=f"!{self.name(kind)}:test",
+                name=self.name(kind),
+                description="",
+                owner_id=self.owner_id,
+                **_PRIVATE,
+            )
+            session.add(room)
+            await session.flush()
+            theirs = await add_agent(
+                session,
+                name=self.name("member-agent"),
+                owner_id=self.id_of(Persona.MEMBER),
+            )
+            await session.execute(
+                insert(room_agents).values(
+                    [
+                        {"room_id": room.id, "agent_id": theirs.id},
+                        {"room_id": room.id, "agent_id": agent_id},
+                    ]
+                )
+            )
+            await session.execute(
+                insert(room_references).values(
+                    room_id=room.id, reference_id=reference_id
+                )
+            )
+            if room_admin:
+                session.add(
+                    RoomAdmin(
+                        room_id=room.id,
+                        user_id=self.id_of(Persona.MEMBER),
+                        granted_by=self.owner_id,
+                    )
+                )
+                await session.flush()
+            return room.id
+
+        return str(await self._once(kind, make))
 
     async def direct_room(self) -> str:
         """A DM the bridge adopted: anyone may read it, and its owner and
@@ -518,6 +600,49 @@ class World:
             holder="package_id",
         )
 
+    async def foreign_package(self) -> str:
+        """A package of the member's that everyone may read: not the
+        owner's."""
+
+        async def make(session: AsyncSession) -> str:
+            package = Package(
+                owner_id=self.id_of(Persona.MEMBER),
+                name=self.name("foreign-package"),
+                description="",
+                instructions="",
+                read_visibility="public",
+                write_visibility="private",
+            )
+            session.add(package)
+            await session.flush()
+            return package.id
+
+        return str(await self._once("foreign_package", make))
+
+    async def foreign_packaged_reference(self) -> str:
+        """The owner's private reference, in a package of someone else's
+        everyone may read: there since it was readable, and private since,
+        which the package shares with nobody."""
+        return await self._held_in(
+            "foreign_packaged_reference",
+            self.foreign_package,
+            self.reference,
+            package_references,
+            "reference_id",
+            holder="package_id",
+        )
+
+    async def foreign_packaged_document(self) -> str:
+        """The owner's private document, as `foreign_packaged_reference`."""
+        return await self._held_in(
+            "foreign_packaged_document",
+            self.foreign_package,
+            self.document,
+            package_documents,
+            "document_id",
+            holder="package_id",
+        )
+
     async def shown_reference(self) -> str:
         """The private reference, in a room everyone may read."""
         return await self._held_in(
@@ -648,6 +773,26 @@ class World:
             return document.id
 
         return str(await self._once("document", make))
+
+    async def public_document(self) -> str:
+        """A document of the owner's that everyone may read, so whoever may
+        attach to a room may attach it."""
+
+        async def make(session: AsyncSession) -> str:
+            document = Document(
+                owner_id=self.owner_id,
+                name=self.name("public-document"),
+                description="",
+                instructions="",
+                content="",
+                read_visibility="public",
+                write_visibility="private",
+            )
+            session.add(document)
+            await session.flush()
+            return document.id
+
+        return str(await self._once("public_document", make))
 
     async def package(self) -> str:
         async def make(session: AsyncSession) -> str:
@@ -874,7 +1019,7 @@ class World:
                 port=39231,
                 redirect_uri="http://127.0.0.1:39231/callback",
                 owner_label="owner",
-                details={},
+                details={"name": "Atlassian"},
                 completion_secret=await self.flow_secret(),
             )
             self._made["service_flow"] = state

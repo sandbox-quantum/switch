@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
 import { agents, kv, locations, switchServers, workspaces } from '@main/db/schema';
+import { log } from '@main/lib/logger';
 
 const mocks = vi.hoisted(() => ({
   db: undefined as AppDb | undefined,
@@ -36,6 +37,9 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({
   trackEvent: telemetryMocks.trackEvent,
 }));
 
+const clearDashboardWindowSession = vi.hoisted(() => vi.fn());
+vi.mock('./dashboard-window-sessions', () => ({ clearDashboardWindowSession }));
+
 // Imported after the mocks so the module binds to the mocked db + secrets store.
 const {
   addServer,
@@ -48,6 +52,7 @@ const {
   getServer,
   removeServer,
   renameServer,
+  serverKindOf,
   setActiveServerId,
   setDashboardUrl,
   updateServer,
@@ -63,6 +68,7 @@ describe('servers-store: rename & delete', () => {
     fixture.sqlite.pragma('foreign_keys = OFF');
     secretMocks.deleteSecret.mockReset();
     telemetryMocks.trackEvent.mockReset();
+    clearDashboardWindowSession.mockReset();
   });
 
   afterEach(() => {
@@ -394,6 +400,36 @@ describe('servers-store: rename & delete', () => {
       });
     });
 
+    it('knows Switch Cloud by its origin, as the interface does', async () => {
+      // The interface compares origins; comparing whole addresses here once
+      // filed a Cloud row the interface showed as Cloud under `external`.
+      vi.stubEnv('SWITCH_CLOUD_URL', 'https://cloud.example.com');
+      const kindOf = (url: string) => serverKindOf({ managed: false, managementKind: null, url });
+
+      expect(kindOf('https://Cloud.Example.com/gateway')).toBe('cloud');
+      expect(kindOf('https://cloud.example.com:443/')).toBe('cloud');
+      expect(kindOf('https://elsewhere.example.com')).toBe('external');
+      vi.unstubAllEnvs();
+    });
+
+    it('reports a server added by address as unknown, and says why, when the Cloud address is unreadable', async () => {
+      vi.stubEnv('SWITCH_CLOUD_URL', 'not a url');
+      const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+
+      expect(
+        serverKindOf({ managed: false, managementKind: null, url: 'https://switch.example.com' })
+      ).toBe('unknown');
+      expect(
+        serverKindOf({ managed: true, managementKind: 'local', url: 'http://localhost:8000' })
+      ).toBe('local');
+      vi.unstubAllEnvs();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Switch Cloud is misconfigured'),
+        expect.objectContaining({ error: expect.stringContaining('SWITCH_CLOUD_URL') })
+      );
+      warn.mockRestore();
+    });
+
     it('reports a managed server by the kind it was managed as', async () => {
       await fixture.db.insert(switchServers).values({
         id: 'srv-rm',
@@ -409,6 +445,18 @@ describe('servers-store: rename & delete', () => {
       expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_removed', {
         server_kind: 'remote_managed',
       });
+    });
+
+    it('clears the session the server’s old dashboard window kept', async () => {
+      await fixture.db.insert(switchServers).values({
+        id: 'srv-ext',
+        name: 'External',
+        url: 'https://switch.example.com',
+      });
+
+      await removeServer('srv-ext');
+
+      expect(clearDashboardWindowSession).toHaveBeenCalledExactlyOnceWith('srv-ext');
     });
 
     it('reports nothing for a server that was already gone', async () => {

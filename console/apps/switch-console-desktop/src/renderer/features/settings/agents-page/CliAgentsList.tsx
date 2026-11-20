@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { useProviderOfferedAnywhere } from '@renderer/lib/hooks/use-provider-offered-anywhere';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
 import { Label } from '@renderer/lib/ui/label';
@@ -34,13 +35,15 @@ export const CliAgentsList: React.FC<CliAgentsListProps> = ({
   const { data: agentPayloads } = useAgents();
   const { data: report } = useThisComputerReport();
   const normalizedQuery = searchQuery.toLowerCase();
+  const offered = useProviderOfferedAnywhere();
 
   const allAgents = useMemo(
     () =>
       (agentPayloads ?? [])
+        .filter((a) => offered(a.id))
         .filter((a) => !normalizedQuery || a.name.toLowerCase().includes(normalizedQuery))
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [agentPayloads, normalizedQuery]
+    [agentPayloads, normalizedQuery, offered]
   );
 
   const [installed, uninstalled] = useMemo(() => {

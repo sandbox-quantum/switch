@@ -71,7 +71,20 @@ export function deleteRoomAction(
 }
 
 /**
- * Whether the user may add agents to a room and take them out: what the
+ * Whether the user may bring agents into a room: what the server says of a
+ * room it listed, which takes being in the room rather than write access. A
+ * Console chat follows its own rules, and a room not listed here is left to
+ * the server to answer.
+ */
+export function mayInviteAgents(roomKey: string): boolean {
+  const workspaceId = switchRoomsStore.roomWorkspaceId(roomKey);
+  const room = switchRoomsStore.roomSummaryById(roomKey);
+  if (!workspaceId || !room || room.isConsoleChat) return true;
+  return switchRoomsStore.roomPermissions(workspaceId, room).canInviteAgents;
+}
+
+/**
+ * Whether the user may take agents out of a room: what the
  * server says of a room it listed. A direct or group conversation's platform
  * fixes who is in it. A Console chat follows its own rules, and a room not
  * listed here is left to the server to answer.

@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { buildAgentProviderCatalogue } from './agent-provider-catalogue';
 
-const plugin = (metadata: { id: string; cliLabel?: string; knownAgentType?: string }) => ({
+const plugin = (metadata: {
+  id: string;
+  cliLabel?: string;
+  shortName?: string;
+  knownAgentType?: string;
+  supportsAutoMode?: boolean;
+}) => ({
   metadata: {
     name: `${metadata.id} name`,
     description: `${metadata.id} description`,
@@ -26,20 +32,41 @@ describe('buildAgentProviderCatalogue', () => {
         description: 'beta description',
         docUrl: 'https://beta.example.com',
         cliLabel: 'beta name',
+        shortName: 'beta name',
         loginCommand: 'beta login',
         knownAgentType: 'beta',
+        supportsAutoMode: true,
       },
       expect.objectContaining({ id: 'alpha', loginCommand: 'alpha login' }),
     ]);
   });
 
-  it('takes the CLI label and gateway type from the plugin when it names them', () => {
+  it('takes the CLI label, short name and gateway type from the plugin when it names them', () => {
     const [entry] = buildAgentProviderCatalogue(
-      [plugin({ id: 'acme', cliLabel: 'Acme CLI', knownAgentType: 'acme-code' })],
+      [
+        plugin({
+          id: 'acme',
+          cliLabel: 'Acme CLI',
+          shortName: 'Acme',
+          knownAgentType: 'acme-code',
+        }),
+      ],
       [runtime('acme')]
     );
 
-    expect(entry).toMatchObject({ cliLabel: 'Acme CLI', knownAgentType: 'acme-code' });
+    expect(entry).toMatchObject({
+      cliLabel: 'Acme CLI',
+      shortName: 'Acme',
+      knownAgentType: 'acme-code',
+    });
+  });
+
+  it('preserves a provider runtime without Auto mode', () => {
+    const [entry] = buildAgentProviderCatalogue(
+      [plugin({ id: 'cursor', supportsAutoMode: false })],
+      [runtime('cursor')]
+    );
+    expect(entry.supportsAutoMode).toBe(false);
   });
 
   it('refuses a plugin with no runtime, naming it', () => {

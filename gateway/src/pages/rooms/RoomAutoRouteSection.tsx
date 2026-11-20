@@ -21,27 +21,28 @@ import { useAgents } from "../../data/hooks";
  * gets undecided messages while the decision service is failing. Shows what
  * the server says: the toggle never flips before the server has answered,
  * and where auto-route cannot work here it says why, in the server's words.
- * Anyone who may write to the room may turn it on or off (`can_write`);
- * naming the triage agent takes the room's owner or a workspace admin
- * (`can_manage`). What the viewer may not change is held, with the reason.
+ * Both are room settings: anyone who may write to the room (`can_write`: its
+ * owner, its room admins or a workspace admin) may change them. What the
+ * viewer may not change is held, with the reason.
  */
 export default function RoomAutoRouteSection({
   room,
   autoRoute,
   canWrite,
-  canManage,
 }: {
   room: RoomDetail;
   autoRoute: RoomAutoRoute;
   canWrite: boolean;
-  canManage: boolean;
 }) {
-  const { data: allAgents } = useAgents();
+  const { data: allAgents, error: agentsError } = useAgents();
   const [state, setState] = useState(autoRoute);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => setState(autoRoute), [autoRoute]);
+  const assigned = state.assigned_agent
+    ? (state.assigned_agent_name ?? state.assigned_agent)
+    : null;
 
   const triageChoices = useMemo(() => {
     const choices = (allAgents ?? [])
@@ -80,21 +81,38 @@ export default function RoomAutoRouteSection({
         <code>!auto-route</code> in the room.
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
+      {agentsError && (
+        <Alert severity="error">
+          Couldn't load the agents, so the room's agents aren't offered as its triage agent: {agentsError}
+        </Alert>
+      )}
       {!state.available && state.reason && <Alert severity="info">{state.reason}</Alert>}
+      {assigned && (
+        <Alert severity="info">
+          {state.on
+            ? `Auto-route is on but not acting: every message goes to ${assigned}, assigned with `
+            : `Every message goes to ${assigned}, assigned with `}
+          <code>!assign-agent</code>. Run <code>!unassign-agent</code> in the room
+          {state.on ? " for auto-route to decide, or turn it off here." : " before turning auto-route on."}
+        </Alert>
+      )}
       <FormControlLabel
         control={
           <Switch
             checked={state.on}
             onChange={(e) => save({ on: e.target.checked })}
-            // Turning it off stays possible where it cannot work.
-            disabled={!canWrite || saving || (!state.available && !state.on)}
+            // Turning it off stays possible where it cannot work, or while an
+            // assigned agent gets every message.
+            disabled={
+              !canWrite || saving || (!state.on && (!state.available || assigned !== null))
+            }
           />
         }
         label={state.on ? "On" : "Off"}
       />
       {!canWrite && (
         <Typography variant="caption" color="text.secondary">
-          Turning auto-route on or off needs write access to this room.
+          Only the room's owner, its room admins or a workspace admin can change auto-route.
         </Typography>
       )}
       <TextField
@@ -103,13 +121,9 @@ export default function RoomAutoRouteSection({
         label="Triage agent while auto-route is unavailable"
         value={state.fallback_agent ?? ""}
         onChange={(e) => save({ fallback_agent: e.target.value || null })}
-        disabled={!canManage || saving}
+        disabled={!canWrite || saving}
         sx={{ width: 360 }}
-        helperText={
-          canManage
-            ? "Gets the messages auto-route could not decide while the decision service is failing. Off by default."
-            : "Only the room's owner or a workspace admin can change this."
-        }
+        helperText="Gets the messages auto-route could not decide while the decision service is failing. Off by default."
       >
         <MenuItem value="">None</MenuItem>
         {triageChoices.map((choice) => (

@@ -45,8 +45,17 @@ class DecideResponse(BaseModel):
     model_choice: str
     confidence: float
     threshold: float
+    # How the pick was made: "threshold" (confidence >= threshold) or "lead"
+    # (the top option leads the next one by at least min_lead).
+    rule: Literal["threshold", "lead"] = "threshold"
+    min_lead: float | None = None
+    # The chosen option's probability minus the next option's, when the
+    # backend scores every option.
+    lead: float | None = None
     reason: str
     model: str
-    # The backend that answered: the configured one, or the per-request override.
+    # The backend that answered: the configured one, the per-request
+    # override, or the fallback.
     backend: str
+    # The answering backend's own call time.
     latency_ms: int

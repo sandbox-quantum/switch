@@ -2,13 +2,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   addBridgeToTeam,
+  cancelLinkRequest,
+  claimBridgeIdentity,
+  changePassword,
   createApiKey,
-  createUser,
+  createBridge,
+  detachLinkedRoom,
   errorText,
+  fetchRoom,
   fetchSession,
   fetchTeamPlacements,
   fetchTeamsAppPackage,
+  issueLinkCode,
+  logout,
+  registerKnownAgent,
+  registerOtherAgent,
   removeBridgeFromTeam,
+  revealApiKey,
   setDefaultTeamsTeam,
   signOutEverywhere,
 } from "./api";
@@ -62,7 +72,7 @@ describe("fetchSession", () => {
   });
 });
 
-describe("createUser", () => {
+describe("changePassword", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("words a rejected password, not [object Object]", async () => {
@@ -70,14 +80,12 @@ describe("createUser", () => {
       detail: [
         {
           type: "string_too_short",
-          loc: ["body", "password"],
+          loc: ["body", "new_password"],
           msg: "String should have at least 8 characters",
         },
       ],
     });
-    const err = await createUser("Ada", "ada@example.com", "hello", "user").catch(
-      (e: unknown) => e,
-    );
+    const err = await changePassword("correct horse", "hello").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).message).toBe("String should have at least 8 characters");
   });
@@ -242,6 +250,26 @@ describe("signOutEverywhere", () => {
   });
 });
 
+describe("logout", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the server to clear this browser's session", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await logout();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/auth/logout");
+    expect(init.method).toBe("POST");
+  });
+
+  it("throws when the session wasn't cleared", async () => {
+    respond(403, { detail: "This request didn't come from Switch." });
+    await expect(logout()).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
 describe("createApiKey", () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -259,5 +287,91 @@ describe("createApiKey", () => {
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ label: "l", expires_in_days: lifetime });
+  });
+});
+
+describe("linking a chat account", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const capture = (body: unknown) => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    return () => fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+  };
+
+  it("claims expecting to confirm, and asks for a message to tap", async () => {
+    const call = capture({ id: "acct-1", claimed_by: [], link_request: null });
+
+    await claimBridgeIdentity("b1", { external_user_id: "U1", username: "ada" });
+
+    const [url, init] = call();
+    expect(url).toContain("/collaborations/b1/identities");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      external_user_id: "U1",
+      username: "ada",
+      expects_confirmation: true,
+      wants_prompt: true,
+    });
+  });
+
+  it("asks for a message to tap with every new code", async () => {
+    const call = capture({ code: "ABCD-EFGH" });
+
+    await issueLinkCode("b1", "acct-1");
+
+    const [url, init] = call();
+    expect(url).toContain("/collaborations/b1/identities/acct-1/code");
+    expect(JSON.parse(String(init.body))).toEqual({ wants_prompt: true });
+  });
+
+  it("cancels only the request waiting, never the link", async () => {
+    const call = capture({});
+
+    await cancelLinkRequest("b1", "acct-1");
+
+    const [url, init] = call();
+    expect(url).toMatch(/\/collaborations\/b1\/identities\/acct-1\/request$/);
+    expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("a read the server refuses", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("throws the server's reason, keeping the status, rather than a bare failure", async () => {
+    respond(404, { detail: "Room not found" });
+    const failed = await fetchRoom("r1").catch((err: unknown) => err);
+    expect(failed).toBeInstanceOf(ApiError);
+    expect((failed as ApiError).status).toBe(404);
+    expect((failed as ApiError).message).toBe("Room not found");
+  });
+
+  it("says the status when the server gives no reason", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("oops", { status: 500, statusText: "Internal Server Error" })),
+    );
+    await expect(fetchRoom("r1")).rejects.toThrow("500 Internal Server Error");
+  });
+});
+
+describe("a write refused as invalid", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const invalid = { detail: [{ msg: "String should have at most 200 characters" }] };
+
+  it.each([
+    ["registerKnownAgent", () => registerKnownAgent("claude-code", "n", "d")],
+    ["registerOtherAgent", () => registerOtherAgent("n", "d")],
+    ["createApiKey", () => createApiKey("l", 90)],
+    ["revealApiKey", () => revealApiKey("k")],
+    ["createBridge", () => createBridge("slack", "n", {})],
+    ["detachLinkedRoom", () => detachLinkedRoom("r1", "r2")],
+  ])("%s says what was wrong, not [object Object]", async (_name, send) => {
+    respond(422, invalid);
+    const failed = await send().catch((err: unknown) => err);
+    expect(failed).toBeInstanceOf(ApiError);
+    expect((failed as ApiError).message).toBe("String should have at most 200 characters");
   });
 });

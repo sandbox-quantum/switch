@@ -7,6 +7,7 @@ import {
   isMissingGitExecutableError,
   missingGitExecutableError,
 } from '@main/core/utils/exec';
+import { refreshInstalledCliPath } from '@main/utils/userEnv';
 import { NON_INTERACTIVE_GIT_ENV } from './non-interactive-git-env';
 import type { ExecOptions, ExecResult, IExecutionContext } from './types';
 
@@ -51,6 +52,11 @@ export class LocalExecutionContext implements IExecutionContext {
       env: process.env,
       fileExists: existsSync,
     });
+  }
+
+  /** Picks up the PATH an installer has just changed, so its CLI is found without a restart. */
+  refreshShellEnv(): Promise<void> {
+    return refreshInstalledCliPath();
   }
 
   exec(command: string, args: string[] = [], opts: ExecOptions = {}): Promise<ExecResult> {

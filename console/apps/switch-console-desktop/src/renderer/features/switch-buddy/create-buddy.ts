@@ -1,6 +1,5 @@
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
-import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { BUDDY_TEMPLATE_ID, buddyAgentName, findBuddy } from './buddy-identity';
 import { reportBuddyStep } from './buddy-telemetry';
 
@@ -16,6 +15,10 @@ export class BuddyNotCreated extends Error {}
  * The person's own agents are known, so a name of theirs is never picked;
  * someone else's buddy may hold the name, which the server refuses as taken,
  * and the next number is tried.
+ *
+ * A new buddy is reported by the template run, as `agent_created` with entry
+ * point `switch_buddy` wherever the person set it up; a buddy the person
+ * already had is opened, and reports nothing.
  */
 export async function createBuddy(input: {
   serverId: string;
@@ -23,13 +26,9 @@ export async function createBuddy(input: {
   machineId: string;
   provider: string;
   person: { name: string | null; email: string | null };
-  /** Where the person set the buddy up: the first run, or the buddy's chat later. */
-  entryPoint: UiEntryPoint;
 }): Promise<{ agentId: string; name: string }> {
   try {
-    const created = await createBuddyAgent(input);
-    reportBuddyStep('created', input.provider);
-    return created;
+    return await createBuddyAgent(input);
   } catch (error) {
     reportBuddyStep('create_failed', input.provider);
     throw error;
@@ -42,7 +41,6 @@ async function createBuddyAgent(input: {
   machineId: string;
   provider: string;
   person: { name: string | null; email: string | null };
-  entryPoint: UiEntryPoint;
 }): Promise<{ agentId: string; name: string }> {
   const existing = (await rpc.managedAgents.list(input.serverId)) ?? [];
   const mine = findBuddy(existing);
@@ -60,11 +58,15 @@ async function createBuddyAgent(input: {
       filled: {},
       templateName: template.name,
       templateId: BUDDY_TEMPLATE_ID,
-      entryPoint: input.entryPoint,
+      entryPoint: 'switch_buddy',
     });
     if (result.kind === 'created') {
       const created = result.createdAgents[0];
       if (!created) throw new BuddyNotCreated('The server created no agent for switch-buddy.');
+      void rpc.workspaces.recordTemplateRun({
+        workspaceId: input.workspaceId,
+        templateId: BUDDY_TEMPLATE_ID,
+      });
       return { agentId: created.agentId, name: created.name };
     }
     if (result.problems.some((problem) => problem.code === 'name_taken')) {

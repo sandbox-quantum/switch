@@ -6,6 +6,7 @@ import { ProviderUnavailableError } from '../adapter';
 import { spawnProvider, stopProvider } from '../provider-process';
 import type { OpencodeConfigFile } from './config';
 import { prepareOpencodeHome } from './home';
+import { opencodeV1DatabaseEnv } from './v1-database';
 
 const READY_PREFIX = 'opencode server listening';
 
@@ -59,6 +60,7 @@ async function findFreePort(): Promise<number> {
 export async function startOpencodeServer(input: StartServerInput): Promise<OpencodeServerHandle> {
   const password = randomBytes(24).toString('base64url');
   const port = await findFreePort();
+  const databaseEnv = opencodeV1DatabaseEnv(input.env);
   const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
 
   const child = spawnProvider(
@@ -68,6 +70,7 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
       cwd: input.cwd,
       env: {
         ...input.env,
+        ...databaseEnv,
         XDG_CONFIG_HOME: configHome,
         OPENCODE_SERVER_PASSWORD: password,
       },

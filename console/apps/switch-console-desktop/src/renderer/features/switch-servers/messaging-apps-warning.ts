@@ -113,5 +113,5 @@ export function identityLinkOrderingNote(app: {
   directorySearchSupported: boolean;
 }): string | null {
   if (app.directorySearchSupported) return null;
-  return `${app.displayName} has no directory of users to search, so Switch knows only people who have written in a chat connected to it. Send a message in a connected group, then link your account from this app’s menu.`;
+  return `${app.displayName} has no directory of users to search, so Switch knows only people who have written to its bot. Say hello to the bot in a private chat, or send a message in a connected group, then link your account from this app’s menu.`;
 }

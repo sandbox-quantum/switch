@@ -184,14 +184,20 @@ async def test_bulk_room_actions_touch_only_rooms_the_caller_may(
     session_factory: async_sessionmaker[AsyncSession], action: str
 ) -> None:
     """They answer everyone, skipping each room the caller may not delete or
-    change, so what each persona was let do is in the count."""
+    change, so what each persona was let do is in the count, and naming each
+    room they skipped with the reason the route for that room would give."""
     gateway = build_gateway(session_factory)
     people = await seed_people(session_factory)
     counts: dict[str, int] = {}
+    refused: dict[str, list[dict[str, str]]] = {}
+    room_ids: dict[str, str] = {}
     async with client(gateway) as http:
         for persona in Persona:
             world = World(session_factory, people, persona.value, http, gateway)
-            body: dict[str, object] = {"room_ids": [await world.room()]}
+            room_ids[persona.value] = await world.room()
+            body: dict[str, object] = {
+                "room_ids": [room_ids[persona.value], "no-such-room"]
+            }
             if action == "bulk-archive":
                 body["archived"] = True
             response = await http.post(
@@ -202,7 +208,20 @@ async def test_bulk_room_actions_touch_only_rooms_the_caller_may(
             counts[persona.value] = counted[
                 "deleted" if action == "bulk-delete" else "updated"
             ]
+            refused[persona.value] = counted["refused"]
     assert counts == {
         **dict.fromkeys(Persona, 1),
         Persona.MEMBER: 0,
+    }
+    gone = {"room_id": "no-such-room", "reason": "Room not found"}
+    why = {
+        "bulk-delete": "Only the room's owner or a workspace admin can delete this room.",
+        "bulk-archive": (
+            "Only the room's owner, a room admin or a workspace admin can "
+            "archive or unarchive this room."
+        ),
+    }[action]
+    assert refused == {
+        **{persona.value: [gone] for persona in Persona},
+        Persona.MEMBER: [{"room_id": room_ids[Persona.MEMBER], "reason": why}, gone],
     }

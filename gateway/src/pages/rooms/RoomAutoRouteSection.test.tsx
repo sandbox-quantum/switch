@@ -4,7 +4,7 @@ import type { AgentSummary, RoomAutoRoute, RoomDetail } from "../../data/api";
 import RoomAutoRouteSection from "./RoomAutoRouteSection";
 
 const NO_BACKEND =
-  "Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Decision routing.";
+  "Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Settings → Message routing.";
 
 function agent(id: string, name: string): AgentSummary {
   return {
@@ -76,7 +76,7 @@ afterEach(() => {
 describe("RoomAutoRouteSection", () => {
   it("turns auto-route on, and shows on only once the server says so", async () => {
     const calls = mockServer((body) => routed({ ...OFF, on: body.on as boolean }));
-    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite canManage />);
+    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite />);
 
     expect(toggle().checked).toBe(false);
     screen.getByText("Off");
@@ -91,7 +91,7 @@ describe("RoomAutoRouteSection", () => {
 
   it("turns auto-route off", async () => {
     const calls = mockServer((body) => routed({ ...OFF, on: body.on as boolean }));
-    render(<RoomAutoRouteSection room={room} autoRoute={{ ...OFF, on: true }} canWrite canManage />);
+    render(<RoomAutoRouteSection room={room} autoRoute={{ ...OFF, on: true }} canWrite />);
 
     fireEvent.click(toggle());
 
@@ -103,7 +103,7 @@ describe("RoomAutoRouteSection", () => {
     mockServer(
       () => new Response(JSON.stringify({ detail: "Not authorized to write this resource" }), { status: 403 }),
     );
-    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite canManage />);
+    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite />);
 
     fireEvent.click(toggle());
 
@@ -118,7 +118,6 @@ describe("RoomAutoRouteSection", () => {
         room={room}
         autoRoute={{ ...OFF, available: false, reason: NO_BACKEND }}
         canWrite
-        canManage
       />,
     );
 
@@ -133,23 +132,46 @@ describe("RoomAutoRouteSection", () => {
         room={room}
         autoRoute={{ on: true, available: false, reason: NO_BACKEND, fallback_agent: null }}
         canWrite
-        canManage
       />,
     );
 
     expect(toggle().disabled).toBe(false);
   });
 
-  it("lets someone who may write to the room turn it on, but not name the triage agent", async () => {
-    const calls = mockServer((body) => routed({ ...OFF, on: body.on as boolean }));
-    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite canManage={false} />);
+  it("cannot be turned on while an agent is assigned, and says how to unassign it", () => {
+    mockServer(() => routed(OFF));
+    render(
+      <RoomAutoRouteSection
+        room={room}
+        autoRoute={{ ...OFF, assigned_agent: "a-1", assigned_agent_name: "helper" }}
+        canWrite
+      />,
+    );
 
-    const select = screen.getByRole("combobox", {
-      name: "Triage agent while auto-route is unavailable",
-    });
-    expect(select.getAttribute("aria-disabled")).toBe("true");
-    screen.getByText("Only the room's owner or a workspace admin can change this.");
-    expect(screen.queryByText(/needs write access/)).toBeNull();
+    expect(toggle().disabled).toBe(true);
+    expect(screen.getByText(/Every message goes to helper/)).toBeTruthy();
+    expect(screen.getByText("!unassign-agent")).toBeTruthy();
+  });
+
+  it("can be turned off in a room that has both, and says auto-route is not acting", () => {
+    mockServer(() => routed(OFF));
+    render(
+      <RoomAutoRouteSection
+        room={room}
+        autoRoute={{ ...OFF, on: true, assigned_agent: "a-1", assigned_agent_name: "helper" }}
+        canWrite
+      />,
+    );
+
+    expect(toggle().disabled).toBe(false);
+    expect(screen.getByText(/on but not acting/)).toBeTruthy();
+  });
+
+  it("lets someone who may write to the room, such as a room admin, turn it on", async () => {
+    const calls = mockServer((body) => routed({ ...OFF, on: body.on as boolean }));
+    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite />);
+
+    expect(screen.queryByText(/can change auto-route/)).toBeNull();
     expect(toggle().disabled).toBe(false);
 
     fireEvent.click(toggle());
@@ -160,18 +182,21 @@ describe("RoomAutoRouteSection", () => {
 
   it("holds the toggle and the picker for a read-only viewer, with the reason", () => {
     mockServer(() => routed(OFF));
-    render(
-      <RoomAutoRouteSection room={room} autoRoute={OFF} canWrite={false} canManage={false} />,
-    );
+    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite={false} />);
 
     expect(toggle().disabled).toBe(true);
-    screen.getByText("Turning auto-route on or off needs write access to this room.");
-    screen.getByText("Only the room's owner or a workspace admin can change this.");
+    const select = screen.getByRole("combobox", {
+      name: "Triage agent while auto-route is unavailable",
+    });
+    expect(select.getAttribute("aria-disabled")).toBe("true");
+    screen.getByText(
+      "Only the room's owner, its room admins or a workspace admin can change auto-route.",
+    );
   });
 
-  it("offers both to the room's owner or a workspace admin", () => {
+  it("offers both to anyone who may write to the room", () => {
     mockServer(() => routed(OFF));
-    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite canManage />);
+    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite />);
 
     expect(toggle().disabled).toBe(false);
     const select = screen.getByRole("combobox", {
@@ -185,7 +210,7 @@ describe("RoomAutoRouteSection", () => {
     const calls = mockServer((body) =>
       routed({ ...OFF, fallback_agent: body.fallback_agent as string | null }),
     );
-    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite canManage />);
+    render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite />);
 
     const select = screen.getByRole("combobox", {
       name: "Triage agent while auto-route is unavailable",
@@ -208,7 +233,7 @@ describe("RoomAutoRouteSection", () => {
   it("clears the triage agent with None", async () => {
     const calls = mockServer(() => routed(OFF));
     render(
-      <RoomAutoRouteSection room={room} autoRoute={{ ...OFF, fallback_agent: "a2" }} canWrite canManage />,
+      <RoomAutoRouteSection room={room} autoRoute={{ ...OFF, fallback_agent: "a2" }} canWrite />,
     );
 
     const select = screen.getByRole("combobox", {
@@ -225,7 +250,7 @@ describe("RoomAutoRouteSection", () => {
   it("still names a triage agent that has left the room", async () => {
     mockServer(() => routed(OFF));
     render(
-      <RoomAutoRouteSection room={room} autoRoute={{ ...OFF, fallback_agent: "a3" }} canWrite canManage />,
+      <RoomAutoRouteSection room={room} autoRoute={{ ...OFF, fallback_agent: "a3" }} canWrite />,
     );
 
     const select = screen.getByRole("combobox", {
@@ -241,7 +266,6 @@ describe("RoomAutoRouteSection", () => {
         room={room}
         autoRoute={{ ...OFF, fallback_agent: "gone-id", fallback_agent_name: "old-triage" }}
         canWrite
-        canManage
       />,
     );
 

@@ -55,6 +55,6 @@ async function removeLocalSession(sessionId: string): Promise<void> {
   // anything in the main process that tracks a session's lifetime, and the IPC
   // event so an open window drops the row. Firing only the second leaves a
   // session that was reported as started and never as ended.
-  sessionHooks._emit('session:deleted', sessionId);
+  sessionHooks._emit('session:deleted', sessionId, 'person');
   events.emit(sessionDeletedChannel, { sessionId });
 }

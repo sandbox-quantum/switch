@@ -3,6 +3,7 @@ import { FileText, Library, Link2, Package, Plus, Shapes } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerPage, ServerTableEmpty } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -109,7 +110,7 @@ const LibraryPanel = observer(function LibraryPanel() {
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Resources"
-      description="References, documents and packages of them that your agents can be given. Attach one to a room and every agent there can use it."
+      description="References, documents, and collections that can be attached to rooms for agents to use."
       action={
         <Button size="sm" disabled={workspaceId === null} onClick={create}>
           <Plus className="size-4" />
@@ -241,7 +242,7 @@ export const libraryView = {
       typeof params === 'object' && params !== null
         ? (params as { serverId?: unknown }).serverId
         : undefined;
-    if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof serverId !== 'string') return homeRedirect();
     return { ok: true };
   },
 } satisfies ViewDefinition<{ serverId: string; kind?: LibraryKind }>;

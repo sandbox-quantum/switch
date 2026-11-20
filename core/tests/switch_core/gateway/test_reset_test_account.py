@@ -6,6 +6,7 @@ Against a real database, with the fakes `test_account_deletion.py` and
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -86,6 +87,7 @@ def _app(
     overrides[gw_deps.get_room_service] = lambda: rooms
     overrides[get_service_broker] = lambda: deletion.broker
     overrides[gw_deps.get_client_lifecycle] = lambda: deletion.clients
+    overrides[gw_deps.get_organization_admin_notices] = lambda: deletion.admin_notices
     overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=TEST_KEYRING,
         gateway_cookie_secure=False,
@@ -107,6 +109,7 @@ def _client(
         tenant_id,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

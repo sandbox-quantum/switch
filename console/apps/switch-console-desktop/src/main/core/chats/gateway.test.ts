@@ -164,7 +164,7 @@ describe('createChat', () => {
       description: 'Where we plan',
       instructions: 'Be brief.',
       groupId: 'g1',
-      access: 'read_only',
+      access: 'public',
     });
     expect(vi.mocked(gatewayFetch).mock.calls.at(-1)?.[2]?.body).toEqual({
       requestId: 'req-1',

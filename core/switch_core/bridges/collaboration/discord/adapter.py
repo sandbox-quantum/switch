@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import io
 import logging
 import re
+import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Iterator,
+    Mapping,
+)
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -46,6 +55,11 @@ from switch_core.bridges.collaboration.discord.connection import (
     NO_MASS_MENTIONS,
     DiscordConnection,
 )
+from switch_core.bridges.collaboration.discord.members import (
+    GuildChangeBatcher,
+    GuildMemberChange,
+    PermissionChangeBatcher,
+)
 from switch_core.bridges.collaboration.discord.slash import (
     SlashArgError,
     build_app_commands,
@@ -62,10 +76,13 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
+    ChannelMembers,
     ChannelNotUsable,
     ChannelType,
     CreatedChannel,
+    DirectMessageUnavailable,
     DirectoryUser,
+    DirectPrompt,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -73,6 +90,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     PrivateNoticeDelivery,
     RetireOutcome,
 )
@@ -95,6 +113,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
+from switch_core.chat_account_links import ACCOUNT_COMMANDS
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -134,6 +153,16 @@ _REACTION: dict[ActivityMark, str] = {"working": "👀", "queued": "⏳"}
 # Discord's error code for "Maximum number of guild roles reached" (250).
 _MAX_GUILD_ROLES_CODE = 30005
 
+# The error codes Discord answers a channel creation with that a person can do
+# something about: "Missing Permissions" (the bot's role lacks Manage
+# Channels), "Missing Access" (the bot can't see where it was asked to create
+# the channel), "Unknown Guild" (the bot isn't in the server the connection
+# names), and "Maximum number of guild channels reached" (500 per server).
+_MISSING_PERMISSIONS_CODE = 50013
+_MISSING_ACCESS_CODE = 50001
+_UNKNOWN_GUILD_CODE = 10004
+_MAX_GUILD_CHANNELS_CODE = 30013
+
 # "Unknown Message". The only 404 that is about the message rather than about
 # what was asked to act on it — a webhook route answers 10015 "Unknown Webhook"
 # with the same status, and reading that as a card that is gone retires a card
@@ -146,6 +175,29 @@ _UNKNOWN_MESSAGE_CODE = 10008
 # other two say the conversation could not be found, which is the bot's problem
 # and not the reader's.
 _UNKNOWN_MEMBER_CODE = 10007
+
+# Lining a room up with its channel. A guild bigger than this is never read
+# whole: only the people its rooms already have are checked, as without the
+# members intent. Reading one is a single Gateway request, but its answer is
+# every member, and Discord streams 1000 a second.
+_MEMBER_LIST_MAX = 25_000
+# How long one read of a guild's members answers for every bridged channel in
+# it, so a pass over a guild's rooms reads its members once. Any member or
+# permission change in the guild drops it sooner.
+_MEMBER_SNAPSHOT_TTL = 120.0
+# The longest a guild's member list, or a batch of people asked about, is
+# waited for.
+_MEMBER_READ_TIMEOUT = 60.0
+# People asked about at once by id: Discord's most per request.
+_MEMBER_QUERY_BATCH = 100
+# Of the people one check could not find in the server, how many are
+# confirmed gone one by one. Past that they are left for the next check, so a
+# wrong empty answer can never turn into a burst of calls or an emptied room.
+_ABSENCE_CHECKS_PER_PASS = 20
+# The most people one batch of live member changes puts in rooms, as the
+# start-up sync caps its additions: a raid or a big role grant is not
+# thousands of new identities at once.
+_LIVE_JOINS_MAX = 500
 
 # The one exception, for a message the server marked as a room-wide mention.
 # Discord needs both halves: `@everyone` in the text and this on the request.
@@ -210,9 +262,112 @@ _INTERRUPT_PREFIX = "swstop"
 _ACTIVITY_LABEL = "View activity"
 _REFRESH_LABEL = "Refresh"
 
+# A link prompt's buttons (CHOO-4121). The prompt is a direct message, and a
+# press in one carries no server, so each button names the server whose bridge
+# sent it as well as the prompt and the position: the shared connection routes
+# a press by server, and has nothing else to route this one by.
+_PROMPT_PREFIX = "swlnk"
+
+
+def _channel_creation_refused(
+    error: discord.HTTPException, channel_name: str
+) -> BridgeOperationError:
+    """What to raise when Discord refuses to create channel `channel_name`:
+    Discord's own error, and what would fix it where a person can.
+
+    A `BridgeOperationError` is what room creation reports back with the
+    reason (a 502), so whoever asked for the room, often switch-buddy on a
+    person's behalf, can say why it failed. Anything else leaves the request
+    as a bare 500 with the reason only in the server log.
+    """
+    prefix = (
+        f"Discord would not create channel #{channel_name} "
+        f"({error.status}, code {error.code}: {error.text or 'no message'})"
+    )
+    if error.code == _MISSING_PERMISSIONS_CODE:
+        return BridgeOperationError(
+            f"{prefix}. The Switch bot's role on this Discord server is missing "
+            "the Manage Channels permission. In Discord, open Server Settings, "
+            "then Roles, select the bot's role and turn on Manage Channels, or "
+            "re-invite the bot with the permissions in the Connect Discord docs."
+        )
+    if error.code == _MISSING_ACCESS_CODE:
+        return BridgeOperationError(
+            f"{prefix}. The Switch bot can't see where the channel would go. "
+            "Check that its role has View Channels on this Discord server."
+        )
+    if error.code == _UNKNOWN_GUILD_CODE:
+        return BridgeOperationError(
+            f"{prefix}. The Switch bot isn't in the Discord server this "
+            "connection names. Invite the bot to that server, or check the "
+            "connection's Server ID."
+        )
+    if error.code == _MAX_GUILD_CHANNELS_CODE:
+        return BridgeOperationError(
+            f"{prefix}. This Discord server has reached Discord's limit of 500 "
+            "channels. Delete some, or bind the room to an existing channel."
+        )
+    return BridgeOperationError(f"{prefix}.")
+
+
+def _private_chat_member_refused(
+    error: discord.HTTPException, channel_name: str, user_name: str
+) -> BridgeOperationError:
+    """What to raise when Discord made a private chat's channel but refused to
+    let its person see it. Like `_channel_creation_refused`, a
+    `BridgeOperationError` so the chat fails with the reason, not a bare 500."""
+    prefix = (
+        f"Discord would not add {user_name} to private channel #{channel_name} "
+        f"({error.status}, code {error.code}: {error.text or 'no message'})"
+    )
+    if error.code == _MISSING_PERMISSIONS_CODE:
+        return BridgeOperationError(
+            f"{prefix}. The Switch bot's role on this Discord server is missing "
+            "the Manage Roles permission, which Discord asks for to change who "
+            "can see a channel. In Discord, open Server Settings, then Roles, "
+            "select the bot's role and turn on Manage Roles."
+        )
+    if error.code == _UNKNOWN_MEMBER_CODE:
+        return BridgeOperationError(
+            f"{prefix}. {user_name} isn't a member of the Discord server this "
+            "connection names. Join that server, then try again."
+        )
+    return BridgeOperationError(f"{prefix}.")
+
 
 def _custom_id(token: str, position: int) -> str:
     return f"{_CUSTOM_ID_PREFIX}:{token}:{position}"
+
+
+def _prompt_id(guild_id: int, token: str, position: int) -> str:
+    return f"{_PROMPT_PREFIX}:{guild_id}:{token}:{position}"
+
+
+def _parse_prompt_id(custom_id: str) -> tuple[int, str, int] | None:
+    """The server, prompt and button a press on a link prompt names, or None
+    if it is not one.
+
+    Read as strictly as `_parse_custom_id`, and trusted no further: the server
+    only decides which bridge is asked, and the token is resolved against the
+    stored request there, from the account Discord says pressed it.
+    """
+    parts = custom_id.split(":")
+    if len(parts) != 4 or parts[0] != _PROMPT_PREFIX:
+        return None
+    guild, token, digits = parts[1], parts[2], parts[3]
+    if not token or not all(
+        part.isascii() and part.isdecimal() for part in (guild, digits)
+    ):
+        return None
+    position = int(digits)
+    return (int(guild), token, position) if position > 0 else None
+
+
+def prompt_guild(custom_id: str) -> int | None:
+    """The server whose bridge sent the link prompt a press is on, or None if
+    it is not a press on one."""
+    prompt = _parse_prompt_id(custom_id)
+    return None if prompt is None else prompt[0]
 
 
 def _interrupt_id(turn_id: str) -> str:
@@ -314,12 +469,14 @@ def _card_refusals() -> Iterator[None]:
 def _press_action(custom_id: str) -> tuple[str, str] | None:
     """The Switch action a press carries and what it names, or None if not ours.
 
-    Three buttons arrive here and they name different things — a request
-    card's option names the card, a stop names the turn, an agent card's
-    button names itself — but they leave by the same door,
-    because what happens next is the same for all: acknowledge inside
-    Discord's three seconds, then hand the press to the shared inbound path and
-    tell the presser alone whatever comes back.
+    Four buttons arrive here and they name different things — a request
+    card's option names the card, a link prompt's names the prompt, a stop
+    names the turn, an agent card's button names itself — but they leave by
+    the same door, because what happens next is the same for all:
+    acknowledge inside Discord's three seconds, then hand the press to the
+    shared inbound path and tell the presser alone whatever comes back. A
+    prompt's button reads back as a request card option's does, its position
+    and its token, so the shared path tells the two apart by the token alone.
     """
     card_button = parse_card_custom_id(custom_id)
     if card_button is not None:
@@ -327,6 +484,10 @@ def _press_action(custom_id: str) -> tuple[str, str] | None:
     turn_id = _parse_interrupt_id(custom_id)
     if turn_id is not None:
         return INTERRUPT_ACTION, turn_id
+    prompt = _parse_prompt_id(custom_id)
+    if prompt is not None:
+        _guild, token, position = prompt
+        return position_action(position), token
     press = _parse_custom_id(custom_id)
     if press is None:
         return None
@@ -495,7 +656,8 @@ class DiscordConnectionConfig(BridgeConnectionConfig):
     #: needs a token; the distributed bridge routes through the one shared
     #: connection and carries none — its token is deployment config.
     bot_token: str | None = None
-    guild_id: str
+    #: Discord's API calls a server a guild; its own app calls the id a Server ID.
+    guild_id: str = Field(title="Server ID")
     #: How this bridge's events reach it, and which is decided by which Discord
     #: app the install came from rather than by an operator's preference.
     #:
@@ -731,6 +893,23 @@ class DiscordAdapter(PlatformAdapter):
         # so anything wider would risk turning a passing "@moderators" into a
         # real ping of somebody's real role.
         self._agent_role_ids: dict[str, int] = {}
+        # Account commands run as slash commands, acknowledged privately and
+        # waiting on their answer (`answer_command`), by interaction id.
+        self._held_commands: dict[str, discord.Interaction] = {}
+        # A guild-wide read of who can see each bridged channel, with when it
+        # was read: channel id -> {person id: name}. See `_channel_viewers`.
+        self._member_snapshot: tuple[float, dict[str, dict[str, str]]] | None = None
+        self._member_snapshot_lock = asyncio.Lock()
+        # People asked about by id while checking rooms without the members
+        # intent: id -> (when, their Member, or None if not in the server).
+        self._member_lookups: dict[str, tuple[float, Any]] = {}
+        # An own-connection bridge gathers its guild's member and permission
+        # changes itself; a shared one is handed them by the shared client,
+        # which gathers them for every guild.
+        self._member_changes = GuildChangeBatcher(self._flush_member_changes)
+        self._permission_changes = PermissionChangeBatcher(
+            self._flush_permission_changes
+        )
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -786,8 +965,10 @@ class DiscordAdapter(PlatformAdapter):
         conn.set_dm_handler(self._handle_message)
         conn.set_interaction_handler(self._make_on_interaction())
         conn.set_channel_update_handler(self.dispatch_channel_update)
+        conn.set_member_change_handler(self._member_changes.add)
+        conn.set_permission_change_handler(self._permission_changes.add)
         await conn.connect(
-            commands=build_app_commands(self._handle_slash_command),
+            commands=build_app_commands(self._handle_slash_command, self.feature_flags),
         )
         logger.info(
             "Discord adapter connected as %s (guild %s)",
@@ -829,6 +1010,9 @@ class DiscordAdapter(PlatformAdapter):
             self._connection = None
         self._webhooks.clear()
         self._owned_webhooks.clear()
+        self._member_changes.close()
+        self._permission_changes.close()
+        self._forget_members()
         logger.info("Discord adapter stopped")
 
     def set_on_attached(self, callback: Callable[[], None]) -> None:
@@ -905,6 +1089,354 @@ class DiscordAdapter(PlatformAdapter):
         guild, as it does slash invocations.
         """
         await self._handle_interaction(interaction)
+
+    # ── Channel membership ───────────────────────────────────────────────────
+    #
+    # Discord has no channel membership: someone is in a channel when they are
+    # in the server and allowed to see it. See `members.py` for how the
+    # changes arrive and are kept within Discord's limits.
+
+    async def _flush_member_changes(
+        self, guild_id: int, changes: list[GuildMemberChange]
+    ) -> None:
+        await self.dispatch_member_changes(changes)
+
+    async def _flush_permission_changes(
+        self, guild_id: int, channel_ids: set[int] | None
+    ) -> None:
+        if guild_id == self._guild_id:
+            self.dispatch_permission_change(channel_ids)
+
+    def _forget_members(self) -> None:
+        """Drop what was read about the guild's members: it may be stale."""
+        self._member_snapshot = None
+        self._member_lookups.clear()
+
+    def _cached_guild(self) -> Any:
+        """This bridge's guild as the Gateway described it, with its roles
+        and channels, or None where this process has no socket (a quiet copy)
+        or has not been told about it. Who can see a channel cannot be worked
+        out without it."""
+        connection = self._connection
+        client = connection.client_or_none if connection is not None else None
+        return client.get_guild(self._guild_id) if client is not None else None
+
+    @staticmethod
+    def _can_see(channel: Any, member: Any) -> bool:
+        return bool(channel.permissions_for(member).view_channel)
+
+    def _bridged_channels_in(self, guild: Any) -> list[Any]:
+        """The guild's channels this bridge has rooms for. Never a thread: a
+        thread's messages go to its parent channel's room, so a thread has no
+        room, and a private thread's members could not be told from its
+        parent's anyway."""
+        channels = []
+        for channel_id in self._bridged_channel_ids():
+            if not channel_id.isdigit():
+                continue
+            channel = guild.get_channel(int(channel_id))
+            if channel is not None:
+                channels.append(channel)
+        return channels
+
+    async def dispatch_member_changes(self, changes: list[GuildMemberChange]) -> None:
+        """People joined or left the server, or their roles changed: move them
+        in or out of the rooms of the bridged channels this changes for them.
+
+        Worked out from the guild's roles and channels already in memory, with
+        no call to Discord. Only bridged channels are looked at, so nothing
+        here creates a room. Someone who can see a channel is put in its room
+        (a no-op for someone already there); someone whose roles no longer let
+        them see it, or who left the server, is taken out (a no-op for
+        someone Switch never put there).
+
+        Joining the server puts someone in every public bridged channel at
+        once, so those joins are quiet: written to history, waking no agent,
+        as the start-up sync's are. A role change that lets someone see a
+        channel is announced, as someone being added to it. At most
+        `_LIVE_JOINS_MAX` people join rooms per batch; the rest join when
+        they first post or at the next sync. Removals are never capped.
+        """
+        changes = [c for c in changes if c.guild_id == self._guild_id]
+        if not changes:
+            return
+        guild = self._cached_guild()
+        if guild is None:
+            self._forget_members()
+            return
+        self._note_member_changes(guild, changes)
+        channels = self._bridged_channels_in(guild)
+        if not channels:
+            return
+        on_user_joined = self._on_user_joined
+        joining = 0
+        skipped = 0
+        for change in changes:
+            # The cap is on putting people in rooms only: taking out someone
+            # who lost access always happens, or they would keep reading a
+            # private room until the next sync.
+            adds = False
+            if change.kind != "leave" and any(
+                self._can_see(channel, change.member) for channel in channels
+            ):
+                if joining >= _LIVE_JOINS_MAX:
+                    skipped += 1
+                else:
+                    joining += 1
+                    adds = True
+            for channel in channels:
+                try:
+                    if change.kind != "leave" and self._can_see(channel, change.member):
+                        if not adds or on_user_joined is None:
+                            continue
+                        await on_user_joined(
+                            InboundUserJoin(
+                                channel_id=str(channel.id),
+                                channel_type=self._channel_type_of(channel),
+                                external_user_id=str(change.user_id),
+                                external_username=change.username,
+                                channel_name=getattr(channel, "name", None),
+                                quiet=change.kind == "join",
+                            )
+                        )
+                    elif change.kind != "join":
+                        await self._user_left(
+                            InboundUserLeave(
+                                channel_id=str(channel.id),
+                                external_user_id=str(change.user_id),
+                                external_username=change.username,
+                            )
+                        )
+                except Exception:
+                    logger.exception(
+                        "Could not follow Discord user %s's %s in channel %s",
+                        change.user_id,
+                        change.kind,
+                        channel.id,
+                    )
+        if skipped:
+            logger.warning(
+                "Discord guild %s had more than %d people gain access to bridged "
+                "channels at once; %d more join rooms when they post or at the "
+                "next sync",
+                self._guild_id,
+                _LIVE_JOINS_MAX,
+                skipped,
+            )
+
+    def _note_member_changes(
+        self, guild: Any, changes: list[GuildMemberChange]
+    ) -> None:
+        """Bring what was read about the guild's members up to date with
+        these changes, rather than discarding it: on a busy server a change
+        arrives every few seconds, and the start-up sync would otherwise
+        read the whole server again for each channel."""
+        snapshot = self._member_snapshot
+        if snapshot is not None:
+            read_at, viewers = snapshot
+            for channel_id, people in viewers.items():
+                channel = guild.get_channel(int(channel_id))
+                for change in changes:
+                    people.pop(str(change.user_id), None)
+                    if (
+                        change.kind != "leave"
+                        and channel is not None
+                        and self._can_see(channel, change.member)
+                    ):
+                        people[str(change.user_id)] = change.username
+        for change in changes:
+            self._member_lookups.pop(str(change.user_id), None)
+
+    def dispatch_permission_change(self, channel_ids: set[int] | None) -> None:
+        """Channel or role permissions changed in the guild: line up again the
+        rooms of the bridged channels affected (every one, for a role)."""
+        self._forget_members()
+        bridged = self._bridged_channel_ids()
+        targets = sorted(
+            channel_id
+            for channel_id in bridged
+            if channel_ids is None
+            or (channel_id.isdigit() and int(channel_id) in channel_ids)
+        )
+        self._resync_members(targets)
+
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool:
+        """With the members intent, for a server small enough to read whole:
+        the same conditions `list_channel_members` lists under."""
+        connection = self._connection
+        if connection is None or not connection.has_members_intent:
+            return False
+        guild = self._cached_guild()
+        return guild is not None and (guild.member_count or 0) <= _MEMBER_LIST_MAX
+
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
+        """Everyone in the server who can see the channel, with the members
+        intent; None without it, or for a server too big to read whole, where
+        the bridge checks the people the room already has instead
+        (`members_gone`).
+
+        One read of the guild's members answers for every bridged channel in
+        it for a while, so lining up a server's rooms reads its members once.
+        A read that failed or timed out is an incomplete listing: it adds
+        nobody and removes nobody.
+        """
+        connection = self._connection
+        if connection is None or not connection.has_members_intent:
+            return None
+        guild = self._cached_guild()
+        if guild is None:
+            return None
+        if (guild.member_count or 0) > _MEMBER_LIST_MAX:
+            return None
+        viewers = await self._channel_viewers(guild, channel_id)
+        if viewers is None:
+            return ChannelMembers(members={}, complete=False)
+        return ChannelMembers(members=viewers, complete=True)
+
+    async def _channel_viewers(
+        self, guild: Any, channel_id: str
+    ) -> dict[str, str] | None:
+        """Who can see the channel, from the guild snapshot, read afresh when
+        it is missing, stale or does not cover this channel. None when the
+        guild's members could not be read."""
+        async with self._member_snapshot_lock:
+            snapshot = self._member_snapshot
+            if (
+                snapshot is not None
+                and time.monotonic() - snapshot[0] < _MEMBER_SNAPSHOT_TTL
+                and channel_id in snapshot[1]
+            ):
+                return snapshot[1][channel_id]
+            channel = (
+                guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+            )
+            if channel is None:
+                return None
+            connection = self._require_connection()
+            try:
+                members = await connection.member_reads.run(
+                    lambda: asyncio.wait_for(
+                        guild.chunk(cache=False), timeout=_MEMBER_READ_TIMEOUT
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Could not read Discord guild %s's members to line up its rooms",
+                    self._guild_id,
+                    exc_info=True,
+                )
+                return None
+            channels = {str(c.id): c for c in self._bridged_channels_in(guild)}
+            channels[channel_id] = channel
+            people = [m for m in members if not getattr(m, "bot", False)]
+            viewers = {
+                cid: {str(m.id): str(m.name) for m in people if self._can_see(c, m)}
+                for cid, c in channels.items()
+            }
+            self._member_snapshot = (time.monotonic(), viewers)
+            return viewers[channel_id]
+
+    async def members_gone(
+        self, channel_id: str, external_user_ids: Collection[str]
+    ) -> set[str] | None:
+        """Of the people a room has, those who left the server or can no
+        longer see the channel: for checking rooms without the members intent,
+        or in a server too big to read whole.
+
+        People are asked about in batches of 100 over the Gateway, which needs
+        no privileged intent, and each answer is reused for the guild's other
+        channels for a while. Someone the batch did not find is confirmed gone
+        one by one before they count, a few per check, so an empty answer for
+        any other reason never empties a room. Someone who could not be asked
+        about is not counted as gone.
+        """
+        guild = self._cached_guild()
+        if guild is None or self._connection is None:
+            return None
+        channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+        if channel is None:
+            return None
+        members = await self._look_up_members(
+            guild, [i for i in external_user_ids if i.isdigit()]
+        )
+        gone: set[str] = set()
+        for external_user_id, member in members.items():
+            if member is None or not self._can_see(channel, member):
+                gone.add(external_user_id)
+        return gone
+
+    async def _look_up_members(
+        self, guild: Any, external_user_ids: list[str]
+    ) -> dict[str, Any]:
+        """Each person's Member, or None for someone confirmed not in the
+        server. People whose answer is not known are left out."""
+        now = time.monotonic()
+        found: dict[str, Any] = {}
+        unknown: list[str] = []
+        for external_user_id in external_user_ids:
+            cached = self._member_lookups.get(external_user_id)
+            if cached is not None and now - cached[0] < _MEMBER_SNAPSHOT_TTL:
+                found[external_user_id] = cached[1]
+            else:
+                unknown.append(external_user_id)
+        connection = self._require_connection()
+        absent: list[str] = []
+        for start in range(0, len(unknown), _MEMBER_QUERY_BATCH):
+            batch = unknown[start : start + _MEMBER_QUERY_BATCH]
+            user_ids = [int(i) for i in batch]
+
+            async def ask(user_ids: list[int] = user_ids) -> list[Any]:
+                return await asyncio.wait_for(
+                    guild.query_members(
+                        user_ids=user_ids, limit=_MEMBER_QUERY_BATCH, cache=False
+                    ),
+                    timeout=_MEMBER_READ_TIMEOUT,
+                )
+
+            try:
+                answered = await connection.member_reads.run(ask)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug(
+                    "Could not ask Discord about %d member(s) of guild %s",
+                    len(batch),
+                    self._guild_id,
+                    exc_info=True,
+                )
+                continue
+            by_id = {str(m.id): m for m in answered}
+            for external_user_id in batch:
+                member = by_id.get(external_user_id)
+                if member is None:
+                    absent.append(external_user_id)
+                else:
+                    found[external_user_id] = member
+                    self._member_lookups[external_user_id] = (now, member)
+        for external_user_id in absent[:_ABSENCE_CHECKS_PER_PASS]:
+            try:
+                member = await guild.fetch_member(int(external_user_id))
+            except discord.NotFound as error:
+                if error.code != _UNKNOWN_MEMBER_CODE:
+                    continue
+                member = None
+            except Exception:
+                logger.debug(
+                    "Could not confirm whether Discord user %s left guild %s",
+                    external_user_id,
+                    self._guild_id,
+                    exc_info=True,
+                )
+                continue
+            found[external_user_id] = member
+            self._member_lookups[external_user_id] = (now, member)
+        return found
 
     def _require_connection(self) -> DiscordConnection:
         """The bridge's Gateway connection, or a loud error if it has none.
@@ -1312,6 +1844,17 @@ class DiscordAdapter(PlatformAdapter):
         return None
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        if connection_config.get("event_delivery") != "shared":
+            return f"!{name} {argument}"
+        # The shared connection is not given message text, so only the slash
+        # command reaches Switch. Discord names each argument as its own field.
+        option = COMMANDS_BY_NAME[name].args_spec[0].name
+        return f"/{name} {option}:{argument.removeprefix('@')}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
@@ -1325,6 +1868,125 @@ class DiscordAdapter(PlatformAdapter):
             f"Run {slash} from that account in a server channel Switch is in, "
             f"or post `!link-account {code}` there."
         )
+
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        option = COMMANDS_BY_NAME["unlink-account"].args_spec[0].name
+        return f"run `/unlink-account {option}:{name}` in a server channel Switch is in"
+
+    async def answer_command(self, command: InboundCommand, text: str) -> None:
+        """Answer an account command where only its sender sees it.
+
+        A slash command was acknowledged privately and held under its
+        `reply_ref` (`_run_account_command`), and is answered in a follow-up to
+        it. A command typed with `!` has none, and nothing but an interaction
+        gives a bot a private reply in a channel, so it is answered in the
+        channel, as is a slash command whose follow-up Discord refuses.
+        """
+        if command.reply_ref is not None:
+            interaction = self._held_commands.pop(command.reply_ref, None)
+            if interaction is None:
+                logger.warning(
+                    "The Discord slash command /%s is no longer waiting on its "
+                    "answer, so it is answered in the channel instead.",
+                    command.command,
+                )
+            else:
+                try:
+                    await interaction.followup.send(
+                        self.translate_outbound(text),
+                        ephemeral=True,
+                        allowed_mentions=NO_MASS_MENTIONS,
+                    )
+                    return
+                except discord.HTTPException as e:
+                    logger.warning(
+                        "Discord would not carry the answer to /%s (%s), so it "
+                        "is answered in the channel instead.",
+                        command.command,
+                        e,
+                    )
+        await super().answer_command(command, text)
+
+    def direct_prompt_unavailable(self) -> str | None:
+        try:
+            self._require_client()
+        except RuntimeError:
+            return "Switch's Discord bot isn't connected right now, so use the code instead."
+        return None
+
+    async def send_direct_prompt(
+        self, external_user_id: str, prompt: DirectPrompt
+    ) -> str:
+        """Message one person from the bot, in its own direct conversation
+        with them.
+
+        Discord lets a bot open one with anyone who shares a server with it
+        and accepts direct messages from that server's members. Each button
+        names this bridge's server as well as the prompt (`_prompt_id`). The
+        view is stopped before it is sent, for the reason `_controls` gives: a
+        press is read off its id rather than off a view held in memory, which
+        is what lets a prompt outlive a restart.
+        """
+        client = self._require_client()
+        view = discord.ui.View(timeout=None)
+        for position, label in enumerate(prompt.labels, start=1):
+            view.add_item(
+                discord.ui.Button(
+                    label=label,
+                    custom_id=_prompt_id(self._guild_id, prompt.token, position),
+                    style=discord.ButtonStyle.danger
+                    if position == len(prompt.labels)
+                    else discord.ButtonStyle.secondary,
+                )
+            )
+        view.stop()
+        try:
+            user = await client.fetch_user(int(external_user_id))
+            channel = await user.create_dm()
+            message = await channel.send(
+                self.translate_outbound(prompt.text),
+                view=view,
+                suppress_embeds=True,
+                allowed_mentions=NO_MASS_MENTIONS,
+            )
+        except (ValueError, discord.NotFound) as e:
+            raise DirectMessageUnavailable(
+                "Discord couldn't find this account, so use the code instead."
+            ) from e
+        except discord.Forbidden as e:
+            raise DirectMessageUnavailable(
+                "Discord won't let Switch message this account. It may not "
+                "accept direct messages from server members, or may no longer "
+                "share a server with Switch, so use the code instead."
+            ) from e
+        return f"{channel.id}:{message.id}"
+
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """The message itself: Discord links a direct message under `@me`."""
+        channel_id, _, message_id = message_ref.partition(":")
+        return f"https://discord.com/channels/@me/{channel_id}/{message_id}"
+
+    async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
+        channel_id, message_id = self._parse_message_ref(message_ref)
+        try:
+            channel = self._require_client().get_partial_messageable(
+                int(channel_id), type=discord.ChannelType.private
+            )
+            await channel.get_partial_message(int(message_id)).edit(
+                content=self.translate_outbound(text),
+                view=None,
+                allowed_mentions=NO_MASS_MENTIONS,
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not replace Discord prompt %s: %s. It was answered: %s",
+                message_ref,
+                e,
+                text,
+            )
 
     async def admin_message(
         self,
@@ -2596,16 +3258,31 @@ class DiscordAdapter(PlatformAdapter):
                 f"Cannot create {channel_type} channels — they are initiated from the messaging platform"
             )
 
-        guild = await self._get_guild()
-        channel = await guild.create_text_channel(
-            name=self.channel_name_for(name),
-            topic=topic,
-            overwrites=(
-                self._private_channel_overwrites(guild)
-                if channel_type == "channel_private"
-                else {}
-            ),
-        )
+        channel_name = self.channel_name_for(name)
+        if not channel_name:
+            # Discord channel names keep only lowercase letters, digits, "-"
+            # and "_", so a room named only in other characters (all emoji,
+            # or a non-Latin script) leaves nothing to send, and Discord would
+            # refuse the empty name with a form error.
+            raise ValueError(
+                f"Discord can't name a channel after the room name {name!r}: "
+                "nothing is left once characters other than lowercase letters, "
+                "digits, hyphens and underscores are removed. Give the room a "
+                "name with some of those."
+            )
+        try:
+            guild = await self._get_guild()
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                topic=topic,
+                overwrites=(
+                    self._private_channel_overwrites(guild)
+                    if channel_type == "channel_private"
+                    else {}
+                ),
+            )
+        except discord.HTTPException as error:
+            raise _channel_creation_refused(error, channel_name) from error
         return CreatedChannel(id=str(channel.id), name=channel.name)
 
     @classmethod
@@ -2724,14 +3401,35 @@ class DiscordAdapter(PlatformAdapter):
         # so no per-agent identity — and DM traffic maps to the deprecated
         # "lobby" flow. Mirror Slack instead: a private channel named after
         # the pair, visible only to the bridge and the user.
-        guild = await self._get_guild()
-        channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(f"{agent_name}-{user_name}"),
-            topic=f"Direct conversation between {user_name} and {agent_name}",
-            overwrites=self._private_channel_overwrites(guild),
-        )
-        member = await self._get_member(guild, user_external_id)
-        await channel.set_permissions(member, view_channel=True)
+        channel_name = self._sanitize_channel_name(f"{agent_name}-{user_name}")
+        try:
+            guild = await self._get_guild()
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                topic=f"Direct conversation between {user_name} and {agent_name}",
+                overwrites=self._private_channel_overwrites(guild),
+            )
+        except discord.HTTPException as error:
+            raise _channel_creation_refused(error, channel_name) from error
+        try:
+            member = await self._get_member(guild, user_external_id)
+            await channel.set_permissions(member, view_channel=True)
+        except discord.HTTPException as error:
+            # The channel exists but its person can't see it, so nobody could
+            # use it: take it down again rather than leave it behind.
+            try:
+                await channel.delete(reason="Switch could not add the person to it")
+            except discord.HTTPException:
+                logger.warning(
+                    "Could not delete Discord channel %s after failing to add "
+                    "user %s to it",
+                    channel.id,
+                    user_external_id,
+                    exc_info=True,
+                )
+            raise _private_chat_member_refused(
+                error, channel_name, user_name
+            ) from error
         return str(channel.id)
 
     @staticmethod
@@ -3317,6 +4015,10 @@ class DiscordAdapter(PlatformAdapter):
             return
         data: dict[str, Any] = dict(interaction.data or {})
         custom_id = str(data.get("custom_id") or "")
+        # A link prompt is a direct message, which carries no server, so its
+        # buttons say whose it is. Another bridge on the same bot sent it.
+        if prompt_guild(custom_id) not in (None, self._guild_id):
+            return
         if custom_id.split(":", 1)[0] == _ACTIVITY_PREFIX:
             await self._handle_activity(interaction, custom_id)
             return
@@ -3781,6 +4483,10 @@ class DiscordAdapter(PlatformAdapter):
             await self._reject_slash(interaction, shown, str(e))
             return
 
+        if command.name in ACCOUNT_COMMANDS:
+            await self._run_account_command(interaction, command.name, args, shown)
+            return
+
         try:
             await interaction.response.send_message(
                 f"⚙️ Running `{shown}` — result will appear in this thread."
@@ -3790,14 +4496,65 @@ class DiscordAdapter(PlatformAdapter):
             return
 
         try:
-            await self._dispatch_slash_command(interaction, command.name, args)
+            await self._dispatch_slash_command(
+                interaction, command.name, args, reply_ref=None
+            )
         except Exception as e:
             logger.exception("Failed to dispatch Discord slash command %s", shown)
             await self._report_slash_failure(interaction, shown, e)
 
-    async def _dispatch_slash_command(
-        self, interaction: discord.Interaction, command_name: str, args: str
+    async def _run_account_command(
+        self,
+        interaction: discord.Interaction,
+        command_name: str,
+        args: str,
+        shown: str,
     ) -> None:
+        """Run an account command so that only its sender sees it, answered
+        by the bridge itself (`answer_command`).
+
+        No "Running" notice: it would show the channel a link code. The ack is
+        private instead, and the interaction is held under its id for as long
+        as the dispatch runs, which is when the bridge answers. Never longer:
+        Discord takes an answer to an interaction for fifteen minutes, so one
+        still held after its dispatch is one nothing can use.
+        """
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.HTTPException:
+            logger.exception(
+                "Failed to acknowledge Discord slash command /%s", command_name
+            )
+            return
+
+        reply_ref = str(interaction.id)
+        self._held_commands[reply_ref] = interaction
+        try:
+            await self._dispatch_slash_command(
+                interaction, command_name, args, reply_ref=reply_ref
+            )
+        except Exception as e:
+            logger.exception(
+                "Failed to dispatch Discord slash command /%s", command_name
+            )
+            await self._report_slash_failure(interaction, shown, e)
+        finally:
+            self._held_commands.pop(reply_ref, None)
+
+    async def _dispatch_slash_command(
+        self,
+        interaction: discord.Interaction,
+        command_name: str,
+        args: str,
+        *,
+        reply_ref: str | None,
+    ) -> None:
+        """Hand a slash command to the bridge as the command a typed one is.
+
+        `reply_ref` is set for a command acknowledged privately, which has no
+        message of its own for its result to thread under; every other is
+        threaded under the "Running" notice it was acknowledged with.
+        """
         if self._on_command is None:
             raise RuntimeError("Discord adapter is not started")
         channel = interaction.channel
@@ -3817,7 +4574,10 @@ class DiscordAdapter(PlatformAdapter):
             root_id = None
             channel_name = getattr(channel, "name", None)
 
-        original = await interaction.original_response()
+        message_ref: str | None = None
+        if reply_ref is None:
+            original = await interaction.original_response()
+            message_ref = f"{original.channel.id}:{original.id}"
         user = interaction.user
         username = str(user.name)
         self._user_names[user.id] = username
@@ -3831,9 +4591,10 @@ class DiscordAdapter(PlatformAdapter):
                 sender_name=username,
                 command=command_name,
                 args=args,
-                message_ref=f"{original.channel.id}:{original.id}",
+                message_ref=message_ref,
                 root_id=root_id,
                 channel_name=channel_name,
+                reply_ref=reply_ref,
             )
         )
 

@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { afterEach, expect, it, vi } from 'vitest';
+import { describeToolsFor } from './mcp-tool-descriptions';
 import { connectParent, SessionLinks, type ParentChannel } from './session-channel';
 import { startSessionMcp } from './session-mcp';
 
@@ -71,7 +72,7 @@ it('serves each session its own server, and forwards every call up its own pipe'
     ['one', 'two', 'three'].map(async (sessionId) => {
       const parent = pipe(links, `/roots/${sessionId}`);
       parent.identify({ agentId: 'agent', sessionId, hostId: `host-${sessionId}`, epoch: 'e' });
-      const mcp = await startSessionMcp(parent);
+      const mcp = await startSessionMcp(parent, (tools) => tools);
       closing.push(mcp.close);
       return { sessionId, ...mcp.spec, token: tokenOf(mcp.spec.headers) };
     })
@@ -107,7 +108,7 @@ it('answers a call its parent could not make as an error the agent can read', as
   const links = new SessionLinks();
   const parent = pipe(links, '/roots/alone');
   parent.identify({ agentId: 'nobody-watches', sessionId: 's', hostId: 'h', epoch: 'e' });
-  const mcp = await startSessionMcp(parent);
+  const mcp = await startSessionMcp(parent, (tools) => tools);
   closing.push(mcp.close);
   const called = await rpc(mcp.spec.url, tokenOf(mcp.spec.headers), 'tools/call', {
     name: 'post_message',
@@ -115,4 +116,27 @@ it('answers a call its parent could not make as an error the agent can read', as
   });
   expect(called.body?.result?.isError).toBe(true);
   expect(JSON.stringify(called.body?.result?.content)).toContain('No room watcher is running');
+});
+
+it("lists the tools as the session's provider is to be told about them", async () => {
+  const links = new SessionLinks();
+  links.answer('agent', async () => [
+    {
+      name: 'post_message',
+      description: 'Send a message to the connected room.\n\nArgs:\n    body: The text.',
+      inputSchema: { type: 'object' },
+    },
+  ]);
+  const parent = pipe(links, '/roots/agy');
+  parent.identify({ agentId: 'agent', sessionId: 'agy', hostId: 'h', epoch: 'e' });
+  const mcp = await startSessionMcp(parent, describeToolsFor('antigravity'));
+  closing.push(mcp.close);
+  const listed = await rpc(mcp.spec.url, tokenOf(mcp.spec.headers), 'tools/list');
+  expect(listed.body?.result?.tools).toEqual([
+    {
+      name: 'post_message',
+      description: 'Send a message to the connected room.',
+      inputSchema: { type: 'object' },
+    },
+  ]);
 });

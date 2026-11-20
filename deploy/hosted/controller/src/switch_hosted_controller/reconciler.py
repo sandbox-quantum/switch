@@ -9,6 +9,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from .cloud import CloudResourceError, Ec2Cloud, rejected
+from .error_report import ErrorReport
 from .model import DesiredState, Machine, ObservedState
 from .store import MachineStore, require_recovery_allowed
 
@@ -18,12 +19,21 @@ LAUNCH_VISIBILITY_GRACE = timedelta(minutes=15)
 
 
 class Reconciler:
-    def __init__(self, store: MachineStore, cloud: Ec2Cloud, *, instance_type: str | None):
+    def __init__(
+        self,
+        store: MachineStore,
+        cloud: Ec2Cloud,
+        *,
+        instance_type: str | None,
+        errors: ErrorReport | None = None,
+    ):
         """`instance_type` is the type every machine moves onto when it next
-        launches, the cloud gateway's; None keeps each on the type it was created with."""
+        launches, the cloud gateway's; None keeps each on the type it was created with.
+        `errors` collects what a failed reconcile tells Core, as fixed words."""
         self._store = store
         self._cloud = cloud
         self._instance_type = instance_type
+        self._errors = errors
 
     def reconcile_all(self) -> None:
         for listed in self._store.list():
@@ -31,6 +41,8 @@ class Reconciler:
             try:
                 self._reconcile(claim)
             except Exception as exc:
+                if self._errors is not None:
+                    self._errors.record(exc)
                 message = _safe_error(exc)
                 logger.error("reconcile failed for machine %s: %s", claim.machine_id, message)
                 self._store.set_observed(claim, ObservedState.NEEDS_ATTENTION, message)

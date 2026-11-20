@@ -722,7 +722,11 @@ def test_admin_message_renders_markdown_as_mrkdwn() -> None:
     fake = _FakeWebClient()
     adapter._web_client = fake  # type: ignore[assignment]
 
-    _run(adapter.admin_message("C123", _no_agents_notice(None)))
+    _run(
+        adapter.admin_message(
+            "C123", _no_agents_notice(None, replies_and_commands_only=False)
+        )
+    )
 
     text = fake.calls[0]["text"]
     assert "**" not in text
@@ -1302,7 +1306,12 @@ def test_bot_join_fires_on_app_joined() -> None:
 
     _run(
         adapter._handle_member_joined_channel(
-            {"type": "member_joined_channel", "user": "UBOT", "channel": "C123"}
+            {
+                "type": "member_joined_channel",
+                "user": "UBOT",
+                "channel": "C123",
+                "inviter": "UALICE",
+            }
         )
     )
 
@@ -1310,6 +1319,8 @@ def test_bot_join_fires_on_app_joined() -> None:
     assert joins[0].channel_id == "C123"
     assert joins[0].channel_type == "channel_public"
     assert joins[0].channel_name == "general"
+    # Who invited it, so their linked Switch user can own the room.
+    assert joins[0].added_by_external_user_id == "UALICE"
 
 
 def test_user_join_does_not_fire_on_app_joined() -> None:

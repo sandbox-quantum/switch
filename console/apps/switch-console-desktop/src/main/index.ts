@@ -46,9 +46,9 @@ import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
+import { clearDashboardWindowSessions } from './core/switch-servers/dashboard-window-sessions';
 import { retireDashboardFallbacks } from './core/switch-servers/server-address';
 import { bridgeSessionEndedToRenderer } from './core/switch-servers/session-ended-bridge';
-import { startActivationTracking } from './core/telemetry/activation';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
@@ -80,6 +80,9 @@ if (import.meta.env.DEV) {
 serverVersionChoice();
 
 const LOCAL_HOST_SHUTDOWN_MS = 5000;
+/** Long enough for switch-core's own stop grace and PostgreSQL's container;
+ * the window is gone by then, so nobody watches it. */
+const LOCAL_SERVER_SHUTDOWN_MS = 30_000;
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
@@ -180,7 +183,6 @@ void app.whenReady().then(async () => {
   registerTelemetryListeners();
   telemetryService.setInternalSource(currentInternalFlag);
   void reportLaunch(readThisLaunch);
-  startActivationTracking();
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below
@@ -212,8 +214,8 @@ void app.whenReady().then(async () => {
 
   void reconcileResourceSampler();
 
-  // Reflect a managed local Switch stack that survived the last quit, so the UI
-  // shows it running without the user restarting it.
+  // Reflect a managed local Switch stack that is still running (a Console that
+  // crashed leaves it up), and start one that the last quit stopped.
   const localServerReady = localServerService.initialize();
   // Re-establish desktop-side forwards for remote-managed stacks that survived
   // the last quit, restoring their reachability from this machine.
@@ -237,6 +239,12 @@ void app.whenReady().then(async () => {
   // for the same reason as the reconcile: it asks every external server.
   void retireDashboardFallbacks().catch((error: unknown) => {
     log.error('Could not check which servers still need a separate dashboard address:', error);
+  });
+
+  // Dashboard pages used to open in a window of Console's own, holding a copy
+  // of Console's session cookie; they open in the browser now.
+  void clearDashboardWindowSessions().catch((error: unknown) => {
+    log.warn('Could not clear the sessions the old dashboard windows kept:', error);
   });
 
   // A signed-in call refused with 401 tells the window to re-check that server's
@@ -343,6 +351,10 @@ app.on('before-quit', (event) => {
   // while it is being replaced.
   const updaterRestarts = updateService.getState().status === 'installing';
   logAppExit('before-quit');
+  // Stopping the server on this computer can take a while; the app reads as
+  // gone the moment it is asked to quit.
+  const mainWindow = getMainWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
   controlService.dispose();
   stopAutoMigration();
   stopResourceSampler();
@@ -367,6 +379,16 @@ app.on('before-quit', (event) => {
         log.error('Failed to stop the embedded agent controllers:', e);
       }),
     ]);
+    // The server on this computer lives as long as the app does. Stopped after
+    // the sessions and controllers that talk to it, and bounded like them.
+    await Promise.race([
+      localServerService.stopForQuit(),
+      delay(LOCAL_SERVER_SHUTDOWN_MS).then(() =>
+        log.warn('The local Switch server did not stop in time; it may outlive Console.')
+      ),
+    ]).catch((e) => {
+      log.error('Failed to stop the local Switch server:', e);
+    });
     await locationManager.dispose().catch((e) => {
       log.error('Failed to shutdown location manager:', e);
     });
