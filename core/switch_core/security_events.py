@@ -168,7 +168,9 @@ def write(event: SecurityEvent) -> None:
         "audit_event_id": event.audit_event_id,
     }
     logger.info(
-        "%s actor=%s target=%s:%s tenant=%s",
+        # No `name=value` pairs: an id after `key=` or `token:` reads as a
+        # credential to secret scanners such as gitleaks' generic-api-key.
+        "%s by %s on %s %s in tenant %s",
         name,
         event.actor_user_id or "-",
         event.target_type,
