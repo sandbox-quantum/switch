@@ -367,7 +367,9 @@ switchCore:
   cookieSecure: true
   # Allow email+password self sign-up on the gateway login page. Takes effect
   # only while signup.mode is default_tenant, where a new account joins the
-  # deployment's one pre-existing workspace.
+  # deployment's one pre-existing workspace, or open, where it joins none and
+  # the web dashboard asks it to create one. Addresses are not verified, so
+  # keep it to test servers until they are.
   signupEnabled: false
   # Most users created per rolling hour, counting every way a user is created.
   signupMaxPerHour: 20
