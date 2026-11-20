@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
+import requests
 from mattermostdriver.exceptions import NoAccessTokenProvided, ResourceNotFound
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telegram.request import HTTPXRequest
@@ -155,6 +156,22 @@ class TestMattermost:
         with _mattermost_driver(driver):
             with pytest.raises(BridgeCredentialError, match="refused the sign-in"):
                 await MattermostAdapter.verify_credentials(dict(MATTERMOST))
+
+    async def test_unverified_bridge_account_says_to_verify_its_email(self) -> None:
+        response = requests.Response()
+        response.status_code = 401
+        response._content = json.dumps(
+            {
+                "id": "api.user.login.not_verified.app_error",
+                "message": "localized error",
+            }
+        ).encode()
+        with patch("requests.request", return_value=response) as request:
+            with pytest.raises(
+                BridgeCredentialError, match="Verify the bridge account's email"
+            ):
+                await MattermostAdapter.verify_credentials(dict(MATTERMOST))
+        request.assert_called_once()
 
     async def test_a_team_it_cannot_find_is_a_credential_error(self) -> None:
         driver = _Driver(login=None, team=ResourceNotFound("not found"))
