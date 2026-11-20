@@ -658,7 +658,14 @@ def stop_controller(commands: Commands, seat: Seat) -> None:
         "not loaded" in output or "does not exist" in output
     ):
         raise BootError(f"{seat.unit} cannot be stopped: {output.strip()}")
-    commands.run(["/usr/bin/systemctl", "stop", f"switch-agent-{seat.uid}@*.service"])
+    commands.run(
+        [
+            "/usr/bin/systemctl",
+            "stop",
+            f"switch-agent-{seat.uid}@*.service",
+            f"switch-agent-{seat.uid}-codex@*.service",
+        ]
+    )
 
 
 def _ensure_root_directories(path: Path) -> None:

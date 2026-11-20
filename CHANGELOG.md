@@ -7664,6 +7664,21 @@ tags; see RELEASING.md.
   offer them, while the socket is down, and when as many calls are in flight
   as Switch takes. A call the socket closes on is answered 502, as a request
   whose connection drops.
+- **Agents running as users of their own get resource limits and a system
+  call filter.** Each agent's unit may use at most 75% of the machine's memory
+  and 4096 processes and threads, and may make only the system calls in
+  systemd's `@system-service` set; any other fails with `EPERM`. Codex agents
+  run as a second template, `switch-agent-<uid>-codex@.service`, which also
+  allows the mount and sandboxing calls Codex's own sandbox needs. Run the
+  setup again to install both; until then Codex agents run as the one
+  template there is.
+- **A provider login given to the machine leaves no copy behind.** When the
+  login is withdrawn or replaced, or the agent is removed, the controller
+  removes its files from the agent's state and its token from the agent's
+  configuration, and an agent host that starts with no login removes any
+  left. A failure is logged as an error. The copy written to check a login is
+  removed once the check is done. An OpenCode console login lives in
+  OpenCode's database, which goes with it.
 
 #### Fixed
 - **A Claude Code login that is there but does not work is reported as not
