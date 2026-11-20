@@ -22,6 +22,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.db.audit_history_ddl import WORKSPACE_DELETED_ACTION
 from switch_core.db.models import (
     AuditEvent,
     OrganizationAuditEvent,
@@ -228,7 +229,7 @@ class ServerAuditAction(StrEnum):
     # The operator lifted the lock failed password sign-ins put on an account's
     # email address, so its owner could try again at once.
     USER_SIGN_IN_LOCK_CLEARED = "user.sign_in_lock_cleared"
-    WORKSPACE_DELETED = "workspace.deleted"
+    WORKSPACE_DELETED = WORKSPACE_DELETED_ACTION
     # A run of the operator's purge of an organization at its owner's request
     # (`accounts/organization_purge.py`) began deleting, naming the accounts
     # it is to delete: the record a run that stops part-way is resumed from.
