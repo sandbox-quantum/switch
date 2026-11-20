@@ -45,7 +45,7 @@ describe("OrganizationAuditSection", () => {
         ],
       ],
     });
-    render(<OrganizationAuditSection organizationName="Acme" />);
+    render(<OrganizationAuditSection organizationName="Acme" membersFromDirectory={false} />);
 
     const renamed = within(await screen.findByTestId("row-e1"));
     expect(renamed.getByText("Workspace renamed")).toBeTruthy();
@@ -96,7 +96,7 @@ describe("OrganizationAuditSection", () => {
         ],
       ],
     });
-    render(<OrganizationAuditSection organizationName="Acme" />);
+    render(<OrganizationAuditSection organizationName="Acme" membersFromDirectory={false} />);
 
     const changed = within(await screen.findByTestId("row-changed"));
     expect(changed.getByText("Role in a workspace changed")).toBeTruthy();
@@ -115,7 +115,7 @@ describe("OrganizationAuditSection", () => {
       event(`e${i}`, { occurred_at: `2026-11-12T10:${String(59 - i).padStart(2, "0")}:00Z` }),
     );
     const calls = answerFetch({ [EVENTS]: [[200, full], [200, [event("older")]]] });
-    render(<OrganizationAuditSection organizationName="Acme" />);
+    render(<OrganizationAuditSection organizationName="Acme" membersFromDirectory={false} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Load older events" }));
 
@@ -127,12 +127,40 @@ describe("OrganizationAuditSection", () => {
 
   it("says nothing is recorded yet, and shows a failure as one", async () => {
     answerFetch({ [EVENTS]: [200, []] });
-    render(<OrganizationAuditSection organizationName="Acme" />);
+    render(<OrganizationAuditSection organizationName="Acme" membersFromDirectory={false} />);
     expect(await screen.findByText("Nothing recorded yet")).toBeTruthy();
     cleanup();
 
     answerFetch({ [EVENTS]: [500, { detail: "The database is unavailable" }] });
-    render(<OrganizationAuditSection organizationName="Acme" />);
+    render(<OrganizationAuditSection organizationName="Acme" membersFromDirectory={false} />);
     expect(await screen.findByText(/The database is unavailable/)).toBeTruthy();
+  });
+
+  it("names organization roles as Switch Trust does where the members come from WorkOS", async () => {
+    answerFetch({
+      [EVENTS]: [
+        200,
+        [
+          event("e1", {
+            action: "organization.member_demoted_from_directory",
+            target_name: "Grace",
+            details: { from: "org_admin", to: "member" },
+          }),
+          event("e2", {
+            action: "organization.member_workspace_role_changed",
+            target_name: "Grace",
+            details: { workspace_name: "Core", from: "admin", to: "member" },
+          }),
+        ],
+      ],
+    });
+    render(<OrganizationAuditSection organizationName="Acme" membersFromDirectory={true} />);
+
+    const demoted = within(await screen.findByTestId("row-e1"));
+    expect(demoted.getByText("Demoted to Viewer from WorkOS")).toBeTruthy();
+    expect(demoted.getByText("Org Admin → Viewer")).toBeTruthy();
+    // A workspace's roles are Switch Rooms' own, whoever keeps the members.
+    const inWorkspace = within(screen.getByTestId("row-e2"));
+    expect(inWorkspace.getByText("Core · Workspace admin → Member")).toBeTruthy();
   });
 });
