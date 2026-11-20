@@ -105,7 +105,12 @@ class _Adapter:
         self.answers.append(text)
 
 
-def _bridge(room: Room, actor: _HumanActor, adapter: _Adapter) -> SimpleNamespace:
+def _bridge(
+    session_factory: async_sessionmaker[AsyncSession],
+    room: Room,
+    actor: _HumanActor,
+    adapter: _Adapter,
+) -> SimpleNamespace:
     async def nothing(*_args: object, **_kwargs: object) -> None:
         return None
 
@@ -127,6 +132,7 @@ def _bridge(room: Room, actor: _HumanActor, adapter: _Adapter) -> SimpleNamespac
         _channel_to_room={"chan-1": (room.id, room.transport_room_id)},
         _channel_locks={},
         _trust_client=NullTrustClient(),
+        _session_factory=session_factory,
         _room_tenant=AsyncMock(return_value=TENANT_ZERO_ID),
     )
     bridge._post_sender_notice = lambda msg, body, message_type: (
@@ -167,7 +173,11 @@ async def scene(session_factory: async_sessionmaker[AsyncSession]):  # type: ign
     alice = await make_person(session_factory, "alice")
     await add_member(session_factory, room, alice)
     adapter = _Adapter()
-    return room, adapter, _bridge(room, _HumanActor(process, alice), adapter)
+    return (
+        room,
+        adapter,
+        _bridge(session_factory, room, _HumanActor(process, alice), adapter),
+    )
 
 
 async def _make(
