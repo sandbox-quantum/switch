@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,7 @@ from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.db.models import (
     Agent,
+    AgentSession,
     ApiKey,
     Client,
     CollaborationBridge,
@@ -215,6 +217,33 @@ class TestGetAgentDetail:
         assert detail.rooms == []
         assert detail.sessions == []
         assert detail.children == []
+
+    async def test_reports_record_creation_separately_from_last_heartbeat(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        created_at = datetime(2026, 1, 1, tzinfo=UTC)
+        async with session_factory() as session:
+            owner = await _make_user(session, "owner")
+            agent = await _make_agent(session, "target", owner_id=owner.id)
+            caller = await _make_agent(session, "caller", owner_id=owner.id)
+            session.add(
+                AgentSession(
+                    agent_id=agent.id,
+                    lifecycle="heartbeat",
+                    created_at=created_at,
+                    last_seen_at=created_at,
+                )
+            )
+            await session.flush()
+            await svc.agent_session_store.touch_heartbeat(session, agent.id, None)
+            await session.commit()
+            agent_id, caller_id = agent.id, caller.id
+
+        detail = await svc.get_agent_detail(caller_id, agent_id)
+        [record] = detail.sessions
+        assert record.created_at == created_at.isoformat()
+        assert datetime.fromisoformat(record.last_seen_at) > created_at
 
     async def test_missing_agent_raises(
         self, session_factory: async_sessionmaker[AsyncSession]

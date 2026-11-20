@@ -493,12 +493,15 @@ class AgentSessionDetail(BaseModel):
     `connection` for an agent's own live connection, and `controller` for a
     controller-backed agent's session, which its agent controller (a machine)
     runs; `controller_id` names that controller, and is null otherwise.
+    `created_at` dates the stored session record, and is null for a live
+    connection or controller without a stored row.
     """
 
     room_id: str | None
     room_name: str | None
     lifecycle: str
     state: str
+    created_at: str | None
     last_seen_at: str
     controller_id: str | None
 
