@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session, TenantMembership } from "./api";
 import {
   appView,
@@ -76,6 +76,20 @@ describe("invite tokens", () => {
     const link = inviteUrl("https://switch.example.com", "a+b/c=");
     expect(new URL(link).search).toBe("");
     expect(inviteTokenFrom(link)).toBe("a+b/c=");
+  });
+
+  it("keeps an invite in memory within the page if browser storage is blocked", () => {
+    const sessionAccess = vi.spyOn(window, "sessionStorage", "get").mockImplementation(() => {
+      throw new DOMException("Storage is blocked", "SecurityError");
+    });
+    try {
+      storePendingInvite("fixture");
+      expect(readPendingInvite()).toBe("fixture");
+      clearPendingInvite();
+      expect(readPendingInvite()).toBeNull();
+    } finally {
+      sessionAccess.mockRestore();
+    }
   });
 
   it("keeps a pending invite in session storage until cleared", () => {

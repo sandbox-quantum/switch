@@ -1,4 +1,5 @@
 import type { EmailDelivery, Session } from "./api";
+import { withBrowserStorage } from "./browserStorage";
 
 /** Which top-level screen the app shows. Pure, so the order of precedence is
  * testable without rendering anything. */
@@ -19,19 +20,26 @@ export function appView(session: Session | null, pendingInvite: string | null): 
 }
 
 const INVITE_KEY = "switch.pendingInvite";
+let inviteInMemory: string | null = null;
 
 /** Session storage, not local: an invite token is a bearer credential, and
  * it should not outlive the tab that followed the link. */
 export function readPendingInvite(): string | null {
-  return window.sessionStorage.getItem(INVITE_KEY);
+  return inviteInMemory ?? withBrowserStorage("sessionStorage", (storage) => storage.getItem(INVITE_KEY)) ?? null;
 }
 
 export function storePendingInvite(token: string): void {
-  window.sessionStorage.setItem(INVITE_KEY, token);
+  const written = withBrowserStorage("sessionStorage", (storage) => {
+    storage.setItem(INVITE_KEY, token);
+    return true;
+  });
+  // The invite can still survive navigation within this page.
+  inviteInMemory = written ? null : token;
 }
 
 export function clearPendingInvite(): void {
-  window.sessionStorage.removeItem(INVITE_KEY);
+  inviteInMemory = null;
+  withBrowserStorage("sessionStorage", (storage) => storage.removeItem(INVITE_KEY));
 }
 
 /** The token in an invite link's fragment (`#token=…`), or null. */
