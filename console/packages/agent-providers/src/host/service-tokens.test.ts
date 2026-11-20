@@ -333,6 +333,9 @@ describe('AgentServiceTokens', () => {
       t.advance(GRANT_CHECK_MS);
       expect(await t.service.answer('github', null)).toMatchObject({ token: 'synthetic-one' });
       expect(warn.mock.calls[0]?.[0]).toContain('offline');
+      expect(warn.mock.calls[0]?.[0]).toContain(
+        "Switch could not confirm this agent's github grant"
+      );
       expect(t.issue).toHaveBeenCalledTimes(1);
     });
 

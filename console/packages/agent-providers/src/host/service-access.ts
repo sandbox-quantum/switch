@@ -129,6 +129,21 @@ export const NO_GRANTS_ROUTE_MS = 10 * 60_000;
 /** Where the grants route answered 404, by endpoint and agent, until when that is believed. */
 const noGrantsRoute = new Map<string, number>();
 
+/** How long the grants request, its error body included, may take. */
+const GRANTS_TIMEOUT_MS = 15_000;
+/** How much of an error body is read for its reason; the rest is not waited for. */
+const ERROR_BODY_MAX_BYTES = 8 * 1024;
+/** How long a reason taken from an error body may be, as it reaches the log and the session. */
+const REASON_MAX_CHARS = 300;
+
+const errorEnvelopeSchema = z.object({
+  error: z.object({ code: z.string(), message: z.string() }),
+});
+const detailObjectSchema = z.object({
+  detail: z.object({ code: z.string(), message: z.string() }),
+});
+const detailStringSchema = z.object({ detail: z.string() });
+
 /**
  * The agent's grants. A Switch from before service connections, or one with
  * them off, answers the route with 404, which is the truth: it grants nothing.
@@ -141,16 +156,17 @@ export async function readServiceGrants(
     switchEndpoint.endpoint.replace(/\/$/, '') +
     `/agents/${encodeURIComponent(switchEndpoint.agentId)}/service-grants`;
   if ((noGrantsRoute.get(url) ?? 0) > Date.now()) return [];
+  const origin = new URL(switchEndpoint.endpoint).origin;
   let response: Response;
   try {
     response = await fetchImpl(url, {
       headers: { Authorization: `Bearer ${switchEndpoint.token}` },
       redirect: 'error',
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(GRANTS_TIMEOUT_MS),
     });
   } catch (error) {
     throw new Error(
-      `Switch could not be reached for this agent's service grants: ${error instanceof Error ? error.message : String(error)}`
+      `Couldn't reach the Switch server at ${origin} to read this agent's service grants (${networkDetail(error)}).`
     );
   }
   if (response.status === 404) {
@@ -160,10 +176,138 @@ export async function readServiceGrants(
   }
   noGrantsRoute.delete(url);
   if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`Switch refused this agent's service grants (HTTP ${response.status}).`);
+    const status = response.status;
+    const { reason, envelope } = await grantsBodyReason(response);
+    if ((status === 502 || status === 503 || status === 504) && !envelope) {
+      const between = `HTTP ${status} from something between this machine and Switch`;
+      throw new Error(
+        `Couldn't reach the Switch server at ${origin} to read this agent's service grants (${reason ? `${between}: ${reason}` : between}).`
+      );
+    }
+    if (status >= 400 && status < 500) {
+      throw new Error(
+        `Switch refused this agent's service grants (HTTP ${status}${reason ? `, ${reason}` : ''}).`
+      );
+    }
+    throw new Error(
+      `Switch answered this agent's service grants request with HTTP ${status}${reason ? ` (${reason})` : ''}.`
+    );
   }
   return grantsResponseSchema.parse(await response.json()).grants;
+}
+
+/**
+ * `text` on one line, at most `max` characters before an ellipsis. Format
+ * characters go too, so a bidi override cannot reorder what a reader sees.
+ */
+function cleanText(text: string, max: number): string {
+  const chars = Array.from(text.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim());
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : chars.join('');
+}
+
+/** A reason code as Switch writes them, or nothing. */
+function cleanCode(code: string): string | null {
+  const cleaned = cleanText(code, 64);
+  return /^[a-z0-9_]{1,64}$/.test(cleaned) ? cleaned : null;
+}
+
+/** The first `ERROR_BODY_MAX_BYTES` of a body as text; null when it cannot be read. */
+async function readBoundedText(response: Response): Promise<string | null> {
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < ERROR_BODY_MAX_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+    }
+    if (size >= ERROR_BODY_MAX_BYTES) await reader.cancel();
+  } catch {
+    return null;
+  }
+  const bytes = new Uint8Array(Math.min(size, ERROR_BODY_MAX_BYTES));
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset >= bytes.length) break;
+    const part = chunk.subarray(0, bytes.length - offset);
+    bytes.set(part, offset);
+    offset += part.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Why an error answer says it failed, from its body: switch-core's error
+ * envelope (`envelope`), FastAPI's `detail`, or a short plain-text line.
+ * Whatever is taken is put on one line and capped, since it reaches the log
+ * and the session's context.
+ */
+async function grantsBodyReason(
+  response: Response
+): Promise<{ reason: string | null; envelope: boolean }> {
+  const text = await readBoundedText(response);
+  if (text === null) return { reason: null, envelope: false };
+  let code: string | null = null;
+  let message: string | null = null;
+  let envelope = false;
+  let json: unknown;
+  let isJson = true;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    isJson = false;
+  }
+  if (isJson) {
+    const fromEnvelope = errorEnvelopeSchema.safeParse(json);
+    const fromDetailObject = detailObjectSchema.safeParse(json);
+    const fromDetailString = detailStringSchema.safeParse(json);
+    if (fromEnvelope.success) {
+      envelope = true;
+      ({ code, message } = fromEnvelope.data.error);
+    } else if (fromDetailObject.success) {
+      ({ code, message } = fromDetailObject.data.detail);
+    } else if (fromDetailString.success) {
+      message = fromDetailString.data.detail;
+    }
+  } else {
+    const trimmed = text.trim();
+    if (trimmed && trimmed.length <= 200 && !trimmed.startsWith('<')) message = trimmed;
+  }
+  const cleanedCode = code === null ? null : cleanCode(code);
+  const cleanedMessage = message === null ? null : cleanText(message, REASON_MAX_CHARS) || null;
+  const reason =
+    cleanedCode && cleanedMessage
+      ? `${cleanedCode}: ${cleanedMessage}`
+      : (cleanedCode ?? cleanedMessage);
+  return { reason, envelope };
+}
+
+const NETWORK_CODES: Record<string, string> = {
+  ECONNREFUSED: 'connection refused',
+  ECONNRESET: 'connection reset',
+  ENOTFOUND: 'address not found',
+  EAI_AGAIN: 'address not found',
+  ETIMEDOUT: `no answer within ${GRANTS_TIMEOUT_MS / 1000} s`,
+  UND_ERR_CONNECT_TIMEOUT: `no answer within ${GRANTS_TIMEOUT_MS / 1000} s`,
+};
+
+/**
+ * What went wrong when a request got no answer. Node's fetch throws
+ * `fetch failed` and keeps the reason on `cause`.
+ */
+function networkDetail(error: unknown): string {
+  const fields = (value: unknown): Record<string, unknown> =>
+    typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+  const { name, message, cause } = fields(error);
+  if (name === 'TimeoutError') return `no answer within ${GRANTS_TIMEOUT_MS / 1000} s`;
+  const { code, message: causeMessage } = fields(cause);
+  if (typeof code === 'string' && code.trim()) return NETWORK_CODES[code] ?? cleanText(code, 64);
+  if (typeof causeMessage === 'string' && causeMessage.trim())
+    return cleanText(causeMessage, REASON_MAX_CHARS);
+  return cleanText(typeof message === 'string' ? message : String(error), REASON_MAX_CHARS);
 }
 
 /** The skills of the agent's grants, one per service. */

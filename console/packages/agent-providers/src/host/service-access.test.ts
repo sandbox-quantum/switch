@@ -144,6 +144,28 @@ const GITHUB: ServiceGrant = {
 
 const answering = (status: number, body: unknown) =>
   vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status }));
+const answeringText = (status: number, text: string) =>
+  vi.fn<typeof fetch>(async () => new Response(text, { status }));
+const throwing = (error: unknown) =>
+  vi.fn<typeof fetch>(async () => {
+    throw error;
+  });
+const failedWith = (code: string, message: string) =>
+  new TypeError('fetch failed', { cause: Object.assign(new Error(message), { code }) });
+const grantsError = async (fetchImpl: typeof fetch): Promise<string> => {
+  const error = await readServiceGrants(SWITCH, fetchImpl).then(
+    () => {
+      throw new Error('the grants were read');
+    },
+    (failure: unknown) => failure
+  );
+  return error instanceof Error ? error.message : String(error);
+};
+
+const ORIGIN = 'https://switch.example.test';
+const UNREACHABLE = `Couldn't reach the Switch server at ${ORIGIN} to read this agent's service grants`;
+const REFUSED = "Switch refused this agent's service grants";
+const ANSWERED = "Switch answered this agent's service grants request with";
 
 describe('readServiceGrants', () => {
   it('reads the grants through the agent’s Switch endpoint, as the agent', async () => {
@@ -163,6 +185,12 @@ describe('readServiceGrants', () => {
       // Every check, each session start: asking each time would trip Switch's refusal breaker.
       expect(await readServiceGrants(without, notFound)).toEqual([]);
       expect(notFound).toHaveBeenCalledTimes(1);
+      const enveloped = answering(404, {
+        error: { code: 'not_found', message: 'Not Found', retryable: false },
+      });
+      expect(
+        await readServiceGrants({ ...SWITCH, agentId: 'agent-404-envelope' }, enveloped)
+      ).toEqual([]);
       vi.advanceTimersByTime(NO_GRANTS_ROUTE_MS + 1);
       const granted = answering(200, { grants: [GITHUB] });
       expect(await readServiceGrants(without, granted)).toEqual([GITHUB]);
@@ -172,12 +200,179 @@ describe('readServiceGrants', () => {
     }
   });
 
-  it('says when Switch refuses or cannot be reached', async () => {
-    await expect(readServiceGrants(SWITCH, answering(503, {}))).rejects.toThrow('HTTP 503');
-    const unreachable = vi.fn<typeof fetch>(async () => {
-      throw new TypeError('fetch failed');
+  it('says it could not reach the Switch server, at its address only, when the connection is refused', async () => {
+    const message = await grantsError(
+      throwing(failedWith('ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:8000'))
+    );
+    expect(message).toBe(`${UNREACHABLE} (connection refused).`);
+    expect(message).not.toMatch(/Switch refused/);
+    for (const secret of ['/api', 'agent 1', 'agent%201', 'agent-key'])
+      expect(message).not.toContain(secret);
+  });
+
+  it('names the network failure from its code, keeping a code it does not know as it is', async () => {
+    expect(await grantsError(throwing(failedWith('ENOTFOUND', 'getaddrinfo ENOTFOUND')))).toContain(
+      '(address not found)'
+    );
+    expect(await grantsError(throwing(failedWith('UND_ERR_SOCKET', 'other side closed')))).toBe(
+      `${UNREACHABLE} (UND_ERR_SOCKET).`
+    );
+  });
+
+  it('falls back to the error’s own words when the failure has no cause', async () => {
+    const message = await grantsError(throwing(new TypeError('fetch failed')));
+    expect(message).toContain("Couldn't reach the Switch server at");
+    expect(message).toContain('(fetch failed)');
+  });
+
+  it('says it could not reach the Switch server when the request times out', async () => {
+    const message = await grantsError(
+      throwing(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+    );
+    expect(message).toBe(`${UNREACHABLE} (no answer within 15 s).`);
+    expect(message).not.toMatch(/Switch refused/);
+  });
+
+  it.each(
+    [502, 503, 504].flatMap((status) => [
+      [status, ''],
+      [status, '<html>Bad Gateway</html>'],
+    ])
+  )(
+    'takes HTTP %i without Switch’s error body (%j) as not reaching Switch',
+    async (status, body) => {
+      const message = await grantsError(answeringText(status as number, body as string));
+      expect(message).toBe(
+        `${UNREACHABLE} (HTTP ${status} from something between this machine and Switch).`
+      );
+      expect(message).not.toMatch(/Switch refused/);
+    }
+  );
+
+  it('passes on what the agent controller’s relay says when it could not reach Switch', async () => {
+    const relay = answering(502, {
+      detail: 'The agent controller could not reach Switch: connect ECONNREFUSED',
     });
-    await expect(readServiceGrants(SWITCH, unreachable)).rejects.toThrow('could not be reached');
+    expect(await grantsError(relay)).toBe(
+      `${UNREACHABLE} (HTTP 502 from something between this machine and Switch: The agent controller could not reach Switch: connect ECONNREFUSED).`
+    );
+  });
+
+  it('says Switch refused, with its reason, when Switch answers with its error body', async () => {
+    const forbidden = answering(403, {
+      error: { code: 'forbidden', message: 'Authenticated as agent a1, not a2.', retryable: false },
+    });
+    expect(await grantsError(forbidden)).toBe(
+      `${REFUSED} (HTTP 403, forbidden: Authenticated as agent a1, not a2.).`
+    );
+    const archived = answering(401, {
+      error: {
+        code: 'workspace_archived',
+        message: 'The workspace is archived.',
+        retryable: false,
+      },
+    });
+    expect(await grantsError(archived)).toContain('HTTP 401, workspace_archived:');
+  });
+
+  it('says Switch refused, with its words, for a plain-text or FastAPI refusal', async () => {
+    expect(await grantsError(answeringText(401, 'Invalid credentials'))).toBe(
+      `${REFUSED} (HTTP 401, Invalid credentials).`
+    );
+    const breaker = answering(429, {
+      detail: 'This request was refused repeatedly; wait before asking again.',
+    });
+    expect(await grantsError(breaker)).toMatch(
+      /^Switch refused this agent's service grants \(HTTP 429, This request/
+    );
+  });
+
+  it.each(
+    [400, 403].flatMap((status) =>
+      [
+        ['empty', answeringText(status, '')],
+        ['HTML', answeringText(status, '<html><body>Forbidden</body></html>')],
+        ['an empty object', answering(status, {})],
+        ['a numeric code', answering(status, { error: { code: 7 } })],
+      ].map(([kind, fetchImpl]) => [status, kind, fetchImpl] as const)
+    )
+  )(
+    'says Switch refused with only the status for HTTP %i with %s body',
+    async (status, _, fetchImpl) => {
+      expect(await grantsError(fetchImpl as typeof fetch)).toBe(`${REFUSED} (HTTP ${status}).`);
+    }
+  );
+
+  it('says what Switch answered, without claiming a refusal, for any other status', async () => {
+    const message = await grantsError(answeringText(500, 'Internal Server Error'));
+    expect(message).toBe(`${ANSWERED} HTTP 500 (Internal Server Error).`);
+    expect(message).not.toMatch(/refused|Couldn't reach/);
+    const fromSwitch = answering(503, {
+      error: { code: 'internal', message: 'x', retryable: false },
+    });
+    expect(await grantsError(fromSwitch)).toBe(`${ANSWERED} HTTP 503 (internal: x).`);
+  });
+
+  it('puts the reason on one line, caps it, and drops a code that is not one', async () => {
+    const long = 'line one\nline two ' + 'a'.repeat(1000);
+    const message = await grantsError(
+      answering(403, { error: { code: 'BAD CODE', message: long, retryable: false } })
+    );
+    const cleaned = long.replace(/\s+/g, ' ');
+    expect(message).toBe(`${REFUSED} (HTTP 403, ${cleaned.slice(0, 300)}…).`);
+    expect(message).not.toContain('\n');
+    expect(message).not.toContain('BAD CODE');
+  });
+
+  it('cleans and caps the reason on every path, not only the envelope', async () => {
+    expect(await grantsError(answeringText(401, 'Invalid\ncredentials'))).toBe(
+      `${REFUSED} (HTTP 401, Invalid credentials).`
+    );
+    const long = 'b'.repeat(1000);
+    expect(await grantsError(answering(429, { detail: long }))).toBe(
+      `${REFUSED} (HTTP 429, ${'b'.repeat(300)}…).`
+    );
+    const multiline = new TypeError('fetch failed', { cause: new Error('socket\nhang up') });
+    expect(await grantsError(throwing(multiline))).toBe(`${UNREACHABLE} (socket hang up).`);
+  });
+
+  it('drops format characters, so a bidi override cannot reorder the reason', async () => {
+    const message = await grantsError(
+      answering(403, { error: { code: 'forbidden', message: 'not\u202ethis\u200b agent' } })
+    );
+    expect(message).toBe(`${REFUSED} (HTTP 403, forbidden: not this agent).`);
+  });
+
+  it('cuts a long reason between characters, never inside one', async () => {
+    const message = await grantsError(answering(403, { detail: '😀'.repeat(400) }));
+    expect(message).toBe(`${REFUSED} (HTTP 403, ${'😀'.repeat(300)}…).`);
+  });
+
+  it('leaves out a code or message that is empty once cleaned', async () => {
+    expect(await grantsError(answering(403, { error: { code: 'forbidden', message: '  ' } }))).toBe(
+      `${REFUSED} (HTTP 403, forbidden).`
+    );
+    expect(await grantsError(answering(403, { error: { code: ' ', message: '  ' } }))).toBe(
+      `${REFUSED} (HTTP 403).`
+    );
+  });
+
+  it('reads no more than 8 KiB of an error body', async () => {
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (pulled >= 1024 * 1024) return controller.close();
+          const chunk = new TextEncoder().encode('a'.repeat(1024));
+          pulled += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    const huge = vi.fn<typeof fetch>(async () => new Response(body, { status: 403 }));
+    expect(await grantsError(huge)).toBe(`${REFUSED} (HTTP 403).`);
+    expect(pulled).toBeLessThanOrEqual(8 * 1024);
   });
 
   it('reads a vendor’s command-line tool as the catalog describes it', async () => {
