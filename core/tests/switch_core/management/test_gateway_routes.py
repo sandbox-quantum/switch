@@ -310,6 +310,43 @@ class TestManagedAgents:
         assert agent.metadata_["known_agent_options"]["auto_session"] is True
         assert agent.metadata_["known_agent_options"]["repo_dir"] == "/srv/example"
 
+    @pytest.mark.parametrize(
+        ("provider_name", "expected"), [("claude", True), ("opencode", False)]
+    )
+    async def test_auto_mode_left_out_is_the_providers_default_for_a_new_agent(
+        self, harness: Harness, provider_name: str, expected: bool
+    ) -> None:
+        # OpenCode's auto mode reviews nothing before a command runs, so a new
+        # OpenCode agent asks unless its owner turns auto mode on.
+        owner = await add_member(harness.session_factory, "ada")
+        body = definition(provider_name)
+        del body["auto_mode"]
+        async with harness.client() as client:
+            response = await create_managed_agent(
+                client,
+                owner,
+                name="builder",
+                controller_id=None,
+                definition_body=body,
+            )
+        assert response.status_code == 201, response.text
+        assert response.json()["definition"]["auto_mode"] is expected
+
+    async def test_an_opencode_agent_keeps_auto_mode_its_owner_asks_for(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            response = await create_managed_agent(
+                client,
+                owner,
+                name="builder",
+                controller_id=None,
+                definition_body=definition("opencode", auto_mode=True),
+            )
+        assert response.status_code == 201, response.text
+        assert response.json()["definition"]["auto_mode"] is True
+
     async def test_an_additional_provider_needs_its_flag_for_a_new_agent(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

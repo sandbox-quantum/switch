@@ -61,6 +61,15 @@ version of their own to them without also giving them a release of their own.
   chart.
 
 #### Security
+- **A new OpenCode agent is created with auto mode off.** OpenCode's auto mode
+  has no review of its own and runs every command without asking, so a
+  managed OpenCode agent created without saying whether it runs in auto mode,
+  through the management API, a template run (`auto_mode` left out of the
+  template or the request) or an agent's `create_agent`, now starts asking its
+  owner. Other providers keep their defaults, and asking for auto mode
+  explicitly still turns it on. Agents already created keep their stored
+  setting; `list_managed_agents` shows each one's `auto_mode`, and
+  `update_agent_detail` or the agent's settings turn it off.
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
   at once, leaving the rest to its own work, such as renewing its lease,
@@ -4882,6 +4891,20 @@ version of their own to them without also giving them a release of their own.
   field shows the one that applies when left blank. When the server can't
   read its decision service, the page says so and keeps the saved choice.
   "Self-hosted endpoint" is now "Your own endpoint".
+#### Security
+
+- **A new OpenCode agent asks before it acts.** OpenCode's auto mode has no
+  review of its own: it answers every permission request itself, so with it
+  on, anyone who can post in the agent's rooms could have commands run on its
+  owner's machine. New OpenCode agents now start with auto mode off, wherever
+  they are created (the new-agent form, a template, or attaching an agent
+  already set up in a folder), and ask before each command and edit. Auto mode
+  is still there for an owner who turns it on, and the switch now says that
+  every action, commands included, then runs without asking. Agents on other
+  providers keep their defaults. Existing agents keep their settings: check
+  an OpenCode agent's **Auto mode** switch in its settings and turn it off if
+  it should ask.
+
 #### Changed
 
 - **The usage-data identifier changes every 30 days and is deleted when you

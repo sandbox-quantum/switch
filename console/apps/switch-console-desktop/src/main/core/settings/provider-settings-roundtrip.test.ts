@@ -48,6 +48,7 @@ const provider = (id: string) => ({
   loginCommand: id,
   knownAgentType: id,
   supportsAutoMode: true,
+  newAgentAutoMode: true,
 });
 
 const KEY = 'providerConfigs';
