@@ -53,6 +53,15 @@ describe('describeFailure', () => {
     expect(result.detail).toBe('fetch failed');
   });
 
+  it('leads with the reason an unreachable gateway gave, when it names one', () => {
+    const message = "Can't reach switch.example.test: the address doesn't resolve (ENOTFOUND).";
+    const result = describeFailure(
+      rpcError('GatewayError', message, { kind: 'network' }),
+      'Could not load the rooms.'
+    );
+    expect(result).toEqual({ headline: message, detail: null });
+  });
+
   it("prefers the gateway's own explanation when it reads as a sentence", () => {
     const result = describeFailure(
       rpcError('GatewayError', 'POST /rooms failed: 409', {
@@ -130,6 +139,7 @@ describe('describeFailure', () => {
     'DuplicateServerUrlError',
     'NoDashboardError',
     'NoManagementApiError',
+    'RedirectedAddressError',
   ])('passes a refusal about a server’s address straight through (%s)', (code) => {
     const message = 'https://switch.example.com answered with a web page, not the Switch server.';
     expect(describeFailure(rpcError(code, message), 'Could not add the server.')).toEqual({

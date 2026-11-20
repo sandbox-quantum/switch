@@ -3,6 +3,7 @@ import { log } from '@main/lib/logger';
 import {
   dashboardOrigin,
   type SwitchServer,
+  urlHost,
   urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { clearDashboardUrl, listServers, setDashboardUrl } from './servers-store';
@@ -100,6 +101,43 @@ export class NoManagementApiError extends Error {
     );
     this.name = 'NoManagementApiError';
   }
+}
+
+/**
+ * The server's address answered its management API with a redirect.
+ * switch-core never redirects an API call, so whatever answered is not it: a
+ * typo that landed on someone else's site, or plain http where the server
+ * only answers https.
+ */
+export class RedirectedAddressError extends Error {
+  constructor(url: string, location: string) {
+    super(redirectMessage(url, location));
+    this.name = 'RedirectedAddressError';
+  }
+}
+
+function bareHostname(hostname: string): string {
+  return hostname.replace(/^www\./, '');
+}
+
+function redirectMessage(url: string, location: string): string {
+  const from = urlHost(url);
+  let source: URL;
+  let target: URL;
+  try {
+    source = new URL(url.trim());
+    target = new URL(location, source);
+  } catch {
+    return `${from} doesn't answer as a Switch server: it redirects to ${location}. Check the address.`;
+  }
+  const sameSite = bareHostname(target.hostname) === bareHostname(source.hostname);
+  if (sameSite && source.protocol === 'http:' && target.protocol === 'https:') {
+    return `${from} only answers over https. Enter the address as https://${target.host}.`;
+  }
+  if (target.host === source.host) {
+    return `${from} redirects instead of answering as a Switch server. Check the address.`;
+  }
+  return `${from} doesn't answer as a Switch server: it redirects to ${target.host}. Check the address.`;
 }
 
 /** A server's dashboard pages cannot be opened, because nothing serves them. */

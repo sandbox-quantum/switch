@@ -11,7 +11,7 @@ import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { type SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { type SwitchServer, urlHost } from '@shared/core/switch-servers/switch-servers';
 import { homeRedirect } from './home-target';
 import { HomeFooter } from './home/home-footer';
 import { HomeHeader } from './home/home-header';
@@ -206,6 +206,19 @@ const HomeBody = observer(function HomeBody({
 const UNREACHABLE_RETRY_MS = 10_000;
 
 /**
+ * The reason a server could not be reached, without the address the card's
+ * title already names: "Can't reach <host>: …" from a network failure, or
+ * "<host> …" from a redirect.
+ */
+function withoutAddress(reason: string | null, host: string): string | null {
+  if (!reason) return null;
+  const prefix = [`Can't reach ${host}: `, `${host} `].find((p) => reason.startsWith(p));
+  if (!prefix) return reason;
+  const rest = reason.slice(prefix.length);
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
+}
+
+/**
  * The whole page when a server's gateway cannot be reached. There is nothing to
  * sign into and no status worth reading, so this replaces both rather than
  * stacking a red banner on top of a sign-in form that can never work. The raw
@@ -226,6 +239,8 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
   // modelled separately. Console watches its process, and the status page says
   // what that found.
   const managed = server.managed;
+  const host = urlHost(server.url);
+  const reason = withoutAddress(store.unreachableReason(serverId), host);
 
   // Keep probing while this is on screen. Waiting for the user to press
   // something would leave a server that recovered looking down. This only
@@ -242,18 +257,23 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
 
   return (
     <div className={`${card} flex items-center justify-between gap-3`}>
-      <div className="flex items-center gap-2 text-sm">
-        <PlugZap className="size-4 text-amber-500" />
-        <span className="text-foreground">
-          {managed ? `${server.name} isn't answering` : 'Cannot reach the server'}
-        </span>
-        <span className="text-foreground-muted">
-          {retrying
-            ? 'Reconnecting…'
-            : managed
-              ? 'Server status shows what it is doing.'
-              : 'Check your connection.'}
-        </span>
+      <div className="flex min-w-0 flex-col gap-1 text-sm">
+        <div className="flex items-center gap-2">
+          <PlugZap className="size-4 shrink-0 text-amber-500" />
+          <span className="text-foreground">
+            {managed ? `${server.name} isn't answering` : `Can't reach ${host}`}
+          </span>
+          <span className="text-foreground-muted">
+            {retrying
+              ? 'Reconnecting…'
+              : managed
+                ? 'Server status shows what it is doing.'
+                : reason
+                  ? null
+                  : 'Check the address and your connection.'}
+          </span>
+        </div>
+        {!managed && reason && <p className="pl-6 text-xs text-foreground-muted">{reason}</p>}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {managed && (

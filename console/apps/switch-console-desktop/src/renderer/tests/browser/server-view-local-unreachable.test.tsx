@@ -16,6 +16,8 @@ vi.hoisted(() => {
 const state = vi.hoisted(() => ({
   status: null as unknown,
   unreachable: false,
+  reason:
+    "Can't reach localhost:41001: nothing is answering at that address and port (ECONNREFUSED).",
   localStart: vi.fn(),
   navigate: vi.fn(),
 }));
@@ -38,6 +40,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
     statusFor: () => ({ connected: true }),
     refreshing: new Set(),
     isUnreachable: () => state.unreachable,
+    unreachableReason: () => (state.unreachable ? state.reason : null),
     isHostBlocked: () => false,
     refreshStatus: () => Promise.resolve(),
     ensureAuthConfig: () => Promise.resolve(),
@@ -159,18 +162,42 @@ it('does not blame the connection when the local server is not answering', async
   await render();
 
   expect(document.body.textContent).toContain("Local server isn't answering");
-  expect(document.body.textContent).not.toContain('Check your connection');
+  expect(document.body.textContent).not.toContain('Check the address and your connection');
   expect(button(/^Server status$/)).toBeDefined();
 });
 
-it('still calls an unmanaged server unreachable a connection problem', async () => {
+it('names the address an unmanaged server cannot be reached at, and why', async () => {
   state.unreachable = true;
   LOCAL.managed = false;
   try {
     await render();
-    expect(document.body.textContent).toContain('Check your connection');
+    expect(document.body.textContent).toContain("Can't reach localhost:41001");
+    expect(document.body.textContent).toContain(
+      'Nothing is answering at that address and port (ECONNREFUSED).'
+    );
     expect(button(/^Server status$/)).toBeUndefined();
   } finally {
     LOCAL.managed = true;
+  }
+});
+
+it('names the address once when a redirect is why the server cannot be used', async () => {
+  state.unreachable = true;
+  state.reason =
+    "localhost:41001 doesn't answer as a Switch server: it redirects to elsewhere.example.org. Check the address.";
+  LOCAL.managed = false;
+  try {
+    await render();
+    const text = document.body.textContent ?? '';
+    expect(text).toContain(
+      "Doesn't answer as a Switch server: it redirects to elsewhere.example.org. Check the address."
+    );
+    expect(text.split('localhost:41001').length - 1).toBe(
+      (text.match(/Can't reach localhost:41001/g) ?? []).length
+    );
+  } finally {
+    LOCAL.managed = true;
+    state.reason =
+      "Can't reach localhost:41001: nothing is answering at that address and port (ECONNREFUSED).";
   }
 });

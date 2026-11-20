@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 const getAuthConfig = vi.hoisted(() => vi.fn());
 const getConnectionStatus = vi.hoisted(() => vi.fn());
@@ -660,6 +661,49 @@ describe('a server that cannot be reached', () => {
 
     expect(store.isUnreachable('srv-a')).toBe(true);
     expect(store.isUnreachable('srv-b')).toBe(false);
+  });
+});
+
+describe('why a server cannot be reached', () => {
+  const unreachable = () =>
+    new RpcError({
+      __switchConsoleRpcError: true,
+      code: 'GatewayError',
+      message: "Can't reach api.srv-a.example.com: the address doesn't resolve (ENOTFOUND).",
+      data: { kind: 'network' },
+    });
+
+  it('keeps the reason the sign-in read gave', async () => {
+    const store = newStore([server('srv-a')]);
+    getAuthConfig.mockRejectedValueOnce(unreachable());
+
+    await store.ensureAuthConfig('srv-a');
+
+    expect(store.authConfigFailure('srv-a')).toBe(
+      "Can't reach api.srv-a.example.com: the address doesn't resolve (ENOTFOUND)."
+    );
+    expect(store.unreachableReason('srv-a')).toBe(store.authConfigFailure('srv-a'));
+  });
+
+  it('keeps the reason the status read gave', async () => {
+    const store = newStore([server('srv-a')]);
+    getConnectionStatus.mockRejectedValueOnce(unreachable());
+
+    await store.refreshStatus('srv-a');
+
+    expect(store.unreachableReason('srv-a')).toMatch(/doesn't resolve/);
+  });
+
+  it('forgets the reason once the server answers', async () => {
+    const store = newStore([server('srv-a')]);
+    getAuthConfig.mockRejectedValueOnce(unreachable());
+    getConnectionStatus.mockRejectedValueOnce(unreachable());
+    await store.refreshServer('srv-a');
+
+    await store.refreshServer('srv-a');
+
+    expect(store.unreachableReason('srv-a')).toBeNull();
+    expect(store.authConfigFailure('srv-a')).toBeNull();
   });
 });
 

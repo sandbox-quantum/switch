@@ -147,7 +147,8 @@ import type {
 import type { OrganizationRole, WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
-import { NoManagementApiError } from './server-address';
+import { describeNetworkFailure } from './network-failure';
+import { NoManagementApiError, RedirectedAddressError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 import { noteSessionEnded } from './session-ended';
 
@@ -418,10 +419,7 @@ export async function gatewayRequest(
       });
     } catch (cause) {
       noteManagedServerUnanswered(server);
-      throw new GatewayError(
-        'network',
-        `Could not reach ${server.url}: ${cause instanceof Error ? cause.message : String(cause)}`
-      );
+      throw new GatewayError('network', describeNetworkFailure(server.url, cause));
     }
   };
 
@@ -448,6 +446,14 @@ export async function gatewayRequest(
   if (answeredWithPage(response)) {
     throw new NoManagementApiError(server.name, server.url, response.status);
   }
+  // Only a call made without a session can blame the address: a signed-in
+  // call redirected is more likely a sign-in proxy in front of the server
+  // whose own login has lapsed, and is left to the caller as a refusal.
+  const location = response.headers.get('location');
+  if (!options.authenticated && response.status >= 300 && response.status < 400 && location) {
+    await response.body?.cancel();
+    throw new RedirectedAddressError(server.url, location);
+  }
   return response;
 }
 
@@ -458,9 +464,12 @@ export async function gatewayRequest(
  * with no route for the path) is not from it. A proxy's 502 page means the
  * server is down, which the caller reports as it is.
  */
+function isHtmlResponse(response: Response): boolean {
+  return (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
+}
+
 function answeredWithPage(response: Response): boolean {
-  const html = (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
-  return html && (response.ok || response.status === 404);
+  return isHtmlResponse(response) && (response.ok || response.status === 404);
 }
 
 /** The `retryable` beside `detail` in a coded refusal, or undefined without one. */
@@ -485,9 +494,12 @@ export async function gatewayFetch(
   });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
+    // A page of markup says nothing a person can read in a sentence; the body
+    // is still kept whole on the error for whoever reads it.
+    const shown = isHtmlResponse(response) ? '' : body;
     throw new GatewayError(
       'http',
-      `Switch gateway returned ${response.status}${body ? `: ${body}` : ''}`,
+      `Switch gateway returned ${response.status}${shown ? `: ${shown}` : ''}`,
       response.status,
       parseErrorDetail(body),
       parseErrorCode(body),
@@ -877,6 +889,27 @@ export class PasswordChangedSessionNotSavedError extends Error {
       { cause }
     );
     this.name = 'PasswordChangedSessionNotSavedError';
+  }
+}
+
+/** Short, because it stands in front of a status read that would otherwise answer at once. */
+const PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * Whether the server answers at all, asked without a session. Any answer
+ * counts, a refusal included; only a request that never got one is raised, as
+ * the `network` {@link GatewayError} that says why.
+ */
+export async function probeGateway(server: SwitchServer): Promise<void> {
+  try {
+    const res = await gatewayRequest(server, '/auth/config', {
+      authenticated: false,
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    await res.body?.cancel();
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.kind !== 'network') return;
+    throw cause;
   }
 }
 
