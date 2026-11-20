@@ -171,6 +171,21 @@ version of their own to them without also giving them a release of their own.
   it; the runtime role still cannot delete audit rows itself. switch-core
   refuses to start if the function is missing or the runtime role may not
   execute it.
+- **`switch-purge-organization` also cleans up outside Switch.** A cloud
+  machine's disk is deleted straight away rather than kept for its retention
+  period, and the purge goes on only once the disk is gone. With the
+  server's `WORKOS_API_KEY` it then takes the organization out of WorkOS:
+  each person's membership goes, a WorkOS user goes only if no other
+  organization in the environment still has them, and the WorkOS
+  organization goes only once nobody else is in it. Without the key it lists
+  what to remove there and exits 4. Where the organization connected a
+  Switch Trust policy, it asks Switch Trust, with that policy's settings, to
+  delete what it holds for each of the organization's rooms; a run resumed
+  after the organization was deleted lists those rooms to delete by hand and
+  exits 4. Every step outside Switch is recorded in the server's audit log
+  and retried by running the command again, and the command ends with a
+  receipt of what was done outside Switch and a reminder that backups keep
+  the organization for up to 37 days.
 - **Member changes that also apply in Switch Trust ask first.** On an
   organization whose members come from WorkOS and whose changes are sent
   there, making someone Org Admin, making an Org Admin a Viewer, and removing
