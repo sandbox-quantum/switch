@@ -840,6 +840,39 @@ describe("the layout", () => {
       }
     });
 
+    it("keeps another switch from racing the cookie update, and lets the user retry on failure", async () => {
+      const gamma = { ...beta, id: "t3", slug: "gamma", name: "Gamma Co" };
+      mockFetch(signedInAs("member", { tenants: [beta, gamma] }));
+      const previous = vi.mocked(fetch).getMockImplementation()!;
+      let finish: () => void = () => {};
+      const waiting = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const switches = vi.fn(async () => {
+        await waiting;
+        return new Response(JSON.stringify({ detail: "Switch failed" }), { status: 500 });
+      });
+      vi.mocked(fetch).mockImplementation((input, init) =>
+        /\/tenants\/t[23]\/switch$/.test(String(input)) ? switches() : previous(input, init)
+      );
+
+      renderAt("/rooms");
+      const menu = await openSwitcher();
+      fireEvent.click(within(menu).getByText("Beta Co"));
+      const crumb = await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ });
+      try {
+        fireEvent.click(crumb);
+        const reopened = screen.queryByRole("menu", { name: "Workspaces" });
+        if (reopened) fireEvent.click(within(reopened).getByText("Gamma Co"));
+        expect(switches).toHaveBeenCalledTimes(1);
+      } finally {
+        finish();
+      }
+
+      expect(await screen.findByText("Switch failed")).toBeTruthy();
+      expect(await openSwitcher()).toBeTruthy();
+    });
+
     it("lets a workspace admin or an organization admin invite people", async () => {
       for (const role of ["workspace_admin", "org_admin"] as const) {
         mockFetch(signedInAs(role));
