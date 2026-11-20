@@ -29,6 +29,10 @@ const admin = vi.hoisted(() => ({ value: true }));
 const agentOwner = vi.hoisted(() => ({ value: 'u-other' }));
 const setRoomGroup = vi.hoisted(() => vi.fn());
 const listBridgePeople = vi.hoisted(() => vi.fn());
+const nativeRoomMembers = vi.hoisted(() => vi.fn());
+const workspaceMembers = vi.hoisted(() => vi.fn());
+const addNativeRoomMember = vi.hoisted(() => vi.fn());
+const chatSummary = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -66,6 +70,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       listBridgePeople,
     },
     agents: { getAgents: vi.fn(() => Promise.resolve([])) },
+    chats: { members: nativeRoomMembers, workspaceMembers, addMember: addNativeRoomMember },
   },
 }));
 
@@ -80,7 +85,21 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { statusFor: () => ({ user: { id: 'u-me' } }) },
+  switchServersStore: {
+    statusFor: () => ({ user: { id: 'u-me' } }),
+    serverById: () => null,
+  },
+}));
+
+vi.mock('@renderer/features/chats/stores/chats', () => ({
+  chatsStore: { chat: chatSummary, removed: new Set() },
+}));
+
+vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
+  workspacesStore: {
+    byId: () => ({ id: 'ws-1', serverId: 'server-1', tenantId: 'tenant-1' }),
+    serverIdFor: () => 'server-1',
+  },
 }));
 
 vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
@@ -143,6 +162,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   agentOwner.value = 'u-other';
+  chatSummary.mockReset();
   getRoomDetail.mockReset();
   getRoomDetail.mockResolvedValue(ROOM);
   setRoomAgentJoinEvents.mockReset();
@@ -636,5 +656,74 @@ describe('room admins in the side column', () => {
     const el = await renderPanel('side');
     expect(fold(el, 'Room admins')).toBeNull();
     expect(el.textContent).not.toContain('room admin');
+  });
+});
+
+describe('unbridged room members', () => {
+  const NATIVE_ROOM = {
+    ...ROOM,
+    channelType: 'channel_private',
+    bridgeId: null,
+    bridgeType: null,
+    bridgeDisplayName: null,
+    connectedUserNames: [],
+    externalChannelId: null,
+  };
+  const OWNER = { userId: 'u-1', name: 'Ada', isOwner: true };
+  const INVITEE = { userId: 'u-bob', name: 'Bob Stone', isOwner: false };
+
+  beforeEach(() => {
+    getRoomDetail.mockResolvedValue(NATIVE_ROOM);
+    nativeRoomMembers.mockReset().mockResolvedValue([OWNER]);
+    workspaceMembers.mockReset().mockResolvedValue([
+      { userId: OWNER.userId, name: OWNER.name, email: null, serviceAccount: false },
+      { userId: INVITEE.userId, name: INVITEE.name, email: null, serviceAccount: false },
+    ]);
+    addNativeRoomMember.mockReset().mockResolvedValue([OWNER, INVITEE]);
+  });
+
+  it('adds a workspace account by ID and shows it in the room roster', async () => {
+    const el = await renderPanel('side');
+    const open = el.querySelector<HTMLElement>('[aria-label="Add people"]');
+    expect(open).not.toBeNull();
+    await click(open!);
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(button(dialog, /Ada/)).toBeUndefined();
+    await click(button(dialog, /Bob Stone/)!);
+    expect(addNativeRoomMember).toHaveBeenCalledWith({
+      serverId: 'server-1',
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      userId: 'u-bob',
+    });
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(el.querySelector('section[aria-label="People"]')?.textContent).toContain('Bob Stone');
+    expect(listBridgePeople).not.toHaveBeenCalled();
+  });
+
+  it('offers the template room action after the chat feed recognizes the room', async () => {
+    chatSummary.mockReturnValue({
+      roomId: NATIVE_ROOM.id,
+      channelType: 'channel_private',
+      bridgeType: null,
+      agents: [],
+      memberUserIds: [OWNER.userId],
+      canManage: true,
+    });
+    const el = await renderPanel('side');
+    expect(el.querySelector('[aria-label="Add people"]')).not.toBeNull();
+  });
+
+  it('does not offer adding people to an archived room', async () => {
+    getRoomDetail.mockResolvedValue({ ...NATIVE_ROOM, archived: true });
+    const el = await renderPanel('side');
+    expect(el.querySelector('[aria-label="Add people"]')).toBeNull();
+  });
+
+  it('does not let a room member use the owner and workspace admin operation', async () => {
+    permissions.value = { ...permissions.value, canManage: false };
+    const el = await renderPanel('side');
+    expect(el.querySelector('[aria-label="Add people"]')).toBeNull();
   });
 });

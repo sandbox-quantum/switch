@@ -6,7 +6,10 @@ import { localWatcherControl } from '@main/core/sdk-host/local-host';
 import { withSidecar } from '@main/core/sdk-host/sidecar-control';
 import { deleteRoom, fetchMe } from '@main/core/switch-servers/gateway-client';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
-import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import {
+  withServerWorkspaceSession,
+  withWorkspaceSession,
+} from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type {
@@ -143,11 +146,14 @@ function reported<T>(
   serverId: string,
   requestId: string | null,
   run: (server: SwitchServer) => Promise<T>,
-  emit: ChatCallEmit<T>
+  emit: ChatCallEmit<T>,
+  workspaceId?: string
 ): Promise<T> {
-  return onServer(serverId, (server) =>
-    reportingChatCall(server, requestId, () => run(server), emit)
-  );
+  const report = (server: SwitchServer) =>
+    reportingChatCall(server, requestId, () => run(server), emit);
+  return workspaceId === undefined
+    ? onServer(serverId, report)
+    : withWorkspaceSession(workspaceId, report);
 }
 
 /**
@@ -239,8 +245,12 @@ export const chatsController = createRPCController({
       (outcome) =>
         trackEvent('chat_member_changed', { ...outcome, change: 'removed', member_kind: 'agent' })
     ),
-  members: (serverId: string, roomId: string): Promise<ChatMember[]> =>
-    onServer(serverId, (server) => listChatMembers(server, roomId)),
+  members: (serverId: string, roomId: string, workspaceId?: string): Promise<ChatMember[]> => {
+    const list = (server: SwitchServer) => listChatMembers(server, roomId);
+    return workspaceId === undefined
+      ? onServer(serverId, list)
+      : withWorkspaceSession(workspaceId, list);
+  },
   /** The room commands a member can type here, for the composer's `!` list. */
   commands: (serverId: string, roomId: string): Promise<ChatCommand[]> =>
     onServer(serverId, (server) => listChatCommands(server, roomId)),
@@ -248,13 +258,15 @@ export const chatsController = createRPCController({
     serverId: string;
     roomId: string;
     userId: string;
+    workspaceId?: string;
   }): Promise<ChatMember[]> =>
     reported(
       params.serverId,
       null,
       (server) => addChatMember(server, params.roomId, params.userId),
       (outcome) =>
-        trackEvent('chat_member_changed', { ...outcome, change: 'added', member_kind: 'person' })
+        trackEvent('chat_member_changed', { ...outcome, change: 'added', member_kind: 'person' }),
+      params.workspaceId
     ),
   removeMember: (params: { serverId: string; roomId: string; userId: string }): Promise<void> =>
     reported(

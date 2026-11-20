@@ -46,6 +46,7 @@ import { chatAgentLabel } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import {
   AddAgentPanel,
+  AddNativePeoplePanel,
   AddPeoplePanel,
   AddRoomAdminPanel,
   ChatAddParticipantPanel,
@@ -123,14 +124,32 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   const detail = useRoomDetail(workspaceId, roomId, true);
   // Whose each agent is, so the viewer is offered taking out their own.
   const workspaceAgents = useWorkspaceAgents(workspaceId);
-  const membersKey = chat && serverId ? chatMembersQueryKey(serverId, chat) : ['no-chat-members'];
+  const room = detail.data ?? null;
+  const nativeRoom =
+    room !== null &&
+    !room.isConsoleChat &&
+    room.bridgeId === null &&
+    room.channelType !== 'direct' &&
+    room.channelType !== 'group';
+  const nativeTenantId =
+    nativeRoom && workspaceId !== null
+      ? (workspacesStore.byId(workspaceId)?.tenantId ?? null)
+      : null;
+  const membersKey =
+    chat && serverId
+      ? chatMembersQueryKey(serverId, chat)
+      : ['native-room-members', serverId, workspaceId, roomId];
+  const mayReadMembers =
+    serverId !== null && (consoleChat ? chat !== null : nativeRoom && room.viewerIsMember);
   const members = useQuery({
     queryKey: membersKey,
-    queryFn: () => rpc.chats.members(serverId as string, roomId),
-    enabled: consoleChat && chat !== null && serverId !== null,
+    queryFn: () =>
+      nativeRoom && workspaceId !== null
+        ? rpc.chats.members(serverId as string, roomId, workspaceId)
+        : rpc.chats.members(serverId as string, roomId),
+    enabled: mayReadMembers,
   });
 
-  const room = detail.data ?? null;
   const bridgeId = consoleChat ? null : (room?.bridgeId ?? null);
   // Who linked each username, to name them beside it. Shares the Add people
   // panel's cache. Only a label, so it is kept a while rather than fetched on
@@ -156,23 +175,24 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   const unreadable = !consoleChat && detail.isError;
   const agentIds = chat ? chat.agents.map((agent) => agent.id) : (room?.agentIds ?? []);
   const chatNames = new Map((chat?.agents ?? []).map((agent) => [agent.id, chatAgentLabel(agent)]));
-  const people = consoleChat
-    ? (members.data ?? []).map((member) => ({
-        key: member.userId,
-        name: member.name,
-        fullName: null,
-        detail: member.isOwner ? 'owner' : null,
-        isOwner: member.isOwner,
-        userIds: [member.userId],
-      }))
-    : (room?.connectedUserNames ?? []).map((name) => ({
-        key: name,
-        name,
-        fullName: linkedNames.get(name) ?? null,
-        detail: null,
-        isOwner: false,
-        userIds: linkedIds.get(name) ?? [],
-      }));
+  const people =
+    consoleChat || nativeRoom
+      ? (members.data ?? []).map((member) => ({
+          key: member.userId,
+          name: member.name,
+          fullName: null,
+          detail: member.isOwner ? 'owner' : null,
+          isOwner: member.isOwner,
+          userIds: [member.userId],
+        }))
+      : (room?.connectedUserNames ?? []).map((name) => ({
+          key: name,
+          name,
+          fullName: linkedNames.get(name) ?? null,
+          detail: null,
+          isOwner: false,
+          userIds: linkedIds.get(name) ?? [],
+        }));
 
   async function refreshRoom() {
     await queryClient.invalidateQueries({ queryKey: roomDetailKey(workspaceId ?? '', roomId) });
@@ -193,6 +213,11 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
       ...NO_CONTROLS,
       // Adding to a chat makes it a group, which the server offers only with group chats on.
       addAgents: groupChats ? () => setAdding('agents') : null,
+      // Template rooms already permit workspace members; they do not have to become a group chat.
+      addPeople:
+        !groupChats && nativeRoom && !room.archived && nativeTenantId !== null
+          ? () => setAdding('people')
+          : null,
       removeAgent: (agentId) => async () => {
         await rpc.chats.removeAgent({ serverId, roomId, agentId });
         chatsStore.dropAgent(roomId, agentId);
@@ -213,8 +238,10 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
     // an admin; a direct or group conversation's platform fixes who is in it,
     // so the server sets neither there. Its settings take `canWrite`.
     const addAgents = permissions.canInviteAgents ? () => setAdding('agents') : null;
-    const addPeople =
-      permissions.canAddPeople && inviteability.canInvite ? () => setAdding('people') : null;
+    const canAddPeople = nativeRoom
+      ? permissions.canManage && !room.archived && serverId !== null && nativeTenantId !== null
+      : permissions.canAddPeople && inviteability.canInvite;
+    const addPeople = canAddPeople ? () => setAdding('people') : null;
     // Anyone may take out their own agent, outside a direct or group
     // conversation, whose platform fixes who is in it.
     const fixedMembers = room.channelType === 'direct' || room.channelType === 'group';
@@ -337,13 +364,21 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
       </Fold>
 
       <Fold
-        title={consoleChat ? 'People' : 'People seen here'}
+        title={consoleChat || nativeRoom ? 'People' : 'People seen here'}
         count={people.length}
         onAdd={controls.addPeople}
         addLabel="Add people"
       >
         {unreadable ? null : people.length === 0 ? (
-          <Note>{consoleChat ? 'Nobody else is here yet.' : 'Nobody has been seen here yet.'}</Note>
+          nativeRoom && members.isError ? (
+            <Note>Could not load people in this room.</Note>
+          ) : nativeRoom && mayReadMembers && members.isPending ? null : (
+            <Note>
+              {consoleChat || nativeRoom
+                ? 'Nobody else is here yet.'
+                : 'Nobody has been seen here yet.'}
+            </Note>
+          )
         ) : (
           people.map((person) => {
             const standing =
@@ -384,12 +419,13 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
             );
           })
         )}
-        {!consoleChat && (
-          // Switch only knows the people who posted here or were added through it.
-          <Note>
-            People who posted here or were added through Switch. The channel may have more.
-          </Note>
-        )}
+        {!consoleChat &&
+          !nativeRoom && (
+            // Switch only knows the people who posted here or were added through it.
+            <Note>
+              People who posted here or were added through Switch. The channel may have more.
+            </Note>
+          )}
         {bridgePeople.isError &&
           people.length > 0 && (
             // Said, so a lookup that failed does not pass for people nobody linked.
@@ -494,6 +530,22 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
             )}
             {adding === 'admins' && room && workspaceId && (
               <AddRoomAdminPanel workspaceId={workspaceId} room={room} />
+            )}
+            {adding === 'people' && nativeRoom && workspaceId && serverId && nativeTenantId && (
+              <AddNativePeoplePanel
+                serverId={serverId}
+                workspaceId={workspaceId}
+                tenantId={nativeTenantId}
+                roomId={roomId}
+                memberIds={new Set(people.map((person) => person.key))}
+                loadingMembers={mayReadMembers && members.isPending}
+                onAdded={(next) => {
+                  queryClient.setQueryData(membersKey, next);
+                  void queryClient.invalidateQueries({
+                    queryKey: roomDetailKey(workspaceId, roomId),
+                  });
+                }}
+              />
             )}
             {adding === 'people' && room && workspaceId && room.bridgeId !== null && (
               <AddPeoplePanel workspaceId={workspaceId} room={room} bridgeId={room.bridgeId} />
