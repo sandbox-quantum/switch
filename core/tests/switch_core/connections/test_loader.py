@@ -24,6 +24,7 @@ PLACEHOLDERS = {
     "box",
     "canva",
     "vercel",
+    "servicenow",
 }
 
 
@@ -68,6 +69,16 @@ def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages
         if definition.enabled:
             assert definition.publisher, slug
             assert definition.links is not None, slug
+
+
+def test_servicenow_stays_a_placeholder_until_instance_aware_mcp_is_validated():
+    connection = CATALOG["servicenow"]
+
+    assert not connection.definition.enabled
+    assert connection.definition.adapter is None
+    assert connection.definition.auth.oauth is None
+    assert connection.definition.auth.identity is None
+    assert not connection.skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
