@@ -6,14 +6,15 @@ section stands on its own: read the one you were pointed at, then act.
 
 ## Telegram private channel
 
-Bots can't create chats on Telegram. They make a group with the bot. With the
-bot's Group Privacy on (BotFather's default) it sees only commands and replies to
-its own messages; they can turn it off in BotFather (`/setprivacy`, Disable)
-before adding the bot, or, if it is already in, remove it and add it back or make
-it an admin. Linking comes first: if `your_account_link` is `none`, they link from
-[Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) and send `/link_account CODE` to
-the bot, in its private chat or in that group, since `/invite_agent` is refused
-and owner-only agents ignore them until then. Then they send
+Bots can't create chats on Telegram. They make a group with the bot. For Group
+Privacy and adding the bot, fetch the docs' Telegram page,
+`https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/telegram.md`, and
+follow it rather than recalling the steps. Linking comes before inviting: if
+`your_account_link` is not `verified`, they post a message in the group, then link
+their account in [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps)
+and send the code it shows (`/link_account CODE`) to the bot, in its private chat or in
+that group, since `/invite_agent` is refused and owner-only agents ignore them until
+then. Then they send
 `/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it, and talk to
 an agent by mentioning its name or replying to its message. Only where the
 bridge has said in that group that it can see just the messages that tag it do
@@ -62,15 +63,15 @@ them pick.
 
 | Page | Link |
 |---|---|
-| The server's home: the workspace at a glance (not where accounts or guardrails are) | `switchdash://open/home` |
+| The server's Home page: its status, and renaming or removing it. It may remind them to link an account, but linking is never done there: send them to Messaging apps in Settings | `switchdash://open/home` |
 | This server's own settings, when their Switch Console runs it: start, stop, restart, update | `switchdash://open/server` |
 | Every room | `switchdash://open/rooms` |
 | A room | `switchdash://open/room/<room-id>` |
 | Templates (`tab=agent`, `room` or `group`) | `switchdash://open/templates` |
 | A template | `switchdash://open/template/<template-id>` |
 | Invite people to the workspace | `switchdash://open/invite` |
-| Admin, for workspace admins: the workspace's messaging apps (`tab=messaging-apps`) and which connectors it offers (`tab=connectors`); for whoever runs the server, Switch Trust guardrails (`tab=switch-trust`) and, on a Switch run without Docker, the apps connectors sign in through (`tab=apps`). A server's status is in settings (`tab=status`) | `switchdash://open/admin` |
-| Switch Console's settings (`tab=preferences`, `messaging-apps` to link their accounts, `clis-models` for agent providers, `api-keys`, `devices`, `remote-hosts` for SSH hosts, `managed-agents`, `status` or `account`) | `switchdash://open/settings` |
+| Link their chat account, or (for workspace admins) see the connected messaging apps | `switchdash://open/settings?tab=messaging-apps` |
+| Switch Console's settings: `tab=preferences`, `clis-models` for agent providers, `api-keys`, `devices`, `remote-hosts` for SSH hosts, `managed-agents`, `status` (the server's status) or `account`; for workspace admins, `connectors` (which connectors the workspace offers), `decision-routing` and `guardrails` (Switch Trust); on a server with no web gateway, `connector-apps` (the apps connectors sign in through) | `switchdash://open/settings` |
 
 - A room's id comes from `list_rooms`, a template's from `list_templates` (only
   templates saved on the server have a page).
@@ -99,6 +100,13 @@ When `messaging_apps.how_to_add` is `own_app`, they create an app on the platfor
 - Never ask them to paste a token into this chat.
 
 ## Linking their chat account
+
+They always link in [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps)
+(`switchdash://open/settings?tab=messaging-apps`): give that link every time you tell
+them to link, and never send them to the server's Home page or the Gateway for it. For
+the steps on that page, fetch the docs'
+`https://docs.switchagents.ai/switch-rooms/getting-started/link-your-chat-account.md`
+rather than recalling them.
 
 Read `your_account_link` for the app:
 
@@ -219,8 +227,8 @@ Be clear about what that means:
 The server's address is plain `http://127.0.0.1`. Atlassian, Google and GitHub
 sign-ins work there with an up-to-date Switch Console and server, once the
 server's admin has set up the vendor app: on the web gateway's Connectors page,
-or, for a Switch running without Docker, "Set up" on its card in
-[Connector apps](switchdash://open/admin?tab=apps). GitHub takes that address
+or, on a server with no web gateway, "Set up" on its card in
+[Connector apps](switchdash://open/settings?tab=connector-apps). GitHub takes that address
 because it is the computer's own; it refuses any other plain http one. For
 GitHub, the computer's own access (see "Access the machine already has") needs
 no app at all.
@@ -231,8 +239,10 @@ It changes the advice:
 
 - **Switch Cloud:** messaging apps usually have the official app, and their
   agents can run on a cloud machine or their computer.
-- **A server Switch Console runs:** it comes with a built-in messaging app. Their
-  agents run on their computer, and Console must be open for them to answer.
+- **A server Switch Console runs:** they can work in rooms in Switch Console straight
+  away, and connect Slack, Microsoft Teams, Discord or Telegram when they want their
+  team in. There is no built-in messaging app. Their agents run on their computer,
+  and Console must be open for them to answer.
   Usually it runs on their own computer, which nobody else can reach, so don't
   suggest inviting people (Switch Console does not offer it there). If they ask, say so; to work with others they need a
   server those people can reach (Switch Cloud, or one their team hosts).
