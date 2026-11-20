@@ -2,7 +2,7 @@
 alone: an ephemeral where the platform has one, a direct message where it has
 not, and the channel, with a warning, where it has neither, the private route
 fails, or there is no one person to reach
-(`CollaborationCore._post_trust_notice`)."""
+(`CollaborationCore._post_sender_notice`)."""
 
 from __future__ import annotations
 

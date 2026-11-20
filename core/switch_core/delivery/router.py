@@ -140,6 +140,14 @@ from switch_core.observability.catalogue import (
 )
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL
+from switch_core.room_read_only import (
+    SYSTEM_CLIENT_TYPE,
+    ReadOnlyState,
+    RoomReadOnly,
+    needs_sender_check,
+    read_only_state,
+    written_regardless,
+)
 from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.stored import to_inbound
@@ -353,6 +361,7 @@ class RoomReads:
         meta: RoomMeta,
         group_id: str | None,
         members: list[RoomMember],
+        read_only: ReadOnlyState | None,
     ) -> None:
         self.tenant_id = tenant_id
         self.room_id = room_id
@@ -360,6 +369,8 @@ class RoomReads:
         self.meta = meta
         self.group_id = group_id
         self.members = members
+        # Whether the room is frozen or archived (`room_read_only.py`).
+        self.read_only = read_only
         self._services = services
         self._client_store = client_store
         self._budget_store = budget_store
@@ -481,6 +492,7 @@ class RoomReads:
             ),
             group_id=room.group_id,
             members=sorted(members, key=lambda member: member.agent.id),
+            read_only=read_only_state(room),
         )
 
     def member(self, client_id: str | None) -> RoomMember | None:
@@ -1116,6 +1128,8 @@ class MessageRouter:
             tenant_id=tenant_id,
             room_id=room_id,
         )
+        if reads is not None and reads.read_only is not None:
+            await self._require_writable(session, reads, message)
         plan = _Plan()
         if reads is not None:
             unwritten = to_inbound(
@@ -1202,6 +1216,33 @@ class MessageRouter:
                 else None
             ),
         )
+
+    @staticmethod
+    async def _require_writable(
+        session: AsyncSession, reads: RoomReads, message: Message
+    ) -> None:
+        """Refuse `message` in a frozen or archived room unless it is one of
+        the rows such a room still takes (`room_read_only.py`)."""
+        assert reads.read_only is not None
+        if written_regardless(message.event_type):
+            return
+        if (
+            needs_sender_check(message.event_type, message.content or {})
+            and message.sender_client_id is not None
+            and await session.scalar(
+                select(Client.type).where(Client.id == message.sender_client_id)
+            )
+            == SYSTEM_CLIENT_TYPE
+        ):
+            return
+        logger.warning(
+            "Refused a %s from %s in room %s: the room is %s",
+            message.event_type,
+            message.sender_id,
+            reads.room_id,
+            reads.read_only,
+        )
+        raise RoomReadOnly(reads.meta.name, reads.read_only)
 
     @staticmethod
     async def _joined_since(session: AsyncSession, reads: RoomReads) -> bool:

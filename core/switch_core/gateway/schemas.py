@@ -95,6 +95,8 @@ class RoomSummary(BaseModel):
     last_message_at: str | None = None
     # True when the room is archived (hidden from the default active list).
     archived: bool = False
+    # Frozen by a workspace admin: read-only until they unfreeze it.
+    frozen: bool = False
     # The caller owns the room, is in it (in Switch Console or through a
     # platform account they claimed), or owns an agent in it.
     viewer_is_member: bool = False
@@ -187,6 +189,22 @@ class RoomAdminEntry(BaseModel):
     granted_at: str
 
 
+class RoomFreezeState(BaseModel):
+    """Since when a room has been frozen. Who froze it and why are filled
+    only for a workspace admin."""
+
+    frozen_at: str
+    frozen_by: str | None
+    reason: str | None
+
+
+class RoomFreezeRequest(BaseModel):
+    """`POST /rooms/{id}/freeze`. The reason is kept for admins and in the
+    audit log; the room is only told it was frozen."""
+
+    reason: str
+
+
 class RoomDetail(RoomSummary):
     transport_room_id: str
     # Deprecated alias of `transport_room_id`, sent for the compatibility
@@ -203,7 +221,6 @@ class RoomDetail(RoomSummary):
     room_admin_candidates: list[RoomPerson] = []
     external_channel_id: str | None
     instructions: str | None
-    protection_config: dict[str, Any] | None
     observe_config: dict[str, Any] | None
     agent_ids: list[str]
     agent_statuses: dict[str, str]
@@ -212,6 +229,8 @@ class RoomDetail(RoomSummary):
     join_event_listeners: list[str] = []
     # ISO timestamp of when the room was archived, or null if active.
     archived_at: str | None = None
+    # Set while the room is frozen.
+    freeze: RoomFreezeState | None = None
     # What deleting the room will do to its platform channel ("archived",
     # "deleted", "left", "kept"), or null when the room has no channel.
     channel_on_delete: ChannelRetirement | None = None
@@ -305,10 +324,6 @@ class RoomUsersRemoved(BaseModel):
     room: RoomDetail
     not_in_room: list[str] = []
     platform_refused: list[str] = []
-
-
-class RoomProtectionRequest(BaseModel):
-    protection_config: dict[str, Any]
 
 
 class RoomObserveRequest(BaseModel):
@@ -2869,3 +2884,10 @@ class ErasureDetail(BaseModel):
     requested_by_user_id: str | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class RoomFreezeResult(BaseModel):
+    room: RoomDetail
+    # Why the room could not be told it was frozen or unfrozen, or null when
+    # it was. The change holds either way.
+    notice_error: str | None

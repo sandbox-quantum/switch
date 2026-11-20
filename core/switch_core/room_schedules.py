@@ -51,6 +51,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.room_policy import RoomCaller
+from switch_core.room_read_only import read_only_state
 from switch_core.tenant_context import no_tenant
 
 logger = logging.getLogger(__name__)
@@ -345,6 +346,19 @@ class RoomScheduler:
             raise RuntimeError(
                 f"Schedule {schedule.id} lost its room or its author after claiming a run"
             )
+        state = read_only_state(room)
+        if state is not None:
+            # The run is claimed and not posted: a frozen or archived room
+            # takes no kickoff (`room_read_only.py`), and the schedule picks up
+            # again at its next run once the room takes posts.
+            logger.warning(
+                "Skipped the run of room schedule %s due at %s: room %s is %s",
+                schedule.id,
+                due_at.isoformat(),
+                room.id,
+                state,
+            )
+            return
         if not may_speak:
             logger.warning(
                 "Paused room schedule %s: its author %s may no longer manage room %s",

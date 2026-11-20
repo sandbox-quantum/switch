@@ -149,6 +149,7 @@ from switch_core.room_invites import (
     with_subagents,
 )
 from switch_core.room_policy import RoomAction, RoomCaller, RoomPermissionError
+from switch_core.room_read_only import RoomReadOnly
 from switch_core.room_schedules import (
     TEXT_LIMIT,
     ScheduleError,
@@ -405,8 +406,16 @@ def _describe_room(room: Room) -> RoomDescriptor:
         transport_room_id=room.transport_room_id,
         matrix_room_id=room.transport_room_id,
         archived=room.archived_at is not None,
+        frozen=room.frozen_at is not None,
         bridge_id=room.bridge_id,
     )
+
+
+def _require_postable(room: RoomDescriptor) -> None:
+    if room.frozen:
+        raise RoomReadOnly(room.name, "frozen")
+    if room.archived:
+        raise RoomReadOnly(room.name, "archived")
 
 
 class AgentCore:
@@ -1604,17 +1613,26 @@ class AgentCore:
         return tenant_session(self.session_factory, tenant_id)
 
     async def require_room_poster(self, agent_id: str, room_id: str) -> RoomDescriptor:
-        """`require_room_member`, and raise `BudgetExceeded` if the agent has
-        reached a budget covering it. One session for both, so a post still
-        costs one pool checkout."""
+        """`require_room_member`, and raise `RoomReadOnly` if the room is
+        frozen or archived and `BudgetExceeded` if the agent has reached a
+        budget covering it. One session for all of it, so a post still costs
+        one pool checkout.
+
+        The read-only check here is the early answer, before Switch Trust or
+        an upload runs; the router refuses the row itself as well
+        (`room_read_only.py`), so a descriptor held a moment too long cannot
+        let a post through."""
         tenant_id = require_tenant_id()
         access = self.room_access
         room = access.member(tenant_id, agent_id, room_id)
+        if room is not None:
+            _require_postable(room)
         if room is not None and access.unbudgeted(tenant_id, agent_id):
             return room
         async with self.session_factory() as session:
             if room is None:
                 room = await self._room_member_in(session, agent_id, room_id)
+                _require_postable(room)
             ticket = access.ticket()
             covered = await self.budget_guard.require_within(
                 session, tenant_id=tenant_id, agent_id=agent_id, room_id=room_id
@@ -1934,7 +1952,7 @@ class AgentCore:
         checked), as its own notice threaded under the flagged reply's own
         event id — not the pre-send thread the agent happened to be posting
         in — rather than appended to the reply itself. Mirrors how
-        `CollaborationCore._post_trust_notice` threads an ALERTED/ERRORED
+        `CollaborationCore._post_sender_notice` threads an ALERTED/ERRORED
         human-authored message under the message that triggered it.
 
         Returns None once the notice is posted, or why it was not (logged as
@@ -3291,7 +3309,6 @@ class AgentCore:
         bridge_id: str | None,
         internal_only: bool = False,
         admin_mode: bool = False,
-        security_config: dict[str, Any] | None = None,
         instructions: str | None = None,
         reference_ids: list[str] | None = None,
         package_ids: list[str] | None = None,
@@ -3396,7 +3413,6 @@ class AgentCore:
                 bridge_id=bridge_id,
                 internal_only=internal_only,
                 admin_mode=admin_mode,
-                protection_config=security_config,
                 instructions=instructions,
                 created_by=agent.owner_id,
                 created_by_kind="agent",

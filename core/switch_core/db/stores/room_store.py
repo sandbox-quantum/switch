@@ -1264,15 +1264,6 @@ class RoomStore:
         room.external_channel_id = external_channel_id
         await session.flush()
 
-    async def update_protection_config(
-        self, session: AsyncSession, room_id: str, config: dict[str, object]
-    ) -> None:
-        room = await session.get(Room, room_id)
-        if room is None:
-            raise ValueError(f"Room not found: {room_id}")
-        room.protection_config = config  # type: ignore[assignment]
-        await session.flush()
-
     async def update_observe_config(
         self, session: AsyncSession, room_id: str, config: dict[str, object]
     ) -> None:
@@ -1312,6 +1303,26 @@ class RoomStore:
             .values(archived_at=datetime.now(UTC) if archived else None)
             .execution_options(synchronize_session=False)
         )
+
+    async def set_frozen(
+        self,
+        session: AsyncSession,
+        room: Room,
+        *,
+        frozen_by: str | None,
+        reason: str | None,
+    ) -> None:
+        """Freeze `room`, stamping when, by whom and why."""
+        room.frozen_at = datetime.now(UTC)
+        room.frozen_by = frozen_by
+        room.frozen_reason = reason
+        await session.flush()
+
+    async def clear_frozen(self, session: AsyncSession, room: Room) -> None:
+        room.frozen_at = None
+        room.frozen_by = None
+        room.frozen_reason = None
+        await session.flush()
 
     async def update_fields(
         self,

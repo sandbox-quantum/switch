@@ -137,6 +137,13 @@ class AuditAction(StrEnum):
     # was, never the text found. Alerts and errors are log-only.
     TRUST_MESSAGE_BLOCKED = "trust.message_blocked"
     TRUST_MESSAGE_REDACTED = "trust.message_redacted"
+    # Incident control by a workspace admin or the server's operator
+    # (`room_moderation.py`): an agent or a person taken out of every room
+    # they were in, the rooms named in `details.rooms`; and a room made
+    # read-only, or writable again.
+    MEMBER_REMOVED_FROM_ALL_ROOMS = "member.removed_from_all_rooms"
+    ROOM_FROZEN = "room.frozen"
+    ROOM_UNFROZEN = "room.unfrozen"
 
 
 class OrganizationAuditAction(StrEnum):

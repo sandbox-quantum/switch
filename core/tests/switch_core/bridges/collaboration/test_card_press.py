@@ -244,7 +244,7 @@ def _bridge(
         _event_for_external_post=event_for,
         _external_post_for_event=post_for,
         _repair_placeholder_username=noop,
-        _post_trust_notice=noop,
+        _post_sender_notice=noop,
         _handle_text_answer=noop,
         _record_message_map=noop,
         _session_factory=_session,

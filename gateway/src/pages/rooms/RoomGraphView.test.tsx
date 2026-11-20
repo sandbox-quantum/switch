@@ -60,7 +60,6 @@ function roomDetail(overrides: Partial<RoomDetail>): RoomDetail {
     matrix_room_id: "!r1:switch.local",
     external_channel_id: null,
     instructions: null,
-    protection_config: null,
     observe_config: null,
     agent_ids: [],
     agent_statuses: {},

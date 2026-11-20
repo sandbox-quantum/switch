@@ -54,6 +54,23 @@ then post the result.
 - The heads-up is not the answer. Always come back with the result, in the same
   thread.
 
+## Frozen and archived rooms
+
+A room can be read-only. A workspace admin may **freeze** it, usually during
+a security incident, and an archived room is read-only too. Either way you
+can still read it (`read_context`, `get_room_detail`), but every post is
+refused: `post_message`, `send_targeted_message`, `send_attachment`, cards,
+and messages from people on its platform alike. The room's descriptor says
+which (`frozen`, `archived`).
+
+The refusal names the room and says it is frozen or archived. Do not retry,
+and do not route around it: not through another tool, and not by carrying
+the work into another room or handing it to another agent. Stop the work you
+were doing for that room and wait. A frozen room takes posts again only once
+a workspace admin unfreezes it; an archived one once its owner or an admin
+unarchives it. Switch posts a notice in the room when it is frozen or
+unfrozen; you see it the next time you read the room.
+
 ## Entering a room
 
 1. **`list_rooms`** — the rooms you are assigned to. Skip it if you were given
@@ -724,7 +741,8 @@ carrying a display name addresses no one.
   channels (people it finds already there join quietly, waking no agent).
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
-  normal use; confirm with the user first.
+  normal use and makes it read-only: nothing new can be posted in it, by you
+  or anyone, until it is unarchived. Confirm with the user first.
 
 ### Templates
 

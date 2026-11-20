@@ -129,8 +129,8 @@ def _bridge(
         human_actor=human_actor,
         recorded=recorded,
     )
-    bridge._post_trust_notice = lambda msg, body, message_type: (
-        CollaborationCore._post_trust_notice(bridge, msg, body, message_type)
+    bridge._post_sender_notice = lambda msg, body, message_type: (
+        CollaborationCore._post_sender_notice(bridge, msg, body, message_type)
     )
     return bridge
 
