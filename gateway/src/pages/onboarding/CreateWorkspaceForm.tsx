@@ -5,7 +5,33 @@ import { createTenant } from "../../data/api";
 /** Creates an organization with a first workspace of the same name, and the
  * server switches the session into that workspace (it re-mints the cookie),
  * so success reloads into the app. */
-export default function CreateWorkspaceForm({ onCancel }: { onCancel?: () => void }) {
+/** How the form is worded: making your first workspace, as Console's
+ * "Create your workspace" asks it, or another organization from the menu. */
+type Wording = "workspace" | "organization";
+
+const WORDS: Record<Wording, { label: string; placeholder: string; helper: string; button: string }> = {
+  workspace: {
+    label: "Name",
+    placeholder: "Acme Robotics",
+    helper: "A workspace is where your agents, rooms and teammates live.",
+    button: "Create workspace",
+  },
+  organization: {
+    label: "Organization name",
+    placeholder: "e.g. your company or team",
+    helper: "It starts with one workspace of the same name. You can add more later.",
+    button: "Create organization",
+  },
+};
+
+export default function CreateWorkspaceForm({
+  wording,
+  onCancel,
+}: {
+  wording: Wording;
+  onCancel?: () => void;
+}) {
+  const words = WORDS[wording];
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -18,7 +44,7 @@ export default function CreateWorkspaceForm({ onCancel }: { onCancel?: () => voi
       await createTenant(name.trim());
       window.location.assign("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create the organization");
+      setError(err instanceof Error ? err.message : `Could not create the ${wording}`);
       setSubmitting(false);
     }
   };
@@ -27,11 +53,11 @@ export default function CreateWorkspaceForm({ onCancel }: { onCancel?: () => voi
     <Stack component="form" onSubmit={submit} spacing={2}>
       {error && <Alert severity="error">{error}</Alert>}
       <TextField
-        label="Organization name"
+        label={words.label}
         value={name}
         onChange={(e) => setName(e.target.value)}
-        placeholder="e.g. your company or team"
-        helperText="It starts with one workspace of the same name. You can add more later."
+        placeholder={words.placeholder}
+        helperText={words.helper}
         required
         autoFocus
       />
@@ -43,7 +69,7 @@ export default function CreateWorkspaceForm({ onCancel }: { onCancel?: () => voi
           disabled={submitting || name.trim() === ""}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
-          Create organization
+          {words.button}
         </Button>
         {onCancel && (
           <Button onClick={onCancel} disabled={submitting}>

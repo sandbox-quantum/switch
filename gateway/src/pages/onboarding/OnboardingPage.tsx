@@ -28,16 +28,16 @@ export default function OnboardingPage() {
 
   return (
     <CenteredCard
-      title="Welcome to Switch"
+      title={canCreate ? "Create your workspace" : "Welcome to Switch"}
       subtitle={
         canCreate
-          ? "Create an organization for your team, or join a workspace you've been invited to."
+          ? "You're not in a workspace yet, so you're the first one here. Create one, or join a workspace you've been invited to."
           : "You're not in a workspace yet. Ask a workspace admin for an invite link."
       }
     >
       <Stack spacing={3}>
         <OrganizationsWithoutWorkspace />
-        {canCreate && <CreateWorkspaceForm />}
+        {canCreate && <CreateWorkspaceForm wording="workspace" />}
         {canCreate && <Divider>or</Divider>}
         <Stack component="form" onSubmit={joinWithInvite} spacing={2}>
           <Typography variant="subtitle2">Have an invite link?</Typography>

@@ -299,7 +299,7 @@ export default memo(function NavRail() {
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>Create an organization</DialogTitle>
         <DialogContent sx={{ pt: "8px !important" }}>
-          <CreateWorkspaceForm onCancel={() => setCreateOpen(false)} />
+          <CreateWorkspaceForm wording="organization" onCancel={() => setCreateOpen(false)} />
         </DialogContent>
       </Dialog>
 

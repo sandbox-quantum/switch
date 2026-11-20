@@ -198,8 +198,8 @@ describe("AppRoutes", () => {
   it("offers to create a workspace to someone in none", async () => {
     mockFetch({ "/auth/session": [200, session({})], "/feature-flags": [200, { flags: [] }] });
     renderAt("/");
-    expect(await screen.findByText("Welcome to Switch")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Create organization" })).toBeTruthy();
+    expect(await screen.findByText("Create your workspace")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create workspace" })).toBeTruthy();
   });
 
   it("only offers an invite when workspaces cannot be created", async () => {
@@ -209,7 +209,7 @@ describe("AppRoutes", () => {
     });
     renderAt("/");
     expect(await screen.findByText(/Ask a workspace admin for an invite link/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create workspace" })).toBeNull();
   });
 
   it("asks someone in several workspaces to choose", async () => {
@@ -1382,7 +1382,7 @@ describe("a link naming a workspace", () => {
       "/feature-flags": [200, { flags: [] }],
     });
     renderAt("/?workspace=t9");
-    expect(await screen.findByText("Welcome to Switch")).toBeTruthy();
+    expect(await screen.findByText("Create your workspace")).toBeTruthy();
     expect(
       screen.getByText("The link you followed is for a workspace you aren't in."),
     ).toBeTruthy();

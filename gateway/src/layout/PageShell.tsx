@@ -8,6 +8,7 @@ import { FULL_WINDOW } from "../routes/roleMatrix";
 import { AREAS, enteredArea } from "../routes/routeTable";
 import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
+import PageErrorBoundary from "./PageErrorBoundary";
 import TopBar from "./TopBar";
 
 // Loaded only on a server with chats in the dashboard: it carries the chat UI.
@@ -90,7 +91,9 @@ function Shell() {
   if (FULL_WINDOW.includes(pathname))
     return (
       <Box component="main" sx={{ height: "100vh" }}>
-        <Outlet />
+        <PageErrorBoundary resetKey={pathname}>
+          <Outlet />
+        </PageErrorBoundary>
       </Box>
     );
   return (
@@ -133,9 +136,11 @@ function Shell() {
             <StaleSessionBanner />
             <LinkNoticeBanner />
           </Box>
-          <WithChats>
-            <Outlet />
-          </WithChats>
+          <PageErrorBoundary resetKey={pathname}>
+            <WithChats>
+              <Outlet />
+            </WithChats>
+          </PageErrorBoundary>
         </Stack>
       </Stack>
     </Box>
