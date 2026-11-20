@@ -21,21 +21,34 @@ const onboarding = vi.hoisted(() => ({
 }));
 vi.mock("./onboarding", () => onboarding);
 
+const KEY = "switch.get-started.sent:me:t1";
+
 function Where() {
   const location = useLocation();
   return <span data-testid="where">{location.pathname}</span>;
 }
 
-async function renderAt(path: string) {
-  const { default: CloudWarmUp } = await import("./CloudWarmUp");
+async function renderGateAt(path: string) {
+  const { FirstVisitGate } = await import("./CloudWarmUp");
   return render(
     <MemoryRouter initialEntries={[path]}>
-      <CloudWarmUp />
       <Routes>
-        <Route path="*" element={<Where />} />
+        <Route
+          path="*"
+          element={
+            <FirstVisitGate>
+              <Where />
+            </FirstVisitGate>
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );
+}
+
+async function renderWarmUp() {
+  const { default: CloudWarmUp } = await import("./CloudWarmUp");
+  return render(<CloudWarmUp />);
 }
 
 beforeEach(() => {
@@ -52,43 +65,58 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("CloudWarmUp", () => {
-  it("starts the cloud device and sends someone with no agents to Get started, once", async () => {
-    await renderAt("/rooms");
+describe("FirstVisitGate", () => {
+  it("takes someone with no agents straight to Get started, showing nothing before", async () => {
+    let answer: (agents: unknown[]) => void = () => {};
+    management.fetchManagedAgents.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    await renderGateAt("/");
+    expect(screen.queryByTestId("where")).toBeNull();
+    answer([]);
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/get-started"));
-    expect(onboarding.ensureCloudMachine).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem("switch.get-started.sent:me:t1")).not.toBeNull();
+    expect(localStorage.getItem(KEY)).not.toBeNull();
   });
 
-  it("only warms the machine for someone who already has agents", async () => {
+  it("shows the page asked for to someone who already has agents", async () => {
     management.fetchManagedAgents.mockResolvedValue([{ agent_id: "a1" }]);
-    await renderAt("/rooms");
-    await waitFor(() => expect(onboarding.ensureCloudMachine).toHaveBeenCalled());
-    await waitFor(() => expect(management.fetchManagedAgents).toHaveBeenCalled());
-    expect(screen.getByTestId("where").textContent).toBe("/rooms");
+    await renderGateAt("/rooms");
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/rooms"));
+    expect(localStorage.getItem(KEY)).not.toBeNull();
   });
 
-  it("still sends someone to Get started when their device cannot be had yet", async () => {
-    onboarding.ensureCloudMachine.mockRejectedValue(new Error("All cloud devices are in use."));
-    await renderAt("/rooms");
+  it("doesn't count a visit where no cloud device could be had", async () => {
+    onboarding.fetchHostedMachines.mockResolvedValue({ available: false, machines: [] });
+    await renderGateAt("/rooms");
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/rooms"));
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it("sends nobody twice", async () => {
+    localStorage.setItem(KEY, "2026-01-01");
+    await renderGateAt("/rooms");
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/rooms"));
+    expect(management.fetchManagedAgents).not.toHaveBeenCalled();
+  });
+
+  it("runs as a first visit again once the visit is forgotten (Start over)", async () => {
+    localStorage.setItem(KEY, "2026-01-01");
+    const { forgetGetStartedVisit } = await import("./CloudWarmUp");
+    forgetGetStartedVisit("me", "t1");
+    await renderGateAt("/rooms");
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/get-started"));
   });
+});
 
-  it("does nothing where the server has no cloud devices", async () => {
-    onboarding.fetchHostedMachines.mockResolvedValue({ available: false, machines: [] });
-    await renderAt("/rooms");
-    await waitFor(() => expect(onboarding.fetchHostedMachines).toHaveBeenCalled());
-    expect(onboarding.ensureCloudMachine).not.toHaveBeenCalled();
-    expect(management.fetchManagedAgents).not.toHaveBeenCalled();
-    expect(screen.getByTestId("where").textContent).toBe("/rooms");
+describe("CloudWarmUp", () => {
+  it("starts a cloud device for someone who has none", async () => {
+    await renderWarmUp();
+    await waitFor(() => expect(onboarding.ensureCloudMachine).toHaveBeenCalledTimes(1));
   });
 
   it("starts a stopped device again on a first visit, as signing in starts a new one", async () => {
     const stopped = { machine_id: "m1", desired_state: "stopped" };
     onboarding.fetchHostedMachines.mockResolvedValue({ available: true, machines: [stopped] });
-    await renderAt("/rooms");
-    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/get-started"));
-    expect(onboarding.wakeCloudMachine).toHaveBeenCalledWith(stopped);
+    await renderWarmUp();
+    await waitFor(() => expect(onboarding.wakeCloudMachine).toHaveBeenCalledWith(stopped));
     expect(onboarding.ensureCloudMachine).not.toHaveBeenCalled();
   });
 
@@ -98,35 +126,16 @@ describe("CloudWarmUp", () => {
       machines: [{ machine_id: "m1", desired_state: "stopped" }],
     });
     management.fetchManagedAgents.mockResolvedValue([{ agent_id: "a1" }]);
-    await renderAt("/rooms");
+    await renderWarmUp();
     await waitFor(() => expect(management.fetchManagedAgents).toHaveBeenCalled());
     expect(onboarding.wakeCloudMachine).not.toHaveBeenCalled();
   });
 
-  it("runs as a first visit again once the visit is forgotten (Start over)", async () => {
-    localStorage.setItem("switch.get-started.sent:me:t1", "2026-01-01");
-    const { forgetGetStartedVisit } = await import("./CloudWarmUp");
-    forgetGetStartedVisit("me", "t1");
-    await renderAt("/rooms");
-    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/get-started"));
-  });
-
-  it("doesn't count a visit where no cloud device could be had", async () => {
+  it("does nothing where the server has no cloud devices", async () => {
     onboarding.fetchHostedMachines.mockResolvedValue({ available: false, machines: [] });
-    await renderAt("/get-started");
-    await waitFor(() => expect(onboarding.fetchHostedMachines).toHaveBeenCalled());
-    expect(localStorage.getItem("switch.get-started.sent:me:t1")).toBeNull();
-  });
-
-  it("sends nobody twice", async () => {
-    localStorage.setItem("switch.get-started.sent:me:t1", "2026-01-01");
-    onboarding.fetchHostedMachines.mockResolvedValue({
-      available: true,
-      machines: [{ machine_id: "m1" }],
-    });
-    await renderAt("/rooms");
+    await renderWarmUp();
     await waitFor(() => expect(onboarding.fetchHostedMachines).toHaveBeenCalled());
     expect(onboarding.ensureCloudMachine).not.toHaveBeenCalled();
-    expect(screen.getByTestId("where").textContent).toBe("/rooms");
+    expect(management.fetchManagedAgents).not.toHaveBeenCalled();
   });
 });
