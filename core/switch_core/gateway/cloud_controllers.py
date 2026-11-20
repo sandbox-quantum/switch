@@ -259,14 +259,33 @@ def controller_reports(machine: CloudMachine) -> dict[str, dict[str, Any]]:
     return dict((machine.heartbeat or {}).get("controllers") or {})
 
 
-def workspace_reported(machine: CloudMachine, workspace_id: str) -> bool:
+def workspace_reported(
+    machine: CloudMachine,
+    workspace_id: str,
+    controller: AgentController | None = None,
+) -> bool:
     """Whether the workspace's controller has reported since the machine was
-    last seen starting: its agents can run."""
+    last seen starting: its agents can run.
+
+    A v2 box's controller nearly always reports before the scaler sees the
+    box running, and F1 makes the box ready on that report
+    (`ready_if_both_signals`). So for a v2 box, a report made at the
+    machine's current revision counts too, under F1's own conditions: by
+    `controller`, the workspace's own controller (read with that workspace
+    bound), still live and unrevoked, and only for this workspace."""
     report = controller_reports(machine).get(workspace_id)
+    if report is None or machine.running_observed_at is None:
+        return False
+    if datetime.fromisoformat(report["at"]) > machine.running_observed_at:
+        return True
     return (
-        report is not None
-        and machine.running_observed_at is not None
-        and datetime.fromisoformat(report["at"]) > machine.running_observed_at
+        process_hosted_v2()
+        and machine.backend == "box"
+        and report.get("revision") == machine.revision
+        and controller is not None
+        and report.get("controller_id") == controller.id
+        and controller.revoked_at is None
+        and controller.api_key_id is not None
     )
 
 
@@ -395,6 +414,13 @@ async def record_controller_status(
         # Kept so the next report can tell a restart; a controller older
         # than the field sends none, and then nothing is counted.
         "started_at": started,
+        # Which controller reported, at which revision (v2 boxes only), for
+        # `workspace_reported`.
+        **(
+            {"revision": machine.revision, "controller_id": controller_id}
+            if v2 and machine.backend == "box"
+            else {}
+        ),
     }
     if reports_memory(reports, workspace.id, now):
         record_box_report(machine_reading, machine.backend)

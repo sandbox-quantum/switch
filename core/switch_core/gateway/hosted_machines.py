@@ -166,7 +166,10 @@ WORKSPACE_CONNECT_TIMEOUT = (
 
 
 def workspace_state(
-    machine: CloudMachine, workspace: MachineWorkspace, now: datetime
+    machine: CloudMachine,
+    workspace: MachineWorkspace,
+    now: datetime,
+    controller: AgentController | None = None,
 ) -> tuple[str, str | None]:
     """The machine's state as the bound workspace sees it, and why it is in
     error: a ready machine is still starting here until this workspace's
@@ -175,7 +178,7 @@ def workspace_state(
     if (
         machine.state != "ready"
         or machine.desired_state != "running"
-        or workspace_reported(machine, workspace.id)
+        or workspace_reported(machine, workspace.id, controller)
     ):
         return machine.state, machine.error
     if (
@@ -193,14 +196,16 @@ async def machine_summary(
     the workspace's managed agents placed on the controller the machine
     enrolled as here, `controller_id` (null until it has)."""
     now = datetime.now(UTC)
-    state, error = workspace_state(machine, workspace, now)
     # The v1/v2 switch: with v2 off, the summary is exactly as before v2.
     v2 = process_hosted_v2()
     controller = (
         None
         if not v2 or workspace.controller_id is None
-        else await session.get(AgentController, workspace.controller_id)
+        else await session.get(
+            AgentController, workspace.controller_id, populate_existing=True
+        )
     )
+    state, error = workspace_state(machine, workspace, now, controller)
     return {
         "machine_id": machine.id,
         "state": state,
