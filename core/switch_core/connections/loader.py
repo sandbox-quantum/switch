@@ -72,9 +72,13 @@ PasteExpiry = Literal["vendor", "never"]
 
 AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
-# Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
-# authorization request is Core's to set.
-AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+# Sign-in parameters a vendor may need beyond OAuth's own: Google's
+# `access_type` and `include_granted_scopes`, and Dropbox's
+# `token_access_type`, without which it hands out no refresh token. The
+# rest of an authorization request is Core's to set.
+AuthorizationParam = Literal[
+    "access_type", "include_granted_scopes", "token_access_type"
+]
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -169,6 +173,12 @@ class OAuthClient(BaseModel):
     themselves, and what the sign-in does until they do, said whenever Switch
     drops one it cannot revoke.
 
+    `revocation_by_bearer`: the revocation endpoint takes the sign-in's
+    access token as its bearer and no body, as Dropbox's
+    `auth/token/revoke` does, rather than an RFC 7009 form. That ends the
+    access token, its refresh token and every access token the refresh
+    token gave out.
+
     `revocation_ends_grant`: revoking any of an account's sign-ins through
     the client ends all of them, as Google's does. A reconnect to the same
     account through the same client then does not revoke the sign-in it
@@ -190,8 +200,9 @@ class OAuthClient(BaseModel):
     `select_account`, to let the person choose the account), one value or
     several separated by spaces, as OAuth writes it.
     So are `authorization_params`, which only a vendor-specific key may name
-    (`access_type: offline`, for a vendor that hands out a refresh token only
-    when asked), never one Core sets itself.
+    (`access_type: offline` for Google, `token_access_type: offline` for
+    Dropbox, each of which hands out a refresh token only when asked),
+    never one Core sets itself.
 
     `choices`: what the person picks from a fixed list before signing in (a
     vendor's site or region), each a field that is never secret. The entry's
@@ -220,6 +231,7 @@ class OAuthClient(BaseModel):
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
+    revocation_by_bearer: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
     revocation_ends_tokens: bool = False
@@ -267,6 +279,12 @@ class OAuthClient(BaseModel):
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
             )
+        if self.revocation_by_bearer and (
+            self.revocation_url is None and not self.revocation_discovered
+        ):
+            raise ValueError(
+                "revocation_by_bearer is for a vendor Switch revokes sign-ins at"
+            )
         if (self.revocation_ends_grant or self.revocation_ends_tokens) and (
             self.revocation_url is None and not self.revocation_discovered
         ):
@@ -311,8 +329,14 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Read account identity from an authenticated GET, an MCP tool result,
-    or the vendor's RFC 7662 introspection answer for the token.
+    """Read account identity from `method` to `url` with the access token, an
+    MCP tool result, or the vendor's RFC 7662 introspection answer for the
+    token.
+
+    A url names its `method`. A POST sends `body`, a fixed JSON object, where
+    there is one, and no body at all otherwise, as Dropbox's
+    `users/get_current_account` takes it; a GET sends none. The token goes in
+    the Authorization header only.
 
     `arguments` go to the MCP tool in place of `{}`. They are fixed catalog
     text, such as a self-reference that the vendor documents as the caller
@@ -320,7 +344,9 @@ class ConnectionIdentity(BaseModel):
     no template braces and no control characters."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"] | None = None
     url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    body: dict[str, object] | None = None
     mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
     arguments: (
         dict[
@@ -346,6 +372,10 @@ class ConnectionIdentity(BaseModel):
             raise ValueError(
                 "identity needs exactly one of url, mcp_tool or introspection"
             )
+        if (self.url is None) != (self.method is None):
+            raise ValueError("an identity url names its method, and only a url does")
+        if self.body is not None and self.method != "POST":
+            raise ValueError("only a POST identity call sends a body")
         if self.arguments is not None and self.mcp_tool is None:
             raise ValueError("arguments are for an mcp_tool identity")
         if isinstance(self.account_id, list) and len(set(self.account_id)) != len(

@@ -586,3 +586,47 @@ describe("an app's details", () => {
     ]);
   });
 });
+
+const DROPBOX = app({
+  ...AIRTABLE,
+  slug: 'dropbox',
+  name: 'Dropbox',
+  configuration_variables: ['DROPBOX_CLIENT_CONFIG_PATH'],
+  redirect_uri: LOOPBACK_REDIRECTS[0]!,
+  redirect_uris: LOOPBACK_REDIRECTS,
+  needs_public_url: false,
+  scopes: ['account_info.read', 'files.content.write'],
+});
+
+describe('Dropbox', () => {
+  it("walks Dropbox's App Console, with every loopback redirect and the scopes to tick", () => {
+    const steps = setupInstructions(DROPBOX, 'internal', null);
+    expect(steps[0]!.link).toEqual({
+      label: 'Open the App Console',
+      href: 'https://www.dropbox.com/developers/apps/create',
+    });
+    expect(steps[0]!.text).toMatch(/Scoped access and Full Dropbox access/);
+    expect(steps[0]!.text).toMatch(/account your organization owns/);
+    expect(steps.flatMap((s) => s.copy)).toEqual(LOOPBACK_REDIRECTS);
+    expect(
+      steps.find((s) => s.text === 'On its Permissions tab, tick exactly these, then Submit:')
+        ?.items
+    ).toEqual(['account_info.read', 'files.content.write']);
+    expect(new Set(steps.map((s) => s.text)).size).toBe(steps.length);
+    expect(steps.at(-1)!.text).toMatch(/App key and the App secret/);
+    expect(steps.every((s) => !s.link || s.link.href.startsWith('https://www.dropbox.com/'))).toBe(
+      true
+    );
+  });
+
+  it('needs no public URL: sign-ins come back to Switch Console', () => {
+    expect(changeBlocked(DROPBOX, null)).toBe(false);
+    expect(confirmBeforeCheck(DROPBOX)).toBeNull();
+  });
+
+  it("names Dropbox's Helm value when moving off configuration", () => {
+    expect(moveChecklist(app({ ...DROPBOX, source: 'configuration' }))[1]!.text).toBe(
+      "Remove DROPBOX_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.dropboxClientSecret."
+    );
+  });
+});

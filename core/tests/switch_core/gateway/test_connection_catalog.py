@@ -95,6 +95,7 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     assert result.pop("notion") == "not_connected"
     assert result.pop("sentry") == "not_connected"
     assert result.pop("linear") == "not_connected"
+    assert result.pop("dropbox") == "not_connected"
     assert len(result) == 8
     assert set(result.values()) == {"coming_soon"}
     github = next(

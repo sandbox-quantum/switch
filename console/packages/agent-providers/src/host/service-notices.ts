@@ -70,6 +70,7 @@ export function serviceName(service: string): string {
   const names: Record<string, string> = {
     atlassian: 'Atlassian',
     datadog: 'Datadog',
+    dropbox: 'Dropbox',
     github: 'GitHub',
     'google-workspace': 'Google Workspace',
     notion: 'Notion',

@@ -1,0 +1,76 @@
+slug: dropbox
+name: Dropbox
+category: File storage
+description: Search, read, add, move and delete your Dropbox files, as you.
+enabled: true
+publisher: Dropbox
+links:
+  documentation: https://help.dropbox.com/integrations/connect-dropbox-mcp-server
+  support: https://help.dropbox.com/
+  privacy: https://www.dropbox.com/privacy
+adapter: oauth
+auth:
+  type: oauth
+  # A refresh keeps the refresh token: Dropbox returns none with it, and the
+  # same one refreshes again (measured).
+  refresh: reusable
+  oauth:
+    # Dropbox offers dynamic registration only to a list of trusted clients,
+    # so each server's operator registers a Dropbox app (Scoped access, Full
+    # Dropbox) and saves it under Connectors, or names its settings in
+    # DROPBOX_CLIENT_CONFIG_PATH. Its Permissions tab must tick every scope
+    # below, and its redirect URIs list the five loopback ones.
+    registration: static
+    client_settings: DROPBOX
+    # Sign-ins come back to Switch Console, so a server without a public
+    # address can connect Dropbox too. Dropbox matches a redirect URI
+    # exactly, port included, so the ports are fixed: Atlassian's.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Without it Dropbox hands out no refresh token, and a connection would
+    # end when its first access token does.
+    authorization_params: { token_access_type: offline }
+    # Dropbox's advertised revocation endpoint, auth/token/revoke, takes the
+    # access token as its bearer and no body. Measured: it ends the access
+    # token and its refresh token, and leaves the account's other sign-ins
+    # working, so revocation_ends_grant does not apply. A copy of the access
+    # token kept from before a disconnect was refused afterwards (401
+    # invalid_access_token), so revoking also ends the tokens agents hold.
+    revocation_discovered: true
+    revocation_by_bearer: true
+    revocation_ends_tokens: true
+    # A code exchange with a made-up code tells a wrong secret
+    # (invalid_client) from a right one (invalid_grant), but Dropbox answers
+    # invalid_grant whatever the redirect URI, and says nothing of the
+    # Permissions tab.
+    unchecked: >-
+      Switch can't check the app's redirect URIs or the permissions ticked on
+      its Permissions tab. Connect once at each level to confirm.
+  # Dropbox's account call is an RPC: a POST that takes no body.
+  identity:
+    method: POST
+    url: https://api.dropboxapi.com/2/users/get_current_account
+    account_id: account_id
+    label: email
+# Dropbox's access tokens live 14400 s (4 hours), as measured.
+token: { kind: pass_through, max_lifetime: 14400 }
+mcp:
+  servers:
+    # Dropbox's remote MCP server, in open beta. It accepts the tokens of an
+    # operator's own app, and checks each tool's scope on every call: a read
+    # sign-in's write calls are refused (403, insufficient_scope).
+    - { name: dropbox, url: "https://mcp.dropbox.com/mcp" }
+access:
+  # Read: list, search and read files and their metadata. Write adds
+  # files.content.write, which every changing tool needs (create, move, copy,
+  # delete, restore, Paper edits). A delete goes to Dropbox's deleted files,
+  # where it can be restored: files.permanent_delete is not asked for. Not
+  # asked for either: sharing.* (shared links, which can open a file to
+  # anyone), file_requests.*, files.metadata.write, and every team or member
+  # scope. The server still lists their tools, and refuses them.
+  read:
+    scopes: [account_info.read, files.metadata.read, files.content.read]
+  write:
+    scopes:
+      [account_info.read, files.metadata.read, files.content.read, files.content.write]
+tools: { mode: pass_through }

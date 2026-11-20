@@ -370,7 +370,11 @@ class FakeOAuthServer:
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
         self.introspections: list[dict[str, str]] = []
+        # Revocations by bearer, Dropbox's way: (the bearer, the body sent).
+        self.bearer_revoked: list[tuple[str, bytes]] = []
         self.mcp_calls: list[dict[str, Any]] = []
+        # The identity calls, as (method, Content-Type, body) sent.
+        self.identity_requests: list[tuple[str, str | None, bytes]] = []
         self.paths: list[str] = []
         self.fail: dict[str, tuple[int, Any]] = {}
         self.metadata: dict[str, Any] = {
@@ -478,6 +482,14 @@ class FakeOAuthServer:
             return self._token(request)
         if where == f"{self.issuer}/register" and request.method == "POST":
             return self._register(request)
+        if where == f"{self.issuer}/2/auth/token/revoke" and request.method == "POST":
+            bearer = request.headers.get("authorization", "").removeprefix("Bearer ")
+            self.bearer_revoked.append((bearer, request.content))
+            if self.live_access.pop(bearer, None) is None:
+                return _json(401, {"error": {".tag": "invalid_access_token"}})
+            # The refresh tokens it came from go too, as Dropbox's do.
+            self.live_refresh.clear()
+            return _json(200, None)
         if where == f"{self.issuer}/revoke" and request.method == "POST":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             self.revoked.append(form)
@@ -485,7 +497,14 @@ class FakeOAuthServer:
             return httpx.Response(200)
         if where == f"{self.issuer}/introspect" and request.method == "POST":
             return self._introspect(request)
-        if where == self.identity_url and request.method == "GET":
+        if where == self.identity_url and request.method in ("GET", "POST"):
+            self.identity_requests.append(
+                (
+                    request.method,
+                    request.headers.get("content-type"),
+                    request.content,
+                )
+            )
             if self._bearer(request) is None:
                 reads = self._pasted(request)
                 if reads is None:

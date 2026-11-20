@@ -48,6 +48,11 @@ auth:
     # revocation_ends_tokens: true   # revoking the sign-in ends its tokens too
     #   (Google's, GitLab's); unsaid, they are taken to live until they expire
   identity:                   # GET with the token; dotted paths in its JSON
+    # revocation_by_bearer: true  # revoke with the access token as bearer and
+    #                             #   no body (Dropbox), not an RFC 7009 form
+  identity:                   # the token's account; dotted paths in its JSON
+    method: GET               # or POST, with an optional fixed JSON body;
+                              #   a POST without one sends no body at all
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
@@ -1153,6 +1158,49 @@ Built from sign-ins against sentry.io with a test organization:
 To connect: Settings, Connections in Switch Console, then Sentry. Nothing
 needs configuring on the server. To roll back, add `sentry` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+## Dropbox
+
+Built from sign-ins against a Dropbox Basic account through an app of its
+own (Scoped access, Full Dropbox):
+
+- Dropbox registers clients dynamically only for a list of trusted ones, so
+  each server's operator registers a Dropbox app (`registration: static`,
+  `DROPBOX_CLIENT_CONFIG_PATH`, Helm `switchCore.dropboxClientSecret`); see
+  [`dropbox-setup.md`](../old/dropbox-setup.md). Dropbox's MCP server
+  (`mcp.dropbox.com/mcp`, in open beta) accepts that app's tokens.
+- Sign-ins come back to Switch Console (`redirect: [loopback]`). Dropbox
+  matches a redirect URI exactly, port included, so the app registers the
+  five fixed ports Atlassian uses, and a server needs no public address.
+- Dropbox hands out a refresh token only when asked
+  (`authorization_params: { token_access_type: offline }`). Access tokens
+  live 4 hours. A refresh returns no new refresh token, and the same one
+  refreshes again (`refresh: reusable`).
+- The account is Dropbox's `users/get_current_account`, an RPC that takes a
+  POST and no body (`identity.method: POST`): `account_id` is the id, the
+  email the label.
+- Disconnecting revokes at the advertised endpoint, `auth/token/revoke`,
+  which takes the access token as its bearer and no body
+  (`revocation_by_bearer`). An access token about to expire is renewed
+  first. Revoking ends the access token and its refresh token, and leaves
+  the account's other sign-ins working, so `revocation_ends_grant` does not
+  apply.
+- Two levels, and Dropbox enforces them. Read is `account_info.read`,
+  `files.metadata.read` and `files.content.read`: list, search and read.
+  Write adds `files.content.write`, which every changing tool needs (create,
+  move, copy, delete, restore, Paper edits). Connecting asks for the write
+  level, as for every service; a sign-in granted only the read scopes would
+  have its write calls refused by Dropbox (403 `insufficient_scope`,
+  measured). Not asked for: `sharing.*` (shared
+  links can open a file to anyone), `file_requests.*`,
+  `files.metadata.write`, `files.permanent_delete`, and every team or member
+  scope. Their tools are still listed, and refused.
+- A code exchange with a made-up code tells a wrong secret (`invalid_client`)
+  from a right one, but not an unregistered redirect URI, so the entry's
+  `unchecked` asks the operator to connect once at each level.
+
+To connect: Settings, Connections in Switch Console, then Dropbox. To roll
+back, add `dropbox` to `DISABLED_SERVICES`, set the entry's `enabled: false`,
+or remove its app.
 
 ## Not yet
 

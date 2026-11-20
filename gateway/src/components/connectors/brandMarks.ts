@@ -33,6 +33,7 @@ export const MARK_COLOR: Readonly<Record<string, { light: string; dark: string }
   atlassian: { light: "#0052CC", dark: FOREGROUND },
   bitbucket: { light: "#0052CC", dark: FOREGROUND },
   box: { light: "#0061D5", dark: FOREGROUND },
+  dropbox: { light: "#0061FF", dark: FOREGROUND },
   datadog: { light: "#632CA6", dark: FOREGROUND },
   "new-relic": { light: FOREGROUND, dark: "#1CE783" },
   airtable: { light: FOREGROUND, dark: "#18BFFF" },
