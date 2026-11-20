@@ -34,9 +34,12 @@ route, so either the service's base URL or its `/decide` URL works):
 - the server default: `DECISION_ENDPOINT_URL`, with `DECISION_API_KEY` as the
   bearer token;
 - a workspace's own endpoint, with the workspace's key as the bearer token;
-- Haiku: the server's decision service, told the backend per request in
-  `X-Decision-Backend` (`anthropic` with the workspace's key in
-  `X-Decision-Anthropic-Key`, or `bedrock`).
+- a choice the server's decision service runs (`SERVICE_BACKENDS`): that
+  service, told the backend per request in `X-Decision-Backend` —
+  `anthropic` (Haiku, with the workspace's key in `X-Decision-Anthropic-Key`),
+  `bedrock` (Haiku on Bedrock), `systemone` (the service's own self-hosted
+  model) or `gemini_decision` (Gemini, with whatever fallback the service
+  applies to it).
 
 A decision never holds up the room or breaks it, so every way of not getting
 an answer means nobody answers (or the room's triage agent, see
@@ -62,7 +65,9 @@ import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from switch_core.db.session_scope import tenant_session
+from switch_core.decision.offers import OFFERS_CACHE_SECONDS, ServiceOffersReader
 from switch_core.decision.settings import (
+    SERVICE_BACKENDS,
     Backend,
     DecisionAvailability,
     ResolvedSettings,
@@ -158,7 +163,14 @@ FailureReason = Literal[
 ]
 # A backend as telemetry and the log name it: the server default is told apart
 # from a workspace's own endpoint.
-BackendLabel = Literal["server_default", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+BackendLabel = Literal[
+    "server_default",
+    "endpoint",
+    "haiku_anthropic",
+    "haiku_bedrock",
+    "self_hosted",
+    "gemini",
+]
 
 # The model that answered, as the metrics' `model` attribute names it. The
 # server's own decision service (the default and Haiku) answers with the model
@@ -287,7 +299,8 @@ def decision_target(
 ) -> DecisionTarget:
     """The request for a backend. `api_key` is the workspace's key, in the
     clear; the server default's is the server's own. Raises ValueError for a
-    backend with nowhere to go (none, or Haiku without a server default)."""
+    backend with nowhere to go (none, or a service-run choice without a
+    server default)."""
     headers = {"Content-Type": "application/json"}
     if source == "server_default":
         if server.endpoint_url is None:
@@ -309,20 +322,18 @@ def decision_target(
         return DecisionTarget(
             decide_url(endpoint), headers, "endpoint", threshold, guarded=True
         )
-    if backend in ("haiku_anthropic", "haiku_bedrock"):
+    if backend in ("haiku_anthropic", "haiku_bedrock", "self_hosted", "gemini"):
         if server.endpoint_url is None:
             raise ValueError(
-                "Haiku runs in Switch's decision service, and none is set up here."
+                "That choice runs in Switch's decision service, and none is set up here."
             )
         if server.api_key is not None:
             headers["Authorization"] = f"Bearer {server.api_key}"
+        headers["X-Decision-Backend"] = SERVICE_BACKENDS[backend]
         if backend == "haiku_anthropic":
             if api_key is None:
                 raise ValueError("Haiku on the Anthropic API needs an Anthropic key.")
-            headers["X-Decision-Backend"] = "anthropic"
             headers["X-Decision-Anthropic-Key"] = api_key
-        else:
-            headers["X-Decision-Backend"] = "bedrock"
         return DecisionTarget(
             decide_url(server.endpoint_url), headers, backend, threshold, guarded=False
         )
@@ -526,6 +537,13 @@ class DynamicDecisionClient:
         self._cache_seconds = cache_seconds
         self._cache: dict[str, tuple[float, ResolvedSettings]] = {}
         self._model_labels: set[str] = set()
+        # What the server's decision service offers workspaces, for the
+        # settings page; deciding a message never reads it.
+        self.offers = ServiceOffersReader(
+            server=availability.server,
+            client=client,
+            cache_seconds=OFFERS_CACHE_SECONDS,
+        )
 
     @property
     def server(self) -> ServerDefault:
@@ -638,14 +656,23 @@ class DynamicDecisionClient:
                 "no longer holds; a workspace admin has to save it again",
                 latency_ms=None,
             )
-        target = decision_target(
-            server=self.server,
-            source=settings.source,
-            backend=settings.backend,
-            endpoint=settings.endpoint,
-            api_key=api_key,
-            threshold=settings.threshold,
-        )
+        try:
+            target = decision_target(
+                server=self.server,
+                source=settings.source,
+                backend=settings.backend,
+                endpoint=settings.endpoint,
+                api_key=api_key,
+                threshold=settings.threshold,
+            )
+        except ValueError as nowhere:
+            logger.warning(
+                "Decision service (%s) not asked for a message in room %s: %s",
+                label,
+                room_id,
+                nowhere,
+            )
+            return Unavailable(reason=str(nowhere))
         started = time.monotonic()
         try:
             answer = await self._post(target, request, decision_id)
@@ -773,12 +800,6 @@ class DynamicDecisionClient:
                 error_message=message,
             )
 
-        if backend == "haiku_bedrock" and not self.server.haiku_bedrock:
-            return error(
-                "backend_unavailable",
-                "Haiku on Bedrock isn't offered here: it needs Switch's "
-                "decision service and DECISION_BEDROCK_ENABLED.",
-            )
         try:
             target = (
                 decision_target(

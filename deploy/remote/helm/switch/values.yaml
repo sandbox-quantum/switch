@@ -479,6 +479,8 @@ switchCore:
     # DECISION_BEDROCK_ENABLED: workspaces may choose Claude Haiku on Amazon
     # Bedrock, which runs inside the decision service on its own AWS
     # credentials. With decision.enabled, decision.bedrock.enabled sets this.
+    # Read only when the decision service doesn't list its backends in
+    # /health; one that lists them decides what workspaces are offered.
     bedrockEnabled: false
     # DECISION_TIMEOUT_SECONDS; empty keeps switch-core's default.
     timeoutSeconds: ""

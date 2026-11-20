@@ -2523,7 +2523,9 @@ class BudgetResponse(BaseModel):
 # ── Switch Trust ──────────────────────────────────────────────────────────────
 
 
-DecisionBackendName = Literal["none", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+DecisionBackendName = Literal[
+    "none", "endpoint", "haiku_anthropic", "haiku_bedrock", "self_hosted", "gemini"
+]
 
 
 class DecisionEffective(BaseModel):
@@ -2540,9 +2542,12 @@ class DecisionEffective(BaseModel):
 class DecisionWorkspaceSettings(BaseModel):
     """The workspace's saved choice. The key is never returned: only whether
     one is set, its last four characters, and whether this server can still
-    decrypt it."""
+    decrypt it. A saved choice this release does not know (a newer release
+    wrote it) reads as `none`, which is what applies, with the saved value in
+    `unrecognized_backend`."""
 
     backend: DecisionBackendName
+    unrecognized_backend: str | None
     endpoint: str | None
     threshold: float | None
     has_api_key: bool
@@ -2551,18 +2556,56 @@ class DecisionWorkspaceSettings(BaseModel):
     updated_at: str
 
 
+class DecisionFallback(BaseModel):
+    """What a backend switches to when it has not answered after `after_s`
+    seconds: `label` is that backend's own label, or its model id."""
+
+    backend: str
+    model: str
+    label: str
+    after_s: float
+
+
+class DecisionBackendInfo(BaseModel):
+    """A backend as the server's decision service describes it in `/health`:
+    the model, the label people see, the confidence threshold it applies when
+    the workspace sets none, and its fallback."""
+
+    label: str
+    model: str
+    threshold: float | None
+    fallback: DecisionFallback | None
+
+
 class DecisionServerDefault(BaseModel):
+    """`info` is the default backend as the decision service describes it;
+    null when there is none, or it could not be read (`options.note`)."""
+
     configured: bool
     endpoint: str | None
     has_api_key: bool
+    info: DecisionBackendInfo | None
 
 
 class DecisionOptions(BaseModel):
-    """Which Haiku backends the server offers: both need the server's
-    decision service, and Bedrock also `DECISION_BEDROCK_ENABLED`."""
+    """Which choices that run in the server's decision service a workspace
+    may newly save, and each one's description (`details`, keyed by choice,
+    for those the service lists).
+
+    `source` is where that came from: `service` (the backends its `/health`
+    lists), `configuration` (a service that lists none: Haiku on the
+    Anthropic API, and Haiku on Bedrock iff `DECISION_BEDROCK_ENABLED`),
+    `unavailable` (it could not be read: nothing new is offered, a saved
+    choice can be kept, and `note` says why) or `none` (no server default,
+    so none of them can run)."""
 
     haiku_anthropic: bool
     haiku_bedrock: bool
+    self_hosted: bool
+    gemini: bool
+    details: dict[str, DecisionBackendInfo]
+    source: Literal["service", "configuration", "unavailable", "none"]
+    note: str | None
 
 
 class DecisionSettingsResponse(BaseModel):

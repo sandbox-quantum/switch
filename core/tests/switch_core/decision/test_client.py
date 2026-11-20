@@ -16,7 +16,7 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import TENANT_ZERO_ID, Tenant
+from switch_core.db.models import TENANT_ZERO_ID, DecisionSettings, Tenant
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.decision.client import (
     MAX_MODEL_LABELS,
@@ -33,7 +33,12 @@ from switch_core.decision.client import (
     confidence_bucket,
     decide_url,
 )
-from switch_core.decision.settings import DecisionAvailability, ServerDefault
+from switch_core.decision.settings import (
+    NO_BACKEND_REASON,
+    UNKNOWN_CHOICE_REASON,
+    DecisionAvailability,
+    ServerDefault,
+)
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import (
     DECISION_BACKEND_ERRORS,
@@ -521,22 +526,79 @@ class TestEachWorkspacesBackend:
         assert headers["x-decision-anthropic-key"] == "fake-key-AwcA"
         assert headers["authorization"] == "Bearer server-key"
 
-    async def test_bedrock_is_asked_for_only_where_the_server_allows_it(
+    @pytest.mark.parametrize(
+        ("backend", "header"),
+        [
+            ("haiku_bedrock", "bedrock"),
+            ("self_hosted", "systemone"),
+            ("gemini", "gemini_decision"),
+        ],
+    )
+    async def test_a_service_run_choice_names_its_backend_and_sends_no_key(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         stub: _Stub,
         http: httpx.AsyncClient,
+        backend: str,
+        header: str,
     ) -> None:
-        await _save(session_factory, TENANT_ZERO_ID, backend="haiku_bedrock")
+        # Whether the service runs it is the service's say (its /health, read
+        # by the settings page), not DECISION_BEDROCK_ENABLED's: the decision
+        # is asked for either way.
+        await _save(session_factory, TENANT_ZERO_ID, backend=backend)
 
-        refused = await _decide(_client(session_factory, http, stub.url))
-        allowed = await _decide(_client(session_factory, http, stub.url, bedrock=True))
+        outcome = await _decide(
+            _client(session_factory, http, stub.url, api_key="server-key")
+        )
 
-        assert isinstance(refused, Unavailable)
-        assert isinstance(allowed, Decided) and allowed.backend == "haiku_bedrock"
+        assert isinstance(outcome, Decided) and outcome.backend == backend
         [(headers, _)] = stub.received
-        assert headers["x-decision-backend"] == "bedrock"
+        assert headers["x-decision-backend"] == header
+        assert headers["authorization"] == "Bearer server-key"
         assert "x-decision-anthropic-key" not in headers
+
+    @pytest.mark.parametrize("backend", ["haiku_bedrock", "self_hosted", "gemini"])
+    async def test_a_service_run_choice_without_a_server_service_is_unavailable(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+        backend: str,
+    ) -> None:
+        await _save(session_factory, TENANT_ZERO_ID, backend=backend)
+
+        outcome = await _decide(_client(session_factory, http, None))
+
+        assert isinstance(outcome, Unavailable)
+        assert outcome.reason == NO_BACKEND_REASON
+        assert stub.received == []
+
+    async def test_a_choice_this_release_does_not_know_is_off_not_a_crash(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A newer release wrote it (a rolling deploy, or a rollback): nothing
+        # is sent anywhere the workspace didn't choose, and it is logged. The
+        # CHECK keeps such a value out of this schema, so the store hands it
+        # over as the newer schema would.
+        client = _client(session_factory, http, stub.url)
+
+        async def newer_row(session: AsyncSession, tenant_id: str) -> DecisionSettings:
+            return DecisionSettings(tenant_id=tenant_id, backend="from_the_future")
+
+        monkeypatch.setattr(client.availability.store, "get", newer_row)
+
+        with caplog.at_level(logging.WARNING):
+            outcome = await _decide(client)
+
+        assert isinstance(outcome, Unavailable)
+        assert outcome.reason == UNKNOWN_CHOICE_REASON
+        assert stub.received == []
+        assert "'from_the_future'" in caplog.text
 
     async def test_a_cached_setting_is_dropped_on_forget(
         self,
@@ -741,13 +803,13 @@ class TestTheTestButton:
         no_key = await _client(session_factory, http, stub.url).test(
             backend="haiku_anthropic", endpoint=None, api_key=None, threshold=None
         )
-        bedrock = await _client(session_factory, http, stub.url).test(
-            backend="haiku_bedrock", endpoint=None, api_key=None, threshold=None
+        self_hosted = await _client(session_factory, http, None).test(
+            backend="self_hosted", endpoint=None, api_key=None, threshold=None
         )
 
         assert no_service.error_code == "not_configured"
         assert no_key.error_code == "not_configured"
-        assert bedrock.error_code == "backend_unavailable"
+        assert self_hosted.error_code == "not_configured"
         assert stub.received == []
 
     async def test_the_server_default_with_the_servers_own_key(
