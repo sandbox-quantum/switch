@@ -539,10 +539,18 @@ WORKSPACE_ARCHIVED = Closure(
     code="closed", message="the agent's workspace was archived", room_id=None
 )
 
+#: How an agent's connections end when it, or its owner, is suspended
+#: (`accounts/suspension.py`). A client that reopens is refused until the
+#: suspension is lifted.
+AGENT_SUSPENDED = Closure(
+    code="closed", message="the agent was suspended", room_id=None
+)
+
 ENDINGS: dict[str, Closure] = {
     "deleted": AGENT_DELETED,
     "key_reissued": KEY_REISSUED,
     "workspace_archived": WORKSPACE_ARCHIVED,
+    "suspended": AGENT_SUSPENDED,
 }
 
 
@@ -1426,6 +1434,13 @@ class AgentConnectionRegistry:
         deleted their rows (`AgentConnectionStore.delete_agent`), and the
         agent is refused when it tries again (`bridges/agent/auth.py`)."""
         await self._end_agent(agent_id, "workspace_archived")
+
+    async def agent_suspended(self, agent_id: str) -> None:
+        """End the connections of an agent that was suspended, or whose owner
+        was, here and in every other process, as `agent_key_reissued` does:
+        the caller deleted their rows (`accounts/suspension.py`), and the
+        agent is refused when it tries again (`bridges/agent/auth.py`)."""
+        await self._end_agent(agent_id, "suspended")
 
     async def _end_agent(self, agent_id: str, ending: str) -> None:
         if self._rows is not None:

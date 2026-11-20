@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.suspension import owner_is_suspended
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CloudMachine
 from switch_core.db.standing import stands_in
@@ -202,7 +203,14 @@ async def _sweep(
         _idle_stops(machine, idle_minutes)
         and machine.state == "ready"
         and machine.desired_state == "running"
-        and controller_machine_idle(machine, timedelta(minutes=idle_minutes), now)
+        and (
+            controller_machine_idle(machine, timedelta(minutes=idle_minutes), now)
+            # Its controllers are refused while their owner is suspended, so
+            # they report nothing to find it idle by, and its agents are
+            # stopped: it sleeps as an idle machine does, and a message
+            # wakes it once the suspension is lifted.
+            or await owner_is_suspended(session, machine.owner_id)
+        )
     ):
         if await store.release_if_empty(
             machine, workspaces, retention_days=retention_days, now=now

@@ -57,6 +57,7 @@ from switch_core.gateway.schemas import (
     AgentRoomMembership,
     AgentSessionDetail,
     AgentSummary,
+    AgentSuspension,
     AgentToolSummary,
     NamedEntry,
 )
@@ -146,6 +147,7 @@ def agent_summary(
         agent.integration_profile if isinstance(agent.integration_profile, dict) else {}
     )
     return AgentSummary(
+        suspension=agent_suspension(agent),
         id=agent.id,
         name=agent.name,
         description=agent.description,
@@ -172,6 +174,17 @@ def agent_summary(
             if isinstance(agent.addressing_policy, dict)
             else None
         ),
+    )
+
+
+def agent_suspension(agent: Agent) -> AgentSuspension | None:
+    if agent.suspended_at is None or agent.suspended_by_role is None:
+        return None
+    return AgentSuspension(
+        suspended_at=agent.suspended_at,
+        reason=agent.suspended_reason,
+        by_role=agent.suspended_by_role,
+        with_owner=agent.suspended_with_owner,
     )
 
 

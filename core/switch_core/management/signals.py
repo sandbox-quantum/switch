@@ -31,8 +31,8 @@ publishes the notice for every process to hand to the owner's sockets.
 Nothing here depends on a signal arriving. When the signal connection comes
 back, every binding and every controller's connection is read again and every
 controller held here is re-nudged from the database, so one that missed a
-signal while the connection was down pulls again, and one revoked meanwhile is
-closed. The periodic re-check does the same reads, but nudges a held
+signal while the connection was down pulls again, and one revoked, or whose
+owner was suspended, meanwhile is closed. The periodic re-check does the same reads, but nudges a held
 controller only with what it has not been told yet (a newer revision, an
 operation it has not heard of), so a quiet controller is not made to pull
 every `RECHECK_SECONDS`.
@@ -45,6 +45,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from switch_core.accounts.suspension import owner_is_suspended
 from switch_core.db.fingerprint import Fingerprint
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -86,6 +87,7 @@ ASSIGNMENT_CHANGED_SIGNAL = "controller.assignment_changed"
 OPERATION_PENDING_SIGNAL = "controller.operation_pending"
 REVOKED_SIGNAL = "controller.revoked"
 CREDENTIAL_REPLACED_SIGNAL = "controller.credential_replaced"
+OWNER_SUSPENDED_SIGNAL = "controller.owner_suspended"
 RENAMED_SIGNAL = "controller.renamed"
 CONNECTION_CHANGED_SIGNAL = "controller.connection_changed"
 
@@ -156,6 +158,7 @@ class ControllerSignals:
         bus.handle(OPERATION_PENDING_SIGNAL, self._on_operation_pending)
         bus.handle(REVOKED_SIGNAL, self._on_revoked)
         bus.handle(CREDENTIAL_REPLACED_SIGNAL, self._on_credential_replaced)
+        bus.handle(OWNER_SUSPENDED_SIGNAL, self._on_owner_suspended)
         bus.handle(RENAMED_SIGNAL, self._on_renamed)
         bus.handle(CONNECTION_CHANGED_SIGNAL, self._on_connection_changed)
         bus.on_resync(self.resync)
@@ -199,6 +202,10 @@ class ControllerSignals:
         attached (`ControllerPresence.credential_replaced`)."""
         self._presence.credential_replaced(controller_id)
         self._bus.publish(CREDENTIAL_REPLACED_SIGNAL, controller_id=controller_id)
+
+    def owner_suspended(self, controller_id: str) -> None:
+        self._presence.owner_suspended(controller_id)
+        self._bus.publish(OWNER_SUSPENDED_SIGNAL, controller_id=controller_id)
 
     def renamed(self, tenant_id: str, controller_id: str) -> None:
         """The controller's owner renamed it. A rename bumps no assignment
@@ -251,6 +258,9 @@ class ControllerSignals:
 
     def _on_credential_replaced(self, signal: dict[str, Any]) -> None:
         self._presence.credential_replaced(signal["controller_id"])
+
+    def _on_owner_suspended(self, signal: dict[str, Any]) -> None:
+        self._presence.owner_suspended(signal["controller_id"])
 
     def _on_renamed(self, signal: dict[str, Any]) -> None:
         self._bindings_owed.add((signal["tenant_id"], signal["controller_id"]))
@@ -495,6 +505,9 @@ class ControllerSignals:
                     if controller is None or controller.revoked_at is not None:
                         self._revoke_here(conn.controller_id)
                         continue
+                    owner_suspended = await owner_is_suspended(
+                        session, controller.owner_id
+                    )
                     offered = await self._operations.list_offered(
                         session, conn.tenant_id, conn.controller_id, self._clock()
                     )
@@ -517,6 +530,10 @@ class ControllerSignals:
                 self._nudged_operations[conn.controller_id] = {
                     operation.id for operation in offered
                 }
+                # After the nudge, as when the suspension was made: a
+                # controller that missed being told is disconnected now.
+                if owner_suspended:
+                    self._presence.owner_suspended(conn.controller_id)
             except Exception:
                 logger.error(
                     "Could not resync controller %s", conn.controller_id, exc_info=True
