@@ -1245,10 +1245,18 @@ class TestAnArchivedWorkspace:
             agent_id="a-1", controller_id="c-1", desired_state="running"
         )
 
-        archived = binding_of("t-1", row, controller, workspace_archived=True)
-        live = binding_of("t-1", row, controller, workspace_archived=False)
+        archived = binding_of(
+            "t-1", row, controller, workspace_archived=True, agent_suspended=False
+        )
+        suspended = binding_of(
+            "t-1", row, controller, workspace_archived=False, agent_suspended=True
+        )
+        live = binding_of(
+            "t-1", row, controller, workspace_archived=False, agent_suspended=False
+        )
 
         assert archived.running is False
+        assert suspended.running is False
         assert live.running is True
 
 

@@ -14,6 +14,7 @@ unrestricted deployment) run on is exempt from row-level security.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -34,6 +35,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
+    Agent,
     AgentConnectionRecord,
     AgentConnectionRoom,
     AgentSessionCommandRelay,
@@ -382,6 +384,22 @@ class AgentConnectionStore:
             )
         )
         return True
+
+    async def suspended_among(
+        self, session: AsyncSession, tenant_id: str, agent_ids: Iterable[str]
+    ) -> list[str]:
+        """Which of `agent_ids` are suspended (`accounts/suspension.py`)."""
+        return list(
+            await session.scalars(
+                select(Agent.id)
+                .where(
+                    Agent.tenant_id == tenant_id,
+                    Agent.id.in_(list(agent_ids)),
+                    Agent.suspended_at.is_not(None),
+                )
+                .order_by(Agent.id)
+            )
+        )
 
     async def delete_agent(
         self, session: AsyncSession, *, tenant_id: str, agent_id: str

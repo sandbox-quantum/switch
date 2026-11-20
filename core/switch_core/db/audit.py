@@ -37,8 +37,8 @@ from switch_core.security_events import (
 
 # Set, to true, in the details of every audit event a platform operator's
 # server command records (`switch-accounts`, `switch-connector-apps`,
-# `switch-promote-org-admin`): no account is behind the change, so the event
-# names no actor.
+# `switch-promote-org-admin`, `switch-suspend`): no account is behind the
+# change, so the event names no actor.
 PLATFORM_OPERATOR_COMMAND = "platform_operator_command"
 
 
@@ -144,6 +144,15 @@ class AuditAction(StrEnum):
     MEMBER_REMOVED_FROM_ALL_ROOMS = "member.removed_from_all_rooms"
     ROOM_FROZEN = "room.frozen"
     ROOM_UNFROZEN = "room.unfrozen"
+
+    # Suspending and lifting a suspension (`accounts/suspension.py`), and
+    # re-issuing an agent's key on request; `details.reason` says why. A
+    # person's are recorded in every workspace they are in or own agents in.
+    AGENT_SUSPENDED = "agent.suspended"
+    AGENT_UNSUSPENDED = "agent.unsuspended"
+    AGENT_KEY_ROTATED = "agent.key_rotated"
+    USER_SUSPENDED = "user.suspended"
+    USER_UNSUSPENDED = "user.unsuspended"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -253,6 +262,10 @@ def request_actor() -> tuple[str | None, str | None]:
     """
     context = current_log_context()
     return context.user_id, context.agent_id
+    # An account suspended or let back in (`accounts/suspension.py`), by
+    # whoever did it; `details.reason` says why.
+    USER_SUSPENDED = "user.suspended"
+    USER_UNSUSPENDED = "user.unsuspended"
 
 
 async def record_audit_event(

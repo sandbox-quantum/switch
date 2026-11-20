@@ -377,8 +377,24 @@ class OrganizationScoped:
 # ── Users ──────────────────────────────────────────────────────────────────────
 
 
+# Who suspended an account or an agent, which decides who may lift it
+# (`accounts/suspension.py`): its owner (agents only), an admin of the
+# workspace or organization, or the server's operator.
+SUSPENDER_ROLES = ("owner", "admin", "operator")
+
+
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "suspended_by_role IN ('admin', 'operator')",
+            name="ck_users_suspended_by_role",
+        ),
+        CheckConstraint(
+            "(suspended_at IS NULL) = (suspended_by_role IS NULL)",
+            name="ck_users_suspension_complete",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -404,6 +420,21 @@ class User(Base):
     session_version: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
+    # Set while the account is suspended (`accounts/suspension.py`): no
+    # session is accepted or started, its keys are refused, and every agent
+    # it owns is suspended with it. `suspended_by` is cleared when that
+    # account is deleted, and is NULL for the operator's command line;
+    # `suspended_by_role` stays, since it decides who may lift it.
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    suspended_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_users_suspended_by"),
+        nullable=True,
+    )
+    suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspended_by_role: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # Changing a password or losing the server-admin role ends every session. As
@@ -940,6 +971,14 @@ class Agent(TenantScoped, Base):
             "mid_turn_delivery IN ('steer', 'queue')",
             name="ck_agents_mid_turn_delivery",
         ),
+        CheckConstraint(
+            "suspended_by_role IN ('owner', 'admin', 'operator')",
+            name="ck_agents_suspended_by_role",
+        ),
+        CheckConstraint(
+            "(suspended_at IS NULL) = (suspended_by_role IS NULL)",
+            name="ck_agents_suspension_complete",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -996,6 +1035,25 @@ class Agent(TenantScoped, Base):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Set while the agent is suspended (`accounts/suspension.py`): its
+    # credentials and its controller are refused for it, its devices assign
+    # it stopped, and its rooms keep it as a member. `suspended_with_owner`
+    # marks a suspension that came from suspending its owner, which is lifted
+    # with the owner's and not on its own. `suspended_by` is cleared when
+    # that account is deleted.
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    suspended_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_agents_suspended_by"),
+        nullable=True,
+    )
+    suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspended_by_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspended_with_owner: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
     )
 
 

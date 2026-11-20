@@ -1221,6 +1221,21 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/agents/{agent_id}/key/rotate",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/agents/{agent_id}/suspend",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/agents/{agent_id}/unsuspend",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/api-keys",
       "auth": "session",
       "flags": []
@@ -1750,6 +1765,16 @@
     },
     {
       "route": "POST /gateway/tenants/{tenant_id}/switch",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/users/{user_id}/suspend",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/users/{user_id}/unsuspend",
       "auth": "session",
       "flags": []
     },

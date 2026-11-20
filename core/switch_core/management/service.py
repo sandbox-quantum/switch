@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.accounts.suspension import owner_is_suspended
 from switch_core.agent_icon import (
     InvalidIconUrl,
     drop_third_party_avatar,
@@ -484,6 +485,12 @@ class ManagementService:
             or key.expired(self.now())
         ):
             raise invalid
+        if await owner_is_suspended(session, key.user_id):
+            raise ManagementError(
+                403,
+                reason_codes.ACCOUNT_SUSPENDED,
+                "The account this enrollment code belongs to is suspended.",
+            )
         consumed = await self.controllers.consume_enrollment_code(
             session, tenant_id, key.id, self.now()
         )
@@ -603,6 +610,14 @@ class ManagementService:
         if is_revoked(controller):
             raise ManagementError(
                 401, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
+            )
+        # Refused, not revoked: the same credential is exchanged again once
+        # the suspension is lifted.
+        if await owner_is_suspended(session, controller.owner_id):
+            raise ManagementError(
+                403,
+                reason_codes.ACCOUNT_SUSPENDED,
+                "The account this controller belongs to is suspended.",
             )
         return tokens.mint_access_token(
             secret=self.settings.token_secret,
@@ -1647,6 +1662,9 @@ class ManagementService:
                 row,
                 controller,
                 workspace_archived=await is_archived(session, tenant_id),
+                agent_suspended=await self.definitions.agent_suspended(
+                    session, tenant_id, row.agent_id
+                ),
             )
         )
 
@@ -1682,6 +1700,42 @@ class ManagementService:
         for row in placed:
             await self._bind(session, tenant_id, row)
         self._nudge(tenant_id, revisions)
+
+    async def agents_suspension_changed(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        agent_ids: list[str],
+        revisions: dict[str, int],
+    ) -> None:
+        """The agents were suspended or let back in, and that has committed
+        with their controllers' revisions moved on (`accounts/suspension.py`):
+        Core's bindings follow, here and in every other process, and each
+        controller pulls its assignment, which has a suspended agent stopped
+        and any other as its owner set it (`assignment_entry`)."""
+        rows = [
+            row
+            for agent_id in agent_ids
+            if (
+                row := await self.definitions.get_for_agent(
+                    session, tenant_id, agent_id
+                )
+            )
+            is not None
+            and row.controller_id is not None
+        ]
+        for row in rows:
+            await self._bind(session, tenant_id, row)
+        await session.commit()
+        self._nudge(tenant_id, revisions)
+
+    def owner_suspended(self, controller_ids: list[str]) -> None:
+        """The controllers' owner was suspended, and that has committed: each
+        controller's stream ends, here and in every other process, and it is
+        refused until the suspension is lifted (`management/auth.py`). Not a
+        revocation: its credential stays, and lets it back in after."""
+        for controller_id in controller_ids:
+            self.signals.owner_suspended(controller_id)
 
     async def check_new_managed_agent(
         self,

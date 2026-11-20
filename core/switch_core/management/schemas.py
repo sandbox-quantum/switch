@@ -474,12 +474,15 @@ def assignment_entry(
 
     In an archived workspace every agent is assigned stopped, whatever its
     owner set, and kept: the controller stops it and starts it again once the
-    workspace is restored, where leaving it out would have it removed."""
+    workspace is restored, where leaving it out would have it removed. A
+    suspended agent is assigned stopped the same way, until its suspension is
+    lifted (`accounts/suspension.py`)."""
     definition = row.definition
+    stopped = workspace_archived or agent.suspended_at is not None
     return {
         "agent_id": row.agent_id,
         "revision": row.revision,
-        "desired_state": "stopped" if workspace_archived else row.desired_state,
+        "desired_state": "stopped" if stopped else row.desired_state,
         "definition": {
             "name": agent.name,
             "display_name": agent.display_name,

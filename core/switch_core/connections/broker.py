@@ -870,6 +870,10 @@ class ServiceBroker:
             raise ServiceError(
                 403, FORBIDDEN, "This agent is not in this workspace.", retryable=False
             )
+        if agent.suspended_at is not None:
+            raise ServiceError(
+                403, FORBIDDEN, "This agent is suspended.", retryable=False
+            )
         if agent.owner_id is None:
             raise ServiceError(
                 403, FORBIDDEN, "This agent has no owner to act for.", retryable=False

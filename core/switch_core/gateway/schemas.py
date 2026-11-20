@@ -418,7 +418,21 @@ class RoomGroupUpdateRequest(BaseModel):
 # ── Agents ────────────────────────────────────────────────────────────────────
 
 
+class AgentSuspension(BaseModel):
+    """An agent's suspension (`accounts/suspension.py`). `by_role` is who
+    made it (`owner`, `admin` or `operator`), which decides who may lift it;
+    `with_owner` says it came from suspending the agent's owner, and is lifted
+    with theirs."""
+
+    suspended_at: datetime
+    reason: str | None
+    by_role: str
+    with_owner: bool
+
+
 class AgentSummary(BaseModel):
+    # Null unless the agent is suspended.
+    suspension: AgentSuspension | None
     id: str
     name: str
     description: str
@@ -2891,3 +2905,34 @@ class RoomFreezeResult(BaseModel):
     # Why the room could not be told it was frozen or unfrozen, or null when
     # it was. The change holds either way.
     notice_error: str | None
+# ── Suspension and key rotation ──────────────────────────────────────────────
+
+
+class SuspendRequest(BaseModel):
+    """Why the agent or person is suspended, kept on it and in the audit log."""
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class AgentSuspensionResponse(BaseModel):
+    agent_id: str
+    # Null once the agent is no longer suspended.
+    suspension: AgentSuspension | None
+
+
+class PersonSuspensionResponse(BaseModel):
+    user_id: str
+    suspended: bool
+    suspended_at: datetime | None
+    reason: str | None
+    by_role: str | None
+    # The agents suspended, or let back in, with the person, by workspace.
+    agents: dict[str, list[str]]
+
+
+class RotateAgentKeyResponse(BaseModel):
+    """The agent's new key, shown this once as when the agent was registered.
+    Every connection made with the old key has been closed."""
+
+    agent_id: str
+    api_key: str

@@ -387,6 +387,28 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/workspace/services/{service}": delete(
         f"{G}/workspace/services/{{workspace_service}}", admins()
     ),
+    "POST /gateway/agents/{agent_id}/suspend": post(
+        f"{G}/agents/{{agent}}/suspend", owner_or_admins(), json={"reason": "matrix"}
+    ),
+    "POST /gateway/agents/{agent_id}/unsuspend": post(
+        f"{G}/agents/{{agent}}/unsuspend",
+        owner_or_admins(ok=409),
+        why="Who may suspend it may ask; this one is not suspended.",
+    ),
+    "POST /gateway/agents/{agent_id}/key/rotate": post(
+        f"{G}/agents/{{agent}}/key/rotate", owner_or_admins()
+    ),
+    "POST /gateway/users/{user_id}/suspend": post(
+        f"{G}/users/{{member_target}}/suspend",
+        admins(),
+        json={"reason": "matrix"},
+        why="An admin of every workspace the person is in, or the operator.",
+    ),
+    "POST /gateway/users/{user_id}/unsuspend": post(
+        f"{G}/users/{{member_target}}/unsuspend",
+        admins(ok=409),
+        why="Who may suspend them may ask; this one is not suspended.",
+    ),
     "POST /gateway/ownership/transfer": post(
         f"{G}/ownership/transfer",
         owner_or_admins(),
