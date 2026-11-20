@@ -1,4 +1,5 @@
 import { expect } from 'vitest';
+import { FULL_WINDOW } from '../../../../gateway/src/routes/roleMatrix.ts';
 import { ROLE_MATRIX_SCENARIOS } from './role-matrix/index.ts';
 import { browserHeader, type BrowserScenario } from './scenario.ts';
 
@@ -32,6 +33,12 @@ const everyPage: BrowserScenario = {
     for (const link of links) {
       await ui.openFromRail(link.label);
       log(`${link.label} (${ui.path()}) opened`);
+      // A page that fills the window has no rail: once it is drawn (the old
+      // page stays until its code has loaded), back to one that has.
+      if (FULL_WINDOW.includes(link.path)) {
+        await expect.poll(() => ui.nav().isVisible(), { timeout: 15_000 }).toBe(false);
+        await ui.open('/');
+      }
     }
   },
 };

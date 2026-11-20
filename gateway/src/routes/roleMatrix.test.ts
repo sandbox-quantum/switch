@@ -26,6 +26,7 @@ function capabilitiesOf(persona: Persona): Capabilities {
       "service_connections",
       "organization_connector_apps",
       "gateway_chats",
+      "gateway_onboarding",
     ].map((key) => ({
       key,
       enabled: true,

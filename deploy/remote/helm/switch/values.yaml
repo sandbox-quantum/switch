@@ -371,6 +371,10 @@ switchCore:
   signupEnabled: false
   # Most users created per rolling hour, counting every way a user is created.
   signupMaxPerHour: 20
+  # Test and canary servers only: lets a person wipe their own account and
+  # everything they alone own (Account → Reset test account), and start
+  # onboarding over. Irreversible; leave off anywhere people keep real data.
+  allowTestAccountReset: false
   # Gateway OIDC login (bring-your-own IdP, e.g. Okta). Disabled by default;
   # set enabled=true and supply issuerUrl/clientId (plus
   # secrets.gatewayOidcClientSecret) to gate the gateway behind OIDC. Provider
@@ -511,9 +515,10 @@ switchCore:
   # additional_messaging_platforms (WhatsApp, Google Chat, Zulip, Signal,
   # Matrix, Rocket.Chat, Webex), additional_agent_providers (DeepSeek
   # Harness, Pi, GitHub Copilot, Kiro, Mistral Vibe, Goose, Qwen Code, Factory
-  # Droid, Cline, Junie), gateway_chats (chats in the dashboard). gateway_v2,
-  # agent_chats, group_chats and agent_management are still accepted but
-  # always on.
+  # Droid, Cline, Junie), gateway_chats (chats in the dashboard),
+  # gateway_onboarding (getting started on Switch Cloud from the dashboard).
+  # gateway_v2, agent_chats, group_chats and agent_management are still
+  # accepted but always on.
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people

@@ -11,11 +11,13 @@ import { agentInitials, resolveAgentAvatarSrc } from "@switch-console/chat-ui/mo
 import { configureFailures } from "@switch-console/chat-ui/model/failures";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { type ReactNode, createContext, useContext, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
 import discordIcon from "../../assets/bridges/discord.svg";
 import slackIcon from "../../assets/bridges/slack.svg";
 import telegramIcon from "../../assets/bridges/telegram.svg";
 import { useAuth } from "../../data/AuthContext";
 import { fetchAvatarSettings } from "../../data/api";
+import { webLinkTarget } from "./consoleLinkOnWeb";
 import { webChatsClient, webFailures } from "./webChatClient";
 import { type WebChats, createWebChats } from "./webChats";
 
@@ -140,6 +142,7 @@ export default function WebChatHost({ children }: { children: ReactNode }) {
   const tenantId = session?.tenant?.id ?? null;
   // Group chats are always on.
   const groupChats = true;
+  const navigate = useNavigate();
   const [queryClient] = useState(() => new QueryClient());
   const [toast, setToast] = useState<ChatToast | null>(null);
 
@@ -164,8 +167,15 @@ export default function WebChatHost({ children }: { children: ReactNode }) {
         commands: (_serverId, roomId) => webChatsClient.listChatCommands(roomId),
         media: (_serverId, roomId, uri) => mediaOf(roomId, uri),
         openLink: (href) => {
-          // A link to a Console page has no meaning on the web; the rest open in a new tab.
-          if (/^https?:\/\//i.test(href)) window.open(href, "_blank", "noopener,noreferrer");
+          // A link to a Console page opens the page that does its job here, where there is one.
+          const target = webLinkTarget(href);
+          if (target.kind === "external") window.open(target.href, "_blank", "noopener,noreferrer");
+          else if (target.kind === "page") navigate(target.path);
+          else if (target.kind === "console-only")
+            setToast({
+              title: "That page is in Switch Console",
+              description: "It has no page in the web dashboard yet.",
+            });
         },
         isModalOpen: () => document.querySelector('[role="dialog"][aria-modal="true"]') !== null,
         toast: setToast,
@@ -179,7 +189,7 @@ export default function WebChatHost({ children }: { children: ReactNode }) {
         AgentAvatar,
         BridgeIcon,
       },
-    [web, userId, tenantId, groupChats],
+    [web, userId, tenantId, groupChats, navigate],
   );
 
   if (!host || !web) return <>{children}</>;

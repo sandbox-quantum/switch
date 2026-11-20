@@ -2,7 +2,9 @@ import { Alert, Box, Button, Stack } from "@mui/material";
 import { type ReactNode, Suspense, lazy } from "react";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
-import { GATEWAY_CHATS } from "../data/featureFlags";
+import { AGENT_MANAGEMENT, GATEWAY_CHATS, GATEWAY_ONBOARDING } from "../data/featureFlags";
+import { GET_STARTED, sentToGetStarted } from "../pages/get-started/paths";
+import { FULL_WINDOW } from "../routes/roleMatrix";
 import { AREAS, enteredArea } from "../routes/routeTable";
 import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
@@ -10,6 +12,49 @@ import TopBar from "./TopBar";
 
 // Loaded only on a server with chats in the dashboard: it carries the chat UI.
 const WebChatHost = lazy(() => import("../pages/chats/WebChatHost"));
+
+// Loaded only on a server with getting started on the web.
+const CloudWarmUp = lazy(() => import("../pages/get-started/CloudWarmUp"));
+
+/** Warms the person's cloud device under every page, where the server has getting started on the web. */
+function WarmUp() {
+  const { capabilities } = useAuth();
+  if (!capabilities.features[GATEWAY_ONBOARDING]) return null;
+  return (
+    <Suspense fallback={null}>
+      <CloudWarmUp />
+    </Suspense>
+  );
+}
+
+const FirstVisitGate = lazy(() =>
+  import("../pages/get-started/CloudWarmUp").then((module) => ({ default: module.FirstVisitGate })),
+);
+
+/**
+ * On an arrival that may be someone's first, where the server has getting
+ * started on the web, shows nothing until it is known whether to open Get
+ * started, so they land there rather than on Home first.
+ */
+function FirstVisit({ children }: { children: ReactNode }) {
+  const { user, session, capabilities } = useAuth();
+  const { pathname } = useLocation();
+  const userId = user?.id ?? null;
+  const tenantId = session?.tenant?.id ?? null;
+  const deciding =
+    capabilities.features[GATEWAY_ONBOARDING] === true &&
+    capabilities.features[AGENT_MANAGEMENT] === true &&
+    userId !== null &&
+    tenantId !== null &&
+    pathname !== GET_STARTED &&
+    !sentToGetStarted(userId, tenantId);
+  if (!deciding) return <>{children}</>;
+  return (
+    <Suspense fallback={null}>
+      <FirstVisitGate>{children}</FirstVisitGate>
+    </Suspense>
+  );
+}
 
 /** Keeps the person's chats live under every page, where the server has them. */
 function WithChats({ children }: { children: ReactNode }) {
@@ -30,10 +75,24 @@ function WithChats({ children }: { children: ReactNode }) {
  *  bar, menu and padding across the whole surface; one refused is shown like
  *  any other page. */
 export default function PageShell() {
+  return (
+    <FirstVisit>
+      <Shell />
+    </FirstVisit>
+  );
+}
+
+function Shell() {
   const { pathname } = useLocation();
   const { capabilities } = useAuth();
   const area = enteredArea(pathname, capabilities);
   const withRail = area === null || !AREAS[area].outsideWorkspace;
+  if (FULL_WINDOW.includes(pathname))
+    return (
+      <Box component="main" sx={{ height: "100vh" }}>
+        <Outlet />
+      </Box>
+    );
   return (
     <Box
       sx={{
@@ -69,6 +128,7 @@ export default function PageShell() {
           }}
         >
           <Box sx={area === null ? undefined : { px: 3, pt: 3, "&:empty": { display: "none" } }}>
+            <WarmUp />
             <WorkspaceMismatchBanner />
             <StaleSessionBanner />
             <LinkNoticeBanner />

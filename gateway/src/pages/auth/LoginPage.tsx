@@ -19,7 +19,9 @@ import { useAuth } from "../../data/AuthContext";
 import { readPendingInvite } from "../../data/sessionState";
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, signUp } = useAuth();
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -38,14 +40,21 @@ export default function LoginPage() {
       setSubmitting(true);
       setError(null);
       try {
-        await login(email, password);
+        if (creating) await signUp({ email, password, name: name.trim() || null });
+        else await login(email, password);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Login failed");
+        setError(
+          err instanceof Error
+            ? err.message
+            : creating
+              ? "Your account could not be created"
+              : "Login failed",
+        );
       } finally {
         setSubmitting(false);
       }
     },
-    [email, password, login],
+    [creating, name, email, password, login, signUp],
   );
 
   // Default to showing the password form if the config call hasn't resolved
@@ -53,7 +62,10 @@ export default function LoginPage() {
   const passwordLoginEnabled = authConfig?.password_login_enabled ?? true;
   const oidcEnabled = authConfig?.oidc_enabled ?? false;
   const providerLabel = authConfig?.oidc_provider_label ?? "SSO";
-  const subtitle = readPendingInvite()
+  const canSignUp = passwordLoginEnabled && authConfig?.web_signup_enabled === true;
+  const subtitle = creating
+    ? "Create your Switch account. Your agents run on Switch, so there is nothing to install."
+    : readPendingInvite()
     ? "Sign in to accept your invitation."
     : oidcEnabled && authConfig?.signup_mode === "open"
       ? `Sign in with ${providerLabel} to create a workspace or join one.`
@@ -84,6 +96,14 @@ export default function LoginPage() {
           {error && <Alert severity="error">{error}</Alert>}
           {passwordLoginEnabled && (
             <>
+              {creating && (
+                <TextField
+                  label="Your name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  autoComplete="name"
+                />
+              )}
               <TextField
                 label="Email"
                 type="email"
@@ -107,8 +127,20 @@ export default function LoginPage() {
                   submitting ? <CircularProgress size={16} /> : undefined
                 }
               >
-                Sign in
+                {creating ? "Create account" : "Sign in"}
               </Button>
+              {canSignUp && (
+                <Button
+                  variant="text"
+                  size="small"
+                  onClick={() => {
+                    setCreating(!creating);
+                    setError(null);
+                  }}
+                >
+                  {creating ? "Have an account? Sign in" : "New to Switch? Create an account"}
+                </Button>
+              )}
             </>
           )}
           {passwordLoginEnabled && oidcEnabled && <Divider>or</Divider>}

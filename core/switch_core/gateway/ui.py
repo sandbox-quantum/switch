@@ -79,6 +79,8 @@ PAGE_PATHS: tuple[str, ...] = (
     "/workspace",
     "/workspace/private-channel-rooms",
     "/organization",
+    # Behind `gateway_onboarding`.
+    "/get-started",
     "/overview",
     "/templates",
     "/templates/{id}",
