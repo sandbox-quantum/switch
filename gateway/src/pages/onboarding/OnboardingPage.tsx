@@ -4,11 +4,19 @@ import { useAuth } from "../../data/AuthContext";
 import OrganizationsWithoutWorkspace from "../account/OrganizationsWithoutWorkspace";
 import { inviteTokenFrom, storePendingInvite } from "../../data/sessionState";
 import CenteredCard from "./CenteredCard";
+import { AGENT_MANAGEMENT, GATEWAY_ONBOARDING } from "../../data/featureFlags";
+import { GET_STARTED } from "../get-started/paths";
 import CreateWorkspaceForm from "./CreateWorkspaceForm";
 
 /** Signed in, and in no workspace yet. */
 export default function OnboardingPage() {
-  const { session, refresh } = useAuth();
+  const { session, refresh, capabilities } = useAuth();
+  // A first workspace goes straight on to getting started, where the server has it.
+  const landing =
+    capabilities.features[GATEWAY_ONBOARDING] === true &&
+    capabilities.features[AGENT_MANAGEMENT] === true
+      ? GET_STARTED
+      : "/";
   const [invite, setInvite] = useState("");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const canCreate = session?.can_create_workspace ?? false;
@@ -37,7 +45,7 @@ export default function OnboardingPage() {
     >
       <Stack spacing={3}>
         <OrganizationsWithoutWorkspace />
-        {canCreate && <CreateWorkspaceForm wording="workspace" />}
+        {canCreate && <CreateWorkspaceForm wording="workspace" landing={landing} />}
         {canCreate && <Divider>or</Divider>}
         <Stack component="form" onSubmit={joinWithInvite} spacing={2}>
           <Typography variant="subtitle2">Have an invite link?</Typography>

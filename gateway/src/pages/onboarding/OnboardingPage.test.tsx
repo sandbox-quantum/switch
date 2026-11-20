@@ -38,6 +38,7 @@ function signedIn(isOperator: boolean) {
       can_create_workspace: false,
     },
     refresh: vi.fn(),
+    capabilities: { features: {} },
   } as unknown as ReturnType<typeof useAuth>);
 }
 

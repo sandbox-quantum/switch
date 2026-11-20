@@ -26,9 +26,12 @@ const WORDS: Record<Wording, { label: string; placeholder: string; helper: strin
 
 export default function CreateWorkspaceForm({
   wording,
+  landing,
   onCancel,
 }: {
   wording: Wording;
+  /** Where the dashboard opens once the workspace exists. */
+  landing: string;
   onCancel?: () => void;
 }) {
   const words = WORDS[wording];
@@ -42,7 +45,7 @@ export default function CreateWorkspaceForm({
     setError(null);
     try {
       await createTenant(name.trim());
-      window.location.assign("/");
+      window.location.assign(landing);
     } catch (err) {
       setError(err instanceof Error ? err.message : `Could not create the ${wording}`);
       setSubmitting(false);
