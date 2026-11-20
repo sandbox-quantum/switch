@@ -75,6 +75,26 @@ version of their own to them without also giving them a release of their own.
   refusals.
 
 #### Added
+- **The decision service can use open-weights models on Amazon Bedrock.**
+  `DECISION_BACKEND=bedrock_openai` (or a request's `X-Decision-Backend:
+  bedrock_openai` with `DECISION_BEDROCK_OPENAI_ENABLED=1`) asks Qwen3 235B
+  A22B Instruct 2507 (`DECISION_BEDROCK_OPENAI_MODEL`) in
+  `DECISION_BEDROCK_OPENAI_REGION` (eu-central-1), scoring every option from
+  the first token's letter probabilities. On 260 labelled real decisions it
+  scored 0.962 at a threshold of 0.89, answering in 0.23 s at the median.
+- **A request can choose the service's own model server.** With
+  `DECISION_SYSTEMONE_ENABLED=1`, `SYSTEMONE_URL` and
+  `DECISION_SYSTEMONE_MODEL`, `X-Decision-Backend: systemone` asks it, for
+  example vllm-sr d3-mini on vLLM.
+- **Each decision backend can have a threshold of its own**
+  (`DECISION_THRESHOLD_<BACKEND>`), applied to the backend that answered; a
+  workspace's own threshold still wins.
+- **Fallbacks per backend.** `DECISION_FALLBACKS=gemini_decision:bedrock`
+  races Haiku against Gemini whenever Gemini is used, as the default or
+  because a workspace chose it; `bedrock_openai` can be a fallback too.
+- **The decision service's `/health` lists what each choice gets**
+  (`backends`: model, a label for people, threshold and fallback), so
+  Switch Console can offer only what the service has.
 - **The WorkOS directory mirror reports whether it is keeping up.** With
   `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
   `switch.workos.cursor_age` (seconds since it last read WorkOS's events
@@ -102,6 +122,10 @@ version of their own to them without also giving them a release of their own.
   workspace that chose its backend gets that backend alone. Off unless set.
 
 #### Changed
+- **A request that names a backend with a fallback now races it.** Before,
+  only a request on the default backend raced its fallback;
+  `DECISION_FALLBACK_BACKEND` now means the default backend's fallback
+  however it is chosen.
 - **Member changes that also apply in Switch Trust ask first.** On an
   organization whose members come from WorkOS and whose changes are sent
   there, making someone Org Admin, making an Org Admin a Viewer, and removing
@@ -116,6 +140,9 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **The decision service is ready behind vLLM.** A model server whose
+  `/health` answers 200 with an empty body counts as healthy; before, the
+  service reported 503 while `/decide` worked.
 - **The decision service's default Bedrock model is a valid id:**
   `us.anthropic.claude-haiku-5-5` (EU regions need
   `eu.anthropic.claude-haiku-5-5` in `DECISION_BEDROCK_MODEL`). The old
