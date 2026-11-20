@@ -2429,13 +2429,32 @@ class CollaborationCore:
 
         The new words pass Switch Trust as a new message would. Words it
         refuses are not kept, and nor are the old ones, which the author has
-        withdrawn: the message is deleted."""
+        withdrawn: the message is deleted.
+
+        A post that carries no message a person wrote there (the bridge's own
+        posts among them) is looked up first, so its edits never reach Switch
+        Trust: they are not a person's words."""
         room_ids = self._channel_to_room.get(event.channel_id)
         if room_ids is None:
             return
         room_id = room_ids[0]
-        content = self._adapter.translate_inbound(event.content)
         tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            written_there = await self._platform_deletions.find_post(
+                session,
+                bridge_id=self._bridge_id,
+                room_id=room_id,
+                external_post_id=event.message_ref,
+            )
+        if written_there is None:
+            logger.debug(
+                "[BRIDGE-IN] %s edited in channel %s carries no message "
+                "written there; nothing to change",
+                event.message_ref,
+                event.channel_id,
+            )
+            return
+        content = self._adapter.translate_inbound(event.content)
         check = await check_message(
             self._trust_client,
             tenant_id=tenant_id,
@@ -2463,8 +2482,8 @@ class CollaborationCore:
             )
             if message is None:
                 logger.debug(
-                    "[BRIDGE-IN] %s edited in channel %s carries no message "
-                    "written there; nothing to change",
+                    "[BRIDGE-IN] %s edited in channel %s was deleted while its "
+                    "new text was checked; nothing to change",
                     event.message_ref,
                     event.channel_id,
                 )

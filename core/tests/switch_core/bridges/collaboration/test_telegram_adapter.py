@@ -777,6 +777,34 @@ def test_an_edit_is_reported_against_the_message_it_edits_and_not_bridged() -> N
     ]
 
 
+def test_the_bots_own_edit_is_not_reported() -> None:
+    adapter = _adapter()
+    edits: list[Any] = []
+
+    async def _ignore(event: Any) -> None:
+        return None
+
+    adapter.set_takeback_handlers(
+        on_message_deleted=_ignore,
+        on_message_edited=lambda e: _collect(edits, e),
+        on_channel_removed=_ignore,
+    )
+
+    _run(
+        adapter._handle_update(
+            _FakeUpdate(
+                edited_message=_FakeInbound(
+                    message_id=12,
+                    text="streamed",
+                    from_user=_FakeUser(user_id=BOT_USER_ID, username="the_bot"),
+                )
+            )
+        )
+    )
+
+    assert edits == []
+
+
 def test_edits_are_asked_for() -> None:
     assert "edited_message" in adapter_module._ALLOWED_UPDATES
     assert "edited_channel_post" in adapter_module._ALLOWED_UPDATES

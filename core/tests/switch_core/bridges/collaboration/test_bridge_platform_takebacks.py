@@ -62,6 +62,20 @@ class _Blocking:
         return True
 
 
+class _Recording:
+    def __init__(self) -> None:
+        self.checked: list[tuple[str, str]] = []
+
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> Any:
+        self.checked.append((role, content))
+        return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
+
+    async def is_active(self, tenant_id: str) -> bool:
+        return True
+
+
 async def _setup(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> tuple[CollaborationCore, Room, str]:
@@ -238,6 +252,47 @@ class TestEdited:
             "$agent": "$agent",
             "$switch-only": "$switch-only",
         }
+
+    async def test_an_edit_of_a_post_not_written_there_never_reaches_trust(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        core, _, _ = await _setup(session_factory)
+        trust = _Recording()
+        core._trust_client = trust  # type: ignore[assignment]
+
+        await core._handle_message_edited(
+            InboundMessageEdited(
+                channel_id=CHANNEL, message_ref="p-agent", content="streamed"
+            )
+        )
+        await core._handle_message_edited(
+            InboundMessageEdited(
+                channel_id=CHANNEL, message_ref="p-unknown", content="streamed"
+            )
+        )
+
+        assert trust.checked == []
+        assert await _bodies(session_factory) == {
+            "$person": "$person",
+            "$agent": "$agent",
+            "$switch-only": "$switch-only",
+        }
+
+    async def test_a_persons_edit_passes_trust_as_a_user_message(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        core, _, _ = await _setup(session_factory)
+        trust = _Recording()
+        core._trust_client = trust  # type: ignore[assignment]
+
+        await core._handle_message_edited(
+            InboundMessageEdited(
+                channel_id=CHANNEL, message_ref="p-person", content="hi <@U1>"
+            )
+        )
+
+        assert trust.checked == [("user", "hi @alice")]
+        assert (await _bodies(session_factory))["$person"] == "hi @alice"
 
     async def test_words_switch_trust_refuses_delete_the_message(
         self, session_factory: async_sessionmaker[AsyncSession]

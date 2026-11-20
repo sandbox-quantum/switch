@@ -2918,6 +2918,9 @@ class TelegramAdapter(PlatformAdapter):
         message was deleted, in any chat, so a message deleted in Telegram
         stays in its room until retention or erasure removes it, or the room
         is deleted."""
+        author = getattr(message, "from_user", None)
+        if author is not None and author.id == self._bot_user_id:
+            return
         await self.report_message_edited(
             str(message.chat.id),
             self._ref(message),
