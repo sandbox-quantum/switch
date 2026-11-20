@@ -107,7 +107,14 @@ async def read_leases(
 
 class ProcessLease:
     """This process's lease. The sessions are opened with no tenant bound:
-    the table carries none."""
+    the table carries none.
+
+    The lease's own writes (`renew`, `stop`) go through
+    `renewal_session_factory` when given: in a server, a connection of its own
+    (`db/engine.create_lease_engine`), so a pool the rest of the process has
+    filled cannot make the lease lapse. Reading every process's lease
+    (`read_all`) is no more urgent than the work that asks for it, and stays on
+    `session_factory`, leaving the lease's connection to its renewals."""
 
     def __init__(
         self,
@@ -116,9 +123,11 @@ class ProcessLease:
         session_factory: async_sessionmaker[AsyncSession],
         processes: SwitchCoreProcessStore,
         key_ids: list[str],
+        renewal_session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self.process_id = process_id
         self._session_factory = session_factory
+        self._renewal_session_factory = renewal_session_factory or session_factory
         self._processes = processes
         # The ids of the keys this process can read, recorded on its row so a
         # process starting with a new front key can check them
@@ -160,7 +169,7 @@ class ProcessLease:
         if self._stopped:
             return
         sent_at = time.monotonic()
-        async with self._session_factory() as session:
+        async with self._renewal_session_factory() as session:
             await self._processes.renew(session, self.process_id, self._key_ids)
             pruned = await self._processes.prune(session, PRUNE_AFTER)
             await session.commit()
@@ -180,7 +189,7 @@ class ProcessLease:
             return
         self._stopped = True
         self._renewed_at = None
-        async with self._session_factory() as session:
+        async with self._renewal_session_factory() as session:
             await self._processes.stop(session, self.process_id)
             await session.commit()
         logger.info("Released switch-core process lease %s", self.process_id)
