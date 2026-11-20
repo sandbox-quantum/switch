@@ -37,7 +37,7 @@ description = "Webhook URL carrying an embedded token"
 regex = '''https?://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]*webhooks?/[A-Za-z0-9._-]*/[A-Za-z0-9_-]{32,}'''
 keywords = ["webhook"]
 
-[allowlist]
+[[allowlists]]
 description = "Known false positives"
 regexTarget = "line"
 regexes = [
@@ -58,4 +58,15 @@ paths = [
   # `dash/apps/switchdash-desktop/` before the rename in CHOO-2008, and those
   # commits still carry the fixtures.
   '''(dash/apps/switchdash-desktop|console/apps/switch-console-desktop)/src/main/lib/file-logger\.test\.ts$''',
+]
+
+[[allowlists]]
+description = "Test fixture in test_read_views_routes.py"
+# A made-up keyed id ("k1-" plus hex): an id format, not a credential.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^core/tests/switch_core/visibility/test_read_views_routes\.py$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*keyed = "k1-0123456789abcdef"\s*$''',
 ]

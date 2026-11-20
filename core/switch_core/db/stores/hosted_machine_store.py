@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, cast
 from uuid import uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
+    AgentControllerEnrollmentCode,
     AgentDefinition,
     CloudMachine,
     MachineWorkspace,
+    TenantMember,
+    User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.tenant_context import tenant_scope
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
@@ -34,6 +41,13 @@ MACHINE_BEING_REMOVED = (
 )
 #: How many workspaces one machine serves: each runs its own agent controller.
 MAX_MACHINE_WORKSPACES = 8
+#: The room-facing words for an operator's pause and an admin's turn-off.
+#: Fixed text, never anything from the request.
+MACHINE_PAUSED = "Your hosted agents are paused by Switch. Contact your admin."
+MACHINE_TURNED_OFF = (
+    "Hosted agents are turned off for you in this workspace. "
+    "Ask your admin to turn them on."
+)
 MACHINE_WORKSPACES_FULL = (
     f"Your cloud machine already serves {MAX_MACHINE_WORKSPACES} workspaces, the most "
     "it can. Contact your server administrator."
@@ -179,8 +193,19 @@ def retention_expired(machine: CloudMachine, now: datetime) -> bool:
     )
 
 
+async def owner_paused(session: AsyncSession, owner_id: str) -> bool:
+    """Whether a Switch operator has paused this user. The mark
+    is on the user, so it holds with no box, and through a box being replaced."""
+    paused_at = await session.scalar(
+        select(User.hosted_paused_at).where(User.id == owner_id)
+    )
+    return paused_at is not None
+
+
 def claim_conflict(machine: CloudMachine, now: datetime) -> str | None:
     """The reason a live machine cannot be claimed, or None when it can."""
+    if machine.stop_reason == "paused":
+        return MACHINE_PAUSED
     if admin_stopped(machine):
         return MACHINE_STOPPED_BY_ADMIN
     if machine.state == "error" and machine.error_code == "machine_needs_attention":
@@ -210,6 +235,75 @@ def await_reconnect(machine: CloudMachine) -> None:
     """
     if machine.state == "ready":
         machine.state = "provisioning"
+
+
+# Revokes one old controller of a revived machine, in the session given (bound
+# to the controller's workspace); the caller commits. Agent management's, passed
+# in by the gateway, since Core's store must not import it.
+RevokeController = Callable[[AsyncSession, str, str], Awaitable[None]]
+
+
+async def revoke_box_controllers(
+    factory: async_sessionmaker[AsyncSession],
+    machine: CloudMachine,
+    workspaces: list[WorkspaceOnMachine],
+    revoke: RevokeController,
+) -> list[str]:
+    """A hosted agents v2 box being deleted keeps its disk, and the disk holds
+    its controller credential, so each of its workspace controllers is
+    revoked, in its own workspace: Core forgets the credential and its own
+    copy of the sealed logins, and a copy on the disk is refused. Already
+    revoked is fine. A v1 machine's disk goes with it, so it's left as before.
+    Returns the controller ids it revoked. Each workspace commits its own."""
+    if machine.backend != "box":
+        return []
+    revoked: list[str] = []
+    for workspace in workspaces:
+        if workspace.controller_id is None:
+            continue
+        async with tenant_session(factory, workspace.tenant_id) as scoped:
+            await revoke(scoped, workspace.tenant_id, workspace.controller_id)
+            await scoped.commit()
+        revoked.append(workspace.controller_id)
+    return revoked
+
+
+async def box_deleted(
+    session: AsyncSession, machine: CloudMachine, now: datetime
+) -> None:
+    """A box machine wanted deleted whose box is at 0 counts as deleted: the
+    box scaler never deletes a box, so this is the box's equivalent of a v1
+    machine's terminate. Its disk is still in the cluster, so a durable
+    `hosted.box_to_remove` entry names it for the removal step: the machine
+    id and the owner's keyed id only. The caller holds the machine's lock and
+    commits."""
+    machine.state = "deleted"
+    machine.error = None
+    machine.error_code = None
+    machine.updated_at = now
+    await _box_removal_entry(session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE)
+
+
+async def _box_removal_entry(
+    session: AsyncSession, machine: CloudMachine, action: ServerAuditAction
+) -> None:
+    """A `hosted.box_to_remove` entry or its cancel, both with the same
+    target and details: the machine id and the owner's keyed id only."""
+    from switch_core.visibility.dependencies import process_keyed_id_key
+    from switch_core.visibility.keyed_id import KeyedIdKind
+
+    key = process_keyed_id_key()
+    details: dict[str, str] = {"machine_id": machine.id}
+    if key is not None:
+        details["user"] = key.keyed_id(KeyedIdKind.USER, machine.owner_id)
+    await record_server_audit_event(
+        session,
+        actor_user_id=None,
+        action=action,
+        target_type="box",
+        target_id=_keyed_box(machine.id),
+        details=details,
+    )
 
 
 class CloudMachineStore:
@@ -256,14 +350,26 @@ class CloudMachineStore:
         owner_id: str,
         capacity: int,
         now: datetime,
+        revoke: RevokeController | None = None,
+        backend: Literal["vm", "box"] = "vm",
     ) -> Claimed:
         """The owner's machine, reused or newly claimed within `capacity`,
         serving the bound workspace, and what the claim changed.
+
+        With `revoke`, an owner whose machine was cleaned up gets that
+        same row back, with the same id, rather than a new one: a user keeps
+        one machine id for life (`_revive`). Without it, as before.
+        `backend` marks a new row (box provisioning claims `box`). A revived row is always a
+        `box`, and an existing live row keeps what it is.
 
         A machine joining a workspace takes a new revision, so it is prepared
         again with a controller for it. The caller holds `lock_claims`, so no
         other claim can count towards capacity or join the machine meanwhile.
         """
+        # A paused user claims nothing, box or no box. The
+        # pause is v2's: with it off, no read, as before v2.
+        if process_hosted_v2() and await owner_paused(session, owner_id):
+            raise CloudMachineConflict(MACHINE_PAUSED)
         machine = await self.live_for_owner(session, owner_id)
         if machine is not None:
             machine = await self.locked(session, machine.id)
@@ -305,6 +411,12 @@ class CloudMachineStore:
         )
         if (live or 0) >= capacity:
             raise CloudMachineConflict(MACHINES_FULL)
+        if revoke is not None:
+            revived = await self._revive(session, factory, owner_id, revoke, now)
+            if revived is not None:
+                # A new box for an owner with no live machine, as a new row is.
+                machine, workspace = revived
+                return Claimed(machine=machine, workspace=workspace, change="new")
         machine_id = str(uuid4())
         await lock_machine(session, machine_id)
         machine = CloudMachine(
@@ -312,6 +424,7 @@ class CloudMachineStore:
             owner_id=owner_id,
             state="queued",
             desired_state="running",
+            backend=backend,
             active_at=now,
             created_at=now,
             updated_at=now,
@@ -321,6 +434,106 @@ class CloudMachineStore:
         workspace = self._add_workspace(session, machine, now)
         await session.flush()
         return Claimed(machine=machine, workspace=workspace, change="new")
+
+    async def _revive(
+        self,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        owner_id: str,
+        revoke: RevokeController,
+        now: datetime,
+    ) -> tuple[CloudMachine, MachineWorkspace] | None:
+        """Bring back the owner's cleaned-up machine row, same id, to have a
+        new box made for it. None when the owner has none.
+
+        The rules: only the row's own owner revives it (the row is
+        found by owner); nothing of the old box comes back (each old controller
+        is revoked, so its credential, open operations and sealed logins are
+        gone, and the stored code is forgotten); workspace rows stay only where
+        the owner is still a member; and a `hosted.box_revived` entry records
+        it. A paused owner never gets here (`claim` refuses first). Its old
+        controller ids stay on the rows, revoked, so the new controller's
+        enrolment moves the owner's agents across. The caller holds
+        `lock_claims` and commits.
+        """
+        candidate = await session.scalar(
+            select(CloudMachine)
+            .where(CloudMachine.owner_id == owner_id, CloudMachine.state == "deleted")
+            .order_by(CloudMachine.updated_at.desc())
+            .limit(1)
+        )
+        if candidate is None:
+            return None
+        machine = await self.locked(session, candidate.id)
+        if (
+            machine is None
+            or machine.state != "deleted"
+            or machine.owner_id != owner_id
+        ):
+            return None
+        if machine.backend == "box":
+            # Its disk is in use again: withdraw `box_deleted`'s entry, in
+            # this same transaction, so nobody removes a live box's disk.
+            await _box_removal_entry(
+                session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE_CANCELLED
+            )
+        for tenant_id in await tenants_of_cloud_machine(factory, machine.id):
+            async with tenant_session(factory, tenant_id) as scoped:
+                row = await workspace_on(scoped, machine.id)
+                if row is None:
+                    continue
+                if row.controller_id is not None:
+                    await revoke(scoped, tenant_id, row.controller_id)
+                row.enrollment_code_encrypted = None
+                row.enrollment_code_revision = None
+                member = await scoped.get(TenantMember, (tenant_id, owner_id))
+                if member is None:
+                    # No link to a workspace the owner has left.
+                    await scoped.execute(
+                        update(AgentControllerEnrollmentCode)
+                        .where(
+                            AgentControllerEnrollmentCode.tenant_id == tenant_id,
+                            AgentControllerEnrollmentCode.machine_workspace_id
+                            == row.id,
+                        )
+                        .values(machine_workspace_id=None)
+                    )
+                    await scoped.execute(
+                        delete(MachineWorkspace).where(
+                            MachineWorkspace.tenant_id == tenant_id,
+                            MachineWorkspace.id == row.id,
+                        )
+                    )
+                await scoped.commit()
+        machine.state = "queued"
+        machine.desired_state = "running"
+        # Revived for the box provisioner to make a box.
+        machine.backend = "box"
+        machine.stop_reason = None
+        machine.retain_until = None
+        machine.instance_type = None
+        machine.instance_id = None
+        machine.data_volume_id = None
+        machine.heartbeat = None
+        machine.heartbeat_at = None
+        machine.first_ready_at = None
+        machine.error = None
+        machine.error_code = None
+        machine.active_at = now
+        bump_revision(machine, now)
+        workspace = await workspace_on(session, machine.id)
+        if workspace is None:
+            workspace = self._add_workspace(session, machine, now)
+        await record_server_audit_event(
+            session,
+            actor_user_id=None,
+            action=ServerAuditAction.HOSTED_BOX_REVIVED,
+            target_type="box",
+            target_id=_keyed_box(machine.id),
+            details={"by": "core", "machine_id": machine.id},
+        )
+        await session.flush()
+        return machine, workspace
 
     def _add_workspace(
         self, session: AsyncSession, machine: CloudMachine, now: datetime
@@ -335,6 +548,12 @@ class CloudMachineStore:
         return workspace
 
     def start(self, machine: CloudMachine, now: datetime) -> None:
+        # An operator's pause holds: nothing starts the box until a resume
+        # clears it, whichever path asks.
+        if machine.stop_reason == "paused":
+            raise CloudMachineConflict(MACHINE_PAUSED)
+        if admin_stopped(machine):
+            raise CloudMachineConflict(MACHINE_STOPPED_BY_ADMIN)
         if machine.desired_state != "running":
             machine.desired_state = "running"
             machine.stop_reason = None
@@ -345,9 +564,23 @@ class CloudMachineStore:
     def stop(
         self,
         machine: CloudMachine,
-        reason: Literal["idle", "owner", "admin"],
+        reason: Literal["idle", "owner", "paused", "turned_off", "admin"],
         now: datetime,
     ) -> None:
+        # Only an administrator's release lifts their stop, only an operator's
+        # resume clears a pause, and only turning the person on clears a
+        # turn-off: no other stop replaces any of them. An administrator's stop
+        # replaces either, and a pause may replace a turn-off.
+        if admin_stopped(machine) and reason != "admin":
+            return
+        if machine.stop_reason == "paused" and reason not in ("paused", "admin"):
+            return
+        if machine.stop_reason == "turned_off" and reason not in (
+            "paused",
+            "turned_off",
+            "admin",
+        ):
+            return
         machine.desired_state = "stopped"
         machine.stop_reason = reason
         bump_revision(machine, now)
@@ -390,6 +623,15 @@ class CloudMachineStore:
             self.retry(machine, now)
 
     def retry(self, machine: CloudMachine, now: datetime) -> None:
+        # A box Core marked as not made was stopped by Core, not by anyone
+        # (no stop reason): Retry wants it running again. A stop someone made
+        # (owner, idle, admin, pause, turn-off) is left as it is.
+        if (
+            machine.error_code == "box_not_made"
+            and machine.desired_state == "stopped"
+            and machine.stop_reason is None
+        ):
+            machine.desired_state = "running"
         machine.state = "queued"
         machine.error = None
         machine.error_code = None
@@ -409,6 +651,10 @@ class CloudMachineStore:
         `workspaces` under it (`workspaces_on`), and commits.
         """
         if any(workspace.agent_count for workspace in workspaces):
+            return False
+        # A paused, turned-off or administrator-stopped machine stays as it was
+        # left: clean-up never retains it, so its disk never expires.
+        if machine.stop_reason in ("paused", "turned_off", "admin"):
             return False
         machine.desired_state = "retained"
         machine.stop_reason = None
@@ -441,3 +687,15 @@ def ever_hosted(workspaces: list[WorkspaceOnMachine]) -> bool:
     """Whether the machine's disk may hold anything worth keeping: a
     controller of it ever enrolled."""
     return any(workspace.controller_id is not None for workspace in workspaces)
+
+
+def _keyed_box(machine_id: str) -> str | None:
+    """The box's keyed id, as the box provisioning entries carry it; None before a
+    key is loaded (a test that builds no app)."""
+    # Imported here: visibility reads this store, so it can't be imported at
+    # the top without a cycle.
+    from switch_core.visibility.dependencies import process_keyed_id_key
+    from switch_core.visibility.keyed_id import KeyedIdKind
+
+    key = process_keyed_id_key()
+    return None if key is None else key.keyed_id(KeyedIdKind.BOX, machine_id)

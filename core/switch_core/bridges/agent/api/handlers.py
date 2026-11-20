@@ -101,7 +101,9 @@ from switch_core.config import SwitchConfig
 from switch_core.content_disposition import untrusted_file_headers
 from switch_core.db.models import Agent
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.feature_flags import V2_ONLY_FLAGS
 from switch_core.gateway.known_agents import known_agent
+from switch_core.hosted_v2 import hosted_v2_on
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
 from switch_core.observability.metrics import metrics
 from switch_core.request_validation import public_errors
@@ -1781,10 +1783,15 @@ async def list_feature_flags(
     """List every feature flag and whether this deployment turned it on.
 
     Any authenticated agent may read them. Flags are set at deploy time
-    (`FEATURE_FLAGS_ENABLED`); nothing can change them through the API.
+    (`FEATURE_FLAGS_ENABLED`); nothing can change them through the API. With
+    hosted agents v2 off, v2's own flags are left out, so the list is
+    upstream's exactly, as the gateway's is.
     """
+    v2 = hosted_v2_on(config)
     return FeatureFlagListResponse(
         flags=[
-            FeatureFlagInfo(key=k, enabled=v) for k, v in config.feature_flags.items()
+            FeatureFlagInfo(key=k, enabled=v)
+            for k, v in config.feature_flags.items()
+            if v2 or k not in V2_ONLY_FLAGS
         ]
     )
