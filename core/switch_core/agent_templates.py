@@ -23,7 +23,11 @@ import yaml
 from pydantic import ValidationError
 
 from switch_core.agent_icon import InvalidIconUrl, validate_icon_url
-from switch_core.providers.registry import agent_provider, provider_ids
+from switch_core.providers.registry import (
+    agent_provider,
+    new_agent_auto_mode,
+    provider_ids,
+)
 from switch_core.rooms_yaml import (
     CONSOLE_PARAM_TYPES,
     ENTITY_PARAM_TYPES,
@@ -821,12 +825,21 @@ class _Planner:
                 "invalid_isolation",
                 f"isolation '{isolation}' is not shared or isolated.",
             )
-        supports_auto_mode = (
-            agent_provider(provider).supports_auto_mode
+        # Absent, it is the provider's default for a new agent; one whose
+        # provider is not one Switch runs is refused below anyway.
+        provider_entry = (
+            agent_provider(provider)
             if provider is not None and provider in provider_ids()
-            else True
+            else None
         )
-        auto_mode = interpolate(entry.get("auto_mode", supports_auto_mode), values)
+        supports_auto_mode = provider_entry is None or provider_entry.supports_auto_mode
+        auto_mode = interpolate(
+            entry.get(
+                "auto_mode",
+                provider_entry is not None and new_agent_auto_mode(provider_entry.id),
+            ),
+            values,
+        )
         if not isinstance(auto_mode, bool):
             self.problem(slot, "invalid_auto_mode", "auto_mode is not true or false.")
         auto_approve = interpolate(

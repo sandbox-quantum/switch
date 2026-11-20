@@ -1035,8 +1035,12 @@ does not manage agents, so say so rather than looking for another way.
   `mistral-vibe`, `goose`, `qwen`, `droid`, `cline` and `junie`; a server that
   does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
-  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
-  default where the provider supports automatic review), `auto_approve` (bypass:
+  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (the
+  provider's automatic review runs safe actions and asks before risky ones; on
+  by default where the provider supports automatic review, except for
+  `opencode`, whose auto mode has no review and runs every command without
+  asking, so it defaults off and the agent asks before each action; turn it on
+  for OpenCode only when the person asks for that), `auto_approve` (bypass:
   skips permission checks and overrides `auto_mode`). New Cursor agents default
   to bypass on and auto mode off because Cursor's ACP interface has no automatic
   review; disclose that in the proposal. Respect an explicit request for approvals
