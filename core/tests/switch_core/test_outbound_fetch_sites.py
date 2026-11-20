@@ -4,6 +4,7 @@ driver's redirects, the Mattermost icon fetch, and Slack file downloads."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from collections.abc import AsyncIterator, Iterator
@@ -240,6 +241,83 @@ class TestTheMattermostIconFetch:
             f"http://127.0.0.1:{icon_server}/icon.png?size=100000"
         )
         assert data is None
+
+    async def test_a_slow_stream_cannot_keep_the_download_alive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def trickle(request: web.Request) -> web.StreamResponse:
+            response = web.StreamResponse()
+            await response.prepare(request)
+            started.set()
+            try:
+                for _ in range(100):
+                    await response.write(b"x")
+                    await asyncio.sleep(0.01)
+            except ConnectionResetError:
+                pass
+            finally:
+                finished.set()
+            return response
+
+        app = web.Application()
+        app.router.add_get("/trickle", trickle)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+        monkeypatch.setattr(mattermost.adapter, "_BOT_ICON_DEADLINE_SECONDS", 0.1)
+        adapter = _mattermost_adapter(OutboundPolicy.parse("127.0.0.1/32"))
+        try:
+            with pytest.raises(TimeoutError):
+                await adapter._fetch_icon(f"http://127.0.0.1:{port}/trickle")
+            assert started.is_set()
+            await asyncio.wait_for(finished.wait(), timeout=2)
+        finally:
+            await runner.cleanup()
+
+    async def test_icon_downloads_have_a_concurrency_limit(self) -> None:
+        active = peak = 0
+        full = asyncio.Event()
+        release = asyncio.Event()
+
+        async def held(request: web.Request) -> web.Response:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            if active == mattermost.adapter._MAX_ICON_FETCHES:
+                full.set()
+            try:
+                await release.wait()
+                return web.Response(body=b"icon")
+            finally:
+                active -= 1
+
+        app = web.Application()
+        app.router.add_get("/held", held)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+        adapter = _mattermost_adapter(OutboundPolicy.parse("127.0.0.1/32"))
+        tasks = [
+            asyncio.create_task(adapter._fetch_icon(f"http://127.0.0.1:{port}/held"))
+            for _ in range(8)
+        ]
+        try:
+            await asyncio.wait_for(full.wait(), timeout=2)
+            await asyncio.sleep(0.05)
+            assert active == peak == mattermost.adapter._MAX_ICON_FETCHES
+            release.set()
+            assert await asyncio.gather(*tasks) == [b"icon"] * 8
+        finally:
+            release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await runner.cleanup()
 
     async def test_an_adapter_without_a_policy_fails_loudly(self) -> None:
         adapter = MattermostAdapter(

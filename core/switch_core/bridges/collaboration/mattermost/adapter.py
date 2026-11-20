@@ -134,6 +134,8 @@ logger = logging.getLogger(__name__)
 # Generously above any real avatar; it exists so a hostile or broken URL cannot
 # stream unbounded data into memory.
 _MAX_BOT_ICON_BYTES = 5 * 1024 * 1024
+_BOT_ICON_DEADLINE_SECONDS = 10.0
+_MAX_ICON_FETCHES = 4
 
 # Every request to Mattermost gives up after this long. The driver's default is
 # to wait for ever, so a server that accepts the connection and never answers
@@ -653,6 +655,7 @@ class MattermostAdapter(PlatformAdapter):
         self._config = config
 
         self._admin_driver: Driver | None = None
+        self._icon_fetch_slots = asyncio.Semaphore(_MAX_ICON_FETCHES)
         self._team_id: str = ""
         # Set once the admin driver has logged in and the team is known: what
         # a directory search needs. The lifecycle starts the adapter in the
@@ -3627,19 +3630,20 @@ class MattermostAdapter(PlatformAdapter):
 
     async def _fetch_icon(self, url: str) -> bytes | None:
         """The icon's bytes, or None if it is larger than the ceiling."""
-        async with guarded_async_client(
-            self.outbound_policy, follow_redirects=False, timeout=10.0
-        ) as client:
-            async with client.stream("GET", url) as resp:
-                resp.raise_for_status()
-                chunks: list[bytes] = []
-                size = 0
-                async for chunk in resp.aiter_bytes():
-                    size += len(chunk)
-                    if size > _MAX_BOT_ICON_BYTES:
-                        return None
-                    chunks.append(chunk)
-        return b"".join(chunks)
+        async with asyncio.timeout(_BOT_ICON_DEADLINE_SECONDS), self._icon_fetch_slots:
+            async with guarded_async_client(
+                self.outbound_policy, follow_redirects=False, timeout=10.0
+            ) as client:
+                async with client.stream("GET", url) as resp:
+                    resp.raise_for_status()
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in resp.aiter_bytes():
+                        size += len(chunk)
+                        if size > _MAX_BOT_ICON_BYTES:
+                            return None
+                        chunks.append(chunk)
+            return b"".join(chunks)
 
     async def _set_bot_icon(self, bot_id: str, agent_name: str) -> None:
         if not self._admin_driver or not self._main_loop:
