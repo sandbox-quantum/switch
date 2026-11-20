@@ -79,6 +79,9 @@ class _Connection:
     def set_permission_change_handler(self, handler: Any) -> None:
         pass
 
+    def set_takeback_handlers(self, **handlers: Any) -> None:
+        pass
+
     def set_guild_lifecycle_handlers(self, **handlers: Any) -> None:
         pass
 

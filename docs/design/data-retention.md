@@ -43,8 +43,9 @@ Messages are numbered per room (`messages.seq`), and every delivery cursor is a
 position in that sequence. New numbers came from "highest existing + 1", so a
 room whose messages had all been deleted would have started again at 1. Every
 cursor already past that point would then have silently skipped the new
-messages. `rooms.seq_floor` records the highest live position retention has
-deleted, and numbering continues above whichever is higher. Reconstructed
+messages. `rooms.seq_floor` records the highest live position deleted
+(retention, erasure, a platform deletion), and numbering continues above
+whichever is higher. Reconstructed
 history (negative `seq`) never moves the floor.
 
 Other effects of deleting old messages, all already handled:
@@ -77,6 +78,72 @@ deleted, which nothing cleaned up before.
 A blob is only a candidate once it is a day old. A file is uploaded before the
 message that carries it, in a separate transaction. A blob named by a chat
 upload that is staged but not yet sent is never a candidate.
+
+### Deletions and edits on chat platforms are followed
+
+Switch's copy of a message follows what is done to it where it was written
+(`retention/platform_deletes.py`, called by each bridge's `CollaborationCore`).
+
+- **A deleted post** deletes its room message at once: every file of a
+  multi-file post, their attachment rows, the record of which platform post
+  carried it, the copies stored as events for agents (`agent_events`), a
+  question still waiting for the decision service, a multi-file post still
+  assembling, and the stored files nothing else refers to. The files go
+  without the sweep's day of grace, as erasing a person's do, because they are
+  known to have been attached.
+- **Only what was written on that platform follows it.** A post the bridge
+  made for a message written in Switch (an agent's reply, a card) is the copy,
+  not the original, and deleting it on the platform leaves the room message
+  alone. The bridge deletes its own posts too (typing notices, answered
+  cards), and platforms report those like any other deletion. A post is
+  recognised as written on the platform by its sender: the person's identity
+  on that bridge.
+- **An edited post** has its message's words replaced in place, and the words
+  in the agents' copies too; the old words are not kept. The content is
+  stamped `com.switch.edited_at`. The row keeps its `seq`, so no reader is
+  handed it a second time: an agent that already received it keeps what it
+  received, and anyone reading from then on reads only the new words. An edit
+  addresses no one afresh. The new words pass Switch Trust as a new message
+  would; words it refuses are not stored, and nor are the withdrawn ones, so
+  the message is deleted. An edit to a post Switch never stored (one Switch
+  Trust blocked, or from before the channel was bridged) changes nothing and
+  never writes a new message.
+- **A deleted channel** takes every message of its room with it, whoever
+  wrote them, in batches of 1000 each in its own transaction, and the room is
+  unlinked from the channel and kept as a room of Switch alone. A room has one
+  channel, so the room is wholly the channel's copy. **An archived channel**
+  only unlinks the room: archiving can be undone on Slack and Mattermost, and
+  linking the room again relays from then on.
+- **Numbering.** A deleted post usually leaves a gap in the middle of its
+  room, as erasing a person already does. Readers page on `seq > cursor`, so a
+  gap is skipped like any row they never had, and `rooms.seq_floor` is raised
+  as retention raises it, so a deleted newest row's number is never given out
+  again.
+
+What each platform reports:
+
+| Platform | Post deleted | Post edited | Channel deleted | Channel archived |
+|---|---|---|---|---|
+| Slack | `message_deleted`; a thread root left as a `tombstone` | `message_changed` whose words changed | `channel_deleted`, `group_deleted` | `channel_archive`, `group_archive` |
+| Mattermost | `post_deleted` | `post_edited` | `channel_deleted`, when the channel is gone | `channel_deleted`, when the channel is still there |
+| Discord | a message deleted, one or in bulk | a message edit whose words changed | a channel deleted; a thread deleted, for a room bound to it | none (a thread archiving itself is not followed) |
+| Telegram | never reported to a bot | `edited_message`, `edited_channel_post` | never reported to a bot | none |
+
+Not followed:
+
+- **A deletion the bridge never hears of.** Telegram reports none. A Slack
+  file deleted on its own is reported only by a file id, which Switch does not
+  keep. Platforms do not replay what happened while a bridge was down.
+- **A deleted Discord thread's posts.** A Discord thread is a thread of its
+  parent channel's room, and Discord sends no deletion for each of its posts,
+  so they stay in the room.
+- **Microsoft Teams**, not yet.
+- **What a reader already has.** Switch Console keeps showing a deleted or
+  edited message until it reads the room again; nothing tells it to yet. An
+  agent keeps what it received in its own transcript, on a machine Switch
+  does not control.
+- **Session activity lines** may quote the message. They are pruned after 7
+  days.
 
 ### Leftover operational records
 
