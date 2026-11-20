@@ -242,3 +242,52 @@ async def test_a_displaced_client_cannot_rewrite_the_holders_placements(
     assert refused.value.status_code == 409
     assert refused.value.detail["code"] == "taken_over"  # type: ignore[index]
     assert protocol.connections.connection_placements(conn) == {"session-1": ROOM_A}
+
+
+@pytest.mark.asyncio
+async def test_every_room_the_agent_is_not_in_is_named_not_only_the_first(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
+    gone = {"room-deleted-1", "room-deleted-2", "room-left"}
+
+    async def member(agent_id: str, room_id: str) -> None:
+        if room_id in gone:
+            raise PermissionError(f"agent {agent_id} is not a member of room {room_id}")
+
+    protocol.require_room_member = member  # type: ignore[method-assign]
+    conn = _open(protocol, "watcher")
+
+    answer = await _place(
+        protocol,
+        conn,
+        {
+            "live": ROOM_A,
+            "stale-1": "room-deleted-1",
+            "stale-2": "room-deleted-2",
+            "stale-3": "room-left",
+        },
+    )
+
+    assert answer["placements"] == {"live": ROOM_A}
+    assert sorted(each["room_id"] for each in answer["refused"]) == sorted(gone)
+    assert protocol.connections.session_in_room(AGENT_ID, ROOM_A) == "live"
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_room_unplaces_its_session_and_tells_the_connection(
+    db_buffer: EventBuffer,
+) -> None:
+    """The agent taken out of a room (or the room deleted, which takes its
+    members out first) must not leave a session placed there for the watcher
+    to state again on every reconnect."""
+    protocol = _Protocol(db_buffer)
+    conn = _open(protocol, "watcher")
+    await _place(protocol, conn, {"session-1": ROOM_A, "session-2": ROOM_B})
+
+    protocol.connections.release_room_everywhere(AGENT_ID, ROOM_A)
+
+    assert protocol.connections.placements(AGENT_ID) == {"session-2": ROOM_B}
+    assert protocol.connections.session_in_room(AGENT_ID, ROOM_A) is None
+    assert conn.rooms == {ROOM_B}
+    assert conn.released_rooms == {ROOM_A: "session-1"}

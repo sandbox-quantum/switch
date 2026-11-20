@@ -1306,14 +1306,14 @@ export async function runAgentHost(
         publishQuietly();
       },
       onDisconnected: ({ error }) => control.report({ state: 'disconnected', detail: error }),
-      // Another connection of this agent took the room: whichever session
-      // attended it here no longer does.
+      // Another connection of this agent took the room, or the agent is no
+      // longer in it: whichever session attended it here no longer does.
       onRoomReleased: async ({ roomId, sessionId }) => {
         pending = pending.then(async () => {
           const lost = await placements.roomLost(roomId);
           if (lost === null) return;
           console.warn(
-            `Room ${roomId} was taken over by another connection of this agent${sessionId && sessionId !== lost ? ` (Switch named session ${sessionId})` : ''}; session ${lost} here no longer attends it.`
+            `Switch released room ${roomId} (another connection of this agent took it, or the agent is no longer in it)${sessionId && sessionId !== lost ? ` (Switch named session ${sessionId})` : ''}; session ${lost} here no longer attends it.`
           );
           publishQuietly();
         });
