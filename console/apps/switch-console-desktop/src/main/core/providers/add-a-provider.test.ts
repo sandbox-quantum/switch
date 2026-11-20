@@ -71,6 +71,7 @@ describe('a provider added as a plugin and a runtime', () => {
       knownAgentType: 'dummy',
       // Its plugin does not say it lacks the CLI's own auto mode.
       supportsAutoMode: true,
+      newAgentAutoMode: true,
     });
     expect(knownAgentTypeForProvider('dummy')).toBe('dummy');
   });

@@ -9,6 +9,7 @@ import {
   PROVIDER_ENV_VARS,
   type ProviderReadiness,
   type SharedHostConfig,
+  sessionsBaseIn,
   sharedConfigSchema,
   WATCH_FLAGS_FILE,
   WATCHER_HEALTH_FILE,
@@ -18,17 +19,19 @@ import {
 } from '@switch-console/agent-providers';
 import { warmOverControlPort } from './control-port';
 import { ReasonedError } from './errors';
-import type { Logger } from './log';
+import { errorMessage, type Logger } from './log';
 import {
   type AgentObservation,
   type AgentRuntime,
   emptyObservation,
+  forgetLoginIn,
   isInside,
   LaunchedBundle,
   type LaunchOptions,
   loginProbeEnvironment,
   parseRelayCredentials,
   probeProvider,
+  probeWithLogin,
   readOptional,
   readRoot,
   type RelayCredentials,
@@ -39,8 +42,11 @@ import {
 import type { Provider } from './schemas';
 import type { GivenLogin } from './sealed-logins';
 import {
+  AGENT_SANDBOXES,
+  type AgentSandbox,
   agentRoot,
   homeRootOf,
+  sandboxFor,
   type SeparateUsersConfig,
   separateUserNames,
   unitAgentRoot,
@@ -118,6 +124,12 @@ export class SystemdRuntime implements AgentRuntime {
       env: NodeJS.ProcessEnv;
       log: Logger;
       now: () => number;
+      /**
+       * Whether the setup installed the template Codex's agents run as
+       * (`codexTemplateInstalled`); when not, they run as the one other
+       * agents do.
+       */
+      codexTemplate: boolean;
     }
   ) {
     this.names = separateUserNames(deps.config.uid);
@@ -140,8 +152,33 @@ export class SystemdRuntime implements AgentRuntime {
     return slot;
   }
 
-  credentialsPath(agentId: string): string {
-    return unitCredentialsPath(this.deps.config, this.claim(agentId));
+  credentialsPath(agentId: string, provider: Provider): string {
+    return unitCredentialsPath(this.deps.config, this.claim(agentId), this.sandbox(provider));
+  }
+
+  /** The template an agent of `provider` runs as here. */
+  private sandbox(provider: Provider): AgentSandbox {
+    return this.deps.codexTemplate ? sandboxFor(provider) : 'standard';
+  }
+
+  /** Every unit agent user `slot` may run as: an agent changing provider changes template. */
+  private units(slot: number): string[] {
+    const sandboxes: readonly AgentSandbox[] = this.deps.codexTemplate
+      ? AGENT_SANDBOXES
+      : ['standard'];
+    return sandboxes.map((sandbox) => this.names.agentUnit(slot, sandbox));
+  }
+
+  /** The unit of `slot` that is running, else one that failed, else the first, with its state. */
+  private async current(slot: number): Promise<{ unit: string; state: UnitState }> {
+    const states = await Promise.all(
+      this.units(slot).map(async (unit) => ({ unit, state: await this.show(unit) }))
+    );
+    return (
+      states.find(({ state }) => LIVE_STATES.has(state.activeState)) ??
+      states.find(({ state }) => state.activeState === 'failed') ??
+      states[0]!
+    );
   }
 
   async readCredentials(agentId: string): Promise<RelayCredentials | null> {
@@ -165,14 +202,46 @@ export class SystemdRuntime implements AgentRuntime {
   async deleteCredentials(agentId: string): Promise<void> {
     const slot = this.deps.store.agentUser(agentId);
     if (slot === null) return;
-    const unit = this.names.agentUnit(slot);
-    await this.deps.systemctl(['stop', unit]);
-    if ((await this.show(unit)).activeState === 'failed')
-      await this.deps.systemctl(['reset-failed', unit]);
+    for (const unit of this.units(slot)) {
+      await this.deps.systemctl(['stop', unit]);
+      if ((await this.show(unit)).activeState === 'failed')
+        await this.deps.systemctl(['reset-failed', unit]);
+    }
     await rm(unitFilesDir(this.deps.config, slot), { recursive: true, force: true });
+    // Its directory is kept, for the agent to come back to; a login given to
+    // the machine is not.
+    await this.forgetProviderLogin(agentId).catch((error: unknown) => {
+      this.deps.log.error('Could not remove the provider login of an agent no longer here', {
+        agentId,
+        error: errorMessage(error),
+      });
+    });
     const root = agentRoot(this.deps.config, slot);
     if (await isDirectory(root)) await this.setAside(root, agentId);
     this.deps.store.releaseAgentUser(agentId);
+  }
+
+  /**
+   * Removes the login files the agent host wrote in the agent's directory. The
+   * controller owns that directory and shares the agent's group, which the
+   * login's own directories are open to (`ensureLoginDirectory`). One an older
+   * agent host made private it cannot clear; that agent host clears it itself
+   * when it next starts with no login.
+   */
+  async forgetProviderLogin(agentId: string): Promise<void> {
+    const slot = this.deps.store.agentUser(agentId);
+    if (slot === null) return;
+    const root = agentRoot(this.deps.config, slot);
+    const watcher = join(root, 'watcher');
+    if (!(await isDirectory(watcher))) return;
+    const removed = await forgetLoginIn(watcher, sessionsBaseIn(join(root, 'home')), (path, body) =>
+      this.writeShared(path, body)
+    );
+    if (removed.length)
+      this.deps.log.info('Removed a provider login from an agent’s directory', {
+        agentId,
+        removed,
+      });
   }
 
   /**
@@ -225,22 +294,28 @@ export class SystemdRuntime implements AgentRuntime {
     // keep what it signed in with there (Cursor does), and a check of the
     // machine's own login in the same home would then pass although no agent,
     // each a user of its own, can use it.
-    const probeHome = login
-      ? join(this.deps.config.dataDir, 'login-check', provider, 'home')
-      : join(this.deps.config.dataDir, 'probe-home-local');
-    await mkdir(probeHome, { recursive: true, mode: 0o700 });
-    const given = login
-      ? await loginProbeEnvironment(
-          join(this.deps.config.dataDir, 'login-check', provider),
-          login,
-          binaryPath
-        )
-      : {};
-    return probeProvider(this.deps.config.bundle, provider, binaryPath, cwd, {
+    const env = {
       ...this.agentEnvironment(),
       PATH: this.deps.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
-      HOME: probeHome,
-      ...given,
+    };
+    if (!login) {
+      const probeHome = join(this.deps.config.dataDir, 'probe-home-local');
+      await mkdir(probeHome, { recursive: true, mode: 0o700 });
+      return probeProvider(this.deps.config.bundle, provider, binaryPath, cwd, {
+        ...env,
+        HOME: probeHome,
+      });
+    }
+    const dir = join(this.deps.config.dataDir, 'login-check', provider);
+    return probeWithLogin(dir, this.deps.log, provider, async () => {
+      const given = await loginProbeEnvironment(dir, login, binaryPath);
+      const probeHome = join(dir, 'home');
+      await mkdir(probeHome, { recursive: true, mode: 0o700 });
+      return probeProvider(this.deps.config.bundle, provider, binaryPath, cwd, {
+        ...env,
+        HOME: probeHome,
+        ...given,
+      });
     });
   }
 
@@ -260,8 +335,7 @@ export class SystemdRuntime implements AgentRuntime {
   async observe(agentId: string): Promise<AgentObservation> {
     const slot = this.deps.store.agentUser(agentId);
     if (slot === null) return emptyObservation();
-    const unit = this.names.agentUnit(slot);
-    const state = await this.show(unit);
+    const { unit, state } = await this.current(slot);
     const alive = LIVE_STATES.has(state.activeState);
     const root = join(agentRoot(this.deps.config, slot), 'watcher');
     if (!(await isDirectory(root))) return { ...emptyObservation(), alive };
@@ -294,7 +368,8 @@ export class SystemdRuntime implements AgentRuntime {
 
   async launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void> {
     const slot = this.claim(agentId);
-    const unit = this.names.agentUnit(slot);
+    const sandbox = this.sandbox(template.start.provider);
+    const unit = this.names.agentUnit(slot, sandbox);
     const watcher = join(await this.prepare(agentId), 'watcher');
     const seen = unitAgentRoot(this.deps.config);
     const cwd = resolve(template.start.input.cwd);
@@ -303,7 +378,9 @@ export class SystemdRuntime implements AgentRuntime {
         'definition_invalid',
         `Agent ${agentId} would work in ${cwd}, outside ${seen}, the only directory its user sees.`
       );
-    if (template.execution?.credentialsPath !== unitCredentialsPath(this.deps.config, slot))
+    if (
+      template.execution?.credentialsPath !== unitCredentialsPath(this.deps.config, slot, sandbox)
+    )
       throw new Error(
         `The launch configuration for agent ${agentId} does not read the credentials its unit loads.`
       );
@@ -318,6 +395,11 @@ export class SystemdRuntime implements AgentRuntime {
       );
 
     if (options.restart || options.replaceIdentity) await this.stop(agentId, { wait: true });
+    // Run as the other template (before its provider changed, or an older
+    // controller's): stopped first, so one agent never runs twice.
+    for (const other of this.units(slot))
+      if (other !== unit && LIVE_STATES.has((await this.show(other)).activeState))
+        await this.deps.systemctl(['stop', other]);
     if (options.replaceIdentity) await removeOptional(join(watcher, 'config.json'));
     if (options.clearTakenOver) await clearTakenOver(watcher);
     await this.writeEnvironment(slot);
@@ -337,8 +419,8 @@ export class SystemdRuntime implements AgentRuntime {
     const watcher = join(agentRoot(this.deps.config, slot), 'watcher');
     if (await isDirectory(watcher))
       await this.writeFlags(watcher, { enabled: false, spawn: false });
-    const unit = this.names.agentUnit(slot);
-    await this.deps.systemctl(options.wait ? ['stop', unit] : ['--no-block', 'stop', unit]);
+    for (const unit of this.units(slot))
+      await this.deps.systemctl(options.wait ? ['stop', unit] : ['--no-block', 'stop', unit]);
   }
 
   /** Agent units outlive the controller. */

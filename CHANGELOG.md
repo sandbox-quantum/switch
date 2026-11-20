@@ -53,6 +53,23 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Security
+- **Cloud machines install security updates daily and reboot within 7
+  days.** The machine image (`deploy/hosted/machine`) turns on
+  unattended-upgrades for Ubuntu's security updates, restarts updated
+  services itself except the agent controllers, agents and boot service, and
+  reboots once a reboot has been pending for 6 days, in the 07:00 UTC hour,
+  or at any hour after 7 days. The reboot ends the machine's agent sessions
+  without asking; its disks are kept and its controllers start again. Takes
+  effect for machines made from an image baked from this release.
+- **A new OpenCode agent is created with auto mode off.** OpenCode's auto mode
+  has no review of its own and runs every command without asking, so a
+  managed OpenCode agent created without saying whether it runs in auto mode,
+  through the management API, a template run (`auto_mode` left out of the
+  template or the request) or an agent's `create_agent`, now starts asking its
+  owner. Other providers keep their defaults, and asking for auto mode
+  explicitly still turns it on. Agents already created keep their stored
+  setting; `list_managed_agents` shows each one's `auto_mode`, and
+  `update_agent_detail` or the agent's settings turn it off.
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
   at once, leaving the rest to its own work, such as renewing its lease,
@@ -67,6 +84,22 @@ version of their own to them without also giving them a release of their own.
   refusals.
 
 #### Added
+- **What someone deletes or edits in a bridged chat is deleted or edited in
+  Switch too.** When a person deletes their post in Slack, Discord,
+  Mattermost or Microsoft Teams, its room message goes at once, with its
+  files and the copies agents were sent. When they edit it, the room message
+  says the new words in place; agents are not sent it again, and the new words
+  pass Switch Trust like a new message (words it refuses delete the message).
+  Edits in Telegram are followed too, but Telegram never tells a bot about a
+  deletion. A channel deleted on its platform takes every message of its room
+  with it and leaves the room unlinked; an archived channel only unlinks the
+  room, since archiving can be undone. Posts the bridge made for messages
+  written in Switch are left alone. A Slack app must subscribe to four more
+  events (`channel_deleted`, `channel_archive`, `group_deleted`,
+  `group_archive`) and be reinstalled for channel removals to arrive. A Teams
+  bridge replaces its channel subscriptions with ones notified of deletions
+  when it next starts, and a Teams edit can no longer arrive in the room as a
+  new message.
 - **The WorkOS directory mirror reports whether it is keeping up.** With
   `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
   `switch.workos.cursor_age` (seconds since it last read WorkOS's events
@@ -94,6 +127,30 @@ version of their own to them without also giving them a release of their own.
   workspace that chose its backend gets that backend alone. Off unless set.
 
 #### Changed
+- **A deleted workspace's audit history is purged without the schema owner's
+  credentials.** The two-year purge now runs on the ordinary runtime
+  connection through a database function owned by the schema owner, so the
+  serving process no longer needs `DB_OWNER_USER` and `DB_OWNER_PASSWORD` for
+  it; the runtime role still cannot delete audit rows itself. switch-core
+  refuses to start if the function is missing or the runtime role may not
+  execute it.
+- **`switch-purge-organization` also cleans up outside Switch.** A cloud
+  machine's disk is deleted straight away rather than kept for its retention
+  period, and the purge goes on only once the disk is gone. With the
+  server's `WORKOS_API_KEY` it then takes the organization out of WorkOS:
+  each person's membership goes, a WorkOS user goes only if no other
+  organization in the environment still has them, and the WorkOS
+  organization goes only once nobody else is in it. Without the key it lists
+  what to remove there and exits 4. Where the organization connected a
+  Switch Trust policy, it first asks Switch Trust, with that policy's
+  settings, to delete what it holds for each of the organization's rooms,
+  before anything in Switch is deleted; if any of those deletions fails it
+  stops there, deleting nothing, and running it again retries them. A run
+  resumed after the organization was deleted can no longer reach Switch
+  Trust, lists those rooms for a person to have deleted there, and exits 4. Every step outside Switch is recorded in the server's audit log
+  and retried by running the command again, and the command ends with a
+  receipt of what was done outside Switch and a reminder that backups keep
+  the organization for up to 37 days.
 - **Member changes that also apply in Switch Trust ask first.** On an
   organization whose members come from WorkOS and whose changes are sent
   there, making someone Org Admin, making an Org Admin a Viewer, and removing
@@ -4737,6 +4794,30 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Security
+
+- **A new OpenCode agent asks before it acts.** OpenCode's auto mode has no
+  review of its own: it answers every permission request itself, so with it
+  on, anyone who can post in the agent's rooms could have commands run on its
+  owner's machine. New OpenCode agents now start with auto mode off, wherever
+  they are created (the new-agent form, a template, or attaching an agent
+  already set up in a folder), and ask before each command and edit. Auto mode
+  is still there for an owner who turns it on, and the switch now says that
+  every action, commands included, then runs without asking. Agents on other
+  providers keep their defaults. Existing agents keep their settings: check
+  an OpenCode agent's **Auto mode** switch in its settings and turn it off if
+  it should ask.
+
+#### Changed
+
+- **The usage-data identifier changes every 30 days and is deleted when you
+  stop sharing.** Usage data is tagged with a random identifier that is now
+  replaced every 30 days; turning sharing off stops sending at once, including
+  an event already being prepared, and deletes the identifier, so turning it
+  back on starts an unrelated one. The operating system version sent is cut
+  down to its major version. The app no longer calls the data anonymous: it
+  is pseudonymous, and the consent text says so.
+
 #### Fixed
 
 - **Creating an agent no longer flashes "An agent called … already exists
@@ -7398,6 +7479,16 @@ tags; see RELEASING.md.
 
 ### [Unreleased]
 
+#### Security
+- **A managed Codex agent keeps the host's own Codex sandbox.** The
+  controller used to give every Codex session a sandbox of its own,
+  `danger-full-access` under Bypass permissions and `workspace-write`
+  otherwise, which replaced the `sandbox_mode` set in the host's
+  `~/.codex/config.toml`: a host set to `read-only` ran writable sessions.
+  The host's setting now wins, then the agent's, and only a host that names
+  none gets that default. Auto mode still narrows `danger-full-access` to
+  `workspace-write`, so Codex's own review still sees requests.
+
 #### Added
 - **Says which machine, OS account and data folder it runs from.**
   Enrolling, and every status report, carry `device_id`: a SHA-256 of the
@@ -7468,6 +7559,21 @@ tags; see RELEASING.md.
   offer them, while the socket is down, and when as many calls are in flight
   as Switch takes. A call the socket closes on is answered 502, as a request
   whose connection drops.
+- **Agents running as users of their own get resource limits and a system
+  call filter.** Each agent's unit may use at most 75% of the machine's memory
+  and 4096 processes and threads, and may make only the system calls in
+  systemd's `@system-service` set; any other fails with `EPERM`. Codex agents
+  run as a second template, `switch-agent-<uid>-codex@.service`, which also
+  allows the mount and sandboxing calls Codex's own sandbox needs. Run the
+  setup again to install both; until then Codex agents run as the one
+  template there is.
+- **A provider login given to the machine leaves no copy behind.** When the
+  login is withdrawn or replaced, or the agent is removed, the controller
+  removes its files from the agent's state and its token from the agent's
+  configuration, and an agent host that starts with no login removes any
+  left. A failure is logged as an error. The copy written to check a login is
+  removed once the check is done. An OpenCode console login lives in
+  OpenCode's database, which goes with it.
 
 #### Fixed
 - **A Claude Code login that is there but does not work is reported as not

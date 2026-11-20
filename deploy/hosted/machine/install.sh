@@ -11,7 +11,10 @@
 # volume, so its files must keep meaning the same users on every instance; the
 # boot makes the other controllers' with ids of their own), and installs the
 # boot service that mounts the data volume and starts the controllers
-# (switch_machine_boot.py).
+# (switch_machine_boot.py). It also turns on daily security updates
+# (unattended-upgrades, with needrestart restarting services) and the timer
+# that reboots the machine within seven days of an update that needs it
+# (switch_machine_reboot.py).
 set -eu
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -37,7 +40,7 @@ case "$expected_node_sha" in
 esac
 [ "${#expected_node_sha}" -eq 64 ] || { echo "node-sha256 must be a lowercase SHA-256" >&2; exit 1; }
 
-for command in python3 lsblk wipefs udevadm mkfs.ext4 findmnt systemd-mount systemctl runuser useradd groupadd getent find chown pkaction; do
+for command in python3 lsblk wipefs udevadm mkfs.ext4 findmnt systemd-mount systemctl runuser useradd groupadd getent find chown pkaction unattended-upgrade needrestart; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "missing required image command: $command" >&2
     exit 1
@@ -99,6 +102,12 @@ install -o root -g root -m 0644 "$source_dir/switch-machine-boot.service" /etc/s
 install -d -o root -g root -m 0755 "/etc/systemd/system/switch-agent-controller-$controller_uid.service.d"
 install -o root -g root -m 0644 "$source_dir/controller-after-boot.conf" \
   "/etc/systemd/system/switch-agent-controller-$controller_uid.service.d/after-boot.conf"
+install -o root -g root -m 0644 "$source_dir/apt-switch-machine-upgrades.conf" /etc/apt/apt.conf.d/52switch-machine-upgrades
+install -d -o root -g root -m 0755 /etc/needrestart/conf.d
+install -o root -g root -m 0644 "$source_dir/needrestart-switch-machine.conf" /etc/needrestart/conf.d/50-switch-machine.conf
+install -o root -g root -m 0755 "$source_dir/switch_machine_reboot.py" /usr/local/libexec/switch-machine-reboot
+install -o root -g root -m 0644 "$source_dir/switch-machine-reboot.service" /etc/systemd/system/switch-machine-reboot.service
+install -o root -g root -m 0644 "$source_dir/switch-machine-reboot.timer" /etc/systemd/system/switch-machine-reboot.timer
 
 provider_path=$(find /opt/switch -mindepth 2 -maxdepth 3 -type d -name bin \
   ! -path '/opt/switch/controller/*' ! -path '/opt/switch/node/*' | sort | tr '\n' ':')
@@ -115,5 +124,5 @@ EOF
 chmod 0644 /etc/switch-hosted/machine.json
 
 systemctl daemon-reload
-systemctl enable switch-machine-boot.service
-echo "Baked: the controller $("$cli" --version), $agent_users agent users, the boot service."
+systemctl enable switch-machine-boot.service switch-machine-reboot.timer apt-daily.timer apt-daily-upgrade.timer
+echo "Baked: the controller $("$cli" --version), $agent_users agent users, the boot service, daily security updates and the reboot timer."

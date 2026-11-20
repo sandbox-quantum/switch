@@ -211,8 +211,10 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
  "auto_approve": false, "directory": null, "isolation": "shared"}
 ```
 
-`auto_mode` (default `true` on create) asks the provider for its own automatic review:
-safe actions run, risky ones still ask a person. `auto_approve` is bypass, every permission
+`auto_mode` asks the provider for its own automatic review: safe actions run, risky ones
+still ask a person. Left out on create, it is the provider's default for a new agent
+(`new_agent_auto_mode` in `providers/registry.py`): `true`, except `false` for `opencode`,
+whose auto mode has no review and answers every permission ask itself. `auto_approve` is bypass, every permission
 check skipped, and wins over `auto_mode`. A definition stored before `auto_mode` existed has
 no such key and reads as `false` (`schemas.stored_definition`): the managed-agent view, the
 assignment entry and an agent's update all fill it in that way, so an existing agent keeps

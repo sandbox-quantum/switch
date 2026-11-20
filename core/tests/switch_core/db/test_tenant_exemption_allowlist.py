@@ -221,6 +221,11 @@ _RAW_SESSION_FACTORY_MODULES = {
     # on purpose and touches only the seven functions above, which are the one
     # thing a session with nothing bound may read.
     "switch_core.db.tenant_lookup",
+    # The audit-history purge, the one other exempt function
+    # (`db/audit_history_ddl.py`). Its session has nothing bound on purpose
+    # and only calls that function, which deletes across tenants as the owner
+    # and returns nothing but each purged tenant's id and row count.
+    "switch_core.retention.audit_history",
     # ── The readiness check, which issues `SELECT 1` and reads no table at
     # all. Unbound on purpose: binding a tenant would make the health of the
     # database a question about one customer's rows, and reading a scoped
@@ -283,6 +288,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     # `users` row (`rls_ddl.GLOBAL_TABLES`) for the organizations they may
     # be left in; the workspace and organization it reads next are bound.
     "switch_core.gateway.organizations",
+    # What the purge leaves outside Switch: it reads `oidc_identities`, global
+    # (`rls_ddl.GLOBAL_TABLES`), and writes the server's audit log; it reads
+    # no workspace or organization.
+    "switch_core.accounts.purge_elsewhere",
     # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
     # and reads `oidc_identities` to match people, both global
     # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.

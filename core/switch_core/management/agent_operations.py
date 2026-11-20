@@ -255,15 +255,23 @@ class ManagementAgentOperations:
                 icon_url=spec.icon_url,
                 controller_id=controller.id,
                 desired_state="running" if spec.start else "stopped",
-                definition=DefinitionV1(
-                    provider=spec.provider,  # type: ignore[arg-type]
-                    model=spec.model,
-                    advanced_config=spec.advanced_config,
-                    instructions=spec.instructions,
-                    auto_mode=spec.auto_mode,
-                    auto_approve=spec.auto_approve,
-                    directory=spec.directory,
-                    isolation=spec.isolation,  # type: ignore[arg-type]
+                # Left out when the spec does not say, for the definition to
+                # fill in the provider's default for a new agent.
+                definition=DefinitionV1.model_validate(
+                    {
+                        "provider": spec.provider,
+                        "model": spec.model,
+                        "advanced_config": spec.advanced_config,
+                        "instructions": spec.instructions,
+                        **(
+                            {}
+                            if spec.auto_mode is None
+                            else {"auto_mode": spec.auto_mode}
+                        ),
+                        "auto_approve": spec.auto_approve,
+                        "directory": spec.directory,
+                        "isolation": spec.isolation,
+                    }
                 ),
             )
         except ValidationError as exc:
