@@ -105,6 +105,8 @@ async def test_connect_on_the_page_finishes_the_install(
     assert "Switch is connected" in connected.text
     assert again.status_code == 400
     assert len(fixture.lifecycle.registered) == 1
+    # The admin who installed it approved what creating channels needs.
+    assert fixture.lifecycle.registered[0]["channel_creation_enabled"] is True
 
 
 async def test_cancel_on_the_page_connects_nothing(rls_harness: RLSHarness) -> None:

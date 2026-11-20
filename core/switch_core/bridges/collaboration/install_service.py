@@ -535,11 +535,11 @@ class MessagingInstallService:
                     bridge_type=platform,
                     display_name=grant.workspace_name,
                     connection_config=connection_config,
-                    # Off, though the granted scopes would allow it. Nobody was
-                    # asked: an install has no registration form, and letting
-                    # an app create channels in a customer's workspace is a
-                    # decision someone should make rather than inherit.
-                    channel_creation_enabled=False,
+                    # On: the admin who installed the app approved the scopes
+                    # that let it create channels, and a private channel with
+                    # an agent is the first thing people ask of it. An admin
+                    # turns it off on the messaging app.
+                    channel_creation_enabled=True,
                     # A person installed the app: this is them connecting their
                     # platform, which is exactly what onboarding measures.
                     preconfigured=False,
@@ -904,6 +904,8 @@ class MessagingInstallService:
                         bridge_type=platform,
                         display_name=claim.grant.workspace_name,
                         connection_config=installer.connection_config(claim.grant),
+                        # Off: a claimed chat's platform (Telegram) has no way
+                        # for a bot to create one.
                         channel_creation_enabled=False,
                         # Someone here connected a chat, as with an OAuth install.
                         preconfigured=False,
