@@ -10,10 +10,14 @@ import {
   usageLimitNotice,
 } from './claude-mapping';
 
-function assistant(text: string, error?: SDKAssistantMessage['error']): SDKAssistantMessage {
+function assistant(
+  text: string,
+  error?: SDKAssistantMessage['error'],
+  model = 'claude-sonnet-4-5'
+): SDKAssistantMessage {
   return {
     type: 'assistant',
-    message: { content: [{ type: 'text', text }] },
+    message: { model, content: [{ type: 'text', text }] },
     parent_tool_use_id: null,
     ...(error ? { error } : {}),
   } as unknown as SDKAssistantMessage;
@@ -43,7 +47,20 @@ describe('usage limit detection', () => {
     );
     expect(usageLimitNotice(assistant(THROTTLE, 'rate_limit'))).toBeUndefined();
     expect(usageLimitNotice(assistant('Invalid API key', 'authentication_failed'))).toBeUndefined();
-    expect(usageLimitNotice(assistant("You've hit your 5-hour limit"))).toBeUndefined();
+  });
+
+  it('takes the notice from a synthetic message the CLI wrote, without an error flag', () => {
+    expect(
+      usageLimitNotice(
+        assistant("You've hit your 5-hour limit · resets 8:40am", undefined, '<synthetic>')
+      )
+    ).toBe("You've hit your 5-hour limit · resets 8:40am");
+    expect(
+      usageLimitNotice(assistant("You've hit your 5-hour limit · resets 8:40am"))
+    ).toBeUndefined();
+    expect(
+      usageLimitNotice(assistant('No response requested.', undefined, '<synthetic>'))
+    ).toBeUndefined();
   });
 
   it('keeps the text of a rate_limit message apart, whatever it says', () => {
