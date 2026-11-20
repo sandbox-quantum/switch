@@ -52,6 +52,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **`ORGANIZATION_DIRECTORY=workos` now works with `GATEWAY_SIGNUP_MODE=open`.**
+  Someone signing in with no workspace may then create an organization of
+  their own. It is kept in Switch, not in WorkOS, and follows WorkOS only
+  once an operator links it with `switch-link-workos`. `default_tenant` is
+  still refused with the WorkOS directory, by the server and by the Helm
+  chart.
+
 #### Security
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
