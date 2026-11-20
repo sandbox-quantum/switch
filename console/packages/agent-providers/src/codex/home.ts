@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import type { RuntimeMode } from '../adapter';
+import { dirMode } from '../host/host-permissions';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
 import { replaceFile } from '../host/replace-file';
 import type { CodexSandboxMode } from './protocol';
@@ -42,8 +43,8 @@ export async function prepareCodexSessionHome(input: {
 }): Promise<{ home: string; keyringLogin: boolean }> {
   const key = createHash('sha256').update(input.sessionId).digest('hex');
   const home = join(input.root, key);
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  await chmod(home, 0o700);
+  await mkdir(home, { recursive: true, mode: dirMode(0o700) });
+  await chmod(home, dirMode(0o700));
   const keyringLogin = !(await hasCodexAuthFile(input.sourceHome));
   if (!keyringLogin) await copyCodexAuthenticationOnce(home, input.sourceHome);
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
