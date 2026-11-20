@@ -13,8 +13,8 @@ one-colour black or white version on the theme where the colour would not
 stand out from the tile.
 
 All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and
-`atlassian.svg` and `google-workspace.svg`, fetched 2026-11-10, and
-`sentry.svg`, fetched 2026-11-05.
+`atlassian.svg` and `google-workspace.svg`, fetched 2026-11-10,
+`sentry.svg`, fetched 2026-11-05, and `clickup.svg`, fetched 2026-11-06.
 
 | File | Brand | Source | License / terms | Colour |
 |---|---|---|---|---|
@@ -28,6 +28,7 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and
 | `new-relic.svg` | New Relic | Simple Icons 16.33.0, `newrelic` | CC0-1.0; guidelines https://newrelic.com/about/media-assets | black in light theme, `#1CE783` in dark theme |
 | `notion.svg` | Notion | Simple Icons 16.33.0, `notion` | CC0-1.0 | theme foreground |
 | `linear.svg` | Linear | Simple Icons 16.33.0, `linear` | CC0-1.0 | `#5E6AD2` |
+| `clickup.svg` | ClickUp | Simple Icons 16.33.0, `clickup` | CC0-1.0; guidelines https://clickup.com/brand | `#7B68EE` |
 | `box.svg` | Box | Simple Icons 16.33.0, `box` | CC0-1.0; guidelines https://www.box.com/en-gb/about-us/press | `#0061D5`, white in dark theme |
 | `airtable.svg` | Airtable | Simple Icons 16.33.0, `airtable` | CC0-1.0 | black in light theme, `#18BFFF` in dark theme |
 | `vercel.svg` | Vercel | Simple Icons 16.33.0, `vercel` | CC0-1.0; guidelines https://vercel.com/geist/brands | theme foreground |
