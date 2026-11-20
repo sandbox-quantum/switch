@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import insert
 
 from switch_core.bridges.collaboration.adapter import (
+    RefusalKind,
     RichContent,
     RichContentFailed,
     RichContentFailedAfterPost,
@@ -66,6 +67,14 @@ class Drawn:
     content: Any
 
 
+class RefusedForGood(RichContentFailed):
+    """A refusal `RecordingPlatform` says no retry will change."""
+
+
+class RefusedForNow(RichContentFailed):
+    """A refusal `RecordingPlatform` says is worth a few more attempts."""
+
+
 @dataclass
 class RecordingPlatform:
     """Duck-typed `PlatformAdapter`: only what the publisher calls."""
@@ -74,6 +83,7 @@ class RecordingPlatform:
     draws_session_activity: bool = True
     separate_attention_slot: bool = True
     notifies_only_by_mention: bool = False
+    broadcasts_thread_replies: bool = False
     redraws_for_elapsed_time: bool = False
     # What `activity_closes_in` answers for every message posted.
     closes_in: float | None = None
@@ -87,6 +97,9 @@ class RecordingPlatform:
     drawn: list[Drawn] = field(default_factory=list)
     marks: list[tuple[str, str, bool]] = field(default_factory=list)
     refuse_posts: bool = False
+    # Raised for every post while set, in place of `refuse_posts`' refusal.
+    post_error: RichContentFailed | None = None
+    post_attempts: int = 0
     # Raised for every post of a turn's activity while its turn id is here.
     turn_post_errors: dict[str, RichContentFailed] = field(default_factory=dict)
     # Turns whose next post opens a message, then is asked to wait before
@@ -110,6 +123,9 @@ class RecordingPlatform:
         content: RichContent,
         thread_root_id: str | None = None,
     ) -> str:
+        self.post_attempts += 1
+        if self.post_error is not None:
+            raise self.post_error
         if self.refuse_posts:
             raise RichContentFailed("refused", text="")
         turn_id = (
@@ -142,6 +158,13 @@ class RecordingPlatform:
         self.drawn.append(
             Drawn("update_rich", channel_id, message_ref, thread_root_id, content)
         )
+
+    def classify_refusal(self, exc: BaseException) -> RefusalKind:
+        if isinstance(exc, RefusedForGood):
+            return "permanent"
+        if isinstance(exc, RefusedForNow):
+            return "bounded"
+        return "transient"
 
     def rich_updates_held_for(self) -> float:
         return self.held_for

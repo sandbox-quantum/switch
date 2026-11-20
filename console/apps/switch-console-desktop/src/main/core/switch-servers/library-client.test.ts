@@ -166,6 +166,20 @@ describe('reading the library', () => {
     expect(older).not.toHaveProperty('hiddenRoomsCount');
   });
 
+  it('keeps what the server says the viewer may do, and leaves it unset when it does not say', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([
+        { ...REFERENCE, can_read: false, can_edit: true, can_manage: false },
+        { ...REFERENCE, id: 'ref-2' },
+      ])
+    );
+    const [told, older] = await fetchLibraryItems(SERVER, 'references');
+    expect(told).toMatchObject({ canRead: false, canEdit: true, canManage: false });
+    expect(older).not.toHaveProperty('canRead');
+    expect(older).not.toHaveProperty('canEdit');
+    expect(older).not.toHaveProperty('canManage');
+  });
+
   it('keeps the server’s word on detaching from each room, when it gives one', async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse([

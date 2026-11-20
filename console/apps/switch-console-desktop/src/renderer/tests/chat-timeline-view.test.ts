@@ -1,6 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import { type ChatEntrance, NO_ENTRANCE } from '@renderer/features/chats/chat-entrance';
 import { ChatTimelineView } from '@renderer/features/chats/components/chat-timeline';
 import {
   ChatTimeline,
@@ -34,6 +35,7 @@ function message(seq: number, userId: string, name: string): ChatMessage {
     mentions: [],
     threadReplyCount: 0,
     threadLastReplySeq: null,
+    kickoff: null,
   };
 }
 
@@ -52,6 +54,7 @@ describe('ChatTimelineView', () => {
         people: [],
         activities: [],
         onReply: () => {},
+        entrance: NO_ENTRANCE,
       })
     );
     expect(html).not.toContain('items-end');
@@ -80,6 +83,7 @@ describe('ChatTimelineView thread replies', () => {
         people: [],
         activities: [],
         onReply: () => {},
+        entrance: NO_ENTRANCE,
       })
     );
     for (const [name, body] of [
@@ -117,6 +121,7 @@ describe('ChatTimelineView mentions', () => {
         people: [{ userId: 'u2', name: 'cc' }],
         activities: [],
         onReply: () => {},
+        entrance: NO_ENTRANCE,
       })
     );
   };
@@ -146,6 +151,7 @@ describe('ChatTimelineView mentions of people no longer in the chat', () => {
         people: [{ userId: 'u9', name: 'Carol Gone' }],
         activities: [],
         onReply: () => {},
+        entrance: NO_ENTRANCE,
       })
     );
     expect(html).toContain('data-mention="person"');
@@ -183,11 +189,144 @@ describe('ChatTimelineView mentions from the server’s spans', () => {
         people: [{ userId: 'u1', name: 'Bob Member' }],
         activities: [],
         onReply: () => {},
+        entrance: NO_ENTRANCE,
       })
     );
     expect([...html.matchAll(/data-mention="(\w+)"[^>]*>@Bob Member</g)].map((m) => m[1])).toEqual([
       'agent',
       'person',
     ]);
+  });
+});
+
+describe('ChatTimelineView kickoffs', () => {
+  const system = { clientId: '', name: '', kind: 'system' as const, agentId: null, userId: null };
+  const render = (timeline: ChatTimeline) =>
+    renderToStaticMarkup(
+      createElement(ChatTimelineView, {
+        serverId: 's',
+        timeline,
+        agents: [],
+        people: [],
+        activities: [],
+        onReply: () => {},
+        entrance: NO_ENTRANCE,
+      })
+    );
+
+  it('shows a kickoff as its runner’s request, with the agents’ note folded away', () => {
+    const timeline = new ChatTimeline('room-1', api);
+    timeline.apply({ ...message(1, '', ''), sender: system, body: 'Kickoff from switch-buddy' });
+    timeline.apply({
+      ...message(2, '', ''),
+      sender: system,
+      threadRootId: 'm1',
+      body: 'Sprint room is live. Post today’s standup.',
+      kickoff: {
+        name: 'switch-buddy',
+        agentId: 'buddy-1',
+        userId: 'me',
+        agentNote: 'Note for the agents: this room is part of a run.',
+        displayName: 'Switch Buddy',
+        iconUrl: 'https://example.test/buddy.png',
+      },
+    });
+    const html = render(timeline);
+
+    // One card: the headline notice above it is not repeated.
+    expect(html).not.toContain('Kickoff from switch-buddy');
+    expect(html).not.toContain('text-center');
+    // Named and pictured as the agent itself, not as a room member speaking.
+    expect(html).toMatch(/Kickoff from <span[^>]*>Switch Buddy<\/span>/);
+    expect(html).toContain('src="https://example.test/buddy.png"');
+    expect(html).not.toContain('font-semibold text-foreground-muted">Switch Buddy');
+    expect(html).toContain('Sprint room is live.');
+    expect(html).toMatch(/<details[^>]*><summary[^>]*>Details for agents<\/summary>/);
+    expect(html).toContain('Note for the agents: this room is part of a run.');
+  });
+
+  it('still shows a Switch notice that is not a kickoff as a centred line', () => {
+    const timeline = new ChatTimeline('room-1', api);
+    timeline.apply({ ...message(1, '', ''), sender: system, body: 'Session reset.' });
+    const html = render(timeline);
+
+    expect(html).toContain('text-center');
+    expect(html).not.toContain('Kickoff from');
+  });
+});
+
+describe('ChatTimelineView first messages on a hand-off', () => {
+  const HIDDEN = /style="opacity:0;transform:translateY\(12px\)"/g;
+
+  function agentMessage(seq: number): ChatMessage {
+    return {
+      ...message(seq, '', 'switch-buddy'),
+      sender: {
+        clientId: 'c',
+        name: 'switch-buddy',
+        kind: 'agent',
+        agentId: 'buddy',
+        userId: null,
+      },
+      body: `agent says ${seq}`,
+    };
+  }
+
+  function render(timeline: ChatTimeline, entrance: ChatEntrance): string {
+    return renderToStaticMarkup(
+      createElement(ChatTimelineView, {
+        serverId: 's',
+        timeline,
+        agents: [],
+        people: [],
+        activities: [],
+        onReply: () => {},
+        entrance,
+      })
+    );
+  }
+
+  function conversation(): ChatTimeline {
+    const timeline = new ChatTimeline('room-1', api);
+    timeline.apply(message(1, 'me', 'Alice'));
+    timeline.apply(agentMessage(2));
+    timeline.apply(agentMessage(3));
+    return timeline;
+  }
+
+  it('starts the agent’s first message hidden below its place, and only that one', () => {
+    const html = render(conversation(), { firstAgent: true, firstOwn: false });
+    expect(html.match(HIDDEN)).toHaveLength(1);
+    expect(html.indexOf('opacity:0')).toBeGreaterThan(html.indexOf('body 1'));
+    expect(html.indexOf('opacity:0')).toBeLessThan(html.indexOf('agent says 2'));
+  });
+
+  it('brings in your first message too when you sent it from Home', () => {
+    const html = render(conversation(), { firstAgent: true, firstOwn: true });
+    expect(html.match(HIDDEN)).toHaveLength(2);
+    expect(html.indexOf('opacity:0')).toBeLessThan(html.indexOf('body 1'));
+  });
+
+  it('brings in your first message while it is still being sent', () => {
+    const timeline = new ChatTimeline('room-1', {
+      send: () => new Promise(() => {}),
+      newId: () => 'req-1',
+    } as unknown as TimelineApi);
+    timeline.send({
+      body: 'from Home',
+      threadRootId: null,
+      mentionAgentIds: [],
+      mentionUserIds: [],
+      mentionSpans: [],
+      files: [],
+      requestId: null,
+    });
+    const html = render(timeline, { firstAgent: true, firstOwn: true });
+    expect(html.match(HIDDEN)).toHaveLength(1);
+    expect(html.indexOf('opacity:0')).toBeLessThan(html.indexOf('from Home'));
+  });
+
+  it('draws everything in place otherwise', () => {
+    expect(render(conversation(), NO_ENTRANCE)).not.toContain('opacity:0');
   });
 });

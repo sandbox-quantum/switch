@@ -106,15 +106,15 @@ describe('fast lane, derived checks', () => {
     expectNoServerErrors(serverErrors, observer.tag, 'while this ran');
   }, 120_000);
 
-  // Makes a workspace and two users, none of which can be deleted, so only on
-  // a stack that is thrown away after the run: not on `local`, which is a
+  // Makes a workspace and two accounts and leaves them behind, so only on a
+  // stack that is thrown away after the run: not on `local`, which is a
   // developer's own and lives on.
   it("a workspace member is refused another workspace's rooms and agents", async (context) => {
     if (!lane.target) return context.skip(lane.skip);
     const { env, switchClient, mattermost } = lane.target;
     if (env.environment !== 'ephemeral') {
       return context.skip(
-        `leaves a workspace and users behind, which cannot be deleted; only on ephemeral, not ${env.environment}`
+        `leaves a workspace and two accounts behind; only on ephemeral, not ${env.environment}`
       );
     }
     const names = run.scope();

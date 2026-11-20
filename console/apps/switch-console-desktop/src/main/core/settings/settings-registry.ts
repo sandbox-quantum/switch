@@ -44,9 +44,6 @@ export const SETTINGS_DEFAULTS = {
     relaxCorsForLocalhost: false,
     profiles: DEFAULT_BROWSER_PROFILES,
   },
-  onboarding: {
-    showChecklist: true,
-  },
   changesViewMode: {
     unstaged: 'flat' as const,
     staged: 'flat' as const,

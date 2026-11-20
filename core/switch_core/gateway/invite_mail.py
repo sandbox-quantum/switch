@@ -1,4 +1,6 @@
-"""Sending an invitation to the address it is for.
+"""Sending an invitation to the address it is for, and telling an
+organization's admins when one of them stops being one
+(`organization_admin_notices.py`).
 
 Plain SMTP through the standard library, run off the event loop: any relay
 an operator already has (SES SMTP, Postmark, a company relay) works, and
@@ -36,8 +38,26 @@ class InviteEmail:
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class AdminChangeEmail:
+    """A change to who administers an organization, for one recipient:
+    `summary` says who did what to whom in which organization, `reason` is
+    the platform operator's when one gave it."""
+
+    to: str
+    subject: str
+    summary: str
+    occurred_at: datetime
+    reason: str | None
+    # None for the person it was made to, while they are no organization
+    # admin there, who can't open the log.
+    audit_log_link: str | None
+
+
 class InviteMailer(Protocol):
     async def send_invitation(self, invite: InviteEmail) -> None: ...
+
+    async def send_admin_change(self, email: AdminChangeEmail) -> None: ...
 
 
 def invite_link(frontend_base_url: str, token: str) -> str:
@@ -91,6 +111,54 @@ def build_invite_message(invite: InviteEmail, sender: str) -> EmailMessage:
     return message
 
 
+def build_admin_change_message(email: AdminChangeEmail, sender: str) -> EmailMessage:
+    when = email.occurred_at.strftime("%Y-%m-%d %H:%M UTC")
+    message = EmailMessage()
+    message["Subject"] = _one_line(email.subject)
+    message["From"] = sender
+    message["To"] = email.to
+    message["Message-ID"] = make_msgid(domain=sender.rpartition("@")[2] or None)
+    reason = "" if email.reason is None else f"\nThe reason given: {email.reason}\n"
+    audit_log = (
+        "The organization's audit log records it.\n"
+        if email.audit_log_link is None
+        else f"The organization's audit log records it:\n{email.audit_log_link}\n"
+    )
+    message.set_content(
+        f"{email.summary}\n"
+        f"{reason}"
+        "\n"
+        f"When: {when}\n"
+        "\n"
+        f"{audit_log}"
+        "\n"
+        "You're receiving this because you are an organization admin there, or "
+        "because the change was to you.\n"
+    )
+    e = html.escape
+    reason_html = (
+        "" if email.reason is None else f"<p>The reason given: {e(email.reason)}</p>"
+    )
+    audit_log_html = (
+        "<p>The organization's audit log records it.</p>"
+        if email.audit_log_link is None
+        else f'<p><a href="{e(email.audit_log_link)}">Open the organization\'s audit '
+        "log</a></p>"
+    )
+    message.add_alternative(
+        "<!doctype html><html><body>"
+        f"<p>{e(email.summary)}</p>"
+        f"{reason_html}"
+        f"<p>When: {e(when)}</p>"
+        f"{audit_log_html}"
+        "<p>You're receiving this because you are an organization admin there, "
+        "or because the change was to you.</p>"
+        "</body></html>",
+        subtype="html",
+    )
+    return message
+
+
 class SmtpInviteMailer:
     def __init__(
         self,
@@ -123,7 +191,12 @@ class SmtpInviteMailer:
         )
 
     async def send_invitation(self, invite: InviteEmail) -> None:
-        message = build_invite_message(invite, self._sender)
+        await self._deliver(build_invite_message(invite, self._sender))
+
+    async def send_admin_change(self, email: AdminChangeEmail) -> None:
+        await self._deliver(build_admin_change_message(email, self._sender))
+
+    async def _deliver(self, message: EmailMessage) -> None:
         try:
             await asyncio.to_thread(self._send, message)
         except (smtplib.SMTPException, OSError) as err:

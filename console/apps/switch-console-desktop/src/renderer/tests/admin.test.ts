@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { adminGroups, shownAdminSection } from '@renderer/features/admin/admin-sections';
-import { switchStanding, switchTiles } from '@renderer/features/admin/workspace-switches';
+import { settingsForAdminSection } from '@renderer/features/admin/admin-sections';
+import {
+  cannotWorkOnThisServer,
+  switchStanding,
+  switchTiles,
+} from '@renderer/features/admin/workspace-switches';
 import type {
   ConnectionCatalogEntry,
   WorkspaceService,
@@ -15,6 +19,10 @@ function service(overrides: Partial<WorkspaceService> = {}): WorkspaceService {
     updated_at: null,
     connected_members: 0,
     granted_agents: 0,
+    unavailable_code: null,
+    unavailable_reason: null,
+    can_change: true,
+    organization_locked: false,
     ...overrides,
   };
 }
@@ -31,69 +39,47 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
+    agent_access_note: null,
     loopback_ports: null,
     key: null,
+    sign_in_choices: null,
+    paste: [],
+    method: null,
+    access_note: null,
+    reconnect_code: null,
+    reconnect_reason: null,
     external_identity: null,
+    choices: null,
     consent: null,
     workspace_enabled: true,
+    organization_locked: false,
   };
 }
 
-describe('the Admin page’s sections', () => {
-  const person = {
-    administers: false,
-    operator: false,
-    operatesGatewaylessServer: false,
-    serviceConnections: true,
-  };
-
-  it('gives workspace admins its messaging apps and connector switches', () => {
-    expect(adminGroups({ ...person, administers: true })).toEqual([
-      { scope: 'workspace', items: ['messaging-apps', 'connectors'] },
-    ]);
-    expect(adminGroups(person)).toEqual([]);
+describe('where an Admin link lands now that its pages are in Settings', () => {
+  it('opens the Settings tab each section became', () => {
+    expect(settingsForAdminSection('messaging-apps')).toEqual({ tab: 'messaging-apps' });
+    expect(settingsForAdminSection('connectors')).toEqual({ tab: 'connectors' });
+    expect(settingsForAdminSection('decision')).toEqual({ tab: 'decision-routing' });
+    expect(settingsForAdminSection('switch-trust')).toEqual({ tab: 'guardrails' });
+    expect(settingsForAdminSection('apps')).toEqual({ tab: 'connector-apps' });
   });
 
-  it('gives the server’s operator Switch Trust, and connector apps only on a Switch with no gateway', () => {
-    const operator = { ...person, administers: true, operator: true };
-    expect(adminGroups(operator)).toEqual([
-      { scope: 'workspace', items: ['messaging-apps', 'connectors'] },
-      { scope: 'server', items: ['switch-trust'] },
-    ]);
-    expect(adminGroups({ ...operator, operatesGatewaylessServer: true })[1]).toEqual({
-      scope: 'server',
-      items: ['switch-trust', 'apps'],
+  it('keeps the connector app a link opened, and only on Connector apps', () => {
+    expect(settingsForAdminSection('apps', 'github')).toEqual({
+      tab: 'connector-apps',
+      app: 'github',
     });
+    expect(settingsForAdminSection('connectors', 'github')).toEqual({ tab: 'connectors' });
   });
 
-  it('keeps only the connector sections behind service connections', () => {
-    expect(
-      adminGroups({
-        administers: true,
-        operator: true,
-        operatesGatewaylessServer: true,
-        serviceConnections: false,
-      })
-    ).toEqual([
-      { scope: 'workspace', items: ['messaging-apps'] },
-      { scope: 'server', items: ['switch-trust'] },
-    ]);
-  });
-
-  it('opens the section asked for when the person may use it, otherwise the first', () => {
-    const operator = adminGroups({
-      ...person,
-      administers: true,
-      operator: true,
-      operatesGatewaylessServer: true,
-    });
-    const admin = adminGroups({ ...person, administers: true });
-    expect(shownAdminSection(operator, 'apps')).toBe('apps');
-    expect(shownAdminSection(admin, 'apps')).toBe('messaging-apps');
-    expect(shownAdminSection(admin, 'connectors')).toBe('connectors');
-    expect(shownAdminSection([], 'connectors')).toBeNull();
+  it('opens Preferences for a section it does not know, or none', () => {
+    expect(settingsForAdminSection('nonsense')).toEqual({ tab: 'preferences' });
+    expect(settingsForAdminSection(undefined)).toEqual({ tab: 'preferences' });
+    expect(settingsForAdminSection('constructor')).toEqual({ tab: 'preferences' });
   });
 });
 
@@ -139,5 +125,20 @@ describe('the workspace switches as tiles', () => {
     expect(switchStanding(service({ connected_members: 3, granted_agents: 1 }))).toBe(
       '3 members connected · 1 agent uses it'
     );
+  });
+
+  it('says nothing of who a switch reaches when the server keeps it to admins', () => {
+    expect(switchStanding(service({ connected_members: null, granted_agents: null }))).toBeNull();
+  });
+
+  it('marks a service the server can never serve, excluding operator-fixable codes', () => {
+    expect(cannotWorkOnThisServer('switched_off')).toBe(true);
+    expect(cannotWorkOnThisServer('needs_https')).toBe(true);
+    expect(cannotWorkOnThisServer('key_never_expires')).toBe(true);
+    expect(cannotWorkOnThisServer('coming_soon')).toBe(true);
+    expect(cannotWorkOnThisServer('app_not_set_up')).toBe(false);
+    expect(cannotWorkOnThisServer('needs_public_url')).toBe(false);
+    expect(cannotWorkOnThisServer('not_set_up')).toBe(false);
+    expect(cannotWorkOnThisServer(null)).toBe(false);
   });
 });

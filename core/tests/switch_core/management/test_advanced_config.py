@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from switch_core.feature_flags import ADDITIONAL_AGENT_PROVIDERS
 from switch_core.management.advanced_config import validate_advanced_config
 from switch_core.management.schemas import DefinitionV1
 from switch_core.providers.schema import advanced_config_schema, providers_schema
@@ -16,13 +17,14 @@ def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
     with pytest.raises(ValidationError) as raised:
         DefinitionV1(provider="gemini")
     assert (
-        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
+        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
+        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie"
         in str(raised.value)
     )
 
 
 def test_the_served_provider_list() -> None:
-    providers = providers_schema()["providers"]
+    providers = providers_schema({ADDITIONAL_AGENT_PROVIDERS: True})["providers"]
 
     assert [(provider["id"], provider["label"]) for provider in providers] == [
         ("claude", "Claude Code"),
@@ -30,18 +32,58 @@ def test_the_served_provider_list() -> None:
         ("opencode", "OpenCode"),
         ("antigravity", "Antigravity"),
         ("cursor", "Cursor CLI"),
+        ("deepseek-harness", "DeepSeek Harness"),
+        ("pi", "Pi"),
+        ("copilot", "GitHub Copilot"),
+        ("kiro", "Kiro CLI"),
+        ("mistral-vibe", "Mistral Vibe"),
+        ("goose", "Goose"),
+        ("qwen", "Qwen Code"),
+        ("droid", "Factory Droid"),
+        ("cline", "Cline CLI"),
+        ("junie", "Junie"),
     ]
     by_id = {provider["id"]: provider for provider in providers}
     served = advanced_config_schema()["providers"]
     for provider_id, provider in by_id.items():
         assert provider["advanced_fields"] == served[provider_id]["fields"]
     assert by_id["cursor"]["advanced_fields"] == []
+    assert by_id["kiro"]["advanced_fields"] == []
+    assert by_id["droid"]["advanced_fields"] == []
+
+
+def test_the_served_provider_list_without_the_additional_providers() -> None:
+    providers = providers_schema({ADDITIONAL_AGENT_PROVIDERS: False})["providers"]
+
+    assert [provider["id"] for provider in providers] == [
+        "claude",
+        "codex",
+        "opencode",
+        "antigravity",
+        "cursor",
+    ]
 
 
 def test_the_served_schema() -> None:
     providers = advanced_config_schema()["providers"]
 
-    assert set(providers) == {"claude", "codex", "opencode", "cursor", "antigravity"}
+    assert set(providers) == {
+        "claude",
+        "codex",
+        "opencode",
+        "cursor",
+        "antigravity",
+        "deepseek-harness",
+        "pi",
+        "copilot",
+        "kiro",
+        "mistral-vibe",
+        "goose",
+        "qwen",
+        "droid",
+        "cline",
+        "junie",
+    }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
         "tools",
         "disallowedTools",
@@ -62,7 +104,14 @@ def test_the_served_schema() -> None:
         "smallModel",
     ]
     assert providers["cursor"] == {"fields": []}
+    assert providers["deepseek-harness"] == {"fields": []}
     assert providers["antigravity"] == {"fields": []}
+    assert providers["copilot"] == {"fields": []}
+    assert providers["kiro"] == {"fields": []}
+    assert providers["goose"] == {"fields": []}
+    assert providers["qwen"] == {"fields": []}
+    assert providers["droid"] == {"fields": []}
+    assert providers["junie"] == {"fields": []}
     claude = {field["key"]: field for field in providers["claude"]["fields"]}
     assert claude["isolation"] == {
         "key": "isolation",
@@ -124,6 +173,8 @@ def test_the_served_schema() -> None:
             },
         ),
         ("cursor", {}),
+        ("kiro", {}),
+        ("droid", {}),
     ],
 )
 def test_valid_settings_pass(provider: str, config: dict[str, Any]) -> None:
@@ -135,6 +186,8 @@ def test_valid_settings_pass(provider: str, config: dict[str, Any]) -> None:
     [
         ("claude", {"verbosity": "low"}, "claude has no setting 'verbosity'"),
         ("cursor", {"effort": "high"}, "it has no advanced configuration"),
+        ("kiro", {"effort": "high"}, "it has no advanced configuration"),
+        ("droid", {"effort": "high"}, "it has no advanced configuration"),
         ("claude", {"effort": "huge"}, "claude setting 'effort' must be one of"),
         ("claude", {"effort": ""}, "leave the field out to leave it unset"),
         ("claude", {"effort": None}, "leave the field out to leave it unset"),

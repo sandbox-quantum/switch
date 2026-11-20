@@ -59,6 +59,10 @@ CONTEXT_FIELDS: tuple[str, ...] = (
     # these say which side, as fields a search can filter on.
     "bridge",
     "platform",
+    # One auto-route decision (`delivery/router.py`): every line logged while a
+    # message is being decided carries it, and the decision backend is sent it
+    # as the request's id, so its own log line for the decision can be found.
+    "decision_id",
 )
 
 
@@ -75,6 +79,32 @@ class LogContext:
     console_name: str | None = None
     bridge: str | None = None
     platform: str | None = None
+    decision_id: str | None = None
+
+
+# A record that carries a structured payload of its own sets this attribute
+# (`logger.info(..., extra={STRUCTURED_FIELDS: {"decision": {...}}})`): a
+# mapping from a group name to that group's fields. The JSON formatter renders
+# each group as an object of that name and the OTLP log handler as
+# `<group>.<field>` attributes. For a record that is a fact in its own right,
+# like the decision record, rather than context every line in a scope shares.
+STRUCTURED_FIELDS = "switch_fields"
+
+StructuredValue = str | int | float | bool | None
+
+
+def structured_fields(
+    record: logging.LogRecord,
+) -> dict[str, dict[str, StructuredValue]]:
+    """The structured groups a record carries, or none."""
+    groups = getattr(record, STRUCTURED_FIELDS, None)
+    if not isinstance(groups, dict):
+        return {}
+    return {
+        str(group): dict(fields)
+        for group, fields in groups.items()
+        if isinstance(fields, dict)
+    }
 
 
 _EMPTY = LogContext()
@@ -141,6 +171,23 @@ def log_context(**fields: str | None) -> Iterator[None]:
     token = bind_log_context(**fields)
     with restore_unless_finalising(lambda: unbind_log_context(token)):
         yield
+
+
+MCP_IDENTITY_DIAGNOSTICS: ContextVar[bool] = ContextVar(
+    "mcp_identity_diagnostics", default=False
+)
+
+
+class McpIdentityDiagnosticFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if MCP_IDENTITY_DIAGNOSTICS.get():
+            # SDK validation diagnostics include raw vendor responses and exceptions.
+            record.msg = "MCP identity transport diagnostic (vendor details omitted)."
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+        return True
 
 
 class LogContextFilter(logging.Filter):

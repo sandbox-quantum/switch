@@ -223,7 +223,11 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-14
+            # `macos-14` (Apple silicon) was retired — its runner config is no
+            # longer supported ("configuration 'macos-14-arm64-us-default' is not
+            # supported"), same way `macos-13` Intel went. `macos-15` is the
+            # current Apple silicon image.
+            runner: macos-15
           - arch: x64
             # A native Intel runner rather than a flag on the Apple silicon job.
             # `npmRebuild` is off, so the native modules baked into the package are

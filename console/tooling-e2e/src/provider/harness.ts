@@ -66,6 +66,7 @@ const ROLE_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   opencode: 'opencode',
   antigravity: 'antigrav',
   cursor: 'cursor',
+  'deepseek-harness': 'deepseek',
   'claude-code': 'claude',
   codex: 'codex',
 };
@@ -90,6 +91,7 @@ export const PROVIDER_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   codex: 'codex',
   antigravity: 'antigravity',
   cursor: 'cursor',
+  'deepseek-harness': 'deepseek-harness',
 };
 
 /** How long to keep asking a controller to take the agent while it comes up. */
@@ -264,6 +266,10 @@ async function buildHarness(
     options: { auto_session: false },
   });
   undo.add(`agent ${witness.name} (${witness.id})`, deleteByName(witness.name));
+
+  // Creating the room invites the witness, which the server refuses for an
+  // agent the inviter may not address.
+  await switchClient.openAddressing(witness.id);
 
   // Registration is what mints the bots; wait for them so the room has them
   // as members and a later `@name` mention has something to resolve to.

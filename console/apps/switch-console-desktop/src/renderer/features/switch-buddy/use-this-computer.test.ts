@@ -18,10 +18,16 @@ function machine(kind: string | null, providers: number): OwnedMachine {
 
 describe('thisComputerState', () => {
   it('has failed, with why, when setting this computer up failed', () => {
-    expect(thisComputerState('No Docker.', [machine('this-computer', 2)])).toEqual({
+    expect(thisComputerState('No Docker.', [machine('this-computer', 0)])).toEqual({
       kind: 'failed',
       error: 'No Docker.',
     });
+    expect(thisComputerState('No Docker.', undefined)).toMatchObject({ kind: 'failed' });
+  });
+
+  it('is ready when this computer reports its providers after setting it up said it failed', () => {
+    const mine = machine('this-computer', 2);
+    expect(thisComputerState('Timed out.', [mine])).toEqual({ kind: 'ready', machine: mine });
   });
 
   it('has failed when the server runs no managed agents', () => {

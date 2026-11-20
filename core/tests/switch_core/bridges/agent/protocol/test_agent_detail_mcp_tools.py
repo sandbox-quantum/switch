@@ -127,6 +127,13 @@ async def _make_agent(
     return agent
 
 
+async def _caller(session: AsyncSession) -> str:
+    """The agent making the call: a real one, since it acts as its owner, who
+    owns nothing else here."""
+    owner = await _make_user(session, "caller-owner")
+    return (await _make_agent(session, "caller", owner_id=owner.id, known=False)).id
+
+
 class TestListAgents:
     async def test_unfiltered_lists_all_sorted_by_name(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -136,10 +143,11 @@ class TestListAgents:
             owner = await _make_user(session, "owner")
             await _make_agent(session, "zeta", owner_id=owner.id)
             await _make_agent(session, "alpha", owner_id=owner.id)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", None, None, None)
-        assert [a["name"] for a in out] == ["alpha", "zeta"]
+        out = await svc.list_agents(caller, None, None, None)
+        assert [a["name"] for a in out] == ["alpha", "caller", "zeta"]
 
     async def test_name_contains_is_case_insensitive_substring(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -149,9 +157,10 @@ class TestListAgents:
             owner = await _make_user(session, "owner")
             await _make_agent(session, "data-bot", owner_id=owner.id)
             await _make_agent(session, "chatter", owner_id=owner.id)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", "BOT", None, None)
+        out = await svc.list_agents(caller, "BOT", None, None)
         assert [a["name"] for a in out] == ["data-bot"]
 
     async def test_owner_name_filter(
@@ -163,9 +172,10 @@ class TestListAgents:
             owner_b = await _make_user(session, "bob")
             await _make_agent(session, "a1", owner_id=owner_a.id)
             await _make_agent(session, "b1", owner_id=owner_b.id)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", None, "alice", None)
+        out = await svc.list_agents(caller, None, "alice", None)
         assert [a["name"] for a in out] == ["a1"]
         assert out[0]["owner_name"] == "alice"
 
@@ -177,9 +187,10 @@ class TestListAgents:
             owner = await _make_user(session, "owner")
             await _make_agent(session, "known", owner_id=owner.id, known=True)
             await _make_agent(session, "other", owner_id=owner.id, known=False)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", None, None, "claude-code")
+        out = await svc.list_agents(caller, None, None, "claude-code")
         assert [a["name"] for a in out] == ["known"]
 
 
@@ -351,6 +362,7 @@ def _profile(
     display_name: str | None = None,
     icon_url: str | None = None,
     addressing: str | None = None,
+    mid_turn_delivery: str | None = None,
     third_party_avatars: bool = True,
 ) -> AgentProfileUpdate:
     return AgentProfileUpdate.parse(
@@ -358,6 +370,7 @@ def _profile(
         display_name=display_name,
         icon_url=icon_url,
         addressing=addressing,
+        mid_turn_delivery=mid_turn_delivery,
         third_party_avatars=third_party_avatars,
     )
 
@@ -440,6 +453,29 @@ class TestUpdateAgentDetail:
             assert agent is not None
             assert agent.addressing_policy == stored
 
+    async def test_mid_turn_delivery_is_set_and_read_back(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        req_id, target_id = await _owned_pair(session_factory)
+        assert (await svc.get_agent_detail(req_id, target_id)).mid_turn_delivery == (
+            "steer"
+        )
+
+        detail = await svc.update_agent_detail(
+            req_id, target_id, _profile(mid_turn_delivery="queue")
+        )
+
+        assert detail.mid_turn_delivery == "queue"
+        assert (await svc.get_agent_detail(req_id, target_id)).mid_turn_delivery == (
+            "queue"
+        )
+        # Another change leaves it as it was.
+        await svc.update_agent_detail(req_id, target_id, _profile(description="new"))
+        assert (await svc.get_agent_detail(req_id, target_id)).mid_turn_delivery == (
+            "queue"
+        )
+
     def test_invalid_values_are_refused_before_anything_is_written(self) -> None:
         with pytest.raises(ValueError, match="addressing must be one of"):
             _profile(addressing="everyone")
@@ -447,12 +483,16 @@ class TestUpdateAgentDetail:
             _profile(icon_url="http://localhost/icon.png")
         with pytest.raises(ValueError, match="description must not be blank"):
             _profile(description="   ")
+        with pytest.raises(
+            ValueError, match='mid_turn_delivery must be "steer" or "queue"'
+        ):
+            _profile(mid_turn_delivery="sometimes")
 
     def test_an_avatar_service_icon_is_refused_only_when_the_server_turns_them_off(
         self,
     ) -> None:
         dicebear = generated_icon_url("target")
-        with pytest.raises(InvalidIconUrl, match="third-party avatars turned off"):
+        with pytest.raises(InvalidIconUrl, match="third-party avatars are turned off"):
             _profile(icon_url=dicebear, third_party_avatars=False)
         assert _profile(icon_url=dicebear).columns == {"icon_url": dicebear}
         other = "https://example.com/r.png"

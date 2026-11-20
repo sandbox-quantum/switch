@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.models import CreatedChannel
 from switch_core.db.models import Client, CollaborationBridge, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -50,7 +51,7 @@ class _FakeProvisioning:
     async def invite_to_room(self, room_id: str, user_id: str) -> None:
         return None
 
-    async def kick_user(self, room_id: str, user_id: str) -> None:
+    async def kick_user(self, room_id: str, user_id: str, **_kwargs: object) -> None:
         return None
 
 
@@ -60,9 +61,9 @@ class _RecordingAdapter:
 
     async def create_channel(
         self, name: str, topic: str, *, channel_type: str = "channel_public"
-    ) -> str:
+    ) -> CreatedChannel:
         self._calls.append("create_channel")
-        return "chan-foreign"
+        return CreatedChannel(id="chan-foreign", name=name)
 
     async def create_dm_channel(self, **kwargs: Any) -> str:
         self._calls.append("create_dm_channel")
@@ -113,6 +114,14 @@ class _FakeLifecycle:
 
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
+
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
 
 
 class _NoRunningClients:

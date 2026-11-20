@@ -63,6 +63,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
+    CreatedChannel,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -517,6 +518,7 @@ class WebhookAdapter(PlatformAdapter):
                     channel_id=event.channel_id,
                     sender_id=event.sender_id,
                     sender_name=event.sender_name,
+                    sender_display_name=event.sender_name,
                     action_id=event.action_id,
                     value=event.value,
                     message_ref=event.message_id,
@@ -1003,7 +1005,8 @@ class WebhookAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         raise ChannelCreationUnsupported(
             "A webhook connection cannot create chats. Create the channel in "
             "your chat app and bind the room to its channel id."

@@ -40,7 +40,15 @@ const resolvePortsMock = vi.hoisted(() => vi.fn());
 const readPersistedPortsMock = vi.hoisted(() => vi.fn());
 const rememberPortsMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const ensureManagedServerMock = vi.hoisted(() => vi.fn(() => Promise.resolve({ id: 'srv-1' })));
-const passwordLoginMock = vi.hoisted(() => vi.fn(() => Promise.resolve({ success: true })));
+const passwordLoginMock = vi.hoisted(() =>
+  vi.fn(() =>
+    Promise.resolve({
+      success: true,
+      data: { id: 'u-1', name: 'Ada Lovelace', email: 'admin@switch.local', role: 'admin' },
+    })
+  )
+);
+const updateMyNameMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const logError = vi.hoisted(() => vi.fn());
 const logWarn = vi.hoisted(() => vi.fn());
 
@@ -99,6 +107,9 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
   setActiveServerId: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('@main/core/switch-servers/auth', () => ({ passwordLogin: passwordLoginMock }));
+// Reaches the reachability store, and through it the database client.
+vi.mock('@main/core/switch-servers/gateway-client', () => ({ updateMyName: updateMyNameMock }));
+vi.mock('./os-user-name', () => ({ osUserFullName: () => Promise.resolve('Ada Lovelace') }));
 vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
   reconcileServerWorkspaces: vi.fn(async () => {}),
 }));
@@ -118,12 +129,10 @@ const hostSecrets: LocalServerSecrets = {
   secretKeys: 'console:host-secret-keys',
   controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'host-admin-pw',
-  mattermostAdminPassword: 'host-mm-admin',
-  mattermostUserPassword: 'host-mm-user',
 };
-const hostPorts = { gateway: 41000, api: 41001, mattermost: 41002, postgres: 41003 };
+const hostPorts = { gateway: 41000, api: 41001, postgres: 41003 };
 const cachedSecrets: LocalServerSecrets = { ...hostSecrets, gatewayAdminPassword: 'cached-pw' };
-const cachedPorts = { gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 };
+const cachedPorts = { gateway: 3300, api: 8000, postgres: 5432 };
 
 function present(
   overrides: Partial<Extract<StackOnHost, { kind: 'present' }>> = {},
@@ -940,6 +949,39 @@ describe('the paths a shared start or join refuses or degrades on', () => {
     );
   });
 
+  it('renames the seeded Admin user to the OS account name after sign-in', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    passwordLoginMock.mockResolvedValueOnce({
+      success: true,
+      data: { id: 'u-1', name: 'Admin', email: 'admin@switch.local', role: 'admin' },
+    });
+
+    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({ kind: 'started' });
+    expect(updateMyNameMock).toHaveBeenCalledWith(expect.anything(), 'Ada Lovelace');
+  });
+
+  it('keeps a name the user already chose', async () => {
+    inspectStackMock.mockResolvedValue(present());
+
+    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({ kind: 'started' });
+    expect(updateMyNameMock).not.toHaveBeenCalled();
+  });
+
+  it('warns and carries on when renaming the Admin user fails', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    passwordLoginMock.mockResolvedValueOnce({
+      success: true,
+      data: { id: 'u-1', name: 'Admin', email: 'admin@switch.local', role: 'admin' },
+    });
+    updateMyNameMock.mockRejectedValueOnce(new Error('gateway down'));
+
+    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({ kind: 'started' });
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/could not rename default admin user/),
+      expect.objectContaining({ error: 'Error: gateway down' })
+    );
+  });
+
   it('has nothing to adopt on a host whose stack nobody shares', async () => {
     const { host } = sharedHost();
     const local = { ...host, sharedState: null } as unknown as ServerHost;
@@ -1167,7 +1209,7 @@ describe('choosing ports for a new stack', () => {
   it('chooses new ports when one it kept from a stack since gone is taken here', async () => {
     inspectStackMock.mockResolvedValue({ kind: 'absent' });
     const { host, checkNetworking } = sharedHost();
-    const fresh = { gateway: 42000, api: 42001, mattermost: 42002, postgres: 42003 };
+    const fresh = { gateway: 42000, api: 42001, postgres: 42003 };
     (host as unknown as { pickFreePorts: () => Promise<typeof fresh> }).pickFreePorts = vi.fn(
       async () => fresh
     );

@@ -52,6 +52,7 @@ from .test_discord_activity_view import (
     _snapshot,
 )
 from .test_discord_card_buttons import (
+    PRESSER_DISPLAY_NAME,
     PRESSER_ID,
     PRESSER_NAME,
     _buttons,
@@ -344,6 +345,7 @@ async def test_a_stop_press_goes_in_under_the_shared_action_id() -> None:
             channel_id=str(CHANNEL_ID),
             sender_id=str(PRESSER_ID),
             sender_name=PRESSER_NAME,
+            sender_display_name=PRESSER_DISPLAY_NAME,
             action_id=INTERRUPT_ACTION,
             value=RUNNING_TURN,
             message_ref=f"{CHANNEL_ID}:{STATUS_MESSAGE_ID}",

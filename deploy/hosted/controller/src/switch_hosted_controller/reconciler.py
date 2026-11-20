@@ -9,6 +9,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from .cloud import CloudResourceError, Ec2Cloud, rejected
+from .error_report import ErrorReport
 from .model import DesiredState, Machine, ObservedState
 from .store import MachineStore, require_recovery_allowed
 
@@ -18,12 +19,21 @@ LAUNCH_VISIBILITY_GRACE = timedelta(minutes=15)
 
 
 class Reconciler:
-    def __init__(self, store: MachineStore, cloud: Ec2Cloud, *, instance_type: str | None):
+    def __init__(
+        self,
+        store: MachineStore,
+        cloud: Ec2Cloud,
+        *,
+        instance_type: str | None,
+        errors: ErrorReport | None = None,
+    ):
         """`instance_type` is the type every machine moves onto when it next
-        launches, the cloud gateway's; None keeps each on the type it was created with."""
+        launches, the cloud gateway's; None keeps each on the type it was created with.
+        `errors` collects what a failed reconcile tells Core, as fixed words."""
         self._store = store
         self._cloud = cloud
         self._instance_type = instance_type
+        self._errors = errors
 
     def reconcile_all(self) -> None:
         for listed in self._store.list():
@@ -31,6 +41,8 @@ class Reconciler:
             try:
                 self._reconcile(claim)
             except Exception as exc:
+                if self._errors is not None:
+                    self._errors.record(exc)
                 message = _safe_error(exc)
                 logger.error("reconcile failed for machine %s: %s", claim.machine_id, message)
                 self._store.set_observed(claim, ObservedState.NEEDS_ATTENTION, message)
@@ -143,12 +155,15 @@ class Reconciler:
             return self._store.replace_terminated(terminated, unexpected=unexpected)
         if state == "stopped":
             if _bundle_ready(machine) and self._unchanged(claim, DesiredState.RUNNING):
-                if machine.bundle is not None and needs_new_user_data(
-                    machine.instance_bundle, machine.bundle
-                ):
-                    # An instance's user data is set when it launches, so it
-                    # makes way for one launched with the new bundle; the data
-                    # volume is kept. A running instance is stopped first.
+                if (
+                    machine.bundle is not None
+                    and needs_new_user_data(machine.instance_bundle, machine.bundle)
+                ) or self._outdated_launch_spec(machine, instance):
+                    # An instance's user data, image and type are set when it
+                    # launches, so it makes way for one launched with the new
+                    # bundle or onto the configured image and type; the data
+                    # volume is kept. A running instance is stopped first for a
+                    # new bundle; an outdated image waits for the machine to stop.
                     machine = self._store.mark_instance_terminate_issued(claim)
                     if not self._same_claim(claim, machine):
                         return machine
@@ -335,6 +350,22 @@ class Reconciler:
             )
         self._store.mark_instance_terminal_observed(machine.machine_id, instance["InstanceId"])
         return None
+
+    def _outdated_launch_spec(self, machine: Machine, instance: dict[str, Any]) -> bool:
+        """Whether a stopped instance should be replaced by one launched from the
+        configured image and instance type as it starts.
+
+        Only when its data volume is known to survive the termination: until
+        `enforce_data_retention` has run, the instance is started as it is and
+        moves at a later stop.
+        """
+        if machine.data_volume_id is None:
+            return False
+        mapping = _volume_mapping(instance, machine.data_volume_id)
+        if mapping is None or mapping.get("DeleteOnTermination") is not False:
+            return False
+        instance_type = self._instance_type or machine.instance_type
+        return machine.image_id != self._cloud.image_id or machine.instance_type != instance_type
 
     def _retention_expired(self, claim: Machine) -> bool:
         retain_until = self._store.get(claim.machine_id).retain_until

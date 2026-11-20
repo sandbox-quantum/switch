@@ -12,8 +12,10 @@ const provider = (id: string, name: string) => ({
   description: `${name} description`,
   docUrl: `https://${id}.example.com`,
   cliLabel: name,
+  shortName: name,
   loginCommand: `${id} login`,
   knownAgentType: id,
+  supportsAutoMode: true,
 });
 
 describe('agent provider catalogue', () => {
@@ -42,5 +44,28 @@ describe('agent provider catalogue', () => {
     expect(() =>
       registry.setAgentProviderCatalogue([provider('a', 'Ay'), provider('a', 'Ay again')])
     ).toThrow('names a provider twice');
+  });
+});
+
+describe('the providers a server offers', () => {
+  it('leaves out a flagged provider until its flag is on', async () => {
+    const { allFeatureFlagsOff } = await import('@shared/core/feature-flags/feature-flags');
+    const registry = await freshRegistry();
+    registry.setAgentProviderCatalogue([
+      provider('claude', 'Claude Code'),
+      provider('goose', 'Goose'),
+      provider('junie', 'Junie'),
+    ]);
+    const off = allFeatureFlagsOff();
+    const on = { ...off, additional_agent_providers: true };
+
+    expect(registry.offeredAgentProviders(off).map((p) => p.id)).toEqual(['claude']);
+    expect(registry.offeredAgentProviders(on).map((p) => p.id)).toEqual([
+      'claude',
+      'goose',
+      'junie',
+    ]);
+    expect(registry.providerOffered('goose', off)).toBe(false);
+    expect(registry.providerOffered('claude', off)).toBe(true);
   });
 });

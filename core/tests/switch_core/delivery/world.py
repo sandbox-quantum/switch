@@ -47,6 +47,7 @@ T0 = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 THREAD = ConversationRoute.THREAD_FOLLOW_UP
 CHANNEL = ConversationRoute.CHANNEL_FOLLOW_UP
 MAIN = ConversationRoute.MAIN_AGENT
+ONE_TO_ONE = ConversationRoute.ONE_TO_ONE
 
 
 def _settings() -> ConversationSettings:
@@ -99,6 +100,36 @@ class World:
             await session.commit()
         return event_id
 
+    async def join(self, *people: str) -> None:
+        """Give each person a membership row in the room, as a bridge does when
+        it sees them there."""
+        async with self.session_factory() as session:
+            for name in people:
+                client = await ClientStore().get_by_transport_user_id(
+                    session, self.mxid(name)
+                )
+                assert client is not None
+                await RoomStore().add_client(session, client.id, self.room_id)
+            await session.commit()
+
+    async def leave(self, *people: str) -> None:
+        """Take each person's membership row out of the room."""
+        async with self.session_factory() as session:
+            for name in people:
+                client = await ClientStore().get_by_transport_user_id(
+                    session, self.mxid(name)
+                )
+                assert client is not None
+                await RoomStore().remove_client(session, client.id, self.room_id)
+            await session.commit()
+
+    async def remove_agent(self, agent: str) -> None:
+        async with self.session_factory() as session:
+            await RoomStore().remove_agents(
+                session, self.room_id, [self.agents[agent].id]
+            )
+            await session.commit()
+
     async def assign(self, agent: str | None) -> None:
         """Make `agent` the room's main agent, or clear it with None."""
         async with self.session_factory() as session:
@@ -123,6 +154,7 @@ class World:
         *,
         settings: ConversationSettings | None = None,
         channel_type: str = "channel_public",
+        auto_route_on: bool = False,
     ) -> ConversationDecision:
         settings = settings or _settings()
         async with self.session_factory() as session:
@@ -149,6 +181,7 @@ class World:
                 channel_type=channel_type,
                 follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
                 main_agent_id=main_agent_in(room.metadata_),
+                auto_route_on=auto_route_on,
                 message=message,
             )
             return await conversation.decide(

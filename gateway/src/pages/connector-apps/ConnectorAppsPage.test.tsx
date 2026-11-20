@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CONNECTORS_NOT_ENABLED, type ConnectorApp, type ConnectorApps } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import ConnectorAppsPage from "./ConnectorAppsPage";
-import { audienceText, ONLY_THE_OPERATOR, PUBLIC_URL_BANNER } from "./connectorApps";
+import { audienceText, PUBLIC_URL_BANNER } from "./connectorApps";
 import { app } from "./testFixtures";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -63,8 +63,12 @@ function listOf(...apps: ConnectorApp[]): ConnectorApps {
   };
 }
 
-function operator(isOperator = true) {
-  vi.mocked(useAuth).mockReturnValue({ isOperator } as ReturnType<typeof useAuth>);
+// Only the operator reaches this page (the route table guards it); what it
+// reads is whether the server runs connectors at all.
+function connectors(enabled = true) {
+  vi.mocked(useAuth).mockReturnValue({
+    capabilities: { features: { service_connections: enabled } },
+  } as ReturnType<typeof useAuth>);
 }
 
 function card(slug: string) {
@@ -72,25 +76,19 @@ function card(slug: string) {
 }
 
 describe("ConnectorAppsPage", () => {
-  beforeEach(() => operator());
+  beforeEach(() => connectors());
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
   });
 
-  it("tells anyone but the operator whose page it is, and asks nothing of the server", () => {
-    operator(false);
+  it("says what to turn on where the server has no connectors, and asks nothing of it", () => {
+    connectors(false);
     const calls = serve(listOf());
     render(<ConnectorAppsPage />);
-    expect(screen.getByText(ONLY_THE_OPERATOR)).toBeTruthy();
-    expect(calls).toEqual([]);
-  });
-
-  it("says what to turn on where the server has no connectors at all", async () => {
-    serve(listOf(), { "GET /gateway/connector-apps": [404, { detail: "Not Found" }] });
-    render(<ConnectorAppsPage />);
-    expect(await screen.findByText(CONNECTORS_NOT_ENABLED)).toBeTruthy();
+    expect(screen.getByText(CONNECTORS_NOT_ENABLED)).toBeTruthy();
     expect(screen.queryAllByTestId(/connector-app-/)).toEqual([]);
+    expect(calls).toEqual([]);
   });
 
   it("lists every app, what needs setting up first, and who sets themselves up", async () => {
@@ -110,8 +108,59 @@ describe("ConnectorAppsPage", () => {
     expect(screen.getByText(/People are sent back to https:\/\/switch\.example\.test\./)).toBeTruthy();
   });
 
-  it("holds GitHub's set-up when the public URL is not https, saying why", async () => {
-    const blocked = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people back to Switch.";
+  it("opens the setup of the app a link named, and only one that still needs setting up", async () => {
+    window.history.pushState({}, "", "/settings/org/connector-apps?set_up=google-workspace");
+    serve(listOf(GITHUB, NONE_GOOGLE));
+    render(<ConnectorAppsPage />);
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    cleanup();
+
+    window.history.pushState({}, "", "/settings/org/connector-apps?set_up=github");
+    render(<ConnectorAppsPage />);
+    expect(await screen.findByText("Ready")).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    window.history.pushState({}, "", "/");
+  });
+
+  it("says a GitHub App short of write lets agents read only, and reads it again after a check", async () => {
+    const readOnly = { ...GITHUB, read_only: true, lacks_write: ["Contents", "Pull requests"] };
+    let listed = readOnly;
+    const calls = serve(listOf(readOnly), {
+      "GET /gateway/connector-apps": () => [200, listOf(listed)],
+      "POST /gateway/connector-apps/github/check": () => {
+        listed = GITHUB;
+        return [
+          200,
+          {
+            ok: true,
+            checks: [
+              {
+                name: "permissions",
+                ok: true,
+                message: "The App has the repository permissions agents are granted.",
+                field: null,
+                note: null,
+              },
+            ],
+          },
+        ];
+      },
+    });
+    render(<ConnectorAppsPage />);
+    await screen.findByTestId("connector-app-github");
+    const line =
+      "Agents can read only: the App lacks Contents and Pull requests write. Write grants are refused.";
+    expect(card("github").getByText(line)).toBeTruthy();
+    // A choice the operator made, not a fault: the card is still ready.
+    expect(card("github").getByText("Ready")).toBeTruthy();
+
+    fireEvent.click(card("github").getByRole("button", { name: "Check it works" }));
+    await waitFor(() => expect(card("github").queryByText(line)).toBeNull());
+    expect(calls.filter((c) => c.path === "/gateway/connector-apps").length).toBe(2);
+  });
+
+  it("holds GitHub's set-up when the public URL is neither https nor loopback, saying why", async () => {
+    const blocked = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, or a loopback http one (localhost, 127.0.0.1 or ::1), to send people back to Switch.";
     serve({
       ...listOf(
         {
@@ -366,7 +415,7 @@ describe("ConnectorAppsPage", () => {
       },
     });
     render(<ConnectorAppsPage />);
-    const chip = (await screen.findByText("Set on the server")).closest(".MuiChip-root")!;
+    const chip = (await screen.findByText("Set in configuration")).closest(".MuiChip-root")!;
     expect(chip.className).toContain("MuiChip-colorSuccess");
     expect(chip.className).toContain("MuiChip-filled");
     expect(

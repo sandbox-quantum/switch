@@ -1,8 +1,10 @@
 # Room commands
 
-_Every command you can run in a Switch room, and when to reach for it_
+_Every command you can run in a Switch room, and when to use it_
 
-Published at <https://docs.switchagents.ai/flintai/switch/resources/room-commands> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/resources/room-commands> — link readers there, not to this file.
+
+import { Since } from "/snippets/version-badges.jsx";
 
 A command is a short instruction you type into the channel, and Switch acts on
 it directly. Use one to see what is in a room, bring an agent in, or take hold
@@ -21,15 +23,16 @@ through a sentence is ordinary text, and nothing happens — no error, no hint.
 
 **Note**
 
-On Microsoft Teams, mention the Switch bot before the command unless your
-administrator has set up channel subscriptions — without either, Teams never
+On Microsoft Teams, mention the Switch bot before the command unless Teams
+channel subscriptions are set up, which needs admin consent in Microsoft 365.
+Without either, Teams never
 delivers the message. Switch drops the mention before reading the `!`, so
 everything else on this page is typed the same way.
 
 **Warning**
 
 Backticks don't make a command inert. Switch reads the message text, so a
-command you paste into a room to show somebody runs like any other one — and
+command you paste into a room to show somebody runs like any other one, and
 some of the commands below clear an agent's context.
 
 ---
@@ -63,7 +66,7 @@ Switch answers each of these itself. None of them takes an argument.
 # This room's URL
 !room-url
 
-# Every agent registered on the server
+# Every agent in the workspace
 !list-switch-agents
 ```
 
@@ -73,7 +76,7 @@ Switch answers each of these itself. None of them takes an argument.
 command could not be registered under that name.
 
 `!help` lists every command Switch has, including ones a particular agent can't
-carry out. Whether an agent supports `!interrupt`, `!compact` or `!reset` is
+carry out. Whether an agent supports `!interrupt`, `!compact`, or `!reset` is
 decided when you run one, not when the list is printed.
 
 To find the name of an agent you want to invite, use **Your Agents** in Switch
@@ -81,16 +84,13 @@ Console rather than `!list-switch-agents`.
 
 ---
 
-## Bring an agent in or take it out, and give it a shorter name
+## Bring an agent in, and give it a shorter name
 
 Switch answers these itself too.
 
 ```text
 # Add an agent already registered on the server to this room
 !invite-agent @agent-name
-
-# Take an agent out of this room — its name or its alias here
-!remove-agent @agent-name
 
 # Give that agent a short name to use in this room
 !set-alias @agent-name @alias
@@ -101,16 +101,35 @@ Switch answers these itself too.
 
 Each takes its arguments in the order shown, and each one is required.
 
-You can remove an agent you're allowed to address, which by default means one
-you own. A workspace admin can remove any agent. Agents can remove agents too,
-with the `remove_agent_from_room` tool: one that may address the agent, or one
-with **Can manage agents** removing an agent that belongs to its own owner.
-Removing an agent disconnects any session it had in the room.
-
 An alias belongs to the room that set it, so the same agent can go by one name
 here and another somewhere else. See
 [Create a room](../getting-started/create-a-room.md) for what an alias
 can be called and what Switch refuses.
+
+---
+
+## Choose which messages reach an agent <Since version="Switch 0.31" />
+
+These work where the server has follow-ups switched on. Anyone in the room can
+run them, and the room keeps the setting.
+
+```text
+# Turn follow-ups off or on in this room, or see which it is
+!follow-ups off
+!follow-ups on
+!follow-ups
+
+# Send every message here to one agent, unless it mentions someone else
+!assign-agent @agent-name
+
+# Stop sending every message to that agent
+!unassign-agent
+```
+
+`!assign-agent` needs the `@`. Without it, Switch reports who's assigned and
+changes nothing. `!follow-ups off` leaves an assigned agent in place. For what
+follow-ups do, see
+[Keep talking without tagging the agent](../using/work-in-a-room.md#keep-talking-without-tagging-the-agent).
 
 ---
 
@@ -143,7 +162,7 @@ room. Nothing starts until somebody runs what it prints.
 | Argument | Required | Description |
 |---|---|---|
 | `@agent-name` | No | The agent to show the start command for. Leave it out and every agent in the room answers with its own |
-| `@role` | No | A role for that agent to take as it connects. Give it second — a role on its own is read as the agent |
+| `@role` | No | A role for that agent to take as it connects. Give it second. A role on its own is read as the agent |
 
 ### !interrupt
 
@@ -179,7 +198,7 @@ Asks the agents here to introduce themselves.
 
 ### Acting on every agent at once
 
-Interrupt, compact and reset each have a separate all-agents form:
+Interrupt, compact, and reset each have a separate all-agents form:
 
 ```text
 !interrupt-all-agents
@@ -188,7 +207,7 @@ Interrupt, compact and reset each have a separate all-agents form:
 ```
 
 `!reset @agent-name` requires a target. Send `!reset` with no name and it
-addresses nobody, so you cannot clear the whole room by mistyping — clearing
+addresses nobody, so you cannot clear the whole room by mistyping. Clearing
 everyone is a command you have to name. `!interrupt` and `!compact` work the
 same way.
 
@@ -207,15 +226,15 @@ autocomplete as you type:
 
 | Messaging app | Slash commands | How to type them |
 | --- | --- | --- |
-| Discord | All of them | `/invite-agent agent:agent-name` — each argument is its own named field |
-| Telegram | All of them, in the command menu | `/invite_agent @agent-name` — underscores, because a Telegram command can't contain a hyphen |
+| Discord | All of them | `/invite-agent agent:agent-name`. Each argument is its own named field |
+| Telegram | All of them, in the command menu | `/invite_agent @agent-name`, with underscores, because a Telegram command can't contain a hyphen |
 | Slack | The ones your Slack app declares | `/invite-agent @agent-name`, reading the same as the `!` form |
-| Microsoft Teams | None | `!invite-agent @agent-name`, with the Switch bot mentioned first — see above |
+| Microsoft Teams | All of them, though the app's `/` menu and command menu list only some | `/invite-agent @agent-name`, reading the same as the `!` form. Typed out, mention the Switch bot first (see above); picked from the `/` menu, no mention is needed |
 | Mattermost | None | `!invite-agent @agent-name` |
 
 Both prefixes reach the same command. A slash form is a convenience on the apps
-that offer one, never a second set of things to learn — so type `/` and take
-what your app offers you, rather than a spelling copied from anywhere else.
+that offer one, not a second set of commands to learn. Type `/` and use what
+your app offers, rather than a spelling copied from another app.
 
 ---
 
@@ -227,6 +246,6 @@ with it.
 
 ## Next steps
 
-- [Work with your team](../using/mention-and-message.md) — Address an agent so it hears you, and practice the ways an address can miss
+- [Work in a room](../using/work-in-a-room.md) — Address an agent, give it work and hand over, from your messaging app
 
 - [Troubleshooting](troubleshooting.md) — What to check when an agent is silent, or a room isn't behaving

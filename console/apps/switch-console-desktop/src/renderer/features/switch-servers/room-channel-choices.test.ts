@@ -10,10 +10,17 @@ import { DEFAULT_ROOM_OPTIONS } from './room-create-request';
 // Mattermost's shape (26 lowercase letters and digits), kept low-entropy so it reads as made up.
 const MATTERMOST_ID = 'mm' + '0'.repeat(24);
 
-const bridge = (type: string, channelIdsRefused: string | null = null) => ({
+const bridge = (
+  type: string,
+  channelIdsRefused: string | null = null,
+  privateChannels: boolean | null = null,
+  privateChannelNeedsLinkedAccount = false
+) => ({
   type,
   displayName: `Acme ${type}`,
   channelIdsRefused,
+  privateChannels,
+  privateChannelNeedsLinkedAccount,
 });
 
 describe('the channel choices for a new room', () => {
@@ -31,11 +38,41 @@ describe('the channel choices for a new room', () => {
     expect(privateCard!.detail).toContain('the server’s admins');
   });
 
-  it('leaves out a private channel on Teams, which Switch cannot make there', () => {
+  it('offers a private channel where the server says it can make one, Teams included', () => {
+    const cards = channelChoiceCards(bridge('teams', null, true, true), true);
+    expect(cards.map((card) => card.value)).toEqual(['public', 'private', 'existing']);
+    expect(cards[1]!.detail).toBe('Only people added to it can see it.');
+  });
+
+  it('asks for a linked account only from someone who has none where one is needed', () => {
+    const teams = bridge('teams', null, true, true);
+    expect(channelChoiceCards(teams, false)[1]!.detail).toBe(
+      'Only people added to it can see it. Link your Acme teams account first: Acme teams needs you as its owner.'
+    );
+    // Elsewhere the account is how Switch puts them in it.
+    expect(channelChoiceCards(bridge('slack', null, true, true), false)[1]!.detail).toBe(
+      'Only people invited to it can see it. Link your Acme slack account first, so Switch can add you to it.'
+    );
+    // Not while the answer is unknown, and never where no account is needed.
+    expect(channelChoiceCards(teams, null)[1]!.detail).toBe('Only people added to it can see it.');
+    expect(channelChoiceCards(bridge('slack', null, true), false)[1]!.detail).toBe(
+      'Only people invited to it can see it.'
+    );
+  });
+
+  it('leaves out a private channel where the server says it cannot make one', () => {
+    expect(channelChoiceCards(bridge('slack', null, false)).map((card) => card.value)).toEqual([
+      'public',
+      'existing',
+    ]);
+  });
+
+  it('leaves out a private channel on Teams for a server that does not say, which cannot make one', () => {
     expect(channelChoiceCards(bridge('teams')).map((card) => card.value)).toEqual([
       'public',
       'existing',
     ]);
+    expect(channelChoiceCards(bridge('slack')).map((card) => card.value)).toContain('private');
   });
 
   it('leaves out an existing channel where the app cannot be pointed at one by id', () => {

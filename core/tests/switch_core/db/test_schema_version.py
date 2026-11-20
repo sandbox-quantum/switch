@@ -7,7 +7,9 @@ under test is the comparison against this build's heads, not the migrations.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from itertools import takewhile
 from pathlib import Path
+from shutil import copyfile
 from typing import Any
 
 import pytest
@@ -172,13 +174,26 @@ class TestAheadByExpandOnlyRevisions:
 
 
 def _run(connection: Connection, alembic_cfg: AlembicConfig, target: str) -> None:
-    """Upgrade or downgrade on an explicit connection, with the recorder the
-    repository's env.py installs, without loading env.py itself."""
+    """Upgrade to "head", or downgrade to `target`, on an explicit connection."""
+    _migrate(connection, alembic_cfg, target, upgrade=target == "head")
+
+
+def _upgrade_to(
+    connection: Connection, alembic_cfg: AlembicConfig, target: str
+) -> None:
+    _migrate(connection, alembic_cfg, target, upgrade=True)
+
+
+def _migrate(
+    connection: Connection, alembic_cfg: AlembicConfig, target: str, upgrade: bool
+) -> None:
+    """Migrate on an explicit connection, with the recorder the repository's
+    env.py installs, without loading env.py itself."""
     script = ScriptDirectory.from_config(alembic_cfg)
 
     def migrate(revision: Any, context: Any) -> Any:
-        if target == "head":
-            return script._upgrade_revs("head", revision)
+        if upgrade:
+            return script._upgrade_revs(target, revision)
         return script._downgrade_revs(target, revision)
 
     with EnvironmentContext(alembic_cfg, script, fn=migrate) as environment:
@@ -231,3 +246,63 @@ async def test_applying_the_chain_records_the_expand_only_revisions(
             text("SELECT to_regclass('schema_expand_only_revisions')")
         )
     assert table is None
+
+
+async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
+    scratch_engine: AsyncEngine, alembic_cfg: AlembicConfig, tmp_path: Path
+) -> None:
+    script = ScriptDirectory.from_config(alembic_cfg)
+    revision = script.get_revision("ab802e19c401")
+    assert isinstance(revision.down_revision, str)
+    # The previous build lacks this revision and everything chained after it.
+    newer = list(
+        reversed(list(script.iterate_revisions("heads", revision.down_revision)))
+    )
+    # It serves on this revision and the expand-only ones right after it; a later
+    # revision that is not expand-only is refused, as it should be.
+    accepted = list(
+        takewhile(lambda r: getattr(r.module, "expand_only", False) is True, newer)
+    )
+    assert accepted[0].revision == revision.revision
+    newer_files = {Path(r.path).name for r in newer}
+
+    old_scripts = tmp_path / "previous-build"
+    old_versions = old_scripts / "versions"
+    old_versions.mkdir(parents=True)
+    for source in (Path(script.dir) / "versions").glob("*.py"):
+        if source.name not in newer_files:
+            copyfile(source, old_versions / source.name)
+    old_config = AlembicConfig()
+    old_config.set_main_option("script_location", str(old_scripts))
+    assert ScriptDirectory.from_config(old_config).get_heads() == [
+        revision.down_revision
+    ]
+
+    async with scratch_engine.begin() as connection:
+        await connection.run_sync(_upgrade_to, alembic_cfg, accepted[-1].revision)
+    async with scratch_engine.connect() as connection:
+        parent = await connection.scalar(
+            text(
+                "SELECT down_revision FROM schema_expand_only_revisions "
+                "WHERE revision = :revision"
+            ),
+            {"revision": revision.revision},
+        )
+    assert parent == revision.down_revision
+    assert await schema_ahead_through_expand_only(scratch_engine, old_config)
+    await require_schema_at_head(scratch_engine, old_config)
+
+    async with scratch_engine.begin() as connection:
+        await connection.run_sync(_run, alembic_cfg, revision.down_revision)
+    await require_schema_at_head(scratch_engine, old_config)
+    async with scratch_engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM schema_expand_only_revisions "
+                    "WHERE revision = :revision"
+                ),
+                {"revision": revision.revision},
+            )
+            == 0
+        )

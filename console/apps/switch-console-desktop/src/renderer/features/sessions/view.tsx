@@ -7,6 +7,7 @@ import {
   getSessionStore,
   sessionViewKind,
 } from '@renderer/features/sessions/stores/session-selectors';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { appState } from '@renderer/lib/stores/app-state';
 import { createSessionCommandProvider } from './commands';
 import { SessionMainPanel } from './main-panel';
@@ -67,13 +68,13 @@ export const sessionView = {
         ? (params as { sessionId?: unknown }).sessionId
         : undefined;
     if (typeof locationId !== 'string' || typeof sessionId !== 'string') {
-      return { ok: false, redirect: 'home' };
+      return homeRedirect();
     }
     if (
       !appState.locations.locations.has(locationId) &&
       !appState.locations.pendingCreationIds.has(locationId)
     ) {
-      return { ok: false, redirect: 'home' };
+      return homeRedirect();
     }
     const sessionManager = getSessionManagerStore(locationId);
     if (sessionManager && !sessionManager.sessions.has(sessionId)) {

@@ -4,6 +4,12 @@ import { homedir } from 'node:os';
 import { extname, resolve, sep } from 'node:path';
 import type { IDisposable, IInitializable } from '@switch-console/shared';
 import { app, dialog, shell } from 'electron';
+import {
+  freshReplayDirName,
+  readsUserDataDirEnv,
+  USER_DATA_DIR_ENV,
+  userDataDirName,
+} from '@main/app/user-data-dir';
 import { getMainWindow } from '@main/app/window';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -164,20 +170,32 @@ class AppService implements IInitializable, IDisposable {
     } catch {
       throw new Error('Invalid URL format');
     }
-    // http/https plus the messaging-app schemes used by the sidebar "open in
-    // Slack/Mattermost" room deeplinks (links the gateway builds from a room's
-    // bridge); other schemes (file:, javascript:, …) stay blocked. Telegram
-    // needs no entry: its links are ordinary https `t.me` URLs.
-    if (!['http:', 'https:', 'slack:', 'mattermost:'].includes(parsedUrl.protocol)) {
+    // http/https plus the messaging-app schemes used to open a room's channel
+    // in its desktop app (links built from a room's bridge); other schemes
+    // (file:, javascript:, …) stay blocked. Telegram needs no entry: its links
+    // are ordinary https `t.me` URLs.
+    if (!['http:', 'https:', 'slack:', 'mattermost:', 'discord:'].includes(parsedUrl.protocol)) {
       throw new Error(
         `Protocol "${parsedUrl.protocol}" is not allowed. Only http, https, ` +
-          `slack and mattermost URLs are permitted.`
+          `slack, mattermost and discord URLs are permitted.`
       );
     }
     await shell.openExternal(url);
   }
 
   quit(): void {
+    app.quit();
+  }
+
+  /** Restart on a brand-new, empty data folder; the next normal launch is back on the real one. */
+  relaunchAsFreshInstall(): void {
+    if (!readsUserDataDirEnv()) {
+      throw new Error('Replay as a fresh install is only available in dev and Canary builds.');
+    }
+    process.env[USER_DATA_DIR_ENV] = freshReplayDirName(userDataDirName(), Date.now());
+    log.info('Relaunching as a fresh install', { userDataDir: process.env[USER_DATA_DIR_ENV] });
+    // before-quit ends in app.exit(0), which honours the relaunch scheduled here.
+    app.relaunch();
     app.quit();
   }
 

@@ -160,8 +160,26 @@ async def test_the_admin_removing_a_member_takes_over_what_they_own(
 
     token = _token(admin_id, "remover@example.invalid", TENANT_A)
     async with _client(_app(session_factory), token) as client:
+        preview = await client.get(f"/tenants/{TENANT_A}/members/{member_id}/removal")
         response = await client.delete(f"/tenants/{TENANT_A}/members/{member_id}")
+    assert preview.status_code == 200, preview.text
     assert response.status_code == 200, response.text
+    heir = preview.json()["handed_over_to"]
+    assert heir["user_id"] == admin_id
+    assert heir["name"] and heir["email"]
+    assert response.json() == {
+        "ok": True,
+        "warning": None,
+        "handed_over_to": heir,
+        "handed_over": {
+            "room": 1,
+            "package": 1,
+            "reference": 1,
+            "reference_type": 1,
+            "document": 1,
+            "template": 1,
+        },
+    }
 
     async with tenant_session(session_factory, TENANT_A) as session:
         for model, row_id in handed.items():
@@ -248,9 +266,12 @@ async def test_from_outside_the_workspace_the_longest_standing_admin_takes_over(
             row.created_at = when  # type: ignore[assignment]
         await session.commit()
 
-        assert await removal_heir(session, TENANT_A, leaving, outsider) == first
-        assert await removal_heir(session, TENANT_A, leaving, None) == first
-        assert await removal_heir(session, TENANT_A, leaving, later) == later
+        assert (
+            await removal_heir(session, TENANT_A, leaving, outsider, lock=True) == first
+        )
+        assert await removal_heir(session, TENANT_A, leaving, None, lock=True) == first
+        assert await removal_heir(session, TENANT_A, leaving, later, lock=True) == later
+        assert await removal_heir(session, TENANT_A, leaving, None, lock=False) == first
 
 
 async def test_with_no_other_admin_what_they_own_stays_theirs(
@@ -261,4 +282,45 @@ async def test_with_no_other_admin_what_they_own_stays_theirs(
         session_factory, name="leaving", tenant_id=TENANT_A, role="member"
     )
     async with tenant_session(session_factory, TENANT_A) as session:
-        assert await removal_heir(session, TENANT_A, leaving, None) is None
+        assert await removal_heir(session, TENANT_A, leaving, None, lock=True) is None
+
+
+async def test_an_admin_leaving_is_told_who_takes_over_before_and_after(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Leaving leaves no remover to take over: the longest-standing other
+    admin does, and both the preview and the removal name them."""
+    await _make_tenant(session_factory, TENANT_A)
+    first = await _make_member(
+        session_factory, name="first-admin", tenant_id=TENANT_A, role="admin"
+    )
+    leaving = await _make_member(
+        session_factory, name="leaving", tenant_id=TENANT_A, role="admin"
+    )
+    async with tenant_session(session_factory, TENANT_A) as session:
+        session.add(_room(leaving))
+        await session.commit()
+
+    token = _token(leaving, "leaving@example.invalid", TENANT_A)
+    async with _client(_app(session_factory), token) as client:
+        preview = await client.get(f"/tenants/{TENANT_A}/members/{leaving}/removal")
+        response = await client.delete(f"/tenants/{TENANT_A}/members/{leaving}")
+    assert preview.status_code == 200, preview.text
+    assert response.status_code == 200, response.text
+    assert preview.json()["handed_over_to"]["user_id"] == first
+    body = response.json()
+    assert body["handed_over_to"] == preview.json()["handed_over_to"]
+    assert body["handed_over"] == {"room": 1}
+
+
+async def test_the_preview_of_removing_a_non_member_is_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _make_tenant(session_factory, TENANT_A)
+    admin_id = await _make_member(
+        session_factory, name="admin", tenant_id=TENANT_A, role="admin"
+    )
+    token = _token(admin_id, "admin@example.invalid", TENANT_A)
+    async with _client(_app(session_factory), token) as client:
+        response = await client.get(f"/tenants/{TENANT_A}/members/nobody/removal")
+    assert response.status_code == 404, response.text

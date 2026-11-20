@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -79,6 +79,11 @@ async def _eventually(check: Callable[[], bool]) -> None:
     async with asyncio.timeout(DELIVERY_TIMEOUT):
         while not check():
             await asyncio.sleep(0.02)
+
+
+def _listening(process: _Process, room_id: str) -> bool:
+    """Whether the process's copy of the client will be woken for the room."""
+    return bool(process.listener.wakers.get(room_id))
 
 
 async def _settled(transport: PostgresTransport) -> None:
@@ -251,19 +256,18 @@ async def _is_member(
 async def _arrivals(
     session_factory: async_sessionmaker[AsyncSession], room_id: str, user_id: str
 ) -> int:
+    """Membership rows that are arrivals: a removal writes a departure too."""
     async with session_factory() as session:
-        return int(
-            await session.scalar(
-                select(func.count())
-                .select_from(Message)
-                .where(
+        contents = (
+            await session.scalars(
+                select(Message.content).where(
                     Message.room_id == room_id,
                     Message.sender_id == user_id,
                     Message.event_type == "m.room.member",
                 )
             )
-            or 0
-        )
+        ).all()
+    return sum(1 for c in contents if (c or {}).get("membership") != "leave")
 
 
 def _kick_after_read(
@@ -395,7 +399,10 @@ class TestAcrossProcesses:
         )
         # The copy in the process that served the change joined itself.
         assert second_id in here.transport._watching
-        await _eventually(lambda: second_id in there.transport._watching)
+        # Wait for the other copy to be listening for the room, not just to
+        # have claimed it: the claim comes before it reads where to start and
+        # subscribes, and a message announced in between wakes nobody there.
+        await _eventually(lambda: _listening(there, second_id))
         async with session_factory() as session:
             membership = await session.get(
                 ClientRoom, {"client_id": client_id, "room_id": second_id}

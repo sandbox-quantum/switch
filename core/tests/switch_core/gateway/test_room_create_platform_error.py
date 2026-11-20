@@ -19,6 +19,9 @@ from fastapi import HTTPException
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
+    ChannelInUse,
+    ChannelNotUsable,
+    PrivateChannelOwnerMissing,
 )
 from switch_core.gateway.rooms import create_room
 from switch_core.gateway.schemas import RoomCreateRequest
@@ -38,6 +41,21 @@ class _RaisingRoomService:
         raise self._exc
 
 
+class _NoAgents:
+    """No agent by those names, so the invite rule has nothing to refuse."""
+
+    async def get_many(self, session: Any, ids: Any) -> list[Any]:
+        return []
+
+    async def get_by_names(self, session: Any, names: Any) -> list[Any]:
+        return []
+
+
+class _Session:
+    async def commit(self) -> None:
+        return None
+
+
 def _request() -> RoomCreateRequest:
     return RoomCreateRequest(
         name="Switch Test Room",
@@ -54,14 +72,16 @@ async def _call(exc: Exception) -> HTTPException:
     with pytest.raises(HTTPException) as excinfo:
         await create_room(
             req=_request(),
-            session=None,  # type: ignore[arg-type]
+            session=_Session(),  # type: ignore[arg-type]
             room_service=_RaisingRoomService(exc),  # type: ignore[arg-type]
             room_store=None,  # type: ignore[arg-type]
             bridge_store=None,  # type: ignore[arg-type]
             external_user_store=None,  # type: ignore[arg-type]
             protocol=None,  # type: ignore[arg-type]
+            decisions=None,  # type: ignore[arg-type]
             user=type("U", (), {"id": "u1"})(),  # type: ignore[arg-type]
             is_admin=False,
+            agent_store=_NoAgents(),  # type: ignore[arg-type]
         )
     return excinfo.value
 
@@ -85,6 +105,29 @@ async def test_switch_declining_is_still_a_400() -> None:
     assert "turned off" in exc.detail
 
 
+async def test_a_channel_another_room_uses_is_a_409() -> None:
+    exc = await _call(ChannelInUse("C0123ABCD"))
+
+    assert exc.status_code == 409
+    assert "C0123ABCD is already used by a room" in exc.detail
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ChannelNotUsable("Slack cannot find channel C1 (channel_not_found)."),
+        PrivateChannelOwnerMissing("Link your Teams account first."),
+    ],
+)
+async def test_a_channel_the_room_cannot_have_is_a_400_saying_why(
+    error: Exception,
+) -> None:
+    exc = await _call(error)
+
+    assert exc.status_code == 400
+    assert exc.detail == str(error)
+
+
 async def test_an_ordinary_bug_is_not_dressed_up_as_a_platform_refusal() -> None:
     # The 502 claims the platform answered. A KeyError in our own code did not,
     # so it must keep propagating as an unhandled error rather than being
@@ -92,12 +135,14 @@ async def test_an_ordinary_bug_is_not_dressed_up_as_a_platform_refusal() -> None
     with pytest.raises(KeyError):
         await create_room(
             req=_request(),
-            session=None,  # type: ignore[arg-type]
+            session=_Session(),  # type: ignore[arg-type]
             room_service=_RaisingRoomService(KeyError("boom")),  # type: ignore[arg-type]
             room_store=None,  # type: ignore[arg-type]
             bridge_store=None,  # type: ignore[arg-type]
             external_user_store=None,  # type: ignore[arg-type]
             protocol=None,  # type: ignore[arg-type]
+            decisions=None,  # type: ignore[arg-type]
             user=type("U", (), {"id": "u1"})(),  # type: ignore[arg-type]
             is_admin=False,
+            agent_store=_NoAgents(),  # type: ignore[arg-type]
         )

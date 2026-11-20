@@ -23,9 +23,13 @@ import re
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.archived_workspace import is_archived
 from switch_core.bridges.agent.auth import ControllerAuthError, ControllerPrincipal
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
-from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.protocol.controller_presence import (
+    Binding,
+    ControllerPresence,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.tenant_lookup import tenant_of_api_key
@@ -92,19 +96,27 @@ class ManagementAuthenticator:
                 controller_id=claims.controller_id,
                 owner_id=claims.owner_id,
                 tenant_id=claims.tenant_id,
+                key_id=claims.key_id,
             )
         )
 
     async def current(self, principal: ControllerPrincipal) -> ControllerPrincipal:
         """The controller `principal` names, while it keeps the authority its
-        token gave it: not revoked, and owned by the same person. Every request
-        made with a controller access token is checked here, and every call on
-        a controller's socket, which authenticated once when it opened."""
+        token gave it: not revoked, owned by the same person, and, for a token
+        naming the credential it was exchanged for, still holding that
+        credential. Every request made with a controller access token is
+        checked here, and every call on a controller's socket, which
+        authenticated once when it opened.
+
+        A token for a credential the controller no longer has (rotated away,
+        or replaced when another controller on the same device took it over)
+        is refused as expired: its holder exchanges its credential again,
+        which only the controller's current process can do."""
         cached = self._auth_cache.controller(
             principal.tenant_id, principal.controller_id
         )
         if cached is not None and cached.owner_id == principal.owner_id:
-            return cached
+            return _holding(principal, cached.key_id)
 
         ticket = self._auth_cache.ticket()
         async with tenant_session(
@@ -126,9 +138,21 @@ class ManagementAuthenticator:
             controller_id=controller.id,
             owner_id=controller.owner_id,
             tenant_id=principal.tenant_id,
+            key_id=controller.api_key_id,
         )
         self._auth_cache.put_controller(current, ticket)
-        return current
+        return _holding(principal, controller.api_key_id)
+
+    async def stopped_by_archive(self, binding: Binding) -> bool:
+        """Whether `binding` is stopped because its workspace is archived: its
+        controller may then not act for the agent, on an agent route or its
+        socket, as the agent's own key may not (`bridges/agent/auth.py`).
+        Read only for a binding not running, so acting for a running agent
+        costs nothing more."""
+        if binding.running:
+            return False
+        async with tenant_session(self._session_factory, binding.tenant_id) as session:
+            return await is_archived(session, binding.tenant_id)
 
     async def tenant_of_secret(self, secret: str) -> str | None:
         """The tenant an enrollment code or controller credential belongs to,
@@ -136,3 +160,14 @@ class ManagementAuthenticator:
         return await tenant_of_api_key(
             self._session_factory, tokens.hash_secret(secret)
         )
+
+
+def _holding(principal: ControllerPrincipal, key_id: str | None) -> ControllerPrincipal:
+    """`principal`, while the controller holds the credential its token names."""
+    if principal.key_id is not None and principal.key_id != key_id:
+        raise ControllerAuthError(
+            reason_codes.TOKEN_EXPIRED,
+            "The access token was issued for a credential this controller no "
+            "longer has; exchange the credential again.",
+        )
+    return principal

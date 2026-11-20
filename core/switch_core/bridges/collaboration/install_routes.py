@@ -62,6 +62,7 @@ from switch_core.bridges.collaboration.install_service import (
     Revocation,
     WebhookBridgeUnavailable,
     WebhookTarget,
+    WebhookWorkspaceArchived,
     WebhookWorkspaceUnknown,
     WebhookWorkspaceUnowned,
 )
@@ -727,6 +728,11 @@ def create_messaging_install_router(
                 else:
                     logger.warning("Dropped a %s event: %s", platform, failure)
                 background.add_task(_unowned, platform, failure.workspace_id, event)
+                continue
+            except WebhookWorkspaceArchived as failure:
+                # Dropped with a 200, as below, and expected rather than
+                # alarming: the workspace was archived on purpose.
+                logger.info("Dropped a %s event: %s", platform, failure)
                 continue
             except WebhookWorkspaceUnknown as failure:
                 # A 200 for an event that reached nobody, which is the one place

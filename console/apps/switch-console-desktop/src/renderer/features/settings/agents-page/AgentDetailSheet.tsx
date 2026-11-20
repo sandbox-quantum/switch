@@ -45,9 +45,10 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
               <Label>Installation</Label>
               {sourcesDiffer && (
                 <p className="text-xs text-foreground-muted">
-                  What Console finds on its own PATH, used to install and update. The status above
-                  is what this computer’s agents controller reported to Switch, and it looks in
-                  places Console may not.
+                  What Console finds, used to install and update, including an executable chosen
+                  here. The status above is what this computer’s agents controller reported to
+                  Switch: it looks for the CLI on its own PATH and does not use an executable chosen
+                  here.
                 </p>
               )}
               <InstallSection

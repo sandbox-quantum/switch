@@ -1,0 +1,139 @@
+# The name, description and use case the catalogue lists each room template
+# under, by slug: a version 2 document has no place for them. A use case is
+# one of switch_core/template_use_cases.py.
+all-hands-prep-room:
+  name: All-Hands Prep Room
+  description: 'Preparing company all-hands and town halls: talking points, slides and speakers.'
+  use_case: ops
+architecture-decision-room:
+  name: Architecture Decision Room
+  description: Evaluating and documenting significant technical decisions (ADRs) with input from senior engineers.
+  use_case: engineering
+brand-messaging-room:
+  name: Brand & Messaging Room
+  description: Keeping the brand consistent, reviewing positioning updates and evolving the messaging framework.
+  use_case: marketing
+budget-planning-room:
+  name: Budget Planning Room
+  description: 'The annual or quarterly budget cycle: department submissions, reviews and approval decisions.'
+  use_case: ops
+bug-triage-room:
+  name: Bug Triage Room
+  description: 'Daily bug triage: reviewing incoming bugs, setting severity, assigning owners and tracking resolution.'
+  use_case: engineering
+campaign-war-room:
+  name: Campaign War Room
+  description: Planning and running a marketing campaign end to end across channels, from strategy through performance analysis.
+  use_case: marketing
+code-review-room:
+  name: Code Review Room
+  description: 'Coordinating code review in one place: PR discussions, review assignments and quality standards.'
+  use_case: engineering
+competitive-intel-room:
+  name: Competitive Intel Room
+  description: Tracking competitor moves, pricing changes, feature launches and positioning shifts on an ongoing basis.
+  use_case: marketing
+content-pipeline:
+  name: Content Pipeline
+  description: 'Planning, drafting, reviewing and publishing content: blog posts, case studies, social media and newsletters.'
+  use_case: marketing
+customer-health-room:
+  name: Customer Health Room
+  description: 'Watching key customer accounts: engagement, churn risk and coordinated save plays.'
+  use_case: support
+deal-room:
+  name: Deal Room
+  description: Coordinating a complex enterprise deal across the account executive, solution engineer, legal and leadership, from opportunity through close.
+  use_case: sales
+deploy-watch-room:
+  name: Deploy Watch Room
+  description: 'Watching a production deployment in real time: metrics, regressions and rollback decisions.'
+  use_case: engineering
+design-review-studio:
+  name: Design Review Studio
+  description: Design critiques and feedback sessions on work in progress.
+  use_case: product
+escalation-room:
+  name: Escalation Room
+  description: Handling urgent customer escalations that need support, engineering and leadership to respond together.
+  use_case: support
+event-planning-room:
+  name: Event Planning Room
+  description: Coordinating conferences, webinars and meetups from planning through post-event follow-up.
+  use_case: marketing
+executive-briefing-room:
+  name: Executive Briefing Room
+  description: 'Preparing and delivering regular executive updates: weekly status, board prep and strategic decisions.'
+  use_case: ops
+financial-close-room:
+  name: Financial Close Room
+  description: Month-end and quarter-end close coordination between accounting, FP&A and department leads.
+  use_case: ops
+fundraising-war-room:
+  name: Fundraising War Room
+  description: 'Coordinating a funding round across founders, finance and legal: investor outreach, term sheets and due diligence.'
+  use_case: ops
+hiring-pipeline:
+  name: Hiring Pipeline
+  description: 'Coordinating hiring for a role from job post through offer: interview scheduling, feedback and candidate evaluation.'
+  use_case: ops
+incident-war-room:
+  name: Incident War Room
+  description: 'Real-time incident response: coordinating investigation, communication and resolution during a live outage.'
+  use_case: engineering
+launch-war-room:
+  name: Launch War Room
+  description: Coordinating a product launch across marketing, product, sales and engineering.
+  use_case: product
+okr-tracker:
+  name: OKR Tracker
+  description: Tracking quarterly OKR progress, flagging objectives at risk and coordinating cross-team dependencies.
+  use_case: ops
+on-call-handoff-room:
+  name: On-Call Handoff Room
+  description: 'Shift handoffs between on-call engineers: passing on active issues, ongoing investigations and known risks.'
+  use_case: engineering
+onboarding-buddy-room:
+  name: Onboarding Buddy Room
+  description: 'Supporting a new hire through their first 30, 60 and 90 days: questions, the onboarding checklist and the right people to meet.'
+  use_case: personal
+pipeline-review-room:
+  name: Pipeline Review Room
+  description: 'The weekly pipeline review: forecasting, deal coaching and commit calls across the sales team.'
+  use_case: sales
+post-mortem-room:
+  name: Post-Mortem Room
+  description: 'Blameless post-incident review: documenting the timeline, root cause, contributing factors and action items.'
+  use_case: engineering
+procurement-review-room:
+  name: Procurement Review Room
+  description: Evaluating and approving vendor contracts, large purchases and tool subscriptions.
+  use_case: ops
+product-trio-room:
+  name: Product Trio Room
+  description: A PM, a designer and a tech lead working on a feature together, from discovery through delivery.
+  use_case: product
+release-train:
+  name: Release Train
+  description: 'Coordinating a release cycle: what is shipping, cherry-picks, go/no-go decisions and release notes.'
+  use_case: engineering
+rfp-response-room:
+  name: RFP Response Room
+  description: Coordinating responses to RFPs and security questionnaires with input from engineering, security, legal and product.
+  use_case: sales
+sales-enablement-room:
+  name: Sales Enablement Room
+  description: Creating and updating sales collateral, playbooks, objection handling guides and competitive battle cards.
+  use_case: sales
+seo-analytics-room:
+  name: SEO & Analytics Room
+  description: Ongoing SEO work, content performance analysis and organic growth strategy.
+  use_case: marketing
+sprint-room:
+  name: Sprint Room
+  description: 'An engineering team''s daily coordination: standups, blockers, PR reviews and sprint progress.'
+  use_case: engineering
+user-research-lab:
+  name: User Research Lab
+  description: Turning user interviews, survey results and usability tests into actionable insights.
+  use_case: research

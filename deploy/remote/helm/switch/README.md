@@ -1,8 +1,7 @@
 # Switch Helm chart
 
 Deploys Switch into a Kubernetes cluster: switch-core (the API and all bridge
-adapters), the gateway dashboard, Postgres, and
-optionally Mattermost.
+adapters), the gateway dashboard, and Postgres.
 
 ```bash
 helm install switch oci://ghcr.io/<owner>/charts/switch --version <version> -f my-values.yaml
@@ -39,10 +38,9 @@ back: a button press is delivered by the Mattermost server over HTTP, to an
 address Switch hands it when it draws the card. So it needs port 8081 reachable
 from Mattermost — usually a cluster-internal Service port and nothing public.
 Set `switchCore.collaborationCallback.enabled` and `helm install` prints the
-address to configure on the bridge; the bundled Mattermost is told to accept
-that address at the same time, which it will otherwise refuse as a private
-host. A Mattermost you run yourself needs the same entry adding by hand
-(`ServiceSettings.AllowedUntrustedInternalConnections`).
+address to configure on the bridge. The Mattermost server needs that address
+on its `ServiceSettings.AllowedUntrustedInternalConnections`, or it refuses to
+call it as a private host.
 
 A bridge with no `callback_base_url` draws no buttons and its requests are
 answered by typing, which is a reduced service and says so in the logs. A
@@ -156,6 +154,39 @@ example), leave `tls.enabled` false and annotate.
 
 ---
 
+## Upgrading from a release that deployed Mattermost
+
+The chart no longer deploys Mattermost or its setup Job. Upgrading removes the
+Mattermost Deployment and Service but leaves its data in place:
+
+- The `mattermost` database stays in Postgres; nothing drops it.
+- The `<release>-mattermost-data` volume is kept: `helm upgrade` finds it and
+  re-renders it annotated `helm.sh/resource-policy: keep`, so no later upgrade
+  or uninstall deletes it. Tools that render without cluster access
+  (`helm template`, Argo CD, Flux) cannot find it: set
+  `retainMattermostData: true` (and `retainedMattermostDataSize` to the old
+  `mattermost.persistence.size`) so they keep it too.
+
+Back both up before upgrading (see [`BACKUP.md`](BACKUP.md)). Once you no
+longer want them:
+
+```bash
+kubectl delete pvc <release>-mattermost-data
+kubectl exec <release>-postgresql-0 -- psql -U postgres -c 'DROP DATABASE mattermost;'   # managed mode; on an external DB, drop it there
+```
+
+On first boot switch-core retires the bridge the setup Job registered: it stops
+being the default, and each of its rooms moves to Switch Console with its owner
+or creator and the people whose Mattermost account there is linked to them. A
+room created afterwards with no bridge named is a Switch Console chat unless
+you set another default bridge. A Mattermost server you connected yourself is
+left alone. Console chat is always on: `agent_chats` and `group_chats` no
+longer need to be listed in `featureFlags.enabled`, and may stay listed.
+
+`secrets.mattermostAdminPassword` and `mattermostUserPassword` are gone; remove
+them from your values. A `secrets.existingSecret` may drop its `MATTERMOST_*`
+keys.
+
 ## Constraints you cannot configure away
 
 **switch-core can run more than one replica.** `switchCore.replicaCount` sets
@@ -266,28 +297,200 @@ switchCore:
 
 An unknown service or profile stops switch-core at startup.
 
-## Agent management
+Two more settings change how people connect a connector. The chart sets
+`SERVICE_SIGN_IN_REDIRECT` only when its map is not empty, and
+`ALLOW_NON_EXPIRING_KEYS` only when it is `true`.
 
-Managed agents, and the agent controllers that run them on users' machines, are
-off by default. The `agent_management` feature flag turns them on:
+```yaml
+switchCore:
+  # SERVICE_SIGN_IN_REDIRECT: where a connector's sign-ins come back.
+  serviceSignInRedirect:
+    atlassian: core
+  # ALLOW_NON_EXPIRING_KEYS: offer pasted keys that never expire.
+  allowNonExpiringKeys: true
+```
+
+- `serviceSignInRedirect`: for a connector that can come back either way
+  (Atlassian, Datadog, Linear). Unset, it comes back the first way the
+  service's entry lists: `loopback` for Atlassian and Datadog, `core` for
+  Linear where `GATEWAY_PUBLIC_URL` is set. `loopback` is Switch Console on
+  the person's computer. `core` is
+  `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`,
+  which an Atlassian or Datadog admin must allow-list first. If you change it, Switch
+  registers a new client at the vendor, and everyone reconnects that service
+  once. A service or way the catalog does not list stops switch-core at
+  startup.
+- Restart all replicas together to change `serviceSignInRedirect`. With more
+  than one replica, a chart upgrade is a rolling update. Upgrade with
+  `switchCore.replicaCount: 0`, then upgrade again with your count. Otherwise
+  people may have to reconnect more than once.
+- `allowNonExpiringKeys`: off by default. On, a connector that takes a pasted
+  credential also offers one that never expires, such as an API key, and hands
+  it to agents. Such a key can only be revoked at the vendor: disconnecting it
+  or removing a grant forgets it in Switch but leaves it working.
+
+The OAuth apps that the operator registers at a vendor can also come from an
+existing Secret with `client.json` (`{"client_id", "client_secret"}`), in
+place of the dashboard's Connectors page:
+
+```yaml
+switchCore:
+  airtableClientSecret: switch-airtable-client         # AIRTABLE_CLIENT_CONFIG_PATH
+  gitlabClientSecret: switch-gitlab-client             # GITLAB_CLIENT_CONFIG_PATH
+  googleWorkspaceClientSecret: switch-google-client    # GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH
+```
+
+A value set here wins over an app saved in the dashboard. A Secret that is
+named but missing stops switch-core from starting.
+
+## Auto-route and the decision service
+
+Off by default. With the `decision_routing` feature flag on (it needs
+`follow_the_conversation` too), a room with auto-route on asks a decision
+service who should answer a message that names nobody and that no follow-up
+rule delivered. The chart can run that service itself:
 
 ```yaml
 switchCore:
   featureFlags:
-    enabled: ["agent_management"]
+    enabled: ["follow_the_conversation", "decision_routing"]
+decision:
+  enabled: true
+  nodeSelector:
+    nvidia.com/gpu.present: "true"   # whatever labels your GPU nodes carry
+```
+
+With `decision.enabled` the chart renders one Deployment (the `decision`
+container, plus the `model-server` sidecar serving the model), a ClusterIP
+Service on port 8230, a PVC the weights are downloaded into at first start, a
+ServiceAccount, a NetworkPolicy that admits only this release's switch-core
+pods to port 8230, and a Secret holding the service's bearer token. It sets
+`DECISION_ENDPOINT_URL` on switch-core to the Service, so every workspace's
+Decision routing settings in Switch Console show it as the server default with
+no further setup.
+
+- **The service token.** The decision service requires a bearer token on
+  everything but `/health` (`DECISION_SERVICE_TOKEN`), and switch-core sends it
+  (`DECISION_API_KEY`). The model server beside it, which listens on the pod's
+  IP for its probes, requires the same token (`LLAMA_API_KEY` for llama.cpp,
+  `STRANDS_API_KEY` for Strands), and the decision container sends it
+  (`MODEL_SERVER_TOKEN`). So another pod in the cluster gets 401 from either
+  port even where the NetworkPolicy isn't enforced; only `/health` answers
+  without it. The chart generates it into the Secret
+  `<release>-decision-token` on the first install, and reads it back with
+  `lookup` on every upgrade, so it stays the same. `helm template` can't read
+  the cluster, so it renders a new value each time; that is expected, and only
+  matters if you apply its output directly (do it with
+  `decision.token.existingSecret` then). To manage the token yourself, put it
+  in a Secret of your own and name it in `decision.token.existingSecret` (the
+  entry `decision.token.existingSecretKey`, `token` by default); the chart then
+  renders no Secret. Rotating it: change the Secret's value and restart both
+  the decision and switch-core pods.
+
+- **The model.** `decision.modelServer.kind` picks the model server:
+  - `strands` (default): **Strands Decider 4B** (the E4B checkpoint) on its own
+    server image, `switch-decision-strands`, which the release builds and pins
+    like the chart's other first-party images. On one NVIDIA L4 it scored
+    92/100 on our routing scenarios with 2 wrong picks, at 0.27 s median.
+  - `llamacpp`: **Qwen3.5-4B** (4-bit) on llama.cpp's CUDA server: 88/100 with
+    9 wrong picks, at 0.16 s median, in a smaller footprint (8 GiB of RAM).
+
+  The decision service's backend and model name follow the kind
+  (`systemone` and `strands-decider-E4B`, or `llamacpp` and
+  `qwen3.5-4b-q4_k_m`); `decision.backend` and `decision.model` override them.
+  Each kind's image, arguments, probes and resources are under
+  `decision.modelServer.strands` or `decision.modelServer.llamacpp`.
+- **GPU and memory.** Either model server requests `nvidia.com/gpu: 1`, so the
+  cluster needs the NVIDIA device plugin and a GPU node. The pod tolerates the
+  usual `nvidia.com/gpu` taint; set `decision.nodeSelector` (and
+  `decision.tolerations`) for your nodes. Strands Decider 4B also requests
+  24Gi of memory to load its 16 GB of bf16 weights, so give it a node with
+  32 GiB (an AWS g6.2xlarge, one L4). The image needs an NVIDIA driver for
+  CUDA 13.0 (580 or later).
+- **Weights and the first start.** Nothing is baked into an image. Strands
+  Decider downloads its checkpoint and base model (about 17 GB) from Hugging
+  Face into the PVC (`decision.persistence.size`, 40Gi) on its first start,
+  then loads them; the port opens only once the model is loaded. Its startup
+  probe allows 30 minutes (`decision.modelServer.strands.startupProbe`), and
+  the decision service reports not ready until then. Later starts only load
+  the weights, a few minutes. For Qwen, an init container downloads the GGUF
+  file (`decision.modelServer.llamacpp.model`: URL, file name, SHA-256) first.
+  `decision.modelServer.hfTokenSecret` names a Secret with a Hugging Face
+  token, for a gated checkpoint or higher Hub rate limits.
+- **Pinned weights.** Every model is downloaded at a fixed Hugging Face
+  commit, so a new push upstream changes nothing that runs:
+  - Qwen's URL names a commit (`…/resolve/<commit>/…`), and the init container
+    checks the file's SHA-256 (`model.sha256`). A file already on the volume
+    that fails the check is deleted and downloaded again; a fresh download
+    that fails it is deleted before the init container exits non-zero, so the
+    next start downloads it again rather than failing on every restart.
+  - Strands Decider's checkpoint is downloaded at
+    `decision.modelServer.strands.revision` and its base model at
+    `baseRevision` (`STRANDS_REVISION`, `STRANDS_BASE_REVISION`). The base
+    revision must be the one the checkpoint records in its `provenance.json`,
+    the one it was trained on; the server refuses to start otherwise.
+
+  To move to a newer model, set the URL, file and SHA-256 together (or both
+  Strands revisions), from the model's Hugging Face page.
+- **Licence.** Strands Decider is Apache-2.0, but its 4B checkpoint is built on
+  Google's Gemma 4 (`google/gemma-4-E4B-it`), whose terms apply to anyone
+  deploying it. The chart downloads the weights at deploy time from Hugging
+  Face; Switch does not redistribute them. Choose `llamacpp` if those terms
+  don't suit you.
+- **Haiku on Bedrock.** `decision.bedrock.enabled` lets workspaces choose Claude
+  Haiku on Amazon Bedrock (`DECISION_BEDROCK_ENABLED` on the service and on
+  switch-core). The service calls Bedrock with the pod's credentials: give it
+  a role through `decision.serviceAccount.annotations` (on EKS,
+  `eks.amazonaws.com/role-arn` for an IAM role allowing `bedrock:InvokeModel`
+  on Haiku). Without a GPU, set `decision.modelServer.enabled: false` and
+  `decision.backend` to `anthropic` or `bedrock`.
+- **Logs.** The decision service logs the way switch-core does, with no
+  settings of its own: `switchCore.logging` sets its format (`json` for a log
+  pipeline), root level and environment, its service name is
+  `switch-decision`, and every line carries the pod's name. With
+  `switchCore.observability.otlpEndpoint` set it also gets the endpoint,
+  `deploymentId`, `logs`, `timeoutSeconds` and the OTLP headers from the
+  chart's Secret, so with `logs: true` it ships its log records to the same
+  collector. It sends no metrics: switch-core measures every decision itself.
+  With no endpoint, no `OTLP_*` variable is set and nothing leaves the pod.
+- **Other settings.** `decision.env` passes anything else in the service's
+  environment (`DECISION_TIMEOUT_S`, `DECISION_HISTORY_LIMIT`, …). It comes
+  last, so an entry there also replaces any of the variables above.
+- **The NetworkPolicy** needs a CNI that enforces it; where none does, the
+  token still keeps other pods from asking for decisions or using the model
+  (they can read `/health`). It stays on by
+  default as a second layer; turn it off with
+  `decision.networkPolicy.enabled: false`.
+
+To use a decision service run elsewhere instead, leave `decision.enabled` off
+and set `switchCore.decision.endpointUrl` (and `bedrockEnabled` if that service
+allows Bedrock). If that service requires a token, put it in a Secret and
+name it in `switchCore.decision.apiKey.existingSecret` (key
+`existingSecretKey`, default `token`); switch-core sends it as
+`DECISION_API_KEY`. Setting both `decision.enabled` and an endpoint is refused
+at render time. With neither,
+auto-route is unavailable until a workspace admin sets up a backend in Switch
+Console. `switchCore.decision.timeoutSeconds` sets `DECISION_TIMEOUT_SECONDS`.
+
+## Agent management
+
+Managed agents, and the agent controllers that run them on users' machines, are
+always on. The chart requires the secret that signs controllers' access tokens:
+
+```yaml
 secrets:
   controllerTokenSecret: "<openssl rand -hex 32>"
 ```
 
 With `secrets.existingSecret`, put the token secret in that Secret as
-`CONTROLLER_TOKEN_SECRET` instead. The chart sets `FEATURE_FLAGS_ENABLED`,
-`CONTROLLER_TOKEN_SECRET` and `CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core
-and its migration Job, so enabling it is one rollout. Controllers enroll and
-connect under `/v1`, which `ingress.agentApiPaths` routes to switch-core by default.
+`CONTROLLER_TOKEN_SECRET` instead. The chart sets `CONTROLLER_TOKEN_SECRET` and
+`CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core and its migration Job.
+Controllers enroll and connect under `/v1`, which `ingress.agentApiPaths` routes
+to switch-core by default.
 
-`switchCore.agentManagement.enabled` is gone: the chart refuses to render with it
-set to true, and switch-core refuses to start with `AGENT_MANAGEMENT_ENABLED=true`.
-Move it to the flag list instead.
+The `agent_management` feature flag is no longer needed; switch-core still
+accepts it. The chart ignores `switchCore.agentManagement.enabled`. switch-core
+refuses to start with `AGENT_MANAGEMENT_ENABLED=true`: remove it.
 
 A deployment that set these variables with `kubectl set env` should remove them
 before the first upgrade that renders them (`kubectl set env deployment/<release>-switch-core

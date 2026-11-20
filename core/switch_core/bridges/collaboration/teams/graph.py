@@ -261,14 +261,29 @@ class GraphClient:
         display_name: str,
         description: str,
         membership_type: str,
+        owner_aad_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a channel in a team. ``membership_type`` is ``standard`` or
-        ``private``. Returns the created channel (with its ``id``)."""
-        body = {
+        ``private``. Returns the created channel (with its ``id``).
+
+        ``owner_aad_id`` names the directory user made the channel's owner.
+        Graph refuses a private channel created with an application token
+        unless the request names one, since a private channel always has a
+        member who owns it and an app cannot be that member.
+        """
+        body: dict[str, Any] = {
             "displayName": display_name,
             "description": description,
             "membershipType": membership_type,
         }
+        if owner_aad_id is not None:
+            body["members"] = [
+                {
+                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                    "user@odata.bind": f"{GRAPH_BASE}/users('{owner_aad_id}')",
+                    "roles": ["owner"],
+                }
+            ]
         resp = await self._send(
             "POST", f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels", json=body
         )
@@ -363,6 +378,33 @@ class GraphClient:
         if resp.status_code >= 300 and resp.status_code != 409:
             raise _graph_error(
                 f"add member {user_aad_id} to channel {channel_id}", resp
+            )
+
+    async def list_channel_members(
+        self, *, team_id: str, channel_id: str
+    ) -> list[dict[str, Any]]:
+        """A channel's members across Graph's pages: for a standard channel,
+        the team's. Each carries `id` (the membership), `userId` (the Entra
+        object id) and `displayName`."""
+        return await self._all_pages(
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{_segment(channel_id)}/members",
+            params=None,
+            what=f"list the members of channel {channel_id}",
+        )
+
+    async def remove_channel_member(
+        self, *, team_id: str, channel_id: str, membership_id: str
+    ) -> None:
+        """Take one membership out of a private or shared channel. Already
+        gone is success."""
+        resp = await self._send(
+            "DELETE",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{_segment(channel_id)}"
+            f"/members/{_segment(membership_id)}",
+        )
+        if resp.status_code >= 300 and resp.status_code != 404:
+            raise _graph_error(
+                f"remove member {membership_id} from channel {channel_id}", resp
             )
 
     async def add_team_member(self, *, team_id: str, user_aad_id: str) -> None:
