@@ -4759,6 +4759,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+
+- **The usage-data identifier changes every 30 days and is deleted when you
+  stop sharing.** Usage data is tagged with a random identifier that is now
+  replaced every 30 days; turning sharing off stops sending at once, including
+  an event already being prepared, and deletes the identifier, so turning it
+  back on starts an unrelated one. The operating system version sent is cut
+  down to its major version. The app no longer calls the data anonymous: it
+  is pseudonymous, and the consent text says so.
+
 #### Fixed
 
 - **Creating an agent no longer flashes "An agent called … already exists
