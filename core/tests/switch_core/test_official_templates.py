@@ -478,8 +478,9 @@ def test_switch_buddy_always_tells_telegram_users_to_reply_to_the_bot():
 
 
 def test_switch_buddy_links_pages_that_still_have_what_it_sends_people_for():
-    """Account linking and guardrails left the server's home for Settings and
-    Admin; a link to home leaves the person with nothing to click."""
+    """Account linking and guardrails are in Settings, not the server's home,
+    and the Admin page's sections moved into Settings too; a link to home for
+    linking leaves the person with nothing to click."""
     texts = [
         (_PACKAGED / "switch-buddy" / "AGENT.md").read_text(),
         _PLAYBOOK.read_text(),
@@ -487,10 +488,33 @@ def test_switch_buddy_links_pages_that_still_have_what_it_sends_people_for():
     for text in texts:
         for line in text.splitlines():
             if "switchdash://open/home" in line:
-                assert "the workspace at a glance" in line, line
+                assert "linking is never done there" in line, line
     joined = " ".join(" ".join(texts).split())
     assert "switchdash://open/settings?tab=messaging-apps" in joined
-    assert "switchdash://open/admin?tab=switch-trust" in joined
+    assert "switchdash://open/settings?tab=guardrails" in joined
+    assert "switchdash://open/admin" not in joined
+
+
+def test_switch_buddy_gives_the_link_wherever_it_says_to_link_an_account():
+    """Told only to link "under Messaging apps", buddy sent people to the
+    server's home; every place that says to link names the Settings page."""
+    for path in (_PACKAGED / "switch-buddy" / "AGENT.md", _PLAYBOOK):
+        text = " ".join(path.read_text().split())
+        for match in re.finditer(
+            r"link their account|link it in|links their own", text
+        ):
+            around = text[max(0, match.start() - 120) : match.end() + 120]
+            assert "switchdash://open/settings?tab=messaging-apps" in around, (
+                path.name,
+                around,
+            )
+
+
+def test_switch_buddy_does_not_promise_a_built_in_messaging_app():
+    """A server Switch Console runs has had no bundled messaging app since 0.32."""
+    playbook = " ".join(_PLAYBOOK.read_text().split())
+    assert "comes with a built-in messaging app" not in playbook
+    assert "work in rooms in Switch Console straight away" in playbook
 
 
 def test_switch_buddy_names_only_choices_the_connect_dialog_offers():
