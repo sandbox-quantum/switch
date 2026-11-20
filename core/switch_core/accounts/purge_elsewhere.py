@@ -1,24 +1,26 @@
-"""What a purged organization leaves outside Switch's database, taken out
-after the purge has deleted its rows (`organization_purge.py`):
+"""What a purged organization leaves outside Switch's database:
 
-- **WorkOS** (`workos_offboarding.py`), with the server's `WORKOS_API_KEY`.
-  A WorkOS user is deleted only where no account here signs in as it any
-  more and no other product in the environment uses it. Without the key,
-  nothing at WorkOS changes and the outcome lists what is left there.
 - **Switch Trust**, which holds the messages it checked under their room
   ids. Each of the purged workspaces' rooms is sent for deletion when the
   organization connected a Switch Trust policy, with that policy's own
   endpoint and key; the deletion call is provisional until Switch Trust
   publishes one (`HttpTrustClient.delete_session`). The organization's
-  settings go with its rows, so they are read before the purge starts
-  (`DynamicTrustClient.session_eraser`). A run resumed after an earlier one
-  deleted the organization has none to read, and says what it could not
-  delete there.
+  settings go with its rows, so this runs before the purge deletes
+  anything (`erase_at_trust`, between `OrganizationPurge.prepare` and
+  `delete`), and a deletion that fails stops the purge there, to be
+  retried by running it again. A run resumed after an earlier one deleted
+  the organization has no settings left to erase with: it lists the room
+  sessions for a person to have deleted at Switch Trust.
+- **WorkOS** (`workos_offboarding.py`), with the server's `WORKOS_API_KEY`,
+  once the purge has deleted the organization's rows (`run`). A WorkOS user
+  is deleted only where no account here signs in as it any more and no
+  other product in the environment uses it. Without the key, nothing at
+  WorkOS changes and the outcome lists what is left there.
 
-Both run on every run of the purge once Switch's side is done, the
-resumed ones included, from what the plan and the records of earlier runs
-name: a deletion already done answers 404, which counts as done. Each run
-records what it did in the server's audit log.
+Both run on every run of the purge, the resumed ones included, from what
+the plan and the records of earlier runs name: a deletion already done
+answers 404, which counts as done. Each run records what it did in the
+server's audit log.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from sqlalchemy import or_, select
 
 from switch_core.accounts.workos_offboarding import WorkOSOffboarding, WorkOSSteps
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
-from switch_core.db.models import OidcIdentity
+from switch_core.db.models import OidcIdentity, ServerAuditEvent
 from switch_core.trust.client import TrustDeletionError, TrustSessionEraser
 
 if TYPE_CHECKING:
@@ -61,25 +63,38 @@ class WorkOSLeftover:
 
 
 @dataclass
+class TrustErasure:
+    """What Switch Trust was asked to delete, before the purge deletes
+    anything."""
+
+    # False when the organization connected no Switch Trust policy, or its
+    # settings were already gone (`settings_gone`).
+    configured: bool
+    # True on a run resumed after the organization's rows, its Switch Trust
+    # settings among them, were deleted: this tool can no longer delete what
+    # Switch Trust holds for its rooms, which is left for a person.
+    settings_gone: bool = False
+    deleted: int = 0
+    # Deleted at Switch Trust by an earlier run, on a run resumed after the
+    # organization's rows went: nothing is left to do for them.
+    deleted_earlier: int = 0
+    failed: list[tuple[str, str]] = field(default_factory=list)
+    # What is left at Switch Trust for a person; set with `settings_gone`.
+    left_by_hand: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ElsewhereOutcome:
     # What was done at WorkOS; None on a server with no WorkOS API key.
     workos: WorkOSSteps | None
     # What is left at WorkOS for a person; set when `workos` is None.
     workos_leftover: WorkOSLeftover | None
-    # False when the organization connected no Switch Trust policy, or its
-    # settings were already gone (`trust_settings_gone`).
-    trust_configured: bool
-    # True on a run resumed after the organization's rows, its Switch Trust
-    # settings among them, were deleted: whatever Switch Trust still holds for
-    # its rooms is left for a person to have deleted there.
-    trust_settings_gone: bool = False
-    trust_deleted: int = 0
-    trust_failed: list[tuple[str, str]] = field(default_factory=list)
+    trust: TrustErasure
 
     @property
     def failed(self) -> bool:
         """Whether something outside failed, so running again is needed."""
-        return bool(self.trust_failed) or bool(
+        return bool(self.trust.failed) or bool(
             self.workos is not None and self.workos.failures
         )
 
@@ -87,7 +102,7 @@ class ElsewhereOutcome:
     def left_by_hand(self) -> bool:
         """Whether something at WorkOS or Switch Trust is left for a person
         to remove."""
-        return self.trust_settings_gone or (
+        return self.trust.settings_gone or (
             self.workos_leftover is not None and not self.workos_leftover.empty
         )
 
@@ -124,10 +139,98 @@ class PurgeElsewhere:
             },
         )
 
-    async def run(self, plan: PurgePlan, request: str) -> ElsewhereOutcome:
-        """Take out of WorkOS and Switch Trust what the purged organization
-        left there, as far as each will go now, and record it. Call once
-        Switch's side is done."""
+    async def erase_at_trust(self, plan: PurgePlan, request: str) -> TrustErasure:
+        """Have Switch Trust delete every room session of the plan, and
+        record it. Call before the purge deletes anything, and go on to
+        delete only when nothing is in `failed`."""
+        erasure = TrustErasure(configured=False)
+        erased: list[str] = []
+        eraser = self.trust
+        if eraser is None:
+            if plan.resuming and plan.trust_sessions:
+                await self._after_settings_went(plan, erasure)
+        else:
+            erasure.configured = True
+            for session_id in plan.trust_sessions:
+                try:
+                    await eraser.delete_session(session_id)
+                except TrustDeletionError as error:
+                    logger.error(
+                        "Switch Trust did not delete session %s: %s", session_id, error
+                    )
+                    erasure.failed.append((session_id, str(error)))
+                    continue
+                erased.append(session_id)
+            erasure.deleted = len(erased)
+        async with self.session_factory() as session:
+            await record_server_audit_event(
+                session,
+                actor_user_id=None,
+                action=ServerAuditAction.ORGANIZATION_PURGE_TRUST,
+                target_type="organization",
+                target_id=plan.organization_id,
+                details={
+                    "configured": erasure.configured,
+                    "settings_gone": erasure.settings_gone,
+                    "sessions": len(plan.trust_sessions),
+                    "sessions_deleted": erasure.deleted,
+                    "sessions_erased": erased,
+                    "sessions_failed": [s for s, _ in erasure.failed],
+                    "sessions_left_by_hand": erasure.left_by_hand,
+                    "request": request,
+                },
+            )
+            await session.commit()
+        return erasure
+
+    async def _after_settings_went(
+        self, plan: PurgePlan, erasure: TrustErasure
+    ) -> None:
+        """On a run resumed after the organization's rows, its Switch Trust
+        settings among them, went: what earlier runs recorded erasing there
+        is done, and the rest can no longer be erased by the purge. An
+        organization an earlier run found with no policy had nothing there."""
+        async with self.session_factory() as session:
+            records = list(
+                await session.scalars(
+                    select(ServerAuditEvent.details).where(
+                        ServerAuditEvent.action
+                        == ServerAuditAction.ORGANIZATION_PURGE_TRUST,
+                        ServerAuditEvent.target_id == plan.organization_id,
+                    )
+                )
+            )
+        earlier = [record or {} for record in records]
+        if any(
+            not record.get("configured") and not record.get("settings_gone")
+            for record in earlier
+        ):
+            return
+        done = {
+            session_id
+            for record in earlier
+            for session_id in record.get("sessions_erased", [])
+        }
+        erasure.deleted_earlier = len(done & set(plan.trust_sessions))
+        erasure.configured = erasure.deleted_earlier > 0
+        erasure.left_by_hand = [s for s in plan.trust_sessions if s not in done]
+        if not erasure.left_by_hand:
+            return
+        logger.warning(
+            "Organization %s's Switch Trust settings were deleted with it by an "
+            "earlier run; %d room session(s) it may have left at Switch Trust "
+            "can no longer be deleted by the purge",
+            plan.organization_id,
+            len(erasure.left_by_hand),
+        )
+        erasure.settings_gone = True
+
+    async def run(
+        self, plan: PurgePlan, request: str, trust: TrustErasure
+    ) -> ElsewhereOutcome:
+        """Take out of WorkOS what the purged organization left there, as far
+        as it will go now, and record it. Call once Switch's side is done,
+        with what `erase_at_trust` did before it."""
         users = sorted(plan.workos_users)
         unused = {user_id for user_id in users if not await self._signs_in(user_id)}
         if self.workos is None:
@@ -142,12 +245,7 @@ class PurgeElsewhere:
                 plan.workos_organization_id, users, unused
             )
             leftover = None
-        outcome = ElsewhereOutcome(
-            workos=workos,
-            workos_leftover=leftover,
-            trust_configured=False,
-        )
-        await self._erase_at_trust(plan, outcome)
+        outcome = ElsewhereOutcome(workos=workos, workos_leftover=leftover, trust=trust)
         await self._record(plan, request, outcome)
         return outcome
 
@@ -170,31 +268,6 @@ class PurgeElsewhere:
                 )
                 is not None
             )
-
-    async def _erase_at_trust(self, plan: PurgePlan, outcome: ElsewhereOutcome) -> None:
-        eraser = self.trust
-        if eraser is None:
-            if plan.resuming and plan.trust_sessions:
-                logger.warning(
-                    "Organization %s's Switch Trust settings were deleted with it "
-                    "by an earlier run; %d room session(s) it may have left at "
-                    "Switch Trust are not deleted",
-                    plan.organization_id,
-                    len(plan.trust_sessions),
-                )
-                outcome.trust_settings_gone = True
-            return
-        outcome.trust_configured = True
-        for session_id in plan.trust_sessions:
-            try:
-                await eraser.delete_session(session_id)
-            except TrustDeletionError as error:
-                logger.error(
-                    "Switch Trust did not delete session %s: %s", session_id, error
-                )
-                outcome.trust_failed.append((session_id, str(error)))
-                continue
-            outcome.trust_deleted += 1
 
     async def _record(
         self, plan: PurgePlan, request: str, outcome: ElsewhereOutcome
@@ -227,21 +300,6 @@ class PurgeElsewhere:
                 details={
                     "workos_organization_id": plan.workos_organization_id,
                     **workos_details,
-                    "request": request,
-                },
-            )
-            await record_server_audit_event(
-                session,
-                actor_user_id=None,
-                action=ServerAuditAction.ORGANIZATION_PURGE_TRUST,
-                target_type="organization",
-                target_id=plan.organization_id,
-                details={
-                    "configured": outcome.trust_configured,
-                    "settings_gone": outcome.trust_settings_gone,
-                    "sessions": len(plan.trust_sessions),
-                    "sessions_deleted": outcome.trust_deleted,
-                    "sessions_failed": [s for s, _ in outcome.trust_failed],
                     "request": request,
                 },
             )

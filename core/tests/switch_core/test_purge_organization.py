@@ -7,7 +7,11 @@ from __future__ import annotations
 import pytest
 
 from switch_core.accounts.organization_purge import Account, PurgeOutcome, PurgePlan
-from switch_core.accounts.purge_elsewhere import ElsewhereOutcome, WorkOSLeftover
+from switch_core.accounts.purge_elsewhere import (
+    ElsewhereOutcome,
+    TrustErasure,
+    WorkOSLeftover,
+)
 from switch_core.accounts.workos_offboarding import Membership, WorkOSSteps
 from switch_core.purge_organization import BACKUPS_NOTE, _print_outcome
 
@@ -54,8 +58,7 @@ def test_the_receipt_lists_what_was_done_outside_and_what_backups_keep(
             organization_deleted=True,
         ),
         workos_leftover=None,
-        trust_configured=True,
-        trust_deleted=2,
+        trust=TrustErasure(configured=True, deleted=2),
     )
 
     _print_outcome(_plan(), outcome, elsewhere)
@@ -79,7 +82,7 @@ def test_without_a_workos_key_the_receipt_says_workos_was_not_cleaned(
         workos_leftover=WorkOSLeftover(
             organization="org_acme", users=["user_alice"], memberships_only=[]
         ),
-        trust_configured=False,
+        trust=TrustErasure(configured=False),
     )
 
     _print_outcome(_plan(), PurgeOutcome(finished=True), elsewhere)

@@ -46,10 +46,13 @@ row left in another workspace from one it was in. Anyone else keeps their
 account and loses only what was here. The server's administrator account is
 always kept.
 
-**Outside, afterwards.** The plan names, and the start record keeps for a
-resumed run, the WorkOS users of the people involved and every room id of
-every workspace. `purge_elsewhere.py` takes the organization out of WorkOS
-and has Switch Trust delete those rooms' sessions, once this is done.
+**Outside.** The plan names, and the start record keeps for a resumed
+run, the WorkOS users of the people involved and every room id of every
+workspace. `purge_organization.py` splits a run into `prepare` and `delete`
+so that, in between, `purge_elsewhere.py` can have Switch Trust delete
+those rooms' sessions with the organization's own settings, which go with
+its rows; a Trust deletion that fails stops the run before anything is
+deleted. It takes the organization out of WorkOS once this is done.
 
 **What stays.** The workspaces' audit history, for two years
 (`retention/audit_history.py`), and the server's own audit log, which records
@@ -388,6 +391,17 @@ class OrganizationPurge:
         Raises `PurgeRefused` for a plan with refusals, before anything
         changes. Returns unfinished, having deleted nothing, while it waits
         on something outside Switch."""
+        outcome = await self.prepare(plan, request)
+        if outcome.waiting:
+            return outcome
+        return await self.delete(plan, request, outcome)
+
+    async def prepare(self, plan: PurgePlan, request: str) -> PurgeOutcome:
+        """The part of `run` that deletes nothing: withdraw what lives outside
+        Switch and, once nothing is left to wait on, record the run as
+        started. Unfinished, with `waiting` set, while it waits; ready for
+        `delete` when `waiting` is empty. Raises `PurgeRefused` as `run`
+        does."""
         if plan.refusals:
             raise PurgeRefused(" ".join(plan.refusals))
         if not request.strip():
@@ -402,8 +416,17 @@ class OrganizationPurge:
         await self._tear_down_machines(plan.machines, outcome)
         if outcome.waiting:
             return outcome
-
         await self._record_start(plan, request)
+        return outcome
+
+    async def delete(
+        self, plan: PurgePlan, request: str, outcome: PurgeOutcome
+    ) -> PurgeOutcome:
+        """The deleting part of `run`, given what `prepare` returned with
+        nothing left to wait on."""
+        if outcome.waiting:
+            raise PurgeRefused("The purge is still waiting; nothing to delete yet.")
+        members = {account.id for account in plan.accounts}
         for workspace in plan.workspaces:
             await self._check_newcomers(workspace, members)
             with tenant_scope(workspace.id):

@@ -212,10 +212,12 @@ version of their own to them without also giving them a release of their own.
   organization in the environment still has them, and the WorkOS
   organization goes only once nobody else is in it. Without the key it lists
   what to remove there and exits 4. Where the organization connected a
-  Switch Trust policy, it asks Switch Trust, with that policy's settings, to
-  delete what it holds for each of the organization's rooms; a run resumed
-  after the organization was deleted lists those rooms to delete by hand and
-  exits 4. Every step outside Switch is recorded in the server's audit log
+  Switch Trust policy, it first asks Switch Trust, with that policy's
+  settings, to delete what it holds for each of the organization's rooms,
+  before anything in Switch is deleted; if any of those deletions fails it
+  stops there, deleting nothing, and running it again retries them. A run
+  resumed after the organization was deleted can no longer reach Switch
+  Trust, lists those rooms for a person to have deleted there, and exits 4. Every step outside Switch is recorded in the server's audit log
   and retried by running the command again, and the command ends with a
   receipt of what was done outside Switch and a reminder that backups keep
   the organization for up to 37 days.
