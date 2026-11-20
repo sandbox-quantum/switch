@@ -299,7 +299,7 @@ class OtlpClient:
                 )
             except httpx.HTTPError as error:
                 raise OtlpSendError(f"POST {url} failed: {error!r}") from error
-            if response.status_code >= 400:
+            if not response.is_success:
                 raise OtlpSendError(f"POST {url} answered {response.status_code}")
             _raise_on_partial_rejection(url, response)
 
@@ -440,6 +440,11 @@ class LogExporter:
             logger.warning(
                 "Log export failed, dropping %d record(s): %s", len(batch), error
             )
+        except asyncio.CancelledError:
+            logger.warning(
+                "Log export interrupted with %d record(s) unconfirmed", len(batch)
+            )
+            raise
 
     async def run_forever(self) -> None:
         while True:
