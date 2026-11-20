@@ -341,10 +341,22 @@ def test_a_deployment_that_pages_its_channel_names_it_once(workdir):
 
 
 def test_the_real_monitors_render_with_no_placeholder_left():
-    result = run_apply(HERE)
+    result = run_apply(HERE, WORKOS_DIRECTORY="1")
     assert result.returncode == 0, result.stderr
     assert len(result.stdout.splitlines()) == len(MONITORS)
     assert "REPLACE-WITH" not in result.stdout
+
+
+def test_the_workos_directory_monitors_are_left_out_unless_asked_for():
+    workos = {
+        m["name"].split("] ", 1)[1]
+        for m in MONITORS
+        if "requires:workos-directory" in m["tags"]
+    }
+    assert workos
+    result = run_apply(HERE)
+    assert result.returncode == 0, result.stderr
+    assert workos.isdisjoint(handles_by_name(result.stdout))
 
 
 def test_the_detection_rules_reach_the_security_channel_and_only_p2_pages():

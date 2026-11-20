@@ -93,7 +93,7 @@ class _NoListeners:
     """The running servers' in-process listeners, which this process cannot
     reach (`CONSOLE_CATCHES_UP`)."""
 
-    async def room_agents_changed(self, tenant_id: str, room_id: str) -> None:
+    async def room_agents_changed(self, tenant_id: str, room_ids: list[str]) -> None:
         return None
 
     def room_changed(self, tenant_id: str, room_id: str) -> None:

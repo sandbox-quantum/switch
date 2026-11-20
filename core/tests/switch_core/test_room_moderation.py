@@ -56,8 +56,8 @@ class _Listeners:
         self.changed: list[str] = []
         self.memberships: list[tuple[str, list[str], list[str]]] = []
 
-    async def room_agents_changed(self, tenant_id: str, room_id: str) -> None:
-        self.agents_changed.append(room_id)
+    async def room_agents_changed(self, tenant_id: str, room_ids: list[str]) -> None:
+        self.agents_changed.extend(room_ids)
 
     def room_changed(self, tenant_id: str, room_id: str) -> None:
         self.changed.append(room_id)

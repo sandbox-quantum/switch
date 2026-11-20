@@ -75,7 +75,9 @@ class RoomListeners(Protocol):
     """What is told once a room's members have changed, after the commit.
     `RoomService` is one; so is the operator command's stand-in."""
 
-    async def room_agents_changed(self, tenant_id: str, room_id: str) -> None: ...
+    async def room_agents_changed(
+        self, tenant_id: str, room_ids: list[str]
+    ) -> None: ...
 
     def room_changed(self, tenant_id: str, room_id: str) -> None: ...
 
@@ -339,7 +341,7 @@ class AccountRemoval:
             )
             left.append(RoomRef(room.id, room.name))
             with tenant_scope(tenant_id):
-                await self._listeners.room_agents_changed(tenant_id, room.id)
+                await self._listeners.room_agents_changed(tenant_id, [room.id])
                 self._listeners.room_changed(tenant_id, room.id)
 
     async def _remove_member(
