@@ -92,7 +92,7 @@ def chunk_message(body: str) -> list[str]:
 
         cut = safe_split(candidate, MAX_MESSAGE)
         closers = closing_tags(candidate[:cut])
-        if cut + len(closers) > MAX_MESSAGE:
+        while cut + len(closers) > MAX_MESSAGE:
             # Closing the open tags would overflow; cut earlier to fit them.
             cut = safe_split(candidate, MAX_MESSAGE - len(closers))
             closers = closing_tags(candidate[:cut])

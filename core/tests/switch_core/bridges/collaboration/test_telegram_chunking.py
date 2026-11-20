@@ -74,6 +74,16 @@ def test_a_split_code_block_resumes_as_a_code_block() -> None:
     assert chunks[1].startswith("<pre>")
 
 
+def test_moving_a_cut_keeps_room_for_newly_exposed_closing_tags() -> None:
+    body = "<b><i>" + "x" * (MAX_MESSAGE - 13) + "</i>" + "y" * 100 + "</b>"
+
+    chunks = chunk_message(body)
+
+    assert all(len(chunk) <= MAX_MESSAGE for chunk in chunks)
+    assert all(_tags_balanced(chunk) for chunk in chunks)
+    assert _visible("".join(chunks)) == _visible(body)
+
+
 def test_splitting_loses_no_text() -> None:
     body = _render("**Report**\n\n" + "\n".join(f"- line {i}" for i in range(700)))
 
