@@ -82,6 +82,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
         "github",
         "atlassian",
         "datadog",
+        "intercom",
         "linear",
         "notion",
         "sentry",
