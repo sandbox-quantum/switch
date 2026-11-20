@@ -172,6 +172,11 @@ export interface AcpProviderHooks {
    */
   mcpCapabilities?: AcpAgentCapabilities['mcpCapabilities'];
   /**
+   * User-configured MCP servers to merge under the session's `mcpServers`
+   * (so Switch's own and Connector servers always win on name collisions).
+   */
+  userMcpServers?(env: Record<string, string>): Promise<Record<string, McpServerSpec>>;
+  /**
    * The ACP mode to put a new session in for Switch's runtime mode, given the
    * modes the session advertised. Omit, or return undefined, to leave the
    * agent's default.

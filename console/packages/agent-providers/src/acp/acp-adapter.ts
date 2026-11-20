@@ -208,12 +208,14 @@ export class AcpAdapter implements ProviderAdapter {
         prefix.legacyMessage
       );
     const binaryPath = this.options.binaryPath ?? hooks.defaultBinary;
+    const userMcpServers = (await hooks.userMcpServers?.(input.env)) ?? {};
+    const sessionMcpServers = { ...userMcpServers, ...input.mcpServers };
     const { cleanup, ...launch } = await hooks.launch({
       binaryPath,
       cwd,
       env: input.env,
       runtimeMode: input.runtimeMode,
-      mcpServers: input.mcpServers,
+      mcpServers: sessionMcpServers,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
@@ -237,7 +239,7 @@ export class AcpAdapter implements ProviderAdapter {
       refusedRequest: false,
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
-      mcpNames: new Set(Object.keys(input.mcpServers)),
+      mcpNames: new Set(Object.keys(sessionMcpServers)),
       autoApprovedMcpNames: new Set(
         Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
       ),
@@ -268,7 +270,7 @@ export class AcpAdapter implements ProviderAdapter {
       if (!hooks.mcpServersAtLaunch)
         requireHttpMcp(
           hooks.label,
-          input.mcpServers,
+          sessionMcpServers,
           agent.mcpCapabilities?.http || hooks.mcpCapabilities?.http
         );
       state.prompt = {
@@ -291,7 +293,9 @@ export class AcpAdapter implements ProviderAdapter {
         }))
       )
         await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = hooks.mcpServersAtLaunch ? [] : acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = hooks.mcpServersAtLaunch
+        ? []
+        : acpMcpServers(sessionMcpServers, input.env);
       let method = 'session/new';
       if (input.resume) {
         method = agent.loadSession
