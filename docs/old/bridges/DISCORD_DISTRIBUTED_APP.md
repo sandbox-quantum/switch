@@ -145,11 +145,22 @@ Discord closes the whole connection with code 4014. So the intent is requested
 conditionally, controlled by `DISCORD_APP_MESSAGE_CONTENT` and **defaulting
 off**. Off, the connection opens fine and content still arrives for the cases the
 intent is not needed for — messages that mention the bot and the bot's own
-messages — which is exactly mention-only operation. On (once approved), agents
-see all message content. Verification is *per application*, not per tenant, and
-its ~100-guild threshold counts the total guilds across **every** tenant, so in
-the distributed model the app crosses it quickly and verification is worth
-starting early rather than deferring.
+messages — which is exactly mention-only operation. On, agents see all message
+content.
+
+Turning it on needs the intent toggled on in the Developer Portal first; that
+is all it takes while the app has fewer than 10,000 users. Past 10,000 unique
+users who can see the app, counted across the servers of **every** tenant,
+Discord asks the app's owner to apply for review, with 90 days to do so; the
+intent keeps working while the review runs, and access once granted is
+reviewed again every year. Since June 2026 the threshold is users, not
+servers: see Discord's [Getting Started with Privileged Intent
+Review](https://docs.discord.com/developers/gateway/getting-started-with-privileged-intent-review).
+Separately, an app in 100 or more servers must be **verified** by Discord,
+which includes the owner verifying their identity. Both are per application,
+not per tenant, so in the distributed model they come early: have the
+application owned by a Developer Team whose owner can be verified, and keep
+the use case for each intent written down for the review.
 
 **The Server Members intent.** Discord has no channel membership: someone is
 in a channel when they are in the server and allowed to see it. Rooms follow

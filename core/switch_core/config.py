@@ -788,16 +788,18 @@ class SwitchConfig(BaseSettings):
     # Whether the shared Gateway connection requests the privileged message-
     # content intent. Off by default (mention-only): the connection opens
     # unapproved and agents still see mentions of the bot and its own messages.
-    # Requesting it while unapproved closes the connection past Discord's
-    # ~100-guild verification threshold, so it is a deliberate flag flipped once
-    # the app is verified — not something inferred (decision #5).
+    # Requesting it while the application is not allowed it (not toggled on in
+    # the Developer Portal, or not granted after Discord's review, which an app
+    # reaching more than 10,000 users needs) closes the connection, so it is a
+    # deliberate flag flipped once the application has it — not something
+    # inferred (decision #5).
     discord_app_message_content: bool = False
 
     # Whether the shared Gateway connection requests the privileged server-
     # members intent. Off by default, and privileged the same way message
-    # content is: requesting it unapproved closes the connection past the
-    # ~100-guild threshold. Off, member lookups fall back to API fetches; on
-    # (once verified), the bot fills its member cache. Its own flag rather than
+    # content is: requesting it while not allowed closes the connection. Off,
+    # member lookups fall back to API fetches; on (once allowed), the bot fills
+    # its member cache. Its own flag rather than
     # riding message content's, because the two are approved independently.
     discord_app_members: bool = False
 
