@@ -90,7 +90,14 @@ it('lists each machine and server with its counter, the troubled ones first, and
       },
     ],
     leftAlone: 4,
-    unasked: 2,
+    unasked: [
+      {
+        serverId: 'local',
+        agents: 2,
+        error: "Local Switch server isn't running: it failed to start or stop.",
+      },
+      { serverId: 'pilot', agents: 1, error: 'connect ECONNREFUSED' },
+    ],
     running: false,
     lastPassAt: '2026-10-07T17:00:00Z',
   });
@@ -103,7 +110,12 @@ it('lists each machine and server with its counter, the troubled ones first, and
   expect(rows[2]).toContain('This computer · Switch Pilot');
   expect(rows[2]).toContain('6/6');
   expect(el.textContent).toContain('4 agents stay in Console');
-  expect(el.textContent).toContain('Switch could not be asked about 2 agents');
+  expect(el.textContent).toContain(
+    "Switch could not be asked about 2 agents on Local dev: Local Switch server isn't running: it failed to start or stop. Tried again later."
+  );
+  expect(el.textContent).toContain(
+    'Switch could not be asked about 1 agent on Switch Pilot: connect ECONNREFUSED. Tried again later.'
+  );
 });
 
 it('runs a check when asked', async () => {
@@ -121,7 +133,7 @@ it('runs a check when asked', async () => {
       },
     ],
     leftAlone: 0,
-    unasked: 0,
+    unasked: [],
     running: false,
     lastPassAt: null,
   });
