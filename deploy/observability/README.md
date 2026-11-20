@@ -6,15 +6,18 @@ the panel reading it land in the same review.
 
 Nothing here contains an account, an API key, a team handle or a URL. The
 monitors carry `@REPLACE-WITH-NOTIFICATION-HANDLE` where a destination belongs;
-`apply.sh` fills it in from `NOTIFY` when importing. They also carry
+`apply.sh` fills it in from `NOTIFY`, `NOTIFY_SECURITY` and
+`NOTIFY_SECURITY_PAGE` when importing (see [Routing](#routing)). They also carry
 `REPLACE-WITH-SERVICE` in their scope and `REPLACE-WITH-ENV` in their name and
 tags, which `apply.sh` fills in from `SERVICE` and `ENV`: every monitor
 watches one deployment only (see "`service`" below).
 
 **Do not skip that.** Datadog does not validate notification handles: a monitor
 carrying the placeholder imports cleanly, shows as healthy in the UI, triggers
-normally — and notifies nobody. There is no error to notice. Replace every one
-of them before you import, and test one deliberately.
+normally — and notifies nobody. There is no error to notice. `apply.sh`
+therefore refuses to run without every handle, and refuses to send anything
+that still carries a placeholder once filled in. Test one alert deliberately
+after a first import all the same.
 
 ## What the server has to be doing first
 
@@ -101,6 +104,42 @@ failure among a handful of requests reads as a high error rate, so a percentage
 would page on noise. "Decisions are failing" is the one exception, and it keeps
 a minimum volume for the same reason: see [Decision routing](#decision-routing).
 
+## Routing
+
+Every monitor has a `category:` tag, and the tag decides who hears about it:
+
+| Monitor | Notifies |
+| --- | --- |
+| `category:ops`, any priority | `NOTIFY` (the ops channel) |
+| `category:security`, P3 to P5 | `NOTIFY_SECURITY` (the security channel) |
+| `category:security`, P1 or P2 | `NOTIFY_SECURITY` and `NOTIFY_SECURITY_PAGE` (the security pager) |
+
+Each variable holds one or more Datadog handles separated by spaces, each
+starting with `@` (`@slack-<workspace>-<channel>`, `@pagerduty-<service>`,
+`@opsgenie-<team>`, …). All three are required on every run, even while no
+security monitor is at P1 or P2, so the pager is in place before the first one
+arrives. Setting `NOTIFY_SECURITY` to the same value as `NOTIFY` works, with a
+warning, for a deployment that has no separate security channel.
+
+Today `category:security` covers the credential refusal alerts and password
+sign-in failures (see [Hosted agents](#hosted-agents)). The bearer-route
+credential refusals alert is P2 and pages; the other two are P4. Alerts on the `switch.event: security.*` log lines
+are meant to follow, routed the same way.
+
+**Name the security on-call owner.** Whoever `NOTIFY_SECURITY_PAGE` reaches
+is the security on-call: `<security on-call owner: to be named>`. Until a
+person or rotation is named here and behind that handle, a P1 or P2 security
+alert pages nobody who knows it is theirs.
+
+**Adding a monitor:** give it `category:ops` or `category:security` (exactly
+one), a `priority`, the `service:`, `env:`, `team:` and `tier:` tags, and the
+handle placeholder exactly once at the end of its message. Never write a real
+handle into `monitors.json`. `check_monitors.py` checks all of that, and also
+that a monitor reading a security signal (`switch.controller.credential_refusals`,
+`switch.auth.*`, or `switch.event:security.*` logs) is tagged
+`category:security`; extend `SECURITY_SIGNALS` there when a new one appears.
+It runs on every pull request and before every import.
+
 ## The morning report
 
 `daily_report.py` posts once a day into a Switch room, as an agent in that room:
@@ -138,11 +177,31 @@ that keeps the default service (`SERVICE=switch-core` with
 for any other deployment leaves it alone.
 
 ```bash
-DD_API_KEY=... DD_APP_KEY=... NOTIFY=@slack-<workspace>-<channel> \
+DD_API_KEY=... DD_APP_KEY=... \
+  NOTIFY=@slack-<workspace>-<ops-channel> \
+  NOTIFY_SECURITY=@slack-<workspace>-<security-channel> \
+  NOTIFY_SECURITY_PAGE=@pagerduty-<security-service> \
   SERVICE=<service> ENV=<env> ./apply.sh
-DRY_RUN=1 ...   # print what would change
 WORKOS_DIRECTORY=1 ...   # also the WorkOS directory monitors
 ```
+
+Before it sends anything it runs `check_monitors.py`, checks every handle
+variable is set and starts with `@`, fills in the placeholders, and stops with
+a non-zero exit, naming the problem, if any `REPLACE-WITH-…` is left in a
+monitor or in the Signal board. Nothing is half-applied by a refusal.
+
+`DRY_RUN=1` changes nothing. It prints each filled-in monitor as one JSON
+object per line on stdout, and a `route:` line per monitor on stderr saying
+where it goes:
+
+```text
+route: [Switch prod] the database is unreachable [ops P1] -> @slack-example-ops
+route: [Switch prod] Controller credential refusals rising [security P2] -> @slack-example-security @pagerduty-example-security
+```
+
+It needs no Datadog keys; given them, it also reads Datadog to say which
+monitors it would update and which it would create. `test_monitors.py` drives
+it this way to check the routing and the refusals.
 
 The monitors tagged `requires:workos-directory` are imported only with
 `WORKOS_DIRECTORY=1`. They read the WorkOS mirror's metrics, which only a server
@@ -165,6 +224,20 @@ from logs (`TELEMETRY_ENABLED`), filtered by service alone, like the Signal
 board's log panels. Version 0.27.0 is left out of every query: it came from
 instances that no longer run. The **Prod** and **Dev** saved views set
 `service` to `switch-core` and `switch-core-dev`.
+
+### Applying to a deployment
+
+Monitors belong to a deployment, not to this repository. Each one is scoped to
+one deployment's `service`, its handles are that deployment's on-call, and its
+queries read signals that only the switch-core version it runs emits. So the
+deployment's own tooling runs `apply.sh`, from the Switch version it deploys,
+when it promotes that version, with its own Datadog keys, `SERVICE`, `ENV` and
+handles. Applying from `main` here would alert on signals a deployment's pinned
+version may not emit yet.
+
+What this repository checks needs no secret. On pull requests, PR CI's
+"Morning report" job runs `check_monitors.py` and `test_monitors.py`, so a
+monitor that would be refused at apply time is refused at review.
 
 `hosted-dashboard.json` is the hosted agents board for whoever is on call: the
 hosted alerts, then the main dashboard's hosted charts in reading order (a test
@@ -501,7 +574,8 @@ is the kind of machine (`vm` for every machine this server makes today).
 - `switch.controller.credential_refusals` counts refused controller
   credentials by reason code and kind of route only, never the client's
   address or any part of the credential.
-- Credential refusals have two alerts. **The paging one** watches the bearer
+- Credential refusals have two alerts, both routed as security (see
+  [Routing](#routing)). **The more urgent one** (P2, pages) watches the bearer
   routes only (`agent`, `controller`, `hosted_controller`) for the reasons that
   mean a token was guessed (`invalid_credential`, `missing_credential`,
   `wrong`, `missing`), at more than 50 in 10 minutes. A revoked or expired
