@@ -1,4 +1,6 @@
 import type * as React from 'react';
+import rehypeKatex from 'rehype-katex';
+import remarkMath from 'remark-math';
 import {
   defaultComponents,
   defaultRehypePlugins,
@@ -6,6 +8,8 @@ import {
   Streamdown,
   type Components,
   type ExtraProps,
+  type MathPlugin,
+  type PluginConfig,
   type UrlTransform,
 } from 'streamdown';
 import type { PluggableList } from 'unified';
@@ -16,6 +20,9 @@ import { cn } from '@renderer/utils/utils';
 import { CONSOLE_LINK_PREFIX, CONSOLE_LINK_SCHEME } from '@shared/core/deeplinks/console-links';
 import { CodeBlock } from './code-block';
 import { PLATFORM_LOGO_PREFIX, platformOfLogoUrl } from './platform-logo';
+
+/** The classes remark-math puts on the code nodes it makes from `$…$` and `$$…$$`. */
+const MATH_CLASSES = ['math-inline', 'math-display'];
 
 const HTTP_URL_PATTERN = /^https?:\/\//i;
 
@@ -30,7 +37,89 @@ const REHYPE_PLUGINS: PluggableList = [
   defaultRehypePlugins.harden,
 ];
 
-type SanitizeSchema = { protocols?: Record<string, string[]> };
+type HastNode = {
+  type: string;
+  tagName?: string;
+  properties?: { className?: unknown };
+  children?: HastNode[];
+};
+
+/**
+ * rehype-katex typesets every `code.language-math`, which is also what a
+ * fenced block labelled `math` looks like. remark-math's own nodes also carry
+ * `math-inline` or `math-display` (kept through sanitize by `withMathClasses`);
+ * a fence cannot get those, as Streamdown only turns a fence's label into a
+ * `language-…` class and raw HTML is skipped. So `language-math` code without
+ * them is a fence: hide that class from KaTeX, then put it back, on the very
+ * same nodes, so CodeBlock still sees the fence as written.
+ */
+function shieldMathFences(node: HastNode, shielded: [HastNode, unknown][]) {
+  const className = node.properties?.className;
+  if (
+    node.type === 'element' &&
+    node.tagName === 'code' &&
+    Array.isArray(className) &&
+    className.includes('language-math') &&
+    !MATH_CLASSES.some((name) => className.includes(name))
+  ) {
+    shielded.push([node, className]);
+    node.properties = {
+      ...node.properties,
+      className: className.filter((name) => name !== 'language-math'),
+    };
+  }
+  for (const child of node.children ?? []) shieldMathFences(child, shielded);
+}
+
+const katexTransform = (rehypeKatex as unknown as () => (tree: HastNode, file: unknown) => void)();
+
+function rehypeChatKatex() {
+  return (tree: HastNode, file: unknown) => {
+    const shielded: [HastNode, unknown][] = [];
+    shieldMathFences(tree, shielded);
+    try {
+      katexTransform(tree, file);
+    } finally {
+      for (const [node, className] of shielded) node.properties = { ...node.properties, className };
+    }
+  };
+}
+
+/**
+ * Math for chat: `$…$` inline and `$$…$$` display, built from the remark-math /
+ * rehype-katex pair the session transcript already uses (KaTeX CSS is imported
+ * globally). Streamdown runs the math rehype plugin after sanitize/harden, so
+ * KaTeX's output is not sanitized: keep KaTeX's default `trust: false`, which
+ * rejects `\href{javascript:…}` and similar. Backslash delimiters (`\(…\)`)
+ * are not handled here. A literal dollar amount must be escaped (`\$5`), since
+ * "$5 and $10" is read as math. Module-level so Streamdown's memo sees stable
+ * plugin identities.
+ */
+const CHAT_MATH: MathPlugin = {
+  name: 'katex',
+  type: 'math',
+  remarkPlugin: [remarkMath, { singleDollarTextMath: true }],
+  rehypePlugin: rehypeChatKatex,
+};
+
+const PLUGINS: PluginConfig = { math: CHAT_MATH };
+
+type SanitizeSchema = {
+  protocols?: Record<string, string[]>;
+  attributes?: Record<string, unknown[]>;
+};
+
+/**
+ * The schema's `code` entries with `className` also allowing exactly the two
+ * remark-math classes, so they are still there after sanitizing. Everything
+ * else in the entry (its `language-*` pattern, `metastring`) is kept.
+ */
+function withMathClasses(code: unknown[] | undefined): unknown[] | undefined {
+  if (!code) return code;
+  return code.map((entry) =>
+    Array.isArray(entry) && entry[0] === 'className' ? [...entry, ...MATH_CLASSES] : entry
+  );
+}
 
 /**
  * The sanitizer, letting links to Console pages keep their `href`, and
@@ -43,6 +132,7 @@ function withConsoleLinks(sanitize: PluggableList[number]): PluggableList[number
     plugin,
     {
       ...schema,
+      attributes: { ...schema.attributes, code: withMathClasses(schema.attributes?.code) },
       protocols: {
         ...schema.protocols,
         href: [...(schema.protocols?.href ?? []), CONSOLE_LINK_SCHEME],
@@ -189,6 +279,7 @@ export function ChatMarkdown({ children, className }: { children: string; classN
       className={cn('min-w-0 text-sm text-foreground', className)}
       components={COMPONENTS}
       rehypePlugins={REHYPE_PLUGINS}
+      plugins={PLUGINS}
       urlTransform={urlTransform}
       skipHtml
       controls={false}
