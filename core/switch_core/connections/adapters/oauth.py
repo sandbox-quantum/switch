@@ -108,24 +108,24 @@ MAX_IDENTITY_BYTES = 1024 * 1024
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
-ClientAuthentication = Literal["client_secret_post", "client_secret_basic"]
+ClientAuthentication = Literal['client_secret_post', 'client_secret_basic']
 
 McpIdentityReason = Literal[
-    "tool_not_found",
-    "not_read_only",
-    "needs_arguments",
-    "tool_error",
-    "bad_result",
-    "protocol_error",
+    'tool_not_found',
+    'not_read_only',
+    'needs_arguments',
+    'tool_error',
+    'bad_result',
+    'protocol_error',
 ]
 
 _MCP_IDENTITY_FAILURES: dict[McpIdentityReason, str] = {
-    "tool_not_found": "the server lists no single tool with the catalog's name",
-    "not_read_only": "the identity tool is not marked read-only",
-    "needs_arguments": "the identity tool needs arguments",
-    "tool_error": "the identity tool returned an error",
-    "bad_result": "the server's answer is too large or is not one JSON object",
-    "protocol_error": "the server's answer is not valid MCP",
+    'tool_not_found': "the server lists no single tool with the catalog's name",
+    'not_read_only': 'the identity tool is not marked read-only',
+    'needs_arguments': 'the identity tool needs arguments',
+    'tool_error': 'the identity tool returned an error',
+    'bad_result': "the server's answer is too large or is not one JSON object",
+    'protocol_error': "the server's answer is not valid MCP",
 }
 
 
@@ -135,8 +135,8 @@ class McpIdentityError(ServiceAdapterError):
 
     def __init__(self, service: str, reason: McpIdentityReason) -> None:
         super().__init__(
-            f"{service} could not identify the account through MCP: "
-            f"{_MCP_IDENTITY_FAILURES[reason]} ({reason})."
+            f'{service} could not identify the account through MCP: '
+            f'{_MCP_IDENTITY_FAILURES[reason]} ({reason}).'
         )
         self.reason: McpIdentityReason = reason
 
@@ -146,7 +146,7 @@ class McpIdentityError(ServiceAdapterError):
 # propagate and has its own handlers, so it needs this filter.
 # `mcp.client.streamable_http` reaches root; its filter covers handlers Core
 # did not install, such as pytest's `caplog`.
-for _sdk_logger in ("mcp.client.streamable_http", "fastmcp.client.client"):
+for _sdk_logger in ('mcp.client.streamable_http', 'fastmcp.client.client'):
     logging.getLogger(_sdk_logger).addFilter(McpIdentityDiagnosticFilter())
 
 
@@ -183,15 +183,17 @@ def client_fields(
 ) -> tuple[dict[str, str], dict[str, str]]:
     """The form fields and headers a request to the token, revocation or
     introspection endpoint identifies the client with."""
-    form = {"client_id": client.client_id}
+    form = {'client_id': client.client_id}
     if client.client_secret is None:
         return form, {}
     authentication = client.authentication or endpoints.client_authentication
-    if authentication == "client_secret_basic":
+    if authentication == 'client_secret_basic':
         # Each half form-urlencoded first (RFC 6749 §2.3.1).
-        pair = f"{quote(client.client_id, safe='')}:{quote(client.client_secret, safe='')}".encode()
-        return form, {"Authorization": f"Basic {base64.b64encode(pair).decode()}"}
-    return {**form, "client_secret": client.client_secret}, {}
+        pair = f'{quote(client.client_id, safe="")}:{quote(client.client_secret, safe="")}'.encode()
+        return form, {
+            'Authorization': f'Basic {base64.b64encode(pair).decode()}'
+        }
+    return {**form, 'client_secret': client.client_secret}, {}
 
 
 class ClientSource(Protocol):
@@ -259,13 +261,13 @@ class Pasted:
 def credential_words(method: str) -> tuple[str, str]:
     """A pasted credential as a sentence names it (`token` or `keys`), and
     the pronoun that stands for it."""
-    return ("token", "it") if method == "token" else ("keys", "them")
+    return ('token', 'it') if method == 'token' else ('keys', 'them')
 
 
 def s256(verifier: str) -> str:
     """The PKCE challenge for `verifier` (RFC 7636, S256)."""
     digest = hashlib.sha256(verifier.encode()).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return base64.urlsafe_b64encode(digest).rstrip(b'=').decode()
 
 
 def _https(url: object, what: str) -> str:
@@ -273,7 +275,7 @@ def _https(url: object, what: str) -> str:
         parts = urlsplit(url) if isinstance(url, str) else None
         valid = (
             parts is not None
-            and parts.scheme == "https"
+            and parts.scheme == 'https'
             and bool(parts.hostname)
             and parts.username is None
             and parts.password is None
@@ -284,6 +286,28 @@ def _https(url: object, what: str) -> str:
         raise ServiceAdapterError(f"The vendor's {what} is not an https URL.")
     assert isinstance(url, str)
     return url
+
+
+def _origin(url: str) -> tuple[str, str, int | None] | None:
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    if not scheme or not parts.hostname:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if scheme == 'https' else 80 if scheme == 'http' else None
+    return (scheme, parts.hostname.lower(), port)
+
+
+def _same_origin(one: str, other: str) -> bool:
+    origin_one = _origin(one)
+    return origin_one is not None and origin_one == _origin(other)
 
 
 def _resource_covers(resource: str, url: str) -> bool:
@@ -298,29 +322,22 @@ def _resource_covers(resource: str, url: str) -> bool:
 
     RFC 8707 forbids a fragment, and Core takes no query either.
     """
-    if "?" in resource or "#" in resource:
+    if '?' in resource or '#' in resource:
+        return False
+    if not _same_origin(resource, url):
         return False
     advertised = urlsplit(resource)
     server = urlsplit(url)
-    try:
-        origins = [
-            (
-                parts.scheme.lower(),
-                parts.hostname,
-                443 if parts.port is None else parts.port,
-            )
-            for parts in (advertised, server)
-        ]
-    except ValueError:
-        return False
-    if origins[0] != origins[1]:
-        return False
-    return f"{server.path.rstrip('/')}/".startswith(f"{advertised.path.rstrip('/')}/")
+    return f'{server.path.rstrip("/")}/'.startswith(
+        f'{advertised.path.rstrip("/")}/'
+    )
 
 
 class _BudgetExceeded(Exception):
     def __init__(self) -> None:
-        super().__init__("The MCP identity call read more than its byte budget.")
+        super().__init__(
+            'The MCP identity call read more than its byte budget.'
+        )
 
 
 @dataclass
@@ -344,7 +361,9 @@ class _McpBudget:
 
 
 class _BudgetStream(httpx.AsyncByteStream):
-    def __init__(self, inner: httpx.AsyncByteStream, budget: _McpBudget) -> None:
+    def __init__(
+        self, inner: httpx.AsyncByteStream, budget: _McpBudget
+    ) -> None:
         self._inner = inner
         self._budget = budget
         self._seen = 0
@@ -368,19 +387,28 @@ class _BudgetStream(httpx.AsyncByteStream):
 class _BudgetTransport(httpx.AsyncBaseTransport):
     """Counts the bytes of each response as they arrive, JSON or SSE."""
 
-    def __init__(self, inner: httpx.AsyncBaseTransport, budget: _McpBudget) -> None:
+    def __init__(
+        self, inner: httpx.AsyncBaseTransport, budget: _McpBudget
+    ) -> None:
         self._inner = inner
         self._budget = budget
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(
+        self, request: httpx.Request
+    ) -> httpx.Response:
         response = await self._inner.handle_async_request(request)
-        if request.method == "POST" and response.status_code == 404:
+        if request.method == 'POST' and response.status_code == 404:
             # The SDK reads a 404 as an ended session and drops the status,
             # so it is raised here the way the SDK raises any other 4xx.
             await response.aclose()
-            raise httpx.HTTPStatusError("Not Found", request=request, response=response)
+            raise httpx.HTTPStatusError(
+                'Not Found', request=request, response=response
+            )
         # Compressed bytes do not bound the decoded size.
-        if response.headers.get("content-encoding", "identity").lower() != "identity":
+        if (
+            response.headers.get('content-encoding', 'identity').lower()
+            != 'identity'
+        ):
             await response.aclose()
             self._budget.trip()
             raise _BudgetExceeded()
@@ -410,12 +438,14 @@ def _mcp_http_client(
     client's policy. Closing it never closes the shared client's transport.
     Redirects are not followed, whatever the SDK asks."""
     return httpx.AsyncClient(
-        headers={**(headers or {}), "Accept-Encoding": "identity"},
+        headers={**(headers or {}), 'Accept-Encoding': 'identity'},
         auth=auth,
         follow_redirects=False,
         trust_env=False,
         timeout=timeout,
-        transport=_BudgetTransport(guarded_transport(policy, verify=verify), budget),
+        transport=_BudgetTransport(
+            guarded_transport(policy, verify=verify), budget
+        ),
     )
 
 
@@ -449,18 +479,20 @@ def _accepts_arguments(schema: object, names: list[str]) -> bool:
     read, so a vendor's schema costs no work: a JSON Schema validator can
     spend minutes of CPU time on a small hostile schema. A tool that still
     refuses the arguments fails loudly when called (`tool_error`)."""
-    if not isinstance(schema, dict) or schema.get("type") != "object":
+    if not isinstance(schema, dict) or schema.get('type') != 'object':
         return False
-    required = schema.get("required", [])
+    required = schema.get('required', [])
     # Compared by equality, not hashed: a vendor's entry can be any JSON.
-    if not isinstance(required, list) or any(name not in names for name in required):
+    if not isinstance(required, list) or any(
+        name not in names for name in required
+    ):
         return False
     if not names:
         return True
-    properties = schema.get("properties")
+    properties = schema.get('properties')
     return isinstance(properties, dict) and all(
         isinstance(properties.get(name), dict)
-        and properties[name].get("type", "string") == "string"
+        and properties[name].get('type', 'string') == 'string'
         for name in names
     )
 
@@ -469,7 +501,9 @@ def _identity_body(result: CallToolResult) -> dict[str, Any] | None:
     """The one JSON object an identity tool returned, or None."""
     if result.structuredContent is not None:
         return result.structuredContent
-    if len(result.content) != 1 or not isinstance(result.content[0], TextContent):
+    if len(result.content) != 1 or not isinstance(
+        result.content[0], TextContent
+    ):
         return None
     try:
         body = json.loads(result.content[0].text)
@@ -480,7 +514,7 @@ def _identity_body(result: CallToolResult) -> dict[str, Any] | None:
 
 def _path_value(document: Any, path: str) -> Any:
     value = document
-    for part in path.split("."):
+    for part in path.split('.'):
         if not isinstance(value, dict):
             return None
         value = value.get(part)
@@ -500,12 +534,14 @@ class OAuthAdapter:
         oauth = definition.auth.oauth
         identity = definition.auth.identity
         if (
-            definition.adapter != "oauth"
+            definition.adapter != 'oauth'
             or oauth is None
             or identity is None
             or (definition.mcp is None and definition.cli is None)
         ):
-            raise ValueError(f"{definition.slug} is not a complete oauth entry.")
+            raise ValueError(
+                f'{definition.slug} is not a complete oauth entry.'
+            )
         self._definition = definition
         self._oauth = oauth
         self._identity = identity
@@ -528,16 +564,18 @@ class OAuthAdapter:
             response = await self._http.send(request, follow_redirects=False)
         except httpx.HTTPError:
             raise ServiceUnavailableError(
-                f"{self._name} could not be reached. Please try again."
+                f'{self._name} could not be reached. Please try again.'
             ) from None
         if response.status_code == 429 or response.status_code >= 500:
             raise ServiceUnavailableError(
-                f"{self._name} is unavailable (HTTP {response.status_code}). "
-                "Please try again."
+                f'{self._name} is unavailable (HTTP {response.status_code}). '
+                'Please try again.'
             )
         return response
 
-    def _json(self, response: httpx.Response, what: str, limit: int) -> dict[str, Any]:
+    def _json(
+        self, response: httpx.Response, what: str, limit: int
+    ) -> dict[str, Any]:
         if len(response.content) > limit:
             raise ServiceAdapterError(f"{self._name}'s {what} is too large.")
         try:
@@ -545,14 +583,18 @@ class OAuthAdapter:
         except ValueError:
             body = None
         if not isinstance(body, dict):
-            raise ServiceAdapterError(f"{self._name}'s {what} is not a JSON object.")
+            raise ServiceAdapterError(
+                f"{self._name}'s {what} is not a JSON object."
+            )
         return body
 
-    async def _metadata(self, candidates: list[str], what: str) -> dict[str, Any]:
+    async def _metadata(
+        self, candidates: list[str], what: str
+    ) -> dict[str, Any]:
         for url in candidates:
             response = await self._send(
                 self._http.build_request(
-                    "GET", url, headers={"Accept": "application/json"}
+                    'GET', url, headers={'Accept': 'application/json'}
                 )
             )
             if response.status_code == 200:
@@ -560,9 +602,9 @@ class OAuthAdapter:
             if response.status_code not in (404, 405):
                 raise ServiceAdapterError(
                     f"{self._name}'s {what} could not be read "
-                    f"(HTTP {response.status_code})."
+                    f'(HTTP {response.status_code}).'
                 )
-        raise ServiceAdapterError(f"{self._name} publishes no {what}.")
+        raise ServiceAdapterError(f'{self._name} publishes no {what}.')
 
     def _checked(self, choices: Mapping[str, str]) -> dict[str, str]:
         """A sign-in's choices, as the entry offers them."""
@@ -574,18 +616,20 @@ class OAuthAdapter:
     def _choices_of(self, secret: ConnectionSecret) -> dict[str, str]:
         """The choices a connection was made with, which its secret keeps;
         none for one made before an entry offered any."""
-        stored = secret.values.get("choices", {})
+        stored = secret.values.get('choices', {})
         try:
             return self._oauth.checked_choices(
                 stored if isinstance(stored, dict) else {}
             )
         except ChoicesError as error:
             raise ReauthorizationRequiredError(
-                f"The {self._name} connector was made for a choice Switch no "
-                f"longer offers. {error}"
+                f'The {self._name} connector was made for a choice Switch no '
+                f'longer offers. {error}'
             ) from None
 
-    async def endpoints(self, choices: Mapping[str, str]) -> AuthorizationEndpoints:
+    async def endpoints(
+        self, choices: Mapping[str, str]
+    ) -> AuthorizationEndpoints:
         """The vendor's OAuth endpoints for `choices`: the catalog's, or
         discovered once per choice."""
         checked = self._checked(choices)
@@ -596,7 +640,9 @@ class OAuthAdapter:
             self._endpoints[key] = known
         return known
 
-    async def _find_endpoints(self, choices: dict[str, str]) -> AuthorizationEndpoints:
+    async def _find_endpoints(
+        self, choices: dict[str, str]
+    ) -> AuthorizationEndpoints:
         if self._oauth.authorization_url is not None and self._oauth.token_url:
             return AuthorizationEndpoints(
                 authorization=render(self._oauth.authorization_url, choices),
@@ -605,17 +651,17 @@ class OAuthAdapter:
                 revocation=None,
                 introspection=None,
                 resource=None,
-                client_authentication="client_secret_post",
+                client_authentication='client_secret_post',
             )
         if self._mcp_url is None:
             raise ServiceAdapterError(
-                f"{self._name} names no OAuth endpoints and has no MCP server to "
-                "discover them from."
+                f'{self._name} names no OAuth endpoints and has no MCP server to '
+                'discover them from.'
             )
         mcp_url = render(self._mcp_url, choices)
         server = urlsplit(mcp_url)
-        origin = f"{server.scheme}://{server.netloc}"
-        path = server.path.rstrip("/")
+        origin = f'{server.scheme}://{server.netloc}'
+        path = server.path.rstrip('/')
         # The server's own answer names its metadata; the well-known addresses
         # are the fallback, and on a host serving several MCP servers the
         # root one may describe another.
@@ -625,104 +671,113 @@ class OAuthAdapter:
             if named is not None
             else [
                 *(
-                    [f"{origin}/.well-known/oauth-protected-resource{path}"]
+                    [f'{origin}/.well-known/oauth-protected-resource{path}']
                     if path
                     else []
                 ),
-                f"{origin}/.well-known/oauth-protected-resource",
+                f'{origin}/.well-known/oauth-protected-resource',
             ],
-            "protected resource metadata",
+            'protected resource metadata',
         )
         # Checked before its authorization servers are trusted: metadata for
         # another server names that server's.
-        advertised = _https(resource.get("resource", mcp_url), "resource identifier")
+        advertised = _https(
+            resource.get('resource', mcp_url), 'resource identifier'
+        )
         if not _resource_covers(advertised, mcp_url):
             raise ServiceAdapterError(
                 f"{self._name}'s MCP server names another server as its resource."
             )
-        servers = resource.get("authorization_servers")
+        servers = resource.get('authorization_servers')
         if not isinstance(servers, list) or not servers:
             raise ServiceAdapterError(
                 f"{self._name}'s MCP server names no authorization server."
             )
-        issuer = urlsplit(_https(servers[0], "authorization server"))
-        issuer_origin = f"{issuer.scheme}://{issuer.netloc}"
-        issuer_path = issuer.path.rstrip("/")
+        issuer = urlsplit(_https(servers[0], 'authorization server'))
+        issuer_origin = f'{issuer.scheme}://{issuer.netloc}'
+        issuer_path = issuer.path.rstrip('/')
         candidates = (
             [
-                f"{issuer_origin}/.well-known/oauth-authorization-server{issuer_path}",
-                f"{issuer_origin}/.well-known/openid-configuration{issuer_path}",
-                f"{issuer_origin}{issuer_path}/.well-known/openid-configuration",
+                f'{issuer_origin}/.well-known/oauth-authorization-server{issuer_path}',
+                f'{issuer_origin}/.well-known/openid-configuration{issuer_path}',
+                f'{issuer_origin}{issuer_path}/.well-known/openid-configuration',
             ]
             if issuer_path
             else [
-                f"{issuer_origin}/.well-known/oauth-authorization-server",
-                f"{issuer_origin}/.well-known/openid-configuration",
+                f'{issuer_origin}/.well-known/oauth-authorization-server',
+                f'{issuer_origin}/.well-known/openid-configuration',
             ]
         )
-        metadata = await self._metadata(candidates, "authorization server metadata")
-        methods = metadata.get("code_challenge_methods_supported")
-        if not isinstance(methods, list) or "S256" not in methods:
+        metadata = await self._metadata(
+            candidates, 'authorization server metadata'
+        )
+        methods = metadata.get('code_challenge_methods_supported')
+        if not isinstance(methods, list) or 'S256' not in methods:
             raise ServiceAdapterError(
                 f"{self._name}'s authorization server does not offer PKCE with "
-                "S256, so Switch cannot sign in to it safely."
+                'S256, so Switch cannot sign in to it safely.'
             )
-        registration = metadata.get("registration_endpoint")
-        revocation = metadata.get("revocation_endpoint")
-        introspection = metadata.get("introspection_endpoint")
+        registration = metadata.get('registration_endpoint')
+        revocation = metadata.get('revocation_endpoint')
+        introspection = metadata.get('introspection_endpoint')
         # The form body, unless the vendor takes a secret only as HTTP Basic:
         # Airtable refuses one in the body. Metadata that lists no methods
         # means Basic (RFC 8414 §2).
         auth_methods = metadata.get(
-            "token_endpoint_auth_methods_supported", ["client_secret_basic"]
+            'token_endpoint_auth_methods_supported', ['client_secret_basic']
         )
         basic_only = (
             isinstance(auth_methods, list)
-            and "client_secret_basic" in auth_methods
-            and "client_secret_post" not in auth_methods
+            and 'client_secret_basic' in auth_methods
+            and 'client_secret_post' not in auth_methods
         )
         return AuthorizationEndpoints(
             authorization=_https(
-                metadata.get("authorization_endpoint"), "authorization endpoint"
+                metadata.get('authorization_endpoint'), 'authorization endpoint'
             ),
-            token=_https(metadata.get("token_endpoint"), "token endpoint"),
+            token=_https(metadata.get('token_endpoint'), 'token endpoint'),
             registration=(
                 None
                 if registration is None
-                else _https(registration, "registration endpoint")
+                else _https(registration, 'registration endpoint')
             ),
             revocation=(
                 None
                 if revocation is None
-                else _https(revocation, "revocation endpoint")
+                else _https(revocation, 'revocation endpoint')
             ),
             introspection=(
                 None
                 if introspection is None
-                else _https(introspection, "introspection endpoint")
+                else _https(introspection, 'introspection endpoint')
             ),
             resource=advertised,
             client_authentication=(
-                "client_secret_basic" if basic_only else "client_secret_post"
+                'client_secret_basic' if basic_only else 'client_secret_post'
             ),
         )
 
-    def _initialize(self, mcp_url: str, headers: Mapping[str, str]) -> httpx.Request:
+    def _initialize(
+        self, mcp_url: str, headers: Mapping[str, str]
+    ) -> httpx.Request:
         """An MCP `initialize` request to `mcp_url`, with `headers`."""
         return self._http.build_request(
-            "POST",
+            'POST',
             mcp_url,
             json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "switch", "version": "1.0.0"},
+                'jsonrpc': '2.0',
+                'id': 1,
+                'method': 'initialize',
+                'params': {
+                    'protocolVersion': '2025-06-18',
+                    'capabilities': {},
+                    'clientInfo': {'name': 'switch', 'version': '1.0.0'},
                 },
             },
-            headers={**headers, "Accept": "application/json, text/event-stream"},
+            headers={
+                **headers,
+                'Accept': 'application/json, text/event-stream',
+            },
         )
 
     async def _resource_metadata_url(self, mcp_url: str) -> str | None:
@@ -732,9 +787,15 @@ class OAuthAdapter:
         if response.status_code != 401:
             return None
         match = re.search(
-            r'resource_metadata="([^"]+)"', response.headers.get("www-authenticate", "")
+            r'resource_metadata="([^"]+)"',
+            response.headers.get('www-authenticate', ''),
         )
-        return None if match is None else _https(match.group(1), "resource metadata")
+        if match is None or not _same_origin(match.group(1), mcp_url):
+            return None
+        try:
+            return _https(match.group(1), 'resource metadata')
+        except ServiceAdapterError:
+            return None
 
     def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return self._client.known_client_id(choice_key(choices))
@@ -756,66 +817,66 @@ class OAuthAdapter:
         identifying, headers = client_fields(endpoints, client)
         data = {**form, **identifying}
         if endpoints.resource is not None:
-            data["resource"] = endpoints.resource
+            data['resource'] = endpoints.resource
         response = await self._send(
             self._http.build_request(
-                "POST",
+                'POST',
                 endpoints.token,
                 data=data,
-                headers={"Accept": "application/json", **headers},
+                headers={'Accept': 'application/json', **headers},
             )
         )
         if response.status_code == 200:
             return TokenAnswer(
-                self._json(response, "token response", MAX_METADATA_BYTES),
+                self._json(response, 'token response', MAX_METADATA_BYTES),
                 client.client_id,
             )
         try:
-            error = response.json().get("error")
+            error = response.json().get('error')
         except (ValueError, AttributeError):
             error = None
-        if error == "invalid_grant":
+        if error == 'invalid_grant':
             raise ReauthorizationRequiredError(
-                f"{self._name} refused the sign-in: it was revoked or has lapsed."
+                f'{self._name} refused the sign-in: it was revoked or has lapsed.'
             )
         raise ServiceAdapterError(
             f"{self._name} refused Switch's token request "
-            f"(HTTP {response.status_code}{f', {error}' if isinstance(error, str) else ''})."
+            f'(HTTP {response.status_code}{f", {error}" if isinstance(error, str) else ""}).'
         )
 
     def _credentials(
         self, body: dict[str, Any], previous: dict[str, Any]
     ) -> dict[str, Any]:
         """The stored secret's values from a token response."""
-        access_token = body.get("access_token")
+        access_token = body.get('access_token')
         if not isinstance(access_token, str) or not access_token:
-            raise ServiceAdapterError(f"{self._name} returned no access token.")
-        token_type = body.get("token_type")
-        if isinstance(token_type, str) and token_type.lower() != "bearer":
+            raise ServiceAdapterError(f'{self._name} returned no access token.')
+        token_type = body.get('token_type')
+        if isinstance(token_type, str) and token_type.lower() != 'bearer':
             raise ServiceAdapterError(
-                f"{self._name} returned a {token_type} token, not a bearer token."
+                f'{self._name} returned a {token_type} token, not a bearer token.'
             )
-        expires_in = body.get("expires_in")
+        expires_in = body.get('expires_in')
         if type(expires_in) is not int or expires_in <= 0:
             raise ServiceAdapterError(
-                f"{self._name} did not say when its access token expires."
+                f'{self._name} did not say when its access token expires.'
             )
         # Without a new one, the refresh token in hand stays good (RFC 6749 §6).
-        refresh_token = body.get("refresh_token", previous.get("refresh_token"))
+        refresh_token = body.get('refresh_token', previous.get('refresh_token'))
         if not isinstance(refresh_token, str) or not refresh_token:
             raise ServiceAdapterError(
-                f"{self._name} returned no refresh token, so Switch could not keep "
-                "the connector signed in."
+                f'{self._name} returned no refresh token, so Switch could not keep '
+                'the connector signed in.'
             )
         values = {
             **previous,
-            "access_token": access_token,
-            "expires_at": time.time() + expires_in,
-            "refresh_token": refresh_token,
+            'access_token': access_token,
+            'expires_at': time.time() + expires_in,
+            'refresh_token': refresh_token,
         }
-        scope = body.get("scope")
+        scope = body.get('scope')
         if isinstance(scope, str):
-            values["scope"] = scope
+            values['scope'] = scope
         return values
 
     # ── Signing in ───────────────────────────────────────────────────────────
@@ -836,24 +897,24 @@ class OAuthAdapter:
             raise self._no_introspection()
         client = await self._client.credentials(endpoints, choice_key(choices))
         query: dict[str, str] = {
-            "response_type": "code",
-            "client_id": client.client_id,
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
+            'response_type': 'code',
+            'client_id': client.client_id,
+            'redirect_uri': redirect_uri,
+            'state': state,
+            'code_challenge': code_challenge,
+            'code_challenge_method': 'S256',
         }
         access = self._definition.access
         if access is None or not access.unscoped:
-            query["scope"] = " ".join(scopes)
+            query['scope'] = ' '.join(scopes)
         for key, value in self._oauth.authorization_params.items():
             query[key] = value
         if self._oauth.prompt is not None:
-            query["prompt"] = self._oauth.prompt
+            query['prompt'] = self._oauth.prompt
         if endpoints.resource is not None:
-            query["resource"] = endpoints.resource
-        separator = "&" if urlsplit(endpoints.authorization).query else "?"
-        return f"{endpoints.authorization}{separator}{urlencode(query)}"
+            query['resource'] = endpoints.resource
+        separator = '&' if urlsplit(endpoints.authorization).query else '?'
+        return f'{endpoints.authorization}{separator}{urlencode(query)}'
 
     async def exchange_code(
         self,
@@ -869,22 +930,24 @@ class OAuthAdapter:
         checked = self._checked(choices)
         answer = await self._token_request(
             {
-                "grant_type": "authorization_code",
-                "code": code,
-                "code_verifier": verifier,
-                "redirect_uri": redirect_uri,
+                'grant_type': 'authorization_code',
+                'code': code,
+                'code_verifier': verifier,
+                'redirect_uri': redirect_uri,
             },
             checked,
         )
-        values = self._credentials(answer.body, {"choices": checked})
-        granted = values.get("scope")
+        values = self._credentials(answer.body, {'choices': checked})
+        granted = values.get('scope')
         return SignIn(
             ConnectionSecret(values),
             granted.split() if isinstance(granted, str) else list(scopes),
             answer.client_id,
         )
 
-    async def identify(self, access_token: str, choices: Mapping[str, str]) -> Identity:
+    async def identify(
+        self, access_token: str, choices: Mapping[str, str]
+    ) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
         checked = self._checked(choices)
         if self._identity.mcp_tool is not None:
@@ -898,29 +961,31 @@ class OAuthAdapter:
             assert self._identity.url is not None
             response = await self._send(
                 self._http.build_request(
-                    "GET",
+                    'GET',
                     render(self._identity.url, checked),
                     headers={
-                        "Authorization": f"Bearer {access_token}",
-                        "Accept": "application/json",
+                        'Authorization': f'Bearer {access_token}',
+                        'Accept': 'application/json',
                     },
                 )
             )
             if response.status_code == 401:
                 raise ReauthorizationRequiredError(
-                    f"{self._name} refused the new sign-in when asked whose it is."
+                    f'{self._name} refused the new sign-in when asked whose it is.'
                 )
             if response.status_code != 200:
                 raise ServiceAdapterError(
-                    f"{self._name} would not say whose sign-in this is "
-                    f"(HTTP {response.status_code})."
+                    f'{self._name} would not say whose sign-in this is '
+                    f'(HTTP {response.status_code}).'
                 )
-            body = self._json(response, "account", MAX_IDENTITY_BYTES)
+            body = self._json(response, 'account', MAX_IDENTITY_BYTES)
         return self._identity_of(body)
 
     def _identity_from(self, response: httpx.Response) -> Identity:
         """The account the identity call's answer names."""
-        return self._identity_of(self._json(response, "account", MAX_IDENTITY_BYTES))
+        return self._identity_of(
+            self._json(response, 'account', MAX_IDENTITY_BYTES)
+        )
 
     def _identity_of(self, body: dict[str, Any]) -> Identity:
         """The account an identity answer's body names."""
@@ -930,17 +995,23 @@ class OAuthAdapter:
             if isinstance(paths, list)
             else [_path_value(body, paths)]
         )
-        if any(type(part) not in (str, int) or not str(part).strip() for part in parts):
-            raise ServiceAdapterError(f"{self._name} did not name the account's id.")
+        if any(
+            type(part) not in (str, int) or not str(part).strip()
+            for part in parts
+        ):
+            raise ServiceAdapterError(
+                f"{self._name} did not name the account's id."
+            )
         # Escape each component so a separator in an id cannot alias another account.
         account_id = (
-            ":".join(quote(str(part), safe="") for part in parts)
+            ':'.join(quote(str(part), safe='') for part in parts)
             if isinstance(paths, list)
             else str(parts[0])
         )
         label = _path_value(body, self._identity.label)
         return Identity(
-            account_id, label if isinstance(label, str) and label else account_id
+            account_id,
+            label if isinstance(label, str) and label else account_id,
         )
 
     async def _introspect(
@@ -956,42 +1027,46 @@ class OAuthAdapter:
         identifying, headers = client_fields(endpoints, client)
         response = await self._send(
             self._http.build_request(
-                "POST",
+                'POST',
                 endpoints.introspection,
                 data={
-                    "token": access_token,
-                    "token_type_hint": "access_token",
+                    'token': access_token,
+                    'token_type_hint': 'access_token',
                     **identifying,
                 },
-                headers={"Accept": "application/json", **headers},
+                headers={'Accept': 'application/json', **headers},
             )
         )
         if response.status_code != 200:
             raise ServiceAdapterError(
-                f"{self._name} would not say whose sign-in this is "
-                f"(HTTP {response.status_code})."
+                f'{self._name} would not say whose sign-in this is '
+                f'(HTTP {response.status_code}).'
             )
-        body = self._json(response, "token introspection", MAX_METADATA_BYTES)
-        if body.get("active") is not True:
+        body = self._json(response, 'token introspection', MAX_METADATA_BYTES)
+        if body.get('active') is not True:
             raise ReauthorizationRequiredError(
-                f"{self._name} says the new sign-in is not active."
+                f'{self._name} says the new sign-in is not active.'
             )
         return body
 
     def _no_introspection(self) -> ServiceAdapterError:
         return ServiceAdapterError(
             f"{self._name}'s authorization server offers no token "
-            "introspection, so Switch cannot tell whose sign-in this is."
+            'introspection, so Switch cannot tell whose sign-in this is.'
         )
 
-    async def _mcp_identity(self, access_token: str, mcp_url: str) -> dict[str, Any]:
+    async def _mcp_identity(
+        self, access_token: str, mcp_url: str
+    ) -> dict[str, Any]:
         if self._identity.mcp_tool is None:
-            raise ServiceAdapterError(f"{self._name} has no MCP identity source.")
+            raise ServiceAdapterError(
+                f'{self._name} has no MCP identity source.'
+            )
         http = self._http
         if not isinstance(http, GuardedAsyncClient):
             raise ServiceAdapterError(
                 f"{self._name} was not asked whose sign-in this is: Core's HTTP "
-                "client is not held to its outbound policy."
+                'client is not held to its outbound policy.'
             )
         deadline = asyncio.timeout(MCP_IDENTITY_SECONDS)
         budget = _McpBudget(MCP_RESPONSE_BYTES, MCP_IDENTITY_BYTES, deadline)
@@ -1019,12 +1094,12 @@ class OAuthAdapter:
             raise failure
         assert result is not None
         if result.isError:
-            raise McpIdentityError(self._name, "tool_error")
+            raise McpIdentityError(self._name, 'tool_error')
         if len(result.model_dump_json().encode()) > MCP_RESULT_BYTES:
-            raise McpIdentityError(self._name, "bad_result")
+            raise McpIdentityError(self._name, 'bad_result')
         body = _identity_body(result)
         if body is None:
-            raise McpIdentityError(self._name, "bad_result")
+            raise McpIdentityError(self._name, 'bad_result')
         return body
 
     async def _call_identity_tool(
@@ -1037,7 +1112,7 @@ class OAuthAdapter:
         assert self._identity.mcp_tool is not None
         transport = StreamableHttpTransport(
             mcp_url,
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={'Authorization': f'Bearer {access_token}'},
             httpx_client_factory=functools.partial(
                 _mcp_http_client,
                 budget=budget,
@@ -1063,19 +1138,24 @@ class OAuthAdapter:
                 if not cursor:
                     break
                 if cursor in seen:
-                    raise McpIdentityError(self._name, "bad_result")
+                    raise McpIdentityError(self._name, 'bad_result')
                 seen.add(cursor)
             else:
-                raise McpIdentityError(self._name, "bad_result")
-            matches = [tool for tool in tools if tool.name == self._identity.mcp_tool]
+                raise McpIdentityError(self._name, 'bad_result')
+            matches = [
+                tool for tool in tools if tool.name == self._identity.mcp_tool
+            ]
             if len(matches) != 1:
-                raise McpIdentityError(self._name, "tool_not_found")
+                raise McpIdentityError(self._name, 'tool_not_found')
             tool = matches[0]
-            if tool.annotations is None or tool.annotations.readOnlyHint is not True:
-                raise McpIdentityError(self._name, "not_read_only")
+            if (
+                tool.annotations is None
+                or tool.annotations.readOnlyHint is not True
+            ):
+                raise McpIdentityError(self._name, 'not_read_only')
             arguments = dict(self._identity.arguments or {})
             if not _accepts_arguments(tool.inputSchema, list(arguments)):
-                raise McpIdentityError(self._name, "needs_arguments")
+                raise McpIdentityError(self._name, 'needs_arguments')
             # Sent as a plain request: the SDK's `call_tool` checks the result
             # against the vendor's outputSchema, which can fetch any URL.
             try:
@@ -1083,7 +1163,8 @@ class OAuthAdapter:
                     ClientRequest(
                         CallToolRequest(
                             params=CallToolRequestParams(
-                                name=self._identity.mcp_tool, arguments=arguments
+                                name=self._identity.mcp_tool,
+                                arguments=arguments,
                             )
                         )
                     ),
@@ -1093,7 +1174,7 @@ class OAuthAdapter:
                 # A tool can refuse its arguments this way, not with an
                 # isError result.
                 if refused.error.code == INVALID_PARAMS:
-                    raise McpIdentityError(self._name, "tool_error") from None
+                    raise McpIdentityError(self._name, 'tool_error') from None
                 raise
             return result
 
@@ -1102,7 +1183,7 @@ class OAuthAdapter:
     ) -> ServiceAdapterError:
         """A new error, of fixed text, for what failed in the identity call."""
         if budget.tripped:
-            return McpIdentityError(self._name, "bad_result")
+            return McpIdentityError(self._name, 'bad_result')
         leaves = list(_leaves(error))
         for leaf in leaves:
             if isinstance(leaf, McpIdentityError):
@@ -1122,41 +1203,43 @@ class OAuthAdapter:
                 status = leaf.response.status_code
                 if status == 401:
                     return ReauthorizationRequiredError(
-                        f"{self._name} refused the new sign-in when asked whose it is."
+                        f'{self._name} refused the new sign-in when asked whose it is.'
                     )
                 if status == 429 or status >= 500:
                     return ServiceUnavailableError(
-                        f"{self._name} is unavailable (HTTP {status}). "
-                        "Please try again."
+                        f'{self._name} is unavailable (HTTP {status}). '
+                        'Please try again.'
                     )
                 if 400 <= status < 500:
                     return ServiceAdapterError(
-                        f"{self._name} would not say whose sign-in this is "
-                        f"(HTTP {status})."
+                        f'{self._name} would not say whose sign-in this is '
+                        f'(HTTP {status}).'
                     )
                 # A redirect, which Core does not follow, is not an MCP answer.
-                return McpIdentityError(self._name, "protocol_error")
+                return McpIdentityError(self._name, 'protocol_error')
         if budget.deadline.expired() or any(
             isinstance(
-                leaf, (TimeoutError, httpx.TransportError, OutboundHostUnresolved)
+                leaf,
+                (TimeoutError, httpx.TransportError, OutboundHostUnresolved),
             )
             or (
                 isinstance(leaf, McpError)
-                and leaf.error.code in (httpx.codes.REQUEST_TIMEOUT, CONNECTION_CLOSED)
+                and leaf.error.code
+                in (httpx.codes.REQUEST_TIMEOUT, CONNECTION_CLOSED)
             )
             for leaf in leaves
         ):
             return ServiceUnavailableError(
-                f"{self._name} could not be reached. Please try again."
+                f'{self._name} could not be reached. Please try again.'
             )
-        return McpIdentityError(self._name, "protocol_error")
+        return McpIdentityError(self._name, 'protocol_error')
 
     # ── A credential pasted in place of a sign-in ────────────────────────────
 
     def paste_method(self, name: str) -> PasteMethod:
         method = self._definition.auth.paste_method(name)
         if method is None:
-            raise ServiceAdapterError(f"{self._name} takes no pasted {name}.")
+            raise ServiceAdapterError(f'{self._name} takes no pasted {name}.')
         return method
 
     def checked_paste(
@@ -1166,14 +1249,17 @@ class OAuthAdapter:
         return checked_fields(self._name, method.fields, submitted)
 
     def pasted_secret(
-        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+        self,
+        method: PasteMethod,
+        values: Mapping[str, str],
+        choices: Mapping[str, str],
     ) -> ConnectionSecret:
         """What a connection made with a pasted credential stores."""
         return ConnectionSecret(
             {
-                "access_token": credential_token(values, choices),
-                "method": method.name,
-                "choices": dict(choices),
+                'access_token': credential_token(values, choices),
+                'method': method.name,
+                'choices': dict(choices),
             }
         )
 
@@ -1181,19 +1267,21 @@ class OAuthAdapter:
         """The pasted credential a connection's secret holds; None for a
         sign-in. One this server no longer takes as it was pasted must be
         pasted again: `ReauthorizationRequiredError`."""
-        name = secret.values.get("method")
+        name = secret.values.get('method')
         if name is None:
             return None
         method = (
-            self._definition.auth.paste_method(name) if isinstance(name, str) else None
+            self._definition.auth.paste_method(name)
+            if isinstance(name, str)
+            else None
         )
         if method is None:
             raise ReauthorizationRequiredError(
-                f"The {self._name} connector was made with a credential Switch "
-                "no longer takes."
+                f'The {self._name} connector was made with a credential Switch '
+                'no longer takes.'
             )
         try:
-            values = json.loads(secret.access_token or "")["secret"]
+            values = json.loads(secret.access_token or '')['secret']
         except (ValueError, KeyError, TypeError):
             values = None
         if (
@@ -1204,15 +1292,21 @@ class OAuthAdapter:
             words, _ = credential_words(method.name)
             raise ReauthorizationRequiredError(
                 f"The {self._name} connector's pasted {words} no longer fit what "
-                "Switch asks for."
+                'Switch asks for.'
             )
         return Pasted(method, values, self._choices_of(secret))
 
     def _paste_headers(
-        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+        self,
+        method: PasteMethod,
+        values: Mapping[str, str],
+        choices: Mapping[str, str],
     ) -> dict[str, str]:
         fields = {**values, **choices}
-        return {name: render(value, fields) for name, value in method.headers.items()}
+        return {
+            name: render(value, fields)
+            for name, value in method.headers.items()
+        }
 
     async def _status(self, request: httpx.Request) -> int:
         """The status the vendor answers `request` with, the body unread: an
@@ -1223,18 +1317,21 @@ class OAuthAdapter:
             )
         except httpx.HTTPError:
             raise ServiceUnavailableError(
-                f"{self._name} could not be reached. Please try again."
+                f'{self._name} could not be reached. Please try again.'
             ) from None
         await response.aclose()
         if response.status_code == 429 or response.status_code >= 500:
             raise ServiceUnavailableError(
-                f"{self._name} is unavailable (HTTP {response.status_code}). "
-                "Please try again."
+                f'{self._name} is unavailable (HTTP {response.status_code}). '
+                'Please try again.'
             )
         return response.status_code
 
     async def check_pasted(
-        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+        self,
+        method: PasteMethod,
+        values: Mapping[str, str],
+        choices: Mapping[str, str],
     ) -> None:
         """Whether the vendor's MCP server takes the credential: an MCP
         `initialize` at the entry's first server, at the choices' site, with
@@ -1243,7 +1340,7 @@ class OAuthAdapter:
         `ServiceAdapterError`."""
         if self._mcp_url is None:
             raise ServiceAdapterError(
-                f"{self._name} has no MCP server to check a pasted credential at."
+                f'{self._name} has no MCP server to check a pasted credential at.'
             )
         status = await self._status(
             self._initialize(
@@ -1256,16 +1353,19 @@ class OAuthAdapter:
         words, _ = credential_words(method.name)
         if status == 401:
             raise ReauthorizationRequiredError(
-                f"{self._name} refused the pasted {words}, which may be wrong, "
-                "revoked or expired."
+                f'{self._name} refused the pasted {words}, which may be wrong, '
+                'revoked or expired.'
             )
         raise ServiceAdapterError(
             f"{self._name}'s MCP server would not take the pasted {words} "
-            f"(HTTP {status}). Check that the {words} may use it."
+            f'(HTTP {status}). Check that the {words} may use it.'
         )
 
     async def identify_pasted(
-        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+        self,
+        method: PasteMethod,
+        values: Mapping[str, str],
+        choices: Mapping[str, str],
     ) -> Identity:
         """The account a pasted credential acts as, where the entry's
         identity call answers with the method's headers. Where it will not
@@ -1276,11 +1376,11 @@ class OAuthAdapter:
         assert self._identity.url is not None
         response = await self._send(
             self._http.build_request(
-                "GET",
+                'GET',
                 render(self._identity.url, choices),
                 headers={
                     **self._paste_headers(method, values, choices),
-                    "Accept": "application/json",
+                    'Accept': 'application/json',
                 },
             )
         )
@@ -1290,24 +1390,24 @@ class OAuthAdapter:
         return Identity(
             secret_digest([values[field.name] for field in method.fields]),
             method.alias_of(values)
-            or " · ".join([f"{self._name} {words}", *choices.values()]),
+            or ' · '.join([f'{self._name} {words}', *choices.values()]),
         )
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
-        if secret.values.get("method") is not None:
+        if secret.values.get('method') is not None:
             # The broker checks a pasted credential instead, and never asks.
             raise ServiceAdapterError(
-                f"A credential pasted for {self._name} is not refreshed."
+                f'A credential pasted for {self._name} is not refreshed.'
             )
-        refresh_token = secret.values.get("refresh_token")
+        refresh_token = secret.values.get('refresh_token')
         if not isinstance(refresh_token, str) or not refresh_token:
             raise ReauthorizationRequiredError(
-                f"The {self._name} connector holds no refresh token."
+                f'The {self._name} connector holds no refresh token.'
             )
         answer = await self._token_request(
-            {"grant_type": "refresh_token", "refresh_token": refresh_token},
+            {'grant_type': 'refresh_token', 'refresh_token': refresh_token},
             self._choices_of(secret),
         )
         return ConnectionSecret(self._credentials(answer.body, secret.values))
@@ -1317,12 +1417,14 @@ class OAuthAdapter:
     ) -> dict[str, Any]:
         if request.resources:
             raise ServiceAdapterError(
-                f"A {self._name} grant reaches the whole connector; it names "
-                "no resources."
+                f'A {self._name} grant reaches the whole connector; it names '
+                'no resources.'
             )
         return {}
 
-    async def issue(self, access: AccessToken, request: IssueRequest) -> IssuedToken:
+    async def issue(
+        self, access: AccessToken, request: IssueRequest
+    ) -> IssuedToken:
         await self.check_grant(access.token, request)
         return IssuedToken(
             token=access.token,
@@ -1336,18 +1438,23 @@ class OAuthAdapter:
             f"A {self._name} token is the owner's own and cannot be revoked alone."
         )
 
-    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> bool:
-        if method != "oauth":
+    async def revoke_connection(
+        self, secret: ConnectionSecret, method: str
+    ) -> bool:
+        if method != 'oauth':
             words, pronoun = credential_words(method)
             raise ConnectionNotRevocable(
-                f"Switch has forgotten the pasted {self._name} {words} but cannot "
-                f"revoke {pronoun}. Revoke {pronoun} in {self._name} to stop "
-                f"{pronoun} working."
+                f'Switch has forgotten the pasted {self._name} {words} but cannot '
+                f'revoke {pronoun}. Revoke {pronoun} in {self._name} to stop '
+                f'{pronoun} working.'
             )
-        if self._oauth.revocation_url is None and not self._oauth.revocation_discovered:
+        if (
+            self._oauth.revocation_url is None
+            and not self._oauth.revocation_discovered
+        ):
             raise ConnectionNotRevocable(
-                f"Switch has stopped using the {self._name} sign-in but cannot "
-                f"revoke it, so it still works. {self._oauth.remove_access}"
+                f'Switch has stopped using the {self._name} sign-in but cannot '
+                f'revoke it, so it still works. {self._oauth.remove_access}'
             )
         choices = self._choices_of(secret)
         endpoints = await self.endpoints(choices)
@@ -1360,13 +1467,13 @@ class OAuthAdapter:
         )
         if url is None:
             raise ServiceAdapterError(
-                f"{self._name} gives Switch no way to revoke a sign-in."
+                f'{self._name} gives Switch no way to revoke a sign-in.'
             )
-        refresh_token = secret.values.get("refresh_token")
+        refresh_token = secret.values.get('refresh_token')
         token, hint = (
-            (refresh_token, "refresh_token")
+            (refresh_token, 'refresh_token')
             if isinstance(refresh_token, str) and refresh_token
-            else (secret.access_token, "access_token")
+            else (secret.access_token, 'access_token')
         )
         if token is None:
             return False
@@ -1374,9 +1481,9 @@ class OAuthAdapter:
         identifying, headers = client_fields(endpoints, client)
         response = await self._send(
             self._http.build_request(
-                "POST",
+                'POST',
                 url,
-                data={"token": token, "token_type_hint": hint, **identifying},
+                data={'token': token, 'token_type_hint': hint, **identifying},
                 headers=headers,
             )
         )
@@ -1385,14 +1492,14 @@ class OAuthAdapter:
         # have ended tokens still in use.
         if response.status_code == 200:
             return True
-        if response.status_code == 400 and "invalid_token" in response.text:
+        if response.status_code == 400 and 'invalid_token' in response.text:
             return False
         raise ServiceAdapterError(
-            f"{self._name} refused to revoke the sign-in (HTTP {response.status_code})."
+            f'{self._name} refused to revoke the sign-in (HTTP {response.status_code}).'
         )
 
     def summary(
         self, agent_name: str, access: AccessLevel, resources: dict[str, Any]
     ) -> str:
-        verb = "reads and writes" if access == "write" else "reads"
-        return f"{agent_name} {verb} {self._name} as you."
+        verb = 'reads and writes' if access == 'write' else 'reads'
+        return f'{agent_name} {verb} {self._name} as you.'

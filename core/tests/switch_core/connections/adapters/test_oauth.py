@@ -783,6 +783,70 @@ class TestWhereTheMetadataIs:
             in vendor.paths
         )
 
+    @pytest.mark.parametrize(
+        "other_origin",
+        [
+            "https://attacker.test/resource-metadata/v1",
+            "https://mcp.example.test:8443/resource-metadata/v1",
+            "http://mcp.example.test/resource-metadata/v1",
+            "https://other.example.test/resource-metadata/v1",
+        ],
+    )
+    async def test_ignores_metadata_from_different_origin(
+        self, vendor, other_origin: str
+    ) -> None:
+        def respond(request: httpx.Request) -> httpx.Response:
+            if (
+                request.url == httpx.URL(MCP_URL)
+                and "authorization" not in request.headers
+            ):
+                return httpx.Response(
+                    401,
+                    json={"error": "invalid_token"},
+                    headers={
+                        "WWW-Authenticate": f'Bearer resource_metadata="{other_origin}"'
+                    },
+                )
+            return vendor.handle(request)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        base, _ = _adapter(vendor)
+        adapter = OAuthAdapter(_definition(), base._client, http)
+        endpoints = await adapter.endpoints({})
+        assert endpoints.token == f"{ISSUER}/token"
+        assert other_origin not in vendor.paths
+        assert (
+            "https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp"
+            in vendor.paths
+        )
+
+    async def test_accepts_metadata_from_same_origin_normalized_port(
+        self, vendor
+    ) -> None:
+        vendor.resource_metadata_path = "/resource-metadata/v1"
+        same_origin = "https://mcp.example.test:443/resource-metadata/v1"
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            if (
+                request.url == httpx.URL(MCP_URL)
+                and "authorization" not in request.headers
+            ):
+                return httpx.Response(
+                    401,
+                    json={"error": "invalid_token"},
+                    headers={
+                        "WWW-Authenticate": f'Bearer resource_metadata="{same_origin}"'
+                    },
+                )
+            return vendor.handle(request)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        base, _ = _adapter(vendor)
+        adapter = OAuthAdapter(_definition(), base._client, http)
+        endpoints = await adapter.endpoints({})
+        assert endpoints.token == f"{ISSUER}/token"
+        assert "https://mcp.example.test/resource-metadata/v1" in vendor.paths
+
     async def test_asks_for_consent_where_the_catalog_says_to(self, vendor) -> None:
         adapter, _ = _adapter(
             vendor,
