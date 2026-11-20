@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from switch_core.logging_context import LogContextFilter, log_context
+from switch_core.logging_context import STRUCTURED_FIELDS, LogContextFilter, log_context
 from switch_core.observability.logs import (
     LogExporter,
     OtlpLogHandler,
@@ -83,6 +83,40 @@ def test_the_log_context_travels_with_the_record():
     assert attributes["request_id"] == "req-1"
     assert attributes["agent_id"] == "agent-7"
     assert attributes["tenant_id"] == "default"
+
+
+def test_a_structured_group_becomes_dotted_attributes():
+    """The decision record's fields arrive as `decision.*`, typed, and a
+    field with no value is left out rather than sent empty."""
+    handler = OtlpLogHandler(capacity=10)
+    record = _record()
+    setattr(
+        record,
+        STRUCTURED_FIELDS,
+        {
+            "decision": {
+                "outcome": "delivered",
+                "candidates": 3,
+                "confidence": 0.9,
+                "choice": None,
+            }
+        },
+    )
+    handler.emit(record)
+
+    attributes = handler.take(10)[0][0].attributes
+    assert attributes["decision.outcome"] == "delivered"
+    assert attributes["decision.candidates"] == 3
+    assert attributes["decision.confidence"] == 0.9
+    assert "decision.choice" not in attributes
+
+
+def test_a_record_without_a_structured_group_has_no_extra_attributes():
+    handler = OtlpLogHandler(capacity=10)
+    handler.emit(_record())
+
+    attributes = handler.take(10)[0][0].attributes
+    assert not any(key.startswith("decision.") for key in attributes)
 
 
 def test_an_exception_becomes_datadog_error_attributes():
@@ -361,3 +395,35 @@ async def test_the_deadline_holds_when_the_task_is_already_being_cancelled(
     # Cancellation still propagates, and it is not held up by the drain.
     assert elapsed < 1.0, f"cancellation took {elapsed:.1f}s"
     assert "never exported" in caplog.text
+
+
+def test_an_ops_line_is_never_a_named_event():
+    """A record carrying `event.name`, `event_type` or an OTLP `eventName` may
+    be treated as a product event by some telemetry pipelines. Even a caller
+    that puts such a group in `extra` gets neither through, and the record's
+    own event name is never set; a `switch.event` field goes through."""
+    from switch_core.observability.otlp import build_logs_payload
+
+    handler = OtlpLogHandler(capacity=10)
+    record = _record()
+    setattr(
+        record,
+        STRUCTURED_FIELDS,
+        {
+            "event": {"name": "runtime.unhandled_exception"},
+            "event_type": {"kind": "x"},
+            "switch": {"event": "runtime.unhandled_exception"},
+        },
+    )
+    handler.emit(record)
+
+    batch, _ = handler.take(10)
+    attributes = batch[0].attributes
+    assert not any(
+        key == "event.name" or key.startswith(("event.", "event_type"))
+        for key in attributes
+    )
+    assert attributes["switch.event"] == "runtime.unhandled_exception"
+    payload = build_logs_payload(batch, RESOURCE)
+    [entry] = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    assert "eventName" not in entry and "event_name" not in entry

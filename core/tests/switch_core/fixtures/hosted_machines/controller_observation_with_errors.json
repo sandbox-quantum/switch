@@ -1,0 +1,25 @@
+{
+  "state": "error",
+  "revision": 1,
+  "error": "The cloud machine needs repair. Contact your server administrator.",
+  "error_code": "machine_needs_attention",
+  "data_volume_id": "vol-0123456789abcdef0",
+  "instance_id": null,
+  "instance_type": "c7i.2xlarge",
+  "cloud_errors": [
+    {
+      "call": "describe",
+      "kind": "throttled",
+      "count": 1
+    },
+    {
+      "call": "launch",
+      "kind": "capacity",
+      "count": 1
+    }
+  ],
+  "reconciler_errors": {
+    "cloud": 2,
+    "core_api": 1
+  }
+}

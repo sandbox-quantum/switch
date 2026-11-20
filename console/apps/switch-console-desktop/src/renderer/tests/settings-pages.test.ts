@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { splitApiKeys } from '@renderer/features/settings/pages/api-keys';
+import {
+  describeCreatedKeyExpiry,
+  formatKeyExpiry,
+  keyLifetime,
+  splitApiKeys,
+} from '@renderer/features/settings/pages/api-keys';
 import {
   resolveSettingsTab,
   type SettingsAudience,
@@ -7,12 +12,29 @@ import {
   shownSettingsTab,
 } from '@renderer/features/settings/settings-tabs';
 import { parseConsoleLink } from '@shared/core/deeplinks/console-links';
+import { settingsPagePath } from '@shared/core/switch-servers/dashboard-pages';
 import { type SwitchApiKey } from '@shared/core/switch-servers/switch-servers';
 
 const everyone: SettingsAudience = {
   hasServer: true,
   agentManagement: true,
   workspaceSettings: true,
+  organizationSettings: false,
+  workspaceAdmin: false,
+  operatesGatewaylessServer: false,
+  serviceConnections: true,
+  decisionRouting: true,
+};
+
+const nobody: SettingsAudience = {
+  hasServer: false,
+  agentManagement: false,
+  workspaceSettings: false,
+  organizationSettings: false,
+  workspaceAdmin: false,
+  operatesGatewaylessServer: false,
+  serviceConnections: false,
+  decisionRouting: false,
 };
 
 const ids = (audience: SettingsAudience) =>
@@ -37,15 +59,78 @@ describe('Settings sections', () => {
   });
 
   it('keeps only what stands without a server when there is none', () => {
-    expect(ids({ hasServer: false, agentManagement: false, workspaceSettings: false })).toEqual([
+    expect(ids(nobody)).toEqual([
       ['preferences', 'clis-models', 'remote-hosts', 'status'],
       [],
       ['docs'],
     ]);
   });
 
+  it('gives workspace admins its connectors, decision routing and guardrails, after agent providers', () => {
+    expect(ids({ ...everyone, workspaceAdmin: true })[0]).toEqual([
+      'preferences',
+      'messaging-apps',
+      'clis-models',
+      'connectors',
+      'decision-routing',
+      'guardrails',
+      'api-keys',
+      'devices',
+      'remote-hosts',
+      'managed-agents',
+      'status',
+    ]);
+  });
+
+  it('keeps Connectors behind service connections, but not decision routing', () => {
+    const main = ids({ ...everyone, workspaceAdmin: true, serviceConnections: false })[0];
+    expect(main).not.toContain('connectors');
+    expect(main).toContain('decision-routing');
+  });
+
+  // Auto-route does not exist on a server with `decision_routing` off.
+  it('keeps Decision routing behind auto-route, and sends a link to it elsewhere', () => {
+    const admin = { ...everyone, workspaceAdmin: true, decisionRouting: false };
+    expect(ids(admin)[0]).not.toContain('decision-routing');
+    expect(ids(admin)[0]).toContain('connectors');
+    expect(shownSettingsTab('decision-routing', settingsSections(admin))).toBe('preferences');
+  });
+
+  it('gives connector apps only to whoever runs a Switch with no gateway', () => {
+    const admin = { ...everyone, workspaceAdmin: true };
+    expect(ids(admin)[0]).not.toContain('connector-apps');
+    expect(ids({ ...admin, operatesGatewaylessServer: true })[0].slice(3, 7)).toEqual([
+      'connectors',
+      'decision-routing',
+      'guardrails',
+      'connector-apps',
+    ]);
+  });
+
+  it('shows a member none of the admin pages, and sends them to Preferences if they ask', () => {
+    const member = settingsSections(everyone);
+    for (const tab of ['connectors', 'decision-routing', 'guardrails', 'connector-apps'] as const)
+      expect(shownSettingsTab(tab, member)).toBe('preferences');
+  });
+
   it('offers workspace settings only where a gateway serves them', () => {
     expect(ids({ ...everyone, workspaceSettings: false })[2]).toEqual(['docs']);
+  });
+
+  it("offers the organization's settings to its admins, after the workspace's", () => {
+    expect(ids({ ...everyone, organizationSettings: true })[2]).toEqual([
+      'workspace-settings',
+      'organization-settings',
+      'docs',
+    ]);
+    expect(ids(everyone)[2]).not.toContain('organization-settings');
+  });
+
+  it('opens the settings of the gateway layout the server has on', () => {
+    expect(settingsPagePath('workspace-settings', false)).toBe('workspace');
+    expect(settingsPagePath('organization-settings', false)).toBe('organization');
+    expect(settingsPagePath('workspace-settings', true)).toBe('settings');
+    expect(settingsPagePath('organization-settings', true)).toBe('settings/org');
   });
 
   it('offers your devices and managed agents only with agent management', () => {
@@ -56,11 +141,7 @@ describe('Settings sections', () => {
   });
 
   it('falls back to Preferences for a tab the sidebar does not offer', () => {
-    const noServer = settingsSections({
-      hasServer: false,
-      agentManagement: false,
-      workspaceSettings: false,
-    });
+    const noServer = settingsSections(nobody);
     expect(shownSettingsTab('account', noServer)).toBe('preferences');
     expect(shownSettingsTab('remote-hosts', noServer)).toBe('remote-hosts');
     expect(shownSettingsTab('devices', noServer)).toBe('preferences');
@@ -89,6 +170,7 @@ const key = (id: string, type: string): SwitchApiKey => ({
   type,
   keyPrefix: 'abc',
   createdAt: '2026-11-03',
+  expiresAt: null,
 });
 
 describe('API keys', () => {
@@ -101,5 +183,23 @@ describe('API keys', () => {
     ]);
     expect(split.registration.map((k) => k.id)).toEqual(['r', 'b']);
     expect(split.agent.map((k) => k.id)).toEqual(['a']);
+  });
+
+  it("shows a key's expiry, past expiry, or that it has none", () => {
+    const now = new Date('2026-11-06T12:00:00Z');
+    expect(formatKeyExpiry(null, now)).toBe('No expiry');
+    expect(formatKeyExpiry('2027-02-04T12:00:00Z', now)).toBe('2027-02-04');
+    expect(formatKeyExpiry('2026-11-01T12:00:00Z', now)).toBe('Expired 2026-11-01');
+  });
+
+  it("describes a new key's expiry", () => {
+    expect(describeCreatedKeyExpiry(null)).toBe('This key does not expire.');
+    expect(describeCreatedKeyExpiry('2027-02-04T12:00:00Z')).toBe('Expires 2027-02-04.');
+  });
+
+  it('sends the chosen lifetime as days or never', () => {
+    expect(keyLifetime('90')).toBe(90);
+    expect(keyLifetime('365')).toBe(365);
+    expect(keyLifetime('never')).toBe('never');
   });
 });

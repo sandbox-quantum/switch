@@ -94,7 +94,7 @@ export function mapCodexItem(raw: CodexThreadItem, lifecycle: ItemLifecycle): Pr
     case 'collabAgentToolCall':
       return {
         id: item.id,
-        type: 'subagent',
+        type: 'tool_call',
         status: statusOf(item.status),
         title: item.tool,
         toolName: item.tool,
@@ -103,11 +103,19 @@ export function mapCodexItem(raw: CodexThreadItem, lifecycle: ItemLifecycle): Pr
       };
     case 'subAgentActivity':
       return {
-        id: item.id,
-        type: 'subagent',
-        status: lifecycleStatus,
+        id: item.kind === 'interacted' ? item.id : item.agentThreadId,
+        type: item.kind === 'interacted' ? 'tool_call' : 'subagent',
+        status:
+          item.kind === 'started'
+            ? 'in_progress'
+            : item.kind === 'interrupted'
+              ? 'declined'
+              : item.kind === 'completed'
+                ? 'completed'
+                : lifecycleStatus,
         title: item.agentPath,
         toolName: item.agentPath,
+        nativeChildId: item.agentThreadId,
         payload: { kind: item.kind, agentThreadId: item.agentThreadId },
       };
     case 'webSearch':
@@ -130,4 +138,23 @@ export function mapCodexItem(raw: CodexThreadItem, lifecycle: ItemLifecycle): Pr
       return { id: unknown.id, type, status: lifecycleStatus, title: unknown.type };
     }
   }
+}
+
+/** A delegation call finishing says nothing about whether its children finished. */
+export function mapCodexChildren(item: CodexThreadItem): ProviderItem[] {
+  if (item.type !== 'collabAgentToolCall') return [];
+  return Object.entries(item.agentsStates ?? {}).map(([childId, state]) => ({
+    id: childId,
+    nativeChildId: childId,
+    type: 'subagent',
+    status:
+      state.status === 'completed'
+        ? 'completed'
+        : state.status === 'interrupted'
+          ? 'declined'
+          : ['errored', 'shutdown', 'notFound'].includes(state.status)
+            ? 'failed'
+            : 'in_progress',
+    title: item.prompt ? firstLine(item.prompt, 'Subagent') : '',
+  }));
 }

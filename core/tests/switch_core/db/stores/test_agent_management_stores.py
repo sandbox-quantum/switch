@@ -72,6 +72,7 @@ async def _controller(
         version="0.1.0",
         public_key=None,
         api_key_id=key.id,
+        device_hash=None,
     )
 
 
@@ -169,6 +170,7 @@ class TestControllers:
                     status={"seq": seq},
                     version="0.2.0",
                     platform={"os": "macos", "arch": "arm64", "os_version": "15"},
+                    device_hash=None,
                     seen_at=NOW,
                 )
 
@@ -219,6 +221,7 @@ class TestControllers:
                     version=None,
                     public_key=None,
                     api_key_id=key.id,
+                    device_hash=None,
                 )
 
 
@@ -467,4 +470,5 @@ async def test_a_write_with_no_tenant_bound_is_refused(
                 version=None,
                 public_key=None,
                 api_key_id=key.id,
+                device_hash=None,
             )

@@ -71,7 +71,7 @@ describe('openBuddyChat', () => {
   it("opens the buddy's Welcome chat when it has one", async () => {
     listChats.mockResolvedValue([chat('r-other', 'Later'), chat('r-welcome', BUDDY_CHAT_NAME)]);
 
-    await openBuddyChat('srv-1', buddy);
+    await openBuddyChat('srv-1', buddy, 'in-place');
 
     expect(createChat).not.toHaveBeenCalled();
     expect(focusComposerWhenOpened).toHaveBeenCalledWith('r-welcome');
@@ -92,7 +92,7 @@ describe('openBuddyChat', () => {
       chat('r-older', 'Notes'),
     ]);
 
-    await openBuddyChat('srv-1', buddy);
+    await openBuddyChat('srv-1', buddy, 'in-place');
 
     expect(createChat).not.toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith(
@@ -106,7 +106,7 @@ describe('openBuddyChat', () => {
     const made = chat('r-new', BUDDY_CHAT_NAME);
     createChat.mockResolvedValue(made);
 
-    await openBuddyChat('srv-1', buddy);
+    await openBuddyChat('srv-1', buddy, 'in-place');
 
     expect(createChat).toHaveBeenCalledWith({
       serverId: 'srv-1',
@@ -130,7 +130,10 @@ describe('openBuddyChat', () => {
     listChats.mockResolvedValue([]);
     createChat.mockResolvedValue(chat('r-new', BUDDY_CHAT_NAME));
 
-    await Promise.all([openBuddyChat('srv-1', buddy), openBuddyChat('srv-1', buddy)]);
+    await Promise.all([
+      openBuddyChat('srv-1', buddy, 'in-place'),
+      openBuddyChat('srv-1', buddy, 'in-place'),
+    ]);
 
     expect(createChat).toHaveBeenCalledTimes(1);
     expect(navigate).toHaveBeenCalledTimes(2);
@@ -140,10 +143,10 @@ describe('openBuddyChat', () => {
   it('looks again for a later open, once the first has finished', async () => {
     listChats.mockResolvedValue([]);
     createChat.mockResolvedValue(chat('r-new', BUDDY_CHAT_NAME));
-    await openBuddyChat('srv-1', buddy);
+    await openBuddyChat('srv-1', buddy, 'in-place');
 
     listChats.mockResolvedValue([chat('r-new', BUDDY_CHAT_NAME)]);
-    await openBuddyChat('srv-1', buddy);
+    await openBuddyChat('srv-1', buddy, 'in-place');
 
     expect(listChats).toHaveBeenCalledTimes(2);
     expect(createChat).toHaveBeenCalledTimes(1);
@@ -152,7 +155,7 @@ describe('openBuddyChat', () => {
   it("still opens the buddy's page, and says why, when its chat cannot be had", async () => {
     listChats.mockRejectedValue(new Error('Switch is down.'));
 
-    await openBuddyChat('srv-1', buddy);
+    await openBuddyChat('srv-1', buddy, 'in-place');
 
     expect(toast).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Could not open the chat with switch-buddy' })

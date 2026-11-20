@@ -4,8 +4,37 @@ import {
   homebrewOption,
   passthroughMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
+import { addToUserPath, removeFromProfile } from '../windows-user-path';
 import { icon } from './icon';
 import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
+
+/**
+ * Anthropic's documented Windows installer, wrapped in `powershell -c` so it
+ * runs whichever shell the install runner resolved: cmd.exe, Windows
+ * PowerShell 5.1 (where `&&` does not parse and `curl` is an alias) or Git
+ * Bash. Kept free of `$` and `%` so neither shell expands anything first.
+ *
+ * The installer puts `claude.exe` in `~\.local\bin` and leaves PATH alone, so
+ * the command adds that folder, for the terminal the sign-in step points to.
+ */
+/**
+ * Claude Code has no uninstall command: Anthropic's documented removal deletes
+ * the native build's launcher and its versions, and leaves settings in
+ * `~/.claude` alone.
+ */
+const CLAUDE_UNIX_UNINSTALL =
+  'rm -f "$HOME/.local/bin/claude" && rm -rf "$HOME/.local/share/claude"';
+/**
+ * The same on Windows, written without `$`, `%` or inner double quotes like the
+ * install. Only what is not there is passed over: a delete that fails (a running
+ * session holding `claude.exe`) stops the command with its own error.
+ */
+const CLAUDE_WINDOWS_UNINSTALL = `powershell -ExecutionPolicy ByPass -c "${[
+  removeFromProfile('.local', 'bin', 'claude.exe'),
+  removeFromProfile('.local', 'share', 'claude'),
+].join('; ')}"`;
+
+export const CLAUDE_WINDOWS_INSTALL_SCRIPT = `powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex; ${addToUserPath('.local', 'bin')}"`;
 
 export const plugin = definePlugin(
   {
@@ -31,7 +60,7 @@ export const plugin = definePlugin(
           {
             method: 'curl',
             command: 'curl -fsSL https://claude.ai/install.sh | bash',
-            uninstallCommand: 'claude uninstall',
+            uninstallCommand: CLAUDE_UNIX_UNINSTALL,
             recommended: true,
           },
           homebrewOption({ formula: 'claude-code', cask: true }),
@@ -40,15 +69,15 @@ export const plugin = definePlugin(
           {
             method: 'curl',
             command: 'curl -fsSL https://claude.ai/install.sh | bash',
-            uninstallCommand: 'claude uninstall',
+            uninstallCommand: CLAUDE_UNIX_UNINSTALL,
           },
         ],
         windows: [
           {
-            method: 'curl',
-            command:
-              'curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd',
-            uninstallCommand: 'claude uninstall',
+            method: 'powershell',
+            command: CLAUDE_WINDOWS_INSTALL_SCRIPT,
+            uninstallCommand: CLAUDE_WINDOWS_UNINSTALL,
+            installedAt: ['.local\\bin\\claude.exe'],
           },
         ],
       },

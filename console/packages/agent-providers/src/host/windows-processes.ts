@@ -60,7 +60,21 @@ export async function listWindowsProcesses(filter?: string): Promise<WindowsProc
     powershell(),
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
     { timeout: PROCESS_QUERY_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, windowsHide: true }
-  );
+  ).catch((error: unknown) => {
+    const failure = error as {
+      killed?: boolean;
+      code?: unknown;
+      signal?: unknown;
+      stderr?: unknown;
+    };
+    const how = failure.killed
+      ? `stopped after ${PROCESS_QUERY_TIMEOUT_MS / 1000} s without an answer`
+      : `exit code ${String(failure.code)}${failure.signal ? `, signal ${String(failure.signal)}` : ''}`;
+    const stderr = typeof failure.stderr === 'string' ? failure.stderr.trim() : '';
+    throw new Error(`The Windows process query failed (${how})${stderr ? `: ${stderr}` : '.'}`, {
+      cause: error,
+    });
+  });
   const text = stdout.trim();
   if (!text) return [];
   return z

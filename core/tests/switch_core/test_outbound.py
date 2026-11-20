@@ -13,9 +13,12 @@ from aiohttp import web
 
 from switch_core.config import SwitchConfig
 from switch_core.outbound import (
+    GuardedAsyncClient,
+    OutboundHostUnresolved,
     OutboundPolicy,
     OutboundURLRefused,
     guarded_async_client,
+    guarded_transport,
 )
 
 _NOTHING_ALLOWED = OutboundPolicy.parse("")
@@ -122,6 +125,18 @@ class TestWhatMayBeReached:
         with pytest.raises(OutboundURLRefused, match="metadata"):
             await policy.resolve(address, 80)
 
+    async def test_a_name_that_does_not_resolve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _getaddrinfo(self: Any, host: str, port: int, **_: Any) -> list[Any]:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+        monkeypatch.setattr(
+            "asyncio.base_events.BaseEventLoop.getaddrinfo", _getaddrinfo
+        )
+        with pytest.raises(OutboundHostUnresolved, match="does not resolve"):
+            await _NOTHING_ALLOWED.resolve("missing.example.com", 443)
+
     async def test_the_gcp_metadata_name_is_refused(self) -> None:
         policy = OutboundPolicy.parse("metadata.google.internal")
         with pytest.raises(OutboundURLRefused, match="metadata"):
@@ -212,3 +227,51 @@ class TestTheGuardedClient:
         async with guarded_async_client(policy) as client:
             response = await client.get(f"http://127.0.0.1:{local_server}/ok")
         assert response.status_code == httpx.codes.OK
+
+    @pytest.mark.parametrize("verify", [True, False])
+    async def test_it_says_what_it_is_held_to(self, verify: bool) -> None:
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        async with guarded_async_client(policy, verify=verify) as client:
+            assert isinstance(client, GuardedAsyncClient)
+            assert client.policy is policy
+            assert client.verify is verify
+            with pytest.raises(AttributeError):
+                client.policy = _NOTHING_ALLOWED  # type: ignore[misc]
+
+    async def test_it_verifies_tls_unless_told_not_to(self) -> None:
+        async with guarded_async_client(_NOTHING_ALLOWED) as client:
+            assert client.verify is True
+
+    @pytest.mark.parametrize(
+        "option",
+        [
+            {"transport": httpx.MockTransport(lambda request: httpx.Response(200))},
+            {"mounts": {"all://": httpx.AsyncHTTPTransport()}},
+            {"proxy": "http://proxy.invalid:3128"},
+            {"trust_env": True},
+            {"trust_env": False},
+        ],
+        ids=["transport", "mounts", "proxy", "trust_env", "trust_env-false"],
+    )
+    @pytest.mark.parametrize("build", [GuardedAsyncClient, guarded_async_client])
+    def test_it_refuses_options_that_route_around_the_policy(
+        self, build: Any, option: dict[str, Any]
+    ) -> None:
+        with pytest.raises(TypeError, match=f"cannot take {next(iter(option))}"):
+            build(_NOTHING_ALLOWED, verify=True, **option)
+
+
+class TestTheGuardedTransport:
+    async def test_a_refused_address_is_never_connected_to(
+        self, local_server: int
+    ) -> None:
+        transport = guarded_transport(_NOTHING_ALLOWED)
+        async with httpx.AsyncClient(transport=transport) as client:
+            with pytest.raises(OutboundURLRefused):
+                await client.get(f"http://127.0.0.1:{local_server}/ok")
+
+    async def test_an_allowed_address_is_reached(self, local_server: int) -> None:
+        transport = guarded_transport(OutboundPolicy.parse("127.0.0.1/32"))
+        async with httpx.AsyncClient(transport=transport) as client:
+            response = await client.get(f"http://127.0.0.1:{local_server}/ok")
+        assert response.text == "ok"

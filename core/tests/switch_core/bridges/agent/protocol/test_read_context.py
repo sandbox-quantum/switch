@@ -18,6 +18,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
@@ -276,6 +277,45 @@ class TestEntries:
         root = result["threads"][0]["root"]
         assert root["kind"] == "room_join"
         assert root["body"] == "Bob joined the room"
+        assert root["sender"] == "@bob:s"
+
+    @pytest.mark.parametrize(
+        ("content", "body"),
+        [
+            ({"membership": "leave"}, "Bob left the room"),
+            (
+                {"membership": "leave", "removed_by": "Rita"},
+                "Bob was removed from the room by Rita",
+            ),
+        ],
+    )
+    async def test_a_departure_is_labelled_and_phrased_on_read(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        content: dict[str, object],
+        body: str,
+    ) -> None:
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(
+                session,
+                room_id,
+                client_id,
+                "$leave",
+                body=None,
+                msgtype=None,
+                event_type="m.room.member",
+                sender="@bob:s",
+                sender_name="Bob",
+                content=content,
+            )
+            await session.commit()
+
+        result = await _service(session_factory).read_context("agent-1", room_id)
+
+        root = result["threads"][0]["root"]
+        assert root["kind"] == "room_leave"
+        assert root["body"] == body
         assert root["sender"] == "@bob:s"
 
     async def test_an_unnamed_sender_falls_back_to_their_address(

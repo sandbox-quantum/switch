@@ -107,7 +107,14 @@ def render_plans(
             ],
         }
     ]
-    plan = plan_template(text, {}, inputs, builtins=builtins, machines=machines)
+    plan = plan_template(
+        text,
+        {},
+        inputs,
+        builtins=builtins,
+        machines=machines,
+        providers=frozenset(provider_ids()),
+    )
     keys = resource_keys(text, inputs, builtins)
     return {key_of(agent, keys): agent for agent in plan.new_agents}
 
@@ -147,7 +154,6 @@ def vouched_source(
     document: str,
     loaded: OfficialTemplate | Template | None,
     *,
-    agent_management: bool,
     switch_buddy: bool,
 ) -> InstallSource | None:
     """The source of a document a caller sent to run: the template it says
@@ -159,7 +165,7 @@ def vouched_source(
     it from."""
     if loaded is not None:
         return source_of(loaded) if loaded.content == document else None
-    for official in official_templates(agent_management, switch_buddy):
+    for official in official_templates(switch_buddy):
         if official.content == document:
             return source_of(official)
     return None

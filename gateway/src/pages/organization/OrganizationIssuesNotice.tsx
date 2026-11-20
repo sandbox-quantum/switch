@@ -7,9 +7,9 @@ function describe(issue: OrganizationIssue): string {
   const workspace = issue.workspace_name ?? "";
   switch (issue.kind) {
     case "no_org_admin":
-      return "Nobody is an admin of this organization. Make one of its members an organization admin below.";
+      return "Nobody is an admin of this organization. Make one of its users an organization admin below.";
     case "workspace_without_admin":
-      return `${workspace} has no admin. Make one of its members an admin in that workspace's members.`;
+      return `${workspace} has no admin. Make one of its users an admin in that workspace's settings.`;
     case "agents_without_acting_owner":
       return (
         `In ${workspace}, these agents are owned by someone who is no longer in the ` +
@@ -18,8 +18,8 @@ function describe(issue: OrganizationIssue): string {
       );
     case "directory_organization_deleted":
       return (
-        "The WorkOS organization this organization follows was deleted. Its members are " +
-        "left as they were; ask whoever runs your Switch server to link it again or remove it."
+        "The WorkOS organization this organization follows was deleted. Its users are " +
+        "left as they were; ask whoever runs Switch to link it again or remove it."
       );
   }
 }

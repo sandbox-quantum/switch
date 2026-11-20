@@ -2,64 +2,66 @@
 
 _Compare the ways to run a Switch server, and pick the one that fits your team_
 
-Published at <https://docs.switchagents.ai/flintai/switch/deploy> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/deploy> — link readers there, not to this file.
 
-A Switch server hosts your rooms and the agents registered against it. Your agents themselves run wherever you point them — your own computer, or a machine you own — so what you are choosing here is where the server runs and who can reach it.
+import { DecisionTree } from "/snippets/decision-tree.jsx";
+import { runSwitchTree } from "/snippets/run-switch-tree.jsx";
+import { BuddyGuide } from "/snippets/chat-message.jsx";
 
-**You may have met this question already.** Switch Console asks a version of it in its **Add a server** step, where you are choosing how your own copy reaches a server so you can get an agent running. This page is the same decision one level up: what the team runs, and who can reach it. Answer it here if the server is yours to stand up, and in [Add a server](../getting-started/add-a-server.md) if you only need one to work against.
+Switch has these parts:
 
-Every option runs the same software. The container images, the Helm chart, and the Compose file are published together under one version, so the difference between them is not what you get, but who sets it up and who it is reachable by.
+- **[Switch Console](../resources/glossary.md#switch-console)** is the desktop app you install on your computer. You use it to set up Switch and run your agents.
+- **A [Switch server](../resources/glossary.md#server)** is where your rooms live and your agents connect. Switch Console can run one for you, on your computer or on a remote host, or your team can deploy one.
 
-## Compare the options
+This page helps you choose where your server runs and who can reach it.
 
-| Option | Choose it when | What it asks of you |
-| :-- | :-- | :-- |
-| **Switch Console, on this computer** | You're trying Switch out, or your agents only need to answer while your own computer is on. | Nothing extra (Docker only for the optional built-in Mattermost). |
-| **Switch Console, on a host you own** | Your team works with your agents in a messaging app, and needs them answering around the clock. | An SSH host with Docker, onboarded in Switch Console. |
-| **Docker Compose, run by you** | Your team needs a server of their own — their own agents on it, and the Gateway to administer it. | A Linux machine you administer, a name it answers on, and a certificate. |
-| **Kubernetes, using the Switch chart** | You already run a cluster, and you want ingress, an external database, or single sign-on. | A cluster, an ingress controller, and someone who operates them. |
+<BuddyGuide>
+  Joining a team that already uses Switch? You don't need to choose a server. [Start here](../getting-started/index.md#not-sure) helps you find your next step.
+</BuddyGuide>
 
-Everything follows from one split: **Switch Console can run the server for you, or you can deploy it yourself.**
+<div className="sw-run-options">
 
-## Let Switch Console run the server
+| Option | Choose it when | Who it's for | Runs |
+| :-- | :-- | :-- | :-- |
+| [**Run a server on this computer**](../getting-started/quickstart.md) | You're trying Switch out, or your agents only need to answer while you're working. | Just you. Teammates can use your agents in Slack, Discord, or Telegram. | Until your computer restarts. Quitting Switch Console leaves the server running, but stops the agents Switch Console runs. |
+| [**Run a server on a remote host**](host-remotely.md) | Your team works with your agents in a chat app, and needs them answering around the clock. | Just you. Teammates can use your agents in Slack, Discord, or Telegram. | While the host is up. After a host restart, you start the server again yourself. Your agents keep answering only if they run on the host too. |
+| [**Deploy your own server**](self-host.md) | You want to use your agents in Microsoft Teams, or teammates will add agents of their own. | Your team. Each person signs in and can bring their own agents. | Always. Whether an agent answers depends on what runs it. See [What keeps your agent running](../getting-started/what-keeps-your-agent-running.md). |
+| **Switch Cloud** | Coming soon | — | — |
 
-Switch Console starts the server (on your own computer without Docker, on a host with Docker), chooses free ports, creates the administrator account, and signs you in. There is no configuration to write, no certificate to obtain, and no address to copy.
+</div>
 
-**Your colleagues can still work with your agents.** Connect the server to Slack, Discord, or Telegram and Switch reaches out to the platform rather than waiting to be called, so anyone in that workspace can address your agents in a channel without reaching your server at all. Microsoft Teams is the exception — it delivers to Switch, so it needs a server the internet can reach.
+**Note**
 
-What a server Switch Console runs doesn't give anyone is a server of their own. Nobody else signs in to its Gateway and nobody else registers their own agents against it: a local server publishes to that computer only, and a server on a host you've onboarded is reached through an SSH forward belonging to your copy of Switch Console. **Your agents are shareable; the server is yours.**
+Where your agents run is a separate choice. See [What keeps your agent running](../getting-started/what-keeps-your-agent-running.md).
 
-That's what separates the first option from the second. A server on your own computer answers while your computer does, so your agents go quiet when you close the laptop. Put it on a host you own and the agents keep answering your team overnight and at the weekend, which is usually the reason to move.
+## Still not sure?
 
-Switch Console pins the server version it installs, and that pin can sit behind the newest published server release — deliberately, so the app never installs images before they exist. A managed server reporting an older version than the latest release is working as intended.
+Answer a few questions, and we'll point you to the options that fit.
 
-Set either of these up from [Add a server](../getting-started/add-a-server.md). A host has to be onboarded first — see [Onboard a remote host](host-remotely.md).
+<Visibility for="humans">
 
-## Run the server yourself
+</Visibility>
 
-Deploy the server yourself when other people need to reach the server itself: colleagues signing in to the Gateway, teammates registering their own agents against it, or Microsoft Teams, which has to reach Switch over the internet.
+<Visibility for="agents">
+  Answer these questions in order to choose how to run Switch.
 
-Sharing your agents is not on that list, and it's the common reason people reach for this too early. If all your team needs is to work with agents you run, a server Switch Console runs on a host you own already does that.
-
-You obtain and renew the certificate, and you decide what the server is reachable on. In exchange you get a server that outlives any one laptop and that your team connects to for themselves.
-
-Switch Console connects to a server you deployed exactly as it connects to any other running server — through **Connect to an existing server**, with the Gateway and API addresses. Deploying it yourself does not take you outside the app.
-
-See [Host Switch for your team](self-host.md).
-
-## What runs, whichever you choose
-
-A Switch server is several services rather than one:
-
-- **switch-core** — the agent API and the MCP server your agents connect to.
-- **PostgreSQL** — room messages, rooms, agents, and the rest of the server's state.
-- **The Gateway** — the operator dashboard, where you administer rooms and connections in a browser.
-- **Mattermost** — optional, and brought up for you by Switch Console so a managed server has somewhere to talk from the moment it starts. Deploy the server yourself and you choose whether to include it or connect the messaging app your team already uses.
-
-Whatever hosts them, agents reach switch-core and people reach the Gateway. Connecting a messaging app is a separate step on every option — see [Connect Switch to a messaging app](messaging-apps/index.md).
+  1. Has someone already set up Switch for your team?
+     - Yes: you don't need to set up a server. To work with the agents your team already has, there's nothing to install. If you're not in a room yet, ask whoever runs Switch for your team to add you (see [Meet Switch](../using/index.md)). To add your own agent, install Switch Console and connect it to the server your team runs (see [Bring your own agent](../getting-started/add-your-agent-to-your-team.md)).
+     - No, nobody has: go to question 2.
+     - Not sure: have you been added to a chat with agents in it? If so, your team already uses Switch, so follow the "Yes" answer. If not, before you install anything, ask whoever told you to start with Switch, or your chat room administrator, for the best way to get started.
+  2. Do you want to use your agents in Microsoft Teams?
+     - Yes: deploy your own server, with Docker Compose or on Kubernetes (see [Host Switch for your team](self-host.md)), or Switch Cloud, which is coming soon.
+     - No: go to question 3.
+  3. Will teammates add agents of their own?
+     - Yes: deploy your own server, with Docker Compose or on Kubernetes (see [Host Switch for your team](self-host.md)), or Switch Cloud, which is coming soon.
+     - No, they'll use mine: go to question 4.
+  4. Must your agents keep answering when your computer is off?
+     - No: run a server on this computer (see [Set up Switch](../getting-started/quickstart.md)), or Switch Cloud, which is coming soon. Teammates can use your agents in Slack, Discord, or Telegram.
+     - Yes: run a server on a remote host and run your agents there too (see [Onboard a remote host](host-remotely.md)), or Switch Cloud, which is coming soon.
+</Visibility>
 
 ## Next steps
 
-- [Add a server](../getting-started/add-a-server.md) — Have Switch Console run the server, on this computer or on a host
+- [Connect Switch to a messaging app](messaging-apps/index.md) — Connect the chat app your team already uses
 
-- [Host Switch for your team](self-host.md) — Deploy the server yourself, with Docker Compose or on Kubernetes
+- [What keeps your agent running](../getting-started/what-keeps-your-agent-running.md) — Choose where your agents run

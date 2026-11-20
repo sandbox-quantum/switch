@@ -45,7 +45,10 @@ class _AuthenticatedAs:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         scope["controller"] = ControllerPrincipal(
-            controller_id=CONTROLLER, owner_id="owner-1", tenant_id="tenant-1"
+            controller_id=CONTROLLER,
+            owner_id="owner-1",
+            tenant_id="tenant-1",
+            key_id=None,
         )
         await self.app(scope, receive, send)
 
@@ -72,7 +75,7 @@ def calls() -> _Calls:
 @pytest.fixture
 def client(calls: _Calls, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     # Pings every 50 ms rather than every heartbeat interval.
-    monkeypatch.setattr(controller_routes, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(controller_routes, "PING_INTERVAL_SECONDS", 0.05)
 
     async def attach_stream(**kwargs: Any) -> AsyncGenerator[dict[str, Any]]:
         if calls.attach_refusal is not None:

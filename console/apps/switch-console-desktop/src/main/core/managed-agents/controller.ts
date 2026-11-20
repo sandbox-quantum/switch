@@ -3,6 +3,8 @@ import {
   type ProviderLogin,
   sealingKeyId,
   sealProviderLogin,
+  signsInThroughVertex,
+  VERTEX_PROVIDERS_ONLY,
   vertexLoginCredential,
 } from '@switch-console/agent-providers';
 import { agentMigrationService } from '@main/core/agent-migration/agent-migration';
@@ -232,7 +234,8 @@ export const managedAgentsController = createRPCController({
    * A one-time code to enroll a new machine with, and the address it enrolls
    * against: the one the server names, else the one Console reaches it at,
    * which `fallback` discloses. `loopback` says that address only works on
-   * this computer.
+   * this computer, and `remoteDevices` is what the server says about another
+   * device enrolling at all.
    */
   machineEnrollment: (serverId: string): Promise<MachineEnrollment> =>
     withReachableServerWorkspaceSession(serverId, async (server) => {
@@ -246,6 +249,7 @@ export const managedAgentsController = createRPCController({
         serverUrl,
         loopback: isLoopbackUrl(serverUrl),
         fallback: named === null,
+        remoteDevices: issued.remoteDevices,
       };
     }),
 
@@ -379,7 +383,7 @@ async function loginToGive(
   input: MachineLoginInput
 ): Promise<ProviderLogin> {
   if (input.source === 'vertex') {
-    if (provider !== 'claude') throw new Error('Only Claude signs in through Vertex AI.');
+    if (!signsInThroughVertex(provider)) throw new Error(VERTEX_PROVIDERS_ONLY);
     const text =
       input.credentials.from === 'key'
         ? input.credentials.json.trim()

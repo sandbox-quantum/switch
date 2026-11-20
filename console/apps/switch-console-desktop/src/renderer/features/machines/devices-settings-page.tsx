@@ -25,6 +25,7 @@ import type { MachineDetail } from '@shared/core/managed-agents/managed-agents';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { MachineIcon, TONE_DOT } from './machine-marks';
 import {
+  addDeviceRefusal,
   arrangeMachines,
   controllerRelease,
   MACHINE_CATEGORY_LABELS,
@@ -41,7 +42,7 @@ import { useMachineDetails } from './use-machines';
 type Filter = 'all' | MachineCategory;
 
 /**
- * Settings → Your devices: the computers that run the signed-in person's managed
+ * Settings → Devices: the computers that run the signed-in person's managed
  * agents on the server the window is on, one card each, opening its page.
  * The server returns the whole list in one response, unpaged, and only this
  * person's own devices.
@@ -50,20 +51,22 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
   const serverId = workspacesStore.activeServerId;
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const [filter, setFilter] = useState<Filter>('all');
-  // The Cloud filter is shown only where the server runs Switch cloud machines.
+  // The Cloud filter is shown only where the server runs Switch Cloud machines.
   const cloudOffered = useFeatureFlags(serverId)['hosted_agents'] ?? false;
   const categories = (Object.keys(MACHINE_CATEGORY_LABELS) as MachineCategory[]).filter(
     (category) => category !== 'cloud' || cloudOffered
   );
   const shownFilter: Filter = filter === 'cloud' && !cloudOffered ? 'all' : filter;
   const showAddMachineModal = useShowModal('addMachineModal');
+  // Not offered where no other device could reach the server; the page says why instead.
+  const addDeviceRefused = server ? addDeviceRefusal(server) : null;
 
   return (
     <>
       <PageHeader
         sticky
-        title="Your devices"
-        description={`The devices that host your agents on ${server?.name ?? 'this server'}.`}
+        title="Devices"
+        description="Devices that host your agents on Switch Rooms."
       >
         <div className="flex items-center justify-between gap-2">
           <ToggleGroup
@@ -80,7 +83,7 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
-          {serverId && (
+          {serverId && addDeviceRefused === null && (
             <Button variant="outline" onClick={() => showAddMachineModal({ serverId })}>
               <Plus className="size-4" />
               Add device
@@ -96,6 +99,7 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
           server={server}
           filter={shownFilter}
           frozen={isFrozenServer(server)}
+          addDeviceRefused={addDeviceRefused}
         />
       )}
     </>
@@ -107,11 +111,14 @@ function DevicesBody({
   server,
   filter,
   frozen,
+  addDeviceRefused,
 }: {
   serverId: string;
   server: SwitchServer;
   filter: Filter;
   frozen: boolean;
+  /** Why Add device is not offered here, or null where it is. */
+  addDeviceRefused: string | null;
 }) {
   const machines = useMachineDetails(serverId);
   const managed = useManagedAgents(serverId);
@@ -121,7 +128,7 @@ function DevicesBody({
   if (machines.error && !machines.data)
     return frozen ? (
       <p className="pt-4 text-sm text-foreground-muted">
-        Your devices show here once the server answers again.
+        Devices show here once the server answers again.
       </p>
     ) : (
       <p role="alert" className="pt-4 text-sm text-destructive">
@@ -146,10 +153,17 @@ function DevicesBody({
   return (
     <div className="flex flex-col gap-6 pt-4 pb-10">
       {machines.error && <RefreshFailed error={machines.error} frozen={frozen} />}
+      {addDeviceRefused && (
+        <p role="note" className="text-sm text-foreground-muted">
+          {addDeviceRefused}
+        </p>
+      )}
       {live.length === 0 ? (
         <p className="text-sm text-foreground-muted">
           {machines.data.length === 0
-            ? 'No devices yet. This computer joins when you run a managed agent on it, and so does an SSH host; a standalone machine joins once it is enrolled.'
+            ? addDeviceRefused
+              ? 'No devices yet. This computer joins when you run a managed agent on it.'
+              : 'No devices yet. This computer joins when you run a managed agent on it, and so does an SSH host; a standalone machine joins once it is enrolled.'
             : filter === 'all'
               ? 'No devices.'
               : emptyCategoryText(filter, server)}

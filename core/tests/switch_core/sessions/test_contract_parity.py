@@ -193,3 +193,51 @@ def test_host_publication_claims_are_rejected() -> None:
     payload["body"]["request"]["audience"] = {"kind": "room", "roomId": "room-demo"}
     with pytest.raises(ValueError):
         parse_host_event(payload)
+
+
+def test_subagent_is_a_shared_item_without_raw_child_output() -> None:
+    child = item(1, "").model_copy(
+        update={
+            "item_id": "child",
+            "kind": "tool-activity",
+            "subagent": True,
+            "title": "Reviewer",
+        }
+    )
+    event = parse_server_event(
+        {
+            "contractVersion": 1,
+            "eventId": "child-start",
+            "sessionId": "session-demo",
+            "sequence": 11,
+            "occurredAt": "2026-09-07T12:00:00Z",
+            "body": {"type": "item.upsert", "item": child.model_dump(by_alias=True)},
+        }
+    )
+    assert event.body.item.kind == "tool-activity"
+    assert event.body.item.subagent is True
+
+
+def _user_message(**extra: Any) -> dict[str, Any]:
+    return {
+        "itemId": "user-steer",
+        "turnId": "turn-demo",
+        "revision": 1,
+        "kind": "user-message",
+        "status": "completed",
+        "title": "",
+        "text": "In blue, please",
+        "attachments": [],
+        "origin": None,
+        **extra,
+    }
+
+
+def test_reads_how_a_message_sent_mid_turn_was_delivered() -> None:
+    """Matches the TypeScript case of the same name: optional, so a host that
+    predates it is read as before."""
+    assert Item.model_validate(_user_message(delivery="steered")).delivery == "steered"
+    assert Item.model_validate(_user_message(delivery="queued")).delivery == "queued"
+    assert Item.model_validate(_user_message()).delivery is None
+    with pytest.raises(ValueError):
+        Item.model_validate(_user_message(delivery="interrupted"))

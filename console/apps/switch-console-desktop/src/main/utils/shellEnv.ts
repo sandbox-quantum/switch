@@ -92,6 +92,11 @@ function expandGlob(pattern: string): string[] {
   }
 }
 
+/** The Windows OpenSSH agent's named pipe when the agent is running. */
+export function detectWindowsOpenSshAgentPipe(): string | undefined {
+  return fs.existsSync(WINDOWS_OPENSSH_AGENT_PIPE) ? WINDOWS_OPENSSH_AGENT_PIPE : undefined;
+}
+
 /**
  * Detects the SSH_AUTH_SOCK environment variable.
  *
@@ -111,7 +116,7 @@ export function detectSshAuthSock(): string | undefined {
   }
 
   if (process.platform === 'win32') {
-    return fs.existsSync(WINDOWS_OPENSSH_AGENT_PIPE) ? WINDOWS_OPENSSH_AGENT_PIPE : undefined;
+    return detectWindowsOpenSshAgentPipe();
   }
 
   // macOS launchd (fast, no shell spawn)

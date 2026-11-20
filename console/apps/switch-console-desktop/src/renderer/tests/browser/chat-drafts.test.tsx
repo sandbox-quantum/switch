@@ -80,7 +80,7 @@ async function mount(timeline: ChatTimeline): Promise<HTMLTextAreaElement> {
           agents={[agent]}
           people={[]}
           groupName="Ship review"
-          activity={null}
+          activities={[]}
           replyTo={null}
           onClearReply={() => {}}
           disabled={null}

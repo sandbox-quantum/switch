@@ -391,7 +391,7 @@ export class ControllerClient {
         throw new ControllerApiError(
           error.status,
           'not_supported',
-          "This Switch server cannot rename a machine from its controller. Change the name and description in the gateway's Machines page instead.",
+          "This Switch server cannot rename a machine from its controller. Change the name and description in the gateway's Devices page instead.",
           false,
           null
         );

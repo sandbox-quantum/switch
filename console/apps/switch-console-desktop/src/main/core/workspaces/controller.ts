@@ -11,11 +11,13 @@ import {
 import {
   addBridgeTeam,
   addRoomAgents,
+  fetchRoomAgentCandidates,
   addRoomUsers,
   createRoomRole,
   deleteRoomRole,
   fetchArchivedRooms,
-  fetchBridgeUserNames,
+  fetchBridgePeople,
+  setRoomAdmin,
   setRoomAgentJoinEvents,
   setRoomArchived,
   setRoomGroup,
@@ -54,13 +56,16 @@ import {
   fetchRoomDetail,
   fetchRoomGroups,
   fetchRoomRoles,
+  fetchRoomSchedules,
   fetchRooms,
+  fetchRoomsOfAgents,
   fetchTemplateDetail,
   fetchTemplateRuns,
   fetchTemplates,
   fetchTemplateSchema,
   GatewayError,
   ownsOwnerAddressedAgent,
+  recordTemplateRun,
   releaseBridgeIdentity,
   removeBridgeTeam,
   removeRoomAgent,
@@ -76,13 +81,16 @@ import {
   getConnectionCatalog,
   getGitHubConnection,
   connectServiceWithKey,
+  connectServiceWithPaste,
   disconnectGitHub,
   disconnectService,
+  setRoomAutoRoute,
   setServiceGrant,
   setWorkspaceService,
   removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
+  updateMidTurnDelivery,
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
@@ -96,6 +104,10 @@ import {
   fetchRoomResources,
   removeLinkedRoom,
   setRoomResourceAttached,
+  createRoomSchedule,
+  deleteRoomSchedule,
+  setRoomSchedulePaused,
+  updateRoomSchedule,
 } from '@main/core/switch-servers/gateway-client';
 import {
   cancelLinkRequestOnServer,
@@ -136,6 +148,7 @@ import type {
   TelemetryBridgePlatform,
   TelemetryIdentityClaimOutcome,
   TelemetryOutcome,
+  TelemetryRoomAgentsAddFailure,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
   TelemetryRoomCreateSource,
@@ -148,6 +161,7 @@ import {
 } from '@main/core/telemetry/narrow';
 import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
+import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import type {
   LibraryDeleteResult,
   LibraryDocument,
@@ -167,6 +181,7 @@ import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
+import type { ServicePaste } from '@shared/core/switch-servers/service-connection';
 import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
@@ -178,6 +193,7 @@ import type {
   BridgeDirectorySearchResult,
   CancelLinkRequestResult,
   ChatClaim,
+  BridgePerson,
   ClaimIdentityParams,
   ConnectedChat,
   ClaimIdentityResult,
@@ -199,8 +215,12 @@ import type {
   RemoteBridgeType,
   RemoteExternalUser,
   RemoteRoomDetail,
+  RoomAutoRoute,
+  SetRoomAutoRouteParams,
   RemoteRoomGroup,
   RemoteRoomRole,
+  RemoteRoomSchedule,
+  RoomScheduleDraft,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
@@ -278,6 +298,20 @@ function roomCreateErrorReason(error: unknown): TelemetryRoomCreateFailure {
   if (error.status === 403) return 'forbidden';
   if (error.status === 404) return 'not_found';
   if (error.status === 409) return 'conflict';
+  if (error.status !== undefined && error.status >= 500) return 'server_error';
+  return 'error';
+}
+
+/** Adding agents to a room that threw, by the error's own type or the server's answer. */
+function roomAgentsAddFailureReason(error: unknown): TelemetryRoomAgentsAddFailure {
+  if (error instanceof HostUnreachableError) return 'unreachable';
+  if (!(error instanceof GatewayError)) return 'error';
+  if (error.kind === 'unauthorized') return 'unauthenticated';
+  if (error.kind === 'network') return 'network';
+  if (error.status === 403) return 'forbidden';
+  if (error.status === 404) return 'not_found';
+  if (error.status === 409) return 'conflict';
+  if (error.status === 400 || error.status === 422) return 'invalid';
   if (error.status !== undefined && error.status >= 500) return 'server_error';
   return 'error';
 }
@@ -553,7 +587,7 @@ export const workspacesController = createRPCController({
 
   listBridges: (workspaceId: string): Promise<RemoteBridge[]> =>
     withReachableWorkspaceSession(workspaceId, async (server) =>
-      withResolvedHomeUrls(server, await fetchBridges(server))
+      withResolvedHomeUrls(await fetchBridges(server))
     ),
 
   listBridgeTypes: (workspaceId: string): Promise<RemoteBridgeType[]> =>
@@ -809,6 +843,7 @@ export const workspacesController = createRPCController({
           instructions: params.instructions,
           bridgeId: params.bridgeId,
           agentIds: params.agentIds,
+          userNames: params.userNames,
           channel: params.channel,
           groupId: params.groupId,
           access: params.access,
@@ -921,6 +956,34 @@ export const workspacesController = createRPCController({
       fetchTemplateDetail(server, params.templateId)
     ),
 
+  /**
+   * Count a stored or official template's run, once the whole run has
+   * succeeded. Never fails: the run is done either way, so a server that does
+   * not count runs, or one that cannot be reached, is logged and the run goes
+   * uncounted.
+   */
+  recordTemplateRun: async (params: { workspaceId: string; templateId: string }): Promise<void> => {
+    try {
+      const counted = await withWorkspaceSession(params.workspaceId, (server) =>
+        recordTemplateRun(server, params.templateId)
+      );
+      if (!counted) {
+        log.warn('A template run was not counted: the server does not count it', {
+          event: 'template_run_count',
+          errorCode: 'not_counted',
+          templateId: params.templateId,
+        });
+      }
+    } catch (error) {
+      log.warn('A template run was not counted', {
+        event: 'template_run_count',
+        errorCode: error instanceof GatewayError ? error.kind : 'error',
+        templateId: params.templateId,
+        error: String(error),
+      });
+    }
+  },
+
   deleteTemplate: (params: { workspaceId: string; templateId: string }): Promise<void> =>
     withWorkspaceSession(params.workspaceId, (server) => deleteTemplate(server, params.templateId)),
 
@@ -959,6 +1022,15 @@ export const workspacesController = createRPCController({
   listAgentRooms: (params: { workspaceId: string; agentId: string }): Promise<RemoteAgentRoom[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchAgentRooms(server, params.agentId)),
 
+  /** Several agents' rooms in one read; null from a server that answers one agent at a time. */
+  listRoomsOfAgents: (params: {
+    workspaceId: string;
+    agentIds: string[];
+  }): Promise<Record<string, RemoteAgentRoom[]> | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomsOfAgents(server, params.agentIds)
+    ),
+
   listRoomRoles: (params: { workspaceId: string; roomId: string }): Promise<RemoteRoomRole[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchRoomRoles(server, params.roomId)),
 
@@ -987,7 +1059,6 @@ export const workspacesController = createRPCController({
         description: params.description,
         instructions: params.instructions,
         readVisibility: params.readVisibility,
-        writeVisibility: params.writeVisibility,
       })
     ),
 
@@ -1064,6 +1135,18 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteRoomDetail> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       setRoomArchived(server, params.roomId, params.archived)
+    ),
+
+  /** Make a person in the room a room admin, or take them off (`admin: false`).
+   * Refusals propagate in the gateway's own words. */
+  setRoomAdmin: (params: {
+    workspaceId: string;
+    roomId: string;
+    userId: string;
+    admin: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomAdmin(server, params.roomId, params.userId, params.admin)
     ),
 
   /** The archived rooms the signed-in user can see. */
@@ -1254,18 +1337,95 @@ export const workspacesController = createRPCController({
       removeLinkedRoom(server, params.roomId, params.targetRoomId)
     ),
 
-  /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
-  listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
+  /** The people Switch knows on one bridge, with who linked each, for offering them to a room. */
+  listBridgePeople: (params: { workspaceId: string; bridgeId: string }): Promise<BridgePerson[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
-      fetchBridgeUserNames(server, params.bridgeId)
+      fetchBridgePeople(server, params.bridgeId)
+    ),
+
+  /** A room's schedules, for its configuration page. */
+  listRoomSchedules: (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RemoteRoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  /**
+   * Add, change, pause or remove one of a room's schedules. Failures propagate
+   * as-is, so a refusal (no write access, an agent not in the room, a time
+   * already past) reaches the form in the server's own words.
+   */
+  createRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params.draft)
+    ),
+
+  updateRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params.draft)
+    ),
+
+  setRoomSchedulePaused: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    paused: boolean;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomSchedulePaused(server, params.roomId, params.scheduleId, params.paused)
+    ),
+
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
+    ),
+
+  /**
+   * Turn auto-route on or off in a room, or name its triage agent, through the
+   * same store `!auto-route` writes. Answers with the setting as it now stands;
+   * a refusal propagates, so the toggle never shows a state the server didn't take.
+   */
+  setRoomAutoRoute: ({
+    workspaceId,
+    roomId,
+    ...changes
+  }: SetRoomAutoRouteParams): Promise<RoomAutoRoute> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      setRoomAutoRoute(server, roomId, changes)
+    ),
+
+  /**
+   * The agents the signed-in person may bring into `roomId`, or into a new
+   * room when it is null; null from a server that cannot say.
+   */
+  roomAgentCandidates: (params: {
+    workspaceId: string;
+    roomId: string | null;
+  }): Promise<string[] | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomAgentCandidates(server, params.roomId)
     ),
 
   /**
    * Add agents to a room. Failures propagate as-is: the caller shows the
    * gateway's own words (e.g. an agent whose server-side client is not running,
-   * which the gateway rejects) rather than a generic message.
+   * which the gateway rejects) rather than a generic message. Reported either
+   * way, with the reason a failure can be told by.
    */
-  addRoomAgents: (params: {
+  addRoomAgents: async (params: {
     workspaceId: string;
     roomId: string;
     agentIds: string[];
@@ -1276,14 +1436,24 @@ export const workspacesController = createRPCController({
      * adding one agent.
      */
     direction: TelemetryRoomAgentsDirection;
-  }): Promise<void> =>
-    withReachableWorkspaceSession(params.workspaceId, async (server) => {
-      await addRoomAgents(server, params.roomId, params.agentIds);
+  }): Promise<void> => {
+    const report = (failure_reason: TelemetryRoomAgentsAddFailure) =>
       trackEvent('room_agents_added', {
         agent_count: params.agentIds.length,
         direction: roomAgentsDirectionOf(params.direction),
+        outcome: failure_reason === 'none' ? 'success' : 'failure',
+        failure_reason,
       });
-    }),
+    try {
+      await withReachableWorkspaceSession(params.workspaceId, (server) =>
+        addRoomAgents(server, params.roomId, params.agentIds)
+      );
+    } catch (error) {
+      report(roomAgentsAddFailureReason(error));
+      throw error;
+    }
+    report('none');
+  },
 
   /** Remove one agent from a room. Membership only — the agent is not deleted. */
   removeRoomAgent: (params: {
@@ -1510,12 +1680,19 @@ export const workspacesController = createRPCController({
 
   /**
    * Start signing in to `service` for this workspace: the browser opens at the
-   * vendor, and this Console's listener takes the result back. Resolves to the
-   * flow's id.
+   * vendor, and this Console's listener takes the result back. `choices` are
+   * what the person picked first (a vendor's site). Resolves to the flow's id,
+   * and the server's callback where the browser returns through it.
    */
-  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+  startServiceConnection: (params: {
+    workspaceId: string;
+    service: string;
+    choices: Record<string, string>;
+  }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
-      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(server, params.service, params.choices, (url) =>
+        appService.openExternal(url)
+      )
     ),
 
   getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>
@@ -1536,6 +1713,19 @@ export const workspacesController = createRPCController({
   }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
       connectServiceWithKey(server, params.service, params.fields)
+    ),
+
+  /**
+   * Connect `service` with a token or keys pasted in place of its sign-in, at
+   * what was picked for its choices (a site); Switch checks them at the service.
+   */
+  connectServiceWithPaste: (params: { workspaceId: string; service: string } & ServicePaste) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      connectServiceWithPaste(server, params.service, {
+        method: params.method,
+        fields: params.fields,
+        choices: params.choices,
+      })
     ),
 
   /** Disconnect `service` in this workspace: its grants go with it. */
@@ -1646,6 +1836,15 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentIcon(server, params.agentId, params.iconUrl)
+    ),
+
+  updateMidTurnDelivery: (params: {
+    workspaceId: string;
+    agentId: string;
+    mode: 'steer' | 'queue';
+  }): Promise<RemoteAgentSummary> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateMidTurnDelivery(server, params.agentId, params.mode)
     ),
 
   /** Change an agent's description. Returns the agent as the server now holds it. */

@@ -16,6 +16,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -23,6 +24,8 @@ import pytest
 from sqlalchemy import delete, func, select, update
 
 from switch_core.addressing import owner_only_policy
+from switch_core.agent_runs import TRACE_OPENING
+from switch_core.clients.consumer import Consumer
 from switch_core.db.models import (
     Agent,
     AgentEventRow,
@@ -43,14 +46,20 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.events import CommandEvent
 from switch_core.gateway import chats as chats_module
 from switch_core.gateway.auth import session_is_current
 from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
 )
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.session_activity.listener import Change
+from switch_core.transport import RoomRef
+from switch_core.transport.observer import ParticipantMessage
+from switch_core.transport.stored import to_inbound
 from tests.switch_core.gateway.conftest import _Harness, _Process
+from tests.telemetry_records import recording_telemetry
 
 
 def _code(response: httpx.Response) -> str:
@@ -517,6 +526,50 @@ async def test_a_send_that_failed_before_commit_posts_once_on_retry(
     assert len(groups) == 1
 
 
+async def test_an_observer_that_raises_does_not_fail_the_send(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post is committed before the observer hears of it, so a failure
+    there must not answer the send with an error: the retry would be told
+    nothing was sent. Counted instead."""
+
+    class _Broken:
+        def observe(self, message: ParticipantMessage) -> None:
+            raise RuntimeError("observer bug")
+
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    registry = MetricsRegistry()
+    install(registry)
+    monkeypatch.setattr(chats.service, "_message_observer", _Broken())
+    try:
+        sent = await chats.send(chats.alice, room_id, "s1", "still sent")
+        failures = next(
+            p
+            for p in registry.collect()
+            if p.name == "switch.messages.observer_failures"
+        )
+    finally:
+        uninstall()
+
+    assert sent.status_code == 200, sent.text
+    assert [m.body for m in await chats.message_rows(room_id)] == ["still sent"]
+    assert failures.numbers[0].value == 1.0
+
+
+async def test_a_chat_is_reported_as_a_console_chat_when_made(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    telemetry, sink = recording_telemetry()
+    monkeypatch.setattr(chats.room_service, "_telemetry", telemetry)
+    agent = await chats.agent("helper", owner=chats.alice)
+
+    await chats.new_chat(chats.alice, agent, "c1")
+
+    [created] = sink.events("room_created")
+    assert created["console_chat"] is True
+
+
 async def test_one_request_id_from_two_users_is_two_sends(chats: _Harness) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await chats.new_chat(chats.alice, agent, "c1")
@@ -653,6 +706,61 @@ async def test_uploads_are_idempotent_and_media_is_scoped_to_the_room(
         f"/chats/{room_id}/media", params={"uri": uri}, headers=chats.as_user(chats.bob)
     )
     assert stranger.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type", "data", "disposition"),
+    [
+        (
+            "report.html",
+            "text/html",
+            b"<html><script>alert(document.cookie)</script></html>",
+            "attachment",
+        ),
+        (
+            "logo.svg",
+            "image/svg+xml",
+            b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>',
+            "attachment",
+        ),
+        ("shot.png", "image/png", b"\x89PNG\r\n\x1a\n", "inline"),
+    ],
+)
+async def test_chat_files_are_served_so_they_cannot_run_as_switch_web(
+    chats: _Harness, name: str, content_type: str, data: bytes, disposition: str
+) -> None:
+    """A file in a chat is on Switch's own origin. HTML and SVG are downloads,
+    never rendered inline; only safe images show inline. Every file gets
+    `nosniff` and a CSP with no script or origin. The bytes and declared type
+    are unchanged, because Console reads both."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    staged = await chats.client.post(
+        f"/chats/{room_id}/attachments",
+        data={"uploadId": "u1"},
+        files={"file": (name, data, content_type)},
+        headers=chats.as_user(chats.alice),
+    )
+    assert staged.status_code == 200, staged.text
+    uri = staged.json()["uri"]
+    assert (
+        await chats.send(chats.alice, room_id, "s1", "", uploadIds=["u1"])
+    ).status_code == 200
+
+    media = await chats.client.get(
+        f"/chats/{room_id}/media",
+        params={"uri": uri},
+        headers=chats.as_user(chats.alice),
+    )
+    assert media.status_code == 200
+    assert media.content == data
+    assert media.headers["content-type"].startswith(content_type)
+    assert media.headers["content-disposition"].startswith(
+        f'{disposition}; filename="{name}";'
+    )
+    assert media.headers["x-content-type-options"] == "nosniff"
+    assert media.headers["content-security-policy"] == "default-src 'none'; sandbox"
+    assert media.headers["cache-control"] == "private, no-store"
 
 
 async def test_a_member_removed_after_a_failed_send_cannot_retry_it(
@@ -865,7 +973,7 @@ def _session_of(chats: _Harness, user: User) -> Callable[[], Awaitable[bool]]:
 
     async def current() -> bool:
         return await session_is_current(
-            chats.factory, UserStore(), user.id, session_version
+            chats.factory, UserStore(), user.id, session_version, "stream-session"
         )
 
     return current
@@ -1026,7 +1134,7 @@ async def test_an_invited_member_keeps_a_chat_that_loses_its_last_agent(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.bob)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert room_id not in await _listed(chats, chats.bob)
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
@@ -1047,7 +1155,7 @@ async def test_unlisted_room_still_delivers_messages_to_invited_member(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert (await chats.invite(chats.alice, room_id, chats.alice)).status_code == 200
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
@@ -1074,7 +1182,7 @@ async def test_unlisted_then_revoked_room_emits_access_removal(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert (await chats.invite(chats.alice, room_id, chats.alice)).status_code == 200
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
@@ -1107,8 +1215,10 @@ async def test_unlisted_then_revoked_room_emits_access_removal(
 async def test_an_unlisted_chat_is_announced_again_when_an_agent_returns(
     chats: _Harness,
 ) -> None:
+    # A bridge that is not running here: nothing to add the agent to.
+    chats.room_service._collab_lifecycle = SimpleNamespace(get=lambda _id: None)  # type: ignore[assignment]
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -1131,8 +1241,10 @@ async def test_an_unlisted_chat_is_announced_again_when_an_agent_returns(
 async def test_the_periodic_recheck_announces_a_chat_that_regains_an_agent(
     chats: _Harness,
 ) -> None:
+    # A bridge that is not running here: nothing to add the agent to.
+    chats.room_service._collab_lifecycle = SimpleNamespace(get=lambda _id: None)  # type: ignore[assignment]
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
     async with chats.factory() as session:
         await session.execute(
@@ -1457,7 +1569,7 @@ async def test_an_agent_owner_is_not_joined_to_bridged_rooms_holding_their_agent
     assert await _reads(chats, chats.alice, channel) == 403
     assert await _reads(chats, chats.alice, dm) == 403
     assert await _listed(chats, chats.alice) == {}
-    await chats.room_service.room_agents_changed(TENANT, channel)
+    await chats.room_service.room_agents_changed(TENANT, [channel])
     assert await _listed(chats, chats.alice) == {}
     assert await _grants(chats) == 0
 
@@ -1494,20 +1606,6 @@ async def test_an_owner_grant_on_a_bridged_room_is_taken_back(
     assert await _grants(chats) == 0
 
 
-async def test_with_agent_chats_off_owner_grants_are_taken_back(
-    chats: _Harness,
-) -> None:
-    agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _left_chat(chats, chats.alice)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
-    assert await _grants(chats) == 1
-
-    chats.service.agent_chats_enabled = False
-    assert await _listed(chats, chats.alice) == {}
-    assert not await _in_room(chats, chats.alice, room_id)
-    assert await _grants(chats) == 0
-
-
 async def test_an_agent_owner_is_not_joined_to_someone_elses_chat(
     chats: _Harness,
 ) -> None:
@@ -1525,19 +1623,6 @@ async def test_an_agent_owner_is_not_joined_to_someone_elses_chat(
         headers=chats.as_user(chats.alice),
     )
     assert left.status_code == 204
-
-
-async def test_with_agent_chats_off_owning_an_agent_joins_nothing(
-    chats: _Harness,
-) -> None:
-    chats.service.agent_chats_enabled = False
-    agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _left_chat(chats, chats.alice)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
-
-    assert await _listed(chats, chats.alice) == {}
-    assert await _reads(chats, chats.alice, room_id) == 403
-    assert await _grants(chats) == 0
 
 
 async def test_an_agent_owner_rejoins_a_chat_they_started_when_their_agent_arrives(
@@ -1586,14 +1671,20 @@ async def test_owner_membership_is_granted_once(chats: _Harness) -> None:
             .select_from(ClientRoom)
             .where(ClientRoom.client_id == client.id)
         )
-        arrivals = await session.scalar(
-            select(func.count())
-            .select_from(Message)
-            .where(
-                Message.room_id == room_id,
-                Message.sender_client_id == client.id,
-                Message.event_type == "m.room.member",
+        membership_rows = (
+            await session.scalars(
+                select(Message.content).where(
+                    Message.room_id == room_id,
+                    Message.sender_client_id == client.id,
+                    Message.event_type == "m.room.member",
+                )
             )
+        ).all()
+        # Departures are membership rows too; only arrivals are counted here.
+        arrivals = sum(
+            1
+            for content in membership_rows
+            if (content or {}).get("membership") != "leave"
         )
     # One arrival from starting the chat, one from the owner rejoin.
     assert (memberships, arrivals, await _grants(chats)) == (1, 2, 1)
@@ -1732,7 +1823,7 @@ async def test_a_deleted_agent_takes_its_owners_access_with_it(
     async with chats.factory() as session:
         await AgentStore().delete(session, agent.id)
         await session.commit()
-    await chats.room_service.room_agents_changed(TENANT, room_id)
+    await chats.room_service.room_agents_changed(TENANT, [room_id])
 
     assert await _reads(chats, chats.alice, room_id) == 403
 
@@ -1753,7 +1844,14 @@ async def test_an_owner_who_created_the_chat_keeps_it_when_the_agent_goes(
 
 
 async def _step(
-    chats: _Harness, agent: Agent, room_id: str, turn_id: str, item_id: str, rev: int
+    chats: _Harness,
+    agent: Agent,
+    room_id: str,
+    turn_id: str,
+    item_id: str,
+    rev: int,
+    *,
+    subagent: bool = False,
 ) -> None:
     async with chats.factory() as session:
         await session.merge(
@@ -1764,6 +1862,7 @@ async def _step(
                 turn_id=turn_id,
                 item_id=item_id,
                 kind="turn" if item_id == "turn" else "tool-activity",
+                subagent=subagent,
                 revision=rev,
                 status="running" if item_id == "turn" else "in-progress",
                 title=f"{item_id} r{rev}",
@@ -1851,7 +1950,7 @@ async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
     other_agent = await chats.agent("other", owner=chats.bob)
     other = await chats.new_chat(chats.bob, other_agent, "c2")
     await _step(chats, agent, mine, "t1", "turn", 1)
-    await _step(chats, agent, mine, "t1", "tool-1", 2)
+    await _step(chats, agent, mine, "t1", "tool-1", 2, subagent=True)
     await _step(chats, other_agent, other, "t9", "turn", 1)
     await _request(chats, agent, mine, "r-open", "open")
     await _request(chats, agent, mine, "r-done", "answered")
@@ -1866,6 +1965,9 @@ async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
         ("t1", "turn", 1),
         ("t1", "tool-1", 2),
     ]
+    child = next(i for i in body["items"] if i["itemId"] == "tool-1")
+    assert child["kind"] == "tool-activity"
+    assert child["subagent"] is True
     assert {(a["requestId"], a["state"]) for a in body["approvals"]} == {
         ("r-open", "open"),
         ("r-done", "answered"),
@@ -2235,3 +2337,158 @@ async def test_a_step_reaches_the_activity_streams_of_every_process(
         name, item = await events.next()
         assert (name, item["roomId"], item["turnId"]) == ("activity", room_id, "t1")
         await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_a_kickoff_reads_back_as_the_agent_that_ran_the_template(
+    chats: _Harness,
+) -> None:
+    """Switch posts a template's kickoff for whoever ran it. Switch Console is
+    told whose it is, and gets the run history for the agents apart from the
+    request, so it can show the request as theirs and fold the history away."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    sent_ids = []
+    for txn, text in (("s1", "Kickoff from switch-buddy"), ("s2", "request")):
+        sent = await chats.send(chats.alice, room_id, txn, text)
+        assert sent.status_code == 200, sent.text
+        sent_ids.append(sent.json()["messages"][0]["messageId"])
+
+    buddy = await chats.agent("switch-buddy", owner=chats.alice)
+    async with chats.factory() as session:
+        await session.execute(
+            update(Agent)
+            .where(Agent.id == buddy.id)
+            .values(
+                display_name="Switch Buddy", icon_url="https://example.test/buddy.png"
+            )
+        )
+        await session.commit()
+    on_behalf_of = {
+        "user_id": chats.alice.id,
+        "name": "switch-buddy",
+        "agent_id": buddy.id,
+    }
+    request = f"Sprint room is live.\n\n{TRACE_OPENING}Welcome. So far: ..."
+    async with chats.factory() as session:
+        rows = {
+            row.transport_event_id: row
+            for row in (
+                await session.execute(
+                    select(Message).where(Message.transport_event_id.in_(sent_ids))
+                )
+            ).scalars()
+        }
+        headline, kickoff = (rows[i] for i in sent_ids)
+        # As the platform posts them: no sender client, the marker in content.
+        headline.sender_client_id = None
+        headline.content = {"com.switch.platform": {"on_behalf_of": on_behalf_of}}
+        kickoff.sender_client_id = None
+        kickoff.body = request
+        kickoff.content = {
+            "com.switch.platform": {
+                "on_behalf_of": on_behalf_of,
+                "reply_in_channel": True,
+            }
+        }
+        await session.commit()
+
+    page = await chats.client.get(
+        f"/chats/{room_id}/messages", headers=chats.as_user(chats.alice)
+    )
+    by_id = {m["messageId"]: m for m in page.json()["messages"]}
+    first, second = (by_id[i] for i in sent_ids)
+    assert first["sender"]["kind"] == "system"
+    assert first["kickoff"] is None
+    assert second["sender"]["kind"] == "system"
+    assert second["body"] == "Sprint room is live."
+    assert second["kickoff"] == {
+        "name": "switch-buddy",
+        "agentId": buddy.id,
+        "userId": chats.alice.id,
+        "agentNote": f"{TRACE_OPENING}Welcome. So far: ...",
+        # Its own look, though it is not in the room.
+        "displayName": "Switch Buddy",
+        "iconUrl": "https://example.test/buddy.png",
+    }
+
+
+async def test_a_typed_room_command_is_run_as_one(chats: _Harness) -> None:
+    """`!set-alias` typed in Console is the command event a platform bridge
+    writes for it, so the room's command handling runs it; the agents do not
+    read it as a message."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    sent = await chats.send(chats.alice, room_id, "s1", "  !set-alias @helper @h ")
+    assert sent.status_code == 200, sent.text
+    [shown] = sent.json()["messages"]
+    # Shown as the person's, as on the platform they could have typed it on.
+    assert shown["sender"]["kind"] == "human"
+    assert shown["sender"]["name"] == "alice"
+    assert shown["body"] == "!set-alias @helper @h"
+
+    assert await chats.message_rows(room_id) == []
+    async with chats.factory() as session:
+        row = (
+            await session.execute(
+                select(Message).where(Message.transport_event_id == shown["messageId"])
+            )
+        ).scalar_one()
+    assert row.event_type == "com.switch.command"
+
+    # What a room's command handling receives from that row: the command and
+    # its arguments, from alice, the same event a bridge's typed one makes.
+    async with chats.factory() as session:
+        room = await session.get(Room, room_id)
+    assert room is not None
+    received: list[CommandEvent] = []
+
+    async def on_command(_room: RoomRef, event: CommandEvent) -> None:
+        received.append(event)
+
+    consumer = SimpleNamespace(
+        _EVENT_DISPATCH=Consumer._EVENT_DISPATCH,
+        _should_ignore=lambda _room, _event: False,
+        on_command=on_command,
+    )
+    await Consumer._handle_custom_event(
+        consumer,  # type: ignore[arg-type]
+        RoomRef(room.transport_room_id),
+        to_inbound(row, [], transport_room_id=room.transport_room_id),
+    )
+    [event] = received
+    assert (event.command, event.args, event.user_name) == (
+        "set-alias",
+        "@helper @h",
+        "alice",
+    )
+
+
+async def test_a_message_that_only_starts_with_a_bang_stays_a_message(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    sent = await chats.send(chats.alice, room_id, "s1", "!important: read this")
+    assert sent.status_code == 200, sent.text
+    [row] = await chats.message_rows(room_id)
+    assert row.body == "!important: read this"
+
+
+async def test_a_person_added_after_the_room_exists_finds_it_in_their_list(
+    chats: _Harness,
+) -> None:
+    """Someone added to a room already under way sees it among their chats,
+    which is the list Switch Console's sidebar is built from."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.send(chats.alice, room_id, "s1", "hello")).status_code == 200
+
+    before = await chats.client.get("/chats", headers=chats.as_user(chats.bob))
+    assert room_id not in {c["roomId"] for c in before.json()["chats"]}
+
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    after = await chats.client.get("/chats", headers=chats.as_user(chats.bob))
+    assert room_id in {c["roomId"] for c in after.json()["chats"]}

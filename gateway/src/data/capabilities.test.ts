@@ -1,0 +1,172 @@
+import { describe, expect, it } from "vitest";
+import type { CurrentTenant, Session, TenantMembership } from "./api";
+import {
+  agentManagement,
+  allOf,
+  capabilitiesOf,
+  connectorAppManagers,
+  everyone,
+  organizationAdmins,
+  serviceConnections,
+  workspaceAdmins,
+} from "./capabilities";
+import { ALL_OFF, featureFlagsFrom } from "./featureFlags";
+
+const membership: TenantMembership = {
+  id: "t1",
+  slug: "acme",
+  name: "Acme",
+  role: "member",
+  organization_role: "member",
+  organization_id: "o1",
+  archived_at: null,
+};
+
+function session(
+  tenant: Partial<TenantMembership> = {},
+  isOperator = false,
+  canManageConnectorApps = isOperator,
+): Session {
+  const current = { ...membership, ...tenant };
+  return {
+    user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: isOperator },
+    tenant: current,
+    tenants: [current],
+    state: "ready",
+    can_create_workspace: false,
+    can_add_workspace: false,
+    invite_email_enabled: false,
+    can_manage_connector_apps: canManageConnectorApps,
+  };
+}
+
+function tenant(administers: boolean): CurrentTenant {
+  return { id: "t1", slug: "acme", name: "Acme", role: "member", administers, can_delete: false, can_manage_data_protection: false };
+}
+
+describe("featureFlagsFrom", () => {
+  it("keeps the flags the dashboard knows, and treats any it was not sent as off", () => {
+    const flags = featureFlagsFrom([
+      { key: "agent_management", enabled: true },
+      { key: "service_connections", enabled: false },
+      { key: "something_newer", enabled: true },
+    ]);
+    expect(flags).toEqual({
+      agent_management: true,
+      service_connections: false,
+      organization_connector_apps: false,
+      switch_buddy: false,
+    });
+  });
+});
+
+describe("capabilitiesOf", () => {
+  it("takes workspace admin from the server's answer, not the role name", () => {
+    expect(capabilitiesOf(session({ role: "admin" }), tenant(false), ALL_OFF).administersWorkspace).toBe(
+      false,
+    );
+    expect(capabilitiesOf(session({ role: "member" }), tenant(true), ALL_OFF).administersWorkspace).toBe(
+      true,
+    );
+  });
+
+  it("says whether connector apps are set up in the dashboard only where the server does", () => {
+    for (const inDashboard of [true, false]) {
+      const told = { ...session(), connector_apps_in_dashboard: inDashboard };
+      expect(capabilitiesOf(told, tenant(false), ALL_OFF).connectorAppsInDashboard).toBe(inDashboard);
+    }
+    expect(capabilitiesOf(session(), tenant(false), ALL_OFF).connectorAppsInDashboard).toBeNull();
+    expect(capabilitiesOf(null, null, ALL_OFF).connectorAppsInDashboard).toBeNull();
+  });
+
+  it("is no admin of anything with no workspace", () => {
+    const caps = capabilitiesOf(null, null, ALL_OFF);
+    expect(caps.administersWorkspace).toBe(false);
+    expect(caps.administersOrganization).toBe(false);
+    expect(caps.isOperator).toBe(false);
+    expect(caps.canManageConnectorApps).toBe(false);
+  });
+
+  it("takes managing connector apps from the session's answer, not the role", () => {
+    const onlyOrganization = session({ organization_role: "org_admin" }, false, true);
+    expect(capabilitiesOf(onlyOrganization, tenant(true), ALL_OFF).canManageConnectorApps).toBe(true);
+    const oneOfSeveral = session({ organization_role: "org_admin" }, false, false);
+    expect(capabilitiesOf(oneOfSeveral, tenant(true), ALL_OFF).canManageConnectorApps).toBe(false);
+  });
+
+  it("takes organization admin from the organization role, not the operator bit", () => {
+    expect(
+      capabilitiesOf(session({ organization_role: "org_admin" }), tenant(true), ALL_OFF)
+        .administersOrganization,
+    ).toBe(true);
+    expect(capabilitiesOf(session({}, true), tenant(true), ALL_OFF).administersOrganization).toBe(false);
+  });
+});
+
+describe("rules", () => {
+  const member = capabilitiesOf(session(), tenant(false), ALL_OFF);
+  const workspaceAdmin = capabilitiesOf(session({ role: "admin" }), tenant(true), ALL_OFF);
+  const orgAdmin = capabilitiesOf(session({ organization_role: "org_admin" }), tenant(true), ALL_OFF);
+  const operator = capabilitiesOf(session({}, true), tenant(true), ALL_OFF);
+  const outsideAnyOrganization = capabilitiesOf(
+    session({ organization_role: null, organization_id: null }),
+    tenant(true),
+    ALL_OFF,
+  );
+
+  it("lets everyone in", () => {
+    expect(everyone(member).allowed).toBe(true);
+  });
+
+  it("lets workspace admins in, whatever made them one", () => {
+    expect(workspaceAdmins(member)).toMatchObject({ allowed: false, reason: "not_permitted" });
+    for (const caps of [workspaceAdmin, orgAdmin, operator]) {
+      expect(workspaceAdmins(caps).allowed).toBe(true);
+    }
+  });
+
+  it("lets whoever the session says may set up connector apps into their page", () => {
+    for (const caps of [member, workspaceAdmin, orgAdmin]) {
+      expect(connectorAppManagers(caps)).toMatchObject({ allowed: false, reason: "not_permitted" });
+    }
+    expect(connectorAppManagers(operator).allowed).toBe(true);
+    const onlyOrganizationAdmin = capabilitiesOf(
+      session({ organization_role: "org_admin" }, false, true),
+      tenant(true),
+      ALL_OFF,
+    );
+    expect(connectorAppManagers(onlyOrganizationAdmin).allowed).toBe(true);
+  });
+
+  it("lets organization admins and the operator into organization settings", () => {
+    expect(organizationAdmins(orgAdmin).allowed).toBe(true);
+    expect(organizationAdmins(operator).allowed).toBe(true);
+    expect(organizationAdmins(workspaceAdmin)).toMatchObject({
+      allowed: false,
+      message: "Only the organization's admins can open this page.",
+    });
+    expect(organizationAdmins(member).allowed).toBe(false);
+    expect(organizationAdmins(outsideAnyOrganization)).toMatchObject({
+      allowed: false,
+      message: "This workspace belongs to no organization.",
+    });
+  });
+
+  it("refuses a page whose feature is off, naming the flag", () => {
+    expect(agentManagement(member)).toEqual({
+      allowed: false,
+      reason: "not_enabled",
+      flag: "agent_management",
+      message: "Agent management isn't turned on here.",
+    });
+    const on = capabilitiesOf(session(), tenant(false), { ...ALL_OFF, agent_management: true });
+    expect(agentManagement(on).allowed).toBe(true);
+  });
+
+  it("answers with the first refusal when several rules apply", () => {
+    const rule = allOf(serviceConnections, workspaceAdmins);
+    expect(rule(member)).toMatchObject({ reason: "not_enabled", flag: "service_connections" });
+    const on = capabilitiesOf(session(), tenant(false), { ...ALL_OFF, service_connections: true });
+    expect(rule(on)).toMatchObject({ reason: "not_permitted" });
+  });
+});

@@ -34,6 +34,7 @@ from switch_core.db.base import Base
 from switch_core.db.rls_ddl import (
     GLOBAL_TABLES,
     HISTORY_TABLES,
+    ORGANIZATION_HISTORY_TABLES,
     organization_scoped_tables,
     scoped_tables,
     unscoped_tables,
@@ -142,6 +143,17 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # Changes to the server as a whole, such as setting up one of those
             # apps: no tenant owns them, so `audit_events` cannot hold them.
             "server_audit_events",
+            # Password sign-ins and sign-ups counted against the email typed
+            # and the client's address, before there is a workspace to file
+            # them under.
+            "auth_attempts",
+            # Sessions signed out of: a session is a person's, across their
+            # workspaces, and the row holds only its random id.
+            "revoked_sessions",
+            # One-time sign-ins Switch Console hands a browser: redeemed
+            # before any workspace is known, and the workspace a row names is
+            # only the claim its session selects.
+            "browser_handoffs",
         }
 
     async def test_the_history_tables_are_exactly_these(self) -> None:
@@ -150,6 +162,12 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         assert set(HISTORY_TABLES) == {"audit_events"}
         assert scoped_tables(Base.metadata)["audit_events"] == "tenant_id"
         assert not Base.metadata.tables["audit_events"].c.tenant_id.foreign_keys
+        assert set(ORGANIZATION_HISTORY_TABLES) == {"organization_audit_events"}
+        table = Base.metadata.tables["organization_audit_events"]
+        assert (
+            organization_scoped_tables(Base.metadata)[table.name] == "organization_id"
+        )
+        assert not table.c.organization_id.foreign_keys
 
     async def test_scoped_is_everything_else(self) -> None:
         scoped = _scoped_tables()

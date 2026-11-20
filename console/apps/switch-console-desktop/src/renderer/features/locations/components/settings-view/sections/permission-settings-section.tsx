@@ -4,6 +4,7 @@ import { Badge } from '@renderer/lib/ui/badge';
 import { Switch } from '@renderer/lib/ui/switch';
 import { log } from '@renderer/utils/logger';
 import type { Agent } from '@shared/core/agents/agents';
+import { providerSupportsAutoMode } from '@shared/core/providers/agent-provider-registry';
 import { SettingRow } from './setting-row';
 
 type PermissionSetting = 'autoApprove' | 'autoMode';
@@ -15,7 +16,7 @@ export const PERMISSION_COPY = {
     description: 'Safe actions run on their own; risky ones ask you first.',
     overridden: 'Bypass permissions is on and overrides it.',
     infoLabel: 'More info about auto mode',
-    info: "The agent's provider reviews each action before it runs: Claude, Codex, OpenCode and Cursor use their own automatic review, and Antigravity approves edits and asks before commands. Applies to every session, including ones started automatically.",
+    info: "The agent's provider reviews each action before it runs: Claude, Codex, OpenCode and Junie use their own automatic review, Antigravity and Pi approve edits and ask before commands, and DeepSeek Harness, which has no reviewer of its own, asks before every tool except those that only read or search files. Applies to every session, including ones started automatically.",
   },
   autoApprove: {
     title: 'Bypass permissions',
@@ -60,28 +61,32 @@ export function PermissionSettingsSection({
   const perAgent = (setting: PermissionSetting) =>
     !single && (
       <div className="flex flex-col gap-2">
-        {list.map((agent) => (
-          <div
-            key={agent.id}
-            className="flex items-center justify-between gap-3 rounded-md border border-border px-2 py-1.5"
-          >
-            <span className="truncate text-sm">{agent.name}</span>
-            <PermissionSwitch agent={agent} setting={setting} locationId={locationId} />
-          </div>
-        ))}
+        {list
+          .filter((agent) => setting !== 'autoMode' || providerSupportsAutoMode(agent.providerId))
+          .map((agent) => (
+            <div
+              key={agent.id}
+              className="flex items-center justify-between gap-3 rounded-md border border-border px-2 py-1.5"
+            >
+              <span className="truncate text-sm">{agent.name}</span>
+              <PermissionSwitch agent={agent} setting={setting} locationId={locationId} />
+            </div>
+          ))}
       </div>
     );
 
   return (
     <>
-      <AutoModeRow
-        overridden={single?.autoApprove ?? false}
-        control={
-          single && <PermissionSwitch agent={single} setting="autoMode" locationId={locationId} />
-        }
-      >
-        {perAgent('autoMode')}
-      </AutoModeRow>
+      {list.some((agent) => providerSupportsAutoMode(agent.providerId)) && (
+        <AutoModeRow
+          overridden={single?.autoApprove ?? false}
+          control={
+            single && <PermissionSwitch agent={single} setting="autoMode" locationId={locationId} />
+          }
+        >
+          {perAgent('autoMode')}
+        </AutoModeRow>
+      )}
       <AutoApproveRow
         control={
           single && (

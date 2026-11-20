@@ -2,6 +2,7 @@ import { Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { ServerTableEmpty } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
@@ -22,7 +23,7 @@ const MachineTitlebar = observer(function MachineTitlebar() {
     <ServerSectionTitlebar
       serverId={params.serverId}
       icon={Server}
-      label="Your devices"
+      label="Devices"
       onSectionClick={() => navigate('settings', { tab: 'devices' })}
       item={{ label: params.name }}
     />
@@ -31,7 +32,7 @@ const MachineTitlebar = observer(function MachineTitlebar() {
 
 /**
  * One of the person's devices, with everything it last reported. Read from
- * the same list as Settings → Your devices: the server has no call for one machine.
+ * the same list as Settings → Devices: the server has no call for one machine.
  */
 const MachinePanel = observer(function MachinePanel() {
   const { params } = useParams('machine');
@@ -90,7 +91,7 @@ export const machineView = {
       typeof value.machineId !== 'string' ||
       typeof value.name !== 'string'
     )
-      return { ok: false, redirect: 'home', discardParams: true };
+      return { ...homeRedirect(), discardParams: true };
     return { ok: true };
   },
 } satisfies ViewDefinition<MachineParams>;

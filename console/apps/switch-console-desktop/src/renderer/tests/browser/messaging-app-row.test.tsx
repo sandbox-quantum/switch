@@ -73,15 +73,21 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     displayName: 'Slack Test',
     status: 'active',
     isDefault: false,
+    preconfigured: null,
     homeUrl: null,
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    directorySearchHint: 'Your name or handle',
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
+    privateChannels: null,
+    privateChannelNeedsLinkedAccount: false,
+    publicChannelAddsCreator: false,
     receivesWebhooks: false,
     webhookUrl: null,
+    commands: {},
     ...patch,
   };
 }
@@ -116,7 +122,6 @@ function row(
     onReleased?: () => void;
     olderLinks?: { count: number; onRequireConfirmation: () => void } | null;
     isAdmin?: boolean;
-    personal?: boolean;
     onConnectChat?: (() => void) | null;
     onDisconnect?: () => void;
   } = {}
@@ -124,16 +129,13 @@ function row(
   return (
     <MessagingAppRow
       workspaceId={overrides.workspaceId === undefined ? 'ws-1' : overrides.workspaceId}
-      serverId="srv-1"
       bridge={overrides.bridge ?? bridge()}
       identities={overrides.identities === undefined ? [] : overrides.identities}
       pending={overrides.pending === undefined ? [] : overrides.pending}
       currentUserId="u1"
       onReleased={overrides.onReleased ?? (() => {})}
       olderLinks={overrides.olderLinks ?? null}
-      showBundledSignIn={false}
       isAdmin={overrides.isAdmin ?? false}
-      personal={overrides.personal ?? false}
       savingChannelCreation={false}
       onToggleChannelCreation={() => {}}
       onConnectChat={overrides.onConnectChat ?? null}
@@ -361,6 +363,7 @@ describe('the row menu', () => {
   it('offers the webhook address of a connection that receives events on one', async () => {
     const el = await render(
       row({
+        isAdmin: true,
         bridge: bridge({
           receivesWebhooks: true,
           webhookUrl: 'https://switch.example/messaging/bridges/b-1/events',
@@ -372,7 +375,9 @@ describe('the row menu', () => {
   });
 
   it('says what is missing when the server has no public address to give', async () => {
-    const el = await render(row({ bridge: bridge({ receivesWebhooks: true, webhookUrl: null }) }));
+    const el = await render(
+      row({ isAdmin: true, bridge: bridge({ receivesWebhooks: true, webhookUrl: null }) })
+    );
 
     await openMenu(el);
     expect(document.body.textContent).toContain('MESSAGING_PUBLIC_URL');
@@ -408,10 +413,10 @@ describe('the row menu', () => {
     expect(await openMenu(el)).not.toContain('Disconnect app…');
   });
 
-  it('keeps the workspace’s settings out of Settings, where only your own account is shown', async () => {
+  it('shows someone who is not an admin only their own account, not the workspace’s settings', async () => {
     const el = await render(
       row({
-        personal: true,
+        isAdmin: false,
         identities: [IDENTITY],
         bridge: bridge({
           receivesWebhooks: true,
@@ -520,7 +525,10 @@ describe('channel creation', () => {
     // "this platform has no such thing". Telegram is the case: it never gets a
     // box at all, only a line saying so.
     const el = await render(
-      row({ bridge: bridge({ channelCreationSupported: false, canCreateChannels: false }) })
+      row({
+        isAdmin: true,
+        bridge: bridge({ channelCreationSupported: false, canCreateChannels: false }),
+      })
     );
 
     const labels = await openMenu(el);
@@ -528,12 +536,10 @@ describe('channel creation', () => {
     expect(document.querySelector('[role="menuitemcheckbox"]')).toBeNull();
   });
 
-  it('leaves it alone for a non-admin', async () => {
+  it('is not shown to a non-admin, whose menu holds only their own account', async () => {
     const el = await render(row({ isAdmin: false }));
 
-    expect(
-      (await menuItem(el, 'Create channels on Slack')).getAttribute('data-disabled')
-    ).not.toBeNull();
+    expect((await openMenu(el)).some((item) => item.startsWith('Create channels'))).toBe(false);
   });
 
   it('lets an admin move it', async () => {

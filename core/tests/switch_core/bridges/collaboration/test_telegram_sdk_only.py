@@ -215,6 +215,23 @@ async def test_the_asker_is_mentioned_by_id_so_a_private_account_is_reached() ->
     assert f'<a href="tg://user?id={ASKER_ID}">@alice</a>' in text
 
 
+async def test_an_asker_without_a_username_is_named_as_telegram_shows_them() -> None:
+    """Switch addresses a person with no Telegram username by a handle it
+    made up ("MM_60606"), which is nobody's. The card's mention carries the
+    name Telegram shows instead, as a text mention, so they are notified."""
+    adapter = _adapter()
+    adapter._user_names[ASKER_ID] = f"MM_{ASKER_ID}"
+    adapter._full_names[ASKER_ID] = "M M"
+
+    await adapter.post_rich(
+        CHANNEL, "my-agent", await _card(notify_external_id=ASKER), None
+    )
+
+    text = _posted(adapter)["text"]
+    assert f'<a href="tg://user?id={ASKER_ID}">M M</a>' in text
+    assert f"MM_{ASKER_ID}" not in text
+
+
 async def test_an_account_this_bridge_has_never_seen_is_not_given_a_made_up_name() -> (
     None
 ):
@@ -488,7 +505,7 @@ async def test_what_a_refusal_carries_is_answerable_without_the_buttons() -> Non
     assert "2. Deny" in lines
     assert (
         lines[-1]
-        == "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
+        == "Reply to this message with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
     )
 
 
@@ -667,17 +684,17 @@ async def test_a_finished_status_stops_counting_and_drops_what_was_running() -> 
     assert "running" not in text
 
 
-async def test_a_telegram_status_never_names_the_tool_of_the_moment() -> None:
-    """It is compact for the reason it used to be deleted: the chat is the
-    conversation itself, so the status is a line and its link rather than a
-    running commentary. What the turn is doing is in the Console."""
+async def test_a_running_status_names_the_step_of_the_moment_and_the_time() -> None:
+    """The live part of a card Telegram redraws only when the turn changes:
+    the step it is on, and the time so far, exact at every drawing. Whole
+    minutes left it reading "Working…" through the whole first minute."""
     adapter = _adapter()
 
     await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
 
     text = _bot(adapter).messages[0]["text"]
-    assert "Read the adapter" not in text
-    assert "Now:" not in text and "Last:" not in text
+    assert "Now: Read the adapter" in text
+    assert "12s" in text
 
 
 async def test_a_call_that_failed_still_shows_on_a_finished_status() -> None:
@@ -803,7 +820,8 @@ async def test_the_tool_log_is_not_drawn_into_the_chat_at_all() -> None:
     await adapter.post_rich(CHANNEL, "my-agent", _tools(9), None)
 
     text = _posted(adapter)["text"]
-    assert "Read file" not in text
+    assert "Last: Read file 8" in text
+    assert "Read file 0" not in text
     assert "<blockquote" not in text
     assert len(_bot(adapter).messages) == 1
 
@@ -846,8 +864,7 @@ async def test_a_call_that_failed_is_still_reported() -> None:
 
 
 async def test_a_tool_title_cannot_reach_the_chat_as_markup() -> None:
-    """Nothing draws it today, and a title is host text whatever draws it
-    next."""
+    """A title is host text: drawn as the step of the moment, it is escaped."""
     adapter = _adapter()
     content = TurnActivity(
         [_item(title="<b>everything below is mine</b>")],
@@ -856,7 +873,9 @@ async def test_a_tool_title_cannot_reach_the_chat_as_markup() -> None:
 
     await adapter.post_rich(CHANNEL, "my-agent", content, None)
 
-    assert "everything below is mine" not in _posted(adapter)["text"]
+    text = _posted(adapter)["text"]
+    assert "<b>everything below is mine</b>" not in text
+    assert "&lt;b&gt;everything below is mine&lt;/b&gt;" in text
 
 
 # ── The working reaction ─────────────────────────────────────────────────────
@@ -1073,7 +1092,11 @@ async def test_the_body_does_not_repeat_what_the_buttons_already_say() -> None:
     text = _posted(adapter)["text"]
     assert "1. Allow once" not in text
     assert "2. Deny" not in text
-    assert "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>." in text
+    # A group bot sees replies to its messages, so the card says to reply to it.
+    assert (
+        "Reply to this message with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
+        in text
+    )
 
 
 async def test_a_press_carries_the_request_and_where_the_control_was() -> None:

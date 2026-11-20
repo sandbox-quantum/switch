@@ -186,6 +186,41 @@ class TestTheRunningGaugeSaysWhichPlatform:
         assert sum(service.running_by_platform().values()) == service.running_count()
 
 
+class TestTheCrashedListNamesTheBridge:
+    def _service(self, alive: set[str]) -> CollaborationBridgeLifecycleService:
+        service = object.__new__(CollaborationBridgeLifecycleService)
+        service._started = {"a", "b", "c"}  # type: ignore[attr-defined]
+        service._bridges = {b: object() for b in alive}  # type: ignore[attr-defined]
+        service._tasks = {b: _DoneTask(b not in alive) for b in "abc"}  # type: ignore[attr-defined]
+        service._bridge_facts = {  # type: ignore[attr-defined]
+            "a": ("slack", None),
+            "b": ("teams", None),
+            "c": ("discord", None),
+        }
+        service._bridge_names = {  # type: ignore[attr-defined]
+            "a": "SandboxAQ Dev",
+            "b": "SAQ Teams",
+            "c": "Design Discord",
+        }
+        return service
+
+    def test_it_lists_each_dead_bridge_by_platform_and_name(self) -> None:
+        assert self._service(alive={"a"}).crashed() == [
+            ("teams", "SAQ Teams"),
+            ("discord", "Design Discord"),
+        ]
+
+    def test_it_is_empty_while_every_bridge_runs(self) -> None:
+        assert self._service(alive={"a", "b", "c"}).crashed() == []
+
+    def test_it_agrees_with_the_running_count(self) -> None:
+        """Two signals from the same fact must not disagree on how many are down."""
+        service = self._service(alive={"b"})
+        assert (
+            len(service.crashed()) == service.expected_count() - service.running_count()
+        )
+
+
 class _DoneTask:
     def __init__(self, done: bool) -> None:
         self._done = done

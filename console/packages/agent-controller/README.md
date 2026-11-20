@@ -37,16 +37,15 @@ relay accepts.
 - Node 22.13 or later. The store uses the built-in `node:sqlite`.
 - Each provider CLI the agents use, installed on `PATH` and signed in as the user
   the controller runs as (`claude`, `codex`, `opencode`, `agent`/`cursor-agent`,
-  `agy`), or its API key in the `--env-file` the controller runs with.
-- A Switch server with the `agent_management` feature flag on
-  (`FEATURE_FLAGS_ENABLED=agent_management`). Behind a proxy or ingress,
-  `/v1` must reach switch-core (the Helm chart routes it).
+  `agy`, `pi`, `kiro-cli`, `vibe-acp`, `junie`), or its API key in the `--env-file` the controller runs with.
+- A Switch server. Behind a proxy or ingress, `/v1` must reach switch-core
+  (the Helm chart routes it).
 
 ## Install
 
 Each `switch-agent-controller-v*` release on GitHub carries one npm package, the CLI
 and the shared-host bundle it runs agents with, with no dependencies. The gateway's
-Machines page shows the one command that installs it, enrolls the machine and starts
+Devices page shows the one command that installs it, enrolls the machine and starts
 it as a service:
 
 ```bash
@@ -99,7 +98,7 @@ switch-agent-controller update [--check]
   through the controller's relay.
 - `--name` defaults to the host name.
 - `--description` says what the machine is for (optional, at most 500
-  characters). Its owner sees it in the gateway's Machines page, where both the
+  characters). Its owner sees it in the gateway's Devices page, where both the
   name and the description can be changed later, and so do the agents allowed
   to manage agents for that owner.
 - `set-info` changes the machine's name and/or description on the server after
@@ -314,7 +313,7 @@ when there is none. From then on the provider is reported ready with
   Antigravity) is written by the agent host in its own state. The agent runs in
   a process of its own, as a separate user under `--separate-users`, and is
   restarted when the login changes or is withdrawn.
-- Claude can also be given a Vertex AI login: a Google Cloud project, a region,
+- Claude and Antigravity can also be given a Vertex AI login: a Google Cloud project, a region,
   and a Google credential, either a service account key (recommended: one for a
   service account that can use only Vertex AI, `roles/aiplatform.user`) or the
   owner's own `gcloud auth application-default login` sign-in, which carries
@@ -323,7 +322,11 @@ when there is none. From then on the provider is reported ready with
   agent's environment gets `CLAUDE_CODE_USE_VERTEX=1`,
   `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and
   `GOOGLE_APPLICATION_CREDENTIALS` pointing at that file, with
-  `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` blanked.
+  `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` blanked. Antigravity (Google's
+  `agy` CLI only, not the retired `antigravity-acp`) gets `AGY_ADC_AUTH=true`,
+  `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_QUOTA_PROJECT` (the project),
+  `GOOGLE_CLOUD_LOCATION` (the region) and the same
+  `GOOGLE_APPLICATION_CREDENTIALS`, with `GEMINI_API_KEY` blanked.
 - Logins are kept in memory only, and fetched again every ten minutes and on
   each `provider.login` and `provider.recheck`. When Switch cannot be reached,
   the login already held is kept.

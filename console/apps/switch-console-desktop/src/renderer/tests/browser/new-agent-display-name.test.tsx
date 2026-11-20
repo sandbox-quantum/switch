@@ -44,7 +44,7 @@ afterEach(async () => {
 async function mountForm(): Promise<() => ConfigureAgentFormState> {
   let latest: ConfigureAgentFormState | null = null;
   function Probe() {
-    latest = useConfigureAgentForm(null);
+    latest = useConfigureAgentForm(null, null);
     return null;
   }
   container = document.createElement('div');
@@ -109,6 +109,47 @@ describe('the display name on a new agent', () => {
     expect(form().displayName).toBe('');
   });
 
+  it('follows a name changed after the suggestion was taken (bug 18)', async () => {
+    // The display name is not on the form, so one left behind by an earlier
+    // name is invisible: the agent would be created labelled as the name it
+    // no longer has, and read as a twin of any agent that does have it.
+    const form = await mountForm();
+
+    await act(async () => form().setAgentName('Mo Scratch Helper'));
+    await act(async () => form().acceptSuggestedName());
+    expect(form().agentName).toBe('mo-scratch-helper');
+    expect(form().displayName).toBe('Mo Scratch Helper');
+
+    await act(async () => form().setAgentName('mo-second-helper'));
+
+    expect(form().agentName).toBe('mo-second-helper');
+    expect(form().displayName).toBe('Mo Second Helper');
+  });
+
+  it('takes the typed text again when a second suggestion is taken', async () => {
+    const form = await mountForm();
+
+    await act(async () => form().setAgentName('Mo Scratch Helper'));
+    await act(async () => form().acceptSuggestedName());
+    await act(async () => form().setAgentName('Mo Second Helper'));
+    expect(form().displayName).toBe('Mo Second Helper');
+    await act(async () => form().acceptSuggestedName());
+
+    expect(form().agentName).toBe('mo-second-helper');
+    expect(form().displayName).toBe('Mo Second Helper');
+  });
+
+  it('keeps a display name the user wrote when the name changes', async () => {
+    const form = await mountForm();
+
+    await act(async () => form().setAgentName('Mo Scratch Helper'));
+    await act(async () => form().acceptSuggestedName());
+    await act(async () => form().setDisplayName('Scratch'));
+    await act(async () => form().setAgentName('mo-second-helper'));
+
+    expect(form().displayName).toBe('Scratch');
+  });
+
   it('does nothing when there is no suggestion to accept', async () => {
     const form = await mountForm();
 
@@ -135,7 +176,7 @@ afterEach(async () => {
 });
 
 function Fields() {
-  domForm = useConfigureAgentForm(null);
+  domForm = useConfigureAgentForm(null, null);
   return <AgentIdentityFields form={domForm} serverId={null} nameTaken={false} />;
 }
 
@@ -182,5 +223,16 @@ describe('the identity fields in the DOM', () => {
 
     expect(domForm?.agentName).toBe('switch-dev');
     expect(domForm?.displayName).toBe('Switch Dev');
+  });
+
+  it('carry the display name along when the name is edited after the suggestion', async () => {
+    const el = await renderFields();
+
+    await typeName(el, 'Mo Scratch Helper');
+    await act(async () => suggestionButton(el)!.click());
+    await typeName(el, 'mo-second-helper');
+
+    expect(domForm?.agentName).toBe('mo-second-helper');
+    expect(domForm?.displayName).toBe('Mo Second Helper');
   });
 });

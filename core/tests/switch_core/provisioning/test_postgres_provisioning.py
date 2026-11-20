@@ -355,6 +355,107 @@ class TestMembership:
         assert woken == [transport_room_id]
 
 
+class TestDepartures:
+    """A removal writes the departure that explains it, as a join writes the
+    arrival: once, by whichever call removed the row, as facts only."""
+
+    async def _member(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[str, str, str, PostgresProvisioning]:
+        async with session_factory() as session:
+            room = await _room(session)
+            client = await _client(session, "nova")
+            await session.commit()
+            room_id, transport_room_id = room.id, room.transport_room_id
+            user_id = client.transport_user_id
+        provisioning = _provisioning(session_factory)
+        await provisioning.invite_to_room(transport_room_id, user_id)
+        return room_id, transport_room_id, user_id, provisioning
+
+    async def _memberships(
+        self, session_factory: async_sessionmaker[AsyncSession], room_id: str
+    ) -> list[dict[str, Any]]:
+        async with session_factory() as session:
+            rows = await MessageStore().list_for_room(
+                session, room_id, after_seq=0, limit=10
+            )
+        assert all(row.event_type == MEMBERSHIP_EVENT_TYPE for row in rows)
+        assert all(row.body is None for row in rows)
+        return [dict(row.content or {}) for row in rows]
+
+    async def test_a_removal_is_written_as_a_departure(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, transport_room_id, user_id, provisioning = await self._member(
+            session_factory
+        )
+
+        await provisioning.kick_user(transport_room_id, user_id)
+
+        contents = await self._memberships(session_factory, room_id)
+        assert [c["membership"] for c in contents] == ["join", "leave"]
+        assert contents[1]["displayname"] == "nova"
+        assert "removed_by" not in contents[1]
+
+    async def test_a_departure_names_who_removed_them(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, transport_room_id, user_id, provisioning = await self._member(
+            session_factory
+        )
+
+        await provisioning.kick_user(transport_room_id, user_id, removed_by="Rita")
+
+        contents = await self._memberships(session_factory, room_id)
+        assert contents[-1]["removed_by"] == "Rita"
+
+    async def test_a_member_removed_twice_leaves_once(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, transport_room_id, user_id, provisioning = await self._member(
+            session_factory
+        )
+
+        await provisioning.kick_user(transport_room_id, user_id)
+        await provisioning.kick_user(transport_room_id, user_id)
+
+        contents = await self._memberships(session_factory, room_id)
+        assert [c["membership"] for c in contents] == ["join", "leave"]
+
+    async def test_an_unannounced_removal_writes_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, transport_room_id, user_id, provisioning = await self._member(
+            session_factory
+        )
+
+        await provisioning.kick_user(transport_room_id, user_id, announce=False)
+
+        contents = await self._memberships(session_factory, room_id)
+        assert [c["membership"] for c in contents] == ["join"]
+
+    async def test_a_departure_recorded_in_the_callers_transaction(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`record_leave` removes and announces with the caller's other
+        writes, and the `kick_user` that follows does not announce again."""
+        room_id, transport_room_id, user_id, provisioning = await self._member(
+            session_factory
+        )
+
+        async with session_factory() as session:
+            committed = await provisioning.record_leave(
+                session, transport_room_id, user_id, removed_by="Rita"
+            )
+            await session.commit()
+        committed()
+        await provisioning.kick_user(transport_room_id, user_id)
+
+        contents = await self._memberships(session_factory, room_id)
+        assert [c["membership"] for c in contents] == ["join", "leave"]
+        assert contents[1]["removed_by"] == "Rita"
+
+
 class TestTwoTenantsSharingAHandle:
     """Two admin clients, one handle, and the invitation that used to go to
     the wrong one.

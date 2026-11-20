@@ -1,10 +1,12 @@
 import { Loader2 } from 'lucide-react';
 import { useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import type { HostDependencyInstallation } from '@renderer/lib/stores/use-agent-installation-statuses';
 import { Alert } from '@renderer/lib/ui/alert';
 import { Input } from '@renderer/lib/ui/input';
 import type { Installation } from '@shared/core/providers/agent-payload';
 import { CommandActionButton } from './install-command-row';
+import { overrideProblem } from './installation-sources';
 
 export type InstallationOverrideCardProps = {
   vm: HostDependencyInstallation;
@@ -26,14 +28,19 @@ export function InstallationOverrideCard({
 }: InstallationOverrideCardProps) {
   const [value, setValue] = useState(initialValue);
   const [isChecking, setIsChecking] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
 
   const handleValidate = async () => {
     setIsChecking(true);
+    setProblem(null);
     onChecking(true);
     try {
       const selection = kind === 'path' ? { path: value } : { cli: value };
       const result = await vm.probeOverride(selection);
+      setProblem(overrideProblem(kind, value, result ?? null));
       onResolved(result ?? null);
+    } catch (error) {
+      setProblem(failureText(error, `Could not check ${value.trim()}.`));
     } finally {
       setIsChecking(false);
       onChecking(false);
@@ -46,13 +53,17 @@ export function InstallationOverrideCard({
     <div className="space-y-2 rounded-lg border p-3">
       <Input
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => {
+          setValue(e.target.value);
+          setProblem(null);
+        }}
         placeholder={
           kind === 'path' ? '/usr/local/bin/claude' : kind === 'cli' ? 'claude' : undefined
         }
         className="font-mono text-sm"
         disabled={isChecking}
       />
+      {problem && <Alert variant="destructive">{problem}</Alert>}
       <Alert variant="warning">
         {kind === 'path'
           ? "Using an absolute path to the agent binary overrides auto-resolution and disables Switch Console's ability to update the agent."

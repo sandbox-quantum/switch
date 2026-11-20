@@ -1,8 +1,9 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { devRoleAccounts } from "./scripts/dev-role-accounts.mjs";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), devRoleAccounts(new URL(".dev-role-accounts.json", import.meta.url))],
   build: { outDir: "dist" },
   server: {
     proxy: {

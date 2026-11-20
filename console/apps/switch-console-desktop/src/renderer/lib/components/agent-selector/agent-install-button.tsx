@@ -45,22 +45,24 @@ export function AgentInstallButton({
   return (
     <TooltipProvider delay={150}>
       <Tooltip>
-        <TooltipTrigger>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            disabled={disabled || state.disabled}
-            aria-label={state.label}
-            onClick={onInstall}
-            className={cn('ml-auto cursor-pointer', className)}
-          >
-            <InstallIcon
-              className={cn('h-3 w-3', state.installing && 'animate-spin')}
-              aria-hidden="true"
-            />
-          </Button>
-        </TooltipTrigger>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              disabled={disabled || state.disabled}
+              aria-label={state.label}
+              onClick={onInstall}
+              className={cn('ml-auto cursor-pointer', className)}
+            >
+              <InstallIcon
+                className={cn('h-3 w-3', state.installing && 'animate-spin')}
+                aria-hidden="true"
+              />
+            </Button>
+          }
+        />
         <TooltipContent side={tooltipSide} className="text-xs">
           {state.label}
         </TooltipContent>

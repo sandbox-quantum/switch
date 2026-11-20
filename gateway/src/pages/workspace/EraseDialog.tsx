@@ -103,7 +103,7 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
               </DialogContentText>
               <DialogContentText>
                 What other people wrote, including replies that quote them, is kept. Copies a
-                chat app received are not deleted; remove those in the app. Their Switch account
+                messaging app received are not deleted; remove those in the app. Their Switch account
                 and membership, if any, are not affected, and they can go on writing.
               </DialogContentText>
             </>
@@ -116,7 +116,7 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
               </DialogContentText>
               <DialogContentText>
                 What other people wrote, including replies that quote them, is kept. Copies in{" "}
-                {person.bridge_name ?? "the disconnected app"} and other chat apps are not
+                {person.bridge_name ?? "the disconnected app"} and other messaging apps are not
                 deleted; remove those in the app. Their Switch account and membership, if any,
                 are not affected.
               </DialogContentText>

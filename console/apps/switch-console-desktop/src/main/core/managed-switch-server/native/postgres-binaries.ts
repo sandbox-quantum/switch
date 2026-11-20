@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
 import { findExecutableOnPath } from '@main/core/utils/resolve-executable';
 import { log } from '@main/lib/logger';
-import type { LocalServerBundle } from './bundle';
+import { bundleCopyHolding, type LocalServerBundle } from './bundle';
 import { installPinnedArchive } from './download';
 import { exe, type NativeLayout } from './native-paths';
 import {
@@ -14,6 +14,7 @@ import {
   POSTGRES_MAJOR,
   POSTGRES_VERSION,
   postgresArchive,
+  VC_RUNTIME_DLLS,
 } from './toolchain-pins';
 
 const execFileAsync = promisify(execFile);
@@ -35,6 +36,46 @@ export type PostgresBinaries = {
 
 const REQUIRED = ['initdb', 'pg_ctl', 'postgres'] as const;
 const CHOICE_FILE = 'postgres.json';
+
+export const VC_REDIST_URL = 'https://aka.ms/vs/17/release/vc_redist.x64.exe';
+
+/** The VC++ runtime DLLs neither `binDir` nor System32 has, which is where
+ * Windows looks for them when loading `binDir`'s binaries. */
+export async function missingVcRuntimeDlls(
+  binDir: string,
+  systemRoot: string | undefined = process.env.SystemRoot
+): Promise<string[]> {
+  const searched = [binDir];
+  if (systemRoot) searched.push(path.join(systemRoot, 'System32'));
+  const missing: string[] = [];
+  for (const dll of VC_RUNTIME_DLLS) {
+    let found = false;
+    for (const dir of searched) {
+      try {
+        await access(path.join(dir, dll), constants.F_OK);
+        found = true;
+        break;
+      } catch {
+        // Not in this folder; Windows looks in the next.
+      }
+    }
+    if (!found) missing.push(dll);
+  }
+  return missing;
+}
+
+/** Throw a fix-it error when PostgreSQL in `binDir` cannot run because the
+ * VC++ runtime is missing, instead of a bare "does not run". */
+async function assertVcRuntime(binDir: string): Promise<void> {
+  if (process.platform !== 'win32') return;
+  const missing = await missingVcRuntimeDlls(binDir);
+  if (missing.length === 0) return;
+  throw new Error(
+    `PostgreSQL cannot start because this computer is missing the Microsoft Visual C++ ` +
+      `Redistributable (${missing.join(', ')} not found). Install it from ${VC_REDIST_URL}, ` +
+      `then start the server again.`
+  );
+}
 
 export function postgresBin(binaries: Pick<PostgresBinaries, 'binDir'>, name: string): string {
   return path.join(binaries.binDir, exe(name));
@@ -277,6 +318,7 @@ async function downloadPostgres(
     await hydrateSymlinks(root);
     const major = await probeBinDir(binDir);
     if (major !== POSTGRES_MAJOR) {
+      await assertVcRuntime(binDir);
       throw new Error(
         `The downloaded PostgreSQL in ${root} does not run (it reported major ${major ?? 'none'}).`
       );
@@ -290,8 +332,10 @@ async function downloadPostgres(
  *
  * The cluster's major decides it once there is one: a data directory only runs
  * under the major that created it, so an installed copy of another major is
- * passed over, and the one used last time is preferred while it still works.
- * Without a cluster, the newest supported installed copy wins; with none
+ * passed over, and the one used last time is preferred while it still works,
+ * except a copy from an older bundle, which gives way to this build's copy of
+ * the same major: older bundles are removed once a start succeeds, and a
+ * server left running from one would lose its files. Without a cluster, the newest supported installed copy wins; with none
  * installed, the one the app ships, and in a build that ships none (a dev
  * build), the pinned portable build is downloaded.
  */
@@ -311,6 +355,20 @@ export async function resolvePostgres(
   const previous = await readChoice(layout);
   const supported = (major: number) => major >= MIN_POSTGRES_MAJOR && major <= MAX_POSTGRES_MAJOR;
   if (previous && supported(previous.major) && (required === null || previous.major === required)) {
+    if (
+      previous.binDir !== bundle?.postgresBinDir &&
+      bundleCopyHolding(layout.toolchain, previous.binDir) !== null
+    ) {
+      const bundled = await bundledPostgres(bundle);
+      if (bundled !== null && bundled.major === previous.major) {
+        log.info(
+          `local-switch-server: moving PostgreSQL ${previous.major} from ${previous.binDir} to ` +
+            `this build's copy in ${bundled.binDir}`
+        );
+        await recordChoice(layout, bundled);
+        return bundled;
+      }
+    }
     if ((await probeBinDir(previous.binDir)) === previous.major) return previous;
     log.warn('local-switch-server: the PostgreSQL used last time is gone; looking again', {
       binDir: previous.binDir,
@@ -323,6 +381,9 @@ export async function resolvePostgres(
   );
   const bundled = await bundledPostgres(bundle);
   let chosen: PostgresBinaries;
+  if (installed.length === 0 && bundled === null && bundle?.postgresBinDir != null) {
+    await assertVcRuntime(bundle.postgresBinDir);
+  }
   if (installed.length > 0) {
     chosen = installed[0];
   } else if (bundled !== null && (required === null || bundled.major === required)) {

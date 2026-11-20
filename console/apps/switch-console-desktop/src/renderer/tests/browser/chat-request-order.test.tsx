@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
+import { NO_ENTRANCE } from '@renderer/features/chats/chat-entrance';
 import { ChatTimelineView } from '@renderer/features/chats/components/chat-timeline';
 import {
   type ActivityApi,
@@ -104,11 +105,12 @@ function message(seq: number, second: number, body: string, agentId: string | nu
     mentions: [],
     threadReplyCount: 0,
     threadLastReplySeq: null,
+    kickoff: null,
   };
 }
 
 it('shows the question form after the text the turn posted, in reading order', async () => {
-  // The turn ran a tool before it posted, so the turn itself shows under the person's message.
+  // The turn ran a tool before it posted its latest reply.
   const items = [item('turn', 1, 'running'), item('tool1', 2, 'completed', 'Bash ls')];
   const api: ActivityApi = {
     resolve: async () => ({
@@ -152,6 +154,7 @@ it('shows the question form after the text the turn posted, in reading order', a
           people={[]}
           activities={[activity]}
           onReply={() => {}}
+          entrance={NO_ENTRANCE}
         />
       </QueryClientProvider>
     )
@@ -159,10 +162,14 @@ it('shows the question form after the text the turn posted, in reading order', a
 
   const text = container.textContent ?? '';
   expect(text).toContain('Which agent would you like me to set up?');
-  // The turn's work log still sits under the person's message, above the agent's text.
-  const workLog = container.querySelector('[data-turn-id="t1"]')!;
-  expect(text.indexOf(workLog.textContent ?? '')).toBeLessThan(text.indexOf('Here are two agents'));
-  expect(workLog.textContent).not.toContain('Which agent would you like me to set up?');
+  // The step the turn took before its replies shows above them; the running
+  // turn's state follows the latest reply, with the open question.
+  const [steps, workLog] = [...container.querySelectorAll('[data-turn-id="t1"]')];
+  expect(text.indexOf(steps.textContent ?? '')).toBeLessThan(
+    text.indexOf('Here are two agents that could help.')
+  );
+  expect(text.indexOf(workLog.textContent ?? '')).toBeGreaterThan(text.indexOf('Pick one below.'));
+  expect(workLog.textContent).toContain('Which agent would you like me to set up?');
   expect(text.indexOf('Pick one below.')).toBeLessThan(
     text.indexOf('Which agent would you like me to set up?')
   );

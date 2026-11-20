@@ -8,8 +8,7 @@ where it deliberately stops short.
 
 ## Shape
 
-- **Management** (Core package `switch_core/management/`, off unless the
-  `agent_management` feature flag is on): the source of truth for managed agents. It holds agent
+- **Management** (Core package `switch_core/management/`, always on): the source of truth for managed agents. It holds agent
   definitions, which controller each one runs on, controller enrollment and credentials,
   controller status, and operations.
 - **Agent controller** (`console/packages/agent-controller`, a Node CLI): one per
@@ -33,11 +32,10 @@ where it deliberately stops short.
 ## Core
 
 ### Config (`config.py`)
-- `agent_management_enabled`: whether the `agent_management` feature flag is on
-  (`FEATURE_FLAGS_ENABLED`). `AGENT_MANAGEMENT_ENABLED=true`, the setting it replaced,
-  stops startup.
-- `controller_token_secret: str | None = None` (`CONTROLLER_TOKEN_SECRET`). **Required
-  when the flag is on**: a model validator raises if it is missing or shorter than 32 chars. It is
+- Agent management is always on. The `agent_management` feature flag is still accepted.
+  `AGENT_MANAGEMENT_ENABLED=true`, the setting it replaced, stops startup.
+- `controller_token_secret: str | None = None` (`CONTROLLER_TOKEN_SECRET`). **Required**:
+  a model validator raises if it is missing or shorter than 32 chars. It is
   separate from `jwt_secret_key` on purpose.
 - `controller_status_interval_seconds: int = 60`. Returned to controllers as `report_within_s`.
   Placement needs a status within 3 intervals. Whether a machine is online is read from its
@@ -131,11 +129,15 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
     A controller resyncs fully on every reconnect.
 
 ### Gateway routes (cookie, `get_current_user`, owner-only)
-- `POST   /gateway/management/enrollment-codes` returns `{code, expires_at, server_url}`.
+- `POST   /gateway/management/enrollment-codes` returns `{code, expires_at, server_url, remote_devices}`.
   `server_url` is the agent bridge's public origin (`GATEWAY_PUBLIC_URL`), the
   `--server` to enroll with, or null when it is not configured; the gateway
   page's own address is not a stand-in, since a gateway need not serve the
-  agent bridge.
+  agent bridge. `remote_devices` is `{supported, reason}`: whether a device
+  other than the one Switch runs on could enroll at all. It is false, with a
+  reason to show, on a server Switch Console runs and when `server_url` is a
+  loopback address; the code is issued either way, since Console enrolls the
+  SSH hosts it sets up with one.
 - `POST   /gateway/management/controllers`
   - Console enrollment by a signed-in user.
   - Body: `{name, description?, kind:"console", platform, version, public_key?}`.

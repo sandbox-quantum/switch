@@ -29,11 +29,17 @@ export const SessionSidebarTrailingSlot = observer(function SessionSidebarTraili
     return (
       <Slot>
         <Tooltip>
-          <TooltipTrigger>
-            <span className="flex size-6 items-center justify-center">
-              <Spinner className="size-3.5 text-foreground-muted" />
-            </span>
-          </TooltipTrigger>
+          <TooltipTrigger
+            render={
+              <span
+                role="img"
+                aria-label="Creating session…"
+                className="flex size-6 items-center justify-center"
+              >
+                <Spinner className="size-3.5 text-foreground-muted" />
+              </span>
+            }
+          />
           <TooltipContent>Creating session…</TooltipContent>
         </Tooltip>
       </Slot>

@@ -15,11 +15,10 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from switch_core.feature_flags import (
-    AGENT_CHATS,
-    AGENT_MANAGEMENT,
+    ALWAYS_ON_FEATURE_FLAGS,
     BUDDY_SLACK_HANDOFF,
+    DECISION_ROUTING,
     FOLLOW_THE_CONVERSATION,
-    GROUP_CHATS,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
     ORGANIZATION_CONNECTOR_APPS,
@@ -89,6 +88,8 @@ def _require_matching_keypair(
 
 # A connection catalog slug (`connections/loader.py`, SLUG_PATTERN).
 _SERVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+# Where a service's sign-ins come back (`connections/loader.py`, RedirectMode).
+_RedirectMode = Literal["loopback", "core"]
 
 # The version shape the controller's package script accepts: a release's
 # x.y.z, or a dev build's x.y.z-<prerelease> (0.31.1-dev.412.gabc1234).
@@ -232,9 +233,9 @@ class SwitchConfig(BaseSettings):
     outbound_allowed_private_hosts: str = ""
 
     # Feature flags that are on for this deployment: comma-separated keys from
-    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off. Fixed for
-    # the life of the process; an unknown key is a startup error rather than a
-    # silently ignored typo.
+    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off, except the
+    # `ALWAYS_ON_FEATURE_FLAGS`. Fixed for the life of the process; an unknown
+    # key is a startup error rather than a silently ignored typo.
     feature_flags_enabled: str = ""
     # Set by Switch Console on a server it runs for someone (MANAGED_BY_CONSOLE),
     # so an agent can tell them apart from Switch Cloud and a self-hosted server.
@@ -245,9 +246,44 @@ class SwitchConfig(BaseSettings):
     # counts as a follow-up to it.
     follow_the_conversation_window_seconds: int = Field(default=300, ge=1, le=3600)
 
-    # Gateway admin seed
+    # Decision routing (feature flag `decision_routing`): the decision service
+    # Switch asks who should answer a message no rule delivered to anyone
+    # (`POST {DECISION_ENDPOINT_URL}`). These are the server default, used by
+    # every workspace that has not chosen a backend of its own in Switch
+    # Console (`decision_settings`); with no endpoint and no choice, auto-route
+    # is unavailable in that workspace and no message is sent anywhere. The
+    # key, when set, is sent as a bearer token. The timeout applies to every
+    # workspace's backend.
+    decision_endpoint_url: str | None = None
+    decision_api_key: str | None = None
+    decision_timeout_seconds: float = 5.0
+    # Whether a workspace may choose Haiku on Amazon Bedrock, which runs in the
+    # server's decision service on the server's own AWS credentials.
+    decision_bedrock_enabled: bool = False
+    # A message still waiting for a decision after this long (a restart, a
+    # long outage) is dropped and logged rather than answered late.
+    decision_pending_max_age_seconds: int = Field(default=120, ge=1, le=3600)
+    # How many tenants' waiting decisions each process's sweep settles at
+    # once, so one tenant with a slow backend does not hold up the others.
+    decision_sweep_concurrency: int = Field(default=4, ge=1, le=64)
+
+    @field_validator(
+        "decision_endpoint_url",
+        "decision_api_key",
+        "gateway_signup_refused_header",
+        mode="before",
+    )
+    @classmethod
+    def _blank_setting_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    # Gateway admin seed. The password is the seeded admin's password-login
+    # credential, so it is required only while password login is on; without
+    # it the admin is seeded with no password and signs in through OIDC.
     gateway_admin_email: str
-    gateway_admin_password: str
+    gateway_admin_password: str | None = None
 
     # OIDC (optional — enables OAuth token validation on the MCP server).
     # The audience is required with the issuer: without it, a token the same
@@ -315,10 +351,49 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # Sign-ups from one client address in an hour, in front of the cap above,
+    # so that one client cannot spend everyone's (`gateway/login_limits.py`).
+    gateway_signup_max_per_hour_per_address: int = Field(default=5, ge=1)
+    # Password sign-in guessing (`gateway/login_limits.py`). Failures with one
+    # email address, whether or not an account has it, lock it out for
+    # `gateway_login_lock_minutes` once there are this many within the window,
+    # and the few before that make each next attempt wait a little longer. A
+    # client address may fail more often, as many people can share one. A
+    # success clears the email's count; the operator can clear it too
+    # (`DELETE /users/{id}/sign-in-lock`). Kept in the `auth_attempts` table,
+    # so the counts hold across replicas. Behind a proxy, client addresses are
+    # counted only once uvicorn trusts the proxy (`FORWARDED_ALLOW_IPS`).
+    #
+    # The per-email lock is a trade-off, made on purpose: since failures from
+    # anywhere count, anyone who knows a person's email can pause that
+    # person's password sign-in for `gateway_login_lock_minutes` by failing
+    # `gateway_login_max_failures` times with it, and keep it paused by
+    # repeating that. It never touches their sessions or single sign-on.
+    # Raising `gateway_login_max_failures` or shortening
+    # `gateway_login_lock_minutes` makes such a lock cheaper to sit out and
+    # costlier to keep up, at the price of more guesses at a password;
+    # lowering them does the reverse. `switch.auth.sign_in_lockouts` counts
+    # the lock-outs, so a run of them aimed at one person shows.
+    gateway_login_max_failures: int = Field(default=10, ge=1)
+    gateway_login_max_failures_per_address: int = Field(default=50, ge=1)
+    gateway_login_failure_window_minutes: int = Field(default=15, ge=1)
+    gateway_login_lock_minutes: int = Field(default=15, ge=1)
+    # The name of a request header that a trusted edge in front of the server
+    # (prod's WAF) adds to requests from countries where new accounts are not
+    # offered. A request carrying it, with any value (empty included), may not
+    # create an account: neither a first OIDC sign-in nor a password sign-up,
+    # the two ways a person creates their own. The edge must therefore add it
+    # only to requests it refuses, never set it to a "no" value for the rest.
+    # Existing accounts sign in as before, and accounts that are not sign-ups
+    # (`switch-accounts create`, the seeded admin, the bootstrap owner) are
+    # unaffected.
+    # Trusting the header's presence is safe, since a client that sends it
+    # only refuses itself; its absence proves nothing, because the edge
+    # decides where a request comes from and this server never checks. Unset
+    # or blank turns the check off.
+    gateway_signup_refused_header: str | None = None
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
-    # Cloud machines run the agent controller, so above 0 this needs the
-    # `agent_management` flag.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
@@ -346,6 +421,34 @@ class SwitchConfig(BaseSettings):
     # ask for some scopes, e.g. {"google-workspace": "drive-file"}. Unknown
     # services or profiles stop the server.
     service_access_profiles: dict[str, str] = Field(default_factory=dict)
+    # Where a service's sign-ins come back, for a catalog entry that lists more
+    # than one way (Atlassian's, Datadog's), as JSON:
+    # {"<slug>": "loopback" | "core"}.
+    # `loopback` is Switch Console's listener on the person's computer; `core`
+    # is this server's own callback,
+    # `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<slug>/flows/callback`,
+    # which a vendor may refuse until its admin allow-lists it (Atlassian: each
+    # site's admin; Datadog: each organization's admin). A service not named comes back the first way its entry
+    # lists. A slug not in the catalog, or a way its entry does not list, stops
+    # the server; `core` without GATEWAY_PUBLIC_URL is a warning at startup,
+    # and that service signs in through loopback where its entry lists it.
+    # Core's callback is registered with a vendor only where sign-ins use it,
+    # so naming `core` for a service whose client Core registers itself, or no
+    # longer naming it, registers a new client, and every connection to that
+    # service on this server must be reconnected once. Set the same value on
+    # every replica: they share one registered client per service.
+    service_sign_in_redirect: dict[str, _RedirectMode] = Field(default_factory=dict)
+    # Whether a connector that takes a credential pasted in place of its
+    # sign-in offers one that never expires (its catalog method says
+    # `expires: never`, such as API and application keys), and hands it to
+    # agents. Off, such a method is not offered, cannot be connected, and a
+    # connection made with one while it was on must be reconnected another
+    # way; a pasted credential its vendor ends (`expires: vendor`, a token
+    # made with an end date) is offered either way. A never-expiring key can
+    # only be revoked at the vendor: disconnecting or removing a grant
+    # forgets it in Switch but leaves it working. An `api_key` catalog entry
+    # stays refused either way.
+    allow_non_expiring_keys: bool = False
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -371,8 +474,8 @@ class SwitchConfig(BaseSettings):
     #   gateway_max_workspaces_per_user.
     #
     # Who may sign in at all is the IdP's decision, not this one: this only
-    # decides where a new account lands. Accounts an administrator creates
-    # (`POST /users`) always join that administrator's workspace.
+    # decides where a new account lands. Accounts the operator creates
+    # (`switch-accounts create`) join no workspace.
     gateway_signup_mode: Literal["default_tenant", "invite_only", "open"] = (
         "default_tenant"
     )
@@ -394,6 +497,12 @@ class SwitchConfig(BaseSettings):
     # an operator provisioning workspaces for other people is not that.
     # docs/old/multi-tenancy-phase2-tenants.md, §5.
     gateway_max_workspaces_per_user: int = 3
+
+    # Test and canary servers only. Lets a person wipe their own account
+    # through `POST /auth/me/reset-test-account`: the messaging apps, rooms,
+    # agents, machines, workspaces and organization they alone are in, and
+    # the account itself. Irreversible. Off everywhere else.
+    gateway_allow_test_account_reset: bool = False
 
     # Who keeps the record of organizations and their members
     # (`organization_directory.py`). "local": this server, in its own tables.
@@ -539,17 +648,20 @@ class SwitchConfig(BaseSettings):
     telemetry_snapshot_interval_hours: float = 24.0
 
     # Which Amplitude project this deployment's usage lands in, sent as
-    # `flint_env`. The relay keeps one project per environment and files an
+    # `switch_trust.env`. The relay keeps one project per environment and files an
     # event naming none, or `prod`, under production — which is what every
-    # customer's deployment is, and why it is the default. Our own non-customer
-    # servers say so here: `dev` for the development deployment, `local` for a
-    # developer's machine (`just init-env` writes it), so their usage never
-    # reads as adoption. Any other value is refused at startup, because the
-    # relay drops an event naming an environment it has no project for.
+    # customer's deployment is, and why it is the default for a release. A
+    # build that is not a release (a `.dev` version) reports as `dev` unless
+    # this is set (`telemetry.setup.telemetry_environment`). Our own
+    # non-customer servers say so here: `dev` for the development deployment,
+    # `local` for a developer's machine (`just init-env` writes it), so their
+    # usage never reads as adoption. Any other value is refused at startup,
+    # because the relay drops an event naming an environment it has no project
+    # for.
     telemetry_environment: Literal["prod", "staging", "dev", "local"] = "prod"
 
     # Whether this deployment is one of the company's own, sent as
-    # `flint_internal` so staff usage can be told from adoption. A customer's
+    # `switch_trust.internal` so staff usage can be told from adoption. A customer's
     # deployment never sets it. Within a deployment, staff accounts are counted
     # separately by email domain whether or not this is set.
     telemetry_internal: bool = False
@@ -596,7 +708,33 @@ class SwitchConfig(BaseSettings):
     # unset, the raw `switchdash://` deeplink is posted as-is. Also the
     # `--server` an agent controller enrolls against, which the gateway's Add
     # machine dialog shows; unset, it shows no enrollment command.
+    #
+    # Connectors send people back here after they sign in at the vendor. A
+    # GitHub App saved under Connector apps is called back at
+    # `<this>/gateway/provider-connections/github/callback`, and GitHub calls
+    # back only to https, or to loopback http (localhost, 127.0.0.1 or ::1), as
+    # a server Switch Console runs has; any other http address leaves GitHub
+    # unavailable here. A connector that signs in through Core's own callback
+    # (Google Workspace, Airtable) is called back at
+    # `<this>/gateway/service-connections/<service>/flows/callback`. Unset,
+    # neither can be set up under Connector apps.
     gateway_public_url: str | None = None
+
+    # Extra origins Switch web's cookie requests may come from, beyond
+    # GATEWAY_PUBLIC_URL, FRONTEND_BASE_URL and the sign-in host: for local
+    # development only (the Vite dev server, `["http://localhost:5173"]`), a
+    # JSON list. Each is scheme://host[:port]; plain http:// only for a
+    # loopback host. Any entry is warned about at start (`origin_check`).
+    gateway_extra_origins: list[str] = []
+
+    @field_validator("gateway_extra_origins")
+    @classmethod
+    def _check_extra_origins(cls, value: list[str]) -> list[str]:
+        from switch_core.gateway.origin_check import check_extra_origin
+
+        if len(value) > 20:
+            raise ValueError("GATEWAY_EXTRA_ORIGINS holds at most 20 origins")
+        return [check_extra_origin(entry) for entry in value]
 
     # The operator dashboard's build output (the `dist/` that `npm run build`
     # writes in gateway/). Set, and switch-core serves the dashboard on its own
@@ -794,6 +932,27 @@ class SwitchConfig(BaseSettings):
     # agent lost, against 161 pool timeouts and 56 agents lost without the
     # gate (dev-abel, 28 Oct 2026). 0 turns it off.
     agent_open_limit: int = Field(default=8, ge=0)
+    # The share of a process's pool (its size and overflow) gateway requests
+    # may hold at once. The rest stays for the process's own work: renewing
+    # its lease, recording controllers' connections, storing and delivering
+    # agents' events. Past it, requests wait their turn and then are answered
+    # 503 (`gateway/admission.py`). Without it, one client sending enough
+    # requests at once fills the pool, and a lease that lapses behind them
+    # drops the process's agents. 0.75 of 30 + 10 is 30, leaving 10.
+    gateway_pool_share: float = Field(default=0.75, gt=0, le=1)
+    # Gateway requests one caller (a signed-in person, a bearer token, or an
+    # address) may run at once in a process, so one caller cannot take the
+    # share everyone's requests run in. Past it, its requests wait their turn
+    # and then are answered 429. A Switch Console sidebar sends two at a
+    # time; one from before `GET /gateway/agents/rooms` sends one per agent,
+    # which queue.
+    gateway_requests_per_caller: int = Field(default=8, ge=1)
+    # The longest one statement of a gateway read (GET or HEAD) may run, a
+    # Postgres interval. A read that slow is a bug or someone loading the
+    # database on purpose, and its client gave up well before: the tailnet's
+    # proxy gives up after about 10 s. It is answered 503. Writes are not
+    # limited, as some do a workspace's worth of work in one statement.
+    gateway_read_statement_timeout: str = "10s"
 
     # Resolving a bearer token to its agent is the highest-frequency query in
     # the system — it runs before every authenticated request, and a fleet of
@@ -829,15 +988,14 @@ class SwitchConfig(BaseSettings):
     # `AGENT_AUTH_CACHE_TTL_SECONDS` or while the signal connection listens.
     room_access_cache_max_entries: int = Field(default=20_000, ge=1)
 
-    # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
-    # Read only to refuse a deployment that still turns it on, which would
-    # otherwise lose agent management without a word.
+    # AGENT_MANAGEMENT_ENABLED, replaced: agent management is always on. Read
+    # only to refuse a deployment that still turns it on.
     legacy_agent_management_enabled: bool | None = Field(
         default=None, validation_alias="agent_management_enabled"
     )
-    # Signs controller access tokens. Required (at least 32 characters) when
-    # agent management is on, and deliberately separate from SECRET_KEYS so
-    # rotating one never invalidates the other.
+    # Signs controller access tokens. Required (at least 32 characters), and
+    # deliberately separate from SECRET_KEYS so rotating one never invalidates
+    # the other.
     controller_token_secret: str | None = None
     # How often a controller must report status. Sent to controllers as
     # `report_within_s`; a controller that has not reported for three of these
@@ -960,22 +1118,14 @@ class SwitchConfig(BaseSettings):
             )
         if self.legacy_agent_management_enabled:
             raise ValueError(
-                "AGENT_MANAGEMENT_ENABLED has been replaced by a feature flag: "
-                f"remove it and add {AGENT_MANAGEMENT!r} to FEATURE_FLAGS_ENABLED."
+                "AGENT_MANAGEMENT_ENABLED has been replaced: remove it. "
+                "Agent management is always on."
             )
-        if not self.agent_management_enabled:
-            if self.hosted_launch_capacity > 0:
-                raise ValueError(
-                    "HOSTED_LAUNCH_CAPACITY needs the "
-                    f"{AGENT_MANAGEMENT!r} feature flag: cloud machines run the "
-                    "agent controller."
-                )
-            return self
         if not self.controller_token_secret:
             raise ValueError(
-                "CONTROLLER_TOKEN_SECRET is required when the "
-                f"{AGENT_MANAGEMENT!r} feature flag is on: it signs the access "
-                "tokens agent controllers use."
+                "CONTROLLER_TOKEN_SECRET is required: it signs the access "
+                "tokens agent controllers use. Set it to a random value of at "
+                "least 32 characters."
             )
         if len(self.controller_token_secret) < 32:
             raise ValueError(
@@ -1304,6 +1454,42 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_decision_routing(self) -> "SwitchConfig":
+        if self.decision_endpoint_url is not None and urlsplit(
+            self.decision_endpoint_url
+        ).scheme not in ("http", "https"):
+            raise ValueError(
+                "DECISION_ENDPOINT_URL must be an http or https URL, got "
+                f"{self.decision_endpoint_url!r}."
+            )
+        if self.decision_timeout_seconds <= 0:
+            raise ValueError(
+                "DECISION_TIMEOUT_SECONDS must be positive, got "
+                f"{self.decision_timeout_seconds!r}."
+            )
+        if (
+            self.feature_flags[DECISION_ROUTING]
+            and not self.feature_flags[FOLLOW_THE_CONVERSATION]
+        ):
+            raise ValueError(
+                f"The {DECISION_ROUTING!r} feature flag needs "
+                f"{FOLLOW_THE_CONVERSATION!r} in FEATURE_FLAGS_ENABLED as well: "
+                "it asks about the messages the follow-the-conversation rules "
+                "leave with nobody."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_admin_password(self) -> "SwitchConfig":
+        if self.gateway_password_login_enabled and not self.gateway_admin_password:
+            raise ValueError(
+                "GATEWAY_ADMIN_PASSWORD is required while password login is "
+                "enabled. Set it, or set GATEWAY_PASSWORD_LOGIN_ENABLED=false "
+                "to seed the admin without a password and sign in through OIDC."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_oauth_audience(self) -> "SwitchConfig":
         if self.oauth_issuer_url and not self.oauth_audience:
             raise ValueError(
@@ -1340,8 +1526,9 @@ class SwitchConfig(BaseSettings):
 
     @property
     def feature_flags(self) -> dict[str, bool]:
-        """Every known flag and whether this deployment turned it on."""
-        enabled = self._enabled_feature_flags()
+        """Every known flag and whether this deployment turned it on, or
+        whether it is on whatever the deployment says."""
+        enabled = self._enabled_feature_flags() | ALWAYS_ON_FEATURE_FLAGS
         return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
 
     @property
@@ -1353,10 +1540,6 @@ class SwitchConfig(BaseSettings):
         if self.managed_by_console:
             return "managed_by_console"
         return "self_hosted"
-
-    @property
-    def agent_management_enabled(self) -> bool:
-        return self.feature_flags[AGENT_MANAGEMENT]
 
     @property
     def hosted_agents_enabled(self) -> bool:
@@ -1375,12 +1558,8 @@ class SwitchConfig(BaseSettings):
         return self.feature_flags[FOLLOW_THE_CONVERSATION]
 
     @property
-    def agent_chats_enabled(self) -> bool:
-        return self.feature_flags[AGENT_CHATS]
-
-    @property
-    def group_chats_enabled(self) -> bool:
-        return self.feature_flags[GROUP_CHATS]
+    def decision_routing_enabled(self) -> bool:
+        return self.feature_flags[DECISION_ROUTING]
 
     @property
     def buddy_slack_handoff_enabled(self) -> bool:
@@ -1425,6 +1604,22 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_gateway_admission(self) -> "SwitchConfig":
+        if not _PG_INTERVAL_RE.match(self.gateway_read_statement_timeout):
+            raise ValueError(
+                "GATEWAY_READ_STATEMENT_TIMEOUT must be a Postgres interval such "
+                "as '10s', '500ms' or a bare count of milliseconds, got "
+                f"{self.gateway_read_statement_timeout!r}."
+            )
+        return self
+
+    @property
+    def gateway_requests_at_once(self) -> int:
+        """Gateway requests a process runs at once (`gateway_pool_share`)."""
+        pool = self.db_pool_size + self.db_max_overflow
+        return max(1, int(pool * self.gateway_pool_share))
+
+    @model_validator(mode="after")
     def _validate_github_app(self) -> "SwitchConfig":
         if (self.github_app_config_path is None) != (
             self.github_app_private_key_path is None
@@ -1465,6 +1660,15 @@ class SwitchConfig(BaseSettings):
                 raise ValueError(
                     f"SERVICE_ACCESS_PROFILES names an invalid profile for {slug}: "
                     f"{profile!r}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_service_sign_in_redirect(self) -> "SwitchConfig":
+        for slug in self.service_sign_in_redirect:
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
+                raise ValueError(
+                    f"SERVICE_SIGN_IN_REDIRECT names an invalid service: {slug!r}"
                 )
         return self
 

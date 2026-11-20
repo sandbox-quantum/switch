@@ -138,6 +138,7 @@ describe('shownDirectory', () => {
     local: null,
     workspacesDir: '/srv/workspaces/',
     os: null,
+    lastSeenAt: null,
   };
   const unset = { ...AGENT, definition: { ...AGENT.definition, directory: null } };
   const reported = {

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import {
   generateSealingKeyPair,
+  providerRuntimeIds,
   providerUnsupportedReason,
   sealProviderLogin,
 } from '@switch-console/agent-providers';
@@ -294,6 +295,9 @@ describe('providerStatusFrom', () => {
   });
 });
 
+// Every provider the controller runs is checked, whatever their number.
+const PROVIDERS = providerRuntimeIds().length;
+
 describe('ProviderStatuses', () => {
   it('checks each provider at most once per TTL, and reports changes', async () => {
     let clock = NOW;
@@ -312,20 +316,38 @@ describe('ProviderStatuses', () => {
     });
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
+    expect(changes).toBe(PROVIDERS);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(2 * (PROVIDERS - 1));
+    expect(changes).toBe(PROVIDERS);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(PROVIDERS + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
+  });
+
+  it('says where each checked CLI was found, for the recheck log', async () => {
+    const locator = new FakeLocator();
+    locator.missing.add('cursor');
+    const statuses = new ProviderStatuses({
+      locator,
+      runtime: new FakeRuntime(),
+      sealed: null,
+      probeCwd: '/tmp',
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    expect(statuses.locations()).toEqual({});
+    await statuses.check('codex');
+    await statuses.check('cursor');
+    expect(statuses.locations()).toEqual({ codex: '/usr/bin/codex', cursor: 'not found' });
   });
 });
 
@@ -429,7 +451,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(PROVIDERS - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 
@@ -550,7 +572,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
     expect(await statuses.check('codex')).toMatchObject({ auth: 'missing' });
     expect(statuses.loginProblem('codex')).toEqual({
       code: 'internal',
-      message: expect.stringContaining('Only Claude signs in through Vertex AI.'),
+      message: expect.stringContaining('Only Claude and Antigravity sign in through Vertex AI.'),
     });
     expect(runtime.loginProbes).toEqual([]);
   });
@@ -581,7 +603,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
     unopened.readiness = pinned;
     answer = sealedAnswer(vertexCredentialFixture(), 1, 'vertex', 'codex');
     const status = await build(unopened).check('codex');
-    expect(status.auth_problem).toContain('Only Claude signs in through Vertex AI.');
+    expect(status.auth_problem).toContain('Only Claude and Antigravity sign in through Vertex AI.');
     expect(status).toMatchObject({ auth: 'missing', login_helps: false });
 
     const none = new FakeRuntime();
@@ -820,6 +842,7 @@ describe('StatusCollector', () => {
       attached: () => true,
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
+      deviceId: 'd'.repeat(64),
       version: '0.1.0',
       updatedBy: 'self',
       now: () => clock,
@@ -835,6 +858,7 @@ describe('StatusCollector', () => {
       protocol: 2,
       assignment_revision: 7,
       updated_by: 'self',
+      started_at: '2026-01-01T12:00:00.000Z',
     });
     expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
     expect(first.tools).toEqual([
@@ -852,6 +876,7 @@ describe('StatusCollector', () => {
     expect(first.agents[0]!.directory).toBeNull();
     expect(first.machine.sessions_running).toBe(2);
     expect(first.machine.workspaces_dir).toBe(join(dir, 'workspaces'));
+    expect(first.machine.device_id).toBe('d'.repeat(64));
     expect(first.machine.disk_total_bytes).toBeGreaterThan(0);
 
     clock += 1000;
@@ -860,6 +885,8 @@ describe('StatusCollector', () => {
       observed({ alive: true, health: { ...health('connecting')!, since: 'later' } })
     );
     const second = await collector.collect(assignment);
+    // The process start, not the report's time: it only changes on a restart.
+    expect(second.controller.started_at).toBe('2026-01-01T12:00:00.000Z');
     expect(second.agents[0]!.since).toBe('2026-01-01T11:30:00Z');
     expect(statusFingerprint(second)).toBe(statusFingerprint(first));
 

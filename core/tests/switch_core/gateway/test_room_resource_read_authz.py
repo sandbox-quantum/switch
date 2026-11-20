@@ -25,6 +25,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.documents import (
     detach_document_from_room,
+    get_document,
     get_room_document,
     list_room_documents,
     list_rooms_for_document,
@@ -101,7 +102,7 @@ class TestRoomResourceReadAuthz:
                     other,
                     await _is_admin(session, other),
                 )
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 404
 
     async def test_non_owner_cannot_list_room_documents(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -123,7 +124,7 @@ class TestRoomResourceReadAuthz:
                     other,
                     await _is_admin(session, other),
                 )
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 404
 
     async def test_non_owner_cannot_detach_room_document(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -144,7 +145,7 @@ class TestRoomResourceReadAuthz:
                     other,
                     await _is_admin(session, other),
                 )
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 404
 
     async def test_non_owner_cannot_detach_reference(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -350,3 +351,86 @@ class TestRoomListingsHidePrivateRooms:
 
             assert await rooms_for(other) == {public.id}
             assert await rooms_for(owner) == {public.id, private.id}
+
+
+class TestRoomDocumentCanRead:
+    """`can_read` on the room routes: the room shares what is in it with
+    every reader, its own documents and attached library ones alike, and an
+    attached one's own page opens for them too."""
+
+    async def _setup(
+        self, session: AsyncSession
+    ) -> tuple[User, User, Room, Document, Document]:
+        owner = await _add_user(session, name="owner")
+        reader = await _add_user(session, name="reader")
+        room = Room(
+            transport_room_id="!pub:test",
+            name="pub",
+            description="d",
+            owner_id=owner.id,
+            read_visibility="public",
+            write_visibility="private",
+        )
+        session.add(room)
+        await session.flush()
+        own = Document(
+            owner_id=owner.id,
+            room_id=room.id,
+            name="room-own",
+            description="",
+            instructions="",
+            content="hello",
+            read_visibility="private",
+            write_visibility="private",
+        )
+        attached = Document(
+            owner_id=owner.id,
+            name="library-private",
+            description="",
+            instructions="",
+            content="secret",
+            read_visibility="private",
+            write_visibility="private",
+        )
+        session.add_all([own, attached])
+        await session.flush()
+        await DocumentStore().attach_to_room(session, room.id, attached.id)
+        await session.commit()
+        return owner, reader, room, own, attached
+
+    async def test_list_and_detail(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _owner, reader, room, own, attached = await self._setup(session)
+            svc = _svc(session_factory)
+            is_admin = await _is_admin(session, reader)
+            listed = await list_room_documents(
+                room.id,
+                session,
+                svc,
+                _USER_STORE,
+                _AGENT_STORE,
+                _ROOM_STORE,
+                reader,
+                is_admin,
+            )
+            by_id = {d.id: (d.can_read, d.instructions) for d in listed}
+            assert by_id == {own.id: (True, ""), attached.id: (True, "")}
+            opened = await get_document(
+                attached.id, session, svc, _USER_STORE, _AGENT_STORE, reader, is_admin
+            )
+            assert (opened.can_read, opened.content) == (True, "secret")
+            detail = await get_room_document(
+                room.id,
+                own.id,
+                session,
+                svc,
+                _USER_STORE,
+                _AGENT_STORE,
+                _ROOM_STORE,
+                reader,
+                is_admin,
+            )
+            assert detail.can_read is True
+            assert detail.content == "hello"

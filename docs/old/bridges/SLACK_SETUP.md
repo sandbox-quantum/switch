@@ -46,8 +46,8 @@ You need one Slack app for the whole bridge. There are two ways to create it —
     "features": {
         "app_home": {
             "home_tab_enabled": true,
-            "messages_tab_enabled": false,
-            "messages_tab_read_only_enabled": false
+            "messages_tab_enabled": true,
+            "messages_tab_read_only_enabled": true
         },
         "bot_user": {
             "display_name": "Agent Switch",
@@ -81,6 +81,7 @@ You need one Slack app for the whole bridge. There are two ways to create it —
             { "command": "/agents-greet", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "description": "Show the frontend URL for this room", "should_escape": false },
             { "command": "/follow-ups", "description": "Turn follow-ups without an @ on or off for this room", "usage_hint": "on | off", "should_escape": false },
+            { "command": "/auto-route", "description": "Let Switch pick the agent to answer messages that tag nobody", "usage_hint": "on | off | fallback @agent", "should_escape": true },
             { "command": "/assign-agent", "description": "Send every message in this room to one agent", "usage_hint": "@agent-name", "should_escape": true },
             { "command": "/unassign-agent", "description": "Stop sending every message to the assigned agent", "should_escape": false }
         ]
@@ -136,7 +137,21 @@ You need one Slack app for the whole bridge. There are two ways to create it —
 
 </details>
 
+`/auto-route` belongs only on a server with the `decision_routing` feature flag
+on; the manifest Switch Console offers when you add your own Slack app leaves
+it out on a server without it. If you paste this one into such a server's app,
+delete that line: the server answers it with "Unknown command".
+
 Then continue with [Generate tokens and install](#2-generate-tokens-and-install).
+
+The manifest turns on the app's **Messages tab**, read only. That's where Switch
+sends the message someone taps to confirm that a Slack account is theirs when
+they link it from Switch Console. People can read the app's messages and press
+their buttons there, but can't write to the app. An app created from an older
+manifest has the tab off: re-apply the manifest (**App Manifest** in the app's
+settings) or turn on **App Home → Messages Tab** and leave "Allow users to send
+Slash commands and messages from the messages tab" unchecked. Until then,
+linking still works with the code Switch Console shows.
 
 ### Alternative: from scratch (manual)
 

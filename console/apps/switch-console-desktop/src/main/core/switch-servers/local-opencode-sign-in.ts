@@ -1,15 +1,13 @@
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { openCodeConsoleCredentialSchema } from '@switch-console/agent-providers';
+import {
+  openCodeConsoleCredentialSchema,
+  opencodeV1DatabasePath,
+} from '@switch-console/agent-providers';
 import Database from 'better-sqlite3';
 
+/** The database the OpenCode 1 that Console runs signs in to its OpenCode console account in. */
 export function localOpenCodeDatabasePath(): string {
-  return join(
-    process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'),
-    'opencode',
-    'opencode.db'
-  );
+  return opencodeV1DatabasePath(process.env);
 }
 
 export function readOpenCodeConsole(path: string): string | null {

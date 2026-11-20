@@ -17,6 +17,7 @@ import boto3
 
 from .cloud import Ec2Cloud
 from .config import ConfigError, ControllerConfig
+from .error_report import ErrorReport
 from .gateway import Gateway, GatewayConfig
 from .health import check_health
 from .lock import ControllerAlreadyRunning, ControllerLock
@@ -173,12 +174,14 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
         try:
             ec2 = boto3.client("ec2", region_name=config.region)
             settings = GatewayConfig.load(gateway_path) if gateway_path else None
+            errors = ErrorReport()
             reconciler = Reconciler(
                 store,
                 Ec2Cloud(ec2, config),
                 instance_type=settings.instance_type if settings else None,
+                errors=errors,
             )
-            gateway = Gateway(settings, config, store) if settings else None
+            gateway = Gateway(settings, config, store, errors) if settings else None
             _touch_health()
             if command == "reconcile-once":
                 try:
@@ -200,15 +203,18 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
                         listed = gateway.machines()
                         gateway.sync_machines(listed)
                     except Exception as error:
+                        errors.record(error)
                         logging.error("Cloud machine polling failed: %s", type(error).__name__)
                 try:
                     reconciler.reconcile_all()
                 except Exception as error:
+                    errors.record(error)
                     logging.error("Cloud machine reconciliation failed: %s", type(error).__name__)
                 if gateway and listed is not None:
                     try:
                         gateway.report_observations(listed)
                     except Exception as error:
+                        errors.record(error)
                         logging.error(
                             "Cloud observation reporting failed: %s", type(error).__name__
                         )

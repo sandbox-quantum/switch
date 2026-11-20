@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
@@ -21,6 +21,7 @@ import {
 import type { AgentStreamDeps } from './agent-host';
 import type { Handoff } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
+import { replaceFile } from './replace-file';
 import { type SessionRequest, SessionLinks } from './session-channel';
 import type * as sessionServices from './session-services';
 import { sharedConfigSchema } from './shared-config';
@@ -194,7 +195,7 @@ function sessionHosts() {
   return hosts;
 }
 
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen', 'junie'])(
   'keeps %s room assignments across a crash before launch and duplicate delivery',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'shared-watch-test-'));
@@ -484,7 +485,7 @@ it('resumes at the server head after its numbering restarts', async () => {
 async function writeFlags(root: string, flags: { enabled: boolean; spawn: boolean }) {
   const temporary = join(root, 'watch.json.tmp');
   await writeFile(temporary, JSON.stringify(flags));
-  await rename(temporary, join(root, 'watch.json'));
+  await replaceFile(temporary, join(root, 'watch.json'));
 }
 
 async function spawning(root: string) {
@@ -1707,7 +1708,7 @@ it('brings live sessions in step with a rewritten definition, each once its turn
     edited.start.input.model = { id: 'claude-sonnet-4-6' };
     edited.execution!.context = 'New instructions.';
     await writeFile(join(root, 'config.json.next'), JSON.stringify(edited));
-    await rename(join(root, 'config.json.next'), join(root, 'config.json'));
+    await replaceFile(join(root, 'config.json.next'), join(root, 'config.json'));
     await eventually(() => restarted.length === 1);
     // The session in the middle of a turn is left to finish it.
     expect(restarted).toEqual([
@@ -1923,7 +1924,7 @@ it('restarts a session’s host before handing it a reset, when its agent’s se
   }
   expect(order.slice(0, 2)).toEqual([`restart ${granted.sessionRoot} true`, 'command']);
   expect(hosts.to(unchanged.sessionRoot)).toEqual([
-    { type: 'command', command: reset(unchanged.sessionId), requesterName: null },
+    { type: 'command', command: reset(unchanged.sessionId), requesterName: null, direct: false },
   ]);
   expect(vi.mocked(ensureSharedProcess).mock.calls.map(([input]) => input.root)).toEqual([
     granted.sessionRoot,
@@ -2085,7 +2086,7 @@ it('hands a relayed command to the session it names, and only if it runs here', 
     // This agent's, but with nothing running it: dropped and said, not started.
     await streams[0]!.onSessionCommand!(command(idle.sessionId));
     expect(hosts.to(own.sessionRoot)).toEqual([
-      { type: 'command', command: command(own.sessionId), requesterName: null },
+      { type: 'command', command: command(own.sessionId), requesterName: null, direct: false },
     ]);
     expect(hosts.to(other.sessionRoot)).toEqual([]);
     expect(hosts.to(idle.sessionRoot)).toEqual([]);
@@ -2136,7 +2137,7 @@ it('starts the host of a session a failure took down, to hand it a retry', async
       faulted.sessionRoot,
     ]);
     expect(hosts.to(faulted.sessionRoot)).toEqual([
-      { type: 'command', command: retry, requesterName: null },
+      { type: 'command', command: retry, requesterName: null, direct: false },
     ]);
   } finally {
     abort.abort();
@@ -2283,13 +2284,19 @@ it('hands a room control to the session working in its room, when Switch names o
   );
   try {
     await eventually(() => streams.length === 1);
-    await streams[0]!.onSessionCommand!({ sessionId: null, roomId: 'room-a', commandId: 'c1' });
+    await streams[0]!.onSessionCommand!({
+      sessionId: null,
+      roomId: 'room-a',
+      commandId: 'c1',
+      direct: true,
+    });
     await streams[0]!.onSessionCommand!({ sessionId: null, roomId: 'room-z', commandId: 'c2' });
     expect(hosts.to(placed.sessionRoot)).toEqual([
       {
         type: 'command',
         command: { sessionId: placed.sessionId, commandId: 'c1' },
         requesterName: null,
+        direct: true,
       },
     ]);
     expect(

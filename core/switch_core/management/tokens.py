@@ -32,7 +32,7 @@ ACCESS_TOKEN_AUDIENCE = "switch-controller"
 ACCESS_TOKEN_ALGORITHM = "HS256"
 ACCESS_TOKEN_LIFETIME = timedelta(hours=1)
 ENROLLMENT_CODE_LIFETIME = timedelta(minutes=10)
-# A Switch cloud machine's code is handed over before the machine boots, and
+# A Switch Cloud machine's code is handed over before the machine boots, and
 # used once it has mounted its disk and installed its controller.
 MACHINE_ENROLLMENT_CODE_LIFETIME = timedelta(minutes=30)
 
@@ -52,6 +52,11 @@ class AccessTokenClaims:
     controller_id: str
     tenant_id: str
     owner_id: str
+    # The credential (`api_keys` row) the token was exchanged for, so a token
+    # stops working with the credential: when it is rotated, or the device is
+    # taken over by another controller on the same machine. None in a token
+    # minted before the claim, which lasts until it expires.
+    key_id: str | None
 
 
 def new_credential() -> str:
@@ -72,6 +77,7 @@ def mint_access_token(
     controller_id: str,
     tenant_id: str,
     owner_id: str,
+    key_id: str,
     now: datetime,
 ) -> tuple[str, datetime]:
     """Return the access token and when it expires."""
@@ -81,6 +87,7 @@ def mint_access_token(
             "cid": controller_id,
             "tid": tenant_id,
             "oid": owner_id,
+            "kid": key_id,
             "aud": ACCESS_TOKEN_AUDIENCE,
             "iat": int(now.timestamp()),
             "exp": int(expires_at.timestamp()),
@@ -155,11 +162,15 @@ def _verify(token: str, *, secret: str) -> tuple[AccessTokenClaims, int]:
     values = (claims.get("cid"), claims.get("tid"), claims.get("oid"))
     if not all(isinstance(value, str) and value for value in values):
         raise AccessTokenInvalid("access token claims are malformed")
+    key_id = claims.get("kid")
+    if key_id is not None and not (isinstance(key_id, str) and key_id):
+        raise AccessTokenInvalid("access token claims are malformed")
     return (
         AccessTokenClaims(
             controller_id=claims["cid"],
             tenant_id=claims["tid"],
             owner_id=claims["oid"],
+            key_id=key_id,
         ),
         int(claims["exp"]),
     )
