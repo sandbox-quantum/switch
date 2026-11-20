@@ -850,3 +850,74 @@ def test_set_login_sends_each_old_key_as_null_beside_the_two_urls():
             "ctl_username": None,
         }
     }
+
+
+# ---- the short check (E3): a change reaches squid's files within seconds ----
+
+
+def _clocked_run(monkeypatch, loads, fail_passes=()):
+    """`run` on a fake clock that moves 3 s each check; returns the times full passes ran."""
+    from switch_hosted_controller import egress_lists
+
+    clock = {"now": 0.0}
+    passes: list[float] = []
+    calls = {"n": 0}
+
+    def fake_reconcile(kube, boxes, proxy):
+        calls["n"] += 1
+        if calls["n"] in fail_passes:
+            raise RuntimeError("API down")
+        passes.append(clock["now"])
+
+    monkeypatch.setattr(egress_lists, "reconcile_once", fake_reconcile)
+    loads = list(loads)
+
+    def load():
+        return loads.pop(0) if len(loads) > 1 else loads[0]
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    egress_lists.run(
+        None, load, PROXY, stop=lambda: clock["now"] >= 66, sleep=sleep, clock=lambda: clock["now"]
+    )
+    return passes
+
+
+def test_an_unchanged_map_gets_a_full_pass_only_each_interval(monkeypatch):
+    ada = [BoxEgress("agents-user-ada", ())]
+    assert _clocked_run(monkeypatch, [ada]) == [0.0, 30.0, 60.0]
+
+
+def test_a_new_or_removed_box_gets_a_full_pass_at_the_next_check(monkeypatch):
+    ada = [BoxEgress("agents-user-ada", ())]
+    both = ada + [BoxEgress("agents-user-bob", ())]
+    # bob appears at the 3rd check (6 s) and is removed at the 5th (12 s).
+    passes = _clocked_run(monkeypatch, [ada, ada, both, both, ada])
+    assert passes[:3] == [0.0, 6.0, 12.0]
+
+
+def test_a_failed_pass_backs_off_then_recovers(monkeypatch, caplog):
+    ada = [BoxEgress("agents-user-ada", ())]
+    passes = _clocked_run(monkeypatch, [ada], fail_passes=(1, 2, 3))
+    # Fails at 0, retried at 3 (+3), 9 (+6), then succeeds at 21 (+12); then each interval.
+    assert passes == [21.0, 51.0]
+    assert caplog.text.count("pass failed") == 3
+
+
+def test_a_refused_map_is_logged_once_per_interval_not_every_check(monkeypatch, caplog):
+    from switch_hosted_controller import egress_lists
+
+    clock = {"now": 0.0}
+
+    def load():
+        raise EgressConfigError("box-map: an entry is not a user box namespace")
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(egress_lists, "reconcile_once", lambda *a: pytest.fail("no pass"))
+    egress_lists.run(
+        None, load, PROXY, stop=lambda: clock["now"] >= 66, sleep=sleep, clock=lambda: clock["now"]
+    )
+    assert caplog.text.count("refused, nothing changed") == 3  # at 0, 30 and 60 s

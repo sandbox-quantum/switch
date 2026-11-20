@@ -80,6 +80,22 @@ the box enforces the lower of the two.
 re-used and must be recreated**, as was already true before the cap: only today's template and the shapes it lists
 as earlier (`_earlier_templates`) count as a box's own.
 
+**Changing the box CA bundle (`box-ca.crt`) needs the old bundle listed in the same change.** Each box's
+`switch-ca` holds the bundle exactly as it was when the box was made, and re-claim compares it exactly. So change
+both together, in one apply and one roll: replace `box-ca.crt` (in `switch-box-operator-files`) with the new bundle,
+**and** add the old one, character for character, to `earlier_box_cas` in the operator config
+(`switch-box-operator-config`, at most 4 entries). Then roll the operator once, after both are applied: it reads both
+only at start. Don't list the current bundle there: the operator refuses a config whose `earlier_box_cas` holds the
+`box-ca.crt` it's started with, and won't start. Boxes made before the change are then re-used as they are, with a
+warning naming which earlier bundle. Nothing is rewritten: they keep the old bundle until they're recreated, and a
+running box's controller reads it only at start anyway (`NODE_EXTRA_CA_CERTS`). Without the entry, every earlier box
+fails on re-claim (`object_refused`) until it's recreated.
+List only an earlier bundle that still holds a **valid** CA, one that still verifies the server's current
+certificate. A box whose bundle holds only an expired or retired CA can't reach the server after a restart anyway, so
+re-using it would hand Core a box that never comes up. Leave such a bundle out, so those boxes are refused and
+recreated, and remove an entry once its CA expires. And list only a bundle whose CAs you'd still trust, never one
+holding a retired or compromised CA: a re-used box keeps trusting everything in its old bundle until it's recreated.
+
 It writes filled copies of `k8s/*.yaml`, `box/priorityclass-switch-box.yaml` and
 `egress/egress-proxy-networkpolicy.yaml` into the new folder, and refuses, writing nothing, if a value is malformed
 or any placeholder would be left. The folder must be outside this repo, so a filled copy is never committed, and
@@ -107,6 +123,28 @@ kubectl -n egress-lists get secret egress-settings >/dev/null 2>&1 \
 Empty means deny: no box files and no logins, so squid lets nothing through until egress-lists fills
 `squid-boxes` and `squid-passwd` for each box. `egress-settings`' `{}` gives every box the default parts; per-box
 settings go in it later through the secret store, never in this file.
+
+**How fast a box gets egress.** egress-lists reads the box map and settings every 3 s and rewrites squid's files
+when they change. squid's wrapper checks its mounted files every 2 s: logins apply at once (a removed box loses its
+login within seconds, as squid re-checks a login every 10 s), and box files go live only after a clean
+`squid -k parse`. The mounts themselves lag by the kubelet's sync, so the system nodes' kubelet syncs about every
+5 s (the box-cluster module). If a box file fails the parse, squid keeps its last good files and logs, every
+minute while it lasts, `squid-reload: WARN box files failed squid -k parse; kept the last good config (files=N
+failing_for=Ns)`, with counts only. The monitor on that line pages if it lasts over 5 minutes: until it's fixed,
+new boxes get no egress.
+
+That monitor is in `observability/monitors.json`, the box cluster's own monitors. Import it with the environment and
+notification handle filled in, the same placeholders as `../observability/monitors.json`. It finds the line through
+the squid pod's Datadog tags (`service:switch-egress-proxy`), so it needs a Datadog agent on the box cluster, which
+isn't part of this folder yet. Until there is one, the WARN line is only in the pod's log.
+
+Every login change reloads squid (`squid -k reconfigure`, a HUP), so there's a reload on each box start and stop.
+A reconfigure re-reads the config and restarts the login helpers, but it doesn't close open connections: other
+boxes' tunnels carry on. QA's slot check "a reload doesn't drop other boxes' connections" is the proof of that on a
+real cluster.
+
+Until the system nodes' kubelet sync is shortened, the mounted files still lag about a minute, so squid sees a change
+that late however fast it checks. Start timings taken before that change understate this part.
 
 Then apply the filled folder in name order: `kubectl apply -f <folder>/` does that (`10-` to `71-`; the box
 PriorityClass and squid's NetworkPolicy are numbered `70-` and `71-`). The admission policies and NetworkPolicies are the safety rules: apply them

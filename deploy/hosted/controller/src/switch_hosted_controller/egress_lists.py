@@ -645,6 +645,9 @@ def check_template_main(argv: list[str] | None = None) -> int:
 # ---- the loop ----
 
 
+CHECK_S = 3.0  # how often the box map and settings are read (two `get`s by name)
+
+
 def run(
     kube: EgressKube,
     load: Callable[[], list[BoxEgress]],
@@ -652,20 +655,42 @@ def run(
     interval: float = 30.0,
     stop: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] = time.sleep,
+    check: float = CHECK_S,
+    clock: Callable[[], float] = time.monotonic,
 ) -> None:
-    """Re-reads the settings and box map every pass, so an edit applies within one interval. A read that is refused
-    leaves squid's current files as they are: the error says which part, and nothing is rewritten."""
+    """Reads the settings and box map every `check` (3 s): two `get`s by name. A full pass (each box's login,
+    squid's files) runs at once when what they say changed, so a new or removed box reaches squid within
+    seconds, and otherwise every `interval`, as before. A failed pass is retried after a wait that doubles
+    from `check` up to `interval`. A read that is refused leaves squid's current files as they are: the error
+    says which part, and nothing is rewritten; it is logged once, then again each `interval` while it lasts."""
+    last: list[BoxEgress] | None = None
+    last_pass: float | None = None
+    retry_at = 0.0
+    backoff = check
+    refused_logged: float | None = None
     while not stop():
+        now = clock()
         try:
             boxes = load()
         except (EgressConfigError, ScalerConfigError, OSError, ValueError) as error:
-            logger.error("Egress: the settings or box map was refused, nothing changed: %s", error)
+            if refused_logged is None or now - refused_logged >= interval:
+                logger.error(
+                    "Egress: the settings or box map was refused, nothing changed: %s", error
+                )
+                refused_logged = now
         else:
-            try:
-                reconcile_once(kube, boxes, proxy)
-            except Exception as error:
-                logger.error("Egress: pass failed (%s); retrying", type(error).__name__)
-        sleep(interval)
+            refused_logged = None
+            due = last_pass is None or boxes != last or now - last_pass >= interval
+            if due and now >= retry_at:
+                try:
+                    reconcile_once(kube, boxes, proxy)
+                except Exception as error:
+                    logger.error("Egress: pass failed (%s); retrying", type(error).__name__)
+                    retry_at = now + backoff
+                    backoff = min(backoff * 2, interval)
+                else:
+                    last, last_pass, backoff, retry_at = boxes, now, check, 0.0
+        sleep(check)
 
 
 ENV_DEFAULT_PARTS = (

@@ -21,7 +21,7 @@ import logging
 import re
 import ssl
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -123,6 +123,32 @@ def _boxes_from_dir(path: Path) -> dict[str, str]:
     return boxes
 
 
+def boxes_from_secret(secret: Any) -> dict[str, str]:
+    """The `box-map` Secret as the API returns it (read by name): machine id to namespace, each value
+    base64-decoded strictly. Refused whole, as the mounted map is, if any entry is off. An empty map
+    is allowed: a new cluster has no boxes until the box operator makes the first."""
+    data = secret.get("data") if isinstance(secret, dict) else None
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ScalerConfigError("the box map is not machine ids to namespaces")
+    boxes: dict[str, str] = {}
+    for key, value in data.items():
+        try:
+            namespace = base64.b64decode(str(value), validate=True).decode().strip()
+        except (ValueError, UnicodeDecodeError):
+            raise ScalerConfigError("a box map value is not valid base64 text") from None
+        if not NAMESPACE_RE.fullmatch(namespace):
+            raise ScalerConfigError("a box map entry is not a user box namespace")
+        try:
+            boxes[str(UUID(str(key)))] = namespace
+        except ValueError:
+            raise ScalerConfigError("a box map key is not a machine id") from None
+    if len(set(boxes.values())) != len(boxes):
+        raise ScalerConfigError("a namespace is listed more than once")
+    return boxes
+
+
 def check_core_origin(origin: str) -> str:
     """The controller token only goes to Core over HTTPS, or to the local tunnel."""
     url = urlsplit(origin)
@@ -149,6 +175,7 @@ class Core(Protocol):
         evictions: int | None = None,
         restarts: int | None = None,
         node: str | None = None,
+        error_code: str | None = None,
     ) -> None: ...
 
 
@@ -180,6 +207,8 @@ def decide(desired: str, replicas: int, ready: int) -> tuple[str | None, str]:
 
 
 START_LIMIT_S = 180.0
+BOX_MISSING = "box_missing"
+BOX_MISSING_ERROR = "This machine's box is missing from the cluster."
 START_TIMEOUT_ERROR = "The box did not become ready within 3 minutes of starting."
 
 
@@ -239,8 +268,28 @@ def reconcile_once(
     codes: RegistrationCodes | None = None,
     watch: EvictionWatch | None = None,
     box_facts: RestartCounter | None = None,
+    listed: list[dict[str, Any]] | None = None,
+    only: Collection[str] | None = None,
+    last_observed: dict[str, str] | None = None,
+    map_read: bool = True,
+    reported_missing: dict[str, int] | None = None,
+    still_unmapped: Callable[[str], bool] | None = None,
 ) -> list[Step]:
     """One pass over the machines Core lists that map to a box namespace.
+
+    The fast passes (`workers_main`) give three more: `listed`, Core's machine
+    list they already read, so it isn't read twice; `only`, the machine ids
+    to look at (the boxes starting or waking), every other box left to the
+    next full round; and `last_observed`, what each box was last reported as,
+    so a box whose state hasn't changed isn't reported again every 2 s.
+
+    `box_missing`: a machine Core lists with `box_expected: true` (Core counts its box as made) and wants
+    running, whose box isn't there: no entry in the box map, when `map_read` says this round's read of it
+    succeeded (a kept, older map never counts) and `still_unmapped`, a fresh read made after Core's list,
+    confirms it (the operator writes the map entry before it reports the box made, so a box made between the
+    round's map read and Core's list is in the fresh read), or a 404 on its `box` StatefulSet (any other error is a failed
+    step). It is reported as `error` with the code `box_missing`, at most once per machine per revision
+    (`reported_missing`), and Core decides what to do. Never for a box Core doesn't want running.
 
     `waiting` remembers, across passes, since when each box has been wanted
     running but not ready. Past 3 minutes the box is reported to Core as an
@@ -269,13 +318,31 @@ def reconcile_once(
     """
     waiting = {} if waiting is None else waiting
     steps: list[Step] = []
-    listed = core.machines()
+    listed = core.machines() if listed is None else listed
+    if reported_missing is not None and only is None:  # only machines Core lists now are remembered
+        current = {str(raw.get("machine_id", "")) for raw in listed}
+        for gone in set(reported_missing) - current:
+            del reported_missing[gone]
     failed = 0
     for raw in listed:
         machine_id = str(raw.get("machine_id", ""))
         namespace = boxes.get(machine_id)
+        expected = raw.get("box_expected") is True and raw.get("desired_state") == RUNNING
         if namespace is None:
+            if (
+                expected
+                and map_read
+                and only is None
+                and (
+                    reported_missing is None
+                    or reported_missing.get(machine_id) != raw.get("revision")
+                )
+                and (still_unmapped is None or still_unmapped(machine_id))
+            ):
+                _report_missing(core, raw, reported_missing, "not in the box map")
             continue  # not one of ours
+        if only is not None and machine_id not in only:
+            continue  # a fast pass: this box waits for the next full round
         desired = raw.get("desired_state")
         revision = raw.get("revision")
         if desired not in (RUNNING, STOPPED, "retained", "deleted") or not isinstance(
@@ -288,7 +355,16 @@ def reconcile_once(
         # One box failing (Kubernetes, or Core) is that box's alone: the pass goes on,
         # so every other box still gets its scale step this pass.
         try:
-            replicas, ready = kube.scale(namespace)
+            try:
+                replicas, ready = kube.scale(namespace)
+            except HTTPError as exc:
+                if exc.code != 404 or not expected:
+                    raise
+                _report_missing(core, raw, reported_missing, "no box StatefulSet")
+                waiting.pop(machine_id, None)  # nothing to wait for: Core decides what happens next
+                continue
+            if reported_missing is not None:
+                reported_missing.pop(machine_id, None)  # there again: a later loss is reported anew
             action, observed = decide(desired, replicas, ready)
             if action == "scale_up":
                 if codes is not None:
@@ -351,9 +427,19 @@ def reconcile_once(
                 waiting.pop(machine_id, None)
                 if codes is not None and desired == RUNNING and observed == RUNNING:
                     codes.ready(machine_id, namespace)
-            _observe(
-                core, machine_id, observed, revision, error, evictions, facts, watch, box_facts
+            unchanged = (
+                last_observed is not None
+                and last_observed.get(machine_id) == observed
+                and error is None
+                and evictions is None
+                and not facts
             )
+            if not unchanged:
+                _observe(
+                    core, machine_id, observed, revision, error, evictions, facts, watch, box_facts
+                )
+            if last_observed is not None:
+                last_observed[machine_id] = observed
             steps.append(Step(machine_id, namespace, desired, replicas, ready, action, observed))
         except Exception as exc:
             failed += 1
@@ -536,6 +622,29 @@ def _open(req: Request, ctx: ssl.SSLContext, timeout: float = 20):
     return build_opener(_NoRedirect, HTTPSHandler(context=ctx)).open(req, timeout=timeout)
 
 
+def _report_missing(
+    core: Any, raw: dict[str, Any], reported: dict[str, int] | None, why: str
+) -> None:
+    """One `box_missing` report for this machine at this revision; never raises."""
+    machine_id, revision = str(raw.get("machine_id", "")), raw.get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool):
+        return
+    if reported is not None and reported.get(machine_id) == revision:
+        return
+    try:
+        core.observe(machine_id, "error", revision, BOX_MISSING_ERROR, error_code=BOX_MISSING)
+    except Exception as exc:
+        logger.warning(
+            "Machine %s: Core did not take its box_missing report (%s).",
+            machine_id,
+            type(exc).__name__,
+        )
+        return
+    if reported is not None:
+        reported[machine_id] = revision
+    logger.warning("Machine %s: its box is missing (%s); told Core.", machine_id, why)
+
+
 class CoreApi:
     """Core's hosted-controller routes, as the existing controller calls them."""
 
@@ -588,6 +697,7 @@ class CoreApi:
         evictions: int | None = None,
         restarts: int | None = None,
         node: str | None = None,
+        error_code: str | None = None,
     ) -> None:
         self._call(
             f"/machines/{machine_id}/observation",
@@ -599,9 +709,9 @@ class CoreApi:
                 "state": state,
                 "revision": revision,
                 "error": error,
-                "error_code": "machine_needs_attention"
-                if error
-                else None,  # v3 Core accepts only this code
+                # v3 Core accepts only machine_needs_attention; box_missing only goes to a Core that sent
+                # `box_expected` (hosted agents v2), which accepts it.
+                "error_code": (error_code or "machine_needs_attention") if error else None,
                 "data_volume_id": None,
                 "instance_id": None,
                 "instance_type": None,
