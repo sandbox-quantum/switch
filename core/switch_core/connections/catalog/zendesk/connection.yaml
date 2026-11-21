@@ -1,0 +1,61 @@
+slug: zendesk
+name: Zendesk
+category: Customer support
+description: Read and update Zendesk tickets, users and organizations, with your API token.
+# Off ("Coming soon") until a session has something to call with the token.
+# A key entry's tools are the vendor's own MCP server or command-line tool, and
+# Zendesk has neither for its Support API: its announced MCP server has no
+# public endpoint, and zcli builds Zendesk apps and themes, not tickets.
+# Switch points no entry at a community server. The sign-in below is complete
+# and tested against Zendesk's documented answers, ready for when one exists.
+enabled: false
+publisher: Zendesk
+links:
+  documentation: https://developer.zendesk.com/documentation/authentication/oauth-vs-api-tokens/
+  support: https://support.zendesk.com/
+  privacy: https://www.zendesk.com/company/agreements-and-terms/privacy-notice/
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: subdomain
+        label: Zendesk subdomain
+        secret: false
+        help: The part before .zendesk.com in your Zendesk address.
+        # One DNS label: only ever the host label of https://{subdomain}.zendesk.com.
+        pattern: "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+      - name: email
+        label: Email address
+        secret: false
+        help: The email you sign in to Zendesk with. The token acts as this user.
+        # Goes only in the Basic user name, so never a colon or a space.
+        pattern: "[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9.-]{1,253}"
+      - name: api_token
+        label: API token
+        secret: true
+        help: Admin Center, Apps and integrations, APIs, API tokens.
+    # Zendesk takes a token as Basic credentials: `{email}/token` and the token.
+    # A wrong token is refused with 401, but a call with no credentials is
+    # answered 200 with an anonymous user whose id is null; an answer that
+    # names no account is refused, so that is never stored either. An unknown
+    # subdomain is answered 404 ("No help desk at ...").
+    identity:
+      method: GET
+      url: "https://{subdomain}.zendesk.com/api/v2/users/me.json"
+      basic: { username: "{email}/token", password: "{api_token}" }
+      account_id: user.id
+      label: user.email
+    help_url: https://developer.zendesk.com/api-reference/introduction/security-and-auth/
+# Zendesk is retiring API tokens
+# (https://developer.zendesk.com/documentation/authentication/oauth-migration/):
+# from 2026-07-28 a token unused for 30 days is deactivated and new accounts
+# cannot use tokens, from 2026-10-27 no account can create one, and on
+# 2027-04-30 every remaining token is deactivated. Until then a token does not
+# expire and only Zendesk can revoke it, so it is never handed to an agent.
+#
+# There is no read-only level: a token has no scopes and acts as its user,
+# with that user's role. A key entry names no `access` for the same reason.
+token: { kind: pass_through, max_lifetime: null }
+tools: { mode: pass_through }

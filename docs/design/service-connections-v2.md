@@ -583,10 +583,14 @@ auth:
         label: Site
         secret: false
         choices: [example.com, eu.example.com]
+      # or a value held to a pattern (an account, a subdomain), in place of
+      # choices: `pattern: "[a-z0-9][a-z0-9-]{0,62}"`, matched in full
     identity:                   # checks the key, before anything is stored
       method: GET               # or POST, with a JSON body
-      url: "https://api.{site}/me"          # a URL names only choices
+      url: "https://api.{site}/me"          # a URL names choices and patterns
       headers: { X-Api-Key: "{api_key}" }
+      # or, for a vendor that takes the key as a Basic password, in place of
+      # an Authorization header: `basic: { username: "{email}/token", password: "{api_key}" }`
       account_id: user.id       # optional: without it, the key's SHA-256
       label: user.email         # optional: without it, the name and choices
     help_url: https://docs.example.com/keys
@@ -604,6 +608,16 @@ The loader refuses a template naming an unknown field, a URL naming a secret
 one, a server without headers, an entry naming `access` (a key reaches
 whatever its vendor let it), and a `max_lifetime` other than null.
 
+**A field held to a pattern** is typed freely, so a URL may hold it only where
+it can pick an account and never another host: as a whole host label followed
+by labels the template fixes (`https://{account}.example.com/...`, at least a
+domain and its suffix), or as a whole path segment (`.../v1/{database}/...`).
+The loader refuses it anywhere else: beside other text in a label or segment,
+in the domain itself, or in the query. Its pattern must compile and must not
+match an empty value. When someone connects, Core holds the value to the
+pattern in full and, whatever the pattern allows, to one DNS label where it is
+a host label and one unreserved path segment where it is a segment.
+
 **A key is never handed to an agent.** It does not expire and only its vendor
 can revoke it, so whatever ran beside the agent could keep it for good, past a
 removed grant or a disconnect. The broker refuses to issue one (403
@@ -615,8 +629,9 @@ for a later server-side use of the key.
 - **Connecting.** Switch Console shows the entry's fields (the services list
   carries them as `key`) and sends them to
   `PUT /gateway/service-connections/{service}/key`. Core holds each field to
-  the entry (a choice among its choices, a secret one printable line without
-  spaces), makes the identity call, and stores the fields encrypted only when
+  the entry (a choice among its choices, a pattern field to its pattern and
+  its place in the URL, a secret one printable line without spaces), makes
+  the identity call, and stores the fields encrypted only when
   the vendor accepts them; a refusal names the fields to check. One account
   is linked to one person in a workspace, as for a sign-in. Re-pasting
   replaces the key in place, keeping the grants.
@@ -637,6 +652,25 @@ API key and an application key in headers named with underscores
 with every key, it now signs in instead (see [Datadog](#datadog)), and no
 shipped entry is connected with a key; the key tests run against an entry of
 their own.
+
+### Zendesk
+
+Zendesk's entry is complete but stays off ("Coming soon"): a key entry's
+tools are the vendor's MCP server or command-line tool, Zendesk has neither for
+its Support API, and Switch points no entry at a community server. A person
+types the account's subdomain (one DNS label, the host label of
+`https://{subdomain}.zendesk.com`), their email and an API token; Zendesk takes
+the token as Basic credentials, `{email}/token` and the token.
+
+The identity call is `GET /api/v2/users/me.json`, which answers in three ways
+that matter here, checked against a live Zendesk instance: 401 ("Couldn't
+authenticate you") for a wrong token; 200 with an anonymous user whose `id` is
+null for a call it did not authenticate, which Switch refuses because it names
+no account; and 404 ("No help desk at ...") for a subdomain no account holds.
+A token has no scopes and acts as its user, with that user's role, so there is
+one level. Zendesk is retiring API tokens: none can be made from 2026-10-27,
+and every remaining one stops working on 2027-04-30, so a connection that
+lasts past then needs Zendesk's OAuth.
 
 ## Adding a connector
 

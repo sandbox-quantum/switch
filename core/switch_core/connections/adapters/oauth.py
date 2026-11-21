@@ -1163,7 +1163,7 @@ class OAuthAdapter:
         self, method: PasteMethod, submitted: Mapping[str, str]
     ) -> dict[str, str]:
         """The pasted fields, each one printable line, and nothing else."""
-        return checked_fields(self._name, method.fields, submitted)
+        return checked_fields(self._name, method.fields, submitted, {})
 
     def pasted_secret(
         self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
