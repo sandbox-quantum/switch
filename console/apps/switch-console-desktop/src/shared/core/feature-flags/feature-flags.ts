@@ -1,5 +1,3 @@
-import { IS_CANARY, IS_DEV } from '@shared/app-identity';
-
 /**
  * Feature flags Console knows about. Each Switch server sets its own at deploy
  * time and serves them at `GET /gateway/feature-flags`; Console reads every
@@ -68,8 +66,8 @@ export function sameFeatureFlags(a: FeatureFlags, b: FeatureFlags): boolean {
  *
  * The first-run pages and the Switch Cloud choice are drawn before Console is
  * connected to anything, so no server's flags can decide them. Every build has
- * the first-run pages on. The Switch Cloud choice is on in a run from a
- * checkout and a canary, and off in a stable release. Once Console is
+ * both on; the Switch Cloud choice still needs the build's Cloud URL
+ * (`switch-cloud.ts`), and reads as not open yet without one. Once Console is
  * connected, the server's own flags decide everything else.
  */
 export type BuildFeatureFlags = {
@@ -81,5 +79,5 @@ export type BuildFeatureFlags = {
 
 export const BUILD_FEATURE_FLAGS: BuildFeatureFlags = {
   onboarding: true,
-  switch_cloud: IS_DEV || IS_CANARY,
+  switch_cloud: true,
 };

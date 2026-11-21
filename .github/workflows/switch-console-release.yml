@@ -287,8 +287,10 @@ jobs:
         env:
           VITE_BUILD: ${{ needs.resolve.outputs.vite_build }}
           VITE_RELEASE: ${{ needs.resolve.outputs.vite_release }}
-          # Only canary knows where Switch Cloud is; a build without it offers no Cloud.
-          MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || '' }}
+          # Where each channel's Switch Cloud is: canary from SWITCH_CLOUD_URL,
+          # stable from SWITCH_CLOUD_URL_STABLE. A build without one shows the
+          # Cloud choice as not open yet.
+          MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || needs.resolve.outputs.channel == 'stable' && vars.SWITCH_CLOUD_URL_STABLE || '' }}
         run: pnpm run build
 
       - name: Write App Store Connect API key
@@ -599,8 +601,10 @@ jobs:
         env:
           VITE_BUILD: ${{ needs.resolve.outputs.vite_build }}
           VITE_RELEASE: ${{ needs.resolve.outputs.vite_release }}
-          # Only canary knows where Switch Cloud is; a build without it offers no Cloud.
-          MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || '' }}
+          # Where each channel's Switch Cloud is: canary from SWITCH_CLOUD_URL,
+          # stable from SWITCH_CLOUD_URL_STABLE. A build without one shows the
+          # Cloud choice as not open yet.
+          MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || needs.resolve.outputs.channel == 'stable' && vars.SWITCH_CLOUD_URL_STABLE || '' }}
         run: pnpm run build
 
       - name: Package (linux ${{ matrix.arch }}, no publish)
@@ -711,8 +715,10 @@ jobs:
         env:
           VITE_BUILD: ${{ needs.resolve.outputs.vite_build }}
           VITE_RELEASE: ${{ needs.resolve.outputs.vite_release }}
-          # Only canary knows where Switch Cloud is; a build without it offers no Cloud.
-          MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || '' }}
+          # Where each channel's Switch Cloud is: canary from SWITCH_CLOUD_URL,
+          # stable from SWITCH_CLOUD_URL_STABLE. A build without one shows the
+          # Cloud choice as not open yet.
+          MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || needs.resolve.outputs.channel == 'stable' && vars.SWITCH_CLOUD_URL_STABLE || '' }}
         run: pnpm run build
 
       - name: Azure login for Artifact Signing

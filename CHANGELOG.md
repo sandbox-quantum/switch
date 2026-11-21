@@ -4772,6 +4772,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+
+- **Stable releases offer Switch Cloud.** The first-run page and the Add
+  server dialog offer Switch Cloud in every build, not only in Canary, so a
+  new user can sign up and connect in one step without typing a server
+  address.
+
 #### Fixed
 
 - **Creating an agent no longer flashes "An agent called … already exists
