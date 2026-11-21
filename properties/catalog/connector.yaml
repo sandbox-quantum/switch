@@ -10,8 +10,20 @@ properties:
     levels: [code, system]
     owner: platform
     status: proposed
+    gaps:
+      system: no lane asks for service tokens through the agent routes
     notes: >
-      Security-critical (`connections/broker.py`).
+      Security-critical (`connections/broker.py`). The code-level machine
+      holds a reference model of who may hold what, and checks every issue
+      against it and, after each upkeep pass, that every token whose grant,
+      owner's membership, sign-in or controller is gone was revoked. A lapsed
+      sign-in stops new tokens but leaves issued ones live until they expire
+      (an hour at most), and the machine allows that. Agent ownership transfer
+      is not modelled, because a transfer is refused while the agent holds a
+      grant. Outside the broker, key rotation re-encrypts the secrets in place
+      and the one-off GitHub move reads the account id from the old rows; the
+      static half of the check names both and fails on any other code that
+      decrypts a connection's secret or an issued token.
   - id: connector.refresh-single-flight
     title: Concurrent requests refresh a token once
     statement: >
