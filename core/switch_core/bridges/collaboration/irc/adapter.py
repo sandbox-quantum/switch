@@ -394,9 +394,7 @@ class IrcAdapter(PlatformAdapter):
                 channel, request.get("topic", ""), request.get("private") == "yes"
             )
         elif action == "join" and is_channel(channel):
-            await client.join(channel)
-            if request.get("private") == "yes":
-                await self._confirm_private(channel)
+            await self._join_and_learn(channel, request.get("private") == "yes")
         elif action == "part" and is_channel(channel):
             await self.retire_channel(channel)
         elif action == "invite" and is_channel(channel):
@@ -434,9 +432,9 @@ class IrcAdapter(PlatformAdapter):
                     ChannelType, channel_type
                 )
                 if self.client:
-                    await self.client.join(channel)
-                    if channel_type == "channel_private":
-                        await self._confirm_private(channel)
+                    await self._join_and_learn(
+                        channel, channel_type == "channel_private"
+                    )
                 else:
                     self._hand_to_holder(
                         {
@@ -448,6 +446,18 @@ class IrcAdapter(PlatformAdapter):
                             else "no",
                         }
                     )
+
+    async def _join_and_learn(self, channel: str, private: bool) -> None:
+        """Join, then make sure the channel's modes are read again: a room
+        saved from another pod's guess is corrected only by a fresh report."""
+        client = self.client
+        assert client is not None
+        already_joined = self.canonical(channel) in client.joined
+        await client.join(channel)
+        if private:
+            await self._confirm_private(channel)
+        elif already_joined:
+            await client.query_modes(channel)
 
     async def refresh_channel_types(self, channel_ids: list[str]) -> None:
         if self.client:

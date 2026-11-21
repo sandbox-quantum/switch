@@ -199,6 +199,29 @@ async def test_unknown_channel_is_public_on_every_pod(wire):
         await holder.stop()
 
 
+async def test_holder_corrects_a_private_channel_a_quiet_pod_guessed_public(wire):
+    wire.modes["#room"] = "+ntsi"
+    holder, _ = await start_adapter(wire)
+    learned = AsyncMock()
+    holder.set_channel_type_handler(learned)
+    quiet, _ = await start_adapter(wire, listening=False, channels="")
+    relayed = []
+    quiet.set_holder_relay(relayed.append)
+    try:
+        await until(lambda: "#room" in holder.client.modes)
+        learned.reset_mock()
+        channel_type = await quiet.get_channel_type("#room")
+        assert channel_type == "channel_public"
+        await quiet.ensure_channel_subscriptions([("#room", channel_type)])
+        for request in relayed:
+            await holder.receive_relayed(request)
+        await holder._relay_queue.join()
+        learned.assert_awaited_with("#room", "channel_private")
+    finally:
+        await quiet.stop()
+        await holder.stop()
+
+
 async def test_registration_saves_server_case_mapping_for_quiet_pods(wire):
     wire.mapping = "rfc1459"
     config = {"server": "127.0.0.1", "port": wire.port, "tls": False, "nick": "switch"}
