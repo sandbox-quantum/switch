@@ -34,4 +34,13 @@ properties:
     formality: semi-formal
     levels: [code]
     owner: platform
-    status: proposed
+    status: checked
+    notes: >
+      The machine runs three brokers on one database, as three processes,
+      against a vendor that rotates refresh tokens and refuses a spent one.
+      Bursts of callers arrive while the token is fresh, about to expire or
+      expired; some callers give up part way, refreshes fail now and then, and
+      the owner signs in again during a burst. One process's callers sharing
+      one fetch saves database connections rather than refreshes (the lock
+      would keep them apart without it), so removing that is not a failure
+      here.
