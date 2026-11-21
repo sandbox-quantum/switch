@@ -225,6 +225,7 @@ describe('redactSecrets (write path)', () => {
     ['anthropic key', 'sk-ant-aaaaaaaaaaaaaaaaaaaaaaaa', 'sk-ant-a'],
     ['jwt', 'eyJabcdefgh.eyJabcdefgh.signaturebits', 'signaturebits'],
     ['json password', JSON.stringify({ password: 'hunter2' }), 'hunter2'],
+    ['url credentials', 'postgres://user:hunter2@db.internal/switch', 'hunter2'],
   ])('never lets %s reach disk', (_label, input, secret) => {
     const written = redactSecrets(input);
 
