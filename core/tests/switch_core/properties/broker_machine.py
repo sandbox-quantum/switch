@@ -371,9 +371,10 @@ class BrokerMachine(RuleBasedStateMachine):
                 )
 
         linked = self.linked[owner]
+        # Membership is the gateway's to check, before the broker is asked: a
+        # person outside the workspace cannot reach the grant route.
         allowed = (
             actor == owner
-            and self.member[owner]
             and linked is not None
             and linked.active
             and (access == "read" or linked.consent == "write")
@@ -386,9 +387,7 @@ class BrokerMachine(RuleBasedStateMachine):
                 f"{error.message}"
             )
             return
-        assert allowed or (actor == owner and linked is not None and linked.active), (
-            f"{actor} granted {agent} {access}, which the model refuses"
-        )
+        assert allowed, f"{actor} granted {agent} {access}, which the model refuses"
         assert linked is not None
         previous = self.granted[agent]
         if previous is None:
