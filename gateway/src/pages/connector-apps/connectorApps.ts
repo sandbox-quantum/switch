@@ -54,6 +54,7 @@ export interface SecretField {
 
 const GOOGLE = "google-workspace";
 const AIRTABLE = "airtable";
+const BIGQUERY = "bigquery";
 const GITLAB = "gitlab";
 
 export function vendorName(app: Pick<ConnectorApp, "slug" | "kind" | "name">): string {
@@ -331,6 +332,37 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === BIGQUERY)
+    return [
+      {
+        text: "In Google Cloud, create a project for Switch, or pick one. The BigQuery API is on in a new project.",
+        copy: [],
+        link: { label: "Create a project", href: "https://console.cloud.google.com/projectcreate" },
+        items: [],
+      },
+      {
+        text: "In Google Auth Platform, under Branding, enter an app name people will recognise and a support email. Under Audience, choose who can sign in: Internal for your organization only, or External with each person added as a test user until the app is published.",
+        copy: [],
+        link: { label: "Open Branding", href: "https://console.cloud.google.com/auth/branding" },
+        items: [],
+      },
+      {
+        text: "Under Clients, create a client of type Web application.",
+        copy: [],
+        link: { label: "Open Clients", href: "https://console.cloud.google.com/auth/clients" },
+        items: [],
+      },
+      redirectStep(
+        "Under Authorized redirect URIs, add each of these, create the client, and copy its Client ID and Client secret:",
+        app.redirect_uris,
+      ),
+      {
+        text: "Give each person who connects the roles BigQuery MCP Tool User, BigQuery Job User and BigQuery Data Viewer on the project, or more where agents should change data.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === AIRTABLE)
     return [
       {
@@ -514,6 +546,7 @@ const HELM_VALUES: Record<string, string> = {
   github: "switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath",
   [GOOGLE]: "switchCore.googleWorkspaceClientSecret",
   [AIRTABLE]: "switchCore.airtableClientSecret",
+  [BIGQUERY]: "switchCore.bigqueryClientSecret",
   [GITLAB]: "switchCore.gitlabClientSecret",
 };
 

@@ -32,6 +32,7 @@ export const MARK_COLOR: Readonly<Record<string, { light: string; dark: string }
   gitlab: { light: "#FC6D26", dark: "#FC6D26" },
   atlassian: { light: "#0052CC", dark: FOREGROUND },
   bitbucket: { light: "#0052CC", dark: FOREGROUND },
+  bigquery: { light: "#669DF6", dark: "#669DF6" },
   box: { light: "#0061D5", dark: FOREGROUND },
   datadog: { light: "#632CA6", dark: FOREGROUND },
   "new-relic": { light: FOREGROUND, dark: "#1CE783" },
