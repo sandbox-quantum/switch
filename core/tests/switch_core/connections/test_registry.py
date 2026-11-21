@@ -85,6 +85,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
         "linear",
         "notion",
         "sentry",
+        "snowflake",
     }
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
@@ -445,7 +446,7 @@ async def test_a_key_that_never_expires_is_neither_connected_nor_granted(
     assert example is not None
     assert (example.code, example.reason) == (
         "key_never_expires",
-        "Example keys do not expire and only Example can revoke them, so Switch "
+        "Example keys are long-lived and only Example can revoke them, so Switch "
         "does not hand them to agents.",
     )
     assert await connectable(broker, "example") is False

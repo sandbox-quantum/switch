@@ -74,6 +74,7 @@ class TestList:
                             "logs_read_data), user_access_read to keep grants."
                         ),
                         "choices": None,
+                        "pattern": None,
                     }
                 ],
                 "help_url": (

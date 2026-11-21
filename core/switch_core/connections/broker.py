@@ -461,8 +461,9 @@ def _server_url(entry: Connection, server: McpServer, choices: dict[str, str]) -
 
 
 def _never_expires(name: str) -> str:
+    # Some keys never expire (Datadog's), some last up to a year (Snowflake's).
     return (
-        f"{name} keys do not expire and only {name} can revoke them, so Switch "
+        f"{name} keys are long-lived and only {name} can revoke them, so Switch "
         "does not hand them to agents."
     )
 
