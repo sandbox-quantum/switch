@@ -139,6 +139,13 @@ class Post(Operation):
     addressed: frozenset[str] = frozenset()
     # The agents it names whose policy shut the sender out when it was decided.
     refused: frozenset[str] = frozenset()
+    # An agent joined the room while it waited for the room's lock, so the
+    # router decides it again under the lock: the agents refused by the
+    # policies then. Which decision's policies it applies is the router's to
+    # choose; either is a decision at the write, as long as one applies to
+    # the whole row.
+    joined_while_waiting: bool = False
+    refused_at_lock: frozenset[str] | None = None
     gate: asyncio.Future[str] | None = None
     seq: int = 0
     # The events it numbered, read in its own transaction before it ends: after
@@ -431,6 +438,8 @@ class Delivery(RuleBasedStateMachine):
                         )
                     ).all()
                 ]
+                if post.joined_while_waiting:
+                    post.refused_at_lock = post.addressed & frozenset(self.restricted)
                 post.state = "parked"
                 assert post.gate is not None
                 decision = await post.gate
@@ -470,7 +479,21 @@ class Delivery(RuleBasedStateMachine):
         names = {agent.id: name for name, (agent, _) in self.agents.items()}
         stored = post.stored
         note(f"a commit stores events for {len(stored)} of the agents")
-        allowed = post.addressed - post.refused
+        names_stored = {names[agent_id] for agent_id, _ in stored}
+        decisions = [post.refused]
+        if post.refused_at_lock is not None:
+            note("a join lands while a post waits for the lock")
+            decisions.append(post.refused_at_lock)
+        allowed = next(
+            (
+                post.addressed - refused
+                for refused in decisions
+                if post.stable & (post.addressed - refused)
+                <= names_stored
+                <= post.addressed - refused
+            ),
+            post.addressed - post.refused,
+        )
         self.tick += 1
         row = Row(
             seq=post.seq,
@@ -535,6 +558,9 @@ class Delivery(RuleBasedStateMachine):
         client = self.agents[agent][1]
         self.run(self._join(client, self.agents[agent][0], self.rooms[room]))
         self.members[room].add(agent)
+        for post in self.posts.values():
+            if post.room == room and post.state == "running":
+                post.joined_while_waiting = True
 
     # ── Retention ─────────────────────────────────────────────────────────────
 
@@ -915,9 +941,17 @@ class Delivery(RuleBasedStateMachine):
         agent, room = absentees[pick % len(absentees)]
         self.join(agent, room)
 
+    # One agent at a time shuts the sender out, so that rows for both agents
+    # stay as common as the runs need them.
+    @precondition(lambda self: not self.restricted)
     @rule(agent=st.sampled_from(AGENTS))
-    def change_policy(self, agent: str) -> None:
-        self.set_policy(agent, agent not in self.restricted)
+    def restrict_policy(self, agent: str) -> None:
+        self.set_policy(agent, True)
+
+    @precondition(lambda self: bool(self.restricted))
+    @rule()
+    def open_policy(self) -> None:
+        self.set_policy(next(iter(self.restricted)), False)
 
     @precondition(lambda self: any(self.owed.values()))
     @rule(choice=st.integers(min_value=0, max_value=20))

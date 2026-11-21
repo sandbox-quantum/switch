@@ -102,3 +102,48 @@ def test_event_is_not_stored_for_an_agent_that_left_after_the_decision(
     finally:
         machine.teardown()
     assert COVERAGE["a leave waits for a lock"] >= 1
+
+
+@pytest.mark.parametrize("restricted_first", [True, False])
+def test_a_row_decided_again_under_the_lock_uses_the_policy_then(
+    postgres_schema: str, restricted_first: bool
+) -> None:
+    """A transaction decides a row for alpha, then waits for the room's lock.
+    Meanwhile alpha's policy changes and beta joins the room, so the router
+    decides the row again under the lock. Its events must follow one of the
+    two decisions, whole."""
+    COVERAGE.clear()
+    machine = machine_on(postgres_schema)()
+    try:
+        machine.begin_leave("beta", "r1")
+        machine.check_all()
+        if not restricted_first:
+            machine.set_policy("alpha", True)
+        machine.begin_post(1, "r1", frozenset())
+        machine.begin_post(2, "r1", frozenset({"alpha"}))
+        machine.set_policy("alpha", restricted_first)
+        machine.join("beta", "r1")
+        machine.end_post(1, "commit")
+        machine.end_post(2, "commit")
+        machine.check_all()
+    finally:
+        machine.teardown()
+    assert COVERAGE["a join lands while a post waits for the lock"] == 1
+
+
+def test_a_row_is_not_for_an_agent_whose_policy_shuts_the_sender_out(
+    postgres_schema: str,
+) -> None:
+    """A row naming two agents is for only the one whose policy lets the
+    sender in, and opening the other's policy later does not make it theirs."""
+    COVERAGE.clear()
+    machine = machine_on(postgres_schema)()
+    try:
+        machine.set_policy("alpha", True)
+        machine.begin_post(1, "r1", frozenset({"alpha", "beta"}))
+        machine.end_post(1, "commit")
+        machine.set_policy("alpha", False)
+        machine.check_all()
+        assert machine.rows["r1"][0].stored == {"beta"}
+    finally:
+        machine.teardown()
