@@ -18,7 +18,6 @@ from switch_core.connections.loader import (
 PLACEHOLDERS = {
     "asana",
     "bitbucket",
-    "microsoft-365",
     "new-relic",
     "salesforce",
     "box",
@@ -29,6 +28,7 @@ PLACEHOLDERS = {
 
 def test_shipped_catalog_enables_its_live_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
+        "microsoft-365",
         "github",
         "airtable",
         "atlassian",
@@ -71,6 +71,39 @@ def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
+
+
+def test_the_microsoft_365_draft_stays_disabled_and_names_entras_endpoints():
+    entry = CATALOG["microsoft-365"]
+    definition = entry.definition
+    oauth = definition.auth.oauth
+    assert oauth is not None and definition.access is not None
+    assert not definition.enabled and not entry.skill_files
+    assert (oauth.registration, oauth.client_settings, oauth.redirect) == (
+        "static",
+        "MICROSOFT_365",
+        ["core"],
+    )
+    # Entra's metadata does not advertise S256, so the endpoints are named.
+    entra = "https://login.microsoftonline.com/organizations/oauth2/v2.0"
+    assert (oauth.authorization_url, oauth.token_url) == (
+        f"{entra}/authorize",
+        f"{entra}/token",
+    )
+    assert definition.auth.refresh == "reusable"
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("work-iq", "https://workiq.svc.cloud.microsoft/mcp")
+    ]
+    assert oauth.revocation_url is None and oauth.remove_access is not None
+    assert definition.auth.identity is None
+    assert definition.access.write is None
+    assert definition.access.read.scopes == [
+        "openid",
+        "profile",
+        "offline_access",
+        "api://workiq.svc.cloud.microsoft/WorkIQ.Read",
+    ]
 
 
 # Identity arguments are fixed self-references that the vendor documents as
