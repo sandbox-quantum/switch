@@ -18,6 +18,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     AgentIdentity,
+    MessagePartlySent,
     PlatformAdapter,
     RichContent,
     RichContentFailed,
@@ -112,6 +113,10 @@ _IMPERSONATE_REFUSED = re.compile(r"permission|not-allowed", re.IGNORECASE)
 # back, moving to the next delay each time it fails again and staying at the last.
 _UNRELAYED_RETRY_SECONDS = (5.0, 30.0, 120.0, 300.0)
 
+# A command: `!`, a name starting with a letter, and its arguments after any
+# whitespace. Anything else that starts with `!` (`!!!`, `! look`) is a message.
+_COMMAND = re.compile(r"!([A-Za-z][\w-]*)(?:\s+(.*))?", re.DOTALL)
+
 
 def _split_server_url(value: str) -> tuple[str, str, int | None, str]:
     parts = urlsplit(value.strip())
@@ -122,6 +127,11 @@ def _split_server_url(value: str) -> tuple[str, str, int | None, str]:
         )
     if parts.query or parts.fragment:
         raise ValueError("server_url must not carry a query or a fragment")
+    if parts.username is not None or parts.password is not None:
+        raise ValueError(
+            "server_url must not carry a user name or password; the bot user ID "
+            "and personal access token go in their own fields"
+        )
     try:
         port = parts.port
     except ValueError as exc:
@@ -482,15 +492,17 @@ class RocketChatAdapter(PlatformAdapter):
             room_id = subscription.get("rid")
             if not room_id or subscription.get("archived"):
                 continue
+            room_id = str(room_id)
             try:
-                await self._read_back(str(room_id), subscription)
+                await self._read_back(room_id, subscription)
             except Exception:
                 # The room stays unread from where it stopped, and is read
-                # back from there next time. The other rooms go on.
+                # back from there soon. The other rooms go on.
+                self._unrelayed.add(room_id)
+                self._schedule_read_back(room_id)
                 logger.exception(
                     "Could not read back what was said in Rocket.Chat room %s "
-                    "while Switch was not listening; it is tried again on the "
-                    "next reconnect",
+                    "while Switch was not listening; trying again",
                     room_id,
                 )
 
@@ -636,25 +648,27 @@ class RocketChatAdapter(PlatformAdapter):
         # it is not that person speaking.
         from_integration = bool(message.get("bot"))
 
-        if stripped.startswith("!"):
+        # A message with a file is never a command, so the file is not lost.
+        has_files = bool(message.get("files") or message.get("file"))
+        command = None if has_files else _COMMAND.fullmatch(stripped)
+        if command is not None:
             if from_integration:
                 logger.warning(
-                    "Ignoring command %r posted by an integration in Rocket.Chat "
+                    "Ignoring command !%s posted by an integration in Rocket.Chat "
                     "room %s: a command must come from a person",
-                    stripped.split(None, 1)[0],
+                    command.group(1),
                     room_id,
                 )
                 return
             if self._on_command is not None:
-                command, _, args = stripped.partition(" ")
                 await self._on_command(
                     InboundCommand(
                         channel_id=room_id,
                         channel_type=channel_type,
                         sender_id=sender_id,
                         sender_name=sender_name,
-                        command=command.lstrip("!"),
-                        args=args.strip(),
+                        command=command.group(1),
+                        args=(command.group(2) or "").strip(),
                         message_ref=str(message["_id"]),
                         root_id=root_id,
                         channel_name=room_name,
@@ -966,10 +980,13 @@ class RocketChatAdapter(PlatformAdapter):
         the first part's id. Every part goes where the first went, in order.
 
         Raises if the first part is refused, when nothing has been posted. A
-        later part refused is logged, and the parts already posted stand.
+        later part refused leaves the parts already posted, a notice saying
+        the rest is missing, and `MessagePartlySent`, so the caller records
+        the message as sent rather than posting those parts again.
         """
+        parts = split_markdown(text, _MAX_MESSAGE)
         first: str | None = None
-        for part in split_markdown(text, _MAX_MESSAGE):
+        for index, part in enumerate(parts):
             body: dict[str, Any] = {"roomId": channel_id, "text": part, **identity}
             if thread_root_id:
                 body["tmid"] = thread_root_id
@@ -979,14 +996,47 @@ class RocketChatAdapter(PlatformAdapter):
                 if first is None:
                     raise
                 logger.error(
-                    "Rocket.Chat refused the rest of a long message in room %s "
-                    "after its first part was posted: %s",
+                    "Rocket.Chat refused part %d of %d of a message in room %s: %s",
+                    index + 1,
+                    len(parts),
                     channel_id,
                     error,
                 )
-                return first
+                await self._note_truncation(
+                    channel_id, thread_root_id, index, len(parts)
+                )
+                raise MessagePartlySent(
+                    platform="Rocket.Chat",
+                    first_ref=first,
+                    delivered=index,
+                    total=len(parts),
+                ) from error
             first = first or str(posted["message"]["_id"])
         return first
+
+    async def _note_truncation(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        delivered: int,
+        total: int,
+    ) -> None:
+        body: dict[str, Any] = {
+            "roomId": channel_id,
+            "text": f"⚠️ Only {delivered} of {total} parts of this message could "
+            "be delivered — Rocket.Chat refused the rest.",
+        }
+        if thread_root_id:
+            body["tmid"] = thread_root_id
+        try:
+            await self._api.post("chat.postMessage", body)
+        except (RocketChatApiError, httpx.HTTPError):
+            logger.exception(
+                "Failed to post the Rocket.Chat notice that a message is missing "
+                "its last %d parts; nothing in room %s says it is cut short",
+                total - delivered,
+                channel_id,
+            )
 
     @staticmethod
     def _not_posted(channel_id: str, error: Exception) -> str | None:
@@ -1046,6 +1096,13 @@ class RocketChatAdapter(PlatformAdapter):
     async def _update(self, channel_id: str, message_ref: str, text: str) -> None:
         # An edit is one message, so text too long for one is cut, not split.
         if len(text) > _MAX_MESSAGE:
+            logger.warning(
+                "An edit to Rocket.Chat message %s is %d characters, over the %d "
+                "one message holds; it is cut to fit",
+                message_ref,
+                len(text),
+                _MAX_MESSAGE,
+            )
             text = text[: _MAX_MESSAGE - 1] + "…"
         await self._api.post(
             "chat.update",

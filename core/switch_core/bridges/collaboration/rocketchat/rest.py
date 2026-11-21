@@ -90,7 +90,13 @@ class RocketChatRest:
     def _json(response: httpx.Response) -> dict[str, Any]:
         if response.status_code != 200:
             raise _error_of(response)
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError:
+            raise RocketChatApiError(
+                response.status_code,
+                f"HTTP {response.status_code}, with an answer that is not JSON",
+            ) from None
         if not isinstance(body, dict) or body.get("success") is False:
             raise _error_of(response)
         return body

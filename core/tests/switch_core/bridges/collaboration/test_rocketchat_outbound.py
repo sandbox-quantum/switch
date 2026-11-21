@@ -11,6 +11,7 @@ import pytest
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     AgentPresentation,
+    MessagePartlySent,
     RichContentFailed,
     TurnActivity,
 )
@@ -94,6 +95,35 @@ async def test_a_long_message_is_split_in_order_into_the_same_thread(
         post["tmid"] == "root" and post["alias"] == "Coder [bot]" for post in posts
     )
     assert "\n".join(post["text"] for post in posts) == body
+
+
+async def test_a_message_cut_short_says_so_and_is_reported_as_partly_sent(
+    adapter: RocketChatAdapter, fake: FakeRocketChat
+) -> None:
+    posted = 0
+
+    def post(call: Call) -> Any:
+        nonlocal posted
+        posted += 1
+        if posted == 2:
+            return refused(400, "[error-message-size-exceeded]")
+        return {"message": {"_id": f"posted-{posted}"}}
+
+    fake.on("chat.postMessage", post)
+    body = "\n".join(f"line {i:04d} " + "x" * 90 for i in range(100))
+    with pytest.raises(MessagePartlySent) as caught:
+        await adapter.send_message(ROOM, "coder", body, "root")
+
+    assert (caught.value.first_ref, caught.value.delivered, caught.value.total) == (
+        "posted-1",
+        1,
+        3,
+    )
+    # The third part is not sent; a notice from the bot says the rest is missing.
+    *_, notice = _posts(fake)
+    assert len(_posts(fake)) == 3
+    assert notice["tmid"] == "root" and "alias" not in notice
+    assert notice["text"].startswith("⚠️ Only 1 of 3 parts")
 
 
 async def test_a_split_never_tears_a_code_block(
@@ -218,7 +248,7 @@ async def test_a_notice_is_the_bot_speaking_rendered_for_rocket_chat(
 
 
 async def test_an_edit_and_a_delete_address_the_message(
-    adapter: RocketChatAdapter, fake: FakeRocketChat
+    adapter: RocketChatAdapter, fake: FakeRocketChat, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake.on("chat.update", lambda _: {"message": {}})
     fake.on("chat.delete", lambda _: {})
@@ -228,6 +258,7 @@ async def test_an_edit_and_a_delete_address_the_message(
     [update] = fake.called("chat.update")
     assert update.body["msgId"] == "m1" and update.body["roomId"] == ROOM
     assert len(update.body["text"]) == 4000 and update.body["text"].endswith("…")
+    assert "it is cut to fit" in caplog.text
     assert fake.called("chat.delete")[0].body == {"roomId": ROOM, "msgId": "m1"}
 
 
