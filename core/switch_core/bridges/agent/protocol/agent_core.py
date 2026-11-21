@@ -2003,7 +2003,7 @@ class AgentCore:
         notice is posted to the room in place of it.
         """
         logger.debug(
-            "[AGENT-MSG] agent=%s room=%s content=%s", agent_id, room_id, content[:80]
+            "[AGENT-MSG] agent=%s room=%s length=%d", agent_id, room_id, len(content)
         )
         room = await self.require_room_poster(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
