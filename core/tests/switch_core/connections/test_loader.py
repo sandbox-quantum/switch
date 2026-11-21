@@ -70,6 +70,16 @@ def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages
             assert definition.links is not None, slug
 
 
+def test_microsoft_365_stays_a_placeholder_until_work_iq_auth_is_validated():
+    connection = CATALOG["microsoft-365"]
+
+    assert not connection.definition.enabled
+    assert connection.definition.adapter is None
+    assert connection.definition.auth.oauth is None
+    assert connection.definition.auth.identity is None
+    assert not connection.skill_files
+
+
 GOOGLE = "https://www.googleapis.com/auth/"
 
 
