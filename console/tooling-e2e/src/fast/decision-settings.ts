@@ -79,7 +79,15 @@ export const decisionSettings: FastScenario = {
       );
     }
     expect(before.workspace).toBeNull();
+    // What a workspace may choose comes from the decision service's /health
+    // (or the server's configuration, for a service that lists nothing).
+    const options = before.options as Record<string, unknown>;
+    for (const choice of ['haiku_anthropic', 'haiku_bedrock', 'self_hosted', 'gemini']) {
+      expect(typeof options[choice], choice).toBe('boolean');
+    }
+    expect(['service', 'configuration', 'unavailable', 'none']).toContain(options.source);
     log(`decision settings start on the server default: ${JSON.stringify(before.server_default)}`);
+    log(`offered: ${JSON.stringify(options)}`);
 
     try {
       // ── Test with nothing saved ───────────────────────────────────────────

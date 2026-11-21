@@ -280,6 +280,7 @@ def decision_record_fields(
     if answer is not None:
         fields.update(
             model=answer.model,
+            answered_by=answer.backend,
             model_choice=(answer.model_choice or "")[:60] or None,
             confidence=answer.confidence,
             threshold=answer.threshold,
