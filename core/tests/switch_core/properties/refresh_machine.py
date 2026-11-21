@@ -52,6 +52,7 @@ RESOURCES = {"installation_id": 7, "repository_ids": [70, 71]}
 # Long enough that a second refresh that is not kept apart starts inside it.
 REFRESH_SECONDS = 0.05
 BURST_SECONDS = 30.0
+UNAVAILABLE = "The vendor is unavailable."
 
 COVERAGE: Counter[str] = Counter()
 SHOULD_REACH = (
@@ -93,15 +94,18 @@ class RotatingVendor(FakeVendor):
         if self.current[family] != given:
             self.reused.append(given)
             raise ReauthorizationRequiredError(f"{given} was already used.")
-        await asyncio.sleep(REFRESH_SECONDS)
         if self.failing:
             self.failing -= 1
-            raise ServiceUnavailableError("The vendor is unavailable.")
+            await asyncio.sleep(REFRESH_SECONDS)
+            raise ServiceUnavailableError(UNAVAILABLE)
+        # Spent on arrival, so a second refresh that overlaps this one is
+        # refused as reuse.
         self.spent += 1
         number = int(given.rsplit(".", 1)[1]) + 1
         token = f"{family}.{number}"
         self.current[family] = token
         self.family[token] = family
+        await asyncio.sleep(REFRESH_SECONDS)
         return ConnectionSecret(
             {
                 **secret.values,
@@ -272,7 +276,7 @@ class RefreshMachine(RuleBasedStateMachine):
         the processes. A caller that gives up is cancelled while the refresh
         is under way."""
 
-        async def go() -> list[object]:
+        async def go() -> tuple[int, list[object]]:
             await self._age(when)
             values, _, _ = await self._stored()
             stale = values["expires_at"] <= time.time() + REFRESH_BEFORE.total_seconds()
@@ -308,10 +312,13 @@ class RefreshMachine(RuleBasedStateMachine):
                     while broker._fetching:
                         await asyncio.sleep(0.01)
             refreshed = self.vendor.spent - spent
-            assert refreshed <= 1 + int(sign_in_again), (
-                f"one burst spent {refreshed} refresh tokens"
-            )
-            if stale and not sign_in_again and not failing:
+            # A sign-in during the burst is stored fresh, so it is never
+            # refreshed there: one refresh at most, either way.
+            assert refreshed <= 1, f"one burst spent {refreshed} refresh tokens"
+            # Callers that all gave up may have gone before any reached the
+            # fetch.
+            waited = not all(gives_up for _, _, gives_up in callers)
+            if stale and waited and not sign_in_again and not failing:
                 assert refreshed == 1, (
                     f"an expiring token was refreshed {refreshed} times in a burst"
                 )
@@ -321,9 +328,9 @@ class RefreshMachine(RuleBasedStateMachine):
                 COVERAGE["a refresh failed"] += 1
             if len({process for process, _, _ in callers}) > 1:
                 COVERAGE["a burst across processes"] += 1
-            return outcomes[: len(callers)]
+            return failing, outcomes[: len(callers)]
 
-        outcomes = self.run(go())
+        failing, outcomes = self.run(go())
         for (process, agent, gives_up), outcome in zip(callers, outcomes, strict=True):
             if isinstance(outcome, asyncio.CancelledError):
                 assert gives_up, (
@@ -333,9 +340,9 @@ class RefreshMachine(RuleBasedStateMachine):
                 )
                 continue
             if isinstance(outcome, ServiceError):
-                # Only a refresh the vendor could not answer, which the caller
-                # may retry.
-                assert outcome.retryable and outcome.status_code == 503, (
+                # Only a refresh the vendor could not answer, in a burst where
+                # it was failing. A lock that timed out is not one.
+                assert failing and outcome.message == UNAVAILABLE, (
                     f"{agent} asking through process {process} was refused: "
                     f"{outcome.code} {outcome.message}"
                 )
