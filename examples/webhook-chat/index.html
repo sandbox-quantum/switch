@@ -1,0 +1,123 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>webhook-chat</title>
+<style>
+  body { font: 15px system-ui, sans-serif; max-width: 760px; margin: 1rem auto; padding: 0 1rem; }
+  header, form { display: flex; gap: .5rem; margin-bottom: .75rem; }
+  header input { flex: 1; }
+  .msg, .card { border: 1px solid #ddd; border-radius: 8px; padding: .5rem .75rem; margin: .4rem 0; }
+  .reply { margin-left: 2rem; }
+  .user { background: #eef4ff; }
+  .card { background: #fafafa; }
+  .who { font-weight: 600; font-size: 13px; }
+  .body, pre { white-space: pre-wrap; margin: .25rem 0; font: inherit; }
+  small, .edited { color: #777; }
+  button { cursor: pointer; }
+  #typing { height: 1.2rem; color: #777; font-style: italic; }
+</style>
+<header>
+  <input id="channel" value="general" aria-label="channel id">
+  <input id="name" value="you" aria-label="your name">
+  <button id="join" title="Tell Switch this channel exists so it can make a room">Announce channel</button>
+</header>
+<div id="log"></div>
+<div id="typing"></div>
+<form id="form">
+  <input id="text" style="flex:1" placeholder="Message, or !command" autocomplete="off">
+  <input id="file" type="file">
+  <button>Send</button>
+</form>
+<small id="threadnote"></small>
+<script>
+const $ = (id) => document.getElementById(id);
+let thread = null;
+
+const api = (path, body) => fetch(path, {
+  method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+}).then((r) => { if (!r.ok) r.text().then((t) => alert(t)); });
+
+const base = () => ({
+  channel_id: $("channel").value, sender_id: $("name").value, sender_name: $("name").value,
+});
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function button(label, onclick) {
+  const b = el("button", "", label);
+  b.onclick = onclick;
+  return b;
+}
+
+function press(item, control) {
+  api("/api/interact", {
+    ...base(), message_id: item.id, action_id: control.action_id, value: control.value,
+    thread_root_id: item.thread_root_id,
+  });
+}
+
+function attachments(list) {
+  const box = el("div");
+  for (const a of list) {
+    const href = "data:" + a.mimetype + ";base64," + a.data_base64;
+    if (a.mimetype.startsWith("image/")) {
+      const img = el("img"); img.src = href; img.style.maxWidth = "240px"; box.append(img);
+    } else {
+      const link = el("a", "", a.filename + (a.size === undefined ? "" : " (" + a.size + " bytes)"));
+      link.href = href; link.download = a.filename; box.append(link, el("br"));
+    }
+  }
+  return box;
+}
+
+function draw(item) {
+  if (item.kind === "message") {
+    const box = el("div", "msg" + (item.sender_type === "user" ? " user" : "") + (item.thread_root_id ? " reply" : ""));
+    box.append(el("div", "who", item.sender), el("div", "body", item.content));
+    if (item.edited) box.append(el("span", "edited", "(edited) "));
+    if (item.attachments.length) box.append(attachments(item.attachments));
+    box.append(button("reply", () => { thread = item.thread_root_id || item.id; $("threadnote").textContent = "Replying in a thread"; }));
+    return box;
+  }
+  const box = el("div", "card");
+  box.append(el("div", "who", item.sender), el("pre", "", item.text));
+  if (item.kind === "activity") {
+    if (item.log) box.append(el("pre", "", item.log));
+    if (item.interrupt) box.append(button(item.interrupt.label, () => press(item, item.interrupt)));
+  } else {
+    for (const c of item.controls) box.append(button(c.position + ". " + c.label, () => press(item, c)));
+  }
+  return box;
+}
+
+async function refresh() {
+  const state = await (await fetch("/api/state?channel=" + encodeURIComponent($("channel").value))).json();
+  $("log").replaceChildren(...state.items.map(draw));
+  $("typing").textContent = state.typing.length ? state.typing.join(", ") + " typing…" : "";
+}
+
+$("form").onsubmit = async (event) => {
+  event.preventDefault();
+  const message = {...base(), text: $("text").value};
+  if (thread) message.thread_root_id = thread;
+  const file = $("file").files[0];
+  if (file) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (const b of bytes) binary += String.fromCharCode(b);
+    message.attachments = [{filename: file.name, mimetype: file.type || "application/octet-stream", data_base64: btoa(binary)}];
+  }
+  if (!message.text && !file) return;
+  await api("/api/send", message);
+  $("text").value = ""; $("file").value = ""; thread = null; $("threadnote").textContent = "";
+  refresh();
+};
+
+$("join").onclick = () => api("/api/join", {channel_id: $("channel").value});
+setInterval(refresh, 1000);
+refresh();
+</script>
