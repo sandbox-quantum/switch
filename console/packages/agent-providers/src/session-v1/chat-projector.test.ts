@@ -282,6 +282,20 @@ describe('service tokens in streamed text', () => {
   });
 });
 
+describe('a turn withdrawn from the queue', () => {
+  it('is projected as a cancelled turn row, tied to the command that queued it', () => {
+    const projector = new ChatProjector(session('codex'), null);
+    projector.bindTurn('turn', context);
+    expect(projector.cancel('turn')).toEqual([
+      { type: 'turn.upsert', turnId: 'turn', status: 'cancelled', commandId: 'command' },
+    ]);
+  });
+
+  it('refuses a turn that was never bound', () => {
+    expect(() => new ChatProjector(session('codex'), null).cancel('turn')).toThrow();
+  });
+});
+
 describe('subagent projection', () => {
   function child(
     id: string,

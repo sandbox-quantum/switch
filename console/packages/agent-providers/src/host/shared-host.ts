@@ -5,7 +5,7 @@ import { commandSchema, hasOwnActivity } from '@switch-console/shared/session-v1
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
-import { ActivityReporter, type Report } from './activity-reporter';
+import { ActivityReporter, asInterrupted, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
@@ -13,6 +13,7 @@ import { agentHasOwnUser } from './host-permissions';
 import { describeToolsFor } from './mcp-tool-descriptions';
 import { Redactions } from './redaction';
 import {
+  cancelRefusal,
   followupCommandId,
   retryRefusal,
   roomControlFollowup,
@@ -561,7 +562,14 @@ export async function runSharedHost(
               `Switch does not accept subagent metadata; reporting ${row.item_id} as tool activity.`
             );
             report = { kind: 'activity', row };
-          } else throw error;
+          } else {
+            const interrupted = asInterrupted(report);
+            if (!interrupted) throw error;
+            console.warn(
+              `Switch refused a cancelled turn, so it is reported to it as interrupted: ${error.message}`
+            );
+            report = interrupted;
+          }
         }
       }
     };
@@ -886,6 +894,27 @@ export async function runSharedHost(
           .catch((error: unknown) =>
             console.warn(
               `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
+            )
+          );
+      // A cancel refused (the message already started, or is not the asker's) is answered where it was asked.
+      if (
+        command.body.type === 'turn.cancel' &&
+        status?.status === 'rejected' &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection &&
+        command.origin.roomId
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: command.origin.roomId,
+            threadId: command.origin.threadId,
+            body: cancelRefusal(status.message),
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${command.origin.roomId} that its cancel was refused: ${String(error)}`
             )
           );
       // A fresh conversation starts with the instructions this host was given,
