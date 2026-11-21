@@ -401,6 +401,12 @@ _SESSION_DEPENDENT = CommandCapabilities(
         (
             "junie",
             "Junie CLI",
+            ["Bash", "Edit", "Write", "Read", "Grep", "Glob", "WebSearch"],
+            [],
+        ),
+        (
+            "kimi",
+            "Kimi Code CLI",
             [
                 "Bash",
                 "Edit",
@@ -409,6 +415,8 @@ _SESSION_DEPENDENT = CommandCapabilities(
                 "Grep",
                 "Glob",
                 "WebSearch",
+                "FetchURL",
+                "Agent",
             ],
             [],
         ),

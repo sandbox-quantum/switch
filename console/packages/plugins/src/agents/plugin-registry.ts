@@ -13,6 +13,7 @@ import { provider as deepseekHarness } from './impl/deepseek-harness';
 import { provider as droid } from './impl/droid';
 import { provider as goose } from './impl/goose';
 import { provider as junie } from './impl/junie';
+import { provider as kimi } from './impl/kimi';
 import { provider as kiro } from './impl/kiro';
 import { provider as mistralVibe } from './impl/mistral-vibe';
 import { provider as opencode } from './impl/opencode';
@@ -38,6 +39,7 @@ for (const p of [
   droid,
   cline,
   junie,
+  kimi,
 ]) {
   pluginRegistry.register(p);
 }
