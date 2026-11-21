@@ -36,6 +36,11 @@ properties:
       step, the membership rows and the `ChatOwnerGrant` marks must match it.
       A creator who left their chat still manages it (adds agents, invites),
       because managing follows the room's owner, not its membership.
+      `sync_owned_rooms` does nothing for someone outside the workspace, and
+      rejoining does not sync. That leaves no stale membership only because
+      the removal route refuses anyone who still owns an agent: they hand
+      their agents on first, while still a member, and that syncs them. The
+      machine removes only people who own no agent, for the same reason.
   - id: chats.streams-close-on-sign-out
     title: Signing out closes a person's streams
     statement: >

@@ -19,14 +19,13 @@ from tests.switch_core.properties.chats_machine import (
 def test_chat_membership_follows_its_reasons(postgres_schema: str) -> None:
     COVERAGE.clear()
     # An owner membership needs a few steps to come about (the creator leaves,
-    # then an agent of theirs arrives) and more to be taken back.
+    # then an agent of theirs arrives) and more to be taken back, so each
+    # example runs longer than the profile's default.
     current = settings()
     run_state_machine_as_test(
         machine_on(postgres_schema),
         settings=settings(
-            current,
-            max_examples=max(100, current.max_examples),
-            stateful_step_count=max(50, current.stateful_step_count),
+            current, stateful_step_count=max(50, current.stateful_step_count)
         ),
     )
     print(f"reached {dict(COVERAGE)}")

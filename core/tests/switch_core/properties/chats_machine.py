@@ -49,7 +49,8 @@ from tests.switch_core.gateway.conftest import (
     _FakeListener,
 )
 
-PEOPLE = ("alice", "bob")
+# carol owns no agent, so she can leave the workspace whenever the steps say.
+PEOPLE = ("alice", "bob", "carol")
 ADMIN = "admin"
 EVERYONE = (*PEOPLE, ADMIN)
 AGENTS = {"alice-bot": "alice", "bob-bot": "bob", "admin-bot": ADMIN}
@@ -111,6 +112,7 @@ class ChatsMachine(RuleBasedStateMachine):
         self.owner = dict(AGENTS)
         self.chats: list[Chat] = []
         self.requests = 0
+        self.counting = False
         # Start with a chat each kind of owner rule turns on: one with someone
         # else's agent, one with the other person's, one with the creator's own.
         self.create_chat("alice", "admin-bot")
@@ -122,6 +124,11 @@ class ChatsMachine(RuleBasedStateMachine):
         self.leave("alice", first)  # type: ignore[arg-type]
         self.add_agent("alice", "alice-bot", first)  # type: ignore[arg-type]
         assert self.chats[0].members == {"alice": "owner"}
+        # And carol, invited to bob's chat, so her leaving the workspace has a
+        # chat to be refused.
+        self.invite("bob", "carol", _Drawn(self.chats[1]))  # type: ignore[arg-type]
+        # Coverage measures what the search reaches, not the set-up.
+        self.counting = True
 
     async def _seed(self) -> None:
         async with self.factory() as session:
@@ -160,6 +167,10 @@ class ChatsMachine(RuleBasedStateMachine):
             self.loop.close()
             self._scope.__exit__(None, None, None)
 
+    def _count(self, what: str) -> None:
+        if self.counting:
+            COVERAGE[what] += 1
+
     # ── The model ────────────────────────────────────────────────────────────
 
     def _owner_joins(self, person: str, chat: Chat) -> bool:
@@ -179,10 +190,10 @@ class ChatsMachine(RuleBasedStateMachine):
             held = chat.members.get(person)
             if held is None and not chat.archived and self._owner_joins(person, chat):
                 chat.members[person] = "owner"
-                COVERAGE["joined as an owner"] += 1
+                self._count("joined as an owner")
             elif held == "owner" and not self._owner_joins(person, chat):
                 del chat.members[person]
-                COVERAGE["an owner membership taken back"] += 1
+                self._count("an owner membership taken back")
 
     def _sync_room(self, chat: Chat) -> None:
         """Everyone a change to the chat's agents may concern: the owners of
@@ -202,13 +213,13 @@ class ChatsMachine(RuleBasedStateMachine):
             return True
         if not chat.archived and self._owner_joins(person, chat):
             self._sync(person)
-            COVERAGE["joined on reading"] += 1
+            self._count("joined on reading")
             return person in chat.members
         return False
 
     def _make_lasting(self, person: str, chat: Chat) -> None:
         if chat.members.get(person) == "owner":
-            COVERAGE["an owner membership made lasting"] += 1
+            self._count("an owner membership made lasting")
         chat.members[person] = "lasting"
 
     def _expect_refusal(self, call: Any, code: str | None, what: str) -> None:
@@ -269,7 +280,7 @@ class ChatsMachine(RuleBasedStateMachine):
             f"{person} reading {chat.room_id}",
         )
         if not self.member[person]:
-            COVERAGE["refused a reader outside the workspace"] += 1
+            self._count("refused a reader outside the workspace")
 
     @precondition(lambda self: self.chats)
     @rule(person=st.sampled_from(EVERYONE), data=st.data())
@@ -282,7 +293,7 @@ class ChatsMachine(RuleBasedStateMachine):
             code = "NOT_A_MEMBER"
         elif self._owner_joins(person, chat):
             code = "AGENT_OWNER"
-            COVERAGE["refused to remove an owner"] += 1
+            self._count("refused to remove an owner")
         call = self.service.remove_member(
             TENANT_ZERO_ID, self.users[person], chat.room_id, self.users[person].id
         )
@@ -327,7 +338,7 @@ class ChatsMachine(RuleBasedStateMachine):
             code = "NOT_A_MANAGER"
         elif person in chat.members and self._owner_joins(person, chat):
             code = "AGENT_OWNER"
-            COVERAGE["refused to remove an owner"] += 1
+            self._count("refused to remove an owner")
         call = self.service.remove_member(
             TENANT_ZERO_ID, self.users[manager], chat.room_id, self.users[person].id
         )
@@ -455,6 +466,12 @@ class ChatsMachine(RuleBasedStateMachine):
 
     @rule(person=st.sampled_from(PEOPLE))
     def leave_workspace(self, person: str) -> None:
+        """The person is removed from the workspace. The removal route refuses
+        while they own an agent, so only someone who has handed theirs on
+        leaves."""
+        if person in self.owner.values():
+            return
+
         async def go() -> None:
             async with self.factory() as session:
                 await session.execute(
