@@ -184,6 +184,21 @@ async def test_quiet_pod_uses_saved_channel_type(wire):
         await quiet.stop()
 
 
+async def test_unknown_channel_is_public_on_every_pod(wire):
+    holder, _ = await start_adapter(wire)
+    quiet, _ = await start_adapter(wire, listening=False, channels="")
+    quiet.set_holder_relay(lambda request: None)
+    try:
+        assert holder.client is not None
+        assert await quiet.get_channel_type("#unseen") == "channel_public"
+        assert await holder.get_channel_type("#unseen") == "channel_public"
+        await quiet.ensure_channel_subscriptions([("#secret", "channel_private")])
+        assert await quiet.get_channel_type("#secret") == "channel_private"
+    finally:
+        await quiet.stop()
+        await holder.stop()
+
+
 async def test_registration_saves_server_case_mapping_for_quiet_pods(wire):
     wire.mapping = "rfc1459"
     config = {"server": "127.0.0.1", "port": wire.port, "tls": False, "nick": "switch"}

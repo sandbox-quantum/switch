@@ -411,13 +411,13 @@ class IrcAdapter(PlatformAdapter):
             return "direct"
         if not is_channel(channel_id):
             raise ChannelNotBindable("Enter an IRC channel name beginning with # or &")
-        if self.client is None:
-            return self._channel_types.get(
-                self.canonical(channel_id), "channel_private"
-            )
-        return (
-            "channel_private" if self.client.private(channel_id) else "channel_public"
-        )
+        # Only the holder sees modes. Anything unknown is public until the
+        # holder reads the channel's modes and corrects the saved room.
+        key = self.canonical(channel_id)
+        if self.client is not None and key in self.client.modes:
+            private = self.client.private(channel_id)
+            return "channel_private" if private else "channel_public"
+        return self._channel_types.get(key, "channel_public")
 
     async def require_bindable_channel(self, channel_id: str) -> None:
         if not is_channel(channel_id) or channel_id != self.canonical(channel_id):
