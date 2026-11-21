@@ -55,6 +55,7 @@ export type {
   AgentBridgeEvent,
   AttachmentRef,
   CommandPayload,
+  MessageEditPayload,
   MessagePayload,
   RoomJoinPayload,
   SwitchCredentials,

@@ -44,3 +44,7 @@ export function retryRefusal(reason: string | null): string {
     return "I couldn't try that again: my current session never worked on that message.";
   return `I couldn't try that again: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
 }
+
+/** What the room is told when an edit arrived after the agent had started on the message. */
+export const EDIT_TOO_LATE =
+  "I'd already started on your message when you edited it, so I'm working from what you first sent. Send the correction as a new message if it changes what you need.";

@@ -156,6 +156,12 @@ export type CommandBody =
   | { type: 'session.compact' }
   /** Run again the turn a room message started, which ended without an answer; nothing is posted again. */
   | { type: 'message.retry'; messageId: Id }
+  /**
+   * Replace the text of the room message's turn while it is still queued: the
+   * sender edited the message before the agent started on it. Refused with
+   * `TOO_LATE` once the turn has started, which then runs as it was sent.
+   */
+  | { type: 'message.edit'; messageId: Id; text: string }
   | { type: 'session.model.set'; modelId: string; options: Record<string, string> };
 /** The server sets origin from a verified identity. Do not trust origin from a client. */
 export type Command = {
