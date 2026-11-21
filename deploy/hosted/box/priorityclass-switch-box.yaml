@@ -1,0 +1,13 @@
+# One priority for every user's box, so every box has equal priority.
+# Under memory pressure the kubelet then ranks boxes by how far each is over its own request, never by
+# whose box it is. `Never`: a box waiting for room never pushes another box off a machine. Below the
+# shared services (`switch-shared-services`, 900000), so a box is stopped before name lookup, the disk
+# controller or the internet filter. The box template sets `priorityClassName: switch-box`.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: switch-box
+value: 1000
+globalDefault: false
+preemptionPolicy: Never
+description: "Every Switch user's box: one equal priority, never preempts, below the shared services."
