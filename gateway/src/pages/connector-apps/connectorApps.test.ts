@@ -460,3 +460,37 @@ describe("a GitHub App that lets agents read only", () => {
     expect(readOnlySentence(GITHUB)).toBeNull();
   });
 });
+
+const BIGQUERY = app({
+  ...AIRTABLE,
+  slug: "bigquery",
+  name: "BigQuery",
+  configuration_variables: ["BIGQUERY_CLIENT_CONFIG_PATH"],
+  redirect_uri: LOOPBACK_REDIRECTS[0]!,
+  redirect_uris: LOOPBACK_REDIRECTS,
+  needs_public_url: false,
+  scopes: ["https://www.googleapis.com/auth/bigquery"],
+});
+
+describe("BigQuery", () => {
+  it("walks Google Cloud and Google Auth Platform, with every loopback redirect", () => {
+    const steps = setupInstructions(BIGQUERY, "internal", null);
+    expect(steps[0]!.link?.href).toBe("https://console.cloud.google.com/projectcreate");
+    expect(steps.every((s) => !s.link || s.link.href.startsWith("https://console.cloud.google.com/"))).toBe(true);
+    expect(steps.flatMap((s) => s.copy)).toEqual(LOOPBACK_REDIRECTS);
+    expect(steps.map((s) => s.text).join(' ')).toMatch(/type Web application/);
+    expect(steps.at(-1)!.text).toMatch(/BigQuery MCP Tool User, BigQuery Job User and BigQuery Data Viewer/);
+    expect(new Set(steps.map((s) => s.text)).size).toBe(steps.length);
+  });
+
+  it("needs no public URL: sign-ins come back to Switch Console", () => {
+    expect(changeBlocked(BIGQUERY, null)).toBe(false);
+    expect(confirmBeforeCheck(BIGQUERY)).toBeNull();
+  });
+
+  it("names its Helm value when moving off configuration", () => {
+    expect(moveChecklist(app({ ...BIGQUERY, source: "configuration" }))[1]!.text).toBe(
+      "Remove BIGQUERY_CLIENT_CONFIG_PATH from Switch's configuration. For Helm, that is switchCore.bigqueryClientSecret."
+    );
+  });
+});
