@@ -71,15 +71,20 @@ properties:
     formality: semi-formal
     levels: [code]
     owner: platform
-    status: proposed
-    gaps:
-      code: no reference model of `addresses()` yet
+    status: checked
     notes: >
       Replaces `delivery.unaddressed-silent`, which was false as stated: an
       agent alone in a direct chat, an alias and a role all address without a
       mention. Every other delivery property assumes this one. The inputs that
       find bugs are free text: punctuation, code spans, case, one name inside
-      another.
+      another. The reference (`addressing_reference.py`) scans text by hand
+      rather than through `clients/mentions.py`. Two things it states that
+      the code only implies: a case-insensitive match takes four non-ASCII
+      letters (long s, Kelvin sign, dotless i, dotted capital I) for ASCII
+      ones, so they name and bound a mention; and a message from Switch's own
+      client with neither the admin nor the platform marker would reach an
+      agent with no policy, which nothing sends, so the examples always mark
+      it.
   - id: delivery.no-events-after-leave
     title: A member who has left has no events in the room
     statement: >
