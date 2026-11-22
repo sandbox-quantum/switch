@@ -63,6 +63,7 @@ def _bridge() -> CollaborationCore:
     bridge._bridge_type = "mattermost"
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
+    bridge._mapping_changes = {}
     bridge._room_tenants = {}
     bridge._session_factory = _ExplodingSessionFactory()  # type: ignore[assignment]
     bridge._membership_slots = asyncio.Semaphore(MEMBERSHIP_EVENTS_AT_ONCE)

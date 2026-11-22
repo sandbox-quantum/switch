@@ -140,6 +140,12 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A messaging app connected during a re-check is no longer stopped by it.**
+  The periodic re-check of messaging apps read their rows, then compared them
+  with the apps running here, so an app connected while it read looked removed
+  and was stopped until the next re-check. A slow re-read of an app's rooms
+  could likewise map a room again that was just unbridged. Both now leave
+  anything changed while they read to the change that made it.
 - **The decision service is ready behind vLLM.** A model server whose
   `/health` answers 200 with an empty body counts as healthy; before, the
   service reported 503 while `/decide` worked.
