@@ -1,4 +1,4 @@
-import type { LinkRequestFailure } from '@shared/core/switch-servers/switch-servers';
+import type { LinkCode, LinkRequestFailure } from '@shared/core/switch-servers/switch-servers';
 
 /**
  * What linking is for, said where someone is deciding whether to bother.
@@ -28,6 +28,19 @@ export function accountHandle(username: string): string {
   return username.startsWith('@') ? username : `@${username}`;
 }
 
+/** How to name a linked or waiting account: its `@handle`, or the person's
+ * name where the handle is one Switch made up (a Telegram account without a
+ * username). */
+export function accountName(account: {
+  externalUsername: string;
+  externalDisplayName?: string;
+  hasHandle?: boolean;
+}): string {
+  return account.hasHandle === false && account.externalDisplayName
+    ? account.externalDisplayName
+    : accountHandle(account.externalUsername);
+}
+
 /** A request about a waiting confirmation that did nothing, said so the user
  * can act on it. */
 export function linkRequestFailureText(failure: LinkRequestFailure): string {
@@ -38,4 +51,17 @@ export function linkRequestFailureText(failure: LinkRequestFailure): string {
     case 'error':
       return failure.message;
   }
+}
+
+/**
+ * What Copy puts on the clipboard: the whole command the instructions say to
+ * post (`!link-account CODE`, or the platform's own form), so pasting it is all
+ * that is left to do. The command is the inline-code span that carries the
+ * code; instructions without one copy the code alone.
+ */
+export function commandToPost(code: LinkCode): string {
+  const spans = code.instructions.split('`');
+  if (spans.length % 2 === 0) return code.code;
+  const command = spans.find((span, i) => i % 2 === 1 && span.includes(code.code));
+  return command?.trim() || code.code;
 }

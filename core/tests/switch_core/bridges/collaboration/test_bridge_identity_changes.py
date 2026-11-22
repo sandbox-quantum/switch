@@ -11,6 +11,8 @@ agents a change names (`CollaborationCore._update_agent_identities`).
 from __future__ import annotations
 
 import asyncio
+import logging
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -219,3 +221,40 @@ async def test_a_change_during_the_first_read_reads_every_agent_again() -> None:
 
     assert store.full_reads == 2
     assert adapter.provisioned[-1] == ["scout", "tracker"]
+
+
+async def test_a_taken_handle_is_a_warning_once_per_bridge(caplog: Any) -> None:
+    """A handle taken in the workspace fails on every bridge start: the first
+    failure on each bridge is a warning, repeats on that bridge are debug."""
+    taken = ValueError(f"the handle '@scout' is already taken ({uuid.uuid4()})")
+
+    async def refuse(
+        agents: Sequence[AgentIdentity],
+    ) -> list[tuple[str, BaseException]]:
+        return [("scout", taken)]
+
+    cores = []
+    for bridge_id in ("bridge-one", "bridge-two"):
+        core, adapter = _core(_Store(_agent("scout")))
+        core._bridge_id = bridge_id  # type: ignore[attr-defined]
+        adapter.sync_agent_identities = refuse  # type: ignore[method-assign]
+        cores.append(core)
+
+    with caplog.at_level(logging.DEBUG):
+        for core in (*cores, cores[0]):
+            await core._sync_agent_identities(
+                {
+                    "agent-scout": AgentIdentity(
+                        agent_id="agent-scout",
+                        name="scout",
+                        description="helps",
+                        display_name=None,
+                    )
+                },
+                [],
+            )
+
+    levels = [
+        r.levelno for r in caplog.records if "Failed to provision" in r.getMessage()
+    ]
+    assert levels == [logging.WARNING, logging.WARNING, logging.DEBUG]

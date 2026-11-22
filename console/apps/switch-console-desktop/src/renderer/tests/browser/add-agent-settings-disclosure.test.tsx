@@ -68,7 +68,7 @@ afterEach(async () => {
 });
 
 function Panel() {
-  const form = useConfigureAgentForm(null);
+  const form = useConfigureAgentForm(null, null);
   return (
     <AgentSettingsSection
       form={form}

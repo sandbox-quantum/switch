@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal, can
+from switch_core.authz import Principal, can, can_manage, can_read_in_package, owns
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Package, User
 from switch_core.db.stores.agent_store import AgentStore
@@ -43,6 +43,7 @@ router = APIRouter()
 
 def _to_detail(
     pkg: Package,
+    reader: Principal,
     *,
     owner_name: str | None = None,
     references_count: int = 0,
@@ -64,6 +65,11 @@ def _to_detail(
         attached_rooms_count=attached_rooms_count,
         hidden_rooms_count=hidden_rooms_count,
         created_at=str(pkg.created_at),
+        # Every route that returns a package returns it whole: those the
+        # caller may read, and those a room they may read shares.
+        can_read=True,
+        can_edit=can(reader, "write", pkg),
+        can_manage=can_manage(reader, pkg.owner_id),
     )
 
 
@@ -91,6 +97,7 @@ async def _enrich(
     return [
         _to_detail(
             p,
+            reader,
             owner_name=owners.get(p.owner_id),
             references_count=ref_counts.get(p.id, 0),
             documents_count=doc_counts.get(p.id, 0),
@@ -120,7 +127,9 @@ async def list_packages(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[PackageDetail]:
-    pkgs = await resource_service.list_packages_for_user(session, user.id)
+    pkgs = await resource_service.list_packages_shown_to(
+        session, user.id, is_admin=is_admin
+    )
     return await _enrich(
         session, pkgs, resource_service, user_store, Principal(user.id, is_admin)
     )
@@ -163,11 +172,8 @@ async def get_package(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageDetail:
     try:
-        pkg = await resource_service.get_package_for_user(
-            session,
-            package_id,
-            user.id,
-            is_admin=is_admin,
+        pkg = await resource_service.open_package(
+            session, package_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -243,11 +249,8 @@ async def list_rooms_for_package(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
     try:
-        await resource_service.get_package_for_user(
-            session,
-            package_id,
-            user.id,
-            is_admin=is_admin,
+        resource = await resource_service.open_package(
+            session, package_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -257,11 +260,35 @@ async def list_rooms_for_package(
         session, package_id, reader_id=user.id, reader_is_admin=is_admin
     )
     return await resource_rooms(
-        session, room_store, rooms, Principal(user.id, is_admin)
+        session,
+        room_store,
+        rooms,
+        Principal(user.id, is_admin),
+        resource_owner_id=resource.owner_id,
     )
 
 
 # ── Membership ────────────────────────────────────────────────────────────
+
+
+async def _open(
+    session: AsyncSession,
+    resource_service: ResourceService,
+    package_id: str,
+    user: User,
+    is_admin: bool,
+) -> Package:
+    """The package, if the caller may open it (`ResourceService.open_package`),
+    for a list of what it holds: each item in it shown by
+    `can_read_in_package`."""
+    try:
+        return await resource_service.open_package(
+            session, package_id, user.id, is_admin=is_admin
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
 
 
 @router.get("/packages/{package_id}/references")
@@ -273,20 +300,16 @@ async def list_package_references(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ReferenceDetail]:
-    try:
-        await resource_service.get_package_for_user(
-            session,
-            package_id,
-            user.id,
-            is_admin=is_admin,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
+    pkg = await _open(session, resource_service, package_id, user, is_admin)
+    reader = Principal(user.id, is_admin)
     refs = await resource_service.list_package_references(session, package_id)
     return await enrich_refs(
-        session, refs, resource_service, user_store, Principal(user.id, is_admin)
+        session,
+        refs,
+        resource_service,
+        user_store,
+        reader,
+        lambda ref: can_read_in_package(reader, ref, pkg.owner_id),
     )
 
 
@@ -352,17 +375,8 @@ async def list_package_documents(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[DocumentSummary]:
-    try:
-        await resource_service.get_package_for_user(
-            session,
-            package_id,
-            user.id,
-            is_admin=is_admin,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
+    pkg = await _open(session, resource_service, package_id, user, is_admin)
+    reader = Principal(user.id, is_admin)
     docs = await resource_service.list_package_documents(session, package_id)
     return await enrich_doc_summaries(
         session,
@@ -370,7 +384,8 @@ async def list_package_documents(
         resource_service,
         user_store,
         agent_store,
-        Principal(user.id, is_admin),
+        reader,
+        lambda doc: can_read_in_package(reader, doc, pkg.owner_id),
     )
 
 
@@ -441,10 +456,9 @@ async def list_room_packages(
 ) -> list[PackageDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     pkgs = await resource_service.list_room_packages(session, room_id)
-    principal = Principal(user.id, is_admin)
-    readable = {p.id for p in pkgs if can(principal, "read", p)}
-    details = await _enrich(session, pkgs, resource_service, user_store, principal)
-    return [d.model_copy(update={"can_read": d.id in readable}) for d in details]
+    return await _enrich(
+        session, pkgs, resource_service, user_store, Principal(user.id, is_admin)
+    )
 
 
 @router.post("/rooms/{room_id}/packages/{package_id}", status_code=201)
@@ -458,7 +472,7 @@ async def attach_package_to_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageDetail:
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    await require_room_access(session, room_store, room_id, user, "attach", is_admin)
     try:
         await resource_service.attach_package_to_room(
             session,
@@ -493,7 +507,15 @@ async def detach_package_from_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
-    await require_room_unlink(session, room_store, room_id, user, is_admin)
+    pkg = await session.get(Package, package_id)
+    await require_room_unlink(
+        session,
+        room_store,
+        room_id,
+        user,
+        is_admin,
+        owns_target=pkg is not None and owns(Principal(user.id, False), pkg.owner_id),
+    )
     await resource_service.detach_package_from_room(session, room_id, package_id)
     await session.commit()
 

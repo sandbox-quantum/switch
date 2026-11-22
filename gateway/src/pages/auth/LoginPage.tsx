@@ -27,7 +27,9 @@ export default function LoginPage() {
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
 
   useEffect(() => {
-    fetchAuthConfig().then(setAuthConfig);
+    fetchAuthConfig().then(setAuthConfig, (err: unknown) =>
+      console.warn("Could not read how Switch signs people in here; offering password sign-in", err),
+    );
   }, []);
 
   const handleSubmit = useCallback(
@@ -64,13 +66,13 @@ export default function LoginPage() {
         height: "100vh",
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "var(--hoot-canvas)",
+        backgroundColor: "var(--sw-canvas)",
       }}
     >
       <Card
         component="form"
         onSubmit={handleSubmit}
-        sx={{ width: 380, p: 4, boxShadow: "var(--hoot-shadow-surface)" }}
+        sx={{ width: 380, p: 4, boxShadow: "var(--sw-shadow-surface)" }}
       >
         <Typography variant="h6" sx={{ mb: 0.5 }}>
           Switch Gateway

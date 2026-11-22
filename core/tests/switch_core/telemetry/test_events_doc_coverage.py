@@ -25,6 +25,7 @@ from switch_core.telemetry.catalogue import (
     _Boolean,
     _Number,
     _OneOf,
+    _Optional,
     _RegisteredPlatform,
 )
 
@@ -33,6 +34,8 @@ DOC = Path(__file__).parents[4] / "docs" / "old" / "telemetry-events.md"
 
 def _closed_values(spec: PropertyType) -> frozenset[str]:
     """The values a property spells out in the catalogue, if any."""
+    if isinstance(spec, _Optional):
+        return _closed_values(spec.kind)
     if isinstance(spec, _OneOf):
         return spec.values
     if isinstance(spec, _RegisteredPlatform):

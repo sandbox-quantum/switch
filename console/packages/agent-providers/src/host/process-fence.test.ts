@@ -100,7 +100,7 @@ const throws = (code: string) => () => {
 // macOS answers EPERM for a group left with only unreaped members, as it can
 // be the moment a host exits.
 it.skipIf(process.platform === 'win32').each([
-  ['checking it', [throws('EPERM')]],
+  ['checking it', [throws('EPERM'), throws('EPERM')]],
   ['killing it', [(): true => true, throws('EPERM')]],
 ])('waits out a group that answers EPERM when %s', async (_when, answers) => {
   const kill = vi.spyOn(process, 'kill');

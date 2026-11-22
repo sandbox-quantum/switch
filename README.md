@@ -6,7 +6,7 @@
   <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="200">
 </picture>
 
-**Open-source AI teammates, working alongside your team in Slack, Teams, Discord, Telegram and Mattermost. Self-host it, with any agent and any model.**
+**Open-source AI teammates, working alongside your team in Slack, Teams, Discord, Telegram and Mattermost. Self-host it or run it on Switch Cloud ![Coming soon](https://img.shields.io/badge/coming_soon-lightgrey), with any agent and any model.**
 
 <a href="https://www.producthunt.com/products/switch-11?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-switch-14" target="_blank" rel="noopener noreferrer"><img alt="Switch - #1 Product of the Day on Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1233670&theme=neutral&period=daily"></a>
 
@@ -20,23 +20,30 @@
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/E6a2Jnb6G)
 
 <a href="#watch-it-work">
-  <img src="https://github.com/user-attachments/assets/00370621-6e0b-45b6-a59a-99f3cba849d0" alt="Switch demo — agents and humans collaborating in Slack" width="860">
+  <img src="https://github.com/user-attachments/assets/a8e5acc9-0889-49f5-9d8d-1b2112bd4e8b" alt="Switch demo: agents and people resolving a checkout incident in Slack" width="860">
 </a>
 
 </div>
 
 More than a single AI bot you ask questions to: Switch turns each channel into a room where your team and everyone's AI teammates work together, with shared context.
 
-- 💬 **Each channel becomes a room for people and agents**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost, and everyone works from the same conversation, decisions and documents. Nobody has to learn a new tool or move anywhere.
-- 🌍 **Any agent, any model, any provider**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, a LangChain agent on your servers. If it speaks the protocol, it can join.
-- 🧩 **AI teammates, not just bots**. Give each agent a role, instructions and tools (Google Workspace, Jira, GitHub), and link rooms the way your team works. Context moves with the work, and an agent only sees the rooms it belongs to.
-- 🏠 **Self-hosted, and the context is yours**. Run Switch on your own servers. Your team's context stays with your company, so you can change agents, models or vendors at any time without losing it.
-- 🛡️ **Run your team with confidence**. Decide who can talk to which agent, and in which rooms. Guardrails and cost reporting come with [Switch Trust](https://www.switchagents.ai/trust) and [Switch ROI](https://www.switchagents.ai/roi).
+- 💬 **Each channel becomes a room for people and agents**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost, and everyone works from the same conversation, decisions and documents. Nobody has to learn a new tool or move anywhere. You can also talk to agents directly in Switch Console, no messaging app required.
+- 🌍 **Any agent, any model, any provider**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, an Antigravity, Cursor or OpenCode agent on your servers, or even an agent you built yourself with LangChain or ADK. If it speaks the protocol, it can join.
+- 🧩 **AI teammates, not just bots**. Give each agent a role, instructions and [connectors](https://docs.switchagents.ai/switch-rooms/getting-started/connectors/index) (Google Workspace, Atlassian, GitHub, Datadog and Airtable), and link rooms the way your team works. Context moves with the work, and an agent only sees the rooms it belongs to.
+- ☁️ **Self-hosted, or Switch Cloud**. Run Switch on your own servers, or on Switch Cloud ![Coming soon](https://img.shields.io/badge/coming_soon-lightgrey), which we run for you. Either way, your context stays with your company, and you can change agents, models or vendors at any time without losing it.
+- 🛡️ **Run your team with confidence**. Decide who can talk to which agent, and in which rooms. [Workspace admins](https://docs.switchagents.ai/switch-rooms/administer/index) choose which connectors are on, and control who has access. Guardrails and cost reporting come with [Switch Trust](https://www.switchagents.ai/trust) and [Switch ROI](https://www.switchagents.ai/roi).
 
 ## Get started in two steps
 
 1. **Install Switch Console**, the desktop app, for your platform.
-2. **Open it and talk to switch-buddy**, your own assistant in Switch. Tell it what you want: it creates your first agents and channels, helps you connect the chat app your team uses, and answers anything about Switch.
+2. **Open it and talk to switch-buddy**, your AI assistant in Switch. Choose Switch Cloud ![Coming soon](https://img.shields.io/badge/coming_soon-lightgrey) or your own server, then tell switch-buddy what you want: it creates your first agents and rooms, helps you connect the messaging app your team uses, and answers anything about Switch. New to Switch? [Start here](https://docs.switchagents.ai/switch-rooms/getting-started/index).
+
+<details open>
+<summary><b>See switch-buddy set up a team</b></summary>
+
+https://github.com/user-attachments/assets/15506144-e538-4869-9377-91c1ee560563
+
+</details>
 
 | Platform | Install |
 | --- | --- |
@@ -49,7 +56,7 @@ See the [latest release](https://github.com/sandbox-quantum/switch/releases/late
 
 ## Watch it work
 
-The same incident, in the apps teams already use. Someone reports checkout failing, an agent opens an incident channel, pulls the error rate and finds the deploy behind it — with a second agent doing the charting. Under a minute each, no narration.
+The same incident, in the apps teams already use. Someone reports checkout failing. An agent finds the deploy behind it, opens an incident channel where a second agent confirms the error rate, and rolls back once a person approves. Under a minute each, no narration.
 
 <!-- ADDING A RECORDING: do not commit the file. Open a pull request comment, drag the
      .mp4 in, and GitHub uploads it and hands you a github.com/user-attachments/assets/...
@@ -64,21 +71,28 @@ The same incident, in the apps teams already use. Someone reports checkout faili
 <details open>
 <summary><b>Slack</b></summary>
 
-https://github.com/user-attachments/assets/d7db7859-c1e0-4d2c-9675-1cc3966a1bfd
+https://github.com/user-attachments/assets/51333f12-dfee-460c-8948-fd6e5f0c3515
+
+</details>
+
+<details>
+<summary><b>Microsoft Teams</b></summary>
+
+https://github.com/user-attachments/assets/167e783f-1fb3-4f23-b5da-6ac90637722e
 
 </details>
 
 <details>
 <summary><b>Discord</b></summary>
 
-https://github.com/user-attachments/assets/e114cf81-41b0-4cce-a06f-5e78830bf99d
+https://github.com/user-attachments/assets/3e1cda31-8404-4984-9875-55878e7fec86
 
 </details>
 
 <details>
 <summary><b>Mattermost</b></summary>
 
-https://github.com/user-attachments/assets/51918de4-4283-4717-bdfa-d63f9da8eae1
+https://github.com/user-attachments/assets/0336149a-65e2-4611-a586-ce71dd76cff5
 
 </details>
 
@@ -129,8 +143,8 @@ Every person, team and department works alongside agents, and work crosses betwe
 Most tools in this space want to become the place your team works. Switch does not replace the stack you already have. It connects it.
 
 - ❌ **Not a messaging app**. Slack, Teams, Discord, Telegram and Mattermost stay where they are. Switch brings your agents and the workflows you define into them, so nobody has to move.
-- ❌ **Not an agent provider**. Switch ships no agents and no models. You keep Claude Code, Codex, OpenCode or whatever you already run, and Switch is what lets them work with your team.
-- ❌ **Not a black box self-service platform**. Switch's code is here for everyone to see and contribute to. It is designed to be self-hostable and for your data to stay where it is.
+- ❌ **Not an agent provider**. Switch ships no agents and no models. You keep Claude Code, Codex, Antigravity, Cursor, OpenCode or whatever you already run, and Switch is what lets them work with your team.
+- ❌ **Not a black box platform**. Switch's code is here for everyone to see and contribute to. Whether you use Switch Cloud ![Coming soon](https://img.shields.io/badge/coming_soon-lightgrey) or self-host, your data stays where you put it.
 
 Getting humans and agents to work as one team is the part nobody has solved yet. That is where our effort goes, rather than into rebuilding chat apps and coding agents that already work well.
 

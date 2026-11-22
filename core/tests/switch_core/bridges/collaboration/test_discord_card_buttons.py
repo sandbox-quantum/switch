@@ -69,6 +69,7 @@ from .test_discord_sdk_only import (
 
 PRESSER_ID = 4242
 PRESSER_NAME = "kim"
+PRESSER_DISPLAY_NAME = "Kim Lee"
 CARD_MESSAGE_ID = 901
 
 
@@ -79,6 +80,7 @@ class _Presser:
     def __init__(self) -> None:
         self.id = PRESSER_ID
         self.name = PRESSER_NAME
+        self.display_name = PRESSER_DISPLAY_NAME
 
 
 class _Response:

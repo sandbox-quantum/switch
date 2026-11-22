@@ -123,16 +123,19 @@ function CopyReportButton({ snapshot }: { snapshot: ResourceSnapshot | null }) {
 
   return (
     <Tooltip>
-      <TooltipTrigger>
-        <button
-          disabled={!snapshot}
-          onClick={handleCopy}
-          className="flex size-6 shrink-0 items-center justify-center rounded-md text-foreground/50 transition-colors hover:bg-background-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
-          aria-label="Copy report"
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
-        </button>
-      </TooltipTrigger>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            disabled={!snapshot}
+            onClick={handleCopy}
+            className="flex size-6 shrink-0 items-center justify-center rounded-md text-foreground/50 transition-colors hover:bg-background-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
+            aria-label="Copy report"
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+        }
+      />
       <TooltipContent>{copied ? 'Copied' : 'Copy report'}</TooltipContent>
     </Tooltip>
   );

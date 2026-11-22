@@ -1,5 +1,5 @@
-import type * as Sqlite from 'node:sqlite';
 import type { DatabaseSync } from 'node:sqlite';
+import { loadNodeSqlite } from '@switch-console/agent-providers';
 import { ConfigurationError } from './errors';
 import { errorMessage } from './log';
 import { type Assignment, assignmentSchema, type ReasonCode } from './schemas';
@@ -75,34 +75,13 @@ const MIGRATIONS: readonly string[] = [
 
 export const STORE_SCHEMA_VERSION = MIGRATIONS.length;
 
-/**
- * Node 22 announces node:sqlite as experimental on first load. That one
- * warning is dropped here, where the module is loaded; every other warning
- * passes through untouched.
- */
-function loadSqlite(): typeof Sqlite {
-  const emitWarning = process.emitWarning;
-  process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
-    const text = typeof warning === 'string' ? warning : warning.message;
-    const type = typeof rest[0] === 'string' ? rest[0] : (rest[0] as { type?: string })?.type;
-    if (type === 'ExperimentalWarning' && text.startsWith('SQLite is an experimental feature'))
-      return;
-    (emitWarning as (...args: unknown[]) => void).call(process, warning, ...rest);
-  }) as typeof process.emitWarning;
-  try {
-    return process.getBuiltinModule('node:sqlite') as typeof Sqlite;
-  } finally {
-    process.emitWarning = emitWarning;
-  }
-}
-
 type Row = Record<string, unknown>;
 
 export class ControllerStore {
   private constructor(private readonly db: DatabaseSync) {}
 
   static open(path: string): ControllerStore {
-    const { DatabaseSync } = loadSqlite();
+    const { DatabaseSync } = loadNodeSqlite();
     const db = new DatabaseSync(path);
     try {
       db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');

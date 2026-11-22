@@ -1,8 +1,19 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, it, vi } from 'vitest';
-import { coreFailureLine, failureLine, startCore, waitForCoreHealth } from './core-process';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  coreFailureLine,
+  lastErrorRecord,
+  coreInterpreter,
+  describeExit,
+  failureLine,
+  runningCore,
+  startCore,
+  stopCore,
+  waitForCoreHealth,
+} from './core-process';
 import { nativeLayout } from './native-paths';
 
 vi.mock('@main/lib/logger', () => ({
@@ -36,7 +47,7 @@ it('stops waiting as soon as switch-core has exited', async () => {
   }
 });
 
-it('picks the line that says why switch-core stopped', () => {
+it('picks the exception switch-core died of', () => {
   const log = [
     '2026-10-17T10:24:32 INFO  [uvicorn.error] Started server process [1]',
     'Traceback (most recent call last):',
@@ -46,8 +57,69 @@ it('picks the line that says why switch-core stopped', () => {
     '(Background on this error at: https://sqlalche.me/e/20/f405)',
   ].join('\n');
   expect(failureLine(log)).toMatch(/^sqlalchemy\.exc\.ProgrammingError: .*syntax error/);
-  expect(failureLine('just one line\n')).toBe('just one line');
+  expect(failureLine('just one line\n')).toBeNull();
   expect(failureLine('')).toBeNull();
+});
+
+it('does not take an error the server logged and ran on past for why it stopped', () => {
+  // CHOO-4471: the bundled Mattermost bridge fails every minute without Docker.
+  const log = [
+    '2026-11-16T09:00:00 ERROR [switch_core.bridges] mattermost bridge failed; retrying in 60s',
+    'Traceback (most recent call last):',
+    '  File "bridge.py", line 10, in login',
+    "requests.exceptions.ConnectionError: HTTPConnectionPool(host='localhost', port=50370): Max retries exceeded with url: /api/v4/users/login",
+    '2026-11-16T09:00:05 INFO  [uvicorn.access] "GET /health" 200',
+  ].join('\n');
+  expect(failureLine(log)).toBeNull();
+});
+
+it("gives a taken port's ERROR record as the reason when no traceback follows", () => {
+  const log = [
+    'INFO:     Started server process [4242]',
+    'INFO:     Waiting for application startup.',
+    "ERROR:    [Errno 48] error while attempting to bind on address ('127.0.0.1', 8000): address already in use",
+    'INFO:     Waiting for application shutdown.',
+    'INFO:     Application shutdown complete.',
+  ].join('\n');
+  expect(failureLine(log)).toBeNull();
+  expect(lastErrorRecord(log)).toBe(
+    "[Errno 48] error while attempting to bind on address ('127.0.0.1', 8000): address already in use"
+  );
+});
+
+it('does not take an ERROR record far up the log for the reason', () => {
+  const log = [
+    '2026-11-16T09:00:00 ERROR [switch_core.bridges] mattermost bridge failed; retrying in 60s',
+    ...Array.from(
+      { length: 6 },
+      (_, i) => `2026-11-16T09:00:0${i} INFO  [uvicorn.access] "GET /health" 200`
+    ),
+  ].join('\n');
+  expect(lastErrorRecord(log)).toBeNull();
+});
+
+it('describes an exit by its code or signal', () => {
+  expect(describeExit({ code: 1, signal: null })).toBe('exited with code 1');
+  expect(describeExit({ code: null, signal: 'SIGKILL' })).toBe('was ended by SIGKILL');
+  // A Windows console program whose window was closed.
+  expect(describeExit({ code: 3221225786, signal: null })).toBe('exited with code 0xC000013A');
+});
+
+describe('the interpreter switch-core runs on', () => {
+  const venvPython = 'C:\\Users\\u\\switch\\venv\\Scripts\\python.exe';
+  const venvPythonw = 'C:\\Users\\u\\switch\\venv\\Scripts\\pythonw.exe';
+
+  it('is pythonw.exe on Windows, which opens no console window', () => {
+    expect(coreInterpreter(venvPython, 'win32', (file) => file === venvPythonw)).toBe(venvPythonw);
+  });
+
+  it('falls back to python.exe on Windows when the environment has no pythonw.exe', () => {
+    expect(coreInterpreter(venvPython, 'win32', () => false)).toBe(venvPython);
+  });
+
+  it.each<NodeJS.Platform>(['linux', 'darwin'])('is the environment python on %s', (platform) => {
+    expect(coreInterpreter('/x/venv/bin/python', platform, () => true)).toBe('/x/venv/bin/python');
+  });
 });
 
 it.skipIf(process.platform === 'win32')(
@@ -81,11 +153,92 @@ it.skipIf(process.platform === 'win32')(
         new AbortController().signal
       );
       expect(healthy).toBe(false);
-      expect(await coreFailureLine(layout)).toBe(
-        'SyntaxError: from __future__ imports must occur at the beginning of the file'
+      expect(await coreFailureLine(layout, null)).toBe(
+        'exited with code 1: SyntaxError: from __future__ imports must occur at the beginning of the file'
       );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   }
 );
+
+it.skipIf(process.platform === 'win32')(
+  'reports a killed switch-core by its signal, not an error it logged earlier',
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'switch-killed-'));
+    try {
+      const layout = nativeLayout(root);
+      const python = path.join(root, 'python');
+      await writeFile(
+        python,
+        [
+          '#!/bin/sh',
+          'echo "2026-11-16T09:00:00 ERROR [switch_core.bridges] mattermost bridge failed"',
+          'echo "requests.exceptions.ConnectionError: localhost:50370 /api/v4/users/login"',
+          'echo "2026-11-16T09:00:05 INFO  [uvicorn.access] GET /health 200"',
+          'exec sleep 30',
+          '',
+        ].join('\n'),
+        { mode: 0o755 }
+      );
+      const record = await startCore(
+        layout,
+        { version: '0.30.0', sourceRoot: root, projectDir: root, python, gatewayUiDir: null },
+        {}
+      );
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      process.kill(record.pid, 'SIGKILL');
+      while ((await runningCore(layout)) !== null) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(await coreFailureLine(layout, record.pid)).toBe('was ended by SIGKILL');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+);
+
+describe('a pid file whose pid answers EPERM', () => {
+  const realPlatform = process.platform;
+  const roots: string[] = [];
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    Object.defineProperty(process, 'platform', { value: realPlatform });
+    for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  });
+
+  async function recordedForeignPid(platform: NodeJS.Platform) {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'switch-foreign-'));
+    roots.push(root);
+    const layout = nativeLayout(root);
+    await mkdir(layout.run, { recursive: true });
+    await writeFile(
+      path.join(layout.run, 'switch-core.json'),
+      JSON.stringify({ pid: 4242, version: '0.30.0', startedAt: new Date().toISOString() })
+    );
+    Object.defineProperty(process, 'platform', { value: platform });
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+    });
+    return { layout, kill };
+  }
+
+  it.each<NodeJS.Platform>(['linux', 'darwin'])(
+    'is a pid reused by another user on %s, and stopping clears the record',
+    async (platform) => {
+      const { layout, kill } = await recordedForeignPid(platform);
+      expect(await runningCore(layout)).toBeNull();
+      await stopCore(layout);
+      expect(kill).not.toHaveBeenCalledWith(4242, 'SIGTERM');
+      expect(existsSync(path.join(layout.run, 'switch-core.json'))).toBe(false);
+    }
+  );
+
+  it('is a running core on Windows, which stopping refuses loudly', async () => {
+    const { layout } = await recordedForeignPid('win32');
+    expect(await runningCore(layout)).toMatchObject({ pid: 4242 });
+    await expect(stopCore(layout)).rejects.toThrow('kill EPERM');
+    expect(existsSync(path.join(layout.run, 'switch-core.json'))).toBe(true);
+  });
+});

@@ -1,26 +1,23 @@
 from __future__ import annotations
 
-from typing import Annotated
+from collections.abc import Callable
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import (
-    Principal,
-    can_delete_room_document,
-    can_unlink_from_room,
-)
+from switch_core import room_admins, room_policy
+from switch_core.authz import Principal, can, can_manage, owns
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Document, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
-    ensure_may_unlink,
+    ensure_room_action,
     get_current_user,
     get_tenant_is_admin,
     require_room_access,
-    takes_part_in_room,
 )
 from switch_core.gateway.dependencies import (
     get_agent_store,
@@ -40,12 +37,14 @@ from switch_core.gateway.schemas import (
     RoomDocumentDetail,
     RoomDocumentSummary,
 )
+from switch_core.room_policy import RoomAction, RoomCaller
 
 router = APIRouter()
 
 
 def _to_detail(
     doc: Document,
+    reader: Principal,
     *,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
@@ -71,12 +70,18 @@ def _to_detail(
         created_by_agent_id=doc.created_by_agent_id,
         created_by_agent_name=created_by_agent_name,
         created_at=str(doc.created_at),
+        # Every route that returns a document's detail returns it whole: one
+        # the caller has opened, or that a room they may read shares.
+        can_read=True,
+        **_capabilities(reader, doc),
     )
 
 
 def _to_summary(
     doc: Document,
+    reader: Principal,
     *,
+    readable: bool,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
     hidden_rooms_count: int,
@@ -91,7 +96,7 @@ def _to_summary(
         write_visibility=doc.write_visibility,
         name=doc.name,
         description=doc.description,
-        instructions=doc.instructions,
+        instructions=doc.instructions if readable else None,
         attached_rooms_count=attached_rooms_count,
         hidden_rooms_count=hidden_rooms_count,
         packages=packages or [],
@@ -100,19 +105,42 @@ def _to_summary(
         created_by_agent_id=doc.created_by_agent_id,
         created_by_agent_name=created_by_agent_name,
         created_at=str(doc.created_at),
+        can_read=readable,
+        **_capabilities(reader, doc),
     )
 
 
+def _capabilities(reader: Principal, doc: Document) -> dict[str, Any]:
+    """What `reader` may do with `doc` through the library routes, for its
+    detail or summary: nothing with a room's own document, which is changed
+    and removed in its room (`RoomDocumentDetail.can_remove`)."""
+    library = doc.room_id is None
+    manage = library and can_manage(reader, doc.owner_id)
+    return {
+        "can_edit": library and can(reader, "write", doc),
+        "can_manage": manage,
+        "can_transfer": manage,
+    }
+
+
 def _can_remove(
-    principal: Principal, room: Room, doc: Document, *, takes_part: bool
+    principal: Principal, room: Room, doc: Document, *, where: room_admins.Standing
 ) -> bool:
     """Whether `principal` may remove `doc` from `room`: delete it if it is
     room-scoped, unlink it if it is attached."""
-    if doc.room_id is not None:
-        return can_delete_room_document(
-            principal, room_owner_id=room.owner_id, document_owner_id=doc.owner_id
-        )
-    return can_unlink_from_room(principal, takes_part=takes_part)
+    return room_policy.allows(
+        RoomCaller(principal, in_room=where.in_room, room_admin=where.room_admin),
+        room,
+        _removal(doc),
+        owns_target=owns(principal, doc.owner_id),
+    )
+
+
+def _removal(doc: Document) -> RoomAction:
+    """A room's own document is deleted; an attached one is unlinked. An
+    agent's document is recorded under the agent's owner, so that person
+    counts as its creator."""
+    return "delete_document" if doc.room_id is not None else "unlink"
 
 
 async def _enrich_summaries(
@@ -122,7 +150,10 @@ async def _enrich_summaries(
     user_store: UserStore,
     agent_store: AgentStore,
     reader: Principal,
+    readable: Callable[[Document], bool],
 ) -> list[DocumentSummary]:
+    """`docs` as `reader` is shown them, with each one's instructions where
+    `readable` says so and withheld where it does not."""
     if not docs:
         return []
     counts = await room_counts(
@@ -146,6 +177,8 @@ async def _enrich_summaries(
     return [
         _to_summary(
             d,
+            reader,
+            readable=readable(d),
             owner_name=owners.get(d.owner_id) if d.owner_id else None,
             attached_rooms_count=counts[d.id].attached,
             hidden_rooms_count=counts[d.id].hidden,
@@ -180,6 +213,7 @@ async def _enrich_detail(
     )
     return _to_detail(
         doc,
+        reader,
         owner_name=owner.name if owner else None,
         attached_rooms_count=counts[doc.id].attached,
         hidden_rooms_count=counts[doc.id].hidden,
@@ -197,14 +231,18 @@ async def list_documents(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[DocumentSummary]:
-    docs = await resource_service.list_documents_for_user(session, user.id)
+    docs = await resource_service.list_documents_shown_to(
+        session, user.id, is_admin=is_admin
+    )
+    reader = Principal(user.id, is_admin)
     return await _enrich_summaries(
         session,
         docs,
         resource_service,
         user_store,
         agent_store,
-        Principal(user.id, is_admin),
+        reader,
+        lambda doc: can(reader, "read", doc),
     )
 
 
@@ -253,7 +291,7 @@ async def get_document(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
     try:
-        doc = await resource_service.get_document_for_user(
+        doc = await resource_service.open_document(
             session, document_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
@@ -270,6 +308,31 @@ async def get_document(
     )
 
 
+async def _refuse_room_document(
+    session: AsyncSession,
+    resource_service: ResourceService,
+    document_id: str,
+    user_id: str,
+    is_admin: bool,
+) -> None:
+    """Raise 409 for a room's own document, which is changed and removed in
+    its room, not here; first refusing whoever may not read it, as the change
+    itself would, so the refusal names nothing they couldn't see."""
+    try:
+        doc = await resource_service.get_document_for_user(
+            session, document_id, user_id, is_admin=is_admin
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    if doc.room_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This document belongs to a room: change or remove it in the room.",
+        )
+
+
 @router.patch("/documents/{document_id}")
 async def patch_document(
     document_id: str,
@@ -281,6 +344,9 @@ async def patch_document(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
+    await _refuse_room_document(
+        session, resource_service, document_id, user.id, is_admin
+    )
     try:
         doc = await resource_service.update_document(
             session,
@@ -317,6 +383,9 @@ async def delete_document(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDeleteResponse:
+    await _refuse_room_document(
+        session, resource_service, document_id, user.id, is_admin
+    )
     affected_packages = await resource_service.list_packages_for_document(
         session, document_id
     )
@@ -349,7 +418,7 @@ async def list_rooms_for_document(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
     try:
-        await resource_service.get_document_for_user(
+        resource = await resource_service.open_document(
             session, document_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
@@ -360,7 +429,11 @@ async def list_rooms_for_document(
         session, document_id, reader_id=user.id, reader_is_admin=is_admin
     )
     return await resource_rooms(
-        session, room_store, rooms, Principal(user.id, is_admin)
+        session,
+        room_store,
+        rooms,
+        Principal(user.id, is_admin),
+        resource_owner_id=resource.owner_id,
     )
 
 
@@ -378,16 +451,23 @@ async def list_room_documents(
     room = await require_room_access(
         session, room_store, room_id, user, "read", is_admin
     )
-    takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
+    where = await room_admins.standing(session, room_store, room.id, user.id)
     principal = Principal(user.id, is_admin)
     docs = await resource_service.list_room_documents(session, room_id)
+    # Attaching shares: whoever may read the room reads what is in it.
     summaries = await _enrich_summaries(
-        session, docs, resource_service, user_store, agent_store, principal
+        session,
+        docs,
+        resource_service,
+        user_store,
+        agent_store,
+        principal,
+        lambda _: True,
     )
     return [
         RoomDocumentSummary(
             **summary.model_dump(),
-            can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
+            can_remove=_can_remove(principal, room, doc, where=where),
         )
         for summary, doc in zip(summaries, docs, strict=True)
     ]
@@ -405,7 +485,7 @@ async def attach_document_to_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    await require_room_access(session, room_store, room_id, user, "attach", is_admin)
     try:
         await resource_service.attach_document_to_room(
             session,
@@ -442,30 +522,31 @@ async def detach_document_from_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
-    """For globally-owned docs: unlink from the room, which those taking part
-    in it and admins may do. For room-scoped docs: hard-delete them entirely
-    (since they live only in this room), which their creator, the room's owner
-    and admins may do."""
+    """For globally-owned docs: unlink from the room, which its owner and
+    admins may do, and the document's owner if they are in the room. For
+    room-scoped docs: hard-delete them entirely (since they live only in this
+    room), which their creator, the room's owner and admins may do."""
     room = await require_room_access(
         session, room_store, room_id, user, "read", is_admin
     )
     principal = Principal(user.id, is_admin)
-    doc = await resource_service.get_room_scoped_document_or_none(
+    scoped = await resource_service.get_room_scoped_document_or_none(
         session, room_id, document_id
     )
-    if doc is not None:
-        if not can_delete_room_document(
-            principal, room_owner_id=room.owner_id, document_owner_id=doc.owner_id
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="Only the document's creator, the room's owner and admins can delete it",
-            )
+    doc = scoped or await session.get(Document, document_id)
+    await ensure_room_action(
+        session,
+        room_store,
+        room,
+        principal,
+        "delete_document" if scoped is not None else "unlink",
+        owns_target=doc is not None and owns(principal, doc.owner_id),
+    )
+    if scoped is not None:
         await resource_service.delete_room_document_by_user(
             session, room_id=room_id, document_id=document_id
         )
     else:
-        await ensure_may_unlink(session, room_store, room, principal)
         await resource_service.detach_document_from_room(session, room_id, document_id)
     await session.commit()
 
@@ -484,7 +565,8 @@ async def get_room_document(
 ) -> RoomDocumentDetail:
     """Fetch a document by id within the context of a room. Accepts both
     room-scoped documents (read-only) and globally-attached documents. Room
-    read access is required and, once granted, implies access to its docs."""
+    read access is required and, once granted, implies access to its docs:
+    attaching one shares it with whoever may read the room."""
     room = await require_room_access(
         session, room_store, room_id, user, "read", is_admin
     )
@@ -498,8 +580,8 @@ async def get_room_document(
     detail = await _enrich_detail(
         session, doc, resource_service, user_store, agent_store, principal
     )
-    takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
+    where = await room_admins.standing(session, room_store, room.id, user.id)
     return RoomDocumentDetail(
         **detail.model_dump(),
-        can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
+        can_remove=_can_remove(principal, room, doc, where=where),
     )

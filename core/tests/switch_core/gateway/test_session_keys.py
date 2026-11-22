@@ -5,6 +5,7 @@ from before `SECRET_KEYS` valid only while `JWT_SECRET_KEY` is set."""
 from __future__ import annotations
 
 import datetime
+import secrets
 
 import jwt
 import pytest
@@ -23,7 +24,16 @@ def _keyring(value: str, legacy: str | None = None) -> Keyring:
 
 
 def _session(keyring: Keyring) -> str:
-    return create_jwt("user-1", "a@example.test", "user", keyring, "tenant-1")
+    return create_jwt(
+        "user-1",
+        "a@example.test",
+        "user",
+        keyring,
+        "tenant-1",
+        session_version=0,
+        auth_time=datetime.datetime.now(datetime.UTC),
+        session_id=secrets.token_urlsafe(16),
+    )
 
 
 def _legacy_session() -> str:

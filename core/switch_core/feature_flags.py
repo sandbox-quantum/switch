@@ -30,17 +30,20 @@ HOSTED_AGENTS = "hosted_agents"
 
 # Agent management: managed agents, the machines and agent controllers that
 # run them, and the controller-facing routes under /v1/management and
-# /v1/controllers. With it off none of those routes are mounted.
+# /v1/controllers. Always on: see ALWAYS_ON_FEATURE_FLAGS.
 AGENT_MANAGEMENT = "agent_management"
 
 # Service connections: people connect outside services (GitHub's grants,
-# Atlassian, Google Workspace, Datadog and the rest of the catalog) and grant
+# Atlassian, Google Workspace, Airtable and the rest of the catalog) and grant
 # them to their agents. With it off, the routes for connections, sign-ins,
 # keys and grants (`/gateway/service-connections`, `/gateway/agents/{id}/
-# service-grants`, `/agents/{id}/service-grants` and `service-tokens`) are not
-# mounted: agent hosts read that as no grants, and Console and the dashboard
-# show no services but GitHub's link, as before connections. GitHub's own
-# connect routes stay.
+# service-grants`, `/agents/{id}/service-grants` and `service-tokens`), the
+# workspace's switches and the connector apps are not mounted: agent hosts
+# read that as no grants, and neither Console nor the dashboard offers any
+# service to connect or grant. GitHub's own connect routes and the older
+# catalog (`/gateway/provider-connections`) stay, for a Console from before
+# connections; a GitHub connection made through them cannot be granted until
+# the flag is on.
 SERVICE_CONNECTIONS = "service_connections"
 
 # Follow the conversation: a person's message that mentions nobody reaches an
@@ -50,10 +53,20 @@ SERVICE_CONNECTIONS = "service_connections"
 # messages reach nobody, as before.
 FOLLOW_THE_CONVERSATION = "follow_the_conversation"
 
-# Agent chats in Switch Console: an agent's page opens on its chats (its
-# direct chats and the rooms it is in) beside the conversation. Core puts an
-# agent's owner back in each chat they started that holds the agent; with it
-# off, owning an agent gives no room membership.
+# Decision routing: in a room that turned it on (`!auto-route on`), a person's
+# message that no rule delivered to any agent is sent, once it is saved, to
+# the decision service its workspace uses (`decision/settings.py`: the
+# workspace's choice, else `DECISION_ENDPOINT_URL`), which picks the one agent
+# that should answer it, or nobody (`delivery/decision.py`). It builds on the
+# follow-the-conversation filters, so the server refuses it without that flag.
+# With it off nothing of auto-route is offered: the decision settings and room
+# auto-route routes are not mounted, rooms carry no `auto_route`, and
+# `!auto-route` is not a command (`bridges/agent/commands.py`).
+DECISION_ROUTING = "decision_routing"
+
+# Agent chats in Switch Console: an agent's page opens on its chats, and an
+# agent's owner is put back in each chat they started that holds the agent.
+# Always on: see ALWAYS_ON_FEATURE_FLAGS.
 AGENT_CHATS = "agent_chats"
 
 # switch-buddy: each person's own assistant, which Switch Console creates on
@@ -64,12 +77,8 @@ AGENT_CHATS = "agent_chats"
 SWITCH_BUDDY = "switch_buddy"
 
 # Group chats in Switch Console: chats with people and with no or several
-# agents, adding and removing a chat's agents, naming people in a message, and
-# the agents a person may add. Turn it on only once every switch-core process
-# runs a release that has it: the guarantee is server-first rollout, then the
-# flag. An upgraded process refuses those requests while it is off, but a
-# process still on an older release ignores the fields it does not know, so
-# turning it on before the rollout finishes is not protected.
+# agents, and rooms with no messaging app. Always on: see
+# ALWAYS_ON_FEATURE_FLAGS.
 GROUP_CHATS = "group_chats"
 
 # switch-buddy's chat on a bridge: Console offers to move the buddy's welcome
@@ -87,6 +96,55 @@ BUDDY_SLACK_HANDOFF = "buddy_slack_handoff"
 # server's apps, as before organizations.
 ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
 
+# The dashboard's settings-areas layout (Home, Templates and Connectors on
+# the rail, Workspace and Organization settings), which was built behind this
+# flag and is now the dashboard's only layout. Always on:
+# see ALWAYS_ON_FEATURE_FLAGS.
+GATEWAY_V2 = "gateway_v2"
+
+# Messaging platforms beyond Slack, Mattermost, Teams, Discord and Telegram:
+# WhatsApp, Google Chat, Zulip, Signal, Matrix, Rocket.Chat, Webex and IRC. With it
+# off their adapters are not registered, so they are missing from the platform
+# directory and no bridge of those types can be created or started.
+ADDITIONAL_MESSAGING_PLATFORMS = "additional_messaging_platforms"
+
+# Agent providers beyond Claude Code, Codex, OpenCode, Cursor and Antigravity:
+# DeepSeek Harness, Pi, GitHub Copilot, Kiro, Mistral Vibe, Goose, Qwen Code,
+# Factory Droid, Cline and Junie (`providers/registry.py` names each one's
+# flag). With it off they are missing from the provider list and the
+# known-agent types, a template does not pick them, and no new managed agent
+# can name one; an agent already defined on one keeps running.
+ADDITIONAL_AGENT_PROVIDERS = "additional_agent_providers"
+
+# Flags that need another flag on: the server refuses a configuration with
+# the key on and any of its values off, and tools that turn flags off one at a
+# time (scripts/e2e_surface.py) turn the dependants off with it.
+FLAG_REQUIRES: dict[str, frozenset[str]] = {
+    DECISION_ROUTING: frozenset({FOLLOW_THE_CONVERSATION}),
+}
+
+
+def without_flag(flags: frozenset[str], flag: str) -> frozenset[str]:
+    """`flags` with `flag` off, and every flag that needs it off too."""
+    off = {flag}
+    changed = True
+    while changed:
+        changed = False
+        for dependant, needs in FLAG_REQUIRES.items():
+            if dependant not in off and needs & off:
+                off.add(dependant)
+                changed = True
+    return flags - off
+
+
+# Flags whose feature no longer has an off. Each is still accepted in
+# FEATURE_FLAGS_ENABLED, so a deployment that names one keeps starting, and is
+# always reported on, so a client that still reads it sees what the server
+# does: Switch Console picks its links into the dashboard by gateway_v2.
+ALWAYS_ON_FEATURE_FLAGS: frozenset[str] = frozenset(
+    {GATEWAY_V2, AGENT_MANAGEMENT, AGENT_CHATS, GROUP_CHATS}
+)
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -96,10 +154,14 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         AGENT_MANAGEMENT,
         SERVICE_CONNECTIONS,
         FOLLOW_THE_CONVERSATION,
+        DECISION_ROUTING,
         AGENT_CHATS,
         SWITCH_BUDDY,
         GROUP_CHATS,
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
+        GATEWAY_V2,
+        ADDITIONAL_MESSAGING_PLATFORMS,
+        ADDITIONAL_AGENT_PROVIDERS,
     }
 )

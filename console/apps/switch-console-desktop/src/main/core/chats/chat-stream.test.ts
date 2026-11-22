@@ -41,6 +41,7 @@ function message(roomId: string, seq: number): ChatMessage {
     mentions: [],
     threadReplyCount: 0,
     threadLastReplySeq: null,
+    kickoff: null,
   };
 }
 
@@ -171,6 +172,23 @@ describe('ChatStream', () => {
     await vi.waitFor(() => expect(stream.state.state).toBe('live'));
     expect(h.messages.map((each) => each.seq)).toEqual([6, 7, 8]);
     expect(stream.cursor('room-a')).toBe(8);
+    stream.stop();
+  });
+
+  it('hands over a chat the person was invited to while the feed was down', async () => {
+    const h = harness([[summary('room-a', 5)], [summary('room-a', 5), summary('room-b', 2)]]);
+    const stream = new ChatStream(h.deps);
+    stream.start();
+    await vi.waitFor(() => expect(h.feeds).toHaveLength(1));
+    h.feeds[0]!.send('ready', {});
+    await vi.waitFor(() => expect(stream.state.state).toBe('live'));
+    h.feeds[0]!.end();
+    await vi.waitFor(() => expect(stream.state.state).toBe('offline'));
+
+    h.fireRetry();
+    await vi.waitFor(() => expect(h.feeds).toHaveLength(2));
+    expect(h.summaries.map((each) => each.roomId)).toContain('room-b');
+    expect(h.opened[1]).toContain('room-b:2');
     stream.stop();
   });
 

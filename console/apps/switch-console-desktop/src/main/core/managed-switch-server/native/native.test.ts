@@ -9,9 +9,8 @@ import { readLocalRuntime, writeLocalRuntime } from '../runtime';
 import { generateSecrets } from '../secret-values';
 import { buildNativeCoreSettings } from './core-settings';
 import { downloadFile } from './download';
-import { mattermostCallbackBaseUrl, mattermostComposeYaml, mattermostImage } from './mattermost';
 import { nativeLayout } from './native-paths';
-import { parsePostgresMajor, resolvePostgres } from './postgres-binaries';
+import { missingVcRuntimeDlls, parsePostgresMajor, resolvePostgres } from './postgres-binaries';
 import { bundlePthLine } from './switch-core-install';
 import {
   currentNativePlatform,
@@ -37,6 +36,7 @@ describe('buildNativeCoreSettings', () => {
     telemetryInternal: false,
     telemetryEndpoint: 'https://relay.example.test',
     gatewayUiDir: null,
+    fromCheckout: false,
   });
 
   it('holds every listener to loopback', () => {
@@ -72,39 +72,6 @@ describe('buildNativeCoreSettings', () => {
 
   it('names the relay the server reports to, as the Docker stack does', () => {
     expect(settings.TELEMETRY_ENDPOINT).toBe('https://relay.example.test');
-  });
-});
-
-describe('mattermost', () => {
-  it('runs the image the bundled compose pins', () => {
-    expect(mattermostImage()).toMatch(/^mattermost\/mattermost-team-edition:\d+\.\d+\.\d+$/);
-  });
-
-  it('shares the host network on Linux and listens on loopback only', () => {
-    const yaml = mattermostComposeYaml({
-      platform: 'linux',
-      mattermostPort: 8065,
-      postgresPort: 5432,
-      ownerPassword: 'pw',
-    });
-    expect(yaml).toContain('network_mode: host');
-    expect(yaml).toContain('MM_SERVICESETTINGS_LISTENADDRESS: "127.0.0.1:8065"');
-    expect(yaml).toContain('@127.0.0.1:5432/mattermost');
-    expect(yaml).not.toContain('ports:');
-  });
-
-  it('reaches the host through host.docker.internal on Docker Desktop', () => {
-    const yaml = mattermostComposeYaml({
-      platform: 'darwin',
-      mattermostPort: 8065,
-      postgresPort: 5432,
-      ownerPassword: 'pw',
-    });
-    expect(yaml).toContain('"127.0.0.1:8065:8065"');
-    expect(yaml).toContain('@host.docker.internal:5432/mattermost');
-    expect(yaml).not.toContain('network_mode');
-    expect(mattermostCallbackBaseUrl('darwin', 51003)).toBe('http://host.docker.internal:51003');
-    expect(mattermostCallbackBaseUrl('linux', 51003)).toBe('http://127.0.0.1:51003');
   });
 });
 
@@ -213,6 +180,30 @@ describe('resolvePostgres', () => {
       await expect(resolvePostgres(layout, null, () => {})).rejects.toThrow(
         'created by PostgreSQL 14, and switch-core needs PostgreSQL 16 or newer. Reset the server'
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('missingVcRuntimeDlls', () => {
+  it('finds the VC++ runtime next to the binaries or in System32, and names what neither has', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'switch-vcrt-'));
+    try {
+      const binDir = path.join(root, 'bin');
+      const system32 = path.join(root, 'Windows', 'System32');
+      await mkdir(binDir, { recursive: true });
+      await mkdir(system32, { recursive: true });
+      const systemRoot = path.join(root, 'Windows');
+      expect(await missingVcRuntimeDlls(binDir, systemRoot)).toEqual([
+        'vcruntime140.dll',
+        'vcruntime140_1.dll',
+        'msvcp140.dll',
+      ]);
+      await writeFile(path.join(system32, 'vcruntime140.dll'), '');
+      await writeFile(path.join(system32, 'vcruntime140_1.dll'), '');
+      await writeFile(path.join(binDir, 'msvcp140.dll'), '');
+      expect(await missingVcRuntimeDlls(binDir, systemRoot)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

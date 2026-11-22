@@ -2,7 +2,7 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { describeFailure, type FailureDescription } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
+import { events, rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { InviteServer } from '@shared/core/switch-servers/switch-cloud';
 import type {
@@ -13,6 +13,7 @@ import type {
   SwitchServer,
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
+import { gatewaySessionEndedChannel } from '@shared/events/switchServerEvents';
 
 /**
  * How long the first read of the server list may take before the window says so
@@ -43,6 +44,9 @@ export class SwitchServersStore {
   /** Server ids with an auth-config fetch in flight, so several recovery
    * signals arriving at once collapse into a single request. */
   private readonly authConfigInFlight = new Set<string>();
+  /** The last failed sign-in per server id, for that server's sign-in form
+   * only: the page-level `error` is shown on every server's page. */
+  private readonly signInErrors = new Map<string, string>();
   /** Server ids whose last connection-status read failed. Authoritative for
    * page-level reachability whenever a status read has ever run for that
    * server: {@link isUnreachable} defers to this over
@@ -69,6 +73,13 @@ export class SwitchServersStore {
   loaded = false;
   /** Server ids with an in-flight status refresh. */
   readonly refreshing = new Set<string>();
+  /**
+   * The latest status check started for each server. Checks overlap (a
+   * session-ended hint, the account page after a password change, a manual
+   * refresh), and only the latest may write: one that set out with a cookie
+   * since replaced must not land after it and undo its answer. Nothing renders it.
+   */
+  private readonly statusGeneration = new Map<string, number>();
   /** The sentence the page leads with. Never raw exception text. */
   error: string | null = null;
   /** Diagnostics for the same failure, rendered under `error` rather than in it. */
@@ -150,6 +161,10 @@ export class SwitchServersStore {
 
   authConfigFor(serverId: string): SwitchAuthConfig | null {
     return this.authConfigs.get(serverId) ?? null;
+  }
+
+  signInError(serverId: string): string | null {
+    return this.signInErrors.get(serverId) ?? null;
   }
 
   isConnected(serverId: string): boolean {
@@ -345,12 +360,33 @@ export class SwitchServersStore {
     await Promise.all([this.refreshStatus(serverId), this.ensureAuthConfig(serverId)]);
   }
 
+  /**
+   * A signed-in call to this server was refused with 401. Re-read its status
+   * rather than signing out on the spot: `/auth/me` is what decides, so a
+   * session that has really gone reads as signed out — the sidebar asks for a
+   * sign-in instead of calling its rooms out of date and its chats offline —
+   * and a stray 401 costs one request and changes nothing.
+   *
+   * Only a server that reads as signed in is re-checked, and not while a check
+   * is already running. The re-check of a dead session is itself refused with
+   * 401 and says so again; once it has landed, the server no longer reads as
+   * signed in, so that echo ends here.
+   */
+  async noteSessionEnded(serverId: string): Promise<void> {
+    if (!this.isConnected(serverId) || this.refreshing.has(serverId)) return;
+    await this.refreshStatus(serverId);
+  }
+
   async refreshStatus(serverId: string): Promise<void> {
+    const generation = (this.statusGeneration.get(serverId) ?? 0) + 1;
+    this.statusGeneration.set(serverId, generation);
+    const latest = () => this.statusGeneration.get(serverId) === generation;
     runInAction(() => {
       this.refreshing.add(serverId);
     });
     try {
       const status = await rpc.switchServers.getConnectionStatus(serverId);
+      if (!latest()) return;
       runInAction(() => {
         this.statuses.set(serverId, status);
         this.statusUnreachable.delete(serverId);
@@ -362,14 +398,18 @@ export class SwitchServersStore {
       // raise the page-level `error` banner: that field is global, so one
       // unreachable server would paint an error over every server's view.
       console.warn(`[switch-servers] could not read status for ${serverId}`, cause);
+      if (!latest()) return;
       runInAction(() => {
         this.statuses.set(serverId, { serverId, connected: false, user: null });
         this.statusUnreachable.add(serverId);
       });
     } finally {
-      runInAction(() => {
-        this.refreshing.delete(serverId);
-      });
+      // An overtaken check leaves the flag to the one still running.
+      if (latest()) {
+        runInAction(() => {
+          this.refreshing.delete(serverId);
+        });
+      }
     }
   }
 
@@ -598,6 +638,7 @@ export class SwitchServersStore {
       this.authConfigWanted.delete(serverId);
       this.statusUnreachable.delete(serverId);
       this.authConfigUnreachable.delete(serverId);
+      this.signInErrors.delete(serverId);
     });
     // The removed id also sits in the server view's saved params, where it
     // outlives the record and would be read back — as a page for a server
@@ -626,13 +667,10 @@ export class SwitchServersStore {
   }
 
   async passwordLogin(serverId: string, email: string, password: string): Promise<boolean> {
-    this.clearError();
+    runInAction(() => this.signInErrors.delete(serverId));
     const result = await rpc.switchServers.passwordLogin({ serverId, email, password });
     if (!result.success) {
-      runInAction(() => {
-        this.error = result.error.message;
-        this.errorDetail = null;
-      });
+      runInAction(() => this.signInErrors.set(serverId, result.error.message));
       return false;
     }
     // Signing in is when the server first says which workspaces the account
@@ -642,21 +680,21 @@ export class SwitchServersStore {
   }
 
   /** Resolves the new account's machine status once signed in, or null when
-   * the account was not created (the reason is in `error`). */
+   * the account was not created (the reason is in `signInError`). */
   async signup(params: SignupParams): Promise<SignupMachine | null> {
-    this.clearError();
+    runInAction(() => this.signInErrors.delete(params.serverId));
     let result: Awaited<ReturnType<typeof rpc.switchServers.signup>>;
     try {
       result = await rpc.switchServers.signup(params);
     } catch (cause) {
-      this.setError(cause, 'Could not create the account.');
+      const { headline, detail } = describeFailure(cause, 'Could not create the account.');
+      runInAction(() =>
+        this.signInErrors.set(params.serverId, detail ? `${headline} (${detail})` : headline)
+      );
       return null;
     }
     if (!result.success) {
-      runInAction(() => {
-        this.error = result.error.message;
-        this.errorDetail = null;
-      });
+      runInAction(() => this.signInErrors.set(params.serverId, result.error.message));
       return null;
     }
     // Signed in now, and as with a sign-in the account's workspaces are known.
@@ -666,15 +704,12 @@ export class SwitchServersStore {
 
   /** `provider`: one of the server's sign-in options, or null for its one SSO button. */
   async oidcLogin(serverId: string, provider: string | null): Promise<boolean> {
-    this.clearError();
+    runInAction(() => this.signInErrors.delete(serverId));
     const result = await rpc.switchServers.oidcLogin(serverId, provider);
     if (!result.success) {
       // A user-cancelled window is not an error worth shouting about.
       if (result.error.kind !== 'cancelled') {
-        runInAction(() => {
-          this.error = result.error.message;
-          this.errorDetail = null;
-        });
+        runInAction(() => this.signInErrors.set(serverId, result.error.message));
       }
       return false;
     }
@@ -715,6 +750,12 @@ export class SwitchServersStore {
     await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
   }
 
+  /** Wipe the signed-in test account on `serverId`, as `deleteAccount` does. */
+  async resetTestAccount(serverId: string, email: string): Promise<void> {
+    await rpc.switchServers.resetTestAccount({ serverId, email });
+    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+  }
+
   private clearError(): void {
     runInAction(() => {
       this.error = null;
@@ -742,3 +783,7 @@ export class SwitchServersStore {
 }
 
 export const switchServersStore = new SwitchServersStore();
+
+events.on(gatewaySessionEndedChannel, ({ serverId }) => {
+  void switchServersStore.noteSessionEnded(serverId);
+});

@@ -121,9 +121,10 @@ async def test_invitation_uses_verified_current_nick_and_rejects_an_impostor(wir
 async def test_private_creation_confirms_modes_and_suppresses_auto_adoption(wire):
     adapter, callbacks = await start_adapter(wire, channels="")
     try:
-        channel = await adapter.create_channel(
+        created = await adapter.create_channel(
             "release", "topic", channel_type="channel_private"
         )
+        channel = created.id
         assert {"s", "i"} <= adapter.client.modes[channel]
         await adapter.send_message(channel, "coder", "private payload")
         assert callbacks[4].call_count == 0
@@ -155,9 +156,10 @@ async def test_quiet_pod_relays_create_and_send_in_order(wire):
     quiet.set_holder_relay(relayed.append)
     try:
         assert wire.connections == 1
-        channel = await quiet.create_channel(
+        created = await quiet.create_channel(
             "release", "", channel_type="channel_private"
         )
+        channel = created.id
         await quiet.send_message(channel, "coder", "private relay")
         for request in relayed:
             await holder.receive_relayed(request)
@@ -349,9 +351,10 @@ async def test_failed_quiet_private_creation_blocks_queued_payload(wire):
     relayed = []
     quiet.set_holder_relay(relayed.append)
     try:
-        channel = await quiet.create_channel(
+        created = await quiet.create_channel(
             "release", "", channel_type="channel_private"
         )
+        channel = created.id
         await quiet.send_message(channel, "coder", "must stay private")
         for request in relayed:
             await holder.receive_relayed(request)

@@ -9,8 +9,8 @@
  *   ./session-outputs/build-brief.md                              (geometry)
  *
  * Colour note: the hex values below are Switch / SandboxAQ brand values supplied by the
- * brief. They are NOT in this repo's design systems (Core DS / Hoot) — this is a
- * standalone branded splash, not a product screen, so the raw hex is intentional.
+ * brief. They are NOT in this repo's design system tokens — this is a standalone
+ * branded splash, not a product screen, so the raw hex is intentional.
  * Same precedent as src/pages/SwitchOnboarding/SwitchOnboarding.jsx.
  */
 

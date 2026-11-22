@@ -1,6 +1,6 @@
 """one cloud machine per user: `cloud_machines` and `machine_workspaces`
 
-A user's Switch cloud machine was a row of one workspace. It becomes the
+A user's Switch Cloud machine was a row of one workspace. It becomes the
 user's, whichever workspaces it serves: `cloud_machines` is global, as the
 person is, and holds the VM's lifecycle; `machine_workspaces` holds, per
 workspace and under row-level security, the agents controller the machine

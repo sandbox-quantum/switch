@@ -41,6 +41,8 @@ from switch_core.db.stores.tenant_store import TenantSlugTaken
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
+    SignedIn,
+    every_workspace_of,
     set_session_cookie,
     workspace_creation_refusal,
 )
@@ -123,6 +125,39 @@ def _no_free_slug(kind: str, name: str) -> HTTPException:
     )
 
 
+async def refuse_a_workspace_name_taken(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_id: str,
+    name: str,
+    *,
+    renaming: str | None,
+) -> None:
+    """409 when another of the organization's workspaces is called `name`, in
+    any case: two of the same name could not be told apart in the switcher.
+    `renaming` is the workspace being renamed, which may take its own name in
+    another case. A check made before the change, not a constraint, so two
+    made or renamed at the same moment could still share one, which nothing
+    breaks.
+
+    `session` is the request's, bound to one of the organization's
+    workspaces. It is committed first, so the request holds no connection
+    while each workspace is read on a short session of its own."""
+    await session.commit()
+    wanted = name.strip().casefold()
+    for tenant in await every_workspace_of(session_factory, organization_id):
+        if tenant.id != renaming and tenant.name.strip().casefold() == wanted:
+            organization = await session.get(Organization, organization_id)
+            if organization is None:
+                raise RuntimeError(
+                    f"Organization {organization_id} is not visible here"
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=f"{organization.name} already has a workspace called “{tenant.name}”.",
+            )
+
+
 async def lock_workspace_allowance(
     session: AsyncSession,
     user_id: str,
@@ -198,6 +233,7 @@ async def create_organization_for(
     *,
     name: str,
     workspace_name: str,
+    signed_in: SignedIn,
 ) -> OrganizationCreateResponse:
     """Create an organization and its first workspace for `caller`, count it
     against their allowance, and switch their session into the workspace.
@@ -241,7 +277,12 @@ async def create_organization_for(
     await user_store.record_last_tenant(session, user, tenant.id)
     await session.commit()
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant.id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant.id,
+        signed_in,
     )
     return OrganizationCreateResponse(
         organization=OrganizationSummary(
@@ -257,6 +298,7 @@ async def create_organization_for(
             role="admin",
             organization_role=ORGANIZATION_ADMIN_ROLE,
             organization_id=organization.id,
+            archived_at=None,
         ),
     )
 

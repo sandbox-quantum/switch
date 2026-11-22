@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { localServerStore } from '@renderer/features/switch-servers/local-server-store';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { events, rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -32,7 +33,9 @@ export function AppMenuEvents({ onOpenSettings }: { onOpenSettings?: () => boole
     return events.on(menuQuitRequestedChannel, () => {
       showConfirmQuitModal({
         title: 'Quit Switch Console?',
-        description: 'SDK sessions continue running in the background after the app quits.',
+        description: localServerStore.isRunning
+          ? 'The server on this computer stops, and starts again when you next open Switch Console. SDK sessions continue running in the background after the app quits.'
+          : 'SDK sessions continue running in the background after the app quits.',
         confirmLabel: 'Quit',
         onSuccess: () => {
           void rpc.app.quit();

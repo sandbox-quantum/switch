@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -205,6 +206,7 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
         _trust_client=NullTrustClient(),
+        _room_tenant=AsyncMock(return_value="tenant-1"),
     )
 
     await CollaborationCore._handle_inbound_message(
@@ -252,6 +254,7 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
         _trust_client=NullTrustClient(),
+        _room_tenant=AsyncMock(return_value="tenant-1"),
     )
 
     await CollaborationCore._handle_inbound_message(

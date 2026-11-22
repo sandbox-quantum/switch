@@ -1,11 +1,13 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, request, type Server } from 'node:http';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { focusMainWindow } from '@main/app/window';
+import { log } from '@main/lib/logger';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelServiceConnection,
   completeServiceConnection,
+  failServiceConnection,
   getConnectionCatalog,
   getServiceFlow,
   startServiceConnection,
@@ -21,6 +23,7 @@ vi.mock('@main/app/window', () => ({ focusMainWindow: vi.fn() }));
 vi.mock('./gateway-client', () => ({
   cancelServiceConnection: vi.fn(),
   completeServiceConnection: vi.fn(),
+  failServiceConnection: vi.fn(),
   getConnectionCatalog: vi.fn(),
   getServiceFlow: vi.fn(),
   startServiceConnection: vi.fn(),
@@ -45,13 +48,23 @@ function listed(ports: number[] | null): ConnectionCatalogEntry[] {
       status: 'not_connected',
       unavailable_reason: null,
       unavailable_code: null,
+      read_only_reason: null,
       pass_through: true,
       token_lifetime: 28_800,
+      agent_access_note: null,
       loopback_ports: ports,
       key: null,
+      sign_in_choices: null,
+      paste: [],
+      method: null,
+      access_note: null,
+      reconnect_code: null,
+      reconnect_reason: null,
       external_identity: null,
+      choices: null,
       consent: null,
       workspace_enabled: null,
+      organization_locked: false,
     },
   ];
 }
@@ -63,7 +76,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.resetAllMocks();
 });
-async function start(service = 'example') {
+async function start(service = 'example', choices: Record<string, string> = {}) {
   vi.mocked(cancelServiceConnection).mockResolvedValue(undefined);
   vi.mocked(completeServiceConnection).mockResolvedValue({
     warning: null,
@@ -74,13 +87,38 @@ async function start(service = 'example') {
     id: input.state,
     url: 'https://auth.example.test/authorize',
     mode: 'loopback',
+    callback_url: null,
   }));
   const open = vi.fn().mockResolvedValue(undefined);
-  const id = await startServiceBrowserFlow(server, service, open);
+  const { id, callbackUrl } = await startServiceBrowserFlow(server, service, choices, open);
+  expect(callbackUrl).toBeNull();
   flows.push([service, id]);
   const input = vi.mocked(startServiceConnection).mock.calls[0]![2];
   return { id, input, open, url: `http://127.0.0.1:${input.port}/switch-services/callback` };
 }
+
+it('starts with what the person picked, and takes the code back past what the vendor adds', async () => {
+  const { id, input, url } = await start('example', { site: 'eu.example.test' });
+  expect(input.choices).toEqual({ site: 'eu.example.test' });
+  // Datadog sends its site, domain and organization beside the code.
+  const extras = new URLSearchParams({
+    code: 'SYNTHETIC',
+    state: id,
+    site: 'https://app.eu.example.test',
+    domain: 'app.eu.example.test',
+    dd_oid: 'org-1',
+    dd_org_name: 'Example Org',
+  });
+  const response = await fetch(`${url}?${extras}`);
+  expect(response.status).toBe(200);
+  expect(completeServiceConnection).toHaveBeenCalledExactlyOnceWith(
+    server,
+    'example',
+    id,
+    'SYNTHETIC',
+    input.completion_secret
+  );
+});
 
 it('takes back only this Console’s state, and hands the code to Core with its secret', async () => {
   const { id, input, open, url } = await start();
@@ -160,6 +198,21 @@ it('takes back a code as long as a vendor issues, and nothing absurdly long', as
   );
 });
 
+it('refuses a request whose Host is not 127.0.0.1, as a rebound DNS name sends', async () => {
+  const { id, input, url } = await start();
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    request(url + `?state=${id}&code=SYNTHETIC`, { headers: { Host: `localhost:${input.port}` } })
+      .on('response', (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      })
+      .on('error', reject)
+      .end();
+  });
+  expect(status).toBe(400);
+  expect(completeServiceConnection).not.toHaveBeenCalled();
+});
+
 it('keys each flow by its service', async () => {
   const { id } = await start('example');
   await expect(getServiceBrowserFlow(server, 'other', id)).rejects.toThrow(
@@ -178,6 +231,95 @@ it('does not show Core’s refusal in the browser, and sends the person to Conso
   expect(text).toContain('Switch Console says what happened');
 });
 
+it.each([
+  [
+    new Error('Could not reach https://switch.example.test: fetch failed'),
+    'Could not reach https://switch.example.test: fetch failed',
+  ],
+  ['no message', 'Switch could not finish signing in to Example.'],
+])('fails the sign-in at once when handing the code to the server fails', async (cause, said) => {
+  const pending = { status: 'pending' as const, account: null, error: null, warning: null };
+  const { id, url } = await start();
+  vi.mocked(completeServiceConnection).mockRejectedValue(cause);
+  expect((await fetch(url + `?state=${id}&code=SYNTHETIC`)).status).toBe(400);
+  vi.mocked(getServiceFlow).mockResolvedValue(pending);
+  expect(await getServiceBrowserFlow(server, 'example', id)).toEqual({
+    ...pending,
+    status: 'failed',
+    error: said,
+  });
+});
+
+it('ends the sign-in at once when the vendor refuses it, and says why in the browser', async () => {
+  const { id, input, url } = await start();
+  vi.mocked(failServiceConnection).mockResolvedValue(undefined);
+  const refusal = new URLSearchParams({
+    state: id,
+    error: 'server_error',
+    error_description: 'Your <b>identity provider</b> refused Example',
+  });
+  const response = await fetch(`${url}?${refusal}`);
+  expect(response.status).toBe(400);
+  const text = await response.text();
+  expect(text).toContain(
+    '<p>Example refused the sign-in: Your identity provider refused Example. Return to Switch Console.</p>'
+  );
+  expect(focusMainWindow).toHaveBeenCalledOnce();
+  expect(failServiceConnection).toHaveBeenCalledExactlyOnceWith(
+    server,
+    'example',
+    id,
+    'server_error',
+    'Your identity provider refused Example',
+    input.completion_secret
+  );
+  // The listener is done with this sign-in: a code after the refusal is not taken.
+  await fetch(url + `?state=${id}&code=SYNTHETIC`).then(
+    (again) => expect(again.status).toBe(400),
+    () => {}
+  );
+  expect(completeServiceConnection).not.toHaveBeenCalled();
+  const failed = {
+    status: 'failed' as const,
+    account: null,
+    error: 'Example refused the sign-in: Your identity provider refused Example.',
+    warning: null,
+  };
+  vi.mocked(getServiceFlow).mockResolvedValue(failed);
+  expect(await getServiceBrowserFlow(server, 'example', id)).toEqual(failed);
+});
+
+it('takes a refusal only for this Console’s state', async () => {
+  const { id, url } = await start();
+  const response = await fetch(url + '?state=unknown&error=access_denied');
+  expect(response.status).toBe(400);
+  expect(await response.text()).toContain('was not started by this Switch Console');
+  expect(failServiceConnection).not.toHaveBeenCalled();
+  expect((await fetch(url + `?state=${id}&code=SYNTHETIC`)).status).toBe(200);
+});
+
+it('shows the vendor’s refusal even when the server cannot be told of it', async () => {
+  const { id, url } = await start();
+  vi.mocked(failServiceConnection).mockRejectedValue(new Error('Switch gateway returned 404'));
+  const response = await fetch(url + `?state=${id}&error=access_denied`);
+  expect(await response.text()).toContain(
+    'Example sign-in was cancelled. Return to Switch Console.'
+  );
+  expect(log.warn).toHaveBeenCalledOnce();
+  vi.mocked(getServiceFlow).mockResolvedValue({
+    status: 'pending',
+    account: null,
+    error: null,
+    warning: null,
+  });
+  expect(await getServiceBrowserFlow(server, 'example', id)).toEqual({
+    status: 'failed',
+    account: null,
+    error: 'Example sign-in was cancelled.',
+    warning: null,
+  });
+});
+
 it('closes the listener when the person cancels', async () => {
   const { id, url } = await start();
   await cancelServiceBrowserFlow(server, 'example', id);
@@ -188,14 +330,36 @@ it('closes the listener when the person cancels', async () => {
   );
 });
 
+it('hands on the server’s callback when the sign-in returns through it', async () => {
+  const callback = 'https://switch.example.test/gateway/service-connections/example/flows/callback';
+  vi.mocked(startServiceConnection).mockImplementation(async (_server, _service, input) => ({
+    id: input.state,
+    url: `https://switch.example.test/gateway/service-connections/example/flows/authorize?state=${input.state}`,
+    mode: 'core',
+    callback_url: callback,
+  }));
+  const started = await startServiceBrowserFlow(
+    server,
+    'example',
+    {},
+    vi.fn().mockResolvedValue(undefined)
+  );
+  flows.push(['example', started.id]);
+  expect(started).toEqual({
+    id: vi.mocked(startServiceConnection).mock.calls[0]![2].state,
+    callbackUrl: callback,
+  });
+});
+
 it('cancels the server flow if the browser cannot open', async () => {
   vi.mocked(startServiceConnection).mockImplementation(async (_server, _service, input) => ({
     id: input.state,
     url: 'https://auth.example.test/authorize',
     mode: 'loopback',
+    callback_url: null,
   }));
   await expect(
-    startServiceBrowserFlow(server, 'example', async () => {
+    startServiceBrowserFlow(server, 'example', {}, async () => {
       throw new Error('Private shell detail');
     })
   ).rejects.toThrow('Could not open the sign-in page in your browser.');
@@ -237,7 +401,7 @@ it('says which ports to free when every one is taken, and starts nothing', async
   const busy = await occupy(43873);
   try {
     vi.mocked(getConnectionCatalog).mockResolvedValue(listed([43873]));
-    await expect(startServiceBrowserFlow(server, 'example', vi.fn())).rejects.toThrow(
+    await expect(startServiceBrowserFlow(server, 'example', {}, vi.fn())).rejects.toThrow(
       'Example takes a sign-in back only on port 43873 of this computer, and all are in use.'
     );
     expect(startServiceConnection).not.toHaveBeenCalled();

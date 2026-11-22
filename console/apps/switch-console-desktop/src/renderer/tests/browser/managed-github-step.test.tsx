@@ -9,6 +9,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const switchServers = vi.hoisted(() => ({
   getGitHubConnection: vi.fn(),
+  startGitHubConnection: vi.fn(),
+  getGitHubFlow: vi.fn(),
+  cancelGitHubConnection: vi.fn(),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -28,6 +31,9 @@ let root: Root | null = null;
 
 beforeEach(() => {
   switchServers.getGitHubConnection.mockReset();
+  switchServers.startGitHubConnection.mockReset();
+  switchServers.getGitHubFlow.mockReset();
+  switchServers.cancelGitHubConnection.mockReset();
 });
 
 afterEach(async () => {
@@ -127,4 +133,93 @@ it("says when an organization's single sign-on hides its installation", async ()
       /single sign-on hides its installation/
     )
   );
+});
+
+const HINT =
+  'If GitHub showed an error, cancel, and ask the person who set up the GitHub App for Switch to check its Callback URL.';
+
+/** Starts a GitHub sign-in whose flow then answers `status` on every poll. */
+async function startSignIn(status: 'pending' | 'checking'): Promise<void> {
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'not_connected',
+    install_url: 'https://github.com/apps/example/installations/new',
+  });
+  switchServers.startGitHubConnection.mockResolvedValue('flow-1');
+  switchServers.getGitHubFlow.mockResolvedValue({
+    status,
+    login: null,
+    error: null,
+    warning: null,
+  });
+  await render(() => {});
+  await vi.waitFor(() => expect(button(/^connect github\s*$/i, dialog())).toBeDefined());
+  await act(async () => button(/^connect github\s*$/i, dialog())!.click());
+  await vi.waitFor(() => expect(dialog().textContent).toMatch(/Complete authorization/));
+}
+
+it('suggests what to check once the browser has been away a minute', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    await startSignIn('pending');
+    await act(async () => vi.advanceTimersByTimeAsync(59_000));
+    expect(dialog().textContent).not.toContain('showed an error');
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(dialog().textContent).toContain(HINT);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('suggests nothing for a sign-in that came back before the minute', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    await startSignIn('checking');
+    await act(async () => vi.advanceTimersByTimeAsync(61_000));
+    expect(dialog().textContent).toMatch(/Complete authorization/);
+    expect(dialog().textContent).not.toContain('showed an error');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('keeps its minute when the page around it renders again', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    await startSignIn('pending');
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    // A parent that passes a new onConnected on each render.
+    await act(async () =>
+      root!.render(
+        <Dialog open>
+          <DialogContent>
+            <ManagedGitHubStep serverId="server" onBack={() => {}} onConnected={() => {}} />
+          </DialogContent>
+        </Dialog>
+      )
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(dialog().textContent).toContain(HINT);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('waits a new minute for a sign-in started again after Cancel', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    await startSignIn('pending');
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(dialog().textContent).toContain(HINT);
+
+    switchServers.cancelGitHubConnection.mockResolvedValue(undefined);
+    await act(async () => button(/^cancel$/i, dialog())!.click());
+    await vi.waitFor(() => expect(button(/^connect github\s*$/i, dialog())).toBeDefined());
+    switchServers.startGitHubConnection.mockResolvedValue('flow-2');
+    await act(async () => button(/^connect github\s*$/i, dialog())!.click());
+    await act(async () => vi.advanceTimersByTimeAsync(59_000));
+    expect(dialog().textContent).toMatch(/Complete authorization/);
+    expect(dialog().textContent).not.toContain('showed an error');
+  } finally {
+    vi.useRealTimers();
+  }
 });

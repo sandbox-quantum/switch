@@ -1,14 +1,15 @@
+import { IS_PROCESS_ALIVE } from '@switch-console/agent-providers';
 import { IS_STATE_ROOT, WATCHER_ROOT } from './state-roots';
 
 /** Runs on the execution host; paths are resolved there and never supplied by the renderer. */
-export const inspectWatchers = String.raw`${WATCHER_ROOT}
+export const inspectWatchers = String.raw`${WATCHER_ROOT}${IS_PROCESS_ALIVE}
 const fs=require('node:fs'), path=require('node:path'), cp=require('node:child_process');
 const directory=path.join(require('node:os').homedir(),'.local','state','switch','sdk-watchers');
 const read=p=>{try{return readJson(p)}catch(e){if(e.code==='ENOENT')return null;throw e}};
 const owner=p=>{
  const saved=read(p); if(!saved)return null;
  if(!Number.isSafeInteger(saved.pid)||saved.pid<=0)throw new Error('Invalid host PID');
- try{process.kill(saved.pid,0);return saved.pid}catch(e){if(e.code==='ESRCH')return null;throw e}
+ return isProcessAlive(saved.pid,'recorded')?saved.pid:null;
 };
 const tail=p=>{
  let fd;
@@ -57,16 +58,15 @@ export const removeWatcherRoots = String.raw`${IS_STATE_ROOT}const fs=require('n
  */
 export const WAIT_FOR_WATCHER_STOP_FN = String.raw`
 function waitForWatcherStop(root) {
-  const fs = require('node:fs'), path = require('node:path');
+  ${IS_PROCESS_ALIVE}  const fs = require('node:fs'), path = require('node:path');
   const files = ['shared-owner.lock', 'supervisor/owner.json'];
   const alive = (file) => {
     try {
       const pid = JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')).pid;
       if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid watcher PID');
-      process.kill(pid, 0);
-      return true;
+      return isProcessAlive(pid, 'recorded');
     } catch (e) {
-      if (['ENOENT', 'ESRCH'].includes(e.code)) return false;
+      if (e.code === 'ENOENT') return false;
       throw e;
     }
   };

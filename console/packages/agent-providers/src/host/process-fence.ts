@@ -1,6 +1,7 @@
 import { execFile, type ExecFileOptions } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { isProcessAlive } from '../process-alive';
 import { descendants, listWindowsProcesses, reused, windowsProcess } from './windows-processes';
 
 /** Bound when called, so a test that mocks `node:child_process` without it can still import this. */
@@ -15,16 +16,6 @@ export async function ownProcessGroup(): Promise<number | null> {
   if (process.platform === 'win32') return null;
   const { stdout } = await execute('ps', ['-o', 'pgid=', '-p', String(process.pid)]);
   return Number(stdout.trim()) === process.pid ? process.pid : null;
-}
-
-function exists(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
 }
 
 /**
@@ -47,11 +38,12 @@ export async function fenceDeadOwner(
 ): Promise<void> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid shared host owner PID.');
   if (process.platform === 'win32') return fenceDeadWindowsOwner(pid, startedAt);
-  if (exists(pid)) throw new Error('FENCING_REQUIRED: the shared host owner is still alive.');
+  if (isProcessAlive(pid, 'recorded'))
+    throw new Error('FENCING_REQUIRED: the shared host owner is still alive.');
   if (group !== pid)
     throw new Error('FENCING_REQUIRED: the previous host did not isolate its provider processes.');
   try {
-    if (!exists(-group)) return;
+    if (!isProcessAlive(-group, 'any-user')) return;
     process.kill(-group, 'SIGKILL');
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -61,11 +53,7 @@ export async function fenceDeadOwner(
     if (code !== 'EPERM') throw error;
   }
   for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      if (!exists(-group)) return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
-    }
+    if (!isProcessAlive(-group, 'any-user')) return;
     await delay(50);
   }
   throw new Error('FENCING_REQUIRED: the previous provider process group has not exited.');

@@ -11,6 +11,11 @@ import discord
 from discord import app_commands
 
 from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
+from switch_core.bridges.collaboration.discord.members import (
+    GuildMemberChange,
+    MemberReadQueue,
+    RoleChangeFilter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +65,45 @@ class DiscordConnection:
         bot_token: str,
         intents: discord.Intents,
         command_guild_id: int | None,
+        cache_members: bool = True,
     ) -> None:
         self._bot_token = bot_token
         self._intents = intents
+        # With the members intent, discord.py would otherwise ask for every
+        # guild's whole member list at start and keep it all in memory. A
+        # connection shared by every tenant's guild turns that off and reads a
+        # guild's members only when a room needs lining up (`member_reads`).
+        self._client_options: dict[str, Any] = (
+            {}
+            if cache_members
+            else {
+                "member_cache_flags": discord.MemberCacheFlags.none(),
+                "chunk_guilds_at_startup": False,
+            }
+        )
         self._command_guild_id = command_guild_id
         self._client: discord.Client | None = None
         self._tree: app_commands.CommandTree[Any] | None = None
         self._connect_task: asyncio.Task[None] | None = None
         self._bot_user_id: int = 0
         self._member_searches: deque[float] = deque()
+        # Background member reads (lining rooms up with their channels) wait
+        # their turn here, within the search budget above.
+        self.member_reads = MemberReadQueue(
+            budget_left=self.member_searches_left, spend=self._spend_member_search
+        )
+        # Someone joined or left a guild, or their roles changed. Called
+        # synchronously from the Gateway's parser, so it must only note the
+        # change; unset (or no members intent) means the change is dropped.
+        self._member_change_handler: Callable[[GuildMemberChange], None] | None = None
+        # Member updates that changed no roles are dropped before the handler.
+        self._role_filter = RoleChangeFilter()
+        # What someone can see changed for reasons other than their own
+        # membership: a channel's permission overwrites (the channels given) or
+        # a role's permissions (None: every channel in the guild).
+        self._permission_change_handler: (
+            Callable[[int, list[int] | None], None] | None
+        ) = None
         # Inbound message routing. A guild's messages go to the handler
         # registered for its id; a direct message (no guild) goes to the DM
         # handler if one is set, and is dropped otherwise. The self-registered
@@ -128,6 +163,22 @@ class DiscordConnection:
     ) -> None:
         self._channel_update_handler = handler
 
+    def set_member_change_handler(
+        self, handler: Callable[[GuildMemberChange], None] | None
+    ) -> None:
+        self._member_change_handler = handler
+
+    def set_permission_change_handler(
+        self, handler: Callable[[int, list[int] | None], None] | None
+    ) -> None:
+        self._permission_change_handler = handler
+
+    @property
+    def has_members_intent(self) -> bool:
+        """Whether this connection asks Discord for the server-members
+        intent, which live member events and whole member lists need."""
+        return bool(self._intents.members)
+
     def register_message_handler(
         self, guild_id: int, handler: Callable[[discord.Message], Awaitable[None]]
     ) -> None:
@@ -183,17 +234,30 @@ class DiscordConnection:
         until its minute is up — long enough for the person waiting on it to
         see a timeout instead of being told to try again.
         """
+        left, wait = self.member_searches_left()
+        if left <= 0:
+            raise DirectorySearchBusy(wait)
+        self._spend_member_search()
+
+    def member_searches_left(self) -> tuple[int, float]:
+        """How many member searches this socket has left in the current
+        window, and how long until the oldest one spent frees up."""
         now = _clock()
         while (
             self._member_searches
             and now - self._member_searches[0] >= _MEMBER_SEARCH_WINDOW
         ):
             self._member_searches.popleft()
-        if len(self._member_searches) >= _MEMBER_SEARCHES_PER_WINDOW:
-            raise DirectorySearchBusy(
-                _MEMBER_SEARCH_WINDOW - (now - self._member_searches[0])
-            )
-        self._member_searches.append(now)
+        left = _MEMBER_SEARCHES_PER_WINDOW - len(self._member_searches)
+        wait = (
+            _MEMBER_SEARCH_WINDOW - (now - self._member_searches[0])
+            if self._member_searches
+            else 0.0
+        )
+        return left, wait
+
+    def _spend_member_search(self) -> None:
+        self._member_searches.append(_clock())
 
     async def login(self) -> None:
         """Log in for Discord's API alone, opening no Gateway socket.
@@ -205,7 +269,9 @@ class DiscordConnection:
         `close` ends it as it ends a connection.
         """
         client = discord.Client(
-            intents=self._intents, allowed_mentions=NO_MASS_MENTIONS
+            intents=self._intents,
+            allowed_mentions=NO_MASS_MENTIONS,
+            **self._client_options,
         )
         self._client = client
         await client.login(self._bot_token)
@@ -229,7 +295,9 @@ class DiscordConnection:
         connect-task failure it is left as-is for the caller's `close()`.
         """
         client = discord.Client(
-            intents=self._intents, allowed_mentions=NO_MASS_MENTIONS
+            intents=self._intents,
+            allowed_mentions=NO_MASS_MENTIONS,
+            **self._client_options,
         )
         client.event(self._make_on_message())
         # Presses on a card's buttons. Registered alongside the command tree
@@ -240,6 +308,12 @@ class DiscordConnection:
         # none is set.
         client.event(self._make_on_interaction())
         client.event(self._make_on_guild_channel_update())
+        client.event(self._make_on_guild_role_update())
+        client.event(self._make_on_guild_role_delete())
+        if self._intents.members:
+            client.event(self._make_on_member_join())
+            client.event(self._make_on_raw_member_remove())
+            self._hook_member_updates(client)
         if self._guild_remove_handler is not None:
             client.event(self._make_on_guild_remove())
         if self._guild_join_handler is not None:
@@ -393,6 +467,7 @@ class DiscordConnection:
         async def on_guild_channel_update(
             before: discord.abc.GuildChannel, after: discord.abc.GuildChannel
         ) -> None:
+            self._note_overwrite_change(before, after)
             handler = self._channel_update_handler
             if handler is None:
                 return
@@ -402,6 +477,148 @@ class DiscordConnection:
                 logger.exception("Failed to handle a Discord channel update")
 
         return on_guild_channel_update
+
+    def _note_overwrite_change(
+        self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel
+    ) -> None:
+        """Report a channel whose permission overwrites changed, and for a
+        category the channels in it, which may follow its overwrites."""
+        handler = self._permission_change_handler
+        if handler is None:
+            return
+        try:
+            if before.overwrites == after.overwrites and getattr(
+                before, "category_id", None
+            ) == getattr(after, "category_id", None):
+                return
+            channel_ids = [after.id]
+            if isinstance(after, discord.CategoryChannel):
+                channel_ids += [child.id for child in after.channels]
+            handler(after.guild.id, channel_ids)
+        except Exception:
+            logger.exception("Failed to note a Discord channel's permission change")
+
+    def _make_on_guild_role_update(
+        self,
+    ) -> Callable[[discord.Role, discord.Role], Coroutine[Any, Any, None]]:
+        async def on_guild_role_update(
+            before: discord.Role, after: discord.Role
+        ) -> None:
+            # A role's name or colour changes nothing anyone can see.
+            if before.permissions == after.permissions:
+                return
+            handler = self._permission_change_handler
+            if handler is not None:
+                handler(after.guild.id, None)
+
+        return on_guild_role_update
+
+    def _make_on_guild_role_delete(
+        self,
+    ) -> Callable[[discord.Role], Coroutine[Any, Any, None]]:
+        async def on_guild_role_delete(role: discord.Role) -> None:
+            handler = self._permission_change_handler
+            if handler is not None:
+                handler(role.guild.id, None)
+
+        return on_guild_role_delete
+
+    def _make_on_member_join(
+        self,
+    ) -> Callable[[discord.Member], Coroutine[Any, Any, None]]:
+        async def on_member_join(member: discord.Member) -> None:
+            handler = self._member_change_handler
+            if handler is None or member.bot:
+                return
+            self._role_filter.changed(
+                member.guild.id, member.id, frozenset(r.id for r in member.roles)
+            )
+            handler(
+                GuildMemberChange(
+                    kind="join",
+                    guild_id=member.guild.id,
+                    user_id=member.id,
+                    username=str(member.name),
+                    member=member,
+                )
+            )
+
+        return on_member_join
+
+    def _make_on_raw_member_remove(
+        self,
+    ) -> Callable[[discord.RawMemberRemoveEvent], Coroutine[Any, Any, None]]:
+        async def on_raw_member_remove(payload: discord.RawMemberRemoveEvent) -> None:
+            handler = self._member_change_handler
+            user = payload.user
+            if handler is None or getattr(user, "bot", False):
+                return
+            self._role_filter.forget(payload.guild_id, user.id)
+            handler(
+                GuildMemberChange(
+                    kind="leave",
+                    guild_id=payload.guild_id,
+                    user_id=user.id,
+                    username=str(user.name),
+                )
+            )
+
+        return on_raw_member_remove
+
+    def _hook_member_updates(self, client: discord.Client) -> None:
+        """Hear every member update, not just those of cached members.
+
+        discord.py reports a member update only for a member it has cached,
+        and a shared connection caches none. So the Gateway parser for the
+        event is wrapped: discord.py's own handling runs first, unchanged,
+        then the update is passed on if it changed the person's roles.
+        """
+        state = getattr(client, "_connection", None)
+        parsers = getattr(state, "parsers", None)
+        original = (
+            parsers.get("GUILD_MEMBER_UPDATE") if isinstance(parsers, dict) else None
+        )
+        if parsers is None or original is None:
+            logger.warning(
+                "discord.py has no member-update parser to hook; role changes "
+                "will not move people in or out of rooms until the next sync"
+            )
+            return
+
+        def parse_guild_member_update(data: Any) -> None:
+            original(data)
+            try:
+                self._on_raw_member_update(state, data)
+            except Exception:
+                logger.exception("Failed to note a Discord member update")
+
+        parsers["GUILD_MEMBER_UPDATE"] = parse_guild_member_update
+
+    def _on_raw_member_update(self, state: Any, data: dict[str, Any]) -> None:
+        handler = self._member_change_handler
+        if handler is None:
+            return
+        user = data.get("user") or {}
+        if user.get("bot"):
+            return
+        guild_id = int(data["guild_id"])
+        user_id = int(user["id"])
+        roles = frozenset(int(role_id) for role_id in data.get("roles") or ())
+        if not self._role_filter.changed(guild_id, user_id, roles):
+            return
+        guild = state._get_guild(guild_id)
+        if guild is None:
+            return
+        member = discord.Member(data=data, guild=guild, state=state)  # type: ignore[arg-type]
+        handler(
+            GuildMemberChange(
+                kind="update",
+                guild_id=guild_id,
+                user_id=user_id,
+                username=str(member.name),
+                member=member,
+            )
+        )
 
     def _make_on_guild_join(
         self,

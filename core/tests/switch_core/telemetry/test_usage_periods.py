@@ -1,4 +1,5 @@
-"""Usage counted per finished day, week and month (`usage_period`).
+"""Usage counted per finished day, week and month (`usage_day_counted`,
+`usage_week_counted`, `usage_month_counted`).
 
 The snapshot's trailing `*_7d` counts add up wrong over a week: each room is
 counted on every day it was in the window. A period is counted once, over
@@ -14,6 +15,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -27,6 +29,7 @@ from switch_core.db.models import (
     TelemetrySnapshotWatermark,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.telemetry import snapshot as snapshot_module
 from switch_core.telemetry.periods import BACKFILL, Period, periods_ending_between
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
@@ -107,6 +110,34 @@ class TestWhichPeriodsAPassReports:
         assert min(period.end for period in periods) > now - BACKFILL
         assert ("month", "2026-10-01", "2026-11-01") in _spans(periods)
 
+    def test_each_kind_is_its_own_event(self) -> None:
+        day, week, month = periods_ending_between(
+            _at("2026-11-29T10:00:00"), _at("2026-12-01T10:00:00")
+        )[1:]
+
+        assert (day.event, week.event, month.event) == (
+            "usage_day_counted",
+            "usage_week_counted",
+            "usage_month_counted",
+        )
+
+    def test_none_is_dated_before_reporting_began(self) -> None:
+        """A period that began before the install or the moment telemetry was
+        switched on is partial, dated no earlier than that moment, which is
+        still inside it; one that had already ended is not reported at all."""
+        day, week, month = periods_ending_between(
+            _at("2026-11-29T10:00:00"), _at("2026-12-01T10:00:00")
+        )[1:]
+        afternoon = _at("2026-11-30T15:00:00")
+
+        assert day.dated(afternoon) == (afternoon, True)
+        assert week.dated(afternoon) is None
+        assert month.dated(afternoon) == (afternoon, True)
+        assert month.dated(_at("2026-11-10T00:00:00")) == (month.midpoint, True)
+        assert day.dated(_at("2026-11-30T09:00:00")) == (day.midpoint, True)
+        assert day.dated(day.start) == (day.midpoint, False)
+        assert day.dated(None) == (day.midpoint, False)
+
     def test_each_is_dated_to_its_middle(self) -> None:
         day, week, month = periods_ending_between(
             _at("2026-11-29T10:00:00"), _at("2026-12-01T10:00:00")
@@ -123,15 +154,19 @@ async def _room_with_posts(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     posts: list[tuple[datetime, bool]],
+    sender_type: str = "user",
+    agent_replies: bool = False,
 ) -> None:
-    """A room with an agent in it, where one chat identity posts at each
-    `(sent_at, as_app)`."""
+    """A room with an agent in it, where one person posts at each
+    `(sent_at, as_app)`; with `agent_replies`, the agent answers each a
+    minute later. `sender_type` is the person's client: `user` on a messaging
+    platform, `member` in Switch Console."""
     suffix = uuid.uuid4().hex[:8]
     async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
         identity = Client(
             transport_user_id=f"@identity-{suffix}:test",
             display_name="identity",
-            type="user",
+            type=sender_type,
         )
         agent = Client(
             transport_user_id=f"@agent-{suffix}:test",
@@ -147,25 +182,39 @@ async def _room_with_posts(
         session.add_all([identity, agent, room])
         await session.flush()
         session.add(ClientRoom(client_id=agent.id, room_id=room.id))
-        for seq, (sent_at, as_app) in enumerate(posts, start=1):
+        seq = 0
+        for sent_at, as_app in posts:
             content: dict[str, object] = {"body": "hello"}
             if as_app:
                 content[SENDER_IS_APP_MARKER] = True
-            session.add(
-                Message(
-                    room_id=room.id,
-                    seq=seq,
-                    transport_event_id=f"$evt-{suffix}-{seq}",
-                    sender_id=identity.transport_user_id,
-                    sender_client_id=identity.id,
-                    event_type="m.room.message",
-                    msgtype="m.text",
-                    body="hello",
-                    content=content,
-                    sent_at=sent_at,
+            said = [(identity, sent_at, content)]
+            if agent_replies:
+                said.append((agent, sent_at + timedelta(minutes=1), {"body": "hi"}))
+            for sender, at, said_content in said:
+                seq += 1
+                session.add(
+                    Message(
+                        room_id=room.id,
+                        seq=seq,
+                        transport_event_id=f"$evt-{suffix}-{seq}",
+                        sender_id=sender.transport_user_id,
+                        sender_client_id=sender.id,
+                        event_type="m.room.message",
+                        msgtype="m.text",
+                        body="hello",
+                        content=said_content,
+                        sent_at=at,
+                    )
                 )
-            )
         await session.commit()
+
+
+async def _counted(
+    session_factory: async_sessionmaker[AsyncSession], start: datetime, end: datetime
+):  # type: ignore[no-untyped-def]
+    return await collect_period_counts(
+        session_factory, tenant_ids=[TENANT_ZERO_ID], start=start, end=end
+    )
 
 
 class TestCountingAPeriod:
@@ -182,13 +231,14 @@ class TestCountingAPeriod:
         )
         await _room_with_posts(session_factory, posts=[(end, False)])
 
-        counts = await collect_period_counts(session_factory, start=start, end=end)
+        counts = await _counted(session_factory, start, end)
 
         assert counts.room_active == 2
         assert counts.person_identity_active == 2
+        assert counts.message_count == 2
         assert counts.tenant_failed_count == 0
 
-    async def test_a_bot_uses_a_room_but_is_not_a_person(
+    async def test_a_bot_is_counted_as_a_bot_and_does_not_make_a_room_active(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         start, end = _at("2026-11-02T00:00:00"), _at("2026-11-03T00:00:00")
@@ -196,10 +246,52 @@ class TestCountingAPeriod:
             session_factory, posts=[(start + timedelta(hours=1), True)]
         )
 
-        counts = await collect_period_counts(session_factory, start=start, end=end)
+        counts = await _counted(session_factory, start, end)
+
+        assert counts.room_active == 0
+        assert counts.person_identity_active == 0
+        assert counts.bot_identity_active == 1
+
+    async def test_a_person_in_switch_console_is_a_person_using_a_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A Console chat with an agent is a room in use, and its turns are a
+        person and an agent talking, as on a messaging platform."""
+        start, end = _at("2026-11-02T00:00:00"), _at("2026-11-03T00:00:00")
+        await _room_with_posts(
+            session_factory,
+            posts=[(start + timedelta(hours=1), False)],
+            sender_type="member",
+            agent_replies=True,
+        )
+
+        counts = await _counted(session_factory, start, end)
 
         assert counts.room_active == 1
-        assert counts.person_identity_active == 0
+        assert counts.person_identity_active == 1
+        assert counts.turn_human_to_agent == 1
+        assert counts.account_active == 0
+
+    async def test_agents_messages_and_turns_are_counted(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        start, end = _at("2026-11-02T00:00:00"), _at("2026-11-03T00:00:00")
+        await _room_with_posts(
+            session_factory,
+            posts=[
+                (start + timedelta(hours=1), False),
+                (start + timedelta(hours=2), False),
+            ],
+            agent_replies=True,
+        )
+
+        counts = await _counted(session_factory, start, end)
+
+        assert counts.agent_active == 1
+        assert counts.message_count == 4
+        assert counts.turn_human_to_agent == 2
+        assert counts.turn_agent_to_human == 1
+        assert counts.turn_agent_to_agent == 0
 
 
 class _RecordingSink:
@@ -214,7 +306,11 @@ class _RecordingSink:
 
 
 def _reporter(
-    sink: _RecordingSink, session_factory: async_sessionmaker[AsyncSession]
+    sink: _RecordingSink,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    installed_at: datetime | None = None,
+    enabled_since: datetime | None = None,
 ) -> SnapshotReporter:
     service = TelemetryService(
         sink=sink,  # type: ignore[arg-type]
@@ -225,7 +321,8 @@ def _reporter(
         telemetry_internal=False,
         deployment_kind="self_hosted",
         session_factory=session_factory,
-        installed_at=datetime.now(UTC) - timedelta(days=30),
+        installed_at=installed_at or datetime(2026, 1, 1, tzinfo=UTC),
+        enabled_since=enabled_since,
     )
     return SnapshotReporter(
         telemetry=service,
@@ -236,8 +333,19 @@ def _reporter(
     )
 
 
+_PERIOD_EVENTS = (
+    "switch_core.usage_day_counted",
+    "switch_core.usage_week_counted",
+    "switch_core.usage_month_counted",
+)
+
+
 def _periods_sent(sink: _RecordingSink) -> list[TelemetryRecord]:
-    return [record for record in sink.sent if record.name == "switch_core.usage_period"]
+    return [record for record in sink.sent if record.name in _PERIOD_EVENTS]
+
+
+def _ns(moment: datetime) -> int:
+    return int(moment.timestamp()) * 10**9
 
 
 class TestThePassReportsThem:
@@ -254,14 +362,82 @@ class TestThePassReportsThem:
             now=_at("2026-12-01T10:00:00"), since=_at("2026-11-30T10:00:00")
         )
 
-        sent = _periods_sent(sink)
-        assert [record.properties["period"] for record in sent] == ["day", "month"]
-        day, month = sent
-        assert day.timestamp_ns == int(_at("2026-11-30T12:00:00").timestamp()) * 10**9
+        day, month = _periods_sent(sink)
+        assert (day.name, month.name) == (
+            "switch_core.usage_day_counted",
+            "switch_core.usage_month_counted",
+        )
+        assert "period" not in day.properties
+        assert day.timestamp_ns == _ns(_at("2026-11-30T12:00:00"))
         assert day.properties["room_active"] == 1
         assert day.properties["person_identity_active"] == 1
-        assert month.timestamp_ns == int(_at("2026-11-16T00:00:00").timestamp()) * 10**9
+        assert day.properties["is_partial"] is False
+        assert month.timestamp_ns == _ns(_at("2026-11-16T00:00:00"))
         assert month.properties["room_active"] == 1
+
+    async def test_none_is_dated_before_the_install(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Amplitude makes a deployment new at its earliest event, so a day
+        that began before the install is dated no earlier than the install,
+        and the week that ended before it is not sent."""
+        installed = _at("2026-11-30T15:00:00")
+        sink = _RecordingSink()
+
+        await _reporter(sink, session_factory, installed_at=installed).run_once(
+            now=_at("2026-12-01T10:00:00"), since=_at("2026-11-29T10:00:00")
+        )
+
+        sent = {record.name: record for record in _periods_sent(sink)}
+        assert set(sent) == {
+            "switch_core.usage_day_counted",
+            "switch_core.usage_month_counted",
+        }
+        day = sent["switch_core.usage_day_counted"]
+        assert day.timestamp_ns == _ns(installed)
+        assert day.properties["is_partial"] is True
+        assert sent["switch_core.usage_month_counted"].properties["is_partial"] is True
+
+    async def test_none_is_dated_before_telemetry_was_switched_on(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        switched_on = _at("2026-11-30T15:00:00")
+        sink = _RecordingSink()
+
+        await _reporter(sink, session_factory, enabled_since=switched_on).run_once(
+            now=_at("2026-12-01T10:00:00"), since=_at("2026-11-28T10:00:00")
+        )
+
+        days = [
+            record
+            for record in _periods_sent(sink)
+            if record.name == "switch_core.usage_day_counted"
+        ]
+        assert [record.timestamp_ns for record in days] == [_ns(switched_on)]
+        assert days[0].properties["is_partial"] is True
+
+    async def test_the_tenants_are_read_once_for_every_period(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        reads = 0
+        original = snapshot_module.all_tenant_ids
+
+        async def counting(factory: object) -> list[str]:
+            nonlocal reads
+            reads += 1
+            return await original(factory)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(snapshot_module, "all_tenant_ids", counting)
+        sink = _RecordingSink()
+
+        await _reporter(sink, session_factory)._report_periods(
+            now=_at("2026-12-01T10:00:00"), since=_at("2026-11-20T10:00:00")
+        )
+
+        assert len(_periods_sent(sink)) > 3
+        assert reads == 1
 
     async def test_the_first_pass_sends_none(
         self, session_factory: async_sessionmaker[AsyncSession]

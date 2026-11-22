@@ -108,7 +108,7 @@ async def test_the_refusal_lists_what_is_left_by_kind_and_count(
     assert reason is not None
     assert "2 rooms (1 archived)" in reason
     assert "1 agent" in reason
-    assert "1 other member" in reason
+    assert "1 other user" in reason
 
 
 async def test_the_default_workspace_is_refused(
@@ -256,9 +256,9 @@ async def test_what_is_still_in_use_blocks_beside_what_has_ended(
         await _ended_and_live(session, tenant_id, owner_id, live=True)
         reason = await refusal(session, tenant_id, owner_id)
     assert reason is not None
-    assert "1 machine" in reason
-    assert "1 messaging app connection" in reason
-    assert "1 cloud machine" in reason
+    assert "1 device" in reason
+    assert "1 installed app" in reason
+    assert "1 cloud device" in reason
 
 
 async def test_a_workspace_deleted_meanwhile_is_not_found(
@@ -353,4 +353,4 @@ async def test_a_workspace_with_others_in_it_is_refused_with_what_is_left(
             "DELETE", f"/tenants/{TENANT}", json={"name": TENANT}
         )
     assert response.status_code == 409, response.text
-    assert "1 other member" in response.json()["detail"]
+    assert "1 other user" in response.json()["detail"]

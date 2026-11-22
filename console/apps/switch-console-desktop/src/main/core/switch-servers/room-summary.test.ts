@@ -84,6 +84,7 @@ describe('the room list as Console reads it', () => {
           write_visibility: 'private',
           connected_user_count: 4,
           viewer_is_member: true,
+          people_are_members: false,
           can_write: false,
           can_manage: false,
         },
@@ -100,6 +101,7 @@ describe('the room list as Console reads it', () => {
       writeVisibility: 'private',
       connectedUserCount: 4,
       viewerIsMember: true,
+      peopleAreMembers: false,
       serverPermissions: { canWrite: false, canManage: false, canUnlink: false },
     });
   });
@@ -114,6 +116,7 @@ describe('the room list as Console reads it', () => {
       'ownerName',
       'readVisibility',
       'connectedUserCount',
+      'peopleAreMembers',
       'serverPermissions',
     ])
       expect(room).not.toHaveProperty(key);

@@ -2,8 +2,9 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { agentPagePath, roomPagePath } from '@shared/core/switch-servers/dashboard-pages';
 import {
-  dashboardOrigin,
+  dashboardPageUrl,
   type RemoteAgentRoom,
   type RemoteRoomSummary,
   type RetireOutcome,
@@ -20,6 +21,8 @@ import { switchServersStore } from './switch-servers-store';
 function key(workspaceId: string, switchAgentId: string): string {
   return `${workspaceId}:${switchAgentId}`;
 }
+
+const MEMBERSHIP_FAILED = 'Could not load the rooms this agent belongs to.';
 
 /**
  * The messaging-app values worth offering as a room filter for these rooms:
@@ -142,7 +145,7 @@ export class SwitchRoomsStore {
   }
 
   /** Id of the server hosting a room's workspace, for the things that are about
-   * the gateway rather than the room — its web app, its Mattermost session. */
+   * the gateway rather than the room, such as its web app. */
   roomServerId(roomId: string): string | null {
     const workspaceId = this.roomWorkspaceById.get(roomId);
     if (!workspaceId) return null;
@@ -150,29 +153,23 @@ export class SwitchRoomsStore {
   }
 
   /**
-   * URL of a room's detail page in the gateway web app, or null if the room's
-   * owning server isn't known yet (names/workspaces are loaded by loadRoomNames)
-   * or serves no web gateway (a native local server started without its pages).
+   * URL of a room's detail page in the gateway web app, opened in the room's
+   * workspace, or null if the room's workspace isn't known yet (names and
+   * workspaces are loaded by loadRoomNames) or its server serves no web
+   * gateway (a native local server started without its pages).
    */
   gatewayRoomUrl(roomId: string): string | null {
-    const serverId = this.roomServerId(roomId);
-    if (!serverId) return null;
-    const server = switchServersStore.servers.find((s) => s.id === serverId);
-    if (!server || !servesWebGateway(server)) return null;
-    const base = dashboardOrigin(server).replace(/\/+$/, '');
-    return `${base}/rooms/${roomId}`;
+    const workspaceId = this.roomWorkspaceById.get(roomId);
+    return workspaceId ? workspaceGatewayUrl(workspaceId, roomPagePath(roomId)) : null;
   }
 
   /**
-   * URL of an agent's detail page in the gateway web app, or null if the server
-   * isn't known or serves no web gateway. Unlike rooms, the caller supplies
-   * the server id directly (an agent carries its owning server on its config).
+   * URL of an agent's detail page in the gateway web app, opened in the
+   * agent's workspace (which it carries on its config), or null if that
+   * workspace isn't known or its server serves no web gateway.
    */
-  gatewayAgentUrl(serverId: string, switchAgentId: string): string | null {
-    const server = switchServersStore.servers.find((s) => s.id === serverId);
-    if (!server || !servesWebGateway(server)) return null;
-    const base = dashboardOrigin(server).replace(/\/+$/, '');
-    return `${base}/agents/${switchAgentId}`;
+  gatewayAgentUrl(workspaceId: string, switchAgentId: string): string | null {
+    return workspaceGatewayUrl(workspaceId, agentPagePath(switchAgentId));
   }
 
   /**
@@ -200,6 +197,11 @@ export class SwitchRoomsStore {
    * rule. Named separately so a page about a single workspace asks for that
    * workspace rather than for whichever one happens to be active.
    */
+  /** Whether a workspace's room list has been read, so an empty list means none. */
+  roomsLoadedFor(workspaceId: string): boolean {
+    return this.allRoomsByWorkspace.has(workspaceId);
+  }
+
   listedRoomsInWorkspace(workspaceId: string): RemoteRoomSummary[] {
     const serverId = workspacesStore.serverIdFor(workspaceId);
     const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;
@@ -356,6 +358,13 @@ export class SwitchRoomsStore {
         ...this.unreachableWorkspaceIds.filter((id) => !askedIds.has(id)),
         ...asked.filter((w) => !switchServersStore.isConnected(w.serverId)).map((w) => w.id),
       ];
+      // A load that failed because the session had ended is the same fact as
+      // being signed out, which is said on its own; a retry cannot fix it.
+      for (const workspace of asked) {
+        if (serverAvailability(workspace.serverId) === 'signed-out') {
+          this.roomListErrors.delete(workspace.id);
+        }
+      }
     });
     await Promise.all(
       connected.map(async (workspace) => {
@@ -535,11 +544,75 @@ export class SwitchRoomsStore {
     const identities = new Map(agents.map((a) => [key(a.workspaceId, a.switchAgentId), a]));
     for (const [k, watched] of this.watchedIdentities)
       if (!identities.has(k)) identities.set(k, watched);
+    // Asked a workspace at a time: the server answers for all of a workspace's
+    // agents in one read.
+    const byWorkspace = new Map<string, string[]>();
+    for (const [k, { workspaceId, switchAgentId }] of identities) {
+      if (this.roomsByAgent.has(k) && !options.force) continue;
+      const ids = byWorkspace.get(workspaceId);
+      if (ids) ids.push(switchAgentId);
+      else byWorkspace.set(workspaceId, [switchAgentId]);
+    }
     await Promise.all(
-      [...identities.values()].map((a) =>
-        this.fetchAgentRooms(a.workspaceId, a.switchAgentId, options)
-      )
+      [...byWorkspace].map(([workspaceId, ids]) => this.fetchRoomsOfAgents(workspaceId, ids))
     );
+  }
+
+  /**
+   * Fetch several agents' membership in one workspace, in one read, or an agent
+   * at a time from a server too old to answer for many at once.
+   */
+  private async fetchRoomsOfAgents(workspaceId: string, switchAgentIds: string[]): Promise<void> {
+    const asked = switchAgentIds.map((id) => {
+      const k = key(workspaceId, id);
+      return { id, k, request: this.startMembershipRequest(k) };
+    });
+    let found: Record<string, RemoteAgentRoom[]> | null;
+    try {
+      found = await rpc.workspaces.listRoomsOfAgents({ workspaceId, agentIds: switchAgentIds });
+    } catch (cause) {
+      const error = failureText(cause, MEMBERSHIP_FAILED);
+      for (const { k, request } of asked) this.settleMembership(k, request, { error });
+      return;
+    }
+    if (found === null) {
+      await Promise.all(
+        switchAgentIds.map((id) => this.fetchAgentRooms(workspaceId, id, { force: true }))
+      );
+      return;
+    }
+    for (const { id, k, request } of asked) {
+      const rooms: RemoteAgentRoom[] | undefined = found[id];
+      this.settleMembership(
+        k,
+        request,
+        rooms ? { rooms } : { error: `${MEMBERSHIP_FAILED} The server has no such agent.` }
+      );
+    }
+  }
+
+  private startMembershipRequest(k: string): number {
+    const request = (this.membershipRequests.get(k) ?? 0) + 1;
+    this.membershipRequests.set(k, request);
+    runInAction(() => {
+      this.loading.add(k);
+      this.errors.delete(k);
+    });
+    return request;
+  }
+
+  /** Record what a membership read found, unless a newer read of the same agent has started since. */
+  private settleMembership(
+    k: string,
+    request: number,
+    outcome: { rooms: RemoteAgentRoom[] } | { error: string }
+  ): void {
+    runInAction(() => {
+      if (this.membershipRequests.get(k) !== request) return;
+      if ('rooms' in outcome) this.roomsByAgent.set(k, outcome.rooms);
+      else this.errors.set(k, outcome.error);
+      this.loading.delete(k);
+    });
   }
 
   /**
@@ -581,31 +654,26 @@ export class SwitchRoomsStore {
     const k = key(workspaceId, switchAgentId);
     const cached = this.roomsByAgent.get(k);
     if (cached && !options.force) return cached;
-    const request = (this.membershipRequests.get(k) ?? 0) + 1;
-    this.membershipRequests.set(k, request);
-
-    runInAction(() => {
-      this.loading.add(k);
-      this.errors.delete(k);
-    });
+    const request = this.startMembershipRequest(k);
     try {
       const rooms = await rpc.workspaces.listAgentRooms({ workspaceId, agentId: switchAgentId });
-      runInAction(() => {
-        if (this.membershipRequests.get(k) === request) this.roomsByAgent.set(k, rooms);
-      });
+      this.settleMembership(k, request, { rooms });
       return rooms;
     } catch (cause) {
-      runInAction(() => {
-        if (this.membershipRequests.get(k) === request)
-          this.errors.set(k, failureText(cause, 'Could not load the rooms this agent belongs to.'));
-      });
+      this.settleMembership(k, request, { error: failureText(cause, MEMBERSHIP_FAILED) });
       return null;
-    } finally {
-      runInAction(() => {
-        if (this.membershipRequests.get(k) === request) this.loading.delete(k);
-      });
     }
   }
+}
+
+/** A gateway page in a workspace, on the server hosting it, or null where
+ * there is no such page to open. */
+function workspaceGatewayUrl(workspaceId: string, path: string): string | null {
+  const workspace = workspacesStore.byId(workspaceId);
+  if (!workspace) return null;
+  const server = switchServersStore.servers.find((s) => s.id === workspace.serverId);
+  if (!server || !servesWebGateway(server)) return null;
+  return dashboardPageUrl(server, path, workspace.tenantId);
 }
 
 export const switchRoomsStore = new SwitchRoomsStore();

@@ -56,6 +56,7 @@ function codexHostDependency(): HostDependencyDescriptor {
     command: CODEX_WINDOWS_INSTALL_SCRIPT,
     updateCommand: CODEX_WINDOWS_INSTALL_SCRIPT,
     uninstallCommand: CODEX_WINDOWS_UNINSTALL_SCRIPT,
+    installedAt: ['AppData\\Local\\Programs\\OpenAI\\Codex\\'],
     recommended: true,
   };
   const windowsNpm = (descriptor.installCommands.windows ?? []).map(
@@ -73,7 +74,8 @@ function codexHostDependency(): HostDependencyDescriptor {
 export const plugin = definePlugin(
   {
     id: 'codex',
-    name: 'Codex',
+    name: 'OpenAI Codex',
+    shortName: 'Codex',
     description:
       'CLI that connects to OpenAI models for project-aware code assistance and terminal workflows.',
     websiteUrl: 'https://github.com/openai/codex',

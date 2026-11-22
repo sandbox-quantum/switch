@@ -9,7 +9,6 @@ import {
   type Budget,
   type CurrentTenant,
   type UsageTotal,
-  type ApiKeyDetail,
   type BridgeDetail,
   type BridgeTypeInfo,
   type ExternalUserSummary,
@@ -22,6 +21,8 @@ import {
   type RoomGraphData,
   type EcosystemGraphData,
   type PackageDetail,
+  type PackageDocument,
+  type PackageReference,
   type ReferenceDetail,
   type ReferenceTypeDetail,
   type ReferenceTypeInfo,
@@ -32,15 +33,15 @@ import {
   type RoomGroupDetail,
   type RoomSummary,
   type TemplateSummary,
-  type UserInfo,
   fetchAgent,
   fetchAgents,
-  fetchApiKeys,
+  fetchRoomAgentCandidates,
   fetchBudgets,
   fetchCurrentTenant,
   fetchUsage,
   fetchAllExternalUsers,
   fetchBridges,
+  fetchMyIdentities,
   fetchBridgeTypes,
   fetchBridgeUsers,
   fetchDocumentRooms,
@@ -70,13 +71,18 @@ import {
   fetchRooms,
   fetchTemplates,
   type TemplateFilter,
-  fetchUsers,
+  type LinkedIdentity,
 } from "./api";
 
 export interface UseQueryResult<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
+  // The status the server refused the load with, so a page can tell "not
+  // found" and "not allowed" from a fault; null when it loaded, or when the
+  // server never answered. Optional only so a test's stand-in result may
+  // leave it out; both hooks here always set it.
+  errorStatus?: number | null;
   refetch: () => void;
 }
 
@@ -84,6 +90,7 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
 
   const refetch = useCallback(() => setTick((t) => t + 1), []);
@@ -92,23 +99,33 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
     let cancelled = false;
     setLoading(true);
 
-    fetcher().then((result) => {
-      if (cancelled) return;
-      if (result === null) {
-        setError("Failed to fetch data");
-      } else {
-        setData(result);
-        setError(null);
-      }
-      setLoading(false);
-    });
+    fetcher().then(
+      (result) => {
+        if (cancelled) return;
+        if (result === null) {
+          setError("Failed to fetch data");
+        } else {
+          setData(result);
+          setError(null);
+        }
+        setErrorStatus(null);
+        setLoading(false);
+      },
+      // A fetcher that raises carries the server's own reason; show that.
+      (e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setErrorStatus(e instanceof ApiError ? e.status : null);
+        setLoading(false);
+      },
+    );
 
     return () => {
       cancelled = true;
     };
   }, [fetcher, tick]);
 
-  return { data, loading, error, refetch };
+  return { data, loading, error, errorStatus, refetch };
 }
 
 export function useRooms(
@@ -127,6 +144,14 @@ export function useRoom(roomId: string | undefined): UseQueryResult<RoomDetail> 
     () => (roomId ? fetchRoom(roomId) : Promise.resolve(null)),
     [roomId],
   );
+  return useQuery(fetcher);
+}
+
+/** The agents the viewer may invite into `roomId`, or into a new room when it is absent. */
+export function useRoomAgentCandidates(
+  roomId?: string,
+): UseQueryResult<{ agent_ids: string[] | null }> {
+  const fetcher = useCallback(() => fetchRoomAgentCandidates(roomId), [roomId]);
   return useQuery(fetcher);
 }
 
@@ -150,6 +175,10 @@ export function useRoomGroups(): UseQueryResult<RoomGroupDetail[]> {
 
 export function useBridges(): UseQueryResult<BridgeDetail[]> {
   return useQuery(fetchBridges);
+}
+/** The accounts linked to the signed-in person, on every connection. */
+export function useMyIdentities(): UseQueryResult<LinkedIdentity[]> {
+  return useQuery(fetchMyIdentities);
 }
 export function useBridgeTypes(): UseQueryResult<BridgeTypeInfo[]> {
   return useQuery(fetchBridgeTypes);
@@ -185,15 +214,12 @@ export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {
 }
 
 /** The connector apps of `scope`: the server's, which only its operator
- * reads, or the current organization's, which only its org admins do. A 404
- * is the routes not being mounted: `notEnabled` says so. */
-export function useConnectorApps(
-  scope: ConnectorAppScope,
-  notEnabled: string,
-): UseQueryResult<ConnectorApps> {
+ * reads, or the current organization's, which only its org admins do. */
+export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<ConnectorApps> {
   const [data, setData] = useState<ConnectorApps | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
   const refetch = useCallback(() => setTick((t) => t + 1), []);
 
@@ -205,34 +231,22 @@ export function useConnectorApps(
         if (cancelled) return;
         setData(result);
         setError(null);
+        setErrorStatus(null);
         setLoading(false);
       },
       (err: unknown) => {
         if (cancelled) return;
-        setError(
-          err instanceof ApiError && err.status === 404
-            ? notEnabled
-            : err instanceof Error
-              ? err.message
-              : String(err),
-        );
+        setError(err instanceof Error ? err.message : String(err));
+        setErrorStatus(err instanceof ApiError ? err.status : null);
         setLoading(false);
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [scope, notEnabled, tick]);
+  }, [scope, tick]);
 
-  return { data, loading, error, refetch };
-}
-
-export function useUsers(): UseQueryResult<UserInfo[]> {
-  return useQuery(fetchUsers);
-}
-
-export function useApiKeys(): UseQueryResult<ApiKeyDetail[]> {
-  return useQuery(fetchApiKeys);
+  return { data, loading, error, errorStatus, refetch };
 }
 
 export function useReferences(): UseQueryResult<ReferenceDetail[]> {
@@ -369,7 +383,7 @@ export function usePackageRooms(
 
 export function usePackageReferences(
   packageId: string | undefined,
-): UseQueryResult<ReferenceDetail[]> {
+): UseQueryResult<PackageReference[]> {
   const fetcher = useCallback(
     () => (packageId ? fetchPackageReferences(packageId) : Promise.resolve(null)),
     [packageId],
@@ -379,7 +393,7 @@ export function usePackageReferences(
 
 export function usePackageDocuments(
   packageId: string | undefined,
-): UseQueryResult<DocumentSummary[]> {
+): UseQueryResult<PackageDocument[]> {
   const fetcher = useCallback(
     () => (packageId ? fetchPackageDocuments(packageId) : Promise.resolve(null)),
     [packageId],

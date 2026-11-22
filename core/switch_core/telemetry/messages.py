@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.chats import CHAT_OPERATION_ID_KEY, MEMBER_CLIENT_TYPE
 from switch_core.db.models import Agent, Client, ClientRoom, CollaborationBridge, Room
 from switch_core.db.session_scope import tenant_session
 from switch_core.observability.throttle import WarningThrottle
@@ -74,17 +75,20 @@ _FAILURES_TO_PAUSE_ALL = 3
 _DRAIN_SECONDS = 0.3
 
 # The transport's `ActorRole` as the catalogue's `sender_kind`. A system or
-# bridge writer is Switch itself.
+# bridge writer is Switch itself; `member` is a person in Switch Console, which
+# the chat service reports rather than a transport.
 _ROLE_KIND = {
     "human": "user",
     "agent": "agent",
     "system": "platform",
     "bridge": "platform",
+    MEMBER_CLIENT_TYPE: "member",
 }
 
 # `clients.type` as `sender_kind`. `admin` is Switch's own client.
 _CLIENT_TYPE_KIND = {
     HUMAN_CLIENT_TYPE: "user",
+    MEMBER_CLIENT_TYPE: "member",
     AGENT_CLIENT_TYPE: "agent",
     "admin": "platform",
     "bridge": "platform",
@@ -99,18 +103,33 @@ _UNKNOWN_RUNTIME = "unknown"
 class _RoomFacts:
     bridge_platform: str
     channel_type: str
-    user_count: int
-    agent_count: int
+    user_count: int | None
+    agent_count: int | None
+    # `true` / `false` / `unknown`: whether Switch Console made the room as a
+    # chat, as a tri-state because a room whose lookup failed cannot say.
+    console_chat: str
 
 
 # A room whose lookup failed. Reported rather than dropped, so a lookup
-# problem shows as `unknown` in the charts instead of as fewer messages; -1
-# rather than 0 so it cannot be read as an empty room. The catalogue has no
-# empty value, so an average of the counts has to filter on
-# `bridge_platform != unknown` — the docs say so.
+# problem shows as `unknown` in the charts instead of as fewer messages. Its
+# sizes are left off the event rather than reported as 0, which would read as
+# an empty room, so an average of them skips it.
 _UNKNOWN_ROOM = _RoomFacts(
-    bridge_platform="unknown", channel_type="unknown", user_count=-1, agent_count=-1
+    bridge_platform="unknown",
+    channel_type="unknown",
+    user_count=None,
+    agent_count=None,
+    console_chat="unknown",
 )
+
+
+def _people(members_by_type: dict[str, int]) -> int:
+    """A room's people: those on a messaging platform and those in Switch
+    Console. Someone who is both counts twice, as someone on two platforms
+    does."""
+    return members_by_type.get(HUMAN_CLIENT_TYPE, 0) + members_by_type.get(
+        MEMBER_CLIENT_TYPE, 0
+    )
 
 
 @dataclass(frozen=True)
@@ -152,8 +171,7 @@ class _TtlCache[K, V]:
 
 
 class MessageTelemetry:
-    """Reports `room_message_sent`, `agent_message_sent` and
-    `agent_message_received`.
+    """Reports `message_sent` and `agent_message_received`.
 
     The transport's `ParticipantMessageObserver`, and what the router tells
     once a message addressed to an agent has committed. Does nothing at all
@@ -316,29 +334,22 @@ class MessageTelemetry:
     async def _report_message(self, message: ParticipantMessage) -> None:
         room = await self._room_facts(message.tenant_id, message.room_id)
         self._telemetry.emit(
-            "room_message_sent",
+            "message_sent",
             sender_kind=(
                 "bot"
                 if message.sender_is_app
                 else _ROLE_KIND.get(message.sender_role, "unknown")
             ),
-            bridge_platform=room.bridge_platform,
-            channel_type=room.channel_type,
-            room_user_count=room.user_count,
-            room_agent_count=room.agent_count,
-            has_attachment=message.has_attachment,
-            in_thread=message.in_thread,
-        )
-        if message.sender_role != "agent":
-            return
-        self._telemetry.emit(
-            "agent_message_sent",
-            known_agent_type=await self._agent_runtime(
-                message.tenant_id, message.sender_client_id
+            known_agent_type=(
+                await self._agent_runtime(message.tenant_id, message.sender_client_id)
+                if message.sender_role == "agent"
+                else None
             ),
             bridge_platform=room.bridge_platform,
             channel_type=room.channel_type,
+            console_chat=room.console_chat,
             room_user_count=room.user_count,
+            room_agent_count=room.agent_count,
             has_attachment=message.has_attachment,
             in_thread=message.in_thread,
         )
@@ -359,6 +370,7 @@ class MessageTelemetry:
             known_agent_type=item.known_agent_type,
             bridge_platform=room.bridge_platform,
             channel_type=room.channel_type,
+            console_chat=room.console_chat,
             has_attachment=item.has_attachment,
             agent_live=item.agent_live,
         )
@@ -487,7 +499,12 @@ class MessageTelemetry:
             open_room = and_(Room.tenant_id == tenant_id, Room.archived_at.is_(None))
             rooms = (
                 await session.execute(
-                    select(Room.id, Room.channel_type, CollaborationBridge.type)
+                    select(
+                        Room.id,
+                        Room.channel_type,
+                        CollaborationBridge.type,
+                        Room.metadata_.has_key(CHAT_OPERATION_ID_KEY),
+                    )
                     .select_from(Room)
                     .outerjoin(
                         CollaborationBridge,
@@ -532,15 +549,16 @@ class MessageTelemetry:
         by_room: dict[str, dict[str, int]] = {}
         for room_id, client_type, count in members:
             by_room.setdefault(room_id, {})[client_type] = int(count)
-        for room_id, channel_type, platform in rooms:
+        for room_id, channel_type, platform, console_chat in rooms:
             by_type = by_room.get(room_id, {})
             self._rooms.put(
                 (tenant_id, room_id),
                 _RoomFacts(
                     bridge_platform=normalise_platform(platform),
                     channel_type=normalise_channel_type(channel_type),
-                    user_count=by_type.get(HUMAN_CLIENT_TYPE, 0),
+                    user_count=_people(by_type),
                     agent_count=by_type.get(AGENT_CLIENT_TYPE, 0),
+                    console_chat="true" if console_chat else "false",
                 ),
             )
         for transport_user_id, client_type in clients:
@@ -591,7 +609,11 @@ class MessageTelemetry:
         async with tenant_session(self._session_factory, tenant_id) as session:
             row = (
                 await session.execute(
-                    select(Room.channel_type, CollaborationBridge.type)
+                    select(
+                        Room.channel_type,
+                        CollaborationBridge.type,
+                        Room.metadata_.has_key(CHAT_OPERATION_ID_KEY),
+                    )
                     .select_from(Room)
                     .outerjoin(
                         CollaborationBridge,
@@ -617,12 +639,13 @@ class MessageTelemetry:
                 .group_by(Client.type)
             )
             by_type = {client_type: int(count) for client_type, count in members.all()}
-        channel_type, platform = row
+        channel_type, platform, console_chat = row
         return _RoomFacts(
             bridge_platform=normalise_platform(platform),
             channel_type=normalise_channel_type(channel_type),
-            user_count=by_type.get(HUMAN_CLIENT_TYPE, 0),
+            user_count=_people(by_type),
             agent_count=by_type.get(AGENT_CLIENT_TYPE, 0),
+            console_chat="true" if console_chat else "false",
         )
 
     async def _sender_kind(self, tenant_id: str, transport_user_id: str) -> str:

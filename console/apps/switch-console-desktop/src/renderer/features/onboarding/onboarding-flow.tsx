@@ -1,16 +1,10 @@
 import { observer } from 'mobx-react-lite';
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect } from 'react';
 import { BuddyStep } from '@renderer/features/switch-buddy/buddy-step';
 import { openBuddyAfterOnboarding } from '@renderer/features/switch-buddy/open-buddy';
-import {
-  ExternalServerStep,
-  LocalSetupStep,
-  SignInStep,
-} from '@renderer/features/switch-servers/AddServerModal';
+import { ExternalServerStep, SignInStep } from '@renderer/features/switch-servers/AddServerModal';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { useSwitchCloud } from '@renderer/features/switch-servers/use-switch-cloud';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { report } from '@renderer/lib/telemetry/report';
@@ -22,7 +16,8 @@ import type {
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 import { CreateWorkspacePage } from './create-workspace-page';
-import { type CloudChoiceState, HowToRunPage } from './how-to-run-page';
+import { HowToRunPage } from './how-to-run-page';
+import { LocalSetupProgress } from './local-setup-progress';
 import { OnboardingIntro } from './onboarding-intro';
 import { onboardingStore, type OnboardingPage } from './onboarding-store';
 import { PickWorkspacePage } from './pick-workspace-page';
@@ -158,39 +153,10 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
         ? { label: 'Back to the app', onExit: () => finish(null) }
         : null;
 
-  const cloud = useSwitchCloud();
-  const [cloudAttempt, setCloudAttempt] = useState<{ connecting: boolean; error: string | null }>({
-    connecting: false,
-    error: null,
-  });
-
-  /** Register Switch Cloud and go straight to signing in to it: there is nothing to ask first. */
-  const connectToCloud = () => {
-    setCloudAttempt({ connecting: true, error: null });
-    switchServersStore.connectToSwitchCloud().then(
-      (added) => {
-        setCloudAttempt({ connecting: false, error: null });
-        connectedTo(added, 'cloud');
-      },
-      (cause) => {
-        const failure = describeFailure(cause, 'Could not connect to Switch Cloud.');
-        setCloudAttempt({
-          connecting: false,
-          error: failure.detail ? `${failure.headline} ${failure.detail}` : failure.headline,
-        });
-      }
-    );
-  };
-
-  const cloudChoice: CloudChoiceState =
-    cloud.kind === 'open' ? { ...cloud, ...cloudAttempt, onConnect: connectToCloud } : cloud;
-
   return (
     <WizardChromeProvider chrome="page" exit={exit}>
       {/* Keyed by page, so each one opens afresh, with its entrance. */}
-      <Fragment key={page}>
-        {currentPage(server, cloudChoice, goTo, back, finish, finishWithBuddy)}
-      </Fragment>
+      <Fragment key={page}>{currentPage(server, goTo, back, finish, finishWithBuddy)}</Fragment>
     </WizardChromeProvider>
   );
 });
@@ -233,7 +199,6 @@ function reportPage(page: OnboardingPage): void {
 
 function currentPage(
   server: SwitchServer | null,
-  cloud: CloudChoiceState,
   goTo: (page: OnboardingPage) => void,
   back: () => void,
   finish: (serverId: string | null) => void,
@@ -255,7 +220,6 @@ function currentPage(
     case 'howToRun':
       return (
         <HowToRunPage
-          cloud={cloud}
           onBack={back}
           onLocal={() => goTo('local')}
           onExternal={() => goTo('connect')}
@@ -263,7 +227,7 @@ function currentPage(
       );
     case 'local':
       return (
-        <LocalSetupStep
+        <LocalSetupProgress
           onBack={back}
           onDone={(serverId) => {
             // Console signed in to the stack it runs as its admin: the
@@ -272,7 +236,6 @@ function currentPage(
             if (started) onboardingStore.startedLocally(started);
             else finish(serverId);
           }}
-          onClose={null}
           onRegistered={(serverId) => onboardingStore.registered('local', serverId)}
         />
       );

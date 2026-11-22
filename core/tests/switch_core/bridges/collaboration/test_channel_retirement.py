@@ -47,7 +47,14 @@ def test_every_platform_declares_what_deleting_a_room_does() -> None:
         "discord": "deleted",
         "telegram": "left",
         "irc": "left",
+        "signal": "kept",
         "teams": "kept",
+        "whatsapp": "kept",
+        "google_chat": "left",
+        "zulip": "left",
+        "matrix": "left",
+        "rocketchat": "archived",
+        "webex": "left",
     }
 
 

@@ -43,7 +43,7 @@ def _summarise_metrics(payload: dict[str, Any]) -> list[str]:
             f"  resource: service={attributes.get('service.name')} "
             f"version={attributes.get('service.version')} "
             f"env={attributes.get('deployment.environment')} "
-            f"deployment={attributes.get('flint.client_id')}"
+            f"deployment={attributes.get('switch_trust.client_id')}"
         )
         for scope in resource.get("scopeMetrics", []):
             for metric in scope.get("metrics", []):
@@ -64,8 +64,10 @@ def _summarise_metrics(payload: dict[str, Any]) -> list[str]:
                     for point in metric["histogram"]["dataPoints"]:
                         count = int(point["count"])
                         mean = (point["sum"] / count) if count else 0.0
+                        unit = metric.get("unit", "")
+                        shown = f"{mean:.1f}{unit}" if unit != "1" else f"{mean:.3f}"
                         lines.append(
-                            f"    {name} n={count} mean={mean:.1f}ms"
+                            f"    {name} n={count} mean={shown}"
                             f"{_render(point.get('attributes', []))}"
                         )
     return lines

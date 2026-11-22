@@ -23,6 +23,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
     ChannelType,
+    CreatedChannel,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -465,8 +466,13 @@ class IrcAdapter(PlatformAdapter):
                 await self.client.command("MODE", channel)
 
     async def create_channel(
-        self, name: str, topic: str, *, channel_type: ChannelType = "channel_public"
-    ) -> str:
+        self,
+        name: str,
+        topic: str,
+        *,
+        channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         slug = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:25] or "room"
         channel = f"#{slug}-{uuid4().hex[:16]}"
         if self.client is None:
@@ -481,7 +487,7 @@ class IrcAdapter(PlatformAdapter):
             )
         else:
             await self._create_exact(channel, topic, channel_type != "channel_public")
-        return channel
+        return CreatedChannel(id=channel, name=channel)
 
     async def _confirm_private(self, channel: str) -> None:
         client = self.client

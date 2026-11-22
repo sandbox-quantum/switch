@@ -12,22 +12,38 @@ left: the platform operator may list its members and make one of them
 
 Changes to the organization itself are recorded in its own audit log
 (`organization_audit_events`), whichever workspace they were made from, and
-read back by its `org_admin`s. See `docs/design/organizations-v1.md`.
+read back by its `org_admin`s. Someone who stops being `org_admin` here, made
+a member or removed, is e-mailed about to every `org_admin` and to themselves
+after the response, holding no connection (`organization_admin_notices.py`). See
+`docs/design/organizations-v1.md`.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, NamedTuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.authz import ORGANIZATION_ADMIN_ROLE
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE, administers_tenant
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.registration_bootstrap import (
+    SERVICE_ACCOUNT_ADMIN_REFUSAL,
+    is_bootstrap_owner,
+)
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import (
@@ -41,24 +57,31 @@ from switch_core.db.audit import (
     record_organization_audit_event,
 )
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Organization,
     OrganizationMember,
     Tenant,
+    TenantMember,
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.room_store import RoomStore, readable_by
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
+    membership_in_organization,
     organization_candidates,
     organization_workspaces_bindable_by,
     organizations_bindable_by,
+    rebind_if_left,
+    session_signed_in,
     workspaces_in_organization,
     workspaces_reached_through_organization,
 )
@@ -67,9 +90,11 @@ from switch_core.gateway.dependencies import (
     get_api_key_store,
     get_client_lifecycle,
     get_config,
+    get_organization_admin_notices,
     get_organization_directory,
     get_organization_store,
     get_protocol,
+    get_room_store,
     get_session,
     get_session_factory,
     get_system_session,
@@ -82,8 +107,14 @@ from switch_core.gateway.schemas import (
     OrganizationCreateResponse,
     OrganizationIssueDetail,
     OrganizationMemberDetail,
+    OrganizationMemberListEntry,
     OrganizationMemberUpdateRequest,
+    OrganizationMemberWorkspace,
+    OrganizationRenameRequest,
+    OrganizationRenameResponse,
     OrganizationSummary,
+    OrganizationWithoutWorkspace,
+    OrganizationWorkspaceResponse,
     TenantMembershipResponse,
     WorkspaceCreateRequest,
 )
@@ -98,11 +129,19 @@ from switch_core.gateway.workspace_creation import (
     create_workspace,
     directory_failed,
     lock_workspace_allowance,
+    refuse_a_workspace_name_taken,
 )
+from switch_core.invitation_revocation import revoke_invitations_made_by
 from switch_core.organization_access import (
     AccessRevocation,
     end_access_through_organization,
     workspaces_where_they_own_agents,
+)
+from switch_core.organization_admin_notices import (
+    AdminChange,
+    AdminChangeKind,
+    OrganizationAdminNotices,
+    Person,
 )
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
@@ -119,10 +158,36 @@ from switch_core.workos_sign_in import OrganizationToken
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
+
+LAST_ORGANIZATION_ADMIN_REFUSAL = (
+    "This is the organization's only org admin. Make someone else an org admin first."
+)
+
 
 def _member_detail(
-    user: User, member: OrganizationMember, warning: str | None
+    user: User,
+    member: OrganizationMember,
+    warning: str | None,
+    *,
+    access: OrganizationAccess | None,
+    accepts_promotion: bool,
+    admin_count: int,
 ) -> OrganizationMemberDetail:
+    """`member`, with what the caller, who passes the role-change gate as
+    `access` says (None: they don't), may do with them: their own row
+    included, so an `org_admin` steps down or leaves while another remains.
+    `admin_count` is the organization's `org_admin`s, read without a lock:
+    the last one is answered as the routes would answer now, and the routes
+    check again, locked, when asked."""
+    change = access is not None
+    # Removing takes the organization's own admin; the operator restoring
+    # one is let through to change roles only.
+    remove = access is not None and not access.platform_access
+    last_admin = member.role == ORGANIZATION_ADMIN_ROLE and admin_count <= 1
+    change_refusal = LAST_ORGANIZATION_ADMIN_REFUSAL if change and last_admin else None
+    remove_refusal = LAST_ORGANIZATION_ADMIN_REFUSAL if remove and last_admin else None
     return OrganizationMemberDetail(
         user_id=user.id,
         name=user.name,
@@ -130,7 +195,28 @@ def _member_detail(
         role=member.role,
         created_at=str(member.created_at),
         warning=warning,
+        service_account=is_bootstrap_owner(user),
+        can_change_role=change and change_refusal is None,
+        change_role_blocked_reason=change_refusal,
+        # Never the registration service account (`SERVICE_ACCOUNT_ADMIN_REFUSAL`).
+        can_grant_org_admin=change
+        and accepts_promotion
+        and not is_bootstrap_owner(user),
+        can_remove=remove and remove_refusal is None,
+        remove_blocked_reason=remove_refusal,
     )
+
+
+def _accepts_promotion(
+    organization_directory: OrganizationDirectory, organization: Organization
+) -> bool:
+    """Whether someone may be made `org_admin` from Switch at all: not in an
+    organization whose members come from a directory Switch cannot change,
+    where that is done in the directory (`OrganizationDirectory.prepare_change`).
+    Whether the directory takes a given person is asked when it is done."""
+    return not organization_directory.keeps_members_of(
+        organization
+    ) or organization_directory.sends_changes_for(organization)
 
 
 async def _current_organization_id(session: AsyncSession) -> str:
@@ -143,7 +229,7 @@ async def _current_organization_id(session: AsyncSession) -> str:
     return tenant.organization_id
 
 
-class _OrganizationAccess(NamedTuple):
+class OrganizationAccess(NamedTuple):
     organization_id: str
     # Let through on the operator flag alone, to restore an `org_admin`,
     # rather than as one: what the organization's audit log marks as
@@ -151,19 +237,19 @@ class _OrganizationAccess(NamedTuple):
     platform_access: bool
 
 
-async def require_organization_admin(
+async def organization_access(
     session: AsyncSession,
     user_store: UserStore,
     organization_store: OrganizationStore,
     user: User,
     *,
     operator_restores: bool,
-) -> _OrganizationAccess:
-    """The bound workspace's organization, and how `user` got in; 403 unless
-    they are its `org_admin`, 404 when the workspace belongs to no
+) -> OrganizationAccess | None:
+    """How `user` gets into the bound workspace's organization as its admin,
+    or None when they don't; 404 when the workspace belongs to no
     organization.
 
-    With `operator_restores`, the platform operator passes too while the
+    With `operator_restores`, the platform operator gets in too while the
     organization has no `org_admin`, so that someone can be made one. That is
     the organization's own decision, not the workspace's: an operator who
     administers the bound workspace by role still has no role here.
@@ -173,16 +259,37 @@ async def require_organization_admin(
         await user_store.organization_role(session, require_tenant_id(), user.id)
         == ORGANIZATION_ADMIN_ROLE
     ):
-        return _OrganizationAccess(organization_id, platform_access=False)
+        return OrganizationAccess(organization_id, platform_access=False)
     if (
         operator_restores
         and user.role == "admin"
         and await organization_store.count_admins(session, organization_id) == 0
     ):
-        return _OrganizationAccess(organization_id, platform_access=True)
-    raise HTTPException(
-        status_code=403, detail="Only an organization admin may do this"
+        return OrganizationAccess(organization_id, platform_access=True)
+    return None
+
+
+async def require_organization_admin(
+    session: AsyncSession,
+    user_store: UserStore,
+    organization_store: OrganizationStore,
+    user: User,
+    *,
+    operator_restores: bool,
+) -> OrganizationAccess:
+    """`organization_access`, refused with 403 when there is none."""
+    access = await organization_access(
+        session,
+        user_store,
+        organization_store,
+        user,
+        operator_restores=operator_restores,
     )
+    if access is None:
+        raise HTTPException(
+            status_code=403, detail="Only an organization admin may do this"
+        )
+    return access
 
 
 @router.get("/organizations")
@@ -201,9 +308,162 @@ async def list_organizations(
     return await organizations_bindable_by(session_factory, user_store, user_id)
 
 
+@router.get("/organizations/without-workspace")
+async def list_organizations_without_workspace(
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
+) -> list[OrganizationWithoutWorkspace]:
+    """The organizations the caller is still a member of, though in none of
+    its workspaces, as removing someone from their last one leaves them:
+    those they may leave (`leave_organization`). Like `GET /organizations`,
+    it needs no workspace selected.
+
+    Read from the organizations they were last taken out of a workspace of
+    (`UserStore.organizations_left`) and the one their last workspace belongs
+    to, each checked as it stands.
+    """
+    found = []
+    for organization_id in await _organizations_maybe_left(
+        session_factory, user_store, caller.id
+    ):
+        refusal, organization = await _leaving_refusal(
+            session_factory, organization_directory, caller.id, organization_id
+        )
+        if refusal is None and organization is not None:
+            found.append(
+                OrganizationWithoutWorkspace(id=organization.id, name=organization.name)
+            )
+    return sorted(found, key=lambda o: (o.name.casefold(), o.id))
+
+
+@router.post("/organizations/{organization_id}/leave")
+async def leave_organization(
+    organization_id: str,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
+) -> dict[str, bool]:
+    """Leave an organization the caller is in none of the workspaces of,
+    which nobody else is asked about: they hold nothing in it to take away.
+
+    404 when they aren't its member, as when it doesn't exist. Refused, 409,
+    while they are in any of its workspaces (removing them from one is an
+    admin's), for its `org_admin`, who leaves from its Users page while
+    another remains, and where a directory keeps its members. Recorded in
+    the organization's audit log.
+    """
+    refusal, organization = await _leaving_refusal(
+        session_factory, organization_directory, caller.id, organization_id
+    )
+    if organization is None:
+        raise HTTPException(status_code=404, detail="Not a member of this organization")
+    if refusal is not None:
+        raise HTTPException(status_code=409, detail=refusal)
+    async with organization_session(session_factory, organization_id) as session:
+        removed = await session.execute(
+            delete(OrganizationMember)
+            .where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id == caller.id,
+                OrganizationMember.role != ORGANIZATION_ADMIN_ROLE,
+            )
+            .returning(OrganizationMember.user_id)
+        )
+        if removed.first() is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Your place in this organization changed meanwhile. Try again.",
+            )
+        await record_organization_audit_event(
+            session,
+            organization_id=organization_id,
+            actor_user_id=caller.id,
+            action=OrganizationAuditAction.MEMBER_LEFT,
+            target_type="user",
+            target_id=caller.id,
+            details=None,
+        )
+        user = await user_store.get(session, caller.id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        await user_store.forget_organization_left(session, user, organization_id)
+        await session.commit()
+    return {"ok": True}
+
+
+async def _organizations_maybe_left(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> list[str]:
+    """The organizations `user_id` may be left in with no workspace: those
+    `UserStore.organizations_left` notes, and the one their last workspace
+    belongs to, which covers a removal from before the note was kept."""
+    async with session_factory() as session:
+        user = await user_store.get(session, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    candidates = set(user_store.organizations_left(user))
+    last_tenant = user_store.last_tenant_id(user)
+    if last_tenant is not None:
+        async with tenant_session(session_factory, last_tenant) as session:
+            tenant = await session.get(Tenant, last_tenant)
+        if tenant is not None and tenant.organization_id is not None:
+            candidates.add(tenant.organization_id)
+    return sorted(candidates)
+
+
+async def _leaving_refusal(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    user_id: str,
+    organization_id: str,
+) -> tuple[str | None, Organization | None]:
+    """Why `user_id` may not leave `organization_id` on their own, or None
+    when they may; and the organization, None when they aren't its member."""
+    async with organization_session(session_factory, organization_id) as session:
+        member = await session.get(OrganizationMember, (organization_id, user_id))
+        organization = await session.get(Organization, organization_id)
+    if member is None or organization is None:
+        return None, None
+    if member.role == ORGANIZATION_ADMIN_ROLE:
+        return (
+            "You're an org admin of this organization. Leave it from its Users "
+            "page, while another org admin remains."
+        ), organization
+    if organization_directory.keeps_members_of(
+        organization
+    ) or organization_directory.sends_changes_for(organization):
+        return (
+            "Your place in this organization is kept in its directory. Ask its "
+            "admins to remove you there."
+        ), organization
+    workspaces = await workspaces_in_organization(
+        session_factory, user_id, organization_id
+    )
+    if workspaces:
+        names = ", ".join(sorted(tenant.name for tenant in workspaces))
+        return (
+            f"You're still in its workspaces: {names}. Ask an admin to remove you."
+        ), organization
+    return None, organization
+
+
 @router.post("/organizations", status_code=201)
 async def create_organization(
     req: OrganizationCreateRequest,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
@@ -240,6 +500,7 @@ async def create_organization(
         config,
         name=req.name,
         workspace_name=req.workspace_name or req.name,
+        signed_in=session_signed_in(request),
     )
 
 
@@ -247,6 +508,7 @@ async def create_organization(
 async def current_organization(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     organization_directory: Annotated[
         OrganizationDirectory, Depends(get_organization_directory)
     ],
@@ -259,14 +521,64 @@ async def current_organization(
     organization = await session.get(Organization, organization_id)
     if organization is None:
         raise HTTPException(status_code=404, detail="Organization not found")
+    role = await user_store.organization_role(session, require_tenant_id(), user.id)
     return CurrentOrganizationResponse(
         id=organization.id,
         slug=organization.slug,
         name=organization.name,
-        role=await user_store.organization_role(session, require_tenant_id(), user.id),
+        role=role,
         members_from_directory=organization_directory.keeps_members_of(organization),
         directory_takes_changes=organization_directory.sends_changes_for(organization),
+        administers=role == ORGANIZATION_ADMIN_ROLE,
+        can_manage_members=await organization_access(
+            session, user_store, organization_store, user, operator_restores=True
+        )
+        is not None,
     )
+
+
+@router.patch("/organizations/current")
+async def rename_current_organization(
+    req: OrganizationRenameRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> OrganizationRenameResponse:
+    """Rename the organization. Its `org_admin`s only: the operator who may
+    restore one is let in to change roles, not this. The slug stays as it
+    is, being an identifier. One whose members come from a directory such
+    as WorkOS keeps its own name here: Switch writes nothing about the
+    organization there, and reads no name back. The name it already has
+    changes and records nothing; a rename is recorded in its audit log."""
+    access = await require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=False
+    )
+    # Locked, so renames made at the same moment each record the name they
+    # replaced.
+    organization = await session.get(
+        Organization, access.organization_id, with_for_update={"key_share": True}
+    )
+    if organization is None:
+        raise RuntimeError(f"Organization {access.organization_id} is not visible here")
+    if req.name != organization.name:
+        await record_organization_audit_event(
+            session,
+            organization_id=organization.id,
+            actor_user_id=user.id,
+            action=OrganizationAuditAction.ORGANIZATION_RENAMED,
+            target_type="organization",
+            target_id=organization.id,
+            details={
+                "name": req.name,
+                "previous_name": organization.name,
+                **made_from(access),
+            },
+        )
+        organization.name = req.name
+        await session.commit()
+        logger.info("User %s renamed organization %s", user.id, organization.id)
+    return OrganizationRenameResponse(id=access.organization_id, name=req.name)
 
 
 @router.get("/organizations/current/workspaces")
@@ -276,22 +588,98 @@ async def list_organization_workspaces(
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     user: Annotated[User, Depends(get_current_user)],
-) -> list[TenantMembershipResponse]:
+) -> list[OrganizationWorkspaceResponse]:
     """The organization's workspaces the caller may enter, and their role in
     each: every one for an `org_admin`, their own for a member, and every one
-    for the platform operator, who may enter any."""
+    for the platform operator, who may enter any. Each with what the
+    Workspaces page shows of it: when it was made, its counts, and its admins
+    by membership. A workspace's agents and rooms are counted as the caller's
+    own lists there would hold them: all of them where they administer it,
+    else their own agents and the rooms they may read."""
     organization_id = await _current_organization_id(session)
-    # Let go of the request's connection while each workspace is read on a
-    # session of its own.
-    await session.commit()
-    return await organization_workspaces_bindable_by(
-        session_factory,
-        user_store,
-        user.id,
-        organization_id,
-        is_operator=user.role == "admin",
+    current_id = require_tenant_id()
+    administers = (
+        await organization_access(
+            session, user_store, organization_store, user, operator_restores=False
+        )
+        is not None
     )
+    is_operator = user.role == "admin"
+    # Let go of the request's connection while each workspace is read on a
+    # session of its own: everything shown of it, on the one session.
+    await session.commit()
+    described: list[OrganizationWorkspaceResponse] = []
+    for tenant_id in await organization_candidates(
+        session_factory, user.id, organization_id, is_operator=is_operator
+    ):
+        async with tenant_session(session_factory, tenant_id) as bound:
+            workspace = await membership_in_organization(
+                bound,
+                user_store,
+                tenant_id,
+                user.id,
+                organization_id,
+                is_operator=is_operator,
+            )
+            if workspace is None:
+                continue
+            tenant = await bound.get(Tenant, tenant_id)
+            assert tenant is not None  # `membership_in_organization` read it.
+            administers_it = administers_tenant(
+                is_operator=is_operator,
+                tenant_role=workspace.role,
+                organization_role=workspace.organization_role,
+            )
+            blocked = (
+                _ARCHIVE_ADMINS_ONLY
+                if not administers
+                else archive_blocked_reason(tenant.id, current_id)
+            )
+            described.append(
+                OrganizationWorkspaceResponse(
+                    **workspace.model_dump(),
+                    created_at=str(tenant.created_at),
+                    users=await user_store.count_people(bound, tenant),
+                    agents=(
+                        await agent_store.count(bound)
+                        if administers_it
+                        else await agent_store.count_owned_by(bound, user.id)
+                    ),
+                    rooms=await room_store.count(
+                        bound, readable_by(user.id, is_admin=administers_it)
+                    ),
+                    admins=await user_store.admin_names(bound, tenant),
+                    can_archive=tenant.archived_at is None and blocked is None,
+                    archive_blocked_reason=(
+                        blocked if tenant.archived_at is None else None
+                    ),
+                    can_restore=tenant.archived_at is not None and administers,
+                )
+            )
+    return described
+
+
+# Why a workspace can't be archived, as the Workspaces page shows it.
+_ARCHIVE_ADMINS_ONLY = "Only an organization admin can archive a workspace."
+_ARCHIVE_CURRENT = "You're working in this workspace. Switch to another one first."
+_ARCHIVE_DEFAULT = (
+    "Everyone who signs up joins this workspace, so it can't be archived."
+)
+
+
+def archive_blocked_reason(workspace_id: str, current_id: str) -> str | None:
+    """Why an organization admin may not archive `workspace_id` from
+    `current_id`, the workspace their request is bound to, or None when they
+    may."""
+    if workspace_id == current_id:
+        return _ARCHIVE_CURRENT
+    if workspace_id == TENANT_ZERO_ID:
+        return _ARCHIVE_DEFAULT
+    return None
 
 
 @router.post("/organizations/current/workspaces", status_code=201)
@@ -320,6 +708,9 @@ async def create_organization_workspace(
         session, user_store, organization_store, user, operator_restores=False
     )
     organization_id = access.organization_id
+    await refuse_a_workspace_name_taken(
+        session, session_factory, organization_id, req.name, renaming=None
+    )
     allowance = (
         None
         if user.role == "admin"
@@ -348,10 +739,11 @@ async def create_organization_workspace(
         role="admin",
         organization_role=ORGANIZATION_ADMIN_ROLE,
         organization_id=organization_id,
+        archived_at=None,
     )
 
 
-def _made_from(access: _OrganizationAccess) -> dict[str, object]:
+def made_from(access: OrganizationAccess) -> dict[str, object]:
     """Where an organization change was made: the workspace the request was
     bound to, and whether the platform operator made it on the operator flag
     alone."""
@@ -459,20 +851,91 @@ async def list_organization_issues(
 @router.get("/organizations/current/members")
 async def list_organization_members(
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     user: Annotated[User, Depends(get_current_user)],
-) -> list[OrganizationMemberDetail]:
-    """Every member of the organization and their role in it. `org_admin` only:
-    the list spans every workspace of the organization, not only this one."""
+) -> list[OrganizationMemberListEntry]:
+    """Every member of the organization, their role in it and the workspaces
+    of it they hold a membership in. `org_admin` only: the list spans every
+    workspace of the organization, not only this one."""
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
     organization_id = access.organization_id
+    accepts_promotion = _accepts_promotion(
+        organization_directory, await _organization(session, organization_id)
+    )
     members = await organization_store.list_members(session, organization_id)
-    return [
-        _member_detail(member_user, member, None) for member_user, member in members
+    admin_count = sum(
+        1 for _, member in members if member.role == ORGANIZATION_ADMIN_ROLE
+    )
+    details = [
+        _member_detail(
+            member_user,
+            member,
+            None,
+            access=access,
+            accepts_promotion=accepts_promotion,
+            admin_count=admin_count,
+        )
+        for member_user, member in members
     ]
+    # Let go of the request's connection while each workspace is read on a
+    # session of its own.
+    await session.commit()
+    held = await _memberships_in_organization(
+        session_factory, user_store, user, organization_id
+    )
+    return [
+        OrganizationMemberListEntry(
+            **detail.model_dump(), workspaces=held.get(detail.user_id, [])
+        )
+        for detail in details
+    ]
+
+
+async def _memberships_in_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user: User,
+    organization_id: str,
+) -> dict[str, list[OrganizationMemberWorkspace]]:
+    """Each person's memberships in the organization's workspaces, by user id,
+    the workspaces in name order: every workspace of it the caller reaches,
+    which for its `org_admin` and the operator is every one."""
+    held: dict[str, list[OrganizationMemberWorkspace]] = {}
+    workspaces = await organization_workspaces_bindable_by(
+        session_factory,
+        user_store,
+        user.id,
+        organization_id,
+        is_operator=user.role == "admin",
+    )
+    for workspace in sorted(workspaces, key=lambda w: (w.name.casefold(), w.id)):
+        async with tenant_session(session_factory, workspace.id) as bound:
+            rows = (
+                await bound.execute(
+                    select(TenantMember.user_id, TenantMember.role).where(
+                        TenantMember.tenant_id == workspace.id
+                    )
+                )
+            ).all()
+        for user_id, role in rows:
+            held.setdefault(user_id, []).append(
+                OrganizationMemberWorkspace(
+                    id=workspace.id,
+                    name=workspace.name,
+                    role=role,
+                    archived=workspace.archived_at is not None,
+                )
+            )
+    return held
 
 
 # Why a change the directory did not make still took something away.
@@ -537,7 +1000,7 @@ async def _member_change(
     user_store: UserStore,
     organization_directory: OrganizationDirectory,
     token: OrganizationToken | None,
-    access: _OrganizationAccess,
+    access: OrganizationAccess,
     organization: Organization,
     user_id: str,
     role: str | None,
@@ -580,6 +1043,36 @@ async def _organization(session: AsyncSession, organization_id: str) -> Organiza
     return organization
 
 
+async def _lock_admins_keeping_one(
+    session: AsyncSession,
+    organization_store: OrganizationStore,
+    organization_id: str,
+    user_id: str,
+    *,
+    last_admin: str,
+) -> OrganizationMember:
+    """Lock the organization's `org_admin` rows on `session` until the change
+    commits (`OrganizationStore.lock_admins`), and refuse, 409 `last_admin`,
+    if taking `user_id` out of the role would leave none.
+
+    Taken once the directory has been asked what the change needs, which lets
+    go of the request's transaction (`_member_change`), and before anything is
+    changed or taken away; held to the commit. Of two admins demoting or
+    removing each other at once, the second then counts after the first has
+    committed, and is refused with nothing of the other's touched. Nothing
+    after it may commit before the change. Returns their membership as it
+    stands once locked: the other may have changed it meanwhile."""
+    admins = await organization_store.lock_admins(session, organization_id)
+    member = await session.get(
+        OrganizationMember, (organization_id, user_id), populate_existing=True
+    )
+    if member is None:
+        raise HTTPException(status_code=404, detail="Not a member of this organization")
+    if member.role == ORGANIZATION_ADMIN_ROLE and admins <= 1:
+        raise HTTPException(status_code=409, detail=last_admin)
+    return member
+
+
 async def _end_access_through_organization(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -591,7 +1084,9 @@ async def _end_access_through_organization(
 ) -> str | None:
     """Take away what `user_id` holds in the workspaces they stand in only as
     the organization's `org_admin`, before they stop being one
-    (`organization_access.end_access_through_organization`).
+    (`organization_access.end_access_through_organization`), and the
+    invitations they made in those where their own membership is not an
+    admin's (`invitation_revocation.py`).
 
     Refuses, 409 naming the workspaces, while they own agents in any of them,
     as removing a workspace member does.
@@ -611,7 +1106,7 @@ async def _end_access_through_organization(
                 f"{', '.join(sorted(tenant.name for tenant in with_agents))}"
             ),
         )
-    return await end_access_through_organization(
+    warning = await end_access_through_organization(
         session_factory,
         revocation,
         user_id=user_id,
@@ -619,11 +1114,29 @@ async def _end_access_through_organization(
         actor_id=actor_id,
         details={"reason": reason},
     )
+    for tenant in await workspaces_in_organization(
+        session_factory, user_id, organization_id
+    ):
+        async with tenant_session(session_factory, tenant.id) as bound:
+            membership = await bound.get(TenantMember, (tenant.id, user_id))
+            if membership is not None and membership.role == "admin":
+                continue
+            if await revoke_invitations_made_by(
+                bound,
+                tenant_id=tenant.id,
+                user_id=user_id,
+                actor_id=actor_id,
+                reason="organization_admin_access_ended",
+            ):
+                await bound.commit()
+    return warning
 
 
 @router.patch("/organizations/current/members/{user_id}", response_model=None)
 async def update_organization_member_role(
     request: Request,
+    response: Response,
+    background: BackgroundTasks,
     user_id: str,
     req: OrganizationMemberUpdateRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -642,16 +1155,24 @@ async def update_organization_member_role(
     directory_token: Annotated[
         OrganizationToken | None, Depends(directory_access_token)
     ],
+    notices: Annotated[
+        OrganizationAdminNotices, Depends(get_organization_admin_notices)
+    ],
     user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> OrganizationMemberDetail | JSONResponse:
     """Make a member `org_admin`, or an `org_admin` a `member`. `org_admin` only,
-    the one role that grants `org_admin`.
+    the one role that grants `org_admin`; their own role included, so an
+    `org_admin` steps down while another remains, and the session moves off
+    a workspace they could enter only as one (`rebind_if_left`).
 
     Refuses to demote the last `org_admin`: nobody else could grant the role
     again. Demoting someone first takes away what they hold in the workspaces
     they were in only as `org_admin` (`_end_access_through_organization`).
     The directory is asked last, once every check has passed
-    (`_ask_directory`). Recorded in the organization's audit log.
+    (`_ask_directory`). Recorded in the organization's audit log; a demotion
+    is e-mailed to the organization's admins and the person demoted after
+    the response, with nothing here holding a connection.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
@@ -660,17 +1181,21 @@ async def update_organization_member_role(
     member = await session.get(OrganizationMember, (organization_id, user_id))
     if member is None:
         raise HTTPException(status_code=404, detail="Not a member of this organization")
-    demoting = (
-        member.role == ORGANIZATION_ADMIN_ROLE and req.role != ORGANIZATION_ADMIN_ROLE
-    )
-    last_admin = HTTPException(
-        status_code=409, detail="Cannot demote the last organization admin"
-    )
+    if req.role == ORGANIZATION_ADMIN_ROLE and member.role != ORGANIZATION_ADMIN_ROLE:
+        target = await user_store.get(session, user_id)
+        if target is None:
+            raise RuntimeError(f"Organization member {user_id} has no user")
+        if is_bootstrap_owner(target):
+            raise HTTPException(status_code=409, detail=SERVICE_ACCOUNT_ADMIN_REFUSAL)
+    last_admin = "Cannot demote the last organization admin"
+    # Before the directory is asked, so the plain case costs no sign-in; the
+    # count that decides is taken under the lock below.
     if (
-        demoting
+        member.role == ORGANIZATION_ADMIN_ROLE
+        and req.role != ORGANIZATION_ADMIN_ROLE
         and await organization_store.count_admins(session, organization_id) <= 1
     ):
-        raise last_admin
+        raise HTTPException(status_code=409, detail=last_admin)
     organization = await _organization(session, organization_id)
     member_change = (
         await _member_change(
@@ -686,12 +1211,21 @@ async def update_organization_member_role(
         if member.role != req.role
         else NO_DIRECTORY_CHANGE
     )
+    if member.role == ORGANIZATION_ADMIN_ROLE and req.role != ORGANIZATION_ADMIN_ROLE:
+        member = await _lock_admins_keeping_one(
+            session,
+            organization_store,
+            organization_id,
+            user_id,
+            last_admin=last_admin,
+        )
+    demoting = (
+        member.role == ORGANIZATION_ADMIN_ROLE and req.role != ORGANIZATION_ADMIN_ROLE
+    )
 
     warning = None
     if demoting:
-        # Let go of the request's connection while each workspace is worked on
-        # on a session of its own.
-        await session.commit()
+        # On sessions of its own, while this one holds the admins' lock.
         try:
             warning = await _end_access_through_organization(
                 session_factory,
@@ -709,15 +1243,6 @@ async def update_organization_member_role(
             )
         except ServiceError as error:
             return service_refusal(error)
-        if await organization_store.lock_admins(session, organization_id) <= 1:
-            raise last_admin
-        member = await session.get(
-            OrganizationMember, (organization_id, user_id), populate_existing=True
-        )
-        if member is None:
-            raise HTTPException(
-                status_code=404, detail="Not a member of this organization"
-            )
 
     if member.role != req.role:
         await _ask_directory(
@@ -738,20 +1263,57 @@ async def update_organization_member_role(
             details={
                 "from": member.role,
                 "to": req.role,
-                **_made_from(access),
+                **made_from(access),
             },
         )
     member.role = req.role
+    target = await user_store.get(session, user_id)
+    if target is None:
+        raise RuntimeError(f"Organization member {user_id} has no user")
     await session.commit()
 
-    target = await user_store.get(session, user_id)
-    assert target is not None
-    return _member_detail(target, member, warning)
+    if demoting:
+        background.add_task(
+            notices.send,
+            AdminChange(
+                organization_id=organization_id,
+                kind=(
+                    AdminChangeKind.STEPPED_DOWN
+                    if user_id == user.id
+                    else AdminChangeKind.DEMOTED
+                ),
+                target=Person(target.id, target.name, target.email),
+                actor=Person(user.id, user.name, user.email),
+                reason=None,
+            ),
+        )
+    if user_id == user.id:
+        await rebind_if_left(
+            request, response, session_factory, user_store, user, config
+        )
+    detail = _member_detail(
+        target,
+        member,
+        warning,
+        # Read again: the change may be what let the caller in, or the
+        # operator's way in may have closed with it.
+        access=await organization_access(
+            session, user_store, organization_store, user, operator_restores=True
+        ),
+        accepts_promotion=_accepts_promotion(organization_directory, organization),
+        admin_count=await organization_store.count_admins(session, organization_id),
+    )
+    # The e-mail goes out after the response, before this session closes:
+    # end the read above so it holds no connection meanwhile.
+    await session.commit()
+    return detail
 
 
 @router.delete("/organizations/current/members/{user_id}", response_model=None)
 async def remove_organization_member(
     request: Request,
+    response: Response,
+    background: BackgroundTasks,
     user_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[
@@ -769,9 +1331,15 @@ async def remove_organization_member(
     directory_token: Annotated[
         OrganizationToken | None, Depends(directory_access_token)
     ],
+    notices: Annotated[
+        OrganizationAdminNotices, Depends(get_organization_admin_notices)
+    ],
     user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict | JSONResponse:
-    """Remove someone from the organization. `org_admin` only.
+    """Remove someone from the organization. `org_admin` only, themselves
+    included, so an `org_admin` leaves while another remains; the session
+    then moves off a workspace they could enter only as one (`rebind_if_left`).
 
     Refuses while they still belong to any of its workspaces, naming them:
     leaving a workspace revokes their keys and connections there and refuses
@@ -780,7 +1348,9 @@ async def remove_organization_member(
     hold no membership row in, and what they hold there is taken away first
     (`_end_access_through_organization`). Refuses the last `org_admin` too.
     The directory is asked last, once every check has passed
-    (`_ask_directory`). Recorded in the organization's audit log.
+    (`_ask_directory`). Recorded in the organization's audit log; removing an
+    `org_admin` is e-mailed to the organization's admins and the person
+    removed after the response, with nothing here holding a connection.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
@@ -789,19 +1359,14 @@ async def remove_organization_member(
     member = await session.get(OrganizationMember, (organization_id, user_id))
     if member is None:
         raise HTTPException(status_code=404, detail="Not a member of this organization")
-    last_admin = HTTPException(
-        status_code=409, detail="Cannot remove the last organization admin"
-    )
-    was_admin = member.role == ORGANIZATION_ADMIN_ROLE
+    last_admin = "Cannot remove the last organization admin"
+    # As for a demotion: early, then decided under the lock below.
     if (
-        was_admin
+        member.role == ORGANIZATION_ADMIN_ROLE
         and await organization_store.count_admins(session, organization_id) <= 1
     ):
-        raise last_admin
+        raise HTTPException(status_code=409, detail=last_admin)
     organization = await _organization(session, organization_id)
-    # Let go of the request's connection while each workspace is read on a
-    # session of its own.
-    await session.commit()
 
     workspaces = await workspaces_in_organization(
         session_factory, user_id, organization_id
@@ -822,6 +1387,15 @@ async def remove_organization_member(
         user_id,
         None,
     )
+    if member.role == ORGANIZATION_ADMIN_ROLE:
+        member = await _lock_admins_keeping_one(
+            session,
+            organization_store,
+            organization_id,
+            user_id,
+            last_admin=last_admin,
+        )
+    was_admin = member.role == ORGANIZATION_ADMIN_ROLE
     warning = None
     if was_admin:
         try:
@@ -842,14 +1416,6 @@ async def remove_organization_member(
         except ServiceError as error:
             return service_refusal(error)
 
-    admins = await organization_store.lock_admins(session, organization_id)
-    member = await session.get(
-        OrganizationMember, (organization_id, user_id), populate_existing=True
-    )
-    if member is None:
-        raise HTTPException(status_code=404, detail="Not a member of this organization")
-    if member.role == ORGANIZATION_ADMIN_ROLE and admins <= 1:
-        raise last_admin
     await _ask_directory(
         organization_directory.remove,
         organization,
@@ -858,6 +1424,9 @@ async def remove_organization_member(
         access_ended=was_admin,
     )
     role = member.role
+    removed = await user_store.get(session, user_id)
+    if removed is None:
+        raise RuntimeError(f"Organization member {user_id} has no user")
     await session.execute(
         delete(OrganizationMember).where(
             OrganizationMember.organization_id == organization_id,
@@ -871,7 +1440,26 @@ async def remove_organization_member(
         action=OrganizationAuditAction.MEMBER_REMOVED,
         target_type="user",
         target_id=user_id,
-        details={"role": role, **_made_from(access)},
+        details={"role": role, **made_from(access)},
     )
     await session.commit()
+    if was_admin:
+        background.add_task(
+            notices.send,
+            AdminChange(
+                organization_id=organization_id,
+                kind=(
+                    AdminChangeKind.LEFT
+                    if user_id == user.id
+                    else AdminChangeKind.REMOVED
+                ),
+                target=Person(removed.id, removed.name, removed.email),
+                actor=Person(user.id, user.name, user.email),
+                reason=None,
+            ),
+        )
+    if user_id == user.id:
+        await rebind_if_left(
+            request, response, session_factory, user_store, user, config
+        )
     return {"ok": True, "warning": warning}

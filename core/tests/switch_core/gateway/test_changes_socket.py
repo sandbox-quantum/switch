@@ -46,14 +46,25 @@ def feed() -> LocalUserChanges:
 
 
 def _signed_in(
-    monkeypatch: pytest.MonkeyPatch, user_id: str = "ada", expires_in: float = 3600
+    monkeypatch: pytest.MonkeyPatch,
+    user_id: str = "ada",
+    expires_in: float = 3600,
+    sessions_ended: bool = False,
 ) -> None:
     async def _authenticate(*_: Any) -> SocketCaller:
         return SocketCaller(
-            user_id=user_id, tenant_id="t1", expires_at=time.time() + expires_in
+            user_id=user_id,
+            tenant_id="t1",
+            expires_at=time.time() + expires_in,
+            session_version=0,
+            session_id="session-1",
         )
 
+    async def _current(*_: Any) -> bool:
+        return not sessions_ended
+
     monkeypatch.setattr(changes, "authenticate_socket", _authenticate)
+    monkeypatch.setattr(changes, "session_still_enters", _current)
 
 
 @pytest.fixture
@@ -155,6 +166,18 @@ def test_closes_with_4401_when_the_session_cookie_expires(
     assert closed.value.code == 4401
 
 
+def test_closes_with_4401_at_the_next_ping_once_the_sessions_are_ended(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(changes, "PING_INTERVAL_SECONDS", 0.02)
+    _signed_in(monkeypatch, sessions_ended=True)
+    with client.websocket_connect("/changes/ws") as ws:
+        ws.receive_json()
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+    assert closed.value.code == 4401
+
+
 def test_closing_the_socket_drops_its_subscription(
     client: TestClient, feed: LocalUserChanges, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -189,3 +212,33 @@ def test_a_user_past_the_socket_cap_is_refused_with_429(
     _signed_in(monkeypatch, user_id="grace")
     with client.websocket_connect("/changes/ws") as ws:
         assert ws.receive_json()["event"] == "hello"
+
+
+def test_console_s_socket_opens_through_the_origin_check(
+    feed: LocalUserChanges, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The change socket behind the gateway's real Origin check. Switch
+    Console's main process opens it with Node's WebSocket: the cookie and no
+    Origin, Referer or Sec-Fetch-Site, so it passes (rule 3). A browser's
+    handshake with no Origin, or another site's, is still closed."""
+    from switch_core.gateway.origin_check import OriginCheckMiddleware
+
+    _signed_in(monkeypatch)
+    app = _app(feed)
+    app.add_middleware(
+        OriginCheckMiddleware, allowed=frozenset({"https://switch.example.com"})
+    )
+    cookie = {"cookie": "switch_auth=session-token-zz7"}
+    with TestClient(app) as client:
+        node = {**cookie, "sec-fetch-mode": "websocket", "user-agent": "node"}
+        with client.websocket_connect("/changes/ws", headers=node) as ws:
+            assert ws.receive_json()["event"] == "hello"
+        for refused in (
+            {**cookie, "sec-fetch-site": "same-site"},
+            {**cookie, "origin": "https://evil.example.com"},
+            {**cookie, "origin": "null"},
+        ):
+            with pytest.raises(WebSocketDisconnect) as closed:
+                with client.websocket_connect("/changes/ws", headers=refused):
+                    pass
+            assert closed.value.code == 4403

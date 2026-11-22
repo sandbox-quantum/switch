@@ -76,7 +76,7 @@ async def link_controller(
     workspace = await workspace_on(session, machine.id)
     assert workspace is not None
     controller = AgentController(
-        owner_id=machine.owner_id, name="Switch cloud", kind="ec2"
+        owner_id=machine.owner_id, name="Switch Cloud", kind="ec2"
     )
     session.add(controller)
     await session.flush()

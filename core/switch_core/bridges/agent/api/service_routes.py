@@ -97,7 +97,9 @@ async def service_token(
 
     `expires_in` is the token's remaining life in seconds as Core counts it,
     so the holder can time its cache from when the answer arrived rather than
-    compare `expires_at` with a clock of its own.
+    compare `expires_at` with a clock of its own. Both are null for a
+    credential the owner pasted, which its vendor ends on a date Switch is
+    not told: it is used until `use_until`, and asked for again.
     """
     response.headers.update(NO_STORE)
     _require_path_agent(agent, agent_id)
@@ -105,8 +107,12 @@ async def service_token(
     now = datetime.now(UTC)
     return {
         "token": token.token,
-        "expires_at": token.expires_at.isoformat(),
-        "expires_in": max(0, int((token.expires_at - now).total_seconds())),
+        "expires_at": None
+        if token.expires_at is None
+        else token.expires_at.isoformat(),
+        "expires_in": None
+        if token.expires_at is None
+        else max(0, int((token.expires_at - now).total_seconds())),
         "use_until": token.use_until.isoformat(),
         "resources": token.resources,
         "grant_revision": token.grant_revision,

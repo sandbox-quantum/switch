@@ -487,6 +487,16 @@ export class ProviderStatuses {
   }
 
   /** Checks every provider now, whatever its last check, all at once. */
+  /** Where each provider's CLI was found at its last check, or `not found`. */
+  locations(): Partial<Record<Provider, string>> {
+    return Object.fromEntries(
+      PROVIDERS.flatMap((provider) => {
+        const entry = this.entries.get(provider);
+        return entry ? [[provider, entry.path ?? 'not found']] : [];
+      })
+    );
+  }
+
   async checkAll(options: { verify?: boolean } = {}): Promise<void> {
     await Promise.all(PROVIDERS.map((provider) => this.check(provider, options)));
   }
@@ -661,11 +671,18 @@ export class StatusCollector {
       dataDir: string;
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
+      /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
+      deviceId: string | null;
       version: string;
       updatedBy: UpdatedBy;
       now: () => number;
     }
-  ) {}
+  ) {
+    this.startedAt = new Date(deps.now()).toISOString();
+  }
+
+  /** When this collector, and so this controller process, started. */
+  private readonly startedAt: string;
 
   async collect(assignment: Assignment | null): Promise<Omit<StatusReport, 'seq'>> {
     const nowMs = this.deps.now();
@@ -714,6 +731,7 @@ export class StatusCollector {
         protocol: PROTOCOL_VERSION,
         assignment_revision: assignment?.revision ?? 0,
         updated_by: this.deps.updatedBy,
+        started_at: this.startedAt,
       },
       machine: {
         platform: contractPlatform(),
@@ -725,6 +743,7 @@ export class StatusCollector {
         // v1 enforces no session limit; 0 says so rather than inventing one.
         sessions_max: 0,
         workspaces_dir: this.deps.workspacesDir,
+        ...(this.deps.deviceId === null ? {} : { device_id: this.deps.deviceId }),
       },
       providers: this.deps.providers.snapshot(),
       tools: await this.deps.tools(),

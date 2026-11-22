@@ -1,6 +1,6 @@
 {
   "name": "@switch-console/desktop",
-  "version": "0.40.1",
+  "version": "0.41.1",
   "description": "A cross-platform Electron app that orchestrates multiple coding agents in parallel",
   "keywords": [
     "claude",
@@ -27,7 +27,7 @@
     "db:fixtures": "vitest run --project fixtures",
     "test:migrations": "vitest run --project migrations",
     "db:reset": "rm -f \"$HOME/Library/Application Support/switchdash-dev/switchdash.db\" \"$HOME/Library/Application Support/switchdash-dev/switchdash.db-wal\" \"$HOME/Library/Application Support/switchdash-dev/switchdash.db-shm\" \"$HOME/.config/switchdash-dev/switchdash.db\" \"$HOME/.config/switchdash-dev/switchdash.db-wal\" \"$HOME/.config/switchdash-dev/switchdash.db-shm\"",
-    "test": "vitest run --project node --project main-db --project migrations --project browser",
+    "test": "vitest run --project node --project main-db --project migrations && vitest run --project browser",
     "build": "electron-vite build && pnpm run build:sidecar && pnpm run build:local-server",
     "build:main": "electron-vite build --filter main",
     "build:sidecar": "node scripts/build-sidecar.mjs",
@@ -113,7 +113,7 @@
     "devicon": "^2.17.0",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
-    "electron": "41.10.3",
+    "electron": "42.11.16",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
     "framer-motion": "^12.33.0",

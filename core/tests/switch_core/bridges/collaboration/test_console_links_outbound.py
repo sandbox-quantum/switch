@@ -35,6 +35,7 @@ def _adapter(platform: str, gateway_public_url: str | None) -> PlatformAdapter:
         ("discord", f"Open [Agent settings]({HTTPS}) to change it."),
         ("telegram", f'Open <a href="{HTTPS}">Agent settings</a> to change it.'),
         ("teams", f"Open [Agent settings]({HTTPS}) to change it."),
+        ("webex", f"Open [Agent settings]({HTTPS}) to change it."),
     ],
 )
 def test_platforms_that_cannot_open_the_scheme_get_an_https_link(
@@ -53,7 +54,7 @@ def test_mattermost_allowing_the_scheme_gets_the_link_unchanged() -> None:
     assert adapter.translate_outbound(BODY) == BODY
 
 
-@pytest.mark.parametrize("platform", ["slack", "discord", "telegram", "teams"])
+@pytest.mark.parametrize("platform", ["slack", "discord", "telegram", "teams", "webex"])
 def test_without_a_public_address_the_page_is_named_in_words(platform: str) -> None:
     adapter = _adapter(platform, None)
 
