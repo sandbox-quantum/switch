@@ -220,6 +220,12 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A messaging app connected during a re-check is no longer stopped by it.**
+  The periodic re-check of messaging apps read their rows, then compared them
+  with the apps running here, so an app connected while it read looked removed
+  and was stopped until the next re-check. A slow re-read of an app's rooms
+  could likewise map a room again that was just unbridged. Both now leave
+  anything changed while they read to the change that made it.
 - **A slow re-read of a workspace's clients no longer undoes a newer change.**
   A re-check or resync that read the clients before a rename or deletion, and
   finished after it, could put an agent's old name back, or start again a

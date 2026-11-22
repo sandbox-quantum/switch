@@ -88,6 +88,53 @@ async def test_a_running_bridge_is_left_alone_until_its_row_changes(
         await service.stop_all()
 
 
+async def test_a_bridge_registered_during_a_recheck_keeps_running(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-check that read the rows before a bridge was registered here must
+    not stop it on finding no row for it: the rows are older than the
+    registration, and nothing would start it again until the next re-check."""
+    monkeypatch.setattr(lifecycle_module, "STOP_GRACE_SECONDS", 0.01)
+    await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+
+    async def run(bridge_id: str, *_: object) -> None:
+        await asyncio.Event().wait()
+
+    service._run_bridge = run  # type: ignore[method-assign]
+    read, release = asyncio.Event(), asyncio.Event()
+    serving = service._serving
+
+    async def read_then_wait(session: AsyncSession, tenant_id: str) -> object:
+        rows = await serving(session, tenant_id)
+        read.set()
+        await release.wait()
+        return rows
+
+    service._serving = read_then_wait  # type: ignore[method-assign,assignment]
+    try:
+        recheck = asyncio.create_task(service.reconcile_all())
+        await asyncio.wait_for(read.wait(), 10)
+
+        # As `register` does: the row commits, then the bridge is wanted,
+        # settled and started here.
+        bridge_id = await _bridge(session_factory)
+        async with session_factory() as session:
+            row = await session.get(CollaborationBridge, bridge_id)
+        assert row is not None
+        service._want(row)
+        await service._owned.settle()
+        await service.start(bridge_id)
+        release.set()
+        await asyncio.wait_for(recheck, 10)
+
+        assert bridge_id in service._bridges
+    finally:
+        await service.stop_all()
+
+
 async def test_a_bridge_that_failed_to_start_is_tried_again_only_once_edited(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

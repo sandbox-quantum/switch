@@ -343,6 +343,9 @@ class CollaborationCore:
 
         self._channel_to_room: dict[str, tuple[str, str]] = {}
         self._room_to_channel: dict[tuple[str, str], str] = {}
+        # How many times each room's mapping was added or removed. A reload
+        # that read the rows before one of those leaves that room alone.
+        self._mapping_changes: dict[tuple[str, str], int] = {}
         # Switch room id -> its tenant. Filled by `add_room_mapping`, which is
         # the one way a room enters the channel maps at all, so a room that
         # has a channel mapping always has a tenant here — including rooms
@@ -2856,9 +2859,11 @@ class CollaborationCore:
 
     async def reload_channel_map(self) -> None:
         """Map this bridge's rooms as their rows say now, after another
-        process bridged, unbridged or moved one. A mapping made here while
-        the rows were being read is newer than the read, and is kept."""
+        process bridged, unbridged or moved one. A room mapped or unmapped
+        here while the rows were being read is newer than the read, and is
+        left as it is."""
         before = dict(self._room_to_channel)
+        changes_before = dict(self._mapping_changes)
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -2868,8 +2873,12 @@ class CollaborationCore:
             for room in rooms
             if room.external_channel_id
         }
+
+        def unchanged(key: tuple[str, str]) -> bool:
+            return self._mapping_changes.get(key) == changes_before.get(key)
+
         for key, channel_id in before.items():
-            if key not in stored and self._room_to_channel.get(key) == channel_id:
+            if key not in stored and unchanged(key):
                 logger.info(
                     "Room %s is no longer bridged to channel %s; unmapping it",
                     key[0],
@@ -2877,7 +2886,9 @@ class CollaborationCore:
                 )
                 self.remove_room_mapping(*key)
         for key, room in stored.items():
-            if self._room_to_channel.get(key) != room.external_channel_id:
+            if self._room_to_channel.get(key) != room.external_channel_id and unchanged(
+                key
+            ):
                 assert room.external_channel_id is not None
                 self.add_room_mapping(
                     room.id,
@@ -3666,12 +3677,14 @@ class CollaborationCore:
         happened to be bound at the time.
         """
         key = (room_id, transport_room_id)
+        self._mapping_changes[key] = self._mapping_changes.get(key, 0) + 1
         self._channel_to_room[external_channel_id] = key
         self._room_to_channel[key] = external_channel_id
         self._room_tenants[room_id] = tenant_id
 
     def remove_room_mapping(self, room_id: str, transport_room_id: str) -> None:
         key = (room_id, transport_room_id)
+        self._mapping_changes[key] = self._mapping_changes.get(key, 0) + 1
         channel_id = self._room_to_channel.pop(key, None)
         if channel_id is not None:
             self._channel_to_room.pop(channel_id, None)

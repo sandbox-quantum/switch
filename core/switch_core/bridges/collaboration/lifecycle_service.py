@@ -345,6 +345,10 @@ class CollaborationBridgeLifecycleService:
         # starts at once would build two adapters, and the one overwritten
         # would go on listening with nothing left to stop it.
         self._bridge_locks: dict[str, asyncio.Lock] = {}
+        # How many times each bridge was wanted, started or stopped here. A
+        # re-check that read the rows before one of those is older than it,
+        # and leaves that bridge to the path that changed it.
+        self._changes: dict[str, int] = {}
         # Why the last take-over of each bridge failed to start it, for
         # `register` to raise: the ownership logs the failure and goes on.
         self._failed_take_overs: dict[str, Exception] = {}
@@ -1141,6 +1145,9 @@ class CollaborationBridgeLifecycleService:
         self._announce(bridge.id)
         return bridge
 
+    def _changed(self, bridge_id: str) -> None:
+        self._changes[bridge_id] = self._changes.get(bridge_id, 0) + 1
+
     def _bridge_lock(self, bridge_id: str) -> asyncio.Lock:
         lock = self._bridge_locks.get(bridge_id)
         if lock is None:
@@ -1158,6 +1165,7 @@ class CollaborationBridgeLifecycleService:
         """Start a bridge here, listening if this process holds it and quietly
         otherwise. One already running in that form is left as it is, and one
         running in the other form is restarted in this one."""
+        self._changed(bridge_id)
         async with self._bridge_lock(bridge_id):
             await self._start_locked(bridge_id)
 
@@ -1769,6 +1777,7 @@ class CollaborationBridgeLifecycleService:
         )
 
     async def stop(self, bridge_id: str, *, reason: str = "shutdown") -> None:
+        self._changed(bridge_id)
         async with self._bridge_lock(bridge_id):
             await self._stop_locked(bridge_id, reason=reason)
 
@@ -1951,6 +1960,7 @@ class CollaborationBridgeLifecycleService:
     def _want(self, bridge: CollaborationBridge) -> None:
         """This process could hold `bridge`, beside whatever its platform
         says it must be held with (`PlatformAdapter.held_with`)."""
+        self._changed(bridge.id)
         adapter_cls = self._adapter_registry.get(bridge.type)
         held_with = (
             adapter_cls.held_with(bridge.connection_config or {})
@@ -2003,7 +2013,12 @@ class CollaborationBridgeLifecycleService:
 
     async def reconcile_all(self) -> None:
         """`reconcile_bridge` for every bridge stored or running here, reading
-        the rows one tenant at a time."""
+        the rows one tenant at a time.
+
+        A bridge wanted, started or stopped here while the rows were read is
+        left alone: the rows are older than that change (a bridge registered
+        meanwhile would read as removed), and whatever made it is newer."""
+        changes_before = dict(self._changes)
         rows: dict[str, CollaborationBridge] = {}
         for tenant_id in await all_tenant_ids(self._session_factory):
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -2019,6 +2034,8 @@ class CollaborationBridgeLifecycleService:
             set(rows) | set(self._bridges) | self._owned.wanted() | self._started
         )
         for bridge_id in sorted(bridge_ids):
+            if self._changes.get(bridge_id) != changes_before.get(bridge_id):
+                continue
             try:
                 await self._reconcile_row(bridge_id, rows.get(bridge_id))
             except Exception:
