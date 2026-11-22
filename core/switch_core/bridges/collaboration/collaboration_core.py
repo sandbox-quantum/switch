@@ -74,7 +74,10 @@ from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
+from switch_core.db.stores.bridge_message_map_store import (
+    CARD_ANSWERER_ID,
+    BridgeMessageMapStore,
+)
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.message_store import MessageStore
@@ -2968,6 +2971,9 @@ class CollaborationCore:
                 external_post_id=card_ref,
                 answer={
                     "by": answerer_name(interaction.sender_display_name),
+                    # Who `by` names, which the name alone cannot say:
+                    # erasing them finds their answers by it.
+                    CARD_ANSWERER_ID: human_actor.transport_user_id,
                     "label": button.label,
                 },
             )

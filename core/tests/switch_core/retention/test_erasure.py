@@ -22,6 +22,7 @@ from switch_core.db.models import (
     ApiKey,
     ApprovalRequest,
     AuditEvent,
+    BridgeMessageMap,
     Client,
     ClientRoom,
     CollaborationBridge,
@@ -34,15 +35,19 @@ from switch_core.db.models import (
     Room,
     User,
 )
+from switch_core.db.stores.bridge_message_map_store import CARD_ANSWERER_ID
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.erasure_store import (
     ERASED_ANSWERER,
     ErasureAlreadyQueued,
     ErasureStore,
+    FormerParticipant,
     UnknownIdentity,
 )
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.room_store import DETACHED_FROM, RoomStore
 from switch_core.retention.erasure import ErasureService
+from switch_core.ui_spec import answerer_name
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 
@@ -621,12 +626,130 @@ class TestErasing:
             await session.flush()
 
             scrubbed = await ErasureStore().scrub_former_direct_rooms(
-                session, [dm.id], ["al", "a", ""]
+                session,
+                FormerParticipant(
+                    sender_id="@switch-slack-gone:test",
+                    names=["al", "a", ""],
+                    platform="slack",
+                    bridge_id=str(uuid.uuid4()),
+                    message_count=1,
+                ),
+                [dm.id],
             )
 
         assert scrubbed == 1
         assert dm.name == "Acme Slack: erased person / Albert's helper"
         assert dm.description == "a dial for erased person"
+
+
+class TestWhatOutlivesTheirMessages:
+    async def test_a_card_they_answered_no_longer_names_them(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            bridge = await _bridge(session)
+            ana = await _person(session, bridge, "ana")
+            bo = await _person(session, bridge, "bo")
+            ana_id = (await _client_of(session, ana)).transport_user_id
+            bo_id = (await _client_of(session, bo)).transport_user_id
+            answers = {
+                # The platform shows a display name, not the username.
+                "P1": {"by": "Ana Lovelace", CARD_ANSWERER_ID: ana_id, "label": "Yes"},
+                # Recorded before answers carried an id: found by username.
+                "P2": {"by": answerer_name("ana"), "label": "No"},
+                "P3": {"by": "Bo", CARD_ANSWERER_ID: bo_id, "label": "Yes"},
+                "P4": {"by": "Ana Lovelace", CARD_ANSWERER_ID: bo_id, "label": "No"},
+            }
+            for post, answer in answers.items():
+                session.add(
+                    BridgeMessageMap(
+                        bridge_id=bridge.id,
+                        external_channel_id="C1",
+                        transport_event_id=f"$card-{post}",
+                        external_post_id=post,
+                        card_answer=answer,
+                    )
+                )
+            await session.commit()
+        await _queue(session_factory, [ana.id])
+
+        await ErasureService(session_factory, _Clients(), _Bridges()).work_once(
+            datetime.now(UTC)
+        )
+
+        async with session_factory() as session:
+            after = dict(
+                (
+                    await session.execute(
+                        select(
+                            BridgeMessageMap.external_post_id,
+                            BridgeMessageMap.card_answer,
+                        )
+                    )
+                ).all()
+            )
+        assert after == {
+            "P1": {"by": ERASED_ANSWERER, "label": "Yes"},
+            "P2": {"by": ERASED_ANSWERER, "label": "No"},
+            "P3": answers["P3"],
+            # Someone else who shares the display name keeps it.
+            "P4": answers["P4"],
+        }
+
+    async def test_their_direct_rooms_lose_their_name_once_the_app_is_gone(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Disconnecting the app detaches its rooms, which then say only in
+        their metadata that they were direct chats on it. A direct room they
+        never wrote in is theirs as much as one they did; a room with their
+        name that was a channel, or was on another app, is not."""
+        async with session_factory() as session:
+            bridge = await _bridge(session)
+            other = await _bridge(session)
+            ana = await _person(session, bridge, "ana")
+            ana_client = await _client_of(session, ana)
+            rooms = {}
+            for key, on, channel_type in (
+                ("wrote", bridge, "direct"),
+                ("silent", bridge, "direct"),
+                ("channel", bridge, "channel_public"),
+                ("elsewhere", other, "direct"),
+            ):
+                rooms[key] = Room(
+                    transport_room_id=f"!{key}-{uuid.uuid4().hex[:8]}:test",
+                    name=f"Acme Slack: ana / helper ({key})",
+                    description="Acme Slack DM - ana / helper",
+                    channel_type=channel_type,
+                    bridge_id=on.id,
+                )
+                session.add(rooms[key])
+            await session.flush()
+            await _say(session, rooms["wrote"], ana_client, "$ana-dm")
+            await _say(session, rooms["channel"], ana_client, "$ana-channel")
+            sender_id = await _disconnect(session, ana)
+            for room in rooms.values():
+                await RoomStore().clear_bridge(session, room.id)
+            await session.commit()
+        assert rooms["silent"].metadata_ == {
+            DETACHED_FROM: {"bridge_id": bridge.id, "channel_type": "direct"}
+        }
+        await _queue(session_factory, [], former_sender_ids=[sender_id])
+
+        await ErasureService(session_factory, _Clients(), _Bridges()).work_once(
+            datetime.now(UTC)
+        )
+
+        async with session_factory() as session:
+            names = {
+                key: (await session.get(Room, room.id)).name  # type: ignore[union-attr]
+                for key, room in rooms.items()
+            }
+        assert names == {
+            "wrote": "Acme Slack: erased person / helper (wrote)",
+            "silent": "Acme Slack: erased person / helper (silent)",
+            "channel": "Acme Slack: ana / helper (channel)",
+            "elsewhere": "Acme Slack: ana / helper (elsewhere)",
+        }
 
 
 class _Killed(BaseException):

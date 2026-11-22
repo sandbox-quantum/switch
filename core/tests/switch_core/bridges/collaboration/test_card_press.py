@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration.collaboration_core import CollaborationCo
 from switch_core.bridges.collaboration.models import InboundInteraction
 from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
 from switch_core.clients.mentions import mention_tokens
+from switch_core.db.stores.bridge_message_map_store import CARD_ANSWERER_ID
 from switch_core.delivery.addressing import named_agents
 from switch_core.sessions.errors import SessionError
 from switch_core.transport.derived_ids import derived_writes
@@ -763,10 +764,11 @@ async def test_a_card_is_answered_by_the_name_the_platform_shows(
     await _deliver(bridge, interaction)
 
     assert interaction.sender_display_name == shown_as
-    assert (
-        bridge._bridge_message_map_store.answers[interaction.message_ref]["by"]
-        == shown_as
-    )
+    answer = bridge._bridge_message_map_store.answers[interaction.message_ref]
+    assert answer["by"] == shown_as
+    # Who pressed, by id, which the shown name cannot say: erasure finds
+    # their answers by it.
+    assert answer[CARD_ANSWERER_ID] == _Human.transport_user_id
     assert bridge._adapter.told == [
         f"This card was already answered by {shown_as} ({INJECTED_LABEL}).".replace(
             "<", "<\u200b"

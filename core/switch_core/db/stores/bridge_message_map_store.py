@@ -6,6 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import BridgeMessageMap
 
+#: The key in a card answer naming who pressed, by transport id, beside the
+#: display name it shows (`by`). Read by nothing but erasure, which takes both.
+CARD_ANSWERER_ID = "by_id"
+
 
 class BridgeMessageMapStore:
     async def claim(
