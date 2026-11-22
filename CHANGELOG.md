@@ -140,6 +140,10 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A cached controller token or room membership no longer outlives its TTL
+  after a slow read.** The TTL counted from when the read was stored, so a
+  change missed while the read was in flight could be served for the TTL plus
+  however long the read took. It now counts from when the read began.
 - **The decision service is ready behind vLLM.** A model server whose
   `/health` answers 200 with an empty body counts as healthy; before, the
   service reported 503 while `/decide` worked.

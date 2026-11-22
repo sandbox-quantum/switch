@@ -99,7 +99,7 @@ class ControllerAuthCache(HeldRows):
             principal.tenant_id,
             principal.controller_id,
             principal,
-            self.held_under(ticket),
+            ticket,
         )
 
     def agent(self, tenant_id: str, agent_id: str) -> Agent | None:
@@ -110,11 +110,8 @@ class ControllerAuthCache(HeldRows):
     ) -> None:
         if not self.fresh(ticket):
             return
-        held_under = self.held_under(ticket)
         for agent in agents:
-            self.put(
-                self._agents, self._max_agents, tenant_id, agent.id, agent, held_under
-            )
+            self.put(self._agents, self._max_agents, tenant_id, agent.id, agent, ticket)
 
     def invalidate_controller(self, controller_id: str) -> None:
         self.invalidated()

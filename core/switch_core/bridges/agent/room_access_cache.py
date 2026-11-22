@@ -75,7 +75,7 @@ class RoomAccessCache(HeldRows):
             tenant_id,
             (agent_id, room.id),
             room,
-            self.held_under(ticket),
+            ticket,
         )
 
     def unbudgeted(self, tenant_id: str, agent_id: str) -> bool:
@@ -91,7 +91,7 @@ class RoomAccessCache(HeldRows):
             tenant_id,
             agent_id,
             True,
-            self.held_under(ticket),
+            ticket,
         )
 
     def invalidate_member(self, agent_id: str, room_id: str) -> None:
