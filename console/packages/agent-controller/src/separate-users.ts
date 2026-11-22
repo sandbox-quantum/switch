@@ -42,6 +42,7 @@ const AGENTS_PARENT = '/var/lib/switch-agents';
 const RELEASES_PARENT = '/var/lib';
 export const MAX_AGENT_USERS = 99;
 export const DEFAULT_AGENT_USERS = 16;
+export const DEFAULT_RELEASED_RETENTION_DAYS = 7;
 /** Where agents cannot reach, so nothing an agent runs may live there. */
 const HOME_ROOTS = ['/home', '/root', '/run/user'];
 
@@ -65,6 +66,11 @@ export const separateUsersConfigSchema = z.strictObject({
    * a controller that is not an npm install.
    */
   releasesDir: absolutePath.nullable().default(null),
+  /**
+   * Days to keep released agent directories under `released/` before sweeping
+   * them. 0 deletes immediately on release.
+   */
+  releasedRetentionDays: z.number().int().min(0).max(90).optional(),
 });
 export type SeparateUsersConfig = z.infer<typeof separateUsersConfigSchema>;
 
@@ -382,6 +388,7 @@ export type SetupInput = {
    * controller's unit is ordered after, such as a machine's boot service.
    */
   noBlock: boolean;
+  releasedRetentionDays?: number;
 };
 
 export type SetupReport = { notes: string[] };
@@ -451,6 +458,7 @@ export async function installSeparateUsers(
     node: input.node,
     bundle: releases?.bundle ?? input.bundle,
     releasesDir: releases?.dir ?? null,
+    releasedRetentionDays: input.releasedRetentionDays ?? DEFAULT_RELEASED_RETENTION_DAYS,
   } satisfies SeparateUsersConfig);
   for (let slot = 1; slot <= config.agentUsers; slot++)
     await ensureAgentUser(names.agentUser(slot), names.group, run);

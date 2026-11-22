@@ -518,9 +518,16 @@ async function runCommand(args: string[]): Promise<number> {
       // The data folder the device id names, where it is not `--data-dir`:
       // Switch Console's own, holding one data directory per server.
       'device-root': { type: 'string' },
+      'released-retention-days': { type: 'string' },
     },
     strict: true,
   });
+  if (values['released-retention-days'] !== undefined) {
+    const days = Number(values['released-retention-days']);
+    if (!Number.isInteger(days) || days < 0 || days > 90)
+      throw new UsageError('--released-retention-days must be a whole number from 0 to 90.');
+    process.env.SWITCH_RELEASED_RETENTION_DAYS = String(days);
+  }
   const agentRuntime = values['agent-runtime'] ?? 'default';
   if (agentRuntime !== 'default' && agentRuntime !== 'separate-user')
     throw new UsageError('--agent-runtime must be default or separate-user.');
@@ -923,11 +930,19 @@ async function installServiceCommand(args: string[]): Promise<number> {
       'agent-users': { type: 'string' },
       'no-block': { type: 'boolean' },
       'releases-dir': { type: 'string' },
+      'released-retention-days': { type: 'string' },
     },
     strict: true,
   });
   if (values['separate-users']) return installSeparateUsersCommand(values);
-  for (const flag of ['user', 'agents-dir', 'agent-users', 'no-block', 'releases-dir'] as const)
+  for (const flag of [
+    'user',
+    'agents-dir',
+    'agent-users',
+    'no-block',
+    'releases-dir',
+    'released-retention-days',
+  ] as const)
     if (values[flag] !== undefined)
       throw new UsageError(`--${flag} is for install-service --separate-users.`);
   const envFile = values['env-file'] ? resolve(values['env-file']) : null;
@@ -1008,6 +1023,7 @@ async function installSeparateUsersCommand(values: {
   'agent-users'?: string;
   'no-block'?: boolean;
   'releases-dir'?: string;
+  'released-retention-days'?: string;
 }): Promise<number> {
   const user = values.user ?? process.env.SUDO_USER;
   if (!user)
@@ -1018,6 +1034,12 @@ async function installSeparateUsersCommand(values: {
     values['agent-users'] === undefined ? DEFAULT_AGENT_USERS : Number(values['agent-users']);
   if (!Number.isInteger(agentUsers) || agentUsers < 1 || agentUsers > MAX_AGENT_USERS)
     throw new UsageError(`--agent-users must be a whole number from 1 to ${MAX_AGENT_USERS}.`);
+  let releasedRetentionDays: number | undefined;
+  if (values['released-retention-days'] !== undefined) {
+    releasedRetentionDays = Number(values['released-retention-days']);
+    if (!Number.isInteger(releasedRetentionDays) || releasedRetentionDays < 0 || releasedRetentionDays > 90)
+      throw new UsageError('--released-retention-days must be a whole number from 0 to 90.');
+  }
   const envFile = values['env-file'] ? resolve(values['env-file']) : null;
   if (envFile) await readEnvFile(envFile);
   const report = await installSeparateUsers(
@@ -1034,6 +1056,7 @@ async function installSeparateUsersCommand(values: {
       envFile,
       path: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       noBlock: values['no-block'] === true,
+      releasedRetentionDays,
     },
     runSecretCommand
   );

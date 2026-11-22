@@ -104,14 +104,15 @@ beforeEach(() => {
   config = {
     v: 1,
     user: 'controller',
-    uid: process.getuid!(),
-    gid: process.getgid!(),
+    uid: process.getuid ? process.getuid() : 1000,
+    gid: process.getgid ? process.getgid() : 1000,
     dataDir: join(dir, 'data'),
     agentsDir: join(dir, 'agents'),
     agentUsers: 2,
     node: '/usr/bin/node',
     bundle: '/opt/switch/shared-host.mjs',
     releasesDir: null,
+    releasedRetentionDays: 7,
   };
   mkdirSync(config.dataDir, { mode: 0o700 });
   mkdirSync(config.agentsDir, { mode: 0o700 });
@@ -276,6 +277,9 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     expect(
       readFileSync(join(config.agentsDir, 'released', 'agent-1', 'workspace', 'notes.md'), 'utf8')
     ).toBe('kept');
+    expect(existsSync(join(config.agentsDir, 'released', 'agent-1', '.switch-released-at'))).toBe(
+      true
+    );
 
     // Another agent takes the freed user, in a fresh directory.
     await start('agent-2');
@@ -287,6 +291,63 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     expect(readFileSync(join(config.agentsDir, '02', 'workspace', 'notes.md'), 'utf8')).toBe(
       'kept'
     );
+    expect(existsSync(join(config.agentsDir, '02', '.switch-released-at'))).toBe(false);
+  });
+
+  it('sweeps released directories older than retention window and keeps newer ones', async () => {
+    let now = 1_000_000_000;
+    const rt = new SystemdRuntime({
+      config,
+      store,
+      systemctl: systemctl.run,
+      env,
+      log: silentLogger,
+      now: () => now,
+    });
+    const releasedDir = join(config.agentsDir, 'released');
+    mkdirSync(join(releasedDir, 'agent-old'), { recursive: true });
+    writeFileSync(
+      join(releasedDir, 'agent-old', '.switch-released-at'),
+      `${now - 8 * 24 * 60 * 60 * 1000}\n`
+    );
+    mkdirSync(join(releasedDir, 'agent-recent'), { recursive: true });
+    writeFileSync(
+      join(releasedDir, 'agent-recent', '.switch-released-at'),
+      `${now - 2 * 24 * 60 * 60 * 1000}\n`
+    );
+    mkdirSync(join(releasedDir, `agent-backup.${now - 9 * 24 * 60 * 60 * 1000}`), {
+      recursive: true,
+    });
+
+    await rt.sweep();
+
+    expect(existsSync(join(releasedDir, 'agent-old'))).toBe(false);
+    expect(existsSync(join(releasedDir, `agent-backup.${now - 9 * 24 * 60 * 60 * 1000}`))).toBe(
+      false
+    );
+    expect(existsSync(join(releasedDir, 'agent-recent'))).toBe(true);
+  });
+
+  it('deletes directory immediately on release when releasedRetentionDays is 0', async () => {
+    const zeroConfig = { ...config, releasedRetentionDays: 0 };
+    const rt = new SystemdRuntime({
+      config: zeroConfig,
+      store,
+      systemctl: systemctl.run,
+      env,
+      log: silentLogger,
+      now: () => 1_000,
+    });
+    await rt.writeCredentials('agent-zero', RELAY);
+    const cwd = await rt.workingDirectory('agent-zero', 'agent-zero', null);
+    await rt.launch('agent-zero', template('agent-zero', cwd), LAUNCH);
+    writeFileSync(join(config.agentsDir, '01', 'workspace', 'data.txt'), 'ephemeral');
+
+    await rt.deleteCredentials('agent-zero');
+
+    expect(store.agentUser('agent-zero')).toBeNull();
+    expect(existsSync(join(config.agentsDir, '01'))).toBe(false);
+    expect(existsSync(join(config.agentsDir, 'released', 'agent-zero'))).toBe(false);
   });
 
   it('sets aside a directory its user held for another agent', async () => {

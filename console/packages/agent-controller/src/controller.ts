@@ -737,6 +737,9 @@ export async function runController(
   };
 
   await reconcileLocally();
+  await runtime
+    .sweep?.()
+    .catch((error: unknown) => failed('Sweeping released agents on startup', error));
   relay.setReady();
 
   void providers.refreshStale().catch((error: unknown) => failed('Checking providers', error));
@@ -747,7 +750,15 @@ export async function runController(
     void providers.refreshStale().catch((error: unknown) => failed('Checking providers', error));
   }, timing.resyncMs);
   let lastPeriodic = deps.now();
+  let lastSweep = deps.now();
+  const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
   const poll = setInterval(() => {
+    if (deps.now() - lastSweep >= SWEEP_INTERVAL_MS) {
+      lastSweep = deps.now();
+      void runtime
+        .sweep?.()
+        .catch((error: unknown) => failed('Sweeping released agents', error));
+    }
     if (deps.now() - lastPeriodic >= reportWithinS * 1000) {
       lastPeriodic = deps.now();
       reporter?.request();
