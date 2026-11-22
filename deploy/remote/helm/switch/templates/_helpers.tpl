@@ -41,6 +41,16 @@ Secret of its own.
 {{- end }}
 
 {{/*
+"true" when GATEWAY_ADMIN_PASSWORD must be set: while password login is on
+(it is the seeded admin's credential). Empty otherwise: with OIDC-only sign-in
+the admin is seeded without a password.
+*/}}
+{{- define "switch.adminPasswordRequired" -}}
+{{- $passwordLogin := or (not .Values.switchCore.oidc.enabled) .Values.switchCore.oidc.passwordLoginEnabled }}
+{{- if $passwordLogin }}true{{ end }}
+{{- end }}
+
+{{/*
 The Secret's data block, so the pre-upgrade copy the migration reads is
 rendered from this one source and cannot drift from the release's own.
 */}}
@@ -59,24 +69,22 @@ SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see
 {{- with .Values.secrets.jwtSecretKey }}
 JWT_SECRET_KEY: {{ . | b64enc | quote }}
 {{- end }}
-{{- if .Values.switchCore.agentManagement.enabled }}
-{{- fail "switchCore.agentManagement.enabled has been replaced by a feature flag: remove it and add \"agent_management\" to switchCore.featureFlags.enabled." }}
-{{- end }}
-{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
-{{- $controllerSecret := required "secrets.controllerTokenSecret is required with the agent_management feature flag on" .Values.secrets.controllerTokenSecret }}
+{{- $controllerSecret := required "secrets.controllerTokenSecret is required (at least 32 characters, see values.yaml)" .Values.secrets.controllerTokenSecret }}
 {{- if lt (len $controllerSecret) 32 }}
 {{- fail "secrets.controllerTokenSecret must be at least 32 characters; switch-core refuses to start with a shorter one." }}
 {{- end }}
 CONTROLLER_TOKEN_SECRET: {{ $controllerSecret | b64enc | quote }}
-{{- end }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
-GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
-{{- if .Values.mattermost.enabled }}
-MATTERMOST_ADMIN_PASSWORD: {{ .Values.secrets.mattermostAdminPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
-MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
+{{- if include "switch.adminPasswordRequired" . }}
+GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required while password login is enabled" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
+{{- else if .Values.secrets.gatewayAdminPassword }}
+GATEWAY_ADMIN_PASSWORD: {{ .Values.secrets.gatewayAdminPassword | b64enc | quote }}
 {{- end }}
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
+{{- end }}
+{{- if eq .Values.switchCore.organizationDirectory.mode "workos" }}
+WORKOS_API_KEY: {{ required "secrets.workosApiKey is required when switchCore.organizationDirectory.mode is workos" .Values.secrets.workosApiKey | b64enc | quote }}
 {{- end }}
 {{- if and .Values.switchCore.smtp.enabled (or .Values.switchCore.smtp.username .Values.switchCore.smtp.usernameFromSecret) }}
 GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when an SMTP username is set" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
@@ -122,7 +130,7 @@ PostgreSQL connection details.
   mode: existing -> an operator-supplied external database (RDS / Cloud SQL /
                     Azure / self-run), configured under postgresql.external.
 
-Every consumer (switch-core, mattermost, the wait-for init containers) resolves
+Every consumer (switch-core, the wait-for init containers) resolves
 the host/port/user/database and the password secret through these helpers so the
 two modes stay in lockstep.
 */}}
@@ -152,8 +160,7 @@ policies apply to.
 
 In managed mode those two are genuinely different accounts. In existing mode
 they are the same value, because the chart does not manage that database and
-has only the one username to go on — so this helper is *not* what Mattermost
-should connect as there; see switch.mattermostDbUser.
+has only the one username to go on.
 */}}
 {{- define "switch.postgresSuperUser" -}}
 {{- if eq .Values.postgresql.mode "existing" -}}
@@ -302,66 +309,6 @@ callers must fall back to those directly rather than through this helper.
 {{- end }}
 
 {{/*
-The credentials Mattermost connects to its own "mattermost" database with,
-and the reason they are not switch.postgresUser's.
-
-Mattermost creates and migrates its own schema, so it needs an account with
-rights in that database. The runtime role has none: it is granted CRUD on the
-tables switch-core's own migration created, in switch-core's own database, and
-nothing anywhere else. There is no isolation argument for restricting
-Mattermost either — its schema carries no row-level security and no tenant
-column — so the administrative account is simply the right one.
-
-In managed mode that is the bootstrapped superuser, unchanged: initdb creates
-the "mattermost" database as "postgres" and postgresql.owner.username does not
-move it, so this deliberately does not follow that value there.
-
-Existing mode is the case this exists for. switch.postgresSuperUser and
-switch.postgresUser both resolve to postgresql.external.username there, so the
-moment an operator repoints external.username at a restricted role — which is
-exactly what docs/old/rds-migration.md asks them to do — Mattermost would
-follow it onto a role with no rights in its database and fail to start. When an
-owner is configured, use it; when one is not, this is a deployment that has not
-split its roles yet and external.username is still the administrative account,
-which is the behaviour it has always had.
-
-The three helpers below share one condition, so it is written once and the
-other two ask it. It answers with a non-empty string or nothing, which is what
-`if` reads — deliberately not "true"/"false", since an `include` returning the
-string "false" is still truthy and inviting a reader to compare against it
-would be inviting a bug.
-*/}}
-{{- define "switch.mattermostUsesOwner" -}}
-{{- if and (eq .Values.postgresql.mode "existing") .Values.postgresql.owner.username -}}
-owner
-{{- end -}}
-{{- end }}
-
-{{- define "switch.mattermostDbUser" -}}
-{{- if include "switch.mattermostUsesOwner" . -}}
-{{- .Values.postgresql.owner.username -}}
-{{- else -}}
-{{- include "switch.postgresSuperUser" . -}}
-{{- end -}}
-{{- end }}
-
-{{- define "switch.mattermostDbSecretName" -}}
-{{- if include "switch.mattermostUsesOwner" . -}}
-{{- include "switch.postgresOwnerSecretName" . -}}
-{{- else -}}
-{{- include "switch.postgresSecretName" . -}}
-{{- end -}}
-{{- end }}
-
-{{- define "switch.mattermostDbSecretKey" -}}
-{{- if include "switch.mattermostUsesOwner" . -}}
-{{- include "switch.postgresOwnerSecretKey" . -}}
-{{- else -}}
-{{- include "switch.postgresSecretKey" . -}}
-{{- end -}}
-{{- end }}
-
-{{/*
 Other service hostnames (used in env vars and init containers).
 */}}
 
@@ -373,8 +320,65 @@ Other service hostnames (used in env vars and init containers).
 {{- include "switch.fullname" . }}-gateway
 {{- end }}
 
-{{- define "switch.mattermostHost" -}}
-{{- include "switch.fullname" . }}-mattermost
+{{- define "switch.decisionHost" -}}
+{{- include "switch.fullname" . }}-decision
+{{- end }}
+
+{{/*
+DECISION_ENDPOINT_URL for switch-core: the chart's own decision service when
+decision.enabled, else switchCore.decision.endpointUrl (empty: none, and
+auto-route is unavailable until a workspace admin sets a backend up).
+*/}}
+{{- define "switch.decisionEndpointUrl" -}}
+{{- if .Values.decision.enabled -}}
+{{- if .Values.switchCore.decision.endpointUrl -}}
+{{- fail (printf "decision.enabled runs the decision service in this release and points switch-core at it, but switchCore.decision.endpointUrl is also set (%q). Clear one of them." .Values.switchCore.decision.endpointUrl) -}}
+{{- end -}}
+{{- printf "http://%s:%v" (include "switch.decisionHost" .) .Values.decision.port -}}
+{{- else -}}
+{{- .Values.switchCore.decision.endpointUrl -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The Secret holding the decision service's bearer token:
+decision.token.existingSecret, or the one the chart generates.
+*/}}
+{{- define "switch.decisionTokenSecret" -}}
+{{- .Values.decision.token.existingSecret | default (printf "%s-decision-token" (include "switch.fullname" .)) -}}
+{{- end }}
+
+{{/*
+An env entry `name` read from the decision token Secret.
+Usage: {{ include "switch.decisionTokenEnv" (dict "root" . "name" "DECISION_API_KEY") }}
+*/}}
+{{- define "switch.decisionTokenEnv" -}}
+- name: {{ .name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.decisionTokenSecret" .root }}
+      key: {{ .root.Values.decision.token.existingSecretKey }}
+{{- end }}
+
+{{/*
+Whether workspaces may choose Haiku on Bedrock (DECISION_BEDROCK_ENABLED).
+Non-empty for yes, nothing for no.
+*/}}
+{{- define "switch.decisionBedrockEnabled" -}}
+{{- if or .Values.switchCore.decision.bedrockEnabled (and .Values.decision.enabled .Values.decision.bedrock.enabled) -}}
+{{- if not (include "switch.decisionEndpointUrl" .) -}}
+{{- fail "switchCore.decision.bedrockEnabled needs a decision service to run Haiku on Bedrock in: set decision.enabled or switchCore.decision.endpointUrl." -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Decision pod selector labels, shared by its Deployment, Service and
+NetworkPolicy.
+*/}}
+{{- define "switch.decisionSelectorLabels" -}}
+{{- include "switch.selectorLabels" (dict "Release" .Release "component" "decision") }}
 {{- end }}
 
 {{/*
@@ -640,6 +644,44 @@ SHA-256.
 {{- end }}
 
 {{/*
+Where to send OTLP, from switchCore.observability: nothing when no collector is
+named. switch-core passes `metrics: true`; the decision service exports logs
+only, so it gets no metrics settings. Each line starts with a newline.
+Usage: {{- include "switch.otlpEnv" (dict "root" . "metrics" true) }}
+*/}}
+{{- define "switch.otlpEnv" -}}
+{{- $root := .root }}
+{{- $metrics := .metrics }}
+{{- with $root.Values.switchCore.observability }}
+{{- if .otlpEndpoint }}
+- name: OTLP_ENDPOINT
+  value: {{ .otlpEndpoint | quote }}
+- name: DEPLOYMENT_ID
+  value: {{ .deploymentId | quote }}
+{{- if $metrics }}
+- name: OTLP_METRICS_ENABLED
+  value: {{ .metrics | quote }}
+{{- end }}
+- name: OTLP_LOGS_ENABLED
+  value: {{ .logs | quote }}
+{{- if $metrics }}
+- name: OTLP_EXPORT_INTERVAL_SECONDS
+  value: {{ .exportIntervalSeconds | quote }}
+{{- end }}
+- name: OTLP_TIMEOUT_SECONDS
+  value: {{ .timeoutSeconds | quote }}
+{{- if $root.Values.secrets.otlpHeaders }}
+- name: OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $root }}
+      key: OTLP_HEADERS
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
@@ -751,7 +793,6 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
       optional: true
-{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
 - name: CONTROLLER_TOKEN_SECRET
   valueFrom:
     secretKeyRef:
@@ -759,7 +800,6 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       key: CONTROLLER_TOKEN_SECRET
 - name: CONTROLLER_STATUS_INTERVAL_SECONDS
   value: {{ .Values.switchCore.agentManagement.statusIntervalSeconds | quote }}
-{{- end }}
 {{- with .Values.switchCore.controllerRelease }}
 {{- if .version }}
 - name: CONTROLLER_RELEASE_VERSION
@@ -780,6 +820,9 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: GATEWAY_ADMIN_PASSWORD
+      {{- if not (include "switch.adminPasswordRequired" .) }}
+      optional: true
+      {{- end }}
 {{- if .Values.switchCore.oidc.enabled }}
 - name: GATEWAY_OIDC_ISSUER_URL
   value: {{ required "switchCore.oidc.issuerUrl is required when oidc.enabled" .Values.switchCore.oidc.issuerUrl | quote }}
@@ -827,15 +870,16 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ $signupMode | quote }}
 - name: GATEWAY_MAX_WORKSPACES_PER_USER
   value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
+{{- with .Values.switchCore.signup.refusedHeader }}
+- name: GATEWAY_SIGNUP_REFUSED_HEADER
+  value: {{ . | quote }}
+{{- end }}
+{{- include "switch.organizationDirectoryEnv" . }}
 - name: GATEWAY_TENANT_CHOICE_ENABLED
   value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
-{{- $outboundHosts := .Values.switchCore.outbound.allowedPrivateHosts }}
-{{- if .Values.mattermost.enabled }}
-{{- $outboundHosts = append $outboundHosts (include "switch.mattermostHost" .) }}
-{{- end }}
-{{- if $outboundHosts }}
+{{- with .Values.switchCore.outbound.allowedPrivateHosts }}
 - name: OUTBOUND_ALLOWED_PRIVATE_HOSTS
-  value: {{ join "," $outboundHosts | quote }}
+  value: {{ join "," . | quote }}
 {{- end }}
 {{- with .Values.switchCore.featureFlags.enabled }}
 - name: FEATURE_FLAGS_ENABLED
@@ -849,9 +893,47 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: SERVICE_ACCESS_PROFILES
   value: {{ toJson . | quote }}
 {{- end }}
+{{- with .Values.switchCore.serviceSignInRedirect }}
+- name: SERVICE_SIGN_IN_REDIRECT
+  value: {{ toJson . | quote }}
+{{- end }}
+{{- if .Values.switchCore.allowNonExpiringKeys }}
+- name: ALLOW_NON_EXPIRING_KEYS
+  value: "true"
+{{- end }}
 {{- if has "follow_the_conversation" .Values.switchCore.featureFlags.enabled }}
 - name: FOLLOW_THE_CONVERSATION_WINDOW_SECONDS
   value: {{ .Values.switchCore.followTheConversation.windowSeconds | quote }}
+{{- end }}
+{{- if and (has "decision_routing" .Values.switchCore.featureFlags.enabled) (not (has "follow_the_conversation" .Values.switchCore.featureFlags.enabled)) }}
+{{- fail "The decision_routing feature flag needs follow_the_conversation in switchCore.featureFlags.enabled as well; switch-core refuses to start without it." }}
+{{- end }}
+{{- with include "switch.decisionEndpointUrl" . }}
+- name: DECISION_ENDPOINT_URL
+  value: {{ . | quote }}
+{{- end }}
+{{- if .Values.decision.enabled }}
+{{- if .Values.switchCore.decision.apiKey.existingSecret }}
+{{- fail "switchCore.decision.apiKey.existingSecret is the key for a decision service run elsewhere (switchCore.decision.endpointUrl); with decision.enabled the chart sends its own token. Clear it, or use decision.token.existingSecret." }}
+{{- end }}
+{{ include "switch.decisionTokenEnv" (dict "root" . "name" "DECISION_API_KEY") }}
+{{- else if .Values.switchCore.decision.apiKey.existingSecret }}
+{{- if not .Values.switchCore.decision.endpointUrl }}
+{{- fail "switchCore.decision.apiKey.existingSecret is set but switchCore.decision.endpointUrl is not: there is no endpoint to send the key to." }}
+{{- end }}
+- name: DECISION_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.switchCore.decision.apiKey.existingSecret }}
+      key: {{ .Values.switchCore.decision.apiKey.existingSecretKey }}
+{{- end }}
+{{- if include "switch.decisionBedrockEnabled" . }}
+- name: DECISION_BEDROCK_ENABLED
+  value: "true"
+{{- end }}
+{{- with .Values.switchCore.decision.timeoutSeconds }}
+- name: DECISION_TIMEOUT_SECONDS
+  value: {{ . | quote }}
 {{- end }}
 {{- if not (or .Values.gateway.enabled .Values.switchCore.serveDashboard) }}
 {{- fail "gateway.enabled and switchCore.serveDashboard are both off, so nothing serves the operator dashboard. Turn one of them on." }}
@@ -911,29 +993,7 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: ENVIRONMENT
   value: {{ . | quote }}
 {{- end }}
-{{- with .Values.switchCore.observability }}
-{{- if .otlpEndpoint }}
-- name: OTLP_ENDPOINT
-  value: {{ .otlpEndpoint | quote }}
-- name: DEPLOYMENT_ID
-  value: {{ .deploymentId | quote }}
-- name: OTLP_METRICS_ENABLED
-  value: {{ .metrics | quote }}
-- name: OTLP_LOGS_ENABLED
-  value: {{ .logs | quote }}
-- name: OTLP_EXPORT_INTERVAL_SECONDS
-  value: {{ .exportIntervalSeconds | quote }}
-- name: OTLP_TIMEOUT_SECONDS
-  value: {{ .timeoutSeconds | quote }}
-{{- if $.Values.secrets.otlpHeaders }}
-- name: OTLP_HEADERS
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "switch.secretName" $ }}
-      key: OTLP_HEADERS
-{{- end }}
-{{- end }}
-{{- end }}
+{{- include "switch.otlpEnv" (dict "root" . "metrics" true) }}
 - name: TELEMETRY_ENABLED
   value: {{ .Values.switchCore.telemetry.enabled | quote }}
 {{- if .Values.switchCore.telemetry.enabled }}
@@ -941,8 +1001,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ .Values.switchCore.telemetry.endpoint | quote }}
 - name: TELEMETRY_SNAPSHOT_INTERVAL_HOURS
   value: {{ .Values.switchCore.telemetry.snapshotIntervalHours | quote }}
+{{- with .Values.switchCore.telemetry.environment }}
 - name: TELEMETRY_ENVIRONMENT
-  value: {{ .Values.switchCore.telemetry.environment | quote }}
+  value: {{ . | quote }}
+{{- end }}
 - name: TELEMETRY_INTERNAL
   value: {{ .Values.switchCore.telemetry.internal | quote }}
 {{- end }}
@@ -1136,4 +1198,110 @@ Usage: {{ include "switch.waitForHttp" (dict "name" "gateway" "url" "http://host
 - name: wait-for-{{ .name }}
   image: busybox:1.36
   command: ["sh", "-c", "until wget -q --spider {{ .url }}; do echo 'waiting for {{ .name }}...'; sleep 2; done"]
+{{- end }}
+
+{{/*
+The weights file name inside /models: decision.modelServer.llamacpp.model.file.
+*/}}
+{{- define "switch.decisionModelFile" -}}
+{{- $file := required "decision.modelServer.llamacpp.model.file is required" .Values.decision.modelServer.llamacpp.model.file -}}
+{{- if contains "/" $file -}}
+{{- fail (printf "decision.modelServer.llamacpp.model.file must be a file name, not a path: %q" $file) -}}
+{{- end -}}
+{{- $file -}}
+{{- end }}
+
+{{/*
+Which model server runs beside the decision service: decision.modelServer.kind,
+strands or llamacpp.
+*/}}
+{{- define "switch.decisionModelServerKind" -}}
+{{- $kind := .Values.decision.modelServer.kind -}}
+{{- if not (has $kind (list "strands" "llamacpp")) -}}
+{{- fail (printf "decision.modelServer.kind must be strands or llamacpp, not %q" $kind) -}}
+{{- end -}}
+{{- $kind -}}
+{{- end }}
+
+{{/*
+DECISION_BACKEND: decision.backend, or else the API the model server speaks
+(systemone for strands, llamacpp for llamacpp). Without a model server there is
+nothing to derive it from, so it must be set (anthropic or bedrock).
+*/}}
+{{- define "switch.decisionBackend" -}}
+{{- $d := .Values.decision -}}
+{{- if $d.backend -}}
+{{- $d.backend -}}
+{{- else if $d.modelServer.enabled -}}
+{{- ternary "systemone" "llamacpp" (eq (include "switch.decisionModelServerKind" .) "strands") -}}
+{{- else -}}
+{{- fail "decision.backend is required when decision.modelServer.enabled is false: anthropic or bedrock, say." -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+DECISION_MODEL: decision.model, or else the model server's modelName. Empty
+(without a model server) keeps the service's default for its backend.
+*/}}
+{{- define "switch.decisionModel" -}}
+{{- $d := .Values.decision -}}
+{{- if $d.model -}}
+{{- $d.model -}}
+{{- else if $d.modelServer.enabled -}}
+{{- (get $d.modelServer (include "switch.decisionModelServerKind" .)).modelName -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+HF_TOKEN env entry from decision.modelServer.hfTokenSecret, or nothing.
+*/}}
+{{- define "switch.decisionHfToken" -}}
+{{- with .Values.decision.modelServer.hfTokenSecret.name }}
+- name: HF_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ . }}
+      key: {{ $.Values.decision.modelServer.hfTokenSecret.key }}
+{{- end }}
+{{- end }}
+
+{{/*
+switch-core's organization directory settings. The checks mirror the ones
+switch-core makes at startup (config.py), so a bad combination fails the
+render instead of a pod.
+*/}}
+{{- define "switch.organizationDirectoryEnv" -}}
+{{- $directory := .Values.switchCore.organizationDirectory }}
+{{- $changes := list $directory.membersServiceUrl $directory.workosClientId $directory.workosRedirectUrl | compact }}
+{{- if not (has $directory.mode (list "local" "workos")) }}
+{{- fail (printf "switchCore.organizationDirectory.mode must be local or workos. Got %q." $directory.mode) }}
+{{- end }}
+{{- if eq $directory.mode "workos" }}
+{{- if not .Values.switchCore.oidc.enabled }}
+{{- fail "switchCore.organizationDirectory.mode workos needs switchCore.oidc.enabled, against the same WorkOS environment: the sign-in is what names the person there." }}
+{{- end }}
+{{- if eq .Values.switchCore.signup.mode "default_tenant" }}
+{{- fail "switchCore.organizationDirectory.mode workos cannot be combined with switchCore.signup.mode default_tenant; use invite_only or open." }}
+{{- end }}
+{{- if and $changes (lt (len $changes) 3) }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are set together, or not at all." }}
+{{- end }}
+- name: ORGANIZATION_DIRECTORY
+  value: "workos"
+- name: WORKOS_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: WORKOS_API_KEY
+{{- if $changes }}
+- name: MEMBERS_SERVICE_URL
+  value: {{ $directory.membersServiceUrl | quote }}
+- name: WORKOS_CLIENT_ID
+  value: {{ $directory.workosClientId | quote }}
+- name: WORKOS_REDIRECT_URL
+  value: {{ $directory.workosRedirectUrl | quote }}
+{{- end }}
+{{- else if $changes }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are for mode workos." }}
+{{- end }}
 {{- end }}

@@ -2,10 +2,14 @@
 together. The two call sites (inbound bridge, agent send_media) are tested
 separately; this covers the decisions they share."""
 
+import ast
 import io
+import json
 import logging
+import subprocess
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 from pypdf import PdfReader, PdfWriter
@@ -29,10 +33,12 @@ class _ContentTrustClient:
     def __init__(self) -> None:
         self.checked: list[tuple[str, str]] = []
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return True
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.checked.append((role, content))
         finding = (TrustFinding(category="test", detector_name="t", severity="high"),)
         if "FORBIDDEN" in content:
@@ -120,6 +126,7 @@ async def test_an_image_alone_carries_no_note_and_is_not_checked() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
@@ -134,6 +141,7 @@ async def test_an_image_still_blocks_when_unchecked_files_are_not_relayed(
     monkeypatch.setattr(attachments, "RELAY_UNCHECKED_FILES", False)
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
@@ -155,6 +163,7 @@ async def test_a_blocked_file_blocks_and_names_the_file() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"fine", "a.txt", "text/plain"), (b"FORBIDDEN", "b.txt", "text/plain")],
         room_id="room-1",
@@ -167,6 +176,7 @@ async def test_a_blocked_file_blocks_and_names_the_file() -> None:
 async def test_a_redacted_file_blocks_because_a_file_cannot_be_redacted() -> None:
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"my SECRET", "notes.md", "text/markdown")],
         room_id="room-1",
@@ -180,6 +190,7 @@ async def test_unreadable_flagged_and_long_files_each_carry_a_note() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="assistant",
         files=[
             (b"\x89PNG", "cat.png", "image/png"),
@@ -211,6 +222,7 @@ async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checke
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b" " * TRUST_FILE_TEXT_LIMIT + b"FORBIDDEN", "pad.txt", "text/plain")],
         room_id="room-1",
@@ -229,6 +241,7 @@ async def test_unchecked_files_block_when_the_policy_says_so(
     monkeypatch.setattr(attachments, "RELAY_UNCHECKED_FILES", False)
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
@@ -371,6 +384,9 @@ def test_a_word_document_is_recognised_by_extension_alone() -> None:
             }
         ),
     ],
+    # The zips carry the time they were built at, so an id made from their
+    # bytes differs between pytest-xdist workers collecting a second apart.
+    ids=["not-a-zip", "no-document-body", "body-named-but-missing"],
 )
 def test_a_broken_word_document_is_unchecked_not_an_error(data: bytes) -> None:
     file_text = extract_file_text(data, _DOCX_TYPE, "memo.docx")
@@ -450,6 +466,7 @@ async def test_a_renamed_header_is_found_through_the_relationships() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[
             (
@@ -495,6 +512,7 @@ async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note() -> No
     )
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(data, "memo.docx", _DOCX_TYPE)],
         room_id="room-1",
@@ -584,6 +602,7 @@ async def test_a_document_that_takes_too_long_to_read_is_not_checked(
     with caplog.at_level(logging.WARNING):
         verdict = await check_attachments(
             client,  # type: ignore[arg-type]
+            tenant_id="tenant-1",
             role="user",
             files=[(_pdf("FORBIDDEN"), "slow.pdf", "application/pdf")],
             room_id="room-1",
@@ -621,6 +640,7 @@ async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[
             (_docx("FORBIDDEN plan"), "plan.docx", _DOCX_TYPE),
@@ -637,6 +657,7 @@ async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks() -> None:
 async def test_a_scanned_pdf_is_relayed_with_a_not_checked_note() -> None:
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(_pdf(None), "scan.pdf", "application/pdf")],
         room_id="room-1",
@@ -677,3 +698,49 @@ def test_a_dtd_in_utf16_is_still_refused() -> None:
     ).encode("utf-16")
     file_text = extract_file_text(_docx_with(document), _DOCX_TYPE, "evil.docx")
     assert file_text.text is None
+
+
+# Windows has no `resource` (nor the other Unix-only modules below); a
+# module-level import of one stops switch-core from starting there (CHOO-4461).
+_UNIX_ONLY_MODULES = {"resource", "fcntl", "pwd", "grp", "termios", "tty", "pty"}
+
+_WITHOUT_RESOURCE = """
+import json, runpy, sys
+sys.modules["resource"] = None  # as on Windows: importing it fails
+import switch_core.file_text
+sys.argv = ["file_text", "docx", str(256 * 1024 * 1024)]
+runpy.run_module("switch_core.file_text", run_name="__main__")
+"""
+
+
+def test_the_reader_imports_and_its_worker_runs_without_resource() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", _WITHOUT_RESOURCE],
+        input=_docx("the body"),
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr.decode()
+    assert "the body" in json.loads(completed.stdout)["text"]
+
+
+def test_switch_core_imports_no_unix_only_module_at_load_time() -> None:
+    """Only module-level imports count: one inside a function, guarded for
+    the platform, does not stop switch-core from loading."""
+    import switch_core
+
+    offenders = []
+    for path in Path(switch_core.__file__).parent.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                if name.split(".")[0] in _UNIX_ONLY_MODULES:
+                    offenders.append(f"{path.name}:{node.lineno} {name}")
+    assert offenders == []

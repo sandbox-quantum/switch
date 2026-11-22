@@ -6,6 +6,7 @@ import { confirmLeaveChat } from '@renderer/features/chats/components/chat-actio
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
@@ -15,15 +16,18 @@ import { describeFailure, failureText } from '@renderer/lib/errors/describe-fail
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { cn } from '@renderer/utils/utils';
 import { type ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
+import { RoomAutoRouteSection } from './room-auto-route-section';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { roomTitle } from './room-labels';
-import { roomDetailKey, useRoomDetail } from './room-participants';
+import { agentNameFor, roomDetailKey, useRoomDetail } from './room-participants';
+import { SchedulesSection } from './room-schedules-section';
 import {
   AccessAndGroupFields,
   ArchiveRoomSection,
@@ -75,7 +79,14 @@ const ChatConfiguration = observer(function ChatConfiguration({
               room={detail.data}
               permissions={{
                 canWrite: chat.canManage,
+                canChangeMembers: chat.canManage,
+                canInviteAgents: chat.canManage,
+                canAddPeople: chat.canManage,
+                canAttach: chat.canManage,
+                canRemoveMembers: chat.canManage,
                 canManage: chat.canManage,
+                canArchive: chat.canManage,
+                canManageAdmins: false,
                 canUnlink: chat.canManage,
               }}
             />
@@ -174,8 +185,8 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
           )}
           {!permissions.canWrite && (
             <Notice icon={<Lock className="size-3.5" />}>
-              Only {room.ownerName ?? 'the room’s owner'} or a workspace admin can change this
-              room’s settings.
+              Only {room.ownerName ?? 'the room’s owner'}, a room admin or a workspace admin can
+              change this room’s settings.
             </Notice>
           )}
           {/* Keyed on the room so the drafts below belong to the room on screen:
@@ -193,7 +204,19 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             permissions={permissions}
             administersWorkspace={administersWorkspaceById(workspaceId)}
           />
+          {/* Absent from a server that predates decision routing. */}
+          {room.autoRoute && (
+            <AutoRouteSection
+              workspaceId={workspaceId}
+              room={room}
+              autoRoute={room.autoRoute}
+              canWrite={permissions.canWrite}
+              // Its owner's or an admin's on a server that predates room admins.
+              canChooseTriage={permissions.canManage || room.viewerIsRoomAdmin}
+            />
+          )}
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
+          <SchedulesSection workspaceId={workspaceId} room={room} permissions={permissions} />
           <RoomInfoSection room={room} />
           <section
             id="room-settings-archive"
@@ -232,7 +255,6 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
   room: RemoteRoomDetail;
 }) {
   const showDeleteRoomModal = useShowModal('deleteRoomModal');
-  const { navigate } = useNavigate();
 
   if (!switchRoomsStore.canDeleteRoom(workspaceId, room)) return null;
 
@@ -259,7 +281,7 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
               roomName: roomTitle(room),
               // The page this is on is the deleted room's own, so staying would
               // leave a settings form for something that no longer exists.
-              onSuccess: () => navigate('home'),
+              onSuccess: () => navigateHome(),
             })
           }
         >
@@ -509,6 +531,39 @@ function Field({
     </div>
   );
 }
+
+/** The room's auto-route switch and triage agent, offering the room's own agents. */
+const AutoRouteSection = observer(function AutoRouteSection({
+  workspaceId,
+  room,
+  autoRoute,
+  canWrite,
+  canChooseTriage,
+}: {
+  workspaceId: string;
+  room: RemoteRoomDetail;
+  autoRoute: NonNullable<RemoteRoomDetail['autoRoute']>;
+  canWrite: boolean;
+  canChooseTriage: boolean;
+}) {
+  const remoteAgents = useWorkspaceAgents(workspaceId);
+  const remoteById = new Map((remoteAgents.data ?? []).map((a) => [a.id, a]));
+  const agents = room.agentIds.map((id) => ({
+    id,
+    name: agentNameFor(id, workspaceId, remoteById),
+  }));
+  return (
+    <RoomAutoRouteSection
+      workspaceId={workspaceId}
+      room={room}
+      autoRoute={autoRoute}
+      agents={agents}
+      canWrite={canWrite}
+      canChooseTriage={canChooseTriage}
+      detailKey={roomDetailKey(workspaceId, room.id)}
+    />
+  );
+});
 
 function PanelNotice({
   icon,

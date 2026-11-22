@@ -44,7 +44,13 @@ export function isLane(raw: string): raw is Lane {
 export type Environment = 'ephemeral' | 'local' | 'dev' | 'staging' | 'prod';
 
 /** The Switch known-agent type the provider lane registers its throwaway agent as. */
-export type HarnessAgentType = 'opencode' | 'claude-code' | 'codex' | 'antigravity' | 'cursor';
+export type HarnessAgentType =
+  | 'opencode'
+  | 'claude-code'
+  | 'codex'
+  | 'antigravity'
+  | 'cursor'
+  | 'deepseek-harness';
 
 /**
  * How the `question` scenario expects the agent to ask.
@@ -369,6 +375,7 @@ const AGENT_TYPES: readonly HarnessAgentType[] = [
   'codex',
   'antigravity',
   'cursor',
+  'deepseek-harness',
 ];
 
 function agentTypeFrom(raw: string | undefined): HarnessAgentType {

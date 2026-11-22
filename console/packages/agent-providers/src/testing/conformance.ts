@@ -79,9 +79,11 @@ export function describeConformance(name: string, options: ConformanceOptions): 
 
   describe(`${name} conformance`, () => {
     let unavailable: string | null = null;
+    // A sign-in check may start the agent itself, which takes longer than
+    // vitest's 10 s hook default (Junie starts a JVM).
     beforeAll(async () => {
       unavailable = await options.unavailableReason();
-    });
+    }, 60_000);
 
     const adapters: ProviderAdapter[] = [];
     const dirs: string[] = [];

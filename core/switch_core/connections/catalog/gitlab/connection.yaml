@@ -1,7 +1,83 @@
 slug: gitlab
 name: GitLab
 category: Source control
-description: Work with GitLab projects, merge requests and issues.
-enabled: false
+description: Read and update GitLab projects, issues, merge requests and pipelines, as you.
+enabled: true
+publisher: GitLab
+links:
+  documentation: https://docs.gitlab.com/user/model_context_protocol/mcp_server/
+  support: https://about.gitlab.com/support/
+  privacy: https://about.gitlab.com/privacy/
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # GitLab offers dynamic client registration, but not enough of it.
+    # POST https://gitlab.com/oauth/register answers scope "mcp" and
+    # grant_types ["authorization_code"] whatever the request asks for —
+    # asking for read_api, read_user and the refresh_token grant changes
+    # neither. A client registered that way
+    # can never call the identity endpoint below, and with no refresh
+    # grant its sign-ins could not be renewed. So each server's operator
+    # registers a GitLab application instead, with the scopes mcp,
+    # read_api, read_user and api, and names its settings in
+    # GITLAB_CLIENT_CONFIG_PATH or saves it under Connectors in the
+    # dashboard.
+    registration: static
+    client_settings: GITLAB
+    # Sign-ins come back to Core's own callback, the address the operator
+    # registers in the GitLab application.
+    redirect: [core]
+    # The app check sends a made-up code, which shows neither the redirect URI
+    # nor the application's scopes.
+    unchecked: >-
+      Switch can't check the redirect URI, or that the application has the
+      scopes mcp, read_api, read_user and api. Connect once to confirm.
+    # Named rather than discovered, so that no request names the MCP
+    # server as its `resource`: the token must also reach the REST API,
+    # for the identity read and for the calls the MCP tools make.
+    authorization_url: https://gitlab.com/oauth/authorize
+    token_url: https://gitlab.com/oauth/token
+    revocation_url: https://gitlab.com/oauth/revoke
+    # Revoking the refresh token also ends the current access token and the
+    # one before it (both then answer 401 invalid_token). Agents hold those
+    # same tokens, so a disconnect ends their access too. No older one is
+    # still valid: Switch renews a token 15 minutes before its two hours end
+    # (PASS_THROUGH_REFRESH_BEFORE), so at most two are live at once.
+    revocation_ends_tokens: true
+  # GET /api/v4/user needs read_user, which both levels carry and which a
+  # dynamically registered client could never be given.
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+# GitLab's access tokens live two hours (expires_in 7200); a refreshed
+# one is minted only from the refresh token, and GitLab rotates both on
+# every refresh, which is why refresh is rotating above.
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  # MCP access is on for every top-level group unless its owner turned it
+  # off. The sign-in does not use the MCP server, so it works either way,
+  # and only the tools are refused. A self-managed instance serves the
+  # same endpoint at https://<host>/api/v4/mcp and is enabled by its
+  # admin; this entry connects to gitlab.com.
+  servers:
+    - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
+access:
+  # The MCP server needs a token carrying `mcp`, and its tools then call
+  # the REST API with that same token. The levels differ by the REST
+  # scope beside it: read_api for read, api for write. api gives complete
+  # read and write access to the API, so it can also delete what the
+  # person can delete. read_user covers the identity read at both levels.
+  # Every connection is granted the write level: a sign-in asks for it, and
+  # GitLab's consent page cannot be partly declined. The read level would
+  # not stop writes either: GitLab's MCP server lets a token with mcp,
+  # read_api and read_user write (a comment through save_note), and only
+  # the REST API refuses it.
+  # The tools themselves pass through unclassified.
+  read:
+    scopes: [mcp, read_api, read_user]
+  write:
+    scopes: [mcp, api, read_user]
+tools: { mode: pass_through }

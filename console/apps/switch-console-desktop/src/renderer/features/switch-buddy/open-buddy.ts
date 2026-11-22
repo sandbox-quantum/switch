@@ -1,3 +1,4 @@
+import { introduceChat } from '@renderer/features/chats/chat-entrance';
 import { focusComposerWhenOpened } from '@renderer/features/chats/components/chat-composer';
 import { chatsStore, chatTitler } from '@renderer/features/chats/stores/chats';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -75,15 +76,21 @@ async function findOrMakeBuddyChat(
 /**
  * Opens the person's buddy's page, in its chat. When the chat cannot
  * be had the agent's page still opens, and a toast says why.
+ *
+ * `entrance` is how its first message appears: sliding in when the chat is
+ * arrived at from elsewhere, at once where it is already on screen (the
+ * buddy's page before it existed draws the same message).
  */
 export async function openBuddyChat(
   serverId: string,
-  agent: { agentId: string; name: string }
+  agent: { agentId: string; name: string },
+  entrance: 'slide-in' | 'in-place'
 ): Promise<void> {
   let roomId: string | null = null;
   try {
     roomId = (await buddyChat(serverId, agent)).roomId;
     focusComposerWhenOpened(roomId);
+    if (entrance === 'slide-in') introduceChat(roomId, 'agent');
   } catch (cause) {
     toast({
       title: 'Could not open the chat with switch-buddy',
@@ -100,6 +107,53 @@ export async function openBuddyChat(
 }
 
 /**
+ * Starts a new chat with the buddy, `text` its first message, as if typed
+ * there, and opens it. The chat is named from that message. The message goes
+ * through the chat's own timeline, which holds it until the server takes it:
+ * it shows there as sending, and a send that fails stays in the chat with
+ * Retry, as one typed there would. A buddy that is starting or offline reads
+ * it when it is up.
+ *
+ * Raises when the chat cannot be made, before anything is sent or opened, so
+ * the caller can keep the text rather than lose it.
+ */
+export async function askBuddy(
+  serverId: string,
+  agent: { agentId: string; name: string },
+  text: string
+): Promise<void> {
+  const chat = await rpc.chats.create({
+    serverId,
+    agentIds: [agent.agentId],
+    name: null,
+    requestId: crypto.randomUUID(),
+    greeting: null,
+  });
+  chatsStore.add(serverId, chat);
+  chatTitler.created(chat, false);
+  const roomId = chat.roomId;
+  chatsStore.timelines.get(serverId, roomId).send({
+    body: text,
+    threadRootId: null,
+    mentionAgentIds: [],
+    mentionUserIds: [],
+    mentionSpans: [],
+    files: [],
+    requestId: null,
+  });
+  void chatTitler.sent(serverId, roomId, text);
+  focusComposerWhenOpened(roomId);
+  // Your message slides in as the chat opens, and the buddy's answer when it comes.
+  introduceChat(roomId, 'own-and-agent');
+  appState.navigation.navigate('managedAgent', {
+    serverId,
+    agentId: agent.agentId,
+    name: agent.name,
+    roomId,
+  });
+}
+
+/**
  * Where the first run ends: the buddy's chat once it exists, else its page,
  * which waits for an AI provider. Skipping the buddy there also keeps its
  * pop-up away for the rest of this launch: it was just declined.
@@ -109,7 +163,7 @@ export async function openBuddyAfterOnboarding(
   agent: { agentId: string; name: string } | null
 ): Promise<void> {
   if (agent) {
-    await openBuddyChat(serverId, agent);
+    await openBuddyChat(serverId, agent, 'slide-in');
     return;
   }
   buddyIntroStore.skipped();

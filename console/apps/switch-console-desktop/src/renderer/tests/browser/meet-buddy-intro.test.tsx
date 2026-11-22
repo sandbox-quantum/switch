@@ -33,7 +33,14 @@ async function render(play: boolean, onPlayed = () => {}) {
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () =>
-    root!.render(<MeetBuddyIntro firstName="Max" play={play} onPlayed={onPlayed} />)
+    root!.render(
+      <MeetBuddyIntro
+        firstName="Max"
+        play={play}
+        onPlayed={onPlayed}
+        after={<p data-testid="after">pick</p>}
+      />
+    )
   );
 }
 
@@ -52,12 +59,14 @@ describe('Meet switch-buddy opening', () => {
     await render(false);
     expect(container!.textContent).toContain('Meet switch-buddy');
     expect(shownLines()).toEqual(buddyIntroLines('Max'));
+    expect(container!.querySelector('[data-testid="after"]')).not.toBeNull();
   });
 
   it('starts with the tile alone and nothing typed', async () => {
     await render(true);
     expect(shownLines()).toEqual([]);
     expect(container!.querySelectorAll('[data-intro="tile"]')).toHaveLength(1);
+    expect(container!.querySelector('[data-testid="after"]')).toBeNull();
   });
 
   it('counts as seen when left part-way', async () => {

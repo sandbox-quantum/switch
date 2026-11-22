@@ -2,8 +2,12 @@
 
 Cookie-authenticated through `get_current_user`, which binds the caller's
 tenant; every route then acts only on the caller's own controllers and
-agents. Someone else's is answered exactly like one that does not exist, so
-nothing about another person's machines is disclosed.
+agents, except that an admin of the workspace, or of its organization, sees
+every device and managed agent in it (`GET /workspace`), and removes any of
+them. Someone else's is otherwise answered exactly like one that does not
+exist, so these routes disclose nothing about another person's machines.
+The agent list (`gateway/agents.py`) names the device each agent is placed
+on to its owner and to workspace admins too.
 
 Failures use the same error envelope as the controller routes.
 """
@@ -15,11 +19,20 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import Principal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.config import DeploymentKind, SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.models import ServiceTokenIssuance, User, require_tenant_id
-from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_protocol, get_session
+from switch_core.db.stores.user_store import UserStore
+from switch_core.deeplinks import gateway_url_is_loopback, url_host_address
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_protocol,
+    get_session,
+    get_user_store,
+)
 from switch_core.management.dependencies import get_management
 from switch_core.management.errors import ManagementRoute
 from switch_core.management.schemas import (
@@ -34,17 +47,35 @@ from switch_core.management.schemas import (
 )
 from switch_core.management.sealed_logins import PutSealedLoginRequest
 from switch_core.management.service import ManagementService, placement_from
+from switch_core.management.workspace_devices import workspace_devices
 
 router = APIRouter(route_class=ManagementRoute, tags=["agent management"])
 
 Management = Annotated[ManagementService, Depends(get_management)]
 Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+IsAdmin = Annotated[bool, Depends(get_tenant_is_admin)]
 Protocol = Annotated[AgentCore, Depends(get_protocol)]
 Broker = Annotated[ServiceBroker, Depends(get_service_broker)]
+Config = Annotated[SwitchConfig, Depends(get_config)]
 
 
-async def _revoke_controller_tokens(
+def _controller(view: dict[str, Any]) -> dict[str, Any]:
+    """`view` with what the caller may do with the machine. Every machine
+    these routes return is the caller's own, to rename and remove, but for a
+    cloud device, which Switch names and removes (`service.refuse_cloud`);
+    removing a revoked one again changes nothing, which `revoked_at` says."""
+    yours = view["kind"] != "ec2"
+    return {**view, "can_edit": yours, "can_remove": yours}
+
+
+def _managed_agent(view: dict[str, Any]) -> dict[str, Any]:
+    """`view` with what the caller may do with the managed agent: every one
+    these routes return is the caller's own, to change or stop managing."""
+    return {**view, "can_edit": True, "can_delete": True}
+
+
+async def revoke_controller_tokens(
     session: AsyncSession, broker: ServiceBroker, *conditions: Any
 ) -> None:
     """Revoke, now, the service tokens a controller change left orphaned.
@@ -58,19 +89,78 @@ async def _revoke_controller_tokens(
     )
 
 
+def remote_devices(
+    deployment_kind: DeploymentKind, server_url: str | None
+) -> dict[str, bool | str | None]:
+    """Whether a device other than the one Switch runs on could enroll here,
+    and if not, why, in words the person adding one can act on.
+
+    A server Switch Console runs listens where only its own computer reaches
+    it, and Console writes its configuration on every start, so there is no
+    setting to point anyone at. A public address on the loopback interface
+    resolves only on the computer serving it. With no public address there is
+    nothing to judge: the caller knows the address it reached Switch at.
+    """
+    if deployment_kind == "managed_by_console":
+        return {
+            "supported": False,
+            "reason": (
+                "This Switch is run by Switch Console, and only the computer it "
+                "runs on can reach it, so other devices can't be added. To run "
+                "agents on other devices, use Switch Cloud or a Switch they can "
+                "reach."
+            ),
+        }
+    if server_url and _names_no_one_address(server_url):
+        return {
+            "supported": False,
+            "reason": (
+                f"This Switch's public address is {server_url}, which names no "
+                "address another device can connect to. Set GATEWAY_PUBLIC_URL "
+                "to an address other devices reach, such as the network IP or "
+                "name of the computer it runs on."
+            ),
+        }
+    if server_url and gateway_url_is_loopback(server_url):
+        return {
+            "supported": False,
+            "reason": (
+                f"This Switch's public address is {server_url}, which only the "
+                "computer it runs on can reach. Set GATEWAY_PUBLIC_URL to an "
+                "address other devices reach, such as that computer's network "
+                "IP or name."
+            ),
+        }
+    return {"supported": True, "reason": None}
+
+
+def _names_no_one_address(url: str) -> bool:
+    """Whether `url`'s host is the unspecified address (`0.0.0.0`, `::`, or
+    another way of writing one, as `url_host_address` reads it): one a server
+    binds to listen everywhere, which no device can connect to."""
+    address = url_host_address(url)
+    return address is not None and address.is_unspecified
+
+
 @router.post("/enrollment-codes", status_code=201)
 async def create_enrollment_code(
-    session: Session, user: CurrentUser, management: Management
-) -> dict[str, str | None]:
+    session: Session, user: CurrentUser, management: Management, config: Config
+) -> dict[str, Any]:
     """A one-time code, and the agent bridge's public origin a controller
     enrolls against with it (`server_url`, null when `GATEWAY_PUBLIC_URL` is
     not set: the page the owner is on is the gateway, which need not serve the
-    agent bridge, so it is no stand-in)."""
+    agent bridge, so it is no stand-in).
+
+    `remote_devices` says whether another device could enroll here at all.
+    The code is issued either way: Switch Console enrolls the SSH hosts it
+    sets up with one, whatever that says."""
     code, expires_at = await management.issue_enrollment_code(session, owner_id=user.id)
+    server_url = management.settings.server_url
     return {
         "code": code,
         "expires_at": wire_time(expires_at),
-        "server_url": management.settings.server_url,
+        "server_url": server_url,
+        "remote_devices": remote_devices(config.deployment_kind, server_url),
     }
 
 
@@ -80,8 +170,12 @@ async def enroll_console(
     session: Session,
     user: CurrentUser,
     management: Management,
-) -> dict[str, str]:
-    controller, credential = await management.create_controller(
+    broker: Broker,
+) -> dict[str, str | bool]:
+    """Enroll the caller's Switch Console as a controller. `adopted`: it took
+    over the caller's device on the same machine, account and data folder, which keeps its
+    id and agents, rather than adding another (`Management.create_controller`)."""
+    enrolled = await management.create_controller(
         session,
         owner_id=user.id,
         description=ControllerDescription(
@@ -90,17 +184,54 @@ async def enroll_console(
             description=body.description,
             platform=body.platform,
             version=body.version,
+            device_id=body.device_id,
         ),
         public_key=body.public_key,
     )
-    return {"controller_id": controller.id, "credential": credential}
+    if enrolled.adopted:
+        await revoke_controller_tokens(
+            session,
+            broker,
+            ServiceTokenIssuance.controller_id == enrolled.controller.id,
+        )
+    return {
+        "controller_id": enrolled.controller.id,
+        "credential": enrolled.credential,
+        "adopted": enrolled.adopted,
+    }
+
+
+@router.get("/workspace")
+async def list_workspace_devices(
+    session: Session,
+    user: CurrentUser,
+    is_admin: IsAdmin,
+    management: Management,
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, list[dict[str, Any]]]:
+    """The workspace's devices, managed agents and operations, as the caller
+    may see them: everyone's to an admin, their own to anyone else, each
+    naming its owner and what the caller may do with it. Console reads the
+    caller's own from the lists below."""
+    return await workspace_devices(
+        session,
+        management,
+        user_store,
+        require_tenant_id(),
+        Principal(user.id, is_admin),
+    )
 
 
 @router.get("/controllers")
 async def list_controllers(
     session: Session, user: CurrentUser, management: Management
 ) -> list[dict[str, Any]]:
-    return await management.list_controllers(session, require_tenant_id(), user.id)
+    return [
+        _controller(view)
+        for view in await management.list_controllers(
+            session, require_tenant_id(), user.id
+        )
+    ]
 
 
 @router.patch("/controllers/{controller_id}")
@@ -112,12 +243,14 @@ async def update_controller(
     management: Management,
 ) -> dict[str, Any]:
     """Rename the machine and/or change its description."""
-    return await management.update_controller(
-        session,
-        require_tenant_id(),
-        user.id,
-        controller_id,
-        {key: getattr(body, key) for key in body.model_fields_set},
+    return _controller(
+        await management.update_controller(
+            session,
+            require_tenant_id(),
+            user.id,
+            controller_id,
+            {key: getattr(body, key) for key in body.model_fields_set},
+        )
     )
 
 
@@ -126,13 +259,18 @@ async def revoke_controller(
     controller_id: str,
     session: Session,
     user: CurrentUser,
+    is_admin: IsAdmin,
     management: Management,
     broker: Broker,
 ) -> dict[str, bool]:
-    await management.revoke_controller(
-        session, require_tenant_id(), user.id, controller_id
+    """Remove the device: its owner's, or anyone's to an admin."""
+    await management.remove_controller(
+        session,
+        require_tenant_id(),
+        controller_id,
+        owner_id=None if is_admin else user.id,
     )
-    await _revoke_controller_tokens(
+    await revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.controller_id == controller_id
     )
     return {"ok": True}
@@ -184,15 +322,22 @@ async def withdraw_sealed_login(
 async def list_managed_agents(
     session: Session, user: CurrentUser, management: Management
 ) -> list[dict[str, Any]]:
-    return await management.list_managed_agents(session, require_tenant_id(), user.id)
+    return [
+        _managed_agent(view)
+        for view in await management.list_managed_agents(
+            session, require_tenant_id(), user.id
+        )
+    ]
 
 
 @router.get("/agents/{agent_id}")
 async def get_managed_agent(
     agent_id: str, session: Session, user: CurrentUser, management: Management
 ) -> dict[str, Any]:
-    return await management.get_managed_agent(
-        session, require_tenant_id(), user.id, agent_id
+    return _managed_agent(
+        await management.get_managed_agent(
+            session, require_tenant_id(), user.id, agent_id
+        )
     )
 
 
@@ -204,8 +349,10 @@ async def create_managed_agent(
     management: Management,
     protocol: Protocol,
 ) -> dict[str, Any]:
-    return await management.create_managed_agent(
-        session, require_tenant_id(), user.id, body, protocol
+    return _managed_agent(
+        await management.create_managed_agent(
+            session, require_tenant_id(), user.id, body, protocol
+        )
     )
 
 
@@ -227,10 +374,10 @@ async def put_managed_agent(
         placement_from(body.controller_id, body.desired_state, body.definition),
         protocol,
     )
-    await _revoke_controller_tokens(
+    await revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
-    return view
+    return _managed_agent(view)
 
 
 @router.patch("/agents/{agent_id}")
@@ -255,10 +402,10 @@ async def patch_managed_agent(
         protocol=protocol,
         expected_revision=None,
     )
-    await _revoke_controller_tokens(
+    await revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
-    return view
+    return _managed_agent(view)
 
 
 @router.delete("/agents/{agent_id}")
@@ -266,13 +413,18 @@ async def delete_managed_agent(
     agent_id: str,
     session: Session,
     user: CurrentUser,
+    is_admin: IsAdmin,
     management: Management,
     broker: Broker,
 ) -> dict[str, bool]:
+    """Stop managing the agent: its owner's, or anyone's to an admin."""
     await management.delete_managed_agent(
-        session, require_tenant_id(), user.id, agent_id
+        session,
+        require_tenant_id(),
+        agent_id,
+        owner_id=None if is_admin else user.id,
     )
-    await _revoke_controller_tokens(
+    await revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
     return {"ok": True}

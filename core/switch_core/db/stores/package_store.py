@@ -1,4 +1,7 @@
-from sqlalchemy import delete, func, insert, or_, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
@@ -44,6 +47,11 @@ class PackageStore:
                 )
             )
         )
+        return list(result.scalars().all())
+
+    async def list_all(self, session: AsyncSession) -> list[Package]:
+        """Every package in the bound tenant, whoever owns it."""
+        result = await session.execute(select(Package))
         return list(result.scalars().all())
 
     async def update_fields(
@@ -101,22 +109,31 @@ class PackageStore:
 
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, package_id: str
-    ) -> None:
-        await session.execute(
-            insert(room_packages).values(room_id=room_id, package_id=package_id)
+    ) -> bool:
+        """Attach a package to a room, saying whether it was attached now.
+        Idempotent, as attaching a reference is."""
+        result = await session.execute(
+            pg_insert(room_packages)
+            .values(room_id=room_id, package_id=package_id)
+            .on_conflict_do_nothing(
+                index_elements=[room_packages.c.room_id, room_packages.c.package_id]
+            )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, package_id: str
-    ) -> None:
-        await session.execute(
+    ) -> bool:
+        """Detach it from a room, saying whether it was attached."""
+        result = await session.execute(
             delete(room_packages).where(
                 room_packages.c.room_id == room_id,
                 room_packages.c.package_id == package_id,
             )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def list_for_room(self, session: AsyncSession, room_id: str) -> list[Package]:
         result = await session.execute(
@@ -221,9 +238,15 @@ class PackageStore:
     async def add_reference(
         self, session: AsyncSession, package_id: str, reference_id: str
     ) -> None:
+        """Idempotent: adding a reference the package holds is a no-op."""
         await session.execute(
-            insert(package_references).values(
-                package_id=package_id, reference_id=reference_id
+            pg_insert(package_references)
+            .values(package_id=package_id, reference_id=reference_id)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    package_references.c.package_id,
+                    package_references.c.reference_id,
+                ]
             )
         )
         await session.flush()
@@ -242,9 +265,15 @@ class PackageStore:
     async def add_document(
         self, session: AsyncSession, package_id: str, document_id: str
     ) -> None:
+        """Idempotent: adding a document the package holds is a no-op."""
         await session.execute(
-            insert(package_documents).values(
-                package_id=package_id, document_id=document_id
+            pg_insert(package_documents)
+            .values(package_id=package_id, document_id=document_id)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    package_documents.c.package_id,
+                    package_documents.c.document_id,
+                ]
             )
         )
         await session.flush()
@@ -294,18 +323,21 @@ class PackageStore:
         )
         return list(result.scalars().all())
 
-    async def list_document_ids_for_room(
+    async def list_documents_for_room(
         self, session: AsyncSession, room_id: str
-    ) -> list[str]:
+    ) -> list[tuple[str, str]]:
+        """(document id, owner of the package it is in) for each document in
+        a package attached to this room, once per package holding it."""
         result = await session.execute(
-            select(package_documents.c.document_id)
+            select(package_documents.c.document_id, Package.owner_id)
             .join(
                 room_packages,
                 room_packages.c.package_id == package_documents.c.package_id,
             )
+            .join(Package, Package.id == package_documents.c.package_id)
             .where(room_packages.c.room_id == room_id)
         )
-        return list(result.scalars().all())
+        return [(doc_id, owner_id) for doc_id, owner_id in result.all()]
 
     # ── Reverse lookups (for ref/doc list responses) ──────────────────────
 

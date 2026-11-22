@@ -46,7 +46,7 @@ class Cooldown:
             return left
         if self._until:
             self._until = 0.0
-            logger.warning(
+            logger.info(
                 "%s is taking %s again after a rate limit.", self._platform, self._kind
             )
         return 0.0
@@ -54,7 +54,10 @@ class Cooldown:
     def start(self, delay: float) -> None:
         """Hold every call of this kind back for what the platform asked for."""
         self._until = time.monotonic() + delay
-        logger.warning(
+        # Info, not a warning: platforms rate limit a busy workspace as a
+        # matter of course, and the bridge waits it out without losing work.
+        # `switch.bridge.throttle_held` is the rate to watch.
+        logger.info(
             "%s is rate limiting %s for the whole %s; holding them all back for "
             "%.0fs. %s",
             self._platform,

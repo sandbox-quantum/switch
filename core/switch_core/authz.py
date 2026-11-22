@@ -148,6 +148,32 @@ def require(principal: Principal, action: Action, resource: Authorizable) -> Non
         raise PermissionError(f"Not authorized to {action} this resource")
 
 
+def owns(principal: Principal, owner_id: str | None) -> bool:
+    """Whether `principal` owns the entity, whatever their role.
+
+    For what only the owner may do, where administering the workspace is not
+    enough: an agent's own capabilities and the service access it holds on its
+    owner's connections, and a person's own API keys, devices and connections.
+    """
+    return owner_id is not None and owner_id == principal.id
+
+
+def can_read_in_package(
+    principal: Principal, item: Authorizable, package_owner_id: str
+) -> bool:
+    """Whether a reference or document in a package is handed out, with what
+    is in it, to `principal`, who may read the package.
+
+    A package shares what its own owner put in it of theirs, private or not.
+    Anything else in it keeps its own rule (`can`'s read): someone else's
+    item, readable when it was added and private since, is not re-shared by
+    whoever owns the package, however widely they open the package.
+    """
+    return (item.owner_id is not None and item.owner_id == package_owner_id) or can(
+        principal, "read", item
+    )
+
+
 def can_manage(principal: Principal, owner_id: str | None) -> bool:
     """Owner-or-admin check for entities that have no visibility model.
 
@@ -156,7 +182,7 @@ def can_manage(principal: Principal, owner_id: str | None) -> bool:
     delete them. This is equivalent to write/delete on an always-private
     resource.
     """
-    return principal.is_admin or (owner_id is not None and owner_id == principal.id)
+    return principal.is_admin or owns(principal, owner_id)
 
 
 def require_manage(principal: Principal, owner_id: str | None) -> None:
@@ -217,6 +243,61 @@ def can_delete_room_document(
         room_owner_id,
         document_owner_id,
     )
+
+
+def can_change_workspace_member(
+    *, administers: bool, member_is_organization_admin: bool
+) -> bool:
+    """Whether the caller may change a workspace member's role or remove them.
+
+    A workspace admin may, their own row included, so an admin steps down or
+    leaves while another admin remains; the last one is refused when asked.
+    Never an organization admin's row, whose standing in the workspace comes
+    from the organization and is changed in its members.
+    """
+    return administers and not member_is_organization_admin
+
+
+def admin_by_own_membership(tenant_role: str | None) -> bool:
+    """Whether `tenant_role` is an admin's own membership of the workspace:
+    not the operator's bypass and not an organization admin acting as one.
+
+    What nobody can undo takes it: deleting the workspace, erasing a person,
+    and setting its messages to be deleted."""
+    return tenant_role in TENANT_ADMIN_ROLES
+
+
+def can_delete_workspace(*, tenant_role: str | None, is_default: bool) -> bool:
+    """Whether the caller may delete the workspace they hold `tenant_role` in:
+    `admin_by_own_membership`, and never the server's default workspace,
+    where new accounts start. That it must first be emptied is checked when
+    it is deleted.
+    """
+    return admin_by_own_membership(tenant_role) and not is_default
+
+
+# The keys a workspace's admins may delete whoever holds them: the ones that
+# add agents to it, and a retired one left on the page for someone to remove.
+# An agent's own key stays with its owner, and the deployment's bootstrap key
+# with the operator it was seeded for.
+ADMIN_REMOVABLE_KEY_TYPES = ("registration", "retired")
+
+
+def can_delete_api_key(
+    principal: Principal,
+    owner_id: str | None,
+    key_type: str,
+    *,
+    an_agent_signs_in_with_it: bool,
+) -> bool:
+    """Whether `principal` may delete an API key: their own, or, administering
+    the workspace, anyone's key for adding agents; never one an agent still
+    signs in with. That key goes with its agent; once the agent is deleted,
+    what is left of it may go too."""
+    reaches = owns(principal, owner_id) or (
+        principal.is_admin and key_type in ADMIN_REMOVABLE_KEY_TYPES
+    )
+    return reaches and not an_agent_signs_in_with_it
 
 
 def require_group_filing(is_admin: bool) -> None:

@@ -2,6 +2,8 @@ import { ArrowRight, Check, Plug, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
+import { servesWebGateway } from '@renderer/features/switch-servers/server-gateway';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -23,10 +25,12 @@ import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
+import { openConnectorAppSetUp } from './connector-app-set-up';
 import {
   type ConnectorViewer,
   FIX_LABEL,
   TONE_BADGE,
+  connectorAppSetUp,
   connectorCardState,
 } from './connector-card-state';
 import { ConnectorProfile } from './connector-profile';
@@ -36,13 +40,14 @@ import {
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
-  defaultConnectorsTab,
 } from './connectors-catalog';
 import {
+  useConnectorAppManagement,
   useConnectorCatalog,
   useReloadConnectors,
   useServerFeatureFlags,
 } from './connectors-queries';
+import { FlagsUnreadable } from './flags-unreadable';
 import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
@@ -54,40 +59,69 @@ const ConnectorsTitlebar = observer(function ConnectorsTitlebar() {
   return <ServerSectionTitlebar serverId={useServerId()} icon={Plug} label="Connectors" />;
 });
 
-const DESCRIPTION =
-  'Connect the services your agents work with. An agent uses one only once you turn it on for that agent.';
+const DESCRIPTION = 'Connect external services for your agents. Connectors are enabled per agent.';
 
 /**
  * The connector catalog of the workspace in scope on the server. Behind the
  * server's `service_connections` flag: with it off there is no page, and
  * reaching it anyway goes to Your Agents rather than drawing an empty one.
+ * Flags that could never be read are said to be, not taken as off.
  */
 const ConnectorsPanel = observer(function ConnectorsPanel() {
   const serverId = useServerId();
   const { navigate } = useNavigate();
-  const access = connectorsPageAccess(useServerFeatureFlags(serverId));
+  const flags = useServerFeatureFlags(serverId);
+  const access = connectorsPageAccess(flags);
+  const gatewayV2 = flags?.flags.gateway_v2 === true;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const server = switchServersStore.servers.find((s) => s.id === serverId);
-  const viewer: ConnectorViewer = {
+  const person: Person = {
     operator: operatesServer(serverId),
     administers: administersWorkspaceInScope(serverId),
     onThisComputer: server !== undefined && runsOnThisComputer(server),
   };
+  const servesDashboard = server !== undefined && servesWebGateway(server);
   useEffect(() => {
     if (access === 'absent') navigate('serverAgents', { serverId });
   }, [access, navigate, serverId]);
 
+  if (access === 'unreadable')
+    return (
+      <ServerPage
+        width={LIST_PAGE_WIDTH}
+        title="Connectors"
+        term="connector"
+        description={DESCRIPTION}
+      >
+        <FlagsUnreadable flags={flags} />
+      </ServerPage>
+    );
   if (access !== 'shown' || workspaceId === null)
     return (
-      <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
+      <ServerPage
+        width={LIST_PAGE_WIDTH}
+        title="Connectors"
+        term="connector"
+        description={DESCRIPTION}
+      >
         <Spinner />
       </ServerPage>
     );
   // Keyed so a workspace switch starts from the catalog, not another workspace's profile.
   return (
-    <Connectors key={workspaceId} serverId={serverId} workspaceId={workspaceId} viewer={viewer} />
+    <Connectors
+      key={workspaceId}
+      serverId={serverId}
+      workspaceId={workspaceId}
+      person={person}
+      servesDashboard={servesDashboard}
+      gatewayV2={gatewayV2}
+    />
   );
 });
+
+/** Who is looking, short of who sets up the server's connector apps, which the server may answer. */
+type Person = Omit<ConnectorViewer, 'appSetUp'>;
 
 /**
  * The catalog, or one connector's profile in front of it. Which is open is a
@@ -95,24 +129,47 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
  * between the two as they do between a room and Your Rooms. Whether the
  * profile opened because the service was just connected is this page's own
  * business, kept here and dropped as soon as the person moves on.
+ *
+ * Where the server serves the dashboard, in either layout, it is asked who
+ * sets up its connector apps, and the catalog waits for the answer rather
+ * than offering Set up to the wrong people meanwhile. An answer that cannot
+ * be read leaves Set up to the operator alone, as on a server that does not
+ * say, and the page says so wherever an app is waiting to be set up.
  */
 function Connectors({
   serverId,
   workspaceId,
-  viewer,
+  person,
+  servesDashboard,
+  gatewayV2,
 }: {
   serverId: string;
   workspaceId: string;
-  viewer: ConnectorViewer;
+  person: Person;
+  /** The server serves the web dashboard, where its connector apps are set up. */
+  servesDashboard: boolean;
+  gatewayV2: boolean;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
-  // Null until the person picks a tab or the catalog first arrives; from then
-  // on it stays put, so a connection made on Discover does not move them.
-  const [chosenTab, setTab] = useState<ConnectorsTab | null>(null);
-  const tab = chosenTab ?? (catalog.data ? defaultConnectorsTab(catalog.data) : 'yours');
-  useEffect(() => {
-    if (chosenTab === null && catalog.data) setTab(defaultConnectorsTab(catalog.data));
-  }, [chosenTab, catalog.data]);
+  const management = useConnectorAppManagement(workspaceId, servesDashboard);
+  // A refetch that failed keeps the last answer in `data`; the page says it
+  // couldn't check, so it goes by none.
+  const answer = management.isError ? undefined : management.data;
+  const viewer: ConnectorViewer = {
+    ...person,
+    appSetUp: connectorAppSetUp({
+      operator: person.operator,
+      servesDashboard,
+      gatewayV2,
+      canManage: answer?.canManage ?? null,
+      inDashboard: answer?.inDashboard ?? null,
+    }),
+  };
+  const entries = management.isLoading ? undefined : catalog.data;
+  const setUpUnchecked = management.isError ? (
+    <AppSetUpUnchecked error={management.error} onRetry={() => void management.refetch()} />
+  ) : null;
+  const [tab, setTab] = useState<ConnectorsTab>('discover');
   const [query, setQuery] = useState('');
   const { navigate } = useNavigate();
   const open = useParams('connectors').params.connector ?? null;
@@ -155,7 +212,7 @@ function Connectors({
     { value: 'discover', label: 'Discover' },
   ] as const satisfies readonly { value: ConnectorsTab; label: string }[];
 
-  const opened = open === null ? null : catalog.data?.find((entry) => entry.slug === open);
+  const opened = open === null ? null : entries?.find((entry) => entry.slug === open);
   // The profile replaces the whole page, title included: it is a place of its
   // own, reached from the catalog, with the way back at its top. Same column
   // as `ServerPage`, so moving between the two does not shift the content.
@@ -169,6 +226,7 @@ function Connectors({
             {catalog.isError && (
               <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
             )}
+            {opened.unavailable_code === 'app_not_set_up' && setUpUnchecked}
             <ConnectorProfile
               key={opened.slug}
               serverId={serverId}
@@ -189,24 +247,25 @@ function Connectors({
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Connectors"
+      term="connector"
       description={DESCRIPTION}
       action={
-        // Turning a service on or off for everyone is the Admin page's; only
-        // the way there is here, for whoever may.
+        // Turning a service on or off for everyone is in Settings; only the
+        // way there is here, for whoever may.
         viewer.administers && (
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate('admin', { serverId, section: 'connectors' })}
+            onClick={() => navigate('settings', { tab: 'connectors' })}
           >
-            Manage in Admin
+            Manage in Settings
             <ArrowRight className="size-3.5" />
           </Button>
         )
       }
     >
-      {/* Which tab opens depends on the catalog, so the tabs wait for it rather than flick over. */}
-      {catalog.data && (
+      {/* The tabs and the search wait for the catalog: until it arrives they have nothing to narrow. */}
+      {entries && (
         <ListToolbar
           scope={
             <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
@@ -222,21 +281,24 @@ function Connectors({
           }
         />
       )}
+      {entries?.some((entry) => entry.unavailable_code === 'app_not_set_up') && setUpUnchecked}
       {catalog.isError ? (
         <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
-      ) : !catalog.data ? (
+      ) : !entries ? (
         <p className="flex items-center gap-2 text-sm">
           <Spinner /> Loading connectors…
         </p>
       ) : (
         <ConnectorGrid
-          entries={connectorsInTab(catalog.data, tab, query)}
+          entries={connectorsInTab(entries, tab, query)}
           tab={tab}
           query={query}
           viewer={viewer}
           turningOn={turningOn}
           onOpen={openProfile}
-          onSetUp={(entry) => navigate('admin', { serverId, section: 'apps', app: entry.slug })}
+          onSetUp={(entry) =>
+            openConnectorAppSetUp(serverId, entry.slug, viewer.appSetUp, navigate)
+          }
           onTurnOn={(entry) => void turnOn(entry)}
           onConnect={(entry) =>
             connect(entry, 'connect', (warning) => {
@@ -248,6 +310,25 @@ function Connectors({
         />
       )}
     </ServerPage>
+  );
+}
+
+/**
+ * The server could not be asked who may set up its connector apps, so Set up
+ * is the operator's alone, as on a server that does not say.
+ */
+function AppSetUpUnchecked({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <Alert variant="warning">
+      <AlertDescription>
+        {`Couldn't check who can set up connector apps on this server, so only whoever runs it is offered Set up. ${failureText(error, 'Reading your session on the server failed.')}`}
+      </AlertDescription>
+      <AlertAction>
+        <Button size="sm" variant="outline" onClick={onRetry}>
+          Retry
+        </Button>
+      </AlertAction>
+    </Alert>
   );
 }
 
@@ -415,7 +496,7 @@ export const connectorsView = {
       typeof params === 'object' && params !== null
         ? (params as { serverId?: unknown }).serverId
         : undefined;
-    if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof serverId !== 'string') return homeRedirect();
     return { ok: true };
   },
 } satisfies ViewDefinition<{ serverId: string; connector?: string }>;

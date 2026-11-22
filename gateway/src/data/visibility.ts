@@ -60,3 +60,27 @@ export const ACCESS_META: Record<AccessLevel, AccessLevelMeta> = {
     color: "default",
   },
 };
+
+/** The access levels as someone sees them who may not change them: the
+ * shared wording speaks to the owner ("only you"), and the access setting is
+ * shown to others disabled, so this says whose it is to change. */
+export const ACCESS_HELPERS_FOR_OTHERS: Record<AccessLevel, string> = {
+  private: "Only its owner and admins can see or change it.",
+  read_only: "Anyone can see and attach it. Only its owner and admins can change it.",
+  public:
+    "Anyone can see, attach and change it. Only its owner and admins can change who may.",
+};
+
+/** References, documents and packages: a private one is its owner's and
+ * admins', and attaching it shares it, with whoever may read the room, or the
+ * package of its owner's it is put in. */
+export const LISTED_RESOURCE_HELPERS: Partial<Record<AccessLevel, string>> = {
+  private:
+    "Only you and admins can see or change it. Anyone who can read a room it's attached to, or a package of yours it's in, can see it there.",
+};
+
+export const LISTED_RESOURCE_HELPERS_FOR_OTHERS: Record<AccessLevel, string> = {
+  ...ACCESS_HELPERS_FOR_OTHERS,
+  private:
+    "Only its owner and admins can see or change it. Anyone who can read a room it's attached to, or a package of its owner's it's in, can see it there.",
+};

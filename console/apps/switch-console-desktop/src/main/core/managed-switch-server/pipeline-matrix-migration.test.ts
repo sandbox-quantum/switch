@@ -46,8 +46,7 @@ vi.mock('./secrets', () => ({
   clearSecrets: vi.fn(),
 }));
 vi.mock('./ports', () => ({
-  resolvePorts: () =>
-    Promise.resolve({ gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 }),
+  resolvePorts: () => Promise.resolve({ gateway: 3300, api: 8000, postgres: 5432 }),
   clearPorts: vi.fn(),
 }));
 vi.mock('./env-file', () => ({
@@ -72,8 +71,15 @@ vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
   reconcileServerWorkspaces: () => Promise.resolve(),
 }));
 vi.mock('@main/core/switch-servers/auth', () => ({
-  passwordLogin: () => Promise.resolve({ success: true }),
+  passwordLogin: () =>
+    Promise.resolve({
+      success: true,
+      data: { id: 'u-1', name: 'Ada Lovelace', email: 'admin@switch.local', role: 'admin' },
+    }),
 }));
+// Reaches the reachability store, and through it the database client.
+vi.mock('@main/core/switch-servers/gateway-client', () => ({ updateMyName: vi.fn() }));
+vi.mock('./os-user-name', () => ({ osUserFullName: () => Promise.resolve('Ada Lovelace') }));
 vi.mock('./managed-upgrade', () => ({
   prepareUpgrade: prepareUpgradeMock,
   finishUpgrade: finishUpgradeMock,

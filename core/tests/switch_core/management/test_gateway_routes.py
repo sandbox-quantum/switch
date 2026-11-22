@@ -7,6 +7,7 @@ existing agent, partial updates, unmanaging, and revocation.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
 import httpx
@@ -14,9 +15,14 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.agent_icon import generated_icon_url
+from switch_core.agent_icon import generated_icon_url, new_icon_url
 from switch_core.connections.broker import Principal, ServiceError
-from switch_core.db.models import AgentController
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    AgentController,
+    Tenant,
+    TenantMember,
+)
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.management.gateway_routes import router as gateway_router
@@ -140,7 +146,7 @@ class TestOwnerIsolation:
             return found
 
         routes = [r for r in gateway_router.routes if hasattr(r, "dependant")]
-        assert len(routes) == 16
+        assert len(routes) == 17
         for route in routes:
             assert get_current_user in calls(route.dependant), route.path  # type: ignore[attr-defined]
 
@@ -304,6 +310,41 @@ class TestManagedAgents:
         assert agent.metadata_["known_agent_options"]["auto_session"] is True
         assert agent.metadata_["known_agent_options"]["repo_dir"] == "/srv/example"
 
+    async def test_an_additional_provider_needs_its_flag_for_a_new_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        offered = build_harness(session_factory)
+        owner = await add_member(session_factory, "ada")
+        async with offered.client() as client:
+            existing = await create_managed_agent(
+                client,
+                owner,
+                name="gander",
+                controller_id=None,
+                definition_body=definition("goose"),
+            )
+        assert existing.status_code == 201, existing.text
+
+        withheld = build_harness(session_factory, additional_agent_providers=False)
+        async with withheld.client() as client:
+            refused = await create_managed_agent(
+                client,
+                owner,
+                name="goose-two",
+                controller_id=None,
+                definition_body=definition("goose"),
+            )
+            edited = await client.patch(
+                f"/gateway/management/agents/{existing.json()['agent_id']}",
+                json={"definition": definition("goose", instructions="Honk.")},
+                cookies=cookies_for(owner),
+            )
+        assert refused.status_code == 422
+        assert refused.json()["error"]["code"] == "validation_error"
+        assert "additional_agent_providers" in refused.json()["error"]["message"]
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["definition"]["instructions"] == "Honk."
+
     async def test_create_gives_the_generated_icon_unless_one_is_chosen(
         self, harness: Harness
     ) -> None:
@@ -343,7 +384,7 @@ class TestManagedAgents:
             scout = await AgentStore().get(session, generated.json()["agent_id"])
             painter = await AgentStore().get(session, chosen.json()["agent_id"])
             prober = await AgentStore().get_by_name(session, "prober")
-        assert scout is not None and scout.icon_url == generated_icon_url("scout")
+        assert scout is not None and scout.icon_url == new_icon_url("scout")
         assert painter is not None
         assert painter.icon_url == "https://example.com/painter.png"
         assert prober is None
@@ -488,8 +529,20 @@ class TestManagedAgents:
             "opencode",
             "cursor",
             "antigravity",
+            "deepseek-harness",
+            "pi",
+            "copilot",
+            "kiro",
+            "mistral-vibe",
+            "goose",
+            "qwen",
+            "droid",
+            "cline",
+            "junie",
         }
         assert providers["cursor"] == {"fields": []}
+        assert providers["kiro"] == {"fields": []}
+        assert providers["droid"] == {"fields": []}
         effort = next(
             field for field in providers["claude"]["fields"] if field["key"] == "effort"
         )
@@ -514,6 +567,16 @@ class TestManagedAgents:
             "opencode",
             "antigravity",
             "cursor",
+            "deepseek-harness",
+            "pi",
+            "copilot",
+            "kiro",
+            "mistral-vibe",
+            "goose",
+            "qwen",
+            "droid",
+            "cline",
+            "junie",
         ]
         assert providers[0]["label"] == "Claude Code"
         for entry in providers:
@@ -801,7 +864,7 @@ class TestTheWorkingDirectory:
 
 
 class TestRevocation:
-    async def test_revoking_nudges_keeps_definitions_and_refuses_the_token(
+    async def test_revoking_nudges_takes_its_agents_off_and_refuses_the_token(
         self, harness: Harness
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -837,11 +900,15 @@ class TestRevocation:
         assert [event for event, _ in subscription.drain()] == [CREDENTIAL_REVOKED]
         assert listed.json()[0]["state"] == "revoked"
         assert listed.json()[0]["revoked_at"] is not None
+        # The agent stays managed, as it was, and placed nowhere until its
+        # owner places it again; the workspace its device made for it goes.
         [agent] = agents.json()
         assert agent["agent_id"] == created.json()["agent_id"]
-        assert agent["controller_state"] == "revoked"
-        assert agent["controller_name"] == listed.json()[0]["name"]
-        assert agent["controller_kind"] == listed.json()[0]["kind"]
+        assert agent["controller_id"] is None
+        assert agent["controller_state"] is None
+        assert agent["desired_state"] == created.json()["desired_state"]
+        assert created.json()["definition"]["directory"] == f"{WORKSPACES_DIR}/reviewer"
+        assert agent["definition"]["directory"] is None
         assert refused.status_code == 401
         assert refused.json()["error"]["code"] == "controller_revoked"
 
@@ -1111,3 +1178,122 @@ class TestMachineNameAndDescription:
         assert response.status_code == 422, response.text
         assert response.json()["error"]["code"] == "validation_error"
         assert listed.json()[0]["name"] == "laptop"
+
+
+class TestWhatTheOwnerMayDo:
+    async def test_each_machine_and_managed_agent_says_what_its_owner_may_do(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        cookies = cookies_for(ada)
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, ada, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+
+            [machine] = (
+                await client.get("/gateway/management/controllers", cookies=cookies)
+            ).json()
+            [listed] = (
+                await client.get("/gateway/management/agents", cookies=cookies)
+            ).json()
+            single = (
+                await client.get(
+                    f"/gateway/management/agents/{agent_id}", cookies=cookies
+                )
+            ).json()
+            await client.delete(
+                f"/gateway/management/controllers/{controller.controller_id}",
+                cookies=cookies,
+            )
+            [revoked] = (
+                await client.get("/gateway/management/controllers", cookies=cookies)
+            ).json()
+
+        assert (created.json()["can_edit"], created.json()["can_delete"]) == (
+            True,
+            True,
+        )
+        assert (machine["can_edit"], machine["can_remove"]) == (True, True)
+        assert (listed["can_edit"], listed["can_delete"]) == (True, True)
+        assert (single["can_edit"], single["can_delete"]) == (True, True)
+        # Still the caller's to rename and remove: removing it again does
+        # nothing, which its `revoked_at` says.
+        assert revoked["revoked_at"] is not None
+        assert (revoked["can_edit"], revoked["can_remove"]) == (True, True)
+
+
+class TestControllerRestart:
+    """A restart of the controller process, queued like a provider recheck and
+    only ever for the asking person's own controller in the workspace asked in."""
+
+    @staticmethod
+    async def _ask(
+        client: httpx.AsyncClient, cookies: dict[str, str], controller_id: str, **extra
+    ) -> httpx.Response:
+        return await client.post(
+            "/gateway/management/operations",
+            json={
+                "controller_id": controller_id,
+                "kind": "controller.restart",
+                **extra,
+            },
+            cookies=cookies,
+        )
+
+    async def test_the_owner_queues_a_restart_for_their_controller(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            asked = await self._ask(client, cookies_for(ada), controller.controller_id)
+        assert asked.status_code in (200, 201), asked.text
+        assert asked.json()["kind"] == "controller.restart"
+        assert asked.json()["agent_id"] is None
+
+    async def test_another_users_controller_is_not_found(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            asked = await self._ask(client, cookies_for(bob), controller.controller_id)
+        assert asked.status_code == 404, asked.text
+
+    async def test_a_controller_in_another_workspace_is_not_found(
+        self, harness: Harness
+    ) -> None:
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with harness.session_factory() as session:
+            session.add(
+                Tenant(id=other, slug=other, name="Lab", organization_id=TENANT_ZERO_ID)
+            )
+            await session.commit()
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.session_factory() as session:
+            session.add(TenantMember(tenant_id=other, user_id=ada.id, role="member"))
+            await session.commit()
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada, tenant_id=other)
+            asked = await self._ask(client, cookies_for(ada), controller.controller_id)
+        assert asked.status_code == 404, asked.text
+
+    async def test_an_unknown_controller_is_not_found(self, harness: Harness) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            asked = await self._ask(client, cookies_for(ada), "no-such-controller")
+        assert asked.status_code == 404, asked.text
+
+    async def test_it_takes_no_agent_and_no_params(self, harness: Harness) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            with_params = await self._ask(
+                client, cookies_for(ada), controller.controller_id, params={"x": 1}
+            )
+        assert with_params.status_code == 422, with_params.text

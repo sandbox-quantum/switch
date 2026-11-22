@@ -24,9 +24,17 @@ from switch_core.db.models import TENANT_ZERO_ID, User
 from switch_core.db.stores.user_store import (
     OidcIdentityConflictError,
     OidcIdentityRaceError,
+    SignupRefusedError,
     UserStore,
 )
-from switch_core.gateway.auth import initial_tenant_claim, set_session_cookie
+from switch_core.gateway.admission import writes_on_get
+from switch_core.gateway.auth import (
+    SIGNUP_REFUSED_DETAIL,
+    initial_tenant_claim,
+    set_session_cookie,
+    signed_in_now,
+    signup_refused_by_edge,
+)
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_config,
@@ -44,6 +52,8 @@ from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
+
+_warned_unverified_claim = False
 
 router = APIRouter()
 
@@ -262,7 +272,9 @@ async def _bring_in_organizations(
         )
 
 
-@router.get("/auth/oidc/callback", name="oidc_callback")
+@router.get(
+    "/auth/oidc/callback", name="oidc_callback", dependencies=[Depends(writes_on_get)]
+)
 async def oidc_callback(
     request: Request,
     config: Annotated[SwitchConfig, Depends(get_config)],
@@ -348,12 +360,17 @@ async def oidc_callback(
                 sub,
             )
             raise HTTPException(status_code=401, detail="OIDC email is not verified")
-        logger.warning(
+        # A setting, not an event: said once per process as a warning, then
+        # at debug for each sign-in it applies to.
+        global _warned_unverified_claim
+        logger.log(
+            logging.DEBUG if _warned_unverified_claim else logging.WARNING,
             "OIDC email_verified=%r accepted (sub %s): the email claim is trusted "
             "because GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED is false.",
             email_verified,
             sub,
         )
+        _warned_unverified_claim = True
     name = claims.get("name") or email.split("@")[0]
 
     # A returning identity is looked up on the immutable issuer+subject, never
@@ -382,7 +399,7 @@ async def oidc_callback(
             status_code=503,
             detail=(
                 "Sign-in is misconfigured: the identity provider's issuer "
-                "does not match this server's configuration"
+                "does not match Switch's configuration"
             ),
         )
     # A first sign-in provisions the account just in time. Where it lands is
@@ -407,7 +424,17 @@ async def oidc_callback(
                 email_verified=verified,
                 join_tenant=join_tenant,
                 link_by_email=config.organization_directory == "local",
+                create_allowed=not signup_refused_by_edge(request, config),
             )
+        except SignupRefusedError as exc:
+            await session.rollback()
+            logger.warning(
+                "OIDC first sign-in refused (sub %s): the request is marked as "
+                "from a country without sign-up",
+                sub,
+            )
+            emit_safely(current_telemetry(), "signup_refused", {"reason": "country"})
+            raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL) from exc
         except OidcIdentityConflictError as exc:
             logger.warning("OIDC identity conflict: %s", exc)
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -455,6 +482,7 @@ async def oidc_callback(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        signed_in_now(),
     )
     return response
 
@@ -499,5 +527,6 @@ async def oidc_exchange(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        signed_in_now(),
     )
     return response

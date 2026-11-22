@@ -54,6 +54,8 @@ describe('main', () => {
     );
     expect(await main([])).toBe(EXIT_CONFIGURATION);
     expect(await main(['--help'])).toBe(EXIT_OK);
+    expect(await main(['--device-id'])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe('switch-agent-controller: --device-id needs --device-root.');
   });
 
   it('enrolls with the name and description it is given', async () => {
@@ -80,6 +82,8 @@ describe('main', () => {
       '  The build box in the office ',
       '--data-dir',
       dir,
+      '--secret-store',
+      'file',
     ]);
     vi.unstubAllGlobals();
     expect(code).toBe(EXIT_OK);
@@ -87,6 +91,47 @@ describe('main', () => {
     expect(bodies[0]).toMatchObject({
       controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
     });
+  });
+
+  it('says which controller it is when it took over the one this machine was', async () => {
+    const written: string[] = [];
+    vi.mocked(process.stdout.write).mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              controller_id: 'controller-0',
+              credential: 'swcc_test',
+              adopted: true,
+            }),
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
+          )
+      )
+    );
+    const code = await main([
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--name',
+      'build-box',
+      '--data-dir',
+      dir,
+      '--secret-store',
+      'file',
+    ]);
+    vi.unstubAllGlobals();
+    expect(code).toBe(EXIT_OK);
+    const out = written.join('');
+    expect(out).toContain('which this machine was before; its agents stay on it.');
+    // Switch Console reads the id off this line when it sets up an SSH host.
+    expect(/Enrolled as controller (\S+)/.exec(out)?.[1]).toBe('controller-0');
   });
 
   it('enrolls without a description when none is given, and refuses an overlong one', async () => {
@@ -101,7 +146,15 @@ describe('main', () => {
         );
       })
     );
-    const base = ['enroll', '--server', 'https://switch.example.com', '--code', 'swce_test'];
+    const base = [
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--secret-store',
+      'file',
+    ];
     expect(await main([...base, '--description', 'x'.repeat(501), '--data-dir', dir])).toBe(
       EXIT_CONFIGURATION
     );

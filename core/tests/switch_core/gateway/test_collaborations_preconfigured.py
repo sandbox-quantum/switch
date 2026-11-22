@@ -169,8 +169,33 @@ class TestReadingItBack:
                 _ROOM_STORE,
                 _NoRunningBridges(),  # type: ignore[arg-type]
                 _admin(),
+                True,
             )
 
         flags = {d.bridge_id: d.preconfigured for d in listed}
         assert flags[bundled] is True
         assert flags[added] is False
+
+
+class TestWhatTheCallerMayDo:
+    async def test_each_bridge_says_whether_the_caller_may_change_or_delete_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            await _make_bridge(session)
+            await session.commit()
+
+        async def flags(is_admin: bool) -> tuple[bool, bool]:
+            async with session_factory() as session:
+                [listed] = await list_bridges(
+                    session,
+                    _BRIDGE_STORE,
+                    _ROOM_STORE,
+                    _NoRunningBridges(),  # type: ignore[arg-type]
+                    _admin(),
+                    is_admin,
+                )
+            return listed.can_manage, listed.can_delete
+
+        assert await flags(True) == (True, True)
+        assert await flags(False) == (False, False)

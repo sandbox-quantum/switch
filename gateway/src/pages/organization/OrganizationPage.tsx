@@ -1,66 +1,115 @@
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
-import { useAuth } from "../../data/AuthContext";
-import { fetchCurrentOrganization } from "../../data/api";
-import { administersOrganization } from "../../data/sessionState";
+import { ORGANIZATION_NAME_MAX, fetchCurrentOrganization, renameOrganization } from "../../data/api";
+import { announceOrganizationRenamed } from "../../data/organizationEvents";
+import EditableField from "../../components/EditableField";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
-import OrganizationConnectorsSection from "./OrganizationConnectorsSection";
-import OrganizationServicesSection from "./OrganizationServicesSection";
+import OrganizationConnectorsSettings from "./connectors/OrganizationConnectorsSettings";
 import OrganizationIssuesNotice from "./OrganizationIssuesNotice";
-import OrganizationMembersSection from "./OrganizationMembersSection";
-import WorkspacesSection from "./WorkspacesSection";
+import OrganizationDevicesSettings from "./devices/OrganizationDevicesSettings";
+import OrganizationGuardrails from "./guardrails/OrganizationGuardrails";
+import OrganizationUsersSettings from "./users/OrganizationUsersSettings";
+import OrganizationWorkspacesSettings from "./workspaces/OrganizationWorkspacesSettings";
 
-/** The organization the current workspace belongs to. Its workspaces are
- * listed to anyone in it; its members and audit log to its admins, the only
- * ones the server answers. */
-export default function OrganizationPage() {
-  const { session } = useAuth();
+function useOrganization() {
   const load = useCallback(() => fetchCurrentOrganization(), []);
-  const { data: organization, error } = useLoad(load);
-  // A change to the members can make an issue or settle one; the notice is
-  // read again, from scratch, after each.
-  const [membersChanged, setMembersChanged] = useState(0);
-  const onMembersChanged = useCallback(() => setMembersChanged((n) => n + 1), []);
-  const tenant = session?.tenant;
-  if (!session || !tenant) return <CircularProgress />;
-  if (tenant.organization_id === null) {
-    return <Alert severity="info">This workspace belongs to no organization.</Alert>;
-  }
-  const isAdmin = administersOrganization(session);
+  return useLoad(load);
+}
+
+// Organization settings. The route table admits the organization's admins,
+// and the operator to General, Workspaces and Users.
+
+export function OrganizationGeneralPage() {
+  const { data: organization, error, refetch } = useOrganization();
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const rename = async (draft: string) => {
+    const { name } = await renameOrganization(draft);
+    announceOrganizationRenamed();
+    await refetch();
+    setNotice(`Organization renamed to ${name}.`);
+  };
 
   return (
     <Box>
-      <Stack spacing={0.5} mb={3}>
-        <Typography variant="h5">{organization?.name ?? ""}</Typography>
-        <Typography variant="body2" sx={{ color: "text.secondary" }}>
-          {isAdmin
-            ? "You are an admin of this organization, and so of every workspace in it."
-            : organization === null
-              ? ""
-              : organization.role === "member"
-                ? "You are a member of this organization."
-                : "You are here as platform operator, not as a member of this organization."}
-        </Typography>
+      <Stack spacing={0.5} sx={{ mb: 3 }}>
+        <Typography variant="h5">General</Typography>
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
-      <Stack spacing={4}>
-        {(isAdmin || session.user.is_operator) && <OrganizationIssuesNotice key={membersChanged} />}
-        <WorkspacesSection currentId={tenant.id} canAdd={session.can_add_workspace} />
-        {(isAdmin || session.user.is_operator) && (
-          <OrganizationMembersSection
-            selfId={session.user.id}
-            organizationId={tenant.organization_id}
-            asOperator={!isAdmin}
-            fromDirectory={organization?.members_from_directory === true}
-            directoryTakesChanges={organization?.directory_takes_changes === true}
-            onChanged={onMembersChanged}
+      {organization === null ? (
+        !error && <CircularProgress />
+      ) : (
+        <Stack spacing={4}>
+          {organization.can_manage_members && <OrganizationIssuesNotice />}
+          <EditableField
+            label="Organization name"
+            value={organization.name}
+            canEdit={organization.administers}
+            readOnlyHelper="Only an org admin can change this."
+            editLabel="Rename organization"
+            maxLength={ORGANIZATION_NAME_MAX}
+            width={420}
+            onSave={rename}
           />
-        )}
-        {isAdmin && <OrganizationServicesSection />}
-        {isAdmin && <OrganizationConnectorsSection />}
-        {isAdmin && <OrganizationAuditSection />}
-      </Stack>
+        </Stack>
+      )}
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </Box>
+  );
+}
+
+export function OrganizationWorkspacesPage() {
+  return <OrganizationWorkspacesSettings />;
+}
+
+export function OrganizationUsersPage() {
+  const { data: organization, error, refetch: refetchOrganization } = useOrganization();
+  // A change to the members can make an issue or settle one, and change what
+  // the server says the viewer may do (the operator who makes an admin can
+  // manage the members no more): both are read again after each.
+  const [membersChanged, setMembersChanged] = useState(0);
+  const onMembersChanged = useCallback(() => {
+    setMembersChanged((n) => n + 1);
+    void refetchOrganization();
+  }, [refetchOrganization]);
+  if (error) return <Alert severity="error">{error}</Alert>;
+  if (organization === null) return <CircularProgress />;
+  return (
+    <Stack spacing={4}>
+      {organization.can_manage_members && <OrganizationIssuesNotice key={membersChanged} />}
+      <OrganizationUsersSettings organization={organization} onChanged={onMembersChanged} />
+    </Stack>
+  );
+}
+
+export function OrganizationGuardrailsPage() {
+  const { data: organization, error } = useOrganization();
+  if (error) return <Alert severity="error">{error}</Alert>;
+  if (organization === null) return <CircularProgress />;
+  return <OrganizationGuardrails organizationName={organization.name} />;
+}
+
+export function OrganizationDevicesPage() {
+  const { data: organization, error } = useOrganization();
+  if (error) return <Alert severity="error">{error}</Alert>;
+  if (organization === null) return <CircularProgress />;
+  return <OrganizationDevicesSettings organizationName={organization.name} />;
+}
+
+export function OrganizationConnectorsPage() {
+  return <OrganizationConnectorsSettings />;
+}
+
+export function OrganizationAuditLogPage() {
+  const { data: organization, error } = useOrganization();
+  if (error) return <Alert severity="error">{error}</Alert>;
+  if (organization === null) return <CircularProgress />;
+  return (
+    <OrganizationAuditSection
+      organizationName={organization.name}
+      membersFromDirectory={organization.members_from_directory}
+    />
   );
 }

@@ -4,10 +4,12 @@ import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { LOCKED_ROW_HINT, LockedMark, OpensMark } from '@renderer/features/library/row-access';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -26,10 +28,28 @@ import type { RoomResource, RoomResourceKind } from '@shared/core/switch-servers
 import { useRoomDetail } from './room-participants';
 import { attachableResources, opensInResources, resourcesByOrigin } from './room-resources';
 
-const KIND_LABEL: Record<RoomResourceKind, { title: string; noun: string; none: string }> = {
-  references: { title: 'References', noun: 'reference', none: 'No references attached.' },
-  documents: { title: 'Documents', noun: 'document', none: 'No documents attached.' },
-  packages: { title: 'Packages', noun: 'package', none: 'No packages attached.' },
+const KIND_LABEL: Record<
+  RoomResourceKind,
+  { title: string; noun: string; none: string; info: string }
+> = {
+  references: {
+    title: 'References',
+    noun: 'reference',
+    none: 'No references attached.',
+    info: 'Links to a repository, a doc or a page outside Switch. Agents in this room read the link and its instructions to know where to look.',
+  },
+  documents: {
+    title: 'Documents',
+    noun: 'document',
+    none: 'No documents attached.',
+    info: 'Notes or instructions kept in Switch. Agents in this room can read them.',
+  },
+  packages: {
+    title: 'Packages',
+    noun: 'package',
+    none: 'No packages attached.',
+    info: 'A set of references and documents that you attach to a room in one go.',
+  },
 };
 
 const roomResourcesKey = (workspaceId: string, roomId: string, kind: RoomResourceKind) => [
@@ -66,11 +86,34 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
   // A Console chat's members may read it but only its managers change it.
   const permissions =
     opensAsConsoleChat(roomId) && chat
-      ? { canWrite: chat.canManage, canManage: chat.canManage, canUnlink: chat.canManage }
+      ? {
+          canWrite: chat.canManage,
+          canChangeMembers: chat.canManage,
+          canInviteAgents: chat.canManage,
+          canAddPeople: chat.canManage,
+          canAttach: chat.canManage,
+          canRemoveMembers: chat.canManage,
+          canManage: chat.canManage,
+          canArchive: chat.canManage,
+          canManageAdmins: false,
+          canUnlink: chat.canManage,
+        }
       : room !== null
         ? switchRoomsStore.roomPermissions(workspaceId, room)
-        : { canWrite: false, canManage: false, canUnlink: false };
+        : {
+            canWrite: false,
+            canChangeMembers: false,
+            canInviteAgents: false,
+            canAddPeople: false,
+            canAttach: false,
+            canRemoveMembers: false,
+            canManage: false,
+            canArchive: false,
+            canManageAdmins: false,
+            canUnlink: false,
+          };
   const canWrite = permissions.canWrite;
+  const canAttach = permissions.canAttach;
   const canUnlink = permissions.canUnlink;
 
   return (
@@ -80,21 +123,21 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
           workspaceId={workspaceId}
           roomId={roomId}
           kind="references"
-          canWrite={canWrite}
+          canAttach={canAttach}
           canUnlink={canUnlink}
         />
         <ResourceSection
           workspaceId={workspaceId}
           roomId={roomId}
           kind="documents"
-          canWrite={canWrite}
+          canAttach={canAttach}
           canUnlink={canUnlink}
         />
         <ResourceSection
           workspaceId={workspaceId}
           roomId={roomId}
           kind="packages"
-          canWrite={canWrite}
+          canAttach={canAttach}
           canUnlink={canUnlink}
         />
         <LinkedRoomsSection workspaceId={workspaceId} roomId={roomId} canWrite={canWrite} />
@@ -107,15 +150,15 @@ const ResourceSection = observer(function ResourceSection({
   workspaceId,
   roomId,
   kind,
-  canWrite,
+  canAttach,
   canUnlink,
 }: {
   workspaceId: string;
   roomId: string;
   kind: RoomResourceKind;
-  /** Attaching. */
-  canWrite: boolean;
-  /** Detaching, which the server keeps for those taking part and admins. */
+  /** Attaching: anyone in the room. */
+  canAttach: boolean;
+  /** Detaching: the room's owner or an admin. */
   canUnlink: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -174,8 +217,11 @@ const ResourceSection = observer(function ResourceSection({
   return (
     <section aria-label={label.title} className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-foreground">{label.title}</h2>
-        {canWrite && (
+        <div className="flex items-center gap-1.5">
+          <h2 className="text-sm font-semibold text-foreground">{label.title}</h2>
+          <InfoTooltip label={`What are ${label.title.toLowerCase()}?`} content={label.info} />
+        </div>
+        {canAttach && (
           <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
             <Plus className="size-3.5" />
             Attach {label.noun}
@@ -217,6 +263,10 @@ const ResourceSection = observer(function ResourceSection({
                                 itemId: resource.id,
                               })
                           : null
+                  }
+                  // A package the viewer may not open, which its owner keeps private.
+                  locked={
+                    kind === 'packages' && serverId !== null && !opensInResources(resource, viewer)
                   }
                   removeLabel={canUnlink ? `Detach ${resource.name}` : null}
                   busy={busy === resource.id}
@@ -286,6 +336,7 @@ function ResourceRow({
   resource,
   via,
   onOpen,
+  locked = false,
   removeLabel,
   busy,
   confirm = false,
@@ -295,6 +346,8 @@ function ResourceRow({
   /** The packages that brought it in, by name. */
   via: string[];
   onOpen: (() => void) | null;
+  /** Shown to the viewer but not theirs to open: dimmed and locked. */
+  locked?: boolean;
   /** The remove button's label, or null for someone who may not remove it. */
   removeLabel: string | null;
   busy: boolean;
@@ -314,9 +367,12 @@ function ResourceRow({
     <>
       <Icon className="size-4 shrink-0 text-foreground-muted" />
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="flex items-center gap-1.5 truncate text-sm text-foreground">
+        <span
+          className={`flex items-center gap-1.5 truncate text-sm ${locked ? 'text-foreground-muted' : 'text-foreground'}`}
+        >
           {resource.name}
           {resource.urls[0] && <ExternalLink className="size-3 shrink-0 text-foreground-muted" />}
+          {locked && <LockedMark />}
         </span>
         {(resource.description || meta.length > 0) && (
           <span className="truncate text-xs text-foreground-muted">
@@ -335,9 +391,16 @@ function ResourceRow({
           onClick={onOpen}
         >
           {body}
+          {/* A link already shows where it goes; anything else opens here. */}
+          {!resource.urls[0] && <OpensMark />}
         </button>
       ) : (
-        <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
+        <div
+          className="flex min-w-0 flex-1 items-center gap-3"
+          title={locked ? LOCKED_ROW_HINT : undefined}
+        >
+          {body}
+        </div>
       )}
       {removeLabel && confirm && armed && (
         <span className="flex shrink-0 items-center gap-1">
@@ -579,7 +642,13 @@ const LinkedRoomsSection = observer(function LinkedRoomsSection({
   return (
     <section aria-label="Linked rooms" className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-foreground">Linked rooms</h2>
+        <div className="flex items-center gap-1.5">
+          <h2 className="text-sm font-semibold text-foreground">Linked rooms</h2>
+          <InfoTooltip
+            label="What are linked rooms?"
+            content="Pointers from this room to related rooms, such as a support room or a parent project. Agents here see each link and why it exists. A link goes one way and does not let anyone into the other room."
+          />
+        </div>
         {canWrite && (
           <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
             <Plus className="size-3.5" />

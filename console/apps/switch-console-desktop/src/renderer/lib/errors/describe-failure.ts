@@ -94,10 +94,18 @@ export function describeFailure(error: unknown, fallback: string): FailureDescri
       case 'DuplicateServerUrlError':
       case 'NoDashboardError':
       case 'NoManagementApiError':
+      case 'PasswordChangedSessionNotSavedError':
         // Already a modeled, actionable sentence: the server and the page to
         // fix it on, who is changing the server and when to try again, which
-        // agents to bring back first, or which address to enter instead.
+        // agents to bring back first, which address to enter instead, or that a
+        // password changed but its new session could not be kept.
         return { headline: error.message, detail: null };
+      case 'ChatApiError':
+        // A coded refusal from `/chats`: the server wrote its message for the
+        // person, often with what to change (a permission to turn on in the
+        // chat app), so it leads instead of a guess that Switch did not answer.
+        if (error.message.trim()) return { headline: error.message, detail: null };
+        break;
     }
   }
 

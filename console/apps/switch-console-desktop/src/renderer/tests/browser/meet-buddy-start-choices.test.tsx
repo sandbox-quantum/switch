@@ -1,6 +1,6 @@
 /**
  * How Meet switch-buddy offers to start the buddy: with a provider already
- * signed in, those and another provider, no Skip; with none, set one up or
+ * signed in, a tile for each and a link to the others, no Skip; with none, set one up or
  * skip.
  */
 import { act } from 'react';
@@ -41,8 +41,13 @@ async function render(props: React.ComponentProps<typeof StartChoices>) {
   await act(async () => root!.render(<StartChoices {...props} />));
 }
 
+/** The choices offered: every button but the heading's explanation of what a provider is. */
+function choices(): HTMLButtonElement[] {
+  return [...container!.querySelectorAll('button')].filter((button) => !button.closest('h2'));
+}
+
 function buttons(): string[] {
-  return [...container!.querySelectorAll('button')].map((button) => button.textContent ?? '');
+  return choices().map((button) => button.textContent ?? '');
 }
 
 describe('Meet switch-buddy start choices', () => {
@@ -57,23 +62,26 @@ describe('Meet switch-buddy start choices', () => {
       starting: null,
       ...on,
     });
-    expect(container!.textContent).toContain('How’d you like to power switch-buddy?');
-    expect(container!.textContent).toContain('Already signed in:');
-    expect(buttons()).toEqual(['Claude Code', 'Codex', 'Use other AI providers']);
+    expect(container!.textContent).toContain('Pick an AI provider to get started');
+    expect(buttons()).toEqual([
+      'Claude CodeSigned in locally',
+      'CodexSigned in locally',
+      'use other providers',
+    ]);
     expect(
       [...container!.querySelectorAll('[data-provider-icon]')].map((icon) =>
         icon.getAttribute('data-provider-icon')
       )
     ).toEqual(['claude', 'codex']);
-    await act(async () => container!.querySelectorAll('button')[1]!.click());
+    await act(async () => choices()[1]!.click());
     expect(on.onStart).toHaveBeenCalledWith('codex');
   });
 
   it('offers to set one up, or skip, when none is signed in', async () => {
     const on = handlers();
     await render({ checking: false, ready: [], starting: null, ...on });
-    expect(buttons()).toEqual(['Skip', 'Set up AI provider']);
-    await act(async () => container!.querySelectorAll('button')[0]!.click());
+    expect(buttons()).toEqual(['Set up AI provider', 'Skip']);
+    await act(async () => choices()[1]!.click());
     expect(on.onSkip).toHaveBeenCalled();
   });
 

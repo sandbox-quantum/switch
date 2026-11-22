@@ -39,6 +39,7 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import TypeAdapter
 
+from switch_core.archived_workspace import WORKSPACE_ARCHIVED
 from switch_core.bridges.agent.api.operations import (
     call_operation,
     refusal_status,
@@ -165,6 +166,14 @@ async def _run(
                 reason_codes.NOT_ASSIGNED,
                 f"Agent {call.agent_id} is not assigned to this controller.",
                 retryable=False,
+            ),
+        )
+    if await authenticator.stopped_by_archive(binding):
+        return _result(
+            id_,
+            403,
+            error_body(
+                reason_codes.WORKSPACE_ARCHIVED, WORKSPACE_ARCHIVED, retryable=False
             ),
         )
 

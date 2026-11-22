@@ -77,9 +77,12 @@ export async function checkAcpSignIn(
   input: SignInCheckInput
 ): Promise<ProviderReadiness> {
   let client: StdioJsonRpcClient | undefined;
+  let cleanup: (() => Promise<void>) | undefined;
   const handshake = async () => {
+    const { cleanup: tidy, ...launch } = await hooks.launch(input);
+    cleanup = tidy;
     client = new StdioJsonRpcClient({
-      ...(await hooks.launch(input)),
+      ...launch,
       cwd: input.cwd,
       logger: noopLogger,
       onExit: () => {},
@@ -90,8 +93,16 @@ export async function checkAcpSignIn(
     if (!client) throw new Error(`${hooks.label} was asked ${method} before its handshake.`);
     return await client.request<T>(method, params);
   };
+  const connection = () => {
+    if (!client)
+      throw new Error(
+        `${hooks.label}'s sign-in check asked for the agent's connection before its handshake opened one.`
+      );
+    return client;
+  };
   try {
-    if (hooks.checkSignIn) return await hooks.checkSignIn({ ...input, handshake, request });
+    if (hooks.checkSignIn)
+      return await hooks.checkSignIn({ ...input, handshake, request, connection });
     await handshake();
     return readiness(
       'unknown',
@@ -99,6 +110,11 @@ export async function checkAcpSignIn(
     );
   } finally {
     await client?.dispose();
+    try {
+      await cleanup?.();
+    } catch {
+      // The check's answer stands; a failed removal must not replace it.
+    }
   }
 }
 
@@ -124,15 +140,25 @@ interface State {
   messageText: string;
   stopping: boolean;
   interrupted: boolean;
+  /** Whether someone cancelled or declined one of this turn's approval requests. */
+  refusedRequest: boolean;
   context: string;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   mcpNames: Set<string>;
   /** The registered servers whose tools are allowed without asking: all but the connectors. */
   autoApprovedMcpNames: Set<string>;
-  toolServers: Map<string, string>;
+  /**
+   * The latest announcement or update of each tool call this turn that
+   * `mcpServerOf` placed on a server, by id.
+   */
+  mcpToolCalls: Map<string, AcpToolCall>;
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
+  /** What the provider's `launch` prepared for this process, removed once it exits. */
+  cleanup: (() => Promise<void>) | undefined;
+  /** The removal of what `launch` prepared, once it has begun. */
+  tidied: Promise<void> | undefined;
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -182,10 +208,12 @@ export class AcpAdapter implements ProviderAdapter {
         prefix.legacyMessage
       );
     const binaryPath = this.options.binaryPath ?? hooks.defaultBinary;
-    const launch = await hooks.launch({
+    const { cleanup, ...launch } = await hooks.launch({
       binaryPath,
       cwd,
       env: input.env,
+      runtimeMode: input.runtimeMode,
+      mcpServers: input.mcpServers,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
@@ -206,16 +234,19 @@ export class AcpAdapter implements ProviderAdapter {
       messageText: '',
       stopping: false,
       interrupted: false,
+      refusedRequest: false,
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
       mcpNames: new Set(Object.keys(input.mcpServers)),
       autoApprovedMcpNames: new Set(
         Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
       ),
-      toolServers: new Map(),
+      mcpToolCalls: new Map(),
       prompt: {},
       configOptions: [],
       models: [],
+      cleanup,
+      tidied: undefined,
     };
     this.sessions.set(state.id, state);
     const context = this.context(state);
@@ -234,7 +265,12 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      if (!hooks.mcpServersAtLaunch)
+        requireHttpMcp(
+          hooks.label,
+          input.mcpServers,
+          agent.mcpCapabilities?.http || hooks.mcpCapabilities?.http
+        );
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -255,7 +291,7 @@ export class AcpAdapter implements ProviderAdapter {
         }))
       )
         await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = hooks.mcpServersAtLaunch ? [] : acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
       if (input.resume) {
         method = agent.loadSession
@@ -285,6 +321,9 @@ export class AcpAdapter implements ProviderAdapter {
       const mode = hooks.sessionMode?.(input.runtimeMode, result.modes);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
+      const configured = hooks.sessionConfigOptions?.(input.runtimeMode, state.configOptions) ?? {};
+      for (const [configId, value] of Object.entries(configured))
+        await this.setConfigOption(state, configId, value);
       if (input.model) await this.setModel(state.id, input.model);
       const nativeSessionId = `${prefix?.prefix ?? ''}${state.nativeId}`;
       this.emit(state, { type: 'session.started', nativeSessionId });
@@ -293,6 +332,7 @@ export class AcpAdapter implements ProviderAdapter {
     } catch (cause) {
       await client.dispose();
       this.sessions.delete(state.id);
+      await this.tidy(state);
       if (cause instanceof ProviderConversationUnavailableError) throw cause;
       const details =
         cause instanceof JsonRpcError &&
@@ -329,15 +369,19 @@ export class AcpAdapter implements ProviderAdapter {
     if (!input) return;
     state.turn = input.turnId;
     state.interrupted = false;
+    state.refusedRequest = false;
     state.messageId = randomUUID();
     state.items.clear();
-    state.toolServers.clear();
+    state.mcpToolCalls.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
     void this.run(state, input).then(
       (reason) => {
         if (state.turn !== input.turnId) return;
-        const interrupted = state.interrupted || reason === 'cancelled';
+        // `cancelled` answers our own `session/cancel`, or follows a request
+        // someone cancelled or declined; an agent that cancels unasked (Junie,
+        // when every model refuses it) has failed.
+        const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
         this.complete(
           state,
           interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
@@ -345,7 +389,9 @@ export class AcpAdapter implements ProviderAdapter {
             ? 'Interrupted.'
             : reason === 'end_turn'
               ? undefined
-              : `${this.hooks.label} stopped: ${reason}`
+              : reason === 'cancelled'
+                ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
+                : `${this.hooks.label} stopped: ${reason}`
         );
       },
       (error: unknown) => {
@@ -425,9 +471,27 @@ export class AcpAdapter implements ProviderAdapter {
     }
     if (!state.models.some((choice) => choice.id === model.id))
       throw new ProviderSessionError(this.provider, id, `Unavailable model: ${model.id}`);
+    await this.requestConfigOption(state, 'model', model.id);
+  }
+
+  /** Sets a session config option to a value it offers, as a provider's hooks ask for the runtime mode. */
+  private async setConfigOption(state: State, configId: string, value: string): Promise<void> {
+    const option = state.configOptions.find((candidate) => candidate.id === configId);
+    if (!option) throw new Error(`${this.hooks.label} offers no '${configId}' session option.`);
+    const offered = (option.options ?? []).flatMap((choice) =>
+      'value' in choice ? [choice.value] : choice.options.map((nested) => nested.value)
+    );
+    if (option.type === 'select' && !offered.includes(value))
+      throw new Error(
+        `${this.hooks.label} does not offer '${value}' for its '${configId}' option; it offers ${offered.join(', ')}.`
+      );
+    await this.requestConfigOption(state, configId, value);
+  }
+
+  private async requestConfigOption(state: State, configId: string, value: string): Promise<void> {
     const result = await state.client.request<{ configOptions?: AcpConfigOption[] }>(
       'session/set_config_option',
-      { sessionId: state.nativeId, configId: 'model', value: model.id }
+      { sessionId: state.nativeId, configId, value }
     );
     if (result.configOptions) this.applyConfigOptions(state, result.configOptions);
   }
@@ -441,6 +505,7 @@ export class AcpAdapter implements ProviderAdapter {
     if (response === undefined && decision !== 'cancel' && decision !== 'decline')
       throw new ProviderSessionError(this.provider, id, `Decision ${decision} is not offered`);
     state.decisions.delete(requestId);
+    if (decision === 'cancel' || decision === 'decline') state.refusedRequest = true;
     pending.settle(response ?? ACP_CANCELLED);
     this.emit(state, { type: 'request.resolved', requestId, decision });
   }
@@ -531,19 +596,37 @@ export class AcpAdapter implements ProviderAdapter {
     const vendor = this.hooks.permission?.(context, request);
     if (vendor) return await vendor;
     const { toolCall } = request;
+    // The request's tool call updates one the agent announced and may name
+    // nothing but its id: what it leaves out is the announced call's.
+    const announced = state.items.get(toolCall.toolCallId);
+    const kind =
+      this.hooks.toolKind?.(toolCall.title ? toolCall : { ...toolCall, title: announced?.title }) ??
+      toolCall.kind ??
+      (announced?.type === 'command_execution'
+        ? 'execute'
+        : announced?.type === 'file_change'
+          ? 'edit'
+          : undefined);
     const once = request.options.find((option) => option.kind === 'allow_once');
-    const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    // The request's own call first, then the call as it was placed, asked
+    // again with the request: an agent may name the server only across the two.
+    const placed = state.mcpToolCalls.get(toolCall.toolCallId);
+    const server =
+      this.hooks.mcpServerOf?.(toolCall, state.mcpNames, toolCall) ??
+      (placed && this.hooks.mcpServerOf?.(placed, state.mcpNames, toolCall));
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
     if (
       once &&
       ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
         state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
+        (state.runtimeMode === 'auto-accept-edits' && kind === 'edit'))
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
+    const persistent = this.hooks.persistentPermissionKinds ?? [];
     for (const option of request.options) {
+      if (persistent.includes(option.kind)) continue;
       const decision =
         option.kind === 'allow_once'
           ? 'accept'
@@ -556,7 +639,7 @@ export class AcpAdapter implements ProviderAdapter {
       if (
         !decision ||
         options.some((offered) => offered.decision === decision) ||
-        /future|permanent/i.test(option.name)
+        /future|permanent/i.test(`${option.optionId} ${option.name}`)
       )
         continue;
       options.push({
@@ -570,12 +653,16 @@ export class AcpAdapter implements ProviderAdapter {
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : kind === 'execute'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
-      title: toolCall.title ?? `${this.hooks.label} needs permission`,
+      title:
+        this.hooks.toolTitle?.(toolCall) ??
+        toolCall.title ??
+        announced?.title ??
+        `${this.hooks.label} needs permission`,
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
@@ -632,8 +719,9 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
-    const server = this.hooks.mcpServerOf?.(update);
-    if (server !== undefined) state.toolServers.set(update.toolCallId, server);
+    const kind = this.hooks.toolKind?.(update) ?? update.kind;
+    const server = this.hooks.mcpServerOf?.(update, state.mcpNames);
+    if (server !== undefined) state.mcpToolCalls.set(update.toolCallId, update);
     const text = (update.content ?? [])
       .map((part) =>
         part.type === 'diff' ? `${part.path}\n${part.newText ?? ''}` : (part.content?.text ?? '')
@@ -655,12 +743,16 @@ export class AcpAdapter implements ProviderAdapter {
         this.hooks.itemType?.(update) ??
         (server !== undefined || update.toolCallId.startsWith('mcp_')
           ? 'mcp_tool_call'
-          : update.kind === 'execute'
+          : kind === 'execute'
             ? 'command_execution'
-            : update.kind === 'edit'
+            : kind === 'edit'
               ? 'file_change'
               : 'tool_call'),
-      title: update.title ?? old?.title ?? 'Tool',
+      // A later update repeating the bare tool name keeps the hook's title.
+      title:
+        this.hooks.toolTitle?.(update) ??
+        (this.hooks.toolTitle && old ? old.title : (update.title ?? old?.title)) ??
+        'Tool',
       status: outputFailed
         ? 'failed'
         : update.status === 'completed'
@@ -671,11 +763,15 @@ export class AcpAdapter implements ProviderAdapter {
       ...(toolText || old?.text ? { text: toolText || old?.text } : {}),
     };
     state.items.set(item.id, item);
+    // An item whose real type is learned only from a later update (Qwen names a
+    // deferred `tool_call` as `agent` one update after announcing it) starts
+    // again under that type, so a subagent is seen starting as a subagent.
+    // Consumers key items by id, so the second start replaces the first.
     this.emit(state, {
       type:
         item.status === 'completed' || item.status === 'failed'
           ? 'item.completed'
-          : old
+          : old && old.type === item.type
             ? 'item.updated'
             : 'item.started',
       turnId,
@@ -762,6 +858,7 @@ export class AcpAdapter implements ProviderAdapter {
     if (state.turn) await this.interruptTurn(id);
     await state.client.dispose();
     this.exited(id, 'Session stopped');
+    await this.tidy(state);
   }
   async stopAll(): Promise<void> {
     await Promise.all([...this.sessions.keys()].map((id) => this.stopSession(id)));
@@ -782,8 +879,26 @@ export class AcpAdapter implements ProviderAdapter {
         usage: [],
       });
     this.sessions.delete(id);
+    void this.tidy(state);
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });
     this.emit(state, { type: 'session.exited', reason });
+  }
+  /**
+   * Removes what `launch` prepared, once; every caller waits for the same
+   * removal. A failure is only logged: the session is already gone.
+   */
+  private tidy(state: State): Promise<void> {
+    state.tidied ??= (async () => {
+      try {
+        await state.cleanup?.();
+      } catch (error) {
+        this.logger.warn(`${this.hooks.label} could not remove what it prepared for a session.`, {
+          sessionId: state.id,
+          error: String(error),
+        });
+      }
+    })();
+    return state.tidied;
   }
   private require(id: string): State {
     const state = this.sessions.get(id);

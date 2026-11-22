@@ -6,10 +6,15 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, CollaborationBridge, Tenant
+from switch_core.db.models import (
+    Client,
+    CollaborationBridge,
+    Tenant,
+    TenantNotBoundError,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 
 async def _make_bridge(session: AsyncSession) -> str:
@@ -253,6 +258,64 @@ async def test_set_default_does_not_demote_another_tenants_default(
 
 
 @pytest.mark.asyncio
+async def test_get_all_and_get_active_return_only_the_bound_tenants_bridges(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The suite connects as the owner, which row-level security exempts, so
+    this pins the store's own filter rather than the policy."""
+    store = CollaborationBridgeStore()
+    other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
+
+    async with session_factory() as session:
+        session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
+        own_bridge = await _make_bridge(session)
+        await session.commit()
+
+    async with tenant_session(session_factory, other_tenant) as other_session:
+        other_bridge = await _make_bridge(other_session)
+        await other_session.commit()
+
+    async with session_factory() as session:
+        assert [b.id for b in await store.get_all(session)] == [own_bridge]
+        assert [b.id for b in await store.get_active(session)] == [own_bridge]
+
+    async with tenant_session(session_factory, other_tenant) as other_session:
+        assert [b.id for b in await store.get_all(other_session)] == [other_bridge]
+        assert [b.id for b in await store.get_active(other_session)] == [other_bridge]
+
+
+@pytest.mark.asyncio
+async def test_get_active_leaves_out_the_bound_tenants_inactive_bridges(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        active = await _make_bridge(session)
+        inactive = await _make_bridge(session)
+        await store.update_status(session, inactive, "inactive")
+        await session.commit()
+
+    async with session_factory() as session:
+        assert sorted(b.id for b in await store.get_all(session)) == sorted(
+            [active, inactive]
+        )
+        assert [b.id for b in await store.get_active(session)] == [active]
+
+
+@pytest.mark.asyncio
+async def test_listing_bridges_with_no_tenant_bound_raises(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    with no_tenant():
+        async with session_factory() as session:
+            with pytest.raises(TenantNotBoundError):
+                await store.get_all(session)
+            with pytest.raises(TenantNotBoundError):
+                await store.get_active(session)
+
+
+@pytest.mark.asyncio
 async def test_set_channel_team_merges_rather_than_replaces(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -428,3 +491,94 @@ async def test_an_edit_merges_into_what_the_bridge_learned_since_it_was_read(
         assert bridge.connection_config["channel_teams"] == {
             "19:a@thread.tacv2": "team-1"
         }
+
+
+@pytest.mark.asyncio
+async def test_replace_team_stores_a_first_default_team(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.set_service_url(session, bridge_id, "https://smba.example")
+
+        stored = await store.replace_team(
+            session, bridge_id, expected=None, team_id="team-1"
+        )
+        await session.commit()
+
+    assert stored is not None
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["team_id"] == "team-1"
+        assert bridge.connection_config["service_url"] == "https://smba.example"
+
+
+@pytest.mark.asyncio
+async def test_replace_team_keeps_a_default_team_already_chosen(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.merge_connection_config(session, bridge_id, {"team_id": "chosen"})
+
+        stored = await store.replace_team(
+            session, bridge_id, expected=None, team_id="team-1"
+        )
+        await session.commit()
+
+    assert stored is None
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["team_id"] == "chosen"
+
+
+@pytest.mark.asyncio
+async def test_replace_team_clears_only_the_team_it_was_told_of(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.merge_connection_config(session, bridge_id, {"team_id": "team-2"})
+
+        assert (
+            await store.replace_team(
+                session, bridge_id, expected="team-1", team_id=None
+            )
+            is None
+        )
+        assert (
+            await store.replace_team(
+                session, bridge_id, expected="team-2", team_id=None
+            )
+            is not None
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["team_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_replace_team_treats_a_cleared_default_as_none(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Leaving the default team stores None rather than dropping the key, and
+    an empty string is no team either."""
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.merge_connection_config(session, bridge_id, {"team_id": ""})
+
+        stored = await store.replace_team(
+            session, bridge_id, expected=None, team_id="team-1"
+        )
+        await session.commit()
+
+    assert stored is not None

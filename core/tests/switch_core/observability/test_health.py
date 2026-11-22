@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from switch_core.observability import health
 from switch_core.observability.catalogue import HEALTH_CHECK
 from switch_core.observability.health import (
     CheckOutcome,
@@ -192,6 +193,49 @@ async def test_run_forever_keeps_going_after_a_broken_refresh(monkeypatch):
 
     assert calls[0] > 1
     assert monitor.current().ready is True
+
+
+@pytest.mark.asyncio
+async def test_not_ready_is_checked_again_before_the_interval(monkeypatch):
+    # A process starting up reads not ready until its listeners connect; it
+    # must read ready soon after they do, not a whole interval later.
+    monkeypatch.setattr(health, "NOT_READY_RECHECK_SECONDS", 0.01)
+    connected = [False]
+    monitor = HealthMonitor(
+        [message_listener_check(lambda: connected[0], gates_readiness=True)],
+        interval_seconds=60.0,
+    )
+    task = asyncio.create_task(monitor.run_forever())
+    try:
+        await asyncio.sleep(0.05)
+        assert monitor.current().ready is False
+        connected[0] = True
+        await asyncio.sleep(0.05)
+        assert monitor.current().ready is True
+    finally:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_ready_waits_the_whole_interval(monkeypatch):
+    monkeypatch.setattr(health, "NOT_READY_RECHECK_SECONDS", 0.01)
+    calls = [0]
+
+    async def probe() -> CheckOutcome:
+        calls[0] += 1
+        return CheckOutcome(name="database", healthy=True, detail="")
+
+    monitor = HealthMonitor(
+        [HealthCheck(name="database", gates_readiness=True, probe=probe)],
+        interval_seconds=60.0,
+    )
+    task = asyncio.create_task(monitor.run_forever())
+    try:
+        await asyncio.sleep(0.05)
+    finally:
+        task.cancel()
+
+    assert calls[0] == 1
 
 
 @pytest.mark.asyncio

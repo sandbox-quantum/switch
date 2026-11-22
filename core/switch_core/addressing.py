@@ -150,6 +150,28 @@ class AddressingRule(BaseModel):
         return sender_owner_user_id == owner_user_id
 
 
+def never_allows(rule: AddressingRule) -> str | None:
+    """Why `rule` can never allow anyone, or None when it can.
+
+    With rules present a policy denies whatever no rule allows, so a rule like
+    this allows nothing while looking as if it did, and a policy of nothing
+    but such rules shuts the agent off, its owner included. Checked when a
+    policy is saved (`gateway/agents.py`), not when one is read: one stored
+    before still parses.
+    """
+    if rule.rooms == []:
+        return "it names no rooms"
+    if rule.room_groups == []:
+        return "it names no room groups"
+    if (
+        rule.users == []
+        and rule.agents == []
+        and not (rule.owner or rule.owner_agents or rule.platform)
+    ):
+        return "it lets in no people, no agents, not the owner and not the platform"
+    return None
+
+
 class AddressingPolicy(BaseModel):
     """An agent's addressing allow-list. Empty ``rules`` → allow-all."""
 
@@ -244,6 +266,49 @@ def _dim_contains(dimension: Dimension, value: str | None) -> bool:
 def _admits_beyond(dimension: Dimension, own: set[str]) -> bool:
     """Whether a sender dimension admits anyone outside `own`."""
     return dimension == ANY or any(value not in own for value in dimension)
+
+
+# What an open policy admits, as a rule: everyone but the platform.
+_OPEN = AddressingRule(owner=True, owner_agents=True)
+
+
+def lets_in_more(new: AddressingPolicy, old: AddressingPolicy) -> bool:
+    """Whether `new` lets someone other than the agent's owner address it, in
+    some room, where `old` does not.
+
+    Someone else is any person, any agent (the owner's own included) and the
+    platform; the owner reaching it in more rooms is not counted, since the
+    owner may change the policy anyway. A rule of `new` that admits anyone
+    else must sit inside one rule of `old`, every dimension within that
+    rule's. That can call a policy wider than it is, when only several of
+    `old`'s rules together cover a rule, but never narrower.
+    """
+    held = old.rules or [_OPEN]
+    return any(
+        _admits_someone_else(rule) and not any(_within(rule, h) for h in held)
+        for rule in new.rules or [_OPEN]
+    )
+
+
+def _admits_someone_else(rule: AddressingRule) -> bool:
+    return rule.users != [] or rule.agents != [] or rule.owner_agents or rule.platform
+
+
+def _within(rule: AddressingRule, held: AddressingRule) -> bool:
+    return (
+        _dimension_within(rule.rooms, held.rooms)
+        and _dimension_within(rule.room_groups, held.room_groups)
+        and _dimension_within(rule.users, held.users)
+        and _dimension_within(rule.agents, held.agents)
+        and (held.owner_agents or not rule.owner_agents)
+        and (held.platform or not rule.platform)
+    )
+
+
+def _dimension_within(inner: Dimension, outer: Dimension) -> bool:
+    if outer == ANY:
+        return True
+    return inner != ANY and set(inner) <= set(outer)
 
 
 def parse_policy(raw: dict | None) -> AddressingPolicy:

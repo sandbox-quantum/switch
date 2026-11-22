@@ -80,8 +80,13 @@ class ActivityReport(BaseModel):
     turn_id: _Id
     item_id: _Id
     kind: Literal[
-        "turn", "user-message", "assistant-message", "tool-activity", "notice"
+        "turn",
+        "user-message",
+        "assistant-message",
+        "tool-activity",
+        "notice",
     ]
+    subagent: bool = Field(default=False, strict=True)
     revision: int = Field(ge=0)
     status: str = Field(min_length=1, max_length=40)
     title: str = Field(max_length=MAX_TITLE_CHARS)
@@ -91,6 +96,9 @@ class ActivityReport(BaseModel):
     thread_id: _Id | None
     message_id: _Id | None
     occurred_at: datetime
+    # On a user message sent while another turn ran: "steered" into that turn,
+    # or "queued" behind it. Hosts that predate steering do not send it.
+    delivery: Literal["steered", "queued"] | None = None
     # Hosts that predate usage reporting do not send it.
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
@@ -205,6 +213,8 @@ async def report_activity(
         turn_id=body.turn_id,
         item_id=body.item_id,
         kind=body.kind,
+        subagent=body.subagent,
+        delivery=body.delivery,
         revision=body.revision,
         status=body.status,
         title=body.title,

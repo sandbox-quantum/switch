@@ -32,6 +32,7 @@ from sqlalchemy import select
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import ORGANIZATION_ADMIN_TENANT_ROLE, TENANT_ADMIN_ROLES
 from switch_core.bridges.agent.commands import (
+    AGENT_GREETING_KEY,
     AGENT_GREETINGS,
     COMMANDS_BY_NAME,
     _addressed_by_name_or_role,
@@ -40,7 +41,9 @@ from switch_core.bridges.agent.commands import (
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
     message_event,
+    removed_by,
     room_join_event,
+    room_leave_event,
 )
 from switch_core.bridges.agent.protocol.presence import (
     agents_present_in,
@@ -49,6 +52,7 @@ from switch_core.bridges.agent.protocol.presence import (
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
+    FollowUp,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
@@ -59,7 +63,7 @@ from switch_core.clients.admin_messages import (
     platform_replies_in_channel,
 )
 from switch_core.clients.mentions import (
-    NAME_CHAR as _NAME_CHAR,
+    mention_pattern as _mention_pattern,
 )
 from switch_core.clients.mentions import (
     mention_regex as _mention_regex,
@@ -71,7 +75,7 @@ from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, CloudMachine, TenantMember
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.standing import organization_admin_of
-from switch_core.db.stores.hosted_machine_store import owner_stopped
+from switch_core.db.stores.hosted_machine_store import admin_stopped, owner_stopped
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
     ADDRESSING_UNCLAIMED_MESSAGE,
@@ -79,6 +83,7 @@ from switch_core.delivery.addressing import (
     AddressingResolver,
     IncomingMessage,
 )
+from switch_core.delivery.conversation import ConversationRoute
 from switch_core.events import (
     CommandEvent,
 )
@@ -344,7 +349,7 @@ def _start_from_console_message(
     console = f"opening **{agent_name}** in Switch Console"
     sign_in = (
         "If Switch Console says I'm signed out, sign me in first with "
-        f"`{sign_in_command}` on the machine I run on."
+        f"`{sign_in_command}` on the device I run on."
     )
     if connected_not_live:
         return (
@@ -392,7 +397,7 @@ def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
     """A managed agent whose controller's stream is down: Core restarted, the
     machine lost its network, or it is switched off."""
     return (
-        f"My machine, **{machine}**, is offline or reconnecting to Switch, so "
+        f"My device, **{machine}**, is offline or reconnecting to Switch, so "
         "I can't answer right now. If I haven't answered once it's back, address "
         f"me again. If it stays offline, {_owner_ref(owner_handle)} needs to "
         "check it."
@@ -401,11 +406,12 @@ def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
 
 @dataclass(frozen=True)
 class CloudMachineState:
-    """How a Switch cloud machine stood once a message for its agents tried to wake it."""
+    """How a Switch Cloud machine stood once a message for its agents tried to wake it."""
 
     state: str
     revision: int
     owner_stopped: bool
+    admin_stopped: bool
 
     @classmethod
     def of(cls, machine: CloudMachine) -> CloudMachineState:
@@ -413,31 +419,41 @@ class CloudMachineState:
             state=machine.state,
             revision=machine.revision,
             owner_stopped=owner_stopped(machine),
+            admin_stopped=admin_stopped(machine),
         )
 
 
 def _cloud_machine_waking_message(machine: str) -> str:
-    """A managed agent whose Switch cloud machine was asleep, and is starting
+    """A managed agent whose Switch Cloud machine was asleep, and is starting
     for this message: Switch keeps the message until the machine is back."""
     return (
-        f"My machine, **{machine}**, was asleep and is starting now. I'll pick "
+        f"My device, **{machine}**, was asleep and is starting now. I'll pick "
         "this up as soon as it's back, usually within a few minutes."
     )
 
 
 def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> str:
-    """A managed agent whose Switch cloud machine its owner stopped: a message
+    """A managed agent whose Switch Cloud machine its owner stopped: a message
     does not start it again."""
     return (
-        f"My machine, **{machine}**, is stopped, so I can't answer. "
+        f"My device, **{machine}**, is stopped, so I can't answer. "
         f"{_owner_ref(owner_handle).capitalize()} can start it again in Switch Console."
+    )
+
+
+def _cloud_machine_admin_stopped_message(machine: str) -> str:
+    """A managed agent whose Switch Cloud machine a server administrator
+    stopped: neither a message nor its owner can start it again."""
+    return (
+        f"My device, **{machine}**, was stopped by a server administrator, so "
+        "I can't answer until they release it."
     )
 
 
 def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
     removed = (
-        f"my machine, **{machine}**, has been removed from Switch, so nothing "
-        "runs me. My owner has to move me to another machine to bring me back."
+        f"my device, **{machine}**, has been removed from Switch, so nothing "
+        "runs me. My owner has to move me to another device to bring me back."
     )
     if owner_handle:
         return f"@{owner_handle} — {removed}"
@@ -634,7 +650,15 @@ class AgentRecipient:
         )
         notice = await self._switch_notice(session) if addressed else None
         own_event = _message_own_event(
-            meta, event, thread_id, self.agent.id, sender_role, notice
+            meta,
+            event,
+            thread_id,
+            self.agent.id,
+            sender_role,
+            notice,
+            mid_turn_delivery=self._mid_turn_delivery(),
+            routed_reason=None,
+            follow_up=None,
         )
 
         async def after(row: InboundEvent) -> None:
@@ -684,7 +708,15 @@ class AgentRecipient:
         notice = await self._switch_notice(session)
         return Delivery(
             own_event=_message_own_event(
-                meta, event, event.thread_root_id, self.agent.id, sender_role, notice
+                meta,
+                event,
+                event.thread_root_id,
+                self.agent.id,
+                sender_role,
+                notice,
+                mid_turn_delivery=self._mid_turn_delivery(),
+                routed_reason=None,
+                follow_up=_follow_up(decision),
             ),
             after=after,
         )
@@ -724,6 +756,66 @@ class AgentRecipient:
             else "the sender may not instruct this agent, or it is over budget",
         )
         return delivered
+
+    async def admits(self, session: AsyncSession, event: InboundMessage) -> bool:
+        """Whether the agent's addressing policy and budget let the sender of
+        `event` through, as they would for a mention, without a refusal: the
+        decision service's candidates are the agents this admits."""
+        agent = await self._fresh_agent(session)
+        return (await self._gate_addressed(session, agent, event, self._meta)).addressed
+
+    async def decide_routed(
+        self,
+        session: AsyncSession,
+        event: InboundMessage,
+        reason: Literal["decided", "fallback"],
+    ) -> Delivery:
+        """The agent's own event for a message routed to it once the message
+        has committed (`delivery/decision.py`): the decision service picked it
+        (`decided`), or the service failed and it is the room's triage agent
+        (`fallback`). Only when its addressing policy and budget let the
+        sender through.
+
+        As quiet as a follow-up, for the same reason: the sender asked no one
+        in particular. A refusal is logged rather than posted, and an agent
+        with no session gets no "unavailable" notice.
+        """
+        meta = self._meta
+        agent = await self._fresh_agent(session)
+        gate = await self._gate_addressed(session, agent, event, meta)
+        if not gate.addressed:
+            # The router's decision record says so (`dropped_not_allowed`).
+            logger.debug(
+                "Decision routing: room=%s message=%s agent=%s routed_reason=%s "
+                "outcome=dropped_not_permitted reason=the sender may not "
+                "instruct this agent, or it is over budget",
+                meta.room_id,
+                event.event_id,
+                agent.name,
+                reason,
+            )
+            return NOTHING
+
+        async def after(row: InboundEvent) -> None:
+            assert isinstance(row, InboundMessage)
+            await self._after_follow_up(row, has_attachment=False)
+
+        sender_role = await self._sender_role(session, event.sender, event.content)
+        notice = await self._switch_notice(session)
+        return Delivery(
+            own_event=_message_own_event(
+                meta,
+                event,
+                event.thread_root_id,
+                self.agent.id,
+                sender_role,
+                notice,
+                mid_turn_delivery=self._mid_turn_delivery(),
+                routed_reason=reason,
+                follow_up=None,
+            ),
+            after=after,
+        )
 
     async def _after_follow_up(
         self, event: InboundMessage, *, has_attachment: bool
@@ -876,11 +968,14 @@ class AgentRecipient:
         anchor = post_anchor(files, lead)
         gate = _GateOutcome(addressed=False, refusal=None)
         followed = False
+        follow_up: FollowUp | None = None
         if named:
             agent = await self._fresh_agent(session)
             gate = await self._gate_addressed(session, agent, anchor, meta)
         elif follow is not None:
             followed = await self._follows(session, anchor, follow)
+            if followed:
+                follow_up = _follow_up(follow)
         delivered = gate.addressed or followed
 
         sender_name = lead.sender_name
@@ -937,7 +1032,9 @@ class AgentRecipient:
                 ],
                 opening_message=opening,
                 sender_role=sender_role,
+                mid_turn_delivery=self._mid_turn_delivery(),
                 switch_notice=switch_notice,
+                follow_up=follow_up,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -997,27 +1094,37 @@ class AgentRecipient:
     async def decide_arrival(
         self, session: AsyncSession, event: InboundMembership
     ) -> Delivery:
-        """Whether someone else's arrival in the room is one of the agent's
-        own events: it is when the agent listens for joins in this room.
+        """Whether someone else's arrival in the room, or departure from it,
+        is one of the agent's own events: it is when the agent listens for
+        members coming and going in this room (the join-events setting).
 
-        Only a genuine join counts. A membership-preserving update (a display
-        name or avatar change) re-fires the membership with `prev_membership`
-        "join", and leaving is never written as a row.
+        Only a genuine join counts as an arrival. A membership-preserving
+        update (a display name or avatar change) re-fires the membership with
+        `prev_membership` "join". A departure is a row with membership
+        "leave"; the agent that left is never told, as nobody's own event is
+        the row they wrote.
         """
-        if event.membership != "join" or event.prev_membership == "join":
+        arriving = event.membership == "join" and event.prev_membership != "join"
+        leaving = event.membership == "leave"
+        if not (arriving or leaving):
+            return NOTHING
+        if arriving and (event.content or {}).get("quiet"):
+            # Someone the member sync found already in the channel: history,
+            # not news, so nobody is woken for each of a channel's people.
             return NOTHING
         if not self._member.listening:
-            # The agent does not listen for joins in this room, so the join
-            # is not written to its own events. A reader that wants the whole
-            # conversation still sees it, read from `messages`.
+            # The agent does not listen for members coming and going in this
+            # room, so the change is not written to its own events. A reader
+            # that wants the whole conversation still sees it, read from
+            # `messages`.
             return NOTHING
         meta = self._meta
         member_name = await self._member_name(session, event)
 
         def own_event(row: InboundEvent) -> OwnEvent:
             assert isinstance(row, InboundMembership)
-            return OwnEvent(
-                room_join_event(
+            if leaving:
+                built = room_leave_event(
                     room_id=meta.room_id,
                     bridge_id=meta.bridge_id,
                     channel_type=meta.channel_type,
@@ -1025,10 +1132,19 @@ class AgentRecipient:
                     member_name=member_name,
                     timestamp=row.timestamp,
                     listening=True,
-                ),
-                room_seq=row.seq,
-                message_key=row.event_id,
-            )
+                    removed_by=removed_by(row.content),
+                )
+            else:
+                built = room_join_event(
+                    room_id=meta.room_id,
+                    bridge_id=meta.bridge_id,
+                    channel_type=meta.channel_type,
+                    member=row.state_key,
+                    member_name=member_name,
+                    timestamp=row.timestamp,
+                    listening=True,
+                )
+            return OwnEvent(built, room_seq=row.seq, message_key=row.event_id)
 
         return Delivery(own_event=own_event, after=None)
 
@@ -1075,6 +1191,7 @@ class AgentRecipient:
             )
             return
         opening = opening_message_for(meta, self.agent.id)
+        extra_content: dict[str, object] | None = None
         if opening is not None:
             greeting = opening
         elif meta.console_chat:
@@ -1083,8 +1200,13 @@ class AgentRecipient:
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
+            extra_content = {AGENT_GREETING_KEY: True}
         await self.actor.send_message(
-            self._room.room_id, greeting, format="markdown", metered=False
+            self._room.room_id,
+            greeting,
+            format="markdown",
+            metered=False,
+            extra_content=extra_content,
         )
 
     # ── Commands ──────────────────────────────────────────────────────────────
@@ -1428,6 +1550,8 @@ class AgentRecipient:
             return _machine_removed_message(binding.controller_name, owner)
         if not controllers.is_live(self.agent.id):
             machine = await self._wake_cloud_machine(binding.controller_id)
+            if machine is not None and machine.admin_stopped:
+                return _cloud_machine_admin_stopped_message(binding.controller_name)
             if machine is None or machine.state == "error":
                 return _machine_offline_message(binding.controller_name, owner)
             if machine.owner_stopped:
@@ -1441,7 +1565,7 @@ class AgentRecipient:
         return None
 
     async def _wake_cloud_machine(self, controller_id: str) -> CloudMachineState | None:
-        """Starts the Switch cloud machine running `controller_id` if it is
+        """Starts the Switch Cloud machine running `controller_id` if it is
         asleep, and says how it stands; None for a controller on no cloud
         machine, or when the machine could not be read."""
         try:
@@ -1811,6 +1935,11 @@ class AgentRecipient:
         agent reads how it differs (`get_template_status`)."""
         return await self._notices.switch_notice(session, self.agent.id)
 
+    def _mid_turn_delivery(self) -> Literal["steer", "queue"]:
+        """The agent's setting for messages sent while it works, sent with
+        every message so a change applies to the next one."""
+        return "queue" if self.agent.mid_turn_delivery == "queue" else "steer"
+
     async def _sender_role(
         self, session: AsyncSession, sender: str, content: Mapping[str, object]
     ) -> str | None:
@@ -1871,7 +2000,7 @@ class AgentRecipient:
 
     def _strip_mention(self, text: str) -> str:
         pattern = re.compile(
-            re.escape(f"@{self.agent.name}") + rf"(?!{_NAME_CHAR}):?",
+            _mention_pattern(self.agent.name) + ":?",
             re.IGNORECASE,
         )
         return pattern.sub("", text).strip()
@@ -1886,6 +2015,21 @@ def opening_message_for(meta: RoomMeta, agent_id: str) -> str | None:
     return written.get("body")
 
 
+_FOLLOW_UPS: dict[ConversationRoute, FollowUp] = {
+    ConversationRoute.THREAD_FOLLOW_UP: "thread_follow_up",
+    ConversationRoute.CHANNEL_FOLLOW_UP: "channel_follow_up",
+    ConversationRoute.MAIN_AGENT: "main_agent",
+    ConversationRoute.ONE_TO_ONE: "one_to_one",
+}
+
+
+def _follow_up(decision: ConversationDecision) -> FollowUp:
+    """The rule a follow-up was delivered by, as the agent's event names it."""
+    if decision.route is None:
+        raise ValueError(f"No rule delivered this follow-up: {decision.reason}")
+    return _FOLLOW_UPS[decision.route]
+
+
 def _message_own_event(
     meta: RoomMeta,
     event: InboundMessage,
@@ -1893,9 +2037,15 @@ def _message_own_event(
     agent_id: str,
     sender_role: str | None,
     switch_notice: str | None,
+    *,
+    mid_turn_delivery: Literal["steer", "queue"],
+    routed_reason: Literal["decided", "fallback"] | None,
+    follow_up: FollowUp | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
-    written."""
+    written. `routed_reason` marks a message Switch routed to the agent after
+    it tagged nobody (`delivery/decision.py`), and `follow_up` one that
+    following the conversation delivered (`delivery/conversation.py`)."""
     sender_name = event.sender_name
     if not sender_name:
         sender_name = event.sender
@@ -1917,7 +2067,10 @@ def _message_own_event(
             thread_id=thread_id,
             opening_message=opening_message_for(meta, agent_id),
             sender_role=sender_role,
+            mid_turn_delivery=mid_turn_delivery,
             switch_notice=switch_notice,
+            routed_reason=routed_reason,
+            follow_up=follow_up,
         )
         # Serialising runs once per agent per message, so only when it will
         # be seen.

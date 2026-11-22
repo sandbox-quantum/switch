@@ -6,9 +6,12 @@ platform operator's access, which every workspace it enters records."""
 from __future__ import annotations
 
 import asyncio
+import secrets
 import uuid
-from datetime import timedelta
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
@@ -17,6 +20,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
+from switch_core.bridges.agent.registration_bootstrap import (
+    BOOTSTRAP_OWNER_MARKER_META_KEY,
+    SERVICE_ACCOUNT_ADMIN_REFUSAL,
+)
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.sign_in_flows import SignInFlows
@@ -29,6 +36,7 @@ from switch_core.db.models import (
     Organization,
     OrganizationAuditEvent,
     OrganizationMember,
+    Room,
     Tenant,
     TenantMember,
     User,
@@ -37,21 +45,31 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway import workspace_creation
+from switch_core.gateway import organizations, workspace_creation
 from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.invite_mail import InviteMailer
+from switch_core.gateway.organization_workspaces import (
+    router as organization_workspaces_router,
+)
+from switch_core.gateway.organizations import LAST_ORGANIZATION_ADMIN_REFUSAL
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.gateway.workos_sign_in_routes import (
     router as workos_sign_in_router,
 )
 from switch_core.keys import Keyring
+from switch_core.organization_admin_notices import OrganizationAdminNotices
 from switch_core.organization_directory import LocalDirectory
 from tests.telemetry_records import recording_telemetry
+
+# Where the organization admins' e-mails link to.
+DASHBOARD = "https://dashboard.example.invalid"
 
 _KEYRING = Keyring.parse(
     "test:" + "organization-routes-test-secret-" + "0" * 32, legacy_secret=None
@@ -80,6 +98,7 @@ def _app(
     *,
     signup_mode: str = "open",
     max_workspaces_per_user: int = 3,
+    mailer: InviteMailer | None = None,
 ) -> FastAPI:
     async def _session_dep():
         async with session_factory() as session:
@@ -87,6 +106,7 @@ def _app(
 
     app = FastAPI()
     app.include_router(organizations_router)
+    app.include_router(organization_workspaces_router)
     app.include_router(tenants_router)
     app.dependency_overrides[gw_deps.get_session] = _session_dep
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep
@@ -102,7 +122,11 @@ def _app(
         _FakeClientLifecycle(session_factory)
     )
     app.dependency_overrides[gw_deps.get_agent_store] = lambda: AgentStore()
+    app.dependency_overrides[gw_deps.get_room_store] = lambda: RoomStore()
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
+    app.dependency_overrides[gw_deps.get_organization_admin_notices] = lambda: (
+        OrganizationAdminNotices(session_factory, mailer, DASHBOARD)
+    )
     app.dependency_overrides[gw_deps.get_protocol] = lambda: SimpleNamespace(
         api_key_cache=SimpleNamespace(invalidate=lambda key_hash: None)
     )
@@ -124,6 +148,7 @@ def _app(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
@@ -137,7 +162,14 @@ def _app(
 
 def _client(app: FastAPI, user_id: str, tenant_id: str | None) -> httpx.AsyncClient:
     token = create_jwt(
-        user_id, f"{user_id}@example.invalid", "user", _KEYRING, tenant_id
+        user_id,
+        f"{user_id}@example.invalid",
+        "user",
+        _KEYRING,
+        tenant_id,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -246,6 +278,46 @@ class TestChangingRoles:
             "workspace_id": tenant_id,
         }
 
+    async def test_the_service_account_cannot_be_made_org_admin(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """An org admin administers every workspace of the organization, and
+        agents added with the shared registration token act with their
+        owner's role: the row says it can't be granted, and the route refuses
+        when asked anyway."""
+        ada, bob, robot = _name("ada"), _name("bob"), _name("robot")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                bob: ("member", "member"),
+                robot: ("member", "member"),
+            },
+        )
+        async with session_factory() as session:
+            account = await session.get(User, robot)
+            assert account is not None
+            account.metadata_ = {BOOTSTRAP_OWNER_MARKER_META_KEY: True}
+            await session.commit()
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            listed = await client.get("/organizations/current/members")
+            promoted = await client.patch(
+                f"/organizations/current/members/{robot}", json={"role": "org_admin"}
+            )
+
+        grants = {row["user_id"]: row["can_grant_org_admin"] for row in listed.json()}
+        assert grants[robot] is False and grants[bob] is True
+        services = {row["user_id"]: row["service_account"] for row in listed.json()}
+        assert services[robot] is True and services[bob] is False
+        assert promoted.status_code == 409, promoted.text
+        assert promoted.json()["detail"] == SERVICE_ACCOUNT_ADMIN_REFUSAL
+        async with session_factory() as session:
+            member = await session.scalar(
+                select(OrganizationMember).where(OrganizationMember.user_id == robot)
+            )
+            assert member is not None and member.role == "member"
+
     async def test_a_member_cannot_grant_themselves_org_admin(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -261,18 +333,31 @@ class TestChangingRoles:
 
         assert response.status_code == 403
 
-    async def test_the_last_org_admin_cannot_be_demoted(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_org_admin_steps_down_while_another_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
-        ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
+        """Their own role is theirs to change; the last one of all stays, as
+        nobody else could grant the role again."""
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                bob: ("member", "org_admin" if another_admin else "member"),
+            },
+        )
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
             response = await client.patch(
                 f"/organizations/current/members/{ada}", json={"role": "member"}
             )
 
-        assert response.status_code == 409
+        assert response.status_code == (200 if another_admin else 409), response.text
+        if another_admin:
+            assert response.json()["role"] == "member"
+            # Still in the workspace by her own membership, so still bound to it.
+            assert "set-cookie" not in response.headers
 
     async def test_an_unknown_role_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -399,17 +484,42 @@ class TestRemoving:
             await _events(session_factory, tenant_id, AuditAction.MEMBER_REMOVED) == []
         )
 
-    async def test_the_last_org_admin_cannot_be_removed(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_org_admin_leaves_while_another_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
-        ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
+        """As with their own role. Having stood in the workspace only as an
+        organization admin, the session no longer names it once she leaves."""
+        ada, bob, cy = _name("ada"), _name("bob"), _name("cy")
+        tenant_id = await _workspace(session_factory, {cy: ("admin", "member")})
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert organization_id is not None
+        async with session_factory() as session:
+            for name, role in (
+                (ada, "org_admin"),
+                (bob, "org_admin" if another_admin else "member"),
+            ):
+                session.add(
+                    User(
+                        id=name, name=name, email=f"{name}@example.invalid", role="user"
+                    )
+                )
+                await session.flush()
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id, user_id=name, role=role
+                    )
+                )
+            await session.commit()
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
             response = await client.delete(f"/organizations/current/members/{ada}")
 
-        assert response.status_code == 409
-        assert "last organization admin" in response.json()["detail"]
+        assert response.status_code == (200 if another_admin else 409), response.text
+        async with session_factory() as session:
+            left = await session.get(OrganizationMember, (organization_id, ada)) is None
+        assert left is another_admin
+        assert ("set-cookie" in response.headers) is another_admin
 
 
 class TestTheWorkspaceRoster:
@@ -521,23 +631,6 @@ class TestThePlatformOperator:
             await _events(session_factory, tenant_id, AuditAction.PLATFORM_ACCESS) == []
         )
 
-    async def test_only_the_operator_lists_every_workspace(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
-        operator_id = await _operator(session_factory)
-
-        async with _client(_app(session_factory), operator_id, None) as client:
-            listed = await client.get("/operator/workspaces")
-        async with _client(_app(session_factory), ada, tenant_id) as client:
-            refused = await client.get("/operator/workspaces")
-
-        assert listed.status_code == 200, listed.text
-        [row] = [row for row in listed.json() if row["id"] == tenant_id]
-        assert row["organization_name"] == "Acme"
-        assert refused.status_code == 403
-
     async def test_restores_an_org_admin_only_where_there_is_none(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -567,6 +660,57 @@ class TestThePlatformOperator:
         assert changed.actor_user_id == operator_id
         assert changed.details is not None
         assert changed.details["platform_access"] is True
+
+    async def test_an_operator_in_the_organization_may_restore_themselves(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """They may make themselves its `org_admin`, as anyone else."""
+        op = _name("op")
+        tenant_id = await _workspace(session_factory, {op: ("member", "member")})
+        async with session_factory() as session:
+            operator = await session.get(User, op)
+            assert operator is not None
+            operator.role = "admin"
+            await session.commit()
+
+        async with _client(_app(session_factory), op, tenant_id) as client:
+            [row] = (await client.get("/organizations/current/members")).json()
+            restored = await client.patch(
+                f"/organizations/current/members/{op}", json={"role": "org_admin"}
+            )
+
+        assert (row["can_change_role"], row["can_remove"]) == (True, False)
+        assert restored.status_code == 200, restored.text
+        assert restored.json()["role"] == "org_admin"
+        # Now its only `org_admin`, their own row says why they may neither
+        # step down nor leave yet.
+        assert (
+            restored.json()["can_change_role"],
+            restored.json()["can_remove"],
+        ) == (False, False)
+        assert restored.json()["change_role_blocked_reason"] == (
+            LAST_ORGANIZATION_ADMIN_REFUSAL
+        )
+
+    async def test_once_the_operator_restores_someone_else_their_way_in_closes(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bob = _name("bob")
+        tenant_id = await _workspace(session_factory, {bob: ("member", "member")})
+        operator_id = await _operator(session_factory)
+
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
+            restored = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "org_admin"}
+            )
+
+        assert restored.status_code == 200, restored.text
+        flags = restored.json()
+        assert (
+            flags["can_change_role"],
+            flags["can_grant_org_admin"],
+            flags["can_remove"],
+        ) == (False, False, False)
 
 
 async def _user(session_factory: async_sessionmaker[AsyncSession], role: str) -> str:
@@ -841,6 +985,84 @@ class TestListingOrganizationsAndWorkspaces:
         }
         assert as_member.status_code == 200, as_member.text
         assert [row["id"] for row in as_member.json()] == [tenant_id]
+
+    async def test_each_workspace_comes_with_its_counts_and_admins(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Counted as each list counts them; admins by membership only, since
+        an org admin administers every workspace without being named."""
+        ada, carol, bob = _name("ada"), _name("carol"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                carol: ("admin", "member"),
+                bob: ("member", "member"),
+            },
+        )
+        async with tenant_session(session_factory, tenant_id) as session:
+            session.add(Room(transport_room_id="!open", name="Open", description=""))
+            session.add(
+                Room(
+                    transport_room_id="!gone",
+                    name="Gone",
+                    description="",
+                    archived_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+        app = _app(session_factory)
+
+        async with _client(app, ada, tenant_id) as client:
+            response = await client.get("/organizations/current/workspaces")
+
+        assert response.status_code == 200, response.text
+        [row] = response.json()
+        assert row["id"] == tenant_id
+        assert (row["users"], row["agents"], row["rooms"]) == (3, 0, 1)
+        assert row["admins"] == [carol]
+        assert row["created_at"]
+
+    async def test_a_member_is_told_only_of_their_own_agents_and_the_rooms_they_may_read(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A private room they are not in is not counted to them, nor another
+        person's agent: as their own Rooms and Agents lists hold them."""
+        ada, carol, bob = _name("ada"), _name("carol"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                carol: ("admin", "member"),
+                bob: ("member", "member"),
+            },
+        )
+        async with tenant_session(session_factory, tenant_id) as session:
+            session.add(Room(transport_room_id="!open", name="Open", description=""))
+            session.add(
+                Room(
+                    transport_room_id="!private",
+                    name="Leadership",
+                    description="",
+                    owner_id=carol,
+                    read_visibility="private",
+                    write_visibility="private",
+                )
+            )
+            await session.commit()
+        await _agent(session_factory, tenant_id, carol)
+        await _agent(session_factory, tenant_id, bob)
+        app = _app(session_factory)
+
+        counts: dict[str, tuple[int, int, int]] = {}
+        for who in (ada, bob):
+            async with _client(app, who, tenant_id) as client:
+                response = await client.get("/organizations/current/workspaces")
+            assert response.status_code == 200, response.text
+            [row] = response.json()
+            counts[who] = (row["users"], row["agents"], row["rooms"])
+
+        assert counts == {ada: (3, 2, 2), bob: (3, 1, 1)}
 
     async def test_the_platform_operator_sees_every_workspace_of_it(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1323,6 +1545,119 @@ async def _organization_of(
         return tenant.organization_id
 
 
+class TestTheLastOrgAdminUnderARace:
+    """Two org admins demoting or removing each other at once. The first holds
+    the admins' lock from before it takes anything away until its change
+    commits, so the second waits, counts after it, and is refused with
+    nothing of the other's taken away. The first is held while it ends the
+    other's access, and the second sent then, so the wait is seen every time
+    rather than when the timing allows."""
+
+    @staticmethod
+    async def _race(
+        monkeypatch: pytest.MonkeyPatch,
+        first: Callable[[], Awaitable[httpx.Response]],
+        second: Callable[[], Awaitable[httpx.Response]],
+    ) -> tuple[httpx.Response, httpx.Response, list[str]]:
+        ended: list[str] = []
+        entered, release = asyncio.Event(), asyncio.Event()
+        end_access = organizations._end_access_through_organization
+
+        async def held_once(*args: Any, **kwargs: Any) -> str | None:
+            ended.append(kwargs["user_id"])
+            if len(ended) == 1:
+                entered.set()
+                await release.wait()
+            return await end_access(*args, **kwargs)
+
+        monkeypatch.setattr(
+            organizations, "_end_access_through_organization", held_once
+        )
+        first_task = asyncio.create_task(first())
+        await entered.wait()
+        second_task = asyncio.create_task(second())
+        await asyncio.sleep(0.5)
+        assert not second_task.done(), "the second did not wait for the first"
+        release.set()
+        return await first_task, await second_task, ended
+
+    async def test_of_two_admins_demoting_each_other_the_second_takes_nothing(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "org_admin")}
+        )
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert organization_id is not None
+        app = _app(session_factory)
+
+        async with (
+            _client(app, ada, tenant_id) as as_ada,
+            _client(app, bob, tenant_id) as as_bob,
+        ):
+            first, second, ended = await self._race(
+                monkeypatch,
+                lambda: as_ada.patch(
+                    f"/organizations/current/members/{bob}", json={"role": "member"}
+                ),
+                lambda: as_bob.patch(
+                    f"/organizations/current/members/{ada}", json={"role": "member"}
+                ),
+            )
+
+        assert first.status_code == 200, first.text
+        assert second.status_code == 409, second.text
+        assert "last organization admin" in second.json()["detail"]
+        assert ended == [bob]
+        async with session_factory() as session:
+            assert await OrganizationStore().count_admins(session, organization_id) == 1
+
+    async def test_of_two_admins_removing_each_other_the_second_takes_nothing(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ada, bob, cy = _name("ada"), _name("bob"), _name("cy")
+        tenant_id = await _workspace(session_factory, {cy: ("admin", "member")})
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert organization_id is not None
+        async with session_factory() as session:
+            for name in (ada, bob):
+                session.add(
+                    User(
+                        id=name, name=name, email=f"{name}@example.invalid", role="user"
+                    )
+                )
+                await session.flush()
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id, user_id=name, role="org_admin"
+                    )
+                )
+            await session.commit()
+        app = _app(session_factory)
+
+        async with (
+            _client(app, ada, tenant_id) as as_ada,
+            _client(app, bob, tenant_id) as as_bob,
+        ):
+            first, second, ended = await self._race(
+                monkeypatch,
+                lambda: as_ada.delete(f"/organizations/current/members/{bob}"),
+                lambda: as_bob.delete(f"/organizations/current/members/{ada}"),
+            )
+
+        assert first.status_code == 200, first.text
+        assert second.status_code == 409, second.text
+        assert "last organization admin" in second.json()["detail"]
+        assert ended == [bob]
+        async with session_factory() as session:
+            assert await OrganizationStore().count_admins(session, organization_id) == 1
+
+
 class TestIssues:
     """What needs an organization admin's attention, read from how things
     stand: an issue is gone once fixed."""
@@ -1473,3 +1808,126 @@ class TestIssues:
             response = await client.get("/organizations/current/issues")
 
         assert response.status_code == 403
+
+
+class TestWhatTheCallerMayDo:
+    @pytest.mark.parametrize(
+        ("who", "administers", "can_manage_members"),
+        [
+            ("org-admin", True, True),
+            ("member", False, False),
+            # Only while the organization has no admin, to make one.
+            ("operator-restoring", False, True),
+            ("operator", False, False),
+        ],
+    )
+    async def test_the_organization_says_whether_the_caller_runs_it(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        who: str,
+        administers: bool,
+        can_manage_members: bool,
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        restoring = who == "operator-restoring"
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "member" if restoring else "org_admin"),
+                bob: ("member", "member"),
+            },
+        )
+        caller = {"org-admin": ada, "member": bob}.get(who) or await _operator(
+            session_factory
+        )
+
+        async with _client(_app(session_factory), caller, tenant_id) as client:
+            response = await client.get("/organizations/current")
+
+        assert response.status_code == 200, response.text
+        assert (
+            response.json()["administers"],
+            response.json()["can_manage_members"],
+        ) == (administers, can_manage_members)
+
+    async def test_each_member_says_what_an_org_admin_may_do_with_them(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob, cy = _name("ada"), _name("bob"), _name("cy")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                bob: ("member", "member"),
+                cy: ("member", "org_admin"),
+            },
+        )
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            response = await client.get("/organizations/current/members")
+
+        assert response.status_code == 200, response.text
+        assert {
+            row["user_id"]: (
+                row["can_change_role"],
+                row["can_grant_org_admin"],
+                row["can_remove"],
+            )
+            for row in response.json()
+        } == {
+            # Their own row too: they step down or leave while another remains.
+            ada: (True, True, True),
+            bob: (True, True, True),
+            cy: (True, True, True),
+        }
+
+    async def test_the_only_org_admins_row_says_why_it_cannot_change(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """As the workspace roster does for its last admin: the flags answer
+        what the routes would, and the reason says what to do first."""
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory,
+            {ada: ("admin", "org_admin"), bob: ("member", "member")},
+        )
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            listed = await client.get("/organizations/current/members")
+            demoted = await client.patch(
+                f"/organizations/current/members/{ada}", json={"role": "member"}
+            )
+
+        assert listed.status_code == 200, listed.text
+        rows = {row["user_id"]: row for row in listed.json()}
+        assert (
+            rows[ada]["can_change_role"],
+            rows[ada]["change_role_blocked_reason"],
+            rows[ada]["can_remove"],
+            rows[ada]["remove_blocked_reason"],
+        ) == (
+            False,
+            LAST_ORGANIZATION_ADMIN_REFUSAL,
+            False,
+            LAST_ORGANIZATION_ADMIN_REFUSAL,
+        )
+        assert (
+            rows[bob]["can_change_role"],
+            rows[bob]["change_role_blocked_reason"],
+            rows[bob]["can_remove"],
+        ) == (True, None, True)
+        assert demoted.status_code == 409, demoted.text
+
+    async def test_the_operator_restoring_an_admin_may_change_roles_and_nothing_more(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bob = _name("bob")
+        tenant_id = await _workspace(session_factory, {bob: ("member", "member")})
+        operator_id = await _operator(session_factory)
+
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
+            response = await client.get("/organizations/current/members")
+
+        assert response.status_code == 200, response.text
+        [row] = response.json()
+        assert (row["can_change_role"], row["can_remove"]) == (True, False)

@@ -1,4 +1,7 @@
-from sqlalchemy import and_, delete, func, insert, or_, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, and_, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Document, Room, package_documents, room_documents
@@ -48,6 +51,14 @@ class DocumentStore:
                     Document.read_visibility == "public",
                 ),
             )
+        )
+        return list(result.scalars().all())
+
+    async def list_library(self, session: AsyncSession) -> list[Document]:
+        """Every library document in the bound tenant, whoever owns it: none
+        of a room's own."""
+        result = await session.execute(
+            select(Document).where(Document.room_id.is_(None))
         )
         return list(result.scalars().all())
 
@@ -109,22 +120,31 @@ class DocumentStore:
 
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, document_id: str
-    ) -> None:
-        await session.execute(
-            insert(room_documents).values(room_id=room_id, document_id=document_id)
+    ) -> bool:
+        """Attach a document to a room, saying whether it was attached now.
+        Idempotent, as attaching a reference is."""
+        result = await session.execute(
+            pg_insert(room_documents)
+            .values(room_id=room_id, document_id=document_id)
+            .on_conflict_do_nothing(
+                index_elements=[room_documents.c.room_id, room_documents.c.document_id]
+            )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, document_id: str
-    ) -> None:
-        await session.execute(
+    ) -> bool:
+        """Detach it from a room, saying whether it was attached."""
+        result = await session.execute(
             delete(room_documents).where(
                 room_documents.c.room_id == room_id,
                 room_documents.c.document_id == document_id,
             )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def list_for_room(
         self, session: AsyncSession, room_id: str

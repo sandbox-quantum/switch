@@ -1,8 +1,8 @@
 import { useColorScheme } from "@mui/material";
-import { HOOT_DARK, HOOT_LIGHT } from "../theme/hoot-tokens";
+import { TOKENS_DARK, TOKENS_LIGHT } from "../theme/tokens";
 
 /** Canvas paints outside the CSS cascade, so the force-graph views can't read
- *  `var(--hoot-*)`. Resolve the active scheme's tokens to concrete colours here
+ *  `var(--sw-*)`. Resolve the active scheme's tokens to concrete colours here
  *  so the graphs follow the theme instead of hardcoding a dark slab. */
 export interface GraphCanvasTheme {
   /** Canvas fill — the graph sits on the same surface as the rest of the page. */
@@ -23,7 +23,7 @@ const FONT = "Space Grotesk, sans-serif";
 export function useGraphCanvasTheme(): GraphCanvasTheme {
   const { mode, systemMode } = useColorScheme();
   const resolved = mode === "system" ? (systemMode ?? "light") : (mode ?? "light");
-  const t = resolved === "dark" ? HOOT_DARK : HOOT_LIGHT;
+  const t = resolved === "dark" ? TOKENS_DARK : TOKENS_LIGHT;
 
   return {
     background: t.card,
