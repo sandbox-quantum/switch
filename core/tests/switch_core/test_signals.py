@@ -282,6 +282,35 @@ class TestNothingIsLost:
         assert attempts == ["t1", "t1"]
         assert work.pending == 0
 
+    async def test_work_that_takes_too_long_is_kept_and_tried_again(
+        self, make_bus: Callable[[], SignalBus], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(signals_module, "RETRY_SECONDS", 0.02)
+        monkeypatch.setattr(signals_module, "REREAD_TIMEOUT_SECONDS", 0.05)
+        bus = make_bus()
+        attempts: list[str] = []
+        done = asyncio.Event()
+
+        async def reread(key: str) -> None:
+            attempts.append(key)
+            if attempts == ["stuck"]:
+                await asyncio.Event().wait()
+            if attempts.count("stuck") == 2:
+                done.set()
+
+        work = bus.pending_work("things", reread)
+        try:
+            await bus.start()
+            work.add("stuck")
+            work.add("behind")
+            await asyncio.wait_for(done.wait(), DELIVERY_TIMEOUT)
+        finally:
+            await bus.stop()
+
+        # The stuck re-read gave way to the key behind it, and was kept.
+        assert attempts == ["stuck", "behind", "stuck"]
+        assert work.pending == 0
+
     async def test_a_signal_with_no_sender_reaches_every_process(
         self,
         two_buses: tuple[SignalBus, SignalBus],
