@@ -74,8 +74,12 @@ def _fake_bridge(  # noqa: ANN202
     async def _adopt_existing_room(channel_id: str) -> tuple[str, str] | None:
         return None
 
+    async def _judge_platform_join(agent_ids: list[str], **kwargs: Any) -> None:
+        return None
+
     bridge = SimpleNamespace(
         _adapter=_Adapter(),
+        _judge_platform_join=_judge_platform_join,
         _room_service=_RoomService(),
         _resolve_agents_for_channel=_resolve_agents_for_channel,
         _adopt_existing_room=_adopt_existing_room,

@@ -121,6 +121,10 @@ class AdminMessageType(StrEnum):
     AUTO_ROUTE_UNAVAILABLE = "auto_route_unavailable"
     # A change an admin made to the room's settings, told in the room.
     ROOM_SETTINGS_NOTICE = "room_settings_notice"
+    # An agent added on the platform by someone its policy does not admit.
+    INVITE_REFUSED = "invite_refused"
+    # An agent added on the platform without the platform saying by whom.
+    INVITE_UNVERIFIED = "invite_unverified"
 
 
 def admin_extra_content(message_type: AdminMessageType | None) -> dict[str, object]:

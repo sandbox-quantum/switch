@@ -94,6 +94,13 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL, RENEW_EVERY_SECONDS
 from switch_core.provisioning import Provisioning
+from switch_core.room_invites import (
+    UNLINKED_ADDER_HINT,
+    PlatformJoinJudgement,
+    judge_platform_join,
+    not_addressable_refusal,
+    unverified_join_notice,
+)
 from switch_core.room_service import RoomCreateConfig
 from switch_core.room_wide_mention import is_room_wide_mention
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
@@ -2259,9 +2266,34 @@ class CollaborationCore:
         if existing is not None:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
+            async with tenant_session(
+                self._session_factory, self._bridge_tenant_id
+            ) as session:
+                room = await self._room_store.get(session, room_id)
+                seated = agent.id in await self._room_store.get_agent_ids(
+                    session, room_id
+                )
+            judgement = None
+            if not seated:
+                judgement = await self._judge_platform_join(
+                    [agent.id],
+                    channel_type=join.channel_type,
+                    room_id=room_id,
+                    group_id=room.group_id if room is not None else None,
+                    added_by_external_user_id=join.added_by_external_user_id,
+                )
+            if judgement is not None and judgement.refused:
+                await self._tell_platform_join(
+                    join.channel_id, join.channel_name, judgement
+                )
+                return
             await self._room_service.add_agents_to_room(
                 room_id, agent_names=[join.agent_name], added_by_kind="system"
             )
+            if judgement is not None:
+                await self._tell_platform_join(
+                    join.channel_id, join.channel_name, judgement
+                )
             return
 
         await self._create_room_for_channel(
@@ -2381,6 +2413,145 @@ class CollaborationCore:
         logger.debug("Adopted existing room %s for channel %s", room.id, channel_id)
         return (room.id, room.transport_room_id)
 
+    async def _judge_platform_join(
+        self,
+        agent_ids: list[str],
+        *,
+        channel_type: ChannelType,
+        room_id: str,
+        group_id: str | None,
+        added_by_external_user_id: str | None,
+    ) -> PlatformJoinJudgement | None:
+        """The invite rule for agents seated in a channel through the platform
+        (`room_invites.judge_platform_join`). None for a lobby or a direct
+        conversation, which the rule leaves alone, and when there is nobody
+        to judge."""
+        if channel_type not in ("channel_public", "channel_private") or not agent_ids:
+            return None
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            by_id = {
+                agent.id: agent
+                for agent in await self._agent_store.get_many(session, agent_ids)
+            }
+            return await judge_platform_join(
+                session,
+                self._external_user_store,
+                targets=[by_id[i] for i in agent_ids if i in by_id],
+                room_id=room_id,
+                group_id=group_id,
+                bridge_id=self._bridge_id,
+                added_by_external_user_id=added_by_external_user_id,
+            )
+
+    async def _tell_platform_join(
+        self,
+        channel_id: str,
+        channel_name: str | None,
+        judgement: PlatformJoinJudgement,
+    ) -> None:
+        """Say in the channel which agents were kept out and why, and which
+        were let in without Switch knowing who added them, telling their
+        owners too. A notice that fails is logged and never takes the join
+        down with it."""
+        for agent in judgement.refused:
+            logger.info(
+                "Kept agent %s out of channel %s: whoever added it there may not "
+                "address it",
+                agent.name,
+                channel_id,
+            )
+            refusal = not_addressable_refusal(agent, markdown=True)
+            if judgement.adder_unlinked:
+                refusal += UNLINKED_ADDER_HINT
+            await self._post_join_notice(
+                channel_id, refusal, AdminMessageType.INVITE_REFUSED
+            )
+        for agent in judgement.unverified:
+            logger.warning(
+                "Agent %s was added to channel %s without the platform saying "
+                "by whom, so who may address it was not checked",
+                agent.name,
+                channel_id,
+            )
+            await self._post_join_notice(
+                channel_id,
+                unverified_join_notice(agent),
+                AdminMessageType.INVITE_UNVERIFIED,
+            )
+            await self._tell_owner_unverified(agent, channel_id, channel_name)
+
+    async def _post_join_notice(
+        self, channel_id: str, content: str, message_type: AdminMessageType
+    ) -> None:
+        try:
+            await self._adapter.admin_message(
+                channel_id, content, message_type=message_type.value
+            )
+        except Exception:
+            logger.warning(
+                "Could not post the %s notice in channel %s: %s",
+                message_type.value,
+                channel_id,
+                content,
+                exc_info=True,
+            )
+
+    async def _tell_owner_unverified(
+        self, agent: Agent, channel_id: str, channel_name: str | None
+    ) -> None:
+        """Tell an agent's owner privately that it was let into `channel_id`
+        unverified, through the account they linked on this bridge. The
+        channel has been told already, so where there is no owner, no linked
+        account or no private route, that notice is all there is, and a
+        failure here is only logged."""
+        if agent.owner_id is None:
+            return
+        if self._adapter.private_notice_delivery == "in_channel":
+            logger.info(
+                "%s has no private route: the owner of %s learns of its "
+                "unverified join to %s from the channel notice",
+                self._adapter.platform_name,
+                agent.name,
+                channel_id,
+            )
+            return
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            accounts = [
+                account
+                for account in await self._external_user_store.get_by_user(
+                    session, agent.owner_id
+                )
+                if account.bridge_id == self._bridge_id
+            ]
+        if not accounts:
+            logger.info(
+                "The owner of %s has no account linked on this bridge: they "
+                "learn of its unverified join to %s from the channel notice",
+                agent.name,
+                channel_id,
+            )
+            return
+        try:
+            await self._adapter.notify_privately(
+                channel_id=channel_id,
+                channel_name=channel_name,
+                user_id=accounts[0].external_user_id,
+                content=unverified_join_notice(agent),
+                thread_root_id=None,
+            )
+        except Exception:
+            logger.warning(
+                "Could not tell the owner of %s privately about its unverified "
+                "join to %s; the channel notice stands",
+                agent.name,
+                channel_id,
+                exc_info=True,
+            )
+
     async def _create_room_for_channel(
         self,
         *,
@@ -2412,6 +2583,16 @@ class CollaborationCore:
             return existing
 
         agent_ids = await self._resolve_agents_for_channel(channel_id, channel_type)
+        judgement = await self._judge_platform_join(
+            agent_ids,
+            channel_type=channel_type,
+            room_id="",
+            group_id=None,
+            added_by_external_user_id=added_by_external_user_id,
+        )
+        if judgement is not None:
+            admitted = {agent.id for agent in judgement.admitted}
+            agent_ids = [agent_id for agent_id in agent_ids if agent_id in admitted]
         owner_id = await self._owner_from_platform_account(
             added_by_external_user_id, channel_id
         )
@@ -2481,9 +2662,17 @@ class CollaborationCore:
             channel_id,
         )
 
+        if judgement is not None:
+            await self._tell_platform_join(channel_id, channel_name, judgement)
+
         # Not when the room is being made by an invite: the agent is a moment
         # away, and "no agents in it yet" would be the first thing said there.
-        if not agent_ids and not inviting_an_agent:
+        # Nor when agents were refused: the refusal already says why.
+        if (
+            not agent_ids
+            and not inviting_an_agent
+            and not (judgement is not None and judgement.refused)
+        ):
             # create_room invited the bridge client before returning, so posting
             # now cannot predate its join. admin_message goes straight to the
             # channel via the platform API (not through the room), so it surfaces
