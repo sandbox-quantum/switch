@@ -12,7 +12,6 @@ properties:
     owner: platform
     status: proposed
     gaps:
-      model: signals.qnt is not written yet
       code: no machine over the revocations yet
       system: waits on the two-replica lane
     notes: >

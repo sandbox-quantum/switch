@@ -2,7 +2,8 @@
 
 Quint models of the concurrent parts of Switch. `delivery.qnt` follows how a
 room's rows reach an agent; `ownership.qnt` follows how owned work passes
-between processes; `configs.qnt` says what bounds each check runs at and which
+between processes; `signals.qnt` follows how a change reaches what other
+processes hold when the `NOTIFY` announcing it is lost; `configs.qnt` says what bounds each check runs at and which
 behaviours that are not in the code each invariant must fail on.
 
 ```bash
@@ -95,6 +96,35 @@ handles the answer to a renewal, so a late answer cannot revive it.
 time that this bounded model cannot give honestly, so it stays a property of
 the running system.
 
+## Signals
+
+`signals.qnt` has one row, the processes that hold it, and three families, one
+switched on per check (`signals_view`, `signals_cache`, `signals_room`). A check
+follows one holder; a change is made by it or by a process not modelled, so the
+holder still misses changes made elsewhere. Each check is a few seconds.
+
+| Family | Is | In the code |
+| --- | --- | --- |
+| `view` | What a process holds about the row and acts on; a signal published after the commit, lost if its sender dies first; a queued re-read; resync on reconnect; a re-check every `RECHECK` ticks | `SignalBus`, `PendingWork`, each family's `on_resync` and `on_recheck` |
+| `cache` | An entry kept past its TTL only while the connection it was read under listens, and a read an invalidation overtook not stored | `HeldRows`, `ReadTicket` |
+| `room` | The highest announced position kept per room, a subscriber that reads every row after its cursor, every room woken on reconnect | `MessageListener` |
+
+A signal that reaches a listening connection is delivered, in any order;
+dropping the connection loses what was not yet handled. A trigger's signal
+(`cache`, `room`) is lost only that way, while a published one (`view`) is also
+lost when its sender dies between the commit and the send.
+
+| Invariant | Property | It says |
+| --- | --- | --- |
+| `NoWrongAnswerPastBound` | `revocation.takes-effect-everywhere`, `signal.loss-only-delays` | Past the bound since a change, a process's view is current (one re-check), and its cache answers the current row (the TTL plus the time the entry's read took) unless the signal dropping it is still to be handled |
+| `LossOnlyDelays` | `signal.loss-only-delays` | A process that listened through every signal, or re-read since one was lost, is current or has the signal or re-read still to do |
+| `NoStrandedRow` | `signal.loss-only-delays` | A row past a listening subscriber's cursor has a wake-up kept or its announcement still to handle |
+| `ReadsEveryRow` | `signal.loss-only-delays` | A subscriber has read every row up to its cursor |
+
+The cache's bound is the TTL plus the read's duration because `HeldRows.put`
+starts the TTL when the read is stored: a read that began before a missed
+change and finished later is kept for the whole TTL from then.
+
 ## Mutants
 
 Each module `mutant_*` in `configs.qnt` switches on one behaviour that is not
@@ -116,8 +146,16 @@ invariant that held on such a system could not have caught that bug.
 | `release_before_stop` | The key released while its work still runs | `NoOverlap` |
 | `stop_at_full_lease` | The holder stops at the whole lease, not half | `NoOverlap` |
 | `write_without_token` | A write accepted whoever the holder is | `FencedTakeover` |
+| `view_acts_on_payload` | A handler takes the version a signal carries instead of re-reading | `LossOnlyDelays` |
+| `no_resync` | Nothing re-read when the listening connection comes back | `LossOnlyDelays` |
+| `no_recheck` | No periodic re-check, so a signal lost with its sender is lost for good | `NoWrongAnswerPastBound` |
+| `cache_acts_on_payload` | The cache stores what a signal carries instead of dropping the row | `NoWrongAnswerPastBound` |
+| `hold_survives_reconnect` | An entry held under one connection is kept under the next | `NoWrongAnswerPastBound` |
+| `no_generation` | A read that an invalidation overtook is stored anyway | `NoWrongAnswerPastBound` |
+| `no_wake_on_reconnect` | The message listener does not wake every room on reconnect | `NoStrandedRow` |
+| `reads_announced_row` | A woken subscriber reads the row the announcement named, not everything after its cursor | `ReadsEveryRow` |
 
-The last is the code as it was. `created_at` defaulted to `now()`, the start of
+`created_at_transaction_start` is the code as it was. `created_at` defaulted to `now()`, the start of
 the transaction, so a transaction that began earlier and numbered its event later
 had a lower number and a later `created_at` than one that began later. Retention
 deletes by `created_at` and a reader takes everything numbered below what

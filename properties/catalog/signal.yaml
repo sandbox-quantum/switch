@@ -12,6 +12,12 @@ properties:
     levels: [model, system]
     owner: platform
     status: proposed
+    gaps:
+      system: no lane drops `NOTIFY` yet; it comes with the two-replica lane
     notes: >
       One rule on two channels: the signal bus (`signals.py`) and the room
-      wake-ups (`messages/notify.py`). One model, `signals.qnt`, covers both.
+      wake-ups (`messages/notify.py`). One model, `signals.qnt`, covers both,
+      one family at a time: what a process holds and re-reads, the held cache
+      (`held_rows.py`), and the room wake-up. Its bound for the held cache is
+      the TTL plus the time the entry's read took, because the TTL counts from
+      when the read is stored, not when it began.

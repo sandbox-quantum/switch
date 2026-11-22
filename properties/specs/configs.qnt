@@ -147,3 +147,85 @@ module mutant_write_without_token {
     PROCS = Set(1, 2), MAX_NOW = 4, BUGS = Set("write-without-token")
   ).* from "./ownership"
 }
+
+// The signals model, one family a check: what a process holds and re-reads
+// (`view`), the held cache (`cache`), and the room wake-up (`room`). One
+// process holding the row, changes made by it or by one not modelled, two
+// changes or rows, and one reconnect.
+
+module signals_view {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set()
+  ).* from "./signals"
+}
+
+module signals_cache {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set()
+  ).* from "./signals"
+}
+
+module signals_room {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("room"), MAX_VERSION = 0, MAX_ROWS = 2,
+    MAX_CONN = 2, MAX_CLOCK = 0, BUGS = Set()
+  ).* from "./signals"
+}
+
+module mutant_view_acts_on_payload {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("view-acts-on-payload")
+  ).* from "./signals"
+}
+
+module mutant_no_resync {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("no-resync")
+  ).* from "./signals"
+}
+
+module mutant_no_recheck {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("no-recheck")
+  ).* from "./signals"
+}
+
+module mutant_cache_acts_on_payload {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set("cache-acts-on-payload")
+  ).* from "./signals"
+}
+
+module mutant_hold_survives_reconnect {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set("hold-survives-reconnect")
+  ).* from "./signals"
+}
+
+module mutant_no_generation {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set("no-generation")
+  ).* from "./signals"
+}
+
+module mutant_no_wake_on_reconnect {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("room"), MAX_VERSION = 0, MAX_ROWS = 2,
+    MAX_CONN = 2, MAX_CLOCK = 0, BUGS = Set("no-wake-on-reconnect")
+  ).* from "./signals"
+}
+
+module mutant_reads_announced_row {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("room"), MAX_VERSION = 0, MAX_ROWS = 2,
+    MAX_CONN = 2, MAX_CLOCK = 0, BUGS = Set("reads-announced-row")
+  ).* from "./signals"
+}

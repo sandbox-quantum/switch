@@ -6,7 +6,7 @@
     python3 properties/specs/run.py mutants           # every mutant must be caught
     python3 properties/specs/run.py                   # verify and mutants
 
-`verify` has TLC search every state `delivery.qnt` and `ownership.qnt` can reach in the bounds
+`verify` has TLC search every state `delivery.qnt`, `ownership.qnt` and `signals.qnt` can reach in the bounds
 `configs.qnt` gives a module, and checks each invariant in all of them. It is
 exhaustive in those bounds and says nothing about more rooms, agents, rows or
 writers. `mutants` does the same on a module with one behaviour that is not in
@@ -37,6 +37,13 @@ INVARIANTS = [
 
 LEASE_INVARIANTS = ["NoOverlap", "FencedTakeover"]
 
+SIGNAL_INVARIANTS = [
+    "NoWrongAnswerPastBound",
+    "LossOnlyDelays",
+    "NoStrandedRow",
+    "ReadsEveryRow",
+]
+
 # Modules in configs.qnt whose every invariant must hold, with those it names,
 # and the ones that take minutes.
 CHECKS = [
@@ -44,6 +51,9 @@ CHECKS = [
     ("retention", INVARIANTS),
     ("recipients", INVARIANTS),
     ("lease", LEASE_INVARIANTS),
+    ("signals_view", SIGNAL_INVARIANTS),
+    ("signals_cache", SIGNAL_INVARIANTS),
+    ("signals_room", SIGNAL_INVARIANTS),
 ]
 DEEP_CHECKS = [
     ("recipients_deep", INVARIANTS),
@@ -65,6 +75,14 @@ MUTANTS = [
     ("mutant_release_before_stop", "NoOverlap"),
     ("mutant_stop_at_full_lease", "NoOverlap"),
     ("mutant_write_without_token", "FencedTakeover"),
+    ("mutant_view_acts_on_payload", "LossOnlyDelays"),
+    ("mutant_no_resync", "LossOnlyDelays"),
+    ("mutant_no_recheck", "NoWrongAnswerPastBound"),
+    ("mutant_cache_acts_on_payload", "NoWrongAnswerPastBound"),
+    ("mutant_hold_survives_reconnect", "NoWrongAnswerPastBound"),
+    ("mutant_no_generation", "NoWrongAnswerPastBound"),
+    ("mutant_no_wake_on_reconnect", "NoStrandedRow"),
+    ("mutant_reads_announced_row", "ReadsEveryRow"),
 ]
 
 
