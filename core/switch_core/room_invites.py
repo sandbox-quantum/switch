@@ -1,10 +1,11 @@
 """Who may invite an agent into a room: one rule for every way in.
 
-An agent can be brought into a room four ways: the Gateway's room routes
+An agent can be brought into a room five ways: the Gateway's room routes
 (Switch Console and the web UI), an agent's `invite_agent_to_room` and
-`create_room` tools, `!invite-agent` posted in the room, and a room made from
-a template or YAML document, by a person or an agent (`rooms_yaml`). All of
-them ask this module, so they agree.
+`create_room` tools, `!invite-agent` posted in the room, a room made from
+a template or YAML document, by a person or an agent (`rooms_yaml`), and
+someone adding it to a channel on the platform itself (`judge_platform_join`).
+All of them ask this module, so they agree.
 
 The rule: the inviter must be **in the room**, and **allowed to address** the
 agent being invited. An agent sitting in a room sees everything said there, so
@@ -22,6 +23,9 @@ restricted agent a view of a room its owner never chose.
 - Someone posting `!invite-agent` is in the channel, so counts as in the room
   whether or not their chat account is linked to a Switch user; the policy
   then decides, which for an unlinked poster means only open agents.
+- Someone adding an agent on the platform is judged the same way, as the
+  account the platform says added it. When the platform does not say, the
+  agent is let in, and the channel and the agent's owner are told.
 
 Each refusal says why in plain words, the same on every path.
 
@@ -32,6 +36,7 @@ which the outside paths check before this one.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from switch_core.addressing import allows_on_behalf_of, can_address, parse_policy
@@ -75,6 +80,94 @@ def not_addressable_refusal(target: Agent, *, markdown: bool = False) -> str:
 
 class InviteRefused(PermissionError):
     """An invite the rule does not allow. `str()` is the refusal to show."""
+
+
+UNLINKED_ADDER_HINT = (
+    " If it's yours, this chat account isn't linked to your Switch user yet: "
+    "link it in Switch Console and add it again."
+)
+
+
+def unverified_join_notice(target: Agent) -> str:
+    """Said in a channel when an agent was seated there without Switch knowing
+    who put it in."""
+    label = agent_label_with_identifier(target.display_name, target.name)
+    return (
+        f"Switch couldn't verify who added {label} to this channel, so it was "
+        "let in without checking who it takes requests from. Its owner can "
+        "remove it if they didn't expect it here."
+    )
+
+
+@dataclass(frozen=True)
+class PlatformJoinJudgement:
+    """What to do with agents someone seated through the platform itself.
+    `admitted` take their seat; `unverified` is the part of `admitted` let in
+    because the platform did not say who added them; `refused` stay out."""
+
+    admitted: list[Agent]
+    unverified: list[Agent]
+    refused: list[Agent]
+    #: The account that added them is unknown to Switch or claimed by nobody,
+    #: so a refusal can say what to fix.
+    adder_unlinked: bool
+
+
+async def judge_platform_join(
+    session: AsyncSession,
+    external_user_store: ExternalUserStore,
+    *,
+    targets: list[Agent],
+    room_id: str,
+    group_id: str | None,
+    bridge_id: str,
+    added_by_external_user_id: str | None,
+) -> PlatformJoinJudgement:
+    """Judge agents added to a channel on the platform, as whoever added them.
+
+    The adder is in the channel, so what is left is whether they may address
+    each agent, answered exactly as for a message from that account: the
+    claimed account, its claimants, deny-by-default. An account Switch does
+    not know is never trusted. When the platform does not say who it was, the
+    agents are let in and reported as unverified, for the caller to disclose.
+    `room_id` is "" for a room not made yet."""
+    admitted: list[Agent] = []
+    unverified: list[Agent] = []
+    refused: list[Agent] = []
+    account = None
+    claimants: list[str] = []
+    if added_by_external_user_id is not None:
+        account = await external_user_store.get_by_external_id(
+            session, bridge_id, added_by_external_user_id
+        )
+        if account is not None:
+            claimants = await external_user_store.claimant_ids(session, account.id)
+    for target in targets:
+        policy = parse_policy(target.addressing_policy)
+        if policy.is_open():
+            admitted.append(target)
+        elif added_by_external_user_id is None:
+            admitted.append(target)
+            unverified.append(target)
+        elif account is not None and can_address(
+            policy,
+            room_id=room_id,
+            group_id=group_id,
+            sender_kind="user",
+            sender_id=account.id,
+            sender_user_ids=claimants,
+            sender_owner_user_id=None,
+            owner_user_id=target.owner_id,
+        ):
+            admitted.append(target)
+        else:
+            refused.append(target)
+    return PlatformJoinJudgement(
+        admitted=admitted,
+        unverified=unverified,
+        refused=refused,
+        adder_unlinked=added_by_external_user_id is not None and not claimants,
+    )
 
 
 async def _takes_part(
