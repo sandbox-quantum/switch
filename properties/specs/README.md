@@ -105,8 +105,8 @@ holder still misses changes made elsewhere. Each check is a few seconds.
 
 | Family | Is | In the code |
 | --- | --- | --- |
-| `view` | What a process holds about the row and acts on; a signal published after the commit, lost if its sender dies first; a queued re-read; resync on reconnect; a re-check every `RECHECK` ticks | `SignalBus`, `PendingWork`, each family's `on_resync` and `on_recheck` |
-| `cache` | An entry kept past its TTL only while the connection it was read under listens, and a read an invalidation overtook not stored | `HeldRows`, `ReadTicket` |
+| `view` | What a process holds about the row and acts on; a signal published after the commit, lost if its sender dies first; a queued re-read; resync on reconnect; a re-check `RECHECK` ticks after the last one finished. Each re-read takes time, can fail, and applies what it read when it finishes | `SignalBus`, `PendingWork`, each family's `on_resync` and `on_recheck` |
+| `cache` | An entry kept past its TTL only while the connection it was read under listens, a read an invalidation overtook not stored, and the TTL counted from when the read began | `HeldRows`, `ReadTicket` |
 | `room` | The highest announced position kept per room, a subscriber that reads every row after its cursor, every room woken on reconnect | `MessageListener` |
 
 A signal that reaches a listening connection is delivered, in any order;
@@ -116,14 +116,15 @@ lost when its sender dies between the commit and the send.
 
 | Invariant | Property | It says |
 | --- | --- | --- |
-| `NoWrongAnswerPastBound` | `revocation.takes-effect-everywhere`, `signal.loss-only-delays` | Past the bound since a change, a process's view is current (one re-check), and its cache answers the current row (the TTL plus the time the entry's read took) unless the signal dropping it is still to be handled |
-| `LossOnlyDelays` | `signal.loss-only-delays` | A process that listened through every signal, or re-read since one was lost, is current or has the signal or re-read still to do |
+| `NoWrongAnswerPastBound` | `revocation.takes-effect-everywhere`, `signal.loss-only-delays` | Past the bound since a change, a process's view is current (one re-check period, one more per failed re-check, and the time its reads were in flight), and its cache answers the current row (the TTL) unless the signal dropping it is still to be handled |
+| `LossOnlyDelays` | `signal.loss-only-delays` | A process that listened through every signal, or re-read since one was lost, is current or has the signal or a re-read still to do; a re-read that a change overtook counts as a lost signal |
 | `NoStrandedRow` | `signal.loss-only-delays` | A row past a listening subscriber's cursor has a wake-up kept or its announcement still to handle |
 | `ReadsEveryRow` | `signal.loss-only-delays` | A subscriber has read every row up to its cursor |
 
-The cache's bound is the TTL plus the read's duration because `HeldRows.put`
-starts the TTL when the read is stored: a read that began before a missed
-change and finished later is kept for the whole TTL from then.
+The view's bound includes the time its reads take because nothing discards a
+re-read that a change overtook: a re-check or resync that read the row before
+a change, and finishes after the change was acted on, puts the old row back
+until the next re-check. A read has no timeout, so neither does that bound.
 
 ## Mutants
 
@@ -152,6 +153,7 @@ invariant that held on such a system could not have caught that bug.
 | `cache_acts_on_payload` | The cache stores what a signal carries instead of dropping the row | `NoWrongAnswerPastBound` |
 | `hold_survives_reconnect` | An entry held under one connection is kept under the next | `NoWrongAnswerPastBound` |
 | `no_generation` | A read that an invalidation overtook is stored anyway | `NoWrongAnswerPastBound` |
+| `ttl_from_store` | The TTL counted from when the read is stored, so a slow read is kept longer | `NoWrongAnswerPastBound` |
 | `no_wake_on_reconnect` | The message listener does not wake every room on reconnect | `NoStrandedRow` |
 | `reads_announced_row` | A woken subscriber reads the row the announcement named, not everything after its cursor | `ReadsEveryRow` |
 

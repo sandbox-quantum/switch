@@ -18,6 +18,6 @@ properties:
       One rule on two channels: the signal bus (`signals.py`) and the room
       wake-ups (`messages/notify.py`). One model, `signals.qnt`, covers both,
       one family at a time: what a process holds and re-reads, the held cache
-      (`held_rows.py`), and the room wake-up. Its bound for the held cache is
-      the TTL plus the time the entry's read took, because the TTL counts from
-      when the read is stored, not when it began.
+      (`held_rows.py`), and the room wake-up. A re-read that a change
+      overtook puts the old row back until the next re-check, so the bound on
+      a process's view includes how long its reads take.

@@ -229,3 +229,10 @@ module mutant_reads_announced_row {
     MAX_CONN = 2, MAX_CLOCK = 0, BUGS = Set("reads-announced-row")
   ).* from "./signals"
 }
+
+module mutant_ttl_from_store {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set("ttl-from-store")
+  ).* from "./signals"
+}

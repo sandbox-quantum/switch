@@ -9,12 +9,15 @@
 //   of a controller's socket holds its revocation. A signal is published after
 //   the commit, through the `Announcer`, and is lost if its sender dies first.
 //   The handler queues a re-read (`PendingWork`); a reconnect resyncs; every
-//   process re-checks every `RECHECK` ticks.
+//   process re-checks `RECHECK` ticks after its last re-check finished. Each
+//   of the three is a read of the database that takes time, can fail, and
+//   applies what it read when it finishes.
 // - `cache`: rows read on every request and kept in memory (`HeldRows`). A
 //   trigger announces every write, so a signal is lost only when the
 //   receiving process is not listening. An entry is kept past its TTL only
-//   while the connection it was read under is the one listening, and a read
-//   that an invalidation overtook is not stored.
+//   while the connection it was read under is the one listening, a read that
+//   an invalidation overtook is not stored, and the TTL counts from when the
+//   read began.
 // - `room`: the room wake-up. Every insert is announced by a trigger; the
 //   listener keeps the highest position per room and wakes the room's
 //   subscribers, which read every row after their own cursor; a reconnect
@@ -46,26 +49,38 @@ module signals {
 
   type Signal = { family: str, version: int }
 
+  // A read of the row for the `view` family, in flight or not, and what it
+  // read when it began.
+  type Read = { busy: bool, value: int }
+
+  // The three ways a process re-reads the row for its view.
+  pure val READERS = Set("work", "recheck", "resync")
+
   // One process. `up` and `conn` are its listening connection (`connected`
   // and `listens`); `inbox` the signals it has received and not yet handled.
   //
-  // `view`, `pending` and `next_recheck` are the `view` family: what it holds,
-  // a re-read queued, and when its re-check is next due.
+  // `view`, `pending`, `next_recheck` and `reads` are the `view` family: what
+  // it holds, a re-read queued, when its re-check is next due, and each
+  // reader's read in flight. `slack` and `failed` are ghosts the bound reads:
+  // the ticks since the last change that some read was in flight, and the
+  // re-checks that failed since then.
   //
   // `cached`, `value`, `expires`, `held` and `generation` are a `HeldRows`
   // entry and its generation; `reading`, `ticket_generation`,
   // `ticket_listening` and `read_value` a read in flight with its ticket.
-  // `held` and `ticket_listening` are -1 for none. `read_at` is when the read
-  // in flight began, and `took` how long the stored entry's read took: the
-  // TTL counts from the store (`HeldRows.put`), so an entry can be that much
-  // older than its TTL.
+  // `held` and `ticket_listening` are -1 for none; `read_at` is when the read
+  // in flight began, which the ticket records.
   //
   // `cursor`, `got` and `wake` are a room subscriber: its place, the rows it
   // has read, and the position the listener keeps for it (-1 for no wake-up,
   // 0 for "read everything").
   //
-  // `missed` is a ghost: a `view` signal for this process was lost while it
-  // listened, because its sender died, and nothing has re-read the row since.
+  // `missed` is a ghost: what the process holds is out of date and no signal
+  // will say so, until a re-read brings it the row as committed. Either a
+  // `view` signal for it was lost while it listened, because its sender died,
+  // or a re-read that began before a change applied what it read after the
+  // change: nothing discards a re-read that a change overtook, the way
+  // `HeldRows`' generation does.
   type Proc = {
     up: bool,
     conn: int,
@@ -74,6 +89,9 @@ module signals {
     pending: bool,
     next_recheck: int,
     missed: bool,
+    reads: str -> Read,
+    slack: int,
+    failed: int,
     cached: bool,
     value: int,
     expires: int,
@@ -84,7 +102,6 @@ module signals {
     ticket_listening: int,
     read_value: int,
     read_at: int,
-    took: int,
     cursor: int,
     got: Set[int],
     wake: int,
@@ -115,9 +132,10 @@ module signals {
       procs: PROCS.mapBy(_ => {
         up: true, conn: 1, inbox: Set(),
         view: 0, pending: false, next_recheck: RECHECK, missed: false,
+        reads: READERS.mapBy(_ => { busy: false, value: 0 }), slack: 0, failed: 0,
         cached: false, value: 0, expires: 0, held: -1, generation: 0,
         reading: false, ticket_generation: 0, ticket_listening: -1, read_value: 0,
-        read_at: 0, took: 0,
+        read_at: 0,
         // `MessageListener.subscribe` wakes a new subscriber once.
         cursor: 0, got: Set(), wake: 0,
       }),
@@ -159,6 +177,8 @@ module signals {
             inbox: me.inbox.union(cache_signal).union(view_signal),
             view: if (has("view") and q == p) bumped else me.view,
             missed: me.missed or (has("view") and heard and q != p and lost),
+            slack: 0,
+            failed: 0,
             cached: if (has("cache") and q == p) false else me.cached,
             generation:
               if (has("cache") and q == p) me.generation + 1 else me.generation,
@@ -210,26 +230,56 @@ module signals {
     }
   }
 
-  // `PendingWork.work_all`: the queued re-read, from the database.
+  def begin_read(me: Proc, reader: str): Proc =
+    { ...me, reads: me.reads.set(reader, { busy: true, value: s.version }) }
+
+  // `PendingWork.work_all` takes the queued key and reads the row.
   action work(p: int): bool = {
     val me = s.procs.get(p)
     all {
       me.pending,
-      s' = with_proc(p, { ...me, pending: false, view: s.version, missed: false }),
+      not(me.reads.get("work").busy),
+      s' = with_proc(p, begin_read({ ...me, pending: false }, "work")),
     }
   }
 
-  // `SignalBus._recheck_forever`, which runs whether or not the bus listens.
-  // The mutant `no-recheck` has none.
+  // `SignalBus._recheck_forever`, which runs whether or not the bus listens,
+  // reads the row once its sleep is over. The mutant `no-recheck` has none.
   action recheck(p: int): bool = {
     val me = s.procs.get(p)
     all {
       has("view"),
       not(BUGS.contains("no-recheck")),
+      not(me.reads.get("recheck").busy),
       s.clock >= me.next_recheck,
-      s' = with_proc(p, {
-        ...me, view: s.version, missed: false, next_recheck: s.clock + RECHECK,
-      }),
+      s' = with_proc(p, begin_read(me, "recheck")),
+    }
+  }
+
+  // A read finishes. One that worked applies what it read when it began. One
+  // that failed is logged and changes nothing: `PendingWork` keeps its key to
+  // try again, a failed resync leaves what was missed while the bus was down
+  // to the re-check, and the re-check tries again at its next turn. A
+  // re-check sleeps `RECHECK` from when it finishes.
+  action finish(p: int, reader: str, ok: bool): bool = {
+    val me = s.procs.get(p)
+    val read = me.reads.get(reader)
+    val done = { ...me, reads: me.reads.set(reader, { ...read, busy: false }) }
+    val after =
+      if (ok) {
+        ...done,
+        view: read.value,
+        missed: read.value != s.version,
+      }
+      else if (reader == "work") { ...done, pending: true }
+      else if (reader == "resync") { ...done, missed: me.view != s.version }
+      else { ...done, failed: me.failed + 1 }
+    all {
+      read.busy,
+      s' = with_proc(p,
+        if (reader == "recheck") { ...after, next_recheck: s.clock + RECHECK }
+        else after
+      ),
     }
   }
 
@@ -243,23 +293,23 @@ module signals {
   }
 
   // A new listening connection (`_listen_once`): `listens` counts it, every
-  // resync re-reads the row, and the message listener wakes every room. The
-  // mutants `no-resync` and `no-wake-on-reconnect` skip those.
+  // resync begins to re-read the row, and the message listener wakes every
+  // room. The mutants `no-resync` and `no-wake-on-reconnect` skip those.
   action reconnect(p: int): bool = {
     val me = s.procs.get(p)
     val resync = has("view") and not(BUGS.contains("no-resync"))
     val wake_all = has("room") and not(BUGS.contains("no-wake-on-reconnect"))
+    val connected = {
+      ...me,
+      up: true,
+      conn: me.conn + 1,
+      wake: if (wake_all and me.wake < 0) 0 else me.wake,
+    }
     all {
       not(me.up),
       me.conn < MAX_CONN,
-      s' = with_proc(p, {
-        ...me,
-        up: true,
-        conn: me.conn + 1,
-        view: if (resync) s.version else me.view,
-        missed: if (resync) false else me.missed,
-        wake: if (wake_all and me.wake < 0) 0 else me.wake,
-      }),
+      not(me.reads.get("resync").busy),
+      s' = with_proc(p, if (resync) begin_read(connected, "resync") else connected),
     }
   }
 
@@ -275,7 +325,8 @@ module signals {
       )
     )
 
-  // A cache miss reads the database: the ticket is taken and the row read.
+  // A cache miss reads the database: the ticket is taken, with the time, and
+  // the row read.
   action read(p: int): bool = {
     val me = s.procs.get(p)
     all {
@@ -295,8 +346,9 @@ module signals {
 
   // The read hands back its ticket (`HeldRows.fresh`, `held_under`): stored
   // only if nothing was invalidated while it was in flight, and held only if
-  // one connection listened through it. The mutant `no-generation` stores it
-  // whatever was invalidated.
+  // one connection listened through it, for the TTL from when the read began.
+  // The mutant `no-generation` stores it whatever was invalidated, and
+  // `ttl-from-store` counts the TTL from the store, as the code did.
   action store(p: int): bool = {
     val me = s.procs.get(p)
     val fresh =
@@ -309,8 +361,8 @@ module signals {
           reading: false,
           cached: true,
           value: me.read_value,
-          expires: s.clock + TTL,
-          took: s.clock - me.read_at,
+          expires:
+            (if (BUGS.contains("ttl-from-store")) s.clock else me.read_at) + TTL,
           held: if (me.ticket_listening == listening(me)) me.ticket_listening else -1,
         }
         else { ...me, reading: false }
@@ -344,19 +396,30 @@ module signals {
   }
 
   // Time passes. `_recheck_forever` wakes when a re-check is due, so time does
-  // not pass one before it has run.
+  // not pass one before it has begun; a read takes as long as it takes.
   action tick: bool = all {
     s.clock < MAX_CLOCK,
-    PROCS.forall(q =>
+    PROCS.forall(q => {
+      val me = s.procs.get(q)
       not(has("view")) or BUGS.contains("no-recheck")
-      or s.clock < s.procs.get(q).next_recheck
-    ),
-    s' = { ...s, clock: s.clock + 1 },
+      or me.reads.get("recheck").busy or s.clock < me.next_recheck
+    }),
+    s' = {
+      ...s,
+      clock: s.clock + 1,
+      procs: s.procs.keys().mapBy(q => {
+        val me = s.procs.get(q)
+        if (READERS.exists(r => me.reads.get(r).busy)) { ...me, slack: me.slack + 1 }
+        else me
+      }),
+    },
   }
 
   action step = {
     nondet p = PROCS.oneOf()
     nondet writer = PROCS.union(Set(0)).oneOf()
+    nondet reader = READERS.oneOf()
+    nondet ok = Set(false, true).oneOf()
     nondet signal = Set("view", "cache", "room")
       .map(f => 1.to(MAX_VERSION + MAX_ROWS).map(v => { family: f, version: v }))
       .flatten()
@@ -367,6 +430,7 @@ module signals {
       handle(p, signal),
       work(p),
       recheck(p),
+      finish(p, reader, ok),
       disconnect(p),
       reconnect(p),
       read(p),
@@ -379,18 +443,24 @@ module signals {
   def heard_about(me: Proc, family: str): bool =
     me.inbox.exists(signal => signal.family == family)
 
+  // A re-read in flight that read the row as it is now.
+  def bringing(me: Proc): bool =
+    READERS.exists(r => me.reads.get(r).busy and me.reads.get(r).value == s.version)
+
   /// @property revocation.takes-effect-everywhere
   /// @property signal.loss-only-delays
   /// What a process acts on is the row as committed once the bound has passed
   /// since the change, whichever signals were lost: its view after one
-  /// re-check, and its cache after the TTL and the time the entry's read took,
-  /// unless the signal that drops the row is still waiting to be handled.
+  /// re-check period, one more for each re-check that failed, and the time
+  /// its reads were in flight; its cache after the TTL, unless the signal that
+  /// drops the row is still waiting to be handled.
   val NoWrongAnswerPastBound = PROCS.forall(p => {
     val me = s.procs.get(p)
     and {
-      has("view") and me.view != s.version implies s.clock <= s.changed_at + RECHECK,
+      has("view") and me.view != s.version implies
+        s.clock <= s.changed_at + RECHECK * (1 + me.failed) + me.slack,
       has("cache") and answers(me) and me.value != s.version implies
-        (s.clock < s.changed_at + TTL + me.took or heard_about(me, "cache")),
+        (s.clock < s.changed_at + TTL or heard_about(me, "cache")),
     }
   })
 
@@ -398,11 +468,12 @@ module signals {
   /// A process that has listened through every signal sent it, or re-read
   /// since it missed one, holds the row as committed, or has the signal or
   /// the re-read still to do: nothing it acts on depends on what a signal
-  /// carried, and a reconnect loses nothing.
+  /// carried, and a reconnect loses nothing. A re-read a change overtook is
+  /// repaired by the re-check alone, which `NoWrongAnswerPastBound` bounds.
   val LossOnlyDelays = PROCS.forall(p => {
     val me = s.procs.get(p)
     has("view") and me.up and not(me.missed) implies
-      (me.view == s.version or me.pending or heard_about(me, "view"))
+      (me.view == s.version or me.pending or heard_about(me, "view") or bringing(me))
   })
 
   /// @property signal.loss-only-delays

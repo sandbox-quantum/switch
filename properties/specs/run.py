@@ -81,6 +81,7 @@ MUTANTS = [
     ("mutant_cache_acts_on_payload", "NoWrongAnswerPastBound"),
     ("mutant_hold_survives_reconnect", "NoWrongAnswerPastBound"),
     ("mutant_no_generation", "NoWrongAnswerPastBound"),
+    ("mutant_ttl_from_store", "NoWrongAnswerPastBound"),
     ("mutant_no_wake_on_reconnect", "NoStrandedRow"),
     ("mutant_reads_announced_row", "ReadsEveryRow"),
 ]
