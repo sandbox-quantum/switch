@@ -3,14 +3,21 @@
  *
  * Settings is about this person and this computer, so most of it is the same
  * for everyone. What changes is what needs a server (your messaging accounts,
- * keys and account live on one), what needs agent management, and whether the
- * server serves the web gateway that its workspace settings live in.
+ * keys and account live on one), what needs agent management, whether the
+ * server serves the web gateway that its workspace and organization settings
+ * live in, and what the person administers: a workspace's admins also look
+ * after its connectors and decision routing here and see its guardrails, and
+ * whoever runs a server with no web gateway its connector apps.
  */
 
 export type SettingsPageTab =
   | 'preferences'
   | 'messaging-apps'
   | 'clis-models'
+  | 'connectors'
+  | 'decision-routing'
+  | 'guardrails'
+  | 'connector-apps'
   | 'api-keys'
   | 'devices'
   | 'remote-hosts'
@@ -19,7 +26,7 @@ export type SettingsPageTab =
   | 'account';
 
 /** Links out of Settings: they open somewhere else rather than a pane. */
-export type SettingsLink = 'workspace-settings' | 'docs';
+export type SettingsLink = 'workspace-settings' | 'organization-settings' | 'docs';
 
 export type SettingsItemId = SettingsPageTab | SettingsLink;
 
@@ -29,6 +36,10 @@ export const SETTINGS_TABS: readonly SettingsPageTab[] = [
   'preferences',
   'messaging-apps',
   'clis-models',
+  'connectors',
+  'decision-routing',
+  'guardrails',
+  'connector-apps',
   'api-keys',
   'devices',
   'remote-hosts',
@@ -60,21 +71,42 @@ export type SettingsAudience = {
   agentManagement: boolean;
   /** The active server serves the web gateway, and you are signed in to it. */
   workspaceSettings: boolean;
+  /** As `workspaceSettings`, and you administer the workspace's organization. */
+  organizationSettings: boolean;
+  /** You administer the active workspace, or run its server. */
+  workspaceAdmin: boolean;
+  /** You run the active server, and it serves no web gateway. */
+  operatesGatewaylessServer: boolean;
+  /** The server has service connections on. */
+  serviceConnections: boolean;
+  /** The server has auto-route (`decision_routing`) on. */
+  decisionRouting: boolean;
 };
 
 /**
  * The sidebar's sections, in order: this computer and your work, then your
  * account, then the ways out. The workspace's own settings are the gateway's,
- * open to every member there; the organization's will join them.
+ * open to every member there; the organization's are the gateway's too, offered
+ * to the organization's admins, who are the ones who can change them.
  */
 export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
   const main: SettingsItem[] = [
     { id: 'preferences', label: 'Preferences' },
     ...(audience.hasServer ? [{ id: 'messaging-apps' as const, label: 'Messaging apps' }] : []),
     { id: 'clis-models', label: 'Agent providers' },
+    ...(audience.workspaceAdmin && audience.serviceConnections
+      ? [{ id: 'connectors' as const, label: 'Connectors' }]
+      : []),
+    ...(audience.workspaceAdmin && audience.decisionRouting
+      ? [{ id: 'decision-routing' as const, label: 'Message routing' }]
+      : []),
+    ...(audience.workspaceAdmin ? [{ id: 'guardrails' as const, label: 'Guardrails' }] : []),
+    ...(audience.operatesGatewaylessServer && audience.serviceConnections
+      ? [{ id: 'connector-apps' as const, label: 'Connector apps' }]
+      : []),
     ...(audience.hasServer ? [{ id: 'api-keys' as const, label: 'API keys' }] : []),
     // The devices Switch knows are yours exist only where agent management runs.
-    ...(audience.agentManagement ? [{ id: 'devices' as const, label: 'Your devices' }] : []),
+    ...(audience.agentManagement ? [{ id: 'devices' as const, label: 'Devices' }] : []),
     // The SSH hosts this Console reaches are this computer's own list.
     { id: 'remote-hosts', label: 'Remote hosts' },
     ...(audience.agentManagement
@@ -89,6 +121,9 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
     ...(audience.workspaceSettings
       ? [{ id: 'workspace-settings' as const, label: 'Workspace settings', isExternal: true }]
       : []),
+    ...(audience.organizationSettings
+      ? [{ id: 'organization-settings' as const, label: 'Organization settings', isExternal: true }]
+      : []),
     { id: 'docs', label: 'Docs', isExternal: true },
   ];
   return [main, account, links];
@@ -97,7 +132,7 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
 /**
  * The tab to show: the one asked for while the sidebar offers it, else
  * Preferences, so a tab that went away (a server signed out of, agent
- * management turned off) never leaves an empty pane.
+ * management turned off, an admin role taken away) never leaves an empty pane.
  */
 export function shownSettingsTab(
   tab: SettingsPageTab,

@@ -388,3 +388,9 @@ def test_a_name_that_is_not_an_agents_is_not_turned_into_a_ping() -> None:
     adapter = _adapter(guild)
 
     assert adapter.translate_outbound("ask @moderators") == "ask @moderators"
+
+
+def test_connect_form_names_the_guild_a_server_as_discord_does() -> None:
+    schema = DiscordConnectionConfig.model_json_schema()
+    assert schema["properties"]["guild_id"]["title"] == "Server ID"
+    assert "guild_id" in schema["required"]

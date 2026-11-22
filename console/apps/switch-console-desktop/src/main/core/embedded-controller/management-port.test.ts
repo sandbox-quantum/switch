@@ -7,6 +7,7 @@ const fetchManagedAgents = vi.hoisted(() => vi.fn());
 const revokeManagementController = vi.hoisted(() => vi.fn());
 const updateManagementController = vi.hoisted(() => vi.fn());
 const enrollConsoleController = vi.hoisted(() => vi.fn());
+const fetchMe = vi.hoisted(() => vi.fn());
 const managementErrorCode = vi.hoisted(() => vi.fn((): string | null => null));
 
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
@@ -14,6 +15,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   enrollConsoleController,
   fetchManagedAgents,
   fetchManagementControllers,
+  fetchMe,
   managementErrorCode,
   managementErrorMessage: (error: unknown) => (error as Error).message,
   revokeManagementController,
@@ -117,20 +119,68 @@ describe('placedOn', () => {
 });
 
 describe('gatewayManagementPort', () => {
+  const DEVICE_ID = 'd'.repeat(64);
+  const body = {
+    name: 'box',
+    platform: { os: 'linux', arch: 'x64', os_version: '6' },
+    version: '0.1.0',
+    deviceId: DEVICE_ID,
+  };
+  /** A signed-in user on a server speaking gateway API revisions up to `speaks`; null for one that says nothing. */
+  const serverSpeaking = (speaks: number | null) =>
+    fetchMe.mockResolvedValue({
+      server:
+        speaks === null
+          ? null
+          : { version: '0.32.0', contracts: { 'gateway-api': { speaks, accepts: 2 } } },
+    });
+
   it('enrolls and says which server and agent bridge that was', async () => {
-    enrollConsoleController.mockResolvedValue({ controllerId: 'c-1', credential: 'swcc_x' });
-    expect(
-      await gatewayManagementPort.enroll('workspace-1', {
-        name: 'box',
-        platform: { os: 'linux', arch: 'x64', os_version: '6' },
-        version: '0.1.0',
-      })
-    ).toEqual({
+    serverSpeaking(7);
+    enrollConsoleController.mockResolvedValue({
+      controllerId: 'c-1',
+      credential: 'swcc_x',
+      adopted: true,
+    });
+    expect(await gatewayManagementPort.enroll('workspace-1', body)).toEqual({
       serverId: 'server-1',
       apiUrl: 'https://switch.example.com',
       controllerId: 'c-1',
       credential: 'swcc_x',
+      adopted: true,
     });
+    expect(enrollConsoleController).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'server-1' }),
+      body
+    );
+  });
+
+  it('sends no device id to a server too old to take one, or one that does not say', async () => {
+    enrollConsoleController.mockResolvedValue({
+      controllerId: 'c-1',
+      credential: 'swcc_x',
+      adopted: false,
+    });
+    for (const speaks of [6, null]) {
+      serverSpeaking(speaks);
+      enrollConsoleController.mockClear();
+      await gatewayManagementPort.enroll('workspace-1', body);
+      expect(enrollConsoleController).toHaveBeenCalledWith(expect.anything(), {
+        ...body,
+        deviceId: null,
+      });
+    }
+  });
+
+  it('asks the server nothing when there is no device id to send', async () => {
+    fetchMe.mockClear();
+    enrollConsoleController.mockResolvedValue({
+      controllerId: 'c-1',
+      credential: 'swcc_x',
+      adopted: false,
+    });
+    await gatewayManagementPort.enroll('workspace-1', { ...body, deviceId: null });
+    expect(fetchMe).not.toHaveBeenCalled();
   });
 
   it('reads a server without agent management as unavailable, and other failures as errors', async () => {

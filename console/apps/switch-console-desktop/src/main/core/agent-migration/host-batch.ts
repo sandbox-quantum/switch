@@ -1,3 +1,4 @@
+import { IS_PROCESS_ALIVE } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import { SECRET_TEMP_SUFFIX } from '@main/core/fs/secret-temp';
 import { WATCHER_ROOT } from '@main/core/sdk-host/state-roots';
@@ -17,7 +18,7 @@ import type { MachineScript } from './session-handoff';
  * Takes the JSON of `{ identities, waitMs, killWaitMs }` and prints, per
  * identity, null when its watcher is down or the reason it is not.
  */
-export const STOP_WATCHERS_SCRIPT = String.raw`${WATCHER_ROOT}
+export const STOP_WATCHERS_SCRIPT = String.raw`${WATCHER_ROOT}${IS_PROCESS_ALIVE}
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const cp = require('node:child_process');
 const o = JSON.parse(process.argv[1]);
@@ -35,9 +36,6 @@ const pidIn = (root, file) => {
     if (e.code === 'ENOENT') return null;
     throw e;
   }
-};
-const alive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 };
 const commandOf = (pid) => {
   try { return fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').join(' '); }
@@ -62,7 +60,7 @@ for (const identity of o.identities) {
 const live = (identity) =>
   ['shared-owner.lock', 'supervisor/owner.json']
     .map((file) => pidIn(roots[identity], file))
-    .filter((pid) => pid !== null && alive(pid));
+    .filter((pid) => pid !== null && isProcessAlive(pid, 'recorded'));
 const signal = (identities, sig) => {
   for (const identity of identities)
     for (const pid of live(identity))

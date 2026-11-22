@@ -9,6 +9,11 @@ import { RenameChatModal } from '@renderer/features/chats/components/chat-modals
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
 import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
+import {
+  DeleteLibraryItemModal,
+  NewLibraryItemModal,
+} from '@renderer/features/library/library-modals';
+import { ReferenceTypeModal } from '@renderer/features/library/reference-types';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
@@ -26,7 +31,6 @@ import { AddAgentToRoomsModal } from '@renderer/features/switch-rooms/AddAgentTo
 import { DeleteRoomModal } from '@renderer/features/switch-rooms/DeleteRoomModal';
 import { AddServerModal } from '@renderer/features/switch-servers/AddServerModal';
 import { AssignServerModal } from '@renderer/features/switch-servers/assign-server-modal';
-import { BundledChatSignInModal } from '@renderer/features/switch-servers/BundledChatSignIn';
 import { ClaimIdentityModal } from '@renderer/features/switch-servers/ClaimIdentityModal';
 import { ConnectChatModal } from '@renderer/features/switch-servers/ConnectChatModal';
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
@@ -38,6 +42,7 @@ import { RenameServerModal } from '@renderer/features/switch-servers/RenameServe
 import { ReplaceTokenModal } from '@renderer/features/switch-servers/ReplaceTokenModal';
 import { RequireLinkConfirmationModal } from '@renderer/features/switch-servers/RequireLinkConfirmationModal';
 import { TeamsPlacementModal } from '@renderer/features/switch-servers/TeamsPlacementModal';
+import { PickRoomToCaptureModal } from '@renderer/features/templates/pick-room-to-capture-modal';
 import { SaveTemplateModal } from '@renderer/features/templates/save-template-modal';
 import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
 import { InvitePeopleModal } from '@renderer/features/workspaces/invite-people-modal';
@@ -80,7 +85,17 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   saveTemplateModal: createModal(SaveTemplateModal, { size: 'sm', dismissOnOutsideClick: false }),
+  pickRoomToCaptureModal: createModal(PickRoomToCaptureModal, { size: 'sm' }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
+  newLibraryItemModal: createModal(NewLibraryItemModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
+  deleteLibraryItemModal: createModal(DeleteLibraryItemModal, { size: 'sm' }),
+  referenceTypeModal: createModal(ReferenceTypeModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),
   renameAgentModal: createModal(RenameAgentModal, { size: 'sm', dismissOnOutsideClick: false }),
   removeAgentConfigModal: createModal(RemoveAgentConfigModal, { size: 'sm' }),
@@ -136,7 +151,6 @@ export const modalRegistry = {
     size: 'md',
     dismissOnOutsideClick: false,
   }),
-  bundledChatSignInModal: createModal(BundledChatSignInModal, { size: 'sm' }),
   disconnectMessagingAppModal: createModal(DisconnectMessagingAppModal, {
     size: 'sm',
     dismissOnOutsideClick: false,

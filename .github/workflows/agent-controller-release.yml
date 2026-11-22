@@ -113,5 +113,5 @@ jobs:
             --title "switch-agent-controller $VERSION" \
             --notes "The Switch agent controller $VERSION, for running managed agents on your own Linux or macOS machines.
 
-          Install (Node 22.13 or later) with \`install.sh\`, which checks the package's signature (\`switch-agent-controller-$VERSION.tgz.sig\`) before installing it. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. An installed controller updates with \`switch-agent-controller update\`." \
+          Install (Node 22.13 or later) with \`install.sh\`, which checks the package's signature (\`switch-agent-controller-$VERSION.tgz.sig\`) before installing it. Then enroll with a code from the Devices page and run \`switch-agent-controller install-service\`. An installed controller updates with \`switch-agent-controller update\`." \
             --latest=false

@@ -44,11 +44,11 @@ has its own `console/CLAUDE.md` (→ `AGENTS.md`); read that before working in t
 
 ```bash
 # Dependencies
-uv sync                          # install/update Python dependencies
+uv sync --project core           # install/update Python dependencies
 
 # Local dev infrastructure (Docker Compose)
 just init-env                    # first-time setup — generate .env with random secrets
-just up                          # start the supporting stack (Postgres, Mattermost) in Docker
+just up                          # start the supporting stack (Postgres) in Docker
 just run                         # run switch-core locally (:8000)
 just down                        # stop the supporting stack
 
@@ -124,8 +124,8 @@ are no connector plugins and no standalone runtime. Each session gets the Switch
 tools from its own session host, and the room-workflow skill from Console:
 `console/packages/plugins/src/switch-skill/SKILL.md` is the single copy,
 exported as `@switch-console/plugins/switch-skill`. OpenCode loads it as a
-skill file; Codex gets it as developer instructions; Claude Code, Cursor and
-Antigravity get it (without its frontmatter) as system context.
+skill file; Codex gets it as developer instructions; Claude Code, Cursor,
+Antigravity and Junie get it (without its frontmatter) as system context.
 
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, event delivery, or anything an agent needs to know —
@@ -170,11 +170,15 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 
 ## Reference Documentation
 
-- `docs/official/` — the published user-facing documentation
-  (docs.switchagents.ai) synced into the repo. Generated — edit the source in the
-  docs repository, never here. Start at `docs/README.md` for how the sync
-  works; `docs/official/internals/` covers architecture and the agent
-  protocol for readers of this repo.
+- **The published docs at https://docs.switchagents.ai are the source of truth**
+  for what users are told: read https://docs.switchagents.ai/llms.txt (every
+  page, one line each) and fetch the pages you need, or add the docs MCP server
+  at https://docs.switchagents.ai/mcp. Their Internals section covers
+  architecture and the agent protocol.
+- `docs/official/` — an offline copy of those docs, for when you cannot reach
+  the site. Generated and synced daily by `.github/workflows/docs-sync.yml`, so
+  it can trail the site by a day; edit the source in the docs repository, never
+  here. `docs/README.md` explains the sync.
 - `docs/old/ARCHITECTURE.md` — historical system overview from when Switch ran
   on Matrix. Much of it no longer matches the code; read it for background only.
 - `docs/old/api/AGENT_PROTOCOL.md` — the original design of the agent↔Switch
@@ -221,6 +225,10 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 - `docs/old/key-rotation.md` — the server's keys (`SECRET_KEYS`): what each
   derived key protects, moving a deployment off `JWT_SECRET_KEY`, and the
   rotation runbook
+- `docs/design/data-retention.md` — what Switch deletes: the per-workspace
+  message-retention window, the orphaned-file sweep, the leftover records
+  pruned after a grace period, how erasing a person works, and a GDPR design
+  note for what is not built (export, audit-log horizon)
 - `docs/old/rds-migration.md` — moving a deployment's Postgres to RDS: the
   proposal and the cutover runbook
 

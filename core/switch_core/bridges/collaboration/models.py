@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict
@@ -23,6 +24,15 @@ channel Switch has no permission to touch, which somebody removes on the
 platform itself.
 """
 
+PrivateNoticeDelivery = Literal["ephemeral", "direct_message", "in_channel"]
+"""How a bridge says something to one person about a message they posted.
+
+`ephemeral` is shown in the channel to that person alone; `direct_message`
+goes to a private chat between them and the bot; `in_channel` is a platform
+where a bot can do neither unprompted, so the notice is posted where everyone
+in the channel sees it.
+"""
+
 
 class RetireOutcome(BaseModel):
     """What happened to a room's platform channel when the room was deleted.
@@ -39,16 +49,60 @@ class RetireOutcome(BaseModel):
         return cls(outcome="failed", reason=reason)
 
 
+class CreatedChannel(BaseModel):
+    """A channel a bridge provisioned for a room.
+
+    `name` is the name the platform shows for it, in the form the bridge
+    reports when the channel is renamed. It can differ from what was asked
+    for: the platform's naming rules applied, and a suffix where the name was
+    taken.
+    """
+
+    id: str
+    name: str
+
+
 class ChannelCreationUnsupported(ValueError):
     """Raised when a bridge will not create a channel for a new room.
 
-    Either the platform has no such call — a Telegram bot cannot create a chat
-    — or an operator has withheld it from this connection. Both are answers to
-    a caller's request rather than faults, so this is a ``ValueError``: every
+    The platform has no such call — a Telegram bot cannot create a chat — an
+    operator has withheld it from this connection, or the connection lacks
+    what a channel needs, such as a Teams default team. All are answers to a
+    caller's request rather than faults, so this is a ``ValueError``: every
     door into room creation already turns one into a 4xx carrying the message,
     where an unexpected exception becomes an opaque 500 and the explanation
     never leaves the server.
     """
+
+
+class ChannelNotUsable(ValueError):
+    """A room was asked to use an existing channel the platform says it cannot.
+
+    Not found, or the Switch app is not in it. The message carries the
+    platform's own reason, since that is what tells the person what to fix.
+    """
+
+
+class ChannelInUse(ValueError):
+    """A room was asked to use a channel another room already uses.
+
+    A channel maps to at most one room. A `ValueError` so that paths without
+    a status of their own still answer it as the caller's mistake; the gateway
+    answers it with a 409.
+    """
+
+    def __init__(self, external_channel_id: str) -> None:
+        super().__init__(
+            f"Channel {external_channel_id} is already used by a room. A "
+            "channel can belong to only one room: choose another channel, or "
+            "move that room off it first."
+        )
+        self.external_channel_id = external_channel_id
+
+
+class PrivateChannelOwnerMissing(ValueError):
+    """A private channel was asked for on a platform that needs a person to own
+    it, and the person asking has no linked account there to name."""
 
 
 class WebhookDeliveryUnsupported(RuntimeError):
@@ -108,6 +162,20 @@ class DirectoryUser(BaseModel):
     username: str
     display_name: str
     email: str | None = None
+    # False where the platform gave this person no handle and `username` is
+    # one Switch made up to address them by (a Telegram account without a
+    # username), so it is not shown as if it were theirs.
+    has_handle: bool = True
+
+
+@dataclass(frozen=True)
+class KnownUserLabel:
+    """How a person Switch has seen is shown in an account search: the name
+    the platform shows for them, and whether their stored name is a handle
+    they chose rather than one Switch made up."""
+
+    display_name: str
+    has_handle: bool
 
 
 class InboundMessage(BaseModel):
@@ -139,6 +207,14 @@ class InboundMessage(BaseModel):
     # delivers another bot's posts, and Teams does not mark them, so both leave
     # this False and their cards accept the answer.
     sender_is_app: bool = False
+    # The message is a reply to one the Switch app posted: an agent's message,
+    # a card or a notice. Set by a platform where a reply is addressed to the
+    # one message it answers (Telegram), so it reaches the agent that posted
+    # that message as a mention would, even where the platform delivers the
+    # bot nothing else. False everywhere replies are threads.
+    replies_to_app: bool = False
+    # Content keys for the room message, beside its body.
+    extra_content: dict[str, object] = {}
 
 
 class InboundCommand(BaseModel):
@@ -160,6 +236,35 @@ class InboundCommand(BaseModel):
     root_id: str | None = None
     agent_name: str | None = None
     channel_name: str | None = None
+    # The adapter's own handle for answering this one command where only its
+    # sender sees the answer, wherever it was run (Slack's `response_url`, a
+    # pending Discord interaction). None when the platform gives the command
+    # no private reply; `PlatformAdapter.answer_command` is what reads it.
+    reply_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class DirectPrompt:
+    """A direct message to one person with a row of buttons (CHOO-4121).
+
+    `text` is Switch Markdown, rendered by the adapter like any other body.
+    Every button carries `token`, and a press names which button by its
+    position in `labels`, from one: the same `(token, position)` pair the
+    platforms' card buttons carry, so a press comes back through the path a
+    card's does, as `position_action(position)` with the token as its value.
+    """
+
+    text: str
+    token: str
+    labels: tuple[str, ...]
+
+
+class DirectMessageUnavailable(Exception):
+    """The platform cannot message this person directly.
+
+    The message says why in words a Switch user can act on, because it is shown
+    to them in Switch Console beside the code that works instead.
+    """
 
 
 class InboundInteraction(BaseModel):
@@ -173,7 +278,10 @@ class InboundInteraction(BaseModel):
 
     channel_id: str
     sender_id: str
+    # The handle Switch files the person under, and the name the platform
+    # shows them by, which is what a card says answered it.
     sender_name: str
+    sender_display_name: str
     action_id: str
     value: str
     # The platform's id for the message the control sits on, in the same form
@@ -190,6 +298,8 @@ class InboundAgentJoin(BaseModel):
     channel_type: ChannelType
     agent_name: str
     channel_name: str | None = None
+    # The platform account that added the agent, where the platform says.
+    added_by_external_user_id: str | None = None
 
 
 class InboundUserJoin(BaseModel):
@@ -198,6 +308,38 @@ class InboundUserJoin(BaseModel):
     external_user_id: str
     external_username: str
     channel_name: str | None = None
+    # Written to the room's history without waking any agent: someone who
+    # came to see the channel without being added to it (joining a Discord
+    # server makes its public channels visible), not someone added to it.
+    quiet: bool = False
+
+
+class InboundUserLeave(BaseModel):
+    """A person left a bridged channel, or was taken out of it.
+
+    `removed_by_name` is what the platform calls whoever removed them, where
+    the platform says and it was not the person themselves; None when they
+    left on their own or the platform did not say.
+    """
+
+    channel_id: str
+    external_user_id: str
+    external_username: str | None = None
+    removed_by_name: str | None = None
+
+
+class ChannelMembers(BaseModel):
+    """Who a platform says is in a channel, for lining a room up with it.
+
+    `complete` is False when the listing stopped short (a page failed, a
+    limit was hit): then it is good for adding people and never for removing
+    them, since someone missing from it may simply not have been reached.
+    `members` maps each person's platform id to their name; bots, the app
+    itself and Switch's agents are left out by the adapter.
+    """
+
+    members: dict[str, str]
+    complete: bool
 
 
 class InboundAppJoin(BaseModel):
@@ -208,6 +350,10 @@ class InboundAppJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType
     channel_name: str | None = None
+    # The platform account that added the app, where the platform says (Slack's
+    # inviter, the Teams user who added it). Its linked Switch user owns the
+    # room the channel becomes.
+    added_by_external_user_id: str | None = None
 
 
 class BridgeInstallLink(BaseModel):

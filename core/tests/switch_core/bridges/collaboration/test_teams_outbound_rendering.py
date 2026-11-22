@@ -20,7 +20,7 @@ from switch_core.bridges.collaboration.teams.cards import (
     agent_message_card,
     card_attachment,
 )
-from switch_core.bridges.collaboration.teams.connector import _payload
+from switch_core.bridges.collaboration.teams.connector import checked_payload
 
 _RENDERING = AgentRendering(
     field_label="james", body_label="james", icon_url="http://icon"
@@ -237,7 +237,7 @@ def test_a_body_of_many_short_lines_is_not_refused_for_its_punctuation() -> None
     text = str(card["body"][1]["text"])
     assert text.startswith("line 0\n\nline 1\n\n")
     assert text.endswith("line 499")
-    _payload("send", {"type": "message", "attachments": [card_attachment(card)]})
+    checked_payload("send", {"type": "message", "attachments": [card_attachment(card)]})
 
 
 def test_a_body_short_enough_to_afford_its_blocks_still_gets_them() -> None:

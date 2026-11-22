@@ -18,6 +18,7 @@ function machine(patch: Partial<OwnedMachine> & { id: string }): OwnedMachine {
     local: null,
     workspacesDir: null,
     os: null,
+    lastSeenAt: null,
     acceptsLogins: false,
     cloud: false,
     ...patch,
@@ -53,12 +54,12 @@ describe('the run locations a server with agent management offers', () => {
     ]);
   });
 
-  it('lists the Switch cloud machine only while it is online, as the cloud', () => {
-    const cloud = machine({ id: 'ec2', name: 'Switch cloud', kind: 'ec2', cloud: true });
+  it('lists the Switch Cloud machine only while it is online, as the cloud', () => {
+    const cloud = machine({ id: 'ec2', name: 'Switch Cloud', kind: 'ec2', cloud: true });
     expect(machineRunLocations([cloud])).toEqual([
       {
         value: 'machine:ec2',
-        label: 'Switch cloud',
+        label: 'Switch Cloud',
         tag: 'cloud',
         icon: 'cloud',
         disabled: false,

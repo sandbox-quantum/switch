@@ -65,9 +65,9 @@ async def end_orphaned_turns_once(
             try:
                 ended = await service.end_orphaned_turns()
                 if ended:
-                    logger.warning(
-                        "Ended %d turn(s) in tenant %s whose agent went away "
-                        "before reporting their end",
+                    logger.info(
+                        "Ended or settled the steps of %d turn(s) in tenant %s "
+                        "whose agent went away before reporting their end",
                         len(ended),
                         tenant_id,
                     )

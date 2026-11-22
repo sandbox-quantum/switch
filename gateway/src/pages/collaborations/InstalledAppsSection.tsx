@@ -24,8 +24,8 @@ import {
   formatDate,
   pluralize,
   platformLabel,
-  titleCase,
-} from "../../theme/hootFormat";
+  sentenceCase,
+} from "../../theme/format";
 import discordIcon from "../../assets/bridges/discord.svg";
 import slackIcon from "../../assets/bridges/slack.svg";
 import telegramIcon from "../../assets/bridges/telegram.svg";
@@ -75,18 +75,18 @@ const ENDED_COLOR: Record<string, "warning" | "default"> = {
 };
 
 interface Props {
-  isAdmin: boolean;
   // Disconnecting removes the connection the install created, so the list of
   // connections above this section is stale once it succeeds.
   onConnectionsChanged: () => void;
+  // For someone who does not administer the workspace, on a page that shows
+  // them only their own side: just the platforms whose chats they can add to
+  // or still have connected, not every platform's history.
+  memberView: boolean;
 }
 
-export default function InstalledAppsSection({
-  isAdmin,
-  onConnectionsChanged,
-}: Props) {
-  const { data: offered, refetch: refetchOffered } = useInstallablePlatforms();
-  const { data: installs, loading, refetch } = useInstalledApps();
+export default function InstalledAppsSection({ onConnectionsChanged, memberView }: Props) {
+  const { data: offered, error: offeredError, refetch: refetchOffered } = useInstallablePlatforms();
+  const { data: installs, error: installsError, loading, refetch } = useInstalledApps();
   const [starting, setStarting] = useState<string | null>(null);
   const [claim, setClaim] = useState<{
     platform: string;
@@ -103,13 +103,22 @@ export default function InstalledAppsSection({
 
   // Every platform this organisation can add to, or has anything recorded
   // for — a platform whose app was since removed still shows its history.
+  // The server offers the OAuth platforms to its admins alone.
   const platforms = useMemo(() => {
+    if (memberView) {
+      const seen = new Set<string>();
+      for (const c of claimable) if (c.can_add_chat) seen.add(c.platform);
+      // A live chat they may disconnect, even on a platform Switch no longer
+      // offers: the chat is still there to take out.
+      for (const row of rows) if (row.status === "active") seen.add(row.platform);
+      return [...seen];
+    }
     const seen = new Set<string>();
     for (const c of claimable) seen.add(c.platform);
-    if (isAdmin) for (const p of installable) seen.add(p);
+    for (const p of installable) seen.add(p);
     for (const row of rows) seen.add(row.platform);
     return [...seen];
-  }, [claimable, installable, rows, isAdmin]);
+  }, [claimable, installable, rows, memberView]);
 
   const handleInstall = useCallback(async (platform: string) => {
     setStarting(platform);
@@ -156,24 +165,48 @@ export default function InstalledAppsSection({
     onConnectionsChanged();
   }, [refetch, refetchOffered, onConnectionsChanged]);
 
-  if (platforms.length === 0) {
+  // Nothing to offer and nothing to show, unless that is only because a list
+  // failed to load: then say so, rather than look like there is nothing.
+  const failed = (offered === null && offeredError !== null) || (installs === null && installsError !== null);
+  if (platforms.length === 0 && !failed) {
     return null;
   }
 
   return (
     <Box mt={5}>
-      <Typography variant="h5" mb={1}>
-        Installed apps
-      </Typography>
-      <Typography variant="body2" color="text.secondary" mb={2}>
-        This deployment&apos;s own apps, using credentials only the deployment
-        holds. Disconnect what an app is installed in here: a connection above
-        cannot be deleted while an app is still installed through it.
-      </Typography>
+      {memberView ? (
+        <>
+          <Typography variant="h6" component="h2" mb={1}>
+            Chats
+          </Typography>
+          <Typography variant="body2" color="text.secondary" mb={2}>
+            Some messaging apps join Switch one chat at a time. Add a chat here,
+            or disconnect one you can write in.
+          </Typography>
+        </>
+      ) : (
+        <>
+          <Typography variant="h6" component="h2" mb={1}>
+            Installed apps
+          </Typography>
+          <Typography variant="body2" color="text.secondary" mb={2}>
+            This deployment&apos;s own apps, using credentials only the deployment
+            holds. Disconnect what an app is installed in here: a messaging app above
+            cannot be deleted while an app is still installed through it.
+          </Typography>
+        </>
+      )}
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
+        </Alert>
+      )}
+
+      {failed && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {memberView ? "Could not load your chats." : "Could not load the installed apps."} Reload the page to try
+          again.
         </Alert>
       )}
 
@@ -189,8 +222,8 @@ export default function InstalledAppsSection({
                 platform={platform}
                 installs={rows.filter((row) => row.platform === platform)}
                 claimable={claimed}
-                canInstall={isAdmin && installable.includes(platform)}
-                canDisconnect={isAdmin || claimed !== undefined}
+                canInstall={installable.includes(platform)}
+                memberView={memberView}
                 starting={starting}
                 onAdd={() =>
                   claimed ? handleClaim(platform) : handleInstall(platform)
@@ -222,7 +255,8 @@ interface CardProps {
   // Set for a claim-based platform, with what this caller may do on it.
   claimable: ClaimablePlatform | undefined;
   canInstall: boolean;
-  canDisconnect: boolean;
+  // The app's own table is not on a member's page, so nothing here points at it.
+  memberView: boolean;
   starting: string | null;
   onAdd: () => void;
   onDisconnect: (install: InstalledApp) => void;
@@ -233,7 +267,7 @@ function PlatformCard({
   installs,
   claimable,
   canInstall,
-  canDisconnect,
+  memberView,
   starting,
   onAdd,
   onDisconnect,
@@ -262,7 +296,9 @@ function PlatformCard({
             {active.length > 0
               ? `${pluralize(active.length, noun)} connected`
               : claimable?.connected
-                ? `No ${noun}s connected. The connection stays until an admin deletes it above.`
+                ? memberView
+                  ? `No ${noun}s connected.`
+                  : `No ${noun}s connected. The messaging app stays until an admin deletes it above.`
                 : "Not connected"}
           </Typography>
         </Box>
@@ -293,7 +329,7 @@ function PlatformCard({
         <InstallRow
           key={install.id}
           install={install}
-          onDisconnect={canDisconnect ? () => onDisconnect(install) : undefined}
+          onDisconnect={install.can_disconnect ? () => onDisconnect(install) : undefined}
         />
       ))}
 
@@ -369,7 +405,7 @@ function InstallRow({
         </Box>
         {!live && (
           <Chip
-            label={titleCase(install.status)}
+            label={sentenceCase(install.status)}
             size="small"
             color={ENDED_COLOR[install.status] ?? "default"}
           />

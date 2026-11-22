@@ -190,7 +190,7 @@ def _check_params(raw: Any, errors: list[Finding], warnings: list[Finding]) -> s
                 warnings.append(
                     Finding(
                         "unknown_param_field",
-                        f"Parameter '{name}' sets '{where}', which this server "
+                        f"Parameter '{name}' sets '{where}', which this Switch "
                         "does not know. It may be from a newer Switch, or a typo.",
                         name,
                     )
@@ -445,8 +445,8 @@ def _lint_v2(
         warnings.append(
             Finding(
                 "unknown_builtin",
-                f"'{{{name}}}' looks like a server-provided value, but this "
-                f"server provides only {', '.join(sorted(_BUILTINS))}.",
+                f"'{{{name}}}' looks like a value Switch provides, but it "
+                f"provides only {', '.join(sorted(_BUILTINS))}.",
                 name,
             )
         )
@@ -523,7 +523,7 @@ def lint_template(text: str) -> LintResult:
             warnings.append(
                 Finding(
                     "unknown_top_level_key",
-                    f"'{key}' is not a key this server recognises. It will be "
+                    f"'{key}' is not a key Switch recognises. It will be "
                     "stored as-is, but check it is not a typo.",
                     key,
                 )
@@ -592,8 +592,8 @@ def lint_template(text: str) -> LintResult:
         warnings.append(
             Finding(
                 "unknown_builtin",
-                f"'{{{name}}}' looks like a server-provided value, but this "
-                f"server provides only {', '.join(sorted(_BUILTINS))}.",
+                f"'{{{name}}}' looks like a value Switch provides, but it "
+                f"provides only {', '.join(sorted(_BUILTINS))}.",
                 name,
             )
         )

@@ -10,9 +10,11 @@ import {
   type ToolResult,
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import type { HttpMcpServerSpec } from '../adapter';
+import type { DescribeTools } from './mcp-tool-descriptions';
 import type { Redactions } from './redaction';
 import { type ServiceGrant, serviceTokenAnswerSchema } from './service-access';
 import { redactServiceToken, type ServiceCredential } from './service-credential';
+import { serviceFallbackNotice, type ServiceNotices } from './service-notices';
 import type { HostAsk } from './session-channel';
 
 /** How long a vendor has to list its tools before the session goes on without them. */
@@ -51,10 +53,14 @@ export async function startVendorServers(input: {
   grants: ServiceGrant[];
   ask: (ask: HostAsk) => Promise<unknown>;
   redactions: Redactions;
+  /** Where a token Switch refuses is said, once per reason. */
+  notices: ServiceNotices;
   listTimeoutMs: number;
   callTimeoutMs: number;
   /** How the vendor is reached: `fetch`, but for tests. */
   fetch: typeof fetch;
+  /** How the session's CLI is told about the vendor's tools. */
+  describe: DescribeTools;
 }): Promise<VendorServers> {
   const specs: Record<string, HttpMcpServerSpec> = {};
   const closers: (() => Promise<void>)[] = [];
@@ -66,7 +72,7 @@ export async function startVendorServers(input: {
         const vendor = new VendorServer(grant.service, server, input);
         const bearer = randomBytes(32).toString('hex');
         const served = await serveMcpOverHttp(bearer, {
-          listTools: () => vendor.listTools(),
+          listTools: async () => input.describe(await vendor.listTools()),
           callTool: (name, args) => vendor.callTool(name, args),
         });
         closers.push(served.close);
@@ -91,6 +97,7 @@ class VendorServer {
     private readonly deps: {
       ask: (ask: HostAsk) => Promise<unknown>;
       redactions: Redactions;
+      notices: ServiceNotices;
       listTimeoutMs: number;
       callTimeoutMs: number;
       fetch: typeof fetch;
@@ -154,7 +161,11 @@ class VendorServer {
     const answer = serviceTokenAnswerSchema.parse(
       await this.deps.ask({ type: 'service-token', service: this.service, rejected })
     );
-    if (answer.kind === 'refused') throw new Error(answer.message);
+    if (answer.kind === 'refused') {
+      // The CLI shows the server with no tools and no reason; the session says why.
+      this.deps.notices.raise(serviceFallbackNotice(this.service, answer.message, false));
+      throw new Error(answer.message);
+    }
     return redactServiceToken(this.deps.redactions, answer.token);
   }
 

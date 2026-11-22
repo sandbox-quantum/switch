@@ -1,5 +1,6 @@
+import { when } from 'mobx';
 import { toast } from 'sonner';
-import type { AdminSection } from '@renderer/features/admin/admin-sections';
+import { settingsForAdminSection } from '@renderer/features/admin/admin-sections';
 import { isAgentSection } from '@renderer/features/managed-agents/agent-sections';
 import { resolveSettingsTab } from '@renderer/features/settings/settings-tabs';
 import { findBuddy } from '@renderer/features/switch-buddy/buddy-identity';
@@ -33,8 +34,61 @@ export async function openConsoleLink(raw: string): Promise<void> {
   }
   const serverId = serverFor(link);
   if (serverId === null) return;
-  if (switchServersStore.activeServerId !== serverId) await switchServersStore.setActive(serverId);
+  if (switchServersStore.activeServerId !== serverId) {
+    await switchServersStore.setActive(serverId);
+    // The switch reports its own failure rather than raising it. Going on
+    // would open the page on the server still on screen.
+    if (switchServersStore.activeServerId !== serverId) {
+      toast.error('Could not open that link', {
+        description: switchServersStore.error ?? 'Could not switch to that server.',
+      });
+      return;
+    }
+  }
+  if (link.workspace !== null && !(await scopeToWorkspace(serverId, link.workspace))) return;
   await openOnServer(serverId, link);
+}
+
+/** How long a link waits for Console to match its workspaces to the server's. */
+const WORKSPACE_MATCH_WAIT_MS = 10_000;
+
+/**
+ * Scope the window to the workspace a link names, by its tenant id: a link
+ * from the web dashboard points at something in the workspace the dashboard
+ * was showing, which may not exist in the one on screen. False, having said
+ * why, when the account is in no such workspace on the server.
+ */
+async function scopeToWorkspace(serverId: string, tenantId: string): Promise<boolean> {
+  const find = () => workspacesStore.onServer(serverId).find((w) => w.tenantId === tenantId);
+  let workspace = find();
+  if (!workspace) {
+    // The list may be older than the membership: read it again.
+    await workspacesStore.refresh();
+    workspace = find();
+  }
+  if (!workspace && workspacesStore.onServer(serverId).some((w) => w.tenantId === null)) {
+    // A workspace Console has not matched to the server's yet, as just after
+    // signing in, may be this one: give the match a moment to land.
+    await when(() => find() !== undefined, { timeout: WORKSPACE_MATCH_WAIT_MS }).catch(() => {});
+    workspace = find();
+  }
+  if (!workspace) {
+    toast.error('Could not open that link', {
+      description: 'It is for a workspace this Switch Console is not signed in to.',
+    });
+    return false;
+  }
+  if (workspacesStore.activeId !== workspace.id) {
+    try {
+      await workspacesStore.setActive(workspace.id);
+    } catch (cause) {
+      toast.error('Could not open that link', {
+        description: `Could not switch to ${workspace.name}: ${String(cause)}`,
+      });
+      return false;
+    }
+  }
+  return true;
 }
 
 /** The server a link means: the one it names, else the one on screen. */
@@ -109,17 +163,16 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       });
       return;
     case 'template':
-      navigation.navigate('templateDetail', { serverId, templateId: link.id! });
+      if (link.use) navigation.navigate('templateUse', { serverId, templateId: link.id! });
+      else navigation.navigate('templateDetail', { serverId, templateId: link.id! });
       return;
     case 'messaging-apps/connect':
+      navigation.navigate('settings', { tab: 'messaging-apps' });
       // Connecting an app is the workspace admins'; anyone else can only link
       // their own account, which Settings does.
-      if (!administersWorkspaceInScope(serverId)) {
-        navigation.navigate('settings', { tab: 'messaging-apps' });
-        return;
+      if (administersWorkspaceInScope(serverId)) {
+        showModal('connectMessagingAppModal', { serverId, onClosed: () => {} });
       }
-      navigation.navigate('admin', { serverId, section: 'messaging-apps' });
-      showModal('connectMessagingAppModal', { serverId, onClosed: () => {} });
       return;
     case 'connections':
       navigation.navigate('connectors', { serverId });
@@ -156,14 +209,14 @@ function openServerSettings(serverId: string): void {
   appState.navigation.navigate('server', { serverId });
   toast.error('This server has no Server page here', {
     description:
-      "Someone else runs it, so its start, stop, update and Mattermost settings aren't in this Switch Console.",
+      "Someone else runs it, so its start, stop and update settings aren't in this Switch Console.",
   });
 }
 
 /**
- * Admin is for the workspace's admins. Whoever runs the server without
- * administering it is looking for its status, and is sent there; anyone else
- * lands on the home and is told why.
+ * What Admin held is in Settings now, for the workspace's admins. Whoever runs
+ * the server without administering it is looking for its status, and is sent
+ * there; anyone else lands on the home and is told why.
  */
 function openAdmin(serverId: string, tab: string | null): void {
   if (!administersWorkspaceInScope(serverId)) {
@@ -172,15 +225,12 @@ function openAdmin(serverId: string, tab: string | null): void {
       return;
     }
     appState.navigation.navigate('server', { serverId });
-    toast.error('Admin is for workspace admins', {
+    toast.error('These settings are for workspace admins', {
       description: 'Ask an admin of this workspace to change these.',
     });
     return;
   }
-  appState.navigation.navigate('admin', {
-    serverId,
-    ...(tab ? { section: tab as AdminSection } : {}),
-  });
+  appState.navigation.navigate('settings', settingsForAdminSection(tab));
 }
 
 /**

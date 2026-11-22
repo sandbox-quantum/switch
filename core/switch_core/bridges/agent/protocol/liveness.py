@@ -14,9 +14,11 @@ from typing import Literal
 # once nothing has arrived for HEARTBEAT_TTL_SECONDS. One mechanism replaces
 # /connection/renew, /watch/heartbeat and /leases/renew.
 #
-# The server pings each agent's socket, and each controller's
-# (`controller_routes.py`), every HEARTBEAT_INTERVAL_SECONDS, and the pong is
-# the beat. The interval is also advertised on every open (`stream.py`). Ten
+# The server pings each agent's socket every HEARTBEAT_INTERVAL_SECONDS, and
+# the pong is the beat; a controller's socket is pinged more often, for the
+# controllers released before they adapted to this interval
+# (`controller_routes.PING_INTERVAL_SECONDS`). The interval is also
+# advertised on every open (`stream.py`). Ten
 # seconds rather than two: a beat on the socket costs no database query, so a
 # slower ping is fewer wakeups and fewer forwarded beats between processes for
 # the same answer. An old event-stream client that still beats over

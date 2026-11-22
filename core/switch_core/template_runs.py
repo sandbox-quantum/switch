@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -37,6 +37,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
 from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceError
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
+from switch_core.room_service import FIXED_MEMBERSHIP
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -201,6 +202,28 @@ def pending_addressing(
     }
 
 
+def opening_rooms_as_made(
+    creator: TemplateAgents | None,
+    tenant_id: str,
+    created: Sequence[CreatedAgent],
+    room_addressing: dict[str, list[str]],
+) -> Callable[[str, str], Awaitable[None]] | None:
+    """What provisioning calls as each room is made, before its kickoff:
+    opens the run's agents to the rooms made so far (see
+    `TemplateAgents.open_to_rooms`). None when no agent is opened to a room."""
+    if creator is None or not room_addressing:
+        return None
+    made: dict[str, str] = {}
+
+    async def room_made(name: str, room_id: str) -> None:
+        made[name] = room_id
+        await creator.open_to_rooms(
+            tenant_id, created, room_addressing, dict(made), so_far=True
+        )
+
+    return room_made
+
+
 def room_ids_of(result: dict[str, Any]) -> dict[str, str]:
     """The rooms a provisioning made, by name: one room's result or a
     group's."""
@@ -239,8 +262,8 @@ class TemplateAgents:
                     Problem(
                         plan.slot,
                         "agent_management_off",
-                        "agent management is not enabled on this Switch server, "
-                        "so it cannot create agents on a machine.",
+                        "agent management is not turned on here, "
+                        "so it cannot create agents on a device.",
                     )
                     for plan in plans
                 ]
@@ -337,7 +360,8 @@ class TemplateAgents:
         self, tenant_id: str, owner_id: str, plan: NewAgentPlan
     ) -> tuple[list[str], list[Problem]]:
         """The rooms the agent joins, by id: each must exist, be one the owner
-        sees, and one the owner may add agents to."""
+        sees, and one the owner may add agents to, which a direct or group
+        conversation is not (`require_membership_changeable_from_outside`)."""
         if not plan.joins:
             return [], []
         async with tenant_session(self._protocol.session_factory, tenant_id) as session:
@@ -372,6 +396,15 @@ class TemplateAgents:
                         f"it joins {name}, and you may not add agents to that room.",
                     )
                 )
+            elif matches[0].channel_type in FIXED_MEMBERSHIP:
+                problems.append(
+                    Problem(
+                        plan.slot,
+                        "join_fixed_membership",
+                        f"it joins {name}, a {matches[0].channel_type} conversation, "
+                        "whose platform fixes who is in it.",
+                    )
+                )
             else:
                 ids.append(matches[0].id)
         return ids, problems
@@ -386,7 +419,7 @@ class TemplateAgents:
                 Problem(
                     plan.slot,
                     "connections_off",
-                    "connections are not enabled on this Switch server, so it "
+                    "connectors are not turned on here, so it "
                     f"cannot be granted {', '.join(c.service for c in plan.connections)}.",
                 )
             ]
@@ -572,21 +605,32 @@ class TemplateAgents:
         created: Sequence[CreatedAgent],
         room_addressing: dict[str, list[str]],
         room_ids: dict[str, str],
+        *,
+        so_far: bool = False,
     ) -> None:
         """Let anyone in the named rooms address the agents opened to them,
-        once those rooms exist, on top of their owner."""
+        once those rooms exist, on top of their owner.
+
+        With ``so_far``, the rooms made so far: called as each room is made,
+        before its kickoff is posted, so the kickoff reaches the agents it
+        mentions. An agent is opened to those of its rooms that exist, and a
+        room still to come is not an error. Without it, every room named must
+        exist."""
         for agent in created:
             rooms = room_addressing.get(agent.name)
             if not rooms:
                 continue
             missing = [r for r in rooms if r not in room_ids]
-            if missing:
+            if missing and not so_far:
                 raise RuntimeError(
                     f"{agent.name} is opened to {', '.join(missing)}, which "
                     "the run did not create"
                 )
+            made = [room_ids[r] for r in rooms if r in room_ids]
+            if not made:
+                continue
             policy = owner_only_policy([])
-            policy.rules.append(AddressingRule(rooms=[room_ids[r] for r in rooms]))
+            policy.rules.append(AddressingRule(rooms=made))
             async with tenant_session(
                 self._protocol.session_factory, tenant_id
             ) as session:

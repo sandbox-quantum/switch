@@ -3,15 +3,13 @@ import {
   DoorOpen,
   FileText,
   House,
+  Library,
   type LucideIcon,
   Plug,
   Settings,
-  ShieldCheck,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { adminGroupsInScope } from '@renderer/features/admin/admin-frame';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
-import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
 import { FROZEN, isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
@@ -29,8 +27,7 @@ import { type WorkspaceNavView, workspaceNavViews } from './workspace-nav-views'
  *
  * Flat and short — the sessions tree below is where depth belongs. Settings is
  * here rather than in the footer, and is here even with no server at all: it is
- * about this computer and this person, so it works without one. It carries the
- * status of a Switch this Console runs, which is operated from Settings.
+ * about this computer and this person, so it works without one.
  */
 export const WorkspaceNav = observer(function WorkspaceNav() {
   const { navigate } = useNavigate();
@@ -40,7 +37,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: roomsParams } = useParams('serverRooms');
   const { params: connectorsParams } = useParams('connectors');
   const { params: templatesParams } = useParams('templates');
-  const { params: adminParams } = useParams('admin');
+  const { params: libraryParams } = useParams('library');
   const active = switchServersStore.activeServer;
   const health = useRoomHealth(active?.id ?? null);
   const serviceConnections = useFeatureFlags(active?.id ?? null).service_connections;
@@ -56,16 +53,11 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     server: { icon: House, label: 'Home', params: homeParams },
     serverAgents: { icon: Bot, label: 'Your Agents', params: agentsParams },
     serverRooms: { icon: DoorOpen, label: 'Rooms', params: roomsParams },
+    library: { icon: Library, label: 'Resources', params: libraryParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
-    admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },
   };
-  const shown = active
-    ? workspaceNavViews({
-        serviceConnections,
-        admin: adminGroupsInScope(active.id, serviceConnections).length > 0,
-      })
-    : [];
+  const shown = active ? workspaceNavViews({ serviceConnections }) : [];
   const onSettings =
     isCurrentView(currentView, 'settings') ||
     isCurrentView(currentView, 'remoteHost') ||
@@ -106,8 +98,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
       >
         <Settings className="size-[15px] shrink-0" />
         Settings
-        <span className="ml-auto flex items-center gap-1.5 pr-0.5">
-          {active?.managed && <ManagedServerDot server={active} size={7} />}
+        <span className="ml-auto flex items-center pr-0.5">
           <BoundShortcut settingsKey="settings" />
         </span>
       </SidebarMenuButton>

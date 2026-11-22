@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -10,10 +10,15 @@ import {
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
-  SESSION_STARTED_KIND,
-  type SessionStartedNotice,
+  windowsRegistryPath,
+  withWindowsPathEntries,
 } from '@switch-console/agent-providers';
-import { withWindowsAgyBinDir } from '@switch-console/plugins/agents';
+import {
+  withWindowsAgyBinDir,
+  withWindowsCodexBinDir,
+  withWindowsInstallerBinDirs,
+  withWindowsGitBashDir,
+} from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
@@ -26,6 +31,7 @@ import {
 } from './api';
 import { type ControllerExit, DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
+import { readDeviceId, SYSTEM_SOURCES } from './device-id';
 import { checksAsJson, formatChecks, runDoctor } from './doctor';
 import { readEnvFile } from './env-file';
 import { ConfigurationError, UsageError } from './errors';
@@ -286,6 +292,7 @@ async function enrollCommand(args: string[]): Promise<number> {
     // Provider logins given to this machine are sealed to this key; only the
     // machine holds the private half.
     const keys = generateSealingKeyPair();
+    const deviceId = await readDeviceId(SYSTEM_SOURCES, dataDir);
     const enrolled = await enroll(fetch, server, {
       proof: { kind: 'enrollment_code', code: values.code },
       public_key: { alg: 'X25519', key: keys.publicKey },
@@ -295,6 +302,7 @@ async function enrollCommand(args: string[]): Promise<number> {
         ...(description !== undefined ? { description } : {}),
         platform: contractPlatform(),
         version: VERSION,
+        ...(deviceId === null ? {} : { device_id: deviceId }),
       },
     });
     await secrets.set(CONTROLLER_CREDENTIAL, enrolled.credential);
@@ -307,7 +315,7 @@ async function enrollCommand(args: string[]): Promise<number> {
       enrolledAt: new Date().toISOString(),
     });
     process.stdout.write(
-      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
+      `${enrolled.adopted ? `Enrolled as controller ${enrolled.controller_id} on ${server}, which this machine was before; its agents stay on it.` : `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.`}\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
     );
     const warning = secrets.startupWarning();
     if (warning) process.stderr.write(`Warning: ${warning}\n`);
@@ -361,7 +369,7 @@ async function setInfoCommand(args: string[]): Promise<number> {
     const credential = await secrets.get(CONTROLLER_CREDENTIAL);
     if (!credential)
       throw new ConfigurationError(
-        `${dataDir} holds no controller credential (it is handed over at run time, or was removed). Change the name and description in the gateway's Machines page instead.`
+        `${dataDir} holds no controller credential (it is handed over at run time, or was removed). Change the name and description in the gateway's Devices page instead.`
       );
     const log = createLogger({
       level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
@@ -401,7 +409,31 @@ async function setInfoCommand(args: string[]): Promise<number> {
 function pathRefresher(log: Logger): () => Promise<void> {
   return async () => {
     if (process.platform === 'win32') {
-      process.env.PATH = withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA);
+      const registry = await windowsRegistryPath(process.env);
+      if (registry === null)
+        log.warn(
+          'Could not read the PATH from the registry; a CLI installed since this controller started may not be found',
+          { path: process.env.PATH }
+        );
+      const current = withUserBinDirs(
+        withWindowsPathEntries(process.env.PATH ?? '', registry ?? ''),
+        homedir()
+      );
+      process.env.PATH = withWindowsGitBashDir(
+        withWindowsInstallerBinDirs(
+          withWindowsCodexBinDir(
+            withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+            process.env.LOCALAPPDATA
+          ),
+          process.env.LOCALAPPDATA
+        ),
+        {
+          localAppData: process.env.LOCALAPPDATA,
+          programFiles: process.env.ProgramFiles,
+          programFilesX86: process.env['ProgramFiles(x86)'],
+        },
+        existsSync
+      );
       return;
     }
     const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
@@ -485,6 +517,9 @@ async function runCommand(args: string[]): Promise<number> {
       'updated-by-console': { type: 'boolean' },
       'no-self-update': { type: 'boolean' },
       'provider-seed': { type: 'string' },
+      // The data folder the device id names, where it is not `--data-dir`:
+      // Switch Console's own, holding one data directory per server.
+      'device-root': { type: 'string' },
     },
     strict: true,
   });
@@ -612,6 +647,9 @@ async function runCommand(args: string[]): Promise<number> {
             now: Date.now,
           })
         : null;
+    // Switch Console starts its controllers again when they end on their own.
+    const supervised =
+      updatedBy === 'console' || isSupervised(separateUsers, values.launchd === true, process.env);
     if (controllerId !== undefined && values.server !== undefined) {
       const previousServer = store.identity()?.server;
       const adopted = adoptIdentity(
@@ -665,19 +703,6 @@ async function runCommand(args: string[]): Promise<number> {
         rechecks,
         refreshPath,
         providerSeed,
-        // Only Switch Console's own controller has a parent listening on IPC.
-        sessionStarted: (started) => {
-          if (!process.send || !process.connected) return;
-          const notice: SessionStartedNotice = { kind: SESSION_STARTED_KIND, ...started };
-          // With a callback, a channel that closed meanwhile is reported here
-          // rather than as an `error` event on the process, which nothing handles.
-          process.send(notice, undefined, undefined, (error) => {
-            if (error)
-              log.warn('Could not tell Switch Console a session started', {
-                error: errorMessage(error),
-              });
-          });
-        },
         tools: () => toolStatuses(process.env.PATH, process.platform, cliToolsBase()),
         fetch,
         openWebSocket: nodeWebSocket,
@@ -687,8 +712,10 @@ async function runCommand(args: string[]): Promise<number> {
         // no directory works in a folder of its own there.
         workspacesFor: separateUsers ? () => unitAgentRoot(separateUsers) : serverWorkspacesDir,
         version: VERSION,
+        deviceId: await readDeviceId(SYSTEM_SOURCES, values['device-root'] ?? dataDir),
         updatedBy,
         selfUpdate,
+        supervised,
         now: Date.now,
         random: Math.random,
         timing: DEFAULT_TIMING,
@@ -1286,6 +1313,20 @@ export async function main(argv: string[]): Promise<number> {
       case '--protocol':
         process.stdout.write(`${PROTOCOL_VERSION}\n`);
         return 0;
+      // For Switch Console, which enrolls this computer itself and names its
+      // own data folder: an empty line when the machine id cannot be read.
+      case '--device-id': {
+        const { values } = parseArgs({
+          args: rest,
+          options: { 'device-root': { type: 'string' } },
+          strict: true,
+        });
+        if (!values['device-root']) throw new UsageError('--device-id needs --device-root.');
+        process.stdout.write(
+          `${(await readDeviceId(SYSTEM_SOURCES, values['device-root'])) ?? ''}\n`
+        );
+        return 0;
+      }
       default:
         throw new UsageError(`Unknown command '${command}'.`);
     }

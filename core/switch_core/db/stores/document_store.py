@@ -1,7 +1,10 @@
-from sqlalchemy import and_, delete, func, insert, or_, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, and_, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Document, Room, room_documents
+from switch_core.db.models import Document, Room, package_documents, room_documents
 from switch_core.db.stores.room_store import AttachedRooms, readable_by
 
 
@@ -51,6 +54,14 @@ class DocumentStore:
         )
         return list(result.scalars().all())
 
+    async def list_library(self, session: AsyncSession) -> list[Document]:
+        """Every library document in the bound tenant, whoever owns it: none
+        of a room's own."""
+        result = await session.execute(
+            select(Document).where(Document.room_id.is_(None))
+        )
+        return list(result.scalars().all())
+
     async def update_fields(
         self,
         session: AsyncSession,
@@ -82,6 +93,16 @@ class DocumentStore:
         return doc
 
     async def delete(self, session: AsyncSession, document_id: str) -> list[str]:
+        """Delete a document, taking it out of every room and package it is
+        in. Returns the list of room_ids it was attached to.
+
+        Package membership has no cascade, so it is removed here: without it a
+        packaged document cannot be deleted at all."""
+        await session.execute(
+            delete(package_documents).where(
+                package_documents.c.document_id == document_id
+            )
+        )
         room_id_result = await session.execute(
             select(room_documents.c.room_id).where(
                 room_documents.c.document_id == document_id
@@ -99,22 +120,31 @@ class DocumentStore:
 
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, document_id: str
-    ) -> None:
-        await session.execute(
-            insert(room_documents).values(room_id=room_id, document_id=document_id)
+    ) -> bool:
+        """Attach a document to a room, saying whether it was attached now.
+        Idempotent, as attaching a reference is."""
+        result = await session.execute(
+            pg_insert(room_documents)
+            .values(room_id=room_id, document_id=document_id)
+            .on_conflict_do_nothing(
+                index_elements=[room_documents.c.room_id, room_documents.c.document_id]
+            )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, document_id: str
-    ) -> None:
-        await session.execute(
+    ) -> bool:
+        """Detach it from a room, saying whether it was attached."""
+        result = await session.execute(
             delete(room_documents).where(
                 room_documents.c.room_id == room_id,
                 room_documents.c.document_id == document_id,
             )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def list_for_room(
         self, session: AsyncSession, room_id: str

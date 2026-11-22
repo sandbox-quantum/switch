@@ -17,7 +17,7 @@ import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-stor
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
 import { log } from '@main/lib/logger';
-import { agentAvatarUrlForName, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
+import { agentAvatarUrlForNewAgent, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -325,7 +325,7 @@ function resolveNewAgentIconUrl(
   avatarSettings: AvatarSettings
 ): string | null {
   if (avatarSettings.thirdPartyAvatarsEnabled) {
-    return requestedIconUrl ?? agentAvatarUrlForName(name);
+    return requestedIconUrl ?? agentAvatarUrlForNewAgent(name);
   }
   return requestedIconUrl !== null && !isThirdPartyAvatarUrl(requestedIconUrl)
     ? requestedIconUrl
@@ -407,6 +407,6 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   await autoSessionWatcher.bringUp(agent.id, 'explicit');
 
   await locationManager.openLocation(location);
-  agentEvents._emit('agent:created', agent, params.entryPoint);
+  agentEvents._emit('agent:created', agent, params.entryPoint, 'created');
   return { kind: 'created', agent };
 }

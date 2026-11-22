@@ -38,6 +38,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
 from switch_core.db.models import Agent, Room, Template
 from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.official_templates import current_revision
+from switch_core.providers.registry import provider_ids
 from switch_core.template_installs import fingerprint
 from switch_core.template_runs import AgentsNotCreated, RunUndone
 from tests.switch_core.bridges.agent.operations.conftest import _make_agent
@@ -161,7 +162,11 @@ async def managed(env, monkeypatch):
     monkeypatch.setattr(definitions, "LISTEN_TIMEOUT_SECONDS", 0.2)
     env["protocol"].config = SimpleNamespace(
         template_max_bytes=64 * 1024,
-        feature_flags={"agent_management": True, "switch_buddy": True},
+        feature_flags={
+            "agent_management": True,
+            "switch_buddy": True,
+            "additional_agent_providers": True,
+        },
     )
     env["protocol"].telemetry = None
     env["protocol"].service_broker = None
@@ -560,6 +565,7 @@ def _plan(template: str, **kw: Any) -> Any:
         kw.pop("inputs", {}),
         builtins={},
         machines=kw.pop("machines", MACHINES),
+        providers=kw.pop("providers", frozenset(provider_ids())),
     )
 
 
@@ -663,6 +669,55 @@ agent:
     assert added == [(lobby_id, [created["agent_id"]])]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_type", ["direct", "group"])
+@pytest.mark.parametrize(
+    ("owner_in_it", "refusal"),
+    [(False, "join_unknown_room"), (True, "join_fixed_membership")],
+)
+async def test_a_new_agent_never_joins_a_direct_or_group_conversation(
+    managed, channel_type, owner_in_it, refusal
+):
+    """Its platform fixes who is in it, however writable its room is: a DM the
+    bridge adopted is writable by every member of the workspace."""
+    added: list[tuple[str, list[str]]] = []
+
+    async def add_agents_to_room(room_id: str, agent_ids: list[str]) -> None:
+        added.append((room_id, agent_ids))
+
+    managed["protocol"].room_service.add_agents_to_room = add_agents_to_room
+    async with managed["session_factory"]() as session:
+        session.add(
+            Room(
+                transport_room_id="!someones-dm:test.local",
+                name="someones-dm",
+                description="d",
+                owner_id=managed["user_id"] if owner_in_it else None,
+                channel_type=channel_type,
+                write_visibility="public",
+            )
+        )
+        await session.commit()
+    template = """\
+agent:
+  name: joiner
+  instructions: Join.
+  provider: claude
+  machine: laptop
+  directory: /srv/joiner
+  join: [someones-dm]
+"""
+    stored = await _stored(managed, template, kind="agent")
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=stored)
+    # Someone else's DM or group is hidden from the agent's owner, so it is
+    # not a room the template can name at all; one they are in is refused
+    # for what it is.
+    assert {p.code for p in e.value.problems} == {refusal}
+    assert managed["management"].created == []
+    assert added == []
+
+
 def test_a_provider_chain_takes_the_first_ready_on_the_machine():
     template = """\
 params:
@@ -677,6 +732,52 @@ agent:
     (agent,) = _plan(template).new_agents
     # server's claude login has expired, so codex.
     assert agent.provider == "codex"
+
+
+GOOSE_AND_CLAUDE = [
+    {
+        "id": "m-laptop",
+        "name": "laptop",
+        "state": "online",
+        "providers": [
+            {"provider": "goose", "installed": True, "auth": "ok"},
+            {"provider": "claude", "installed": True, "auth": "ok"},
+        ],
+    },
+]
+WITHOUT_GOOSE = frozenset(provider_ids()) - {"goose"}
+
+
+@pytest.mark.parametrize("default", ["[goose, claude]", "[$first]"])
+def test_a_provider_chain_passes_over_a_provider_the_server_does_not_offer(default):
+    template = f"""\
+params:
+  coder: {{ type: provider, default: {default} }}
+agent:
+  name: a
+  instructions: Hi.
+  provider: "{{coder}}"
+  machine: laptop
+  directory: /x
+"""
+    (agent,) = _plan(
+        template, machines=GOOSE_AND_CLAUDE, providers=WITHOUT_GOOSE
+    ).new_agents
+    assert agent.provider == "claude"
+
+
+def test_an_agent_naming_a_provider_the_server_does_not_offer_is_refused():
+    template = """\
+agent:
+  name: a
+  instructions: Hi.
+  provider: goose
+  machine: laptop
+  directory: /x
+"""
+    assert _codes(template, machines=GOOSE_AND_CLAUDE, providers=WITHOUT_GOOSE) == {
+        "provider_not_offered"
+    }
 
 
 def test_a_repo_is_cloned_by_the_agent_and_grants_nothing():
@@ -848,6 +949,36 @@ async def test_a_v2_template_runs_and_opens_its_agent_to_its_room(managed):
     rules = agent.addressing_policy["rules"]
     assert any(rule.get("rooms") == [result["room_id"]] for rule in rules)
     assert managed["admin"].sent[-1]["body"].startswith("@switch-expert hi.")
+
+
+@pytest.mark.asyncio
+async def test_an_agent_is_opened_to_its_room_before_the_kickoff_is_posted(managed):
+    """The kickoff speaks for the agent running the template (switch-buddy),
+    which an agent left on its owner alone would refuse: it must already be
+    open to the room by the time the kickoff lands there."""
+    template_id = await _stored(managed, V2_EXPERT, kind="agent")
+    admin = managed["admin"]
+    policies_at_kickoff: list[Any] = []
+    send = admin.send_platform_message
+
+    async def snapshot_then_send(room_id: str, body: str, **kwargs: Any) -> Any:
+        async with managed["session_factory"]() as session:
+            agent = (
+                await session.execute(
+                    select(Agent).where(Agent.name == "switch-expert")
+                )
+            ).scalar_one()
+            policies_at_kickoff.append((room_id, agent.addressing_policy))
+        return await send(room_id, body, **kwargs)
+
+    admin.send_platform_message = snapshot_then_send
+
+    result = await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert policies_at_kickoff
+    for _room, policy in policies_at_kickoff:
+        assert policy is not None
+        assert any(rule.get("rooms") == [result["room_id"]] for rule in policy["rules"])
 
 
 @pytest.mark.asyncio

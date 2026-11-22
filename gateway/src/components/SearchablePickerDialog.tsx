@@ -34,6 +34,8 @@ interface Props {
   subtitle?: ReactNode;
   options: PickerOption[];
   loading?: boolean;
+  /** Why the options could not be loaded, said in place of an empty list. */
+  loadError?: string | null;
   searchPlaceholder?: string;
   submitLabel?: string;
   /** If true the picker is single-select; selecting an item submits immediately. */
@@ -59,6 +61,7 @@ export default function SearchablePickerDialog({
   subtitle,
   options,
   loading,
+  loadError = null,
   searchPlaceholder = "Search…",
   submitLabel = "Add",
   singleSelect = false,
@@ -87,6 +90,13 @@ export default function SearchablePickerDialog({
     if (!q) return options;
     return options.filter((o) => o.search.includes(q));
   }, [options, search]);
+
+  // Only what is still offered: after a submit that partly failed, the
+  // options that went in are gone from the list, and must not be sent again.
+  const picked = useMemo(
+    () => options.filter((o) => selected.has(o.id)).map((o) => o.id),
+    [options, selected],
+  );
 
   const toggle = async (id: string) => {
     if (singleSelect) {
@@ -164,6 +174,8 @@ export default function SearchablePickerDialog({
             <Stack alignItems="center" sx={{ py: 4 }}>
               <CircularProgress />
             </Stack>
+          ) : loadError ? (
+            <Alert severity="error">Couldn't load what to choose from: {loadError}</Alert>
           ) : filtered.length === 0 ? (
             <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
               {options.length === 0 ? "Nothing to choose from." : "No matches."}
@@ -246,12 +258,12 @@ export default function SearchablePickerDialog({
         {!singleSelect && (
           <Button
             variant="contained"
-            onClick={() => submit([...selected])}
-            disabled={selected.size === 0 || submitting}
+            onClick={() => submit(picked)}
+            disabled={picked.length === 0 || submitting}
             startIcon={submitting ? <CircularProgress size={16} /> : undefined}
           >
             {submitLabel}
-            {selected.size > 0 ? ` (${selected.size})` : ""}
+            {picked.length > 0 ? ` (${picked.length})` : ""}
           </Button>
         )}
       </DialogActions>

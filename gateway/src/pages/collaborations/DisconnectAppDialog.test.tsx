@@ -12,6 +12,7 @@ const install: InstalledApp = {
   bridge_id: "b1",
   installed_at: "2026-01-01",
   ended_at: null,
+  can_disconnect: true,
 };
 
 describe("DisconnectAppDialog", () => {

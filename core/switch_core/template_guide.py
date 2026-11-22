@@ -51,7 +51,7 @@ A condition reads one param: "{param}" (true when it has a value) or
 ## An agent (type: agent)
 
   instructions: text             # REQUIRED. The agent's brief.
-  provider: claude | codex | opencode | antigravity | cursor | "{param}"   # REQUIRED
+  provider: claude | codex | opencode | antigravity | cursor | deepseek-harness | pi | copilot | mistral-vibe | junie | "{param}"   # REQUIRED
   machine: machine name or id | "{param}"           # REQUIRED: where it runs
   directory: path | "{param}"                       # REQUIRED
   name: identifier               # optional; else derived from display_name.
@@ -62,9 +62,9 @@ A condition reads one param: "{param}" (true when it has a value) or
   model: text | "{param}"        # optional; the provider's default if absent
   advanced_config: {key: value}  # optional; see get_advanced_config(provider)
   isolation: shared | isolated   # optional; default shared
-  auto_mode: true | false        # optional; default true. The provider's own
+  auto_mode: true | false        # optional; default true (false for Cursor). The provider's own
                                  # review: safe actions run, risky ones ask
-  auto_approve: true | false     # optional; default false. Bypass: no
+  auto_approve: true | false     # optional; default false (true for Cursor). Bypass: no
                                  # permission checks at all; overrides auto_mode
   can_manage_agents: true | false  # optional; default false. It may create
                                  # agents on the deployer's machines
@@ -110,8 +110,8 @@ existing agent may stand in for it.
   name: text                     # REQUIRED
   description: text              # REQUIRED
   instructions: text             # standing brief for the room's agents
-  bridge: messaging app display name, or "{param}"
-  channel_type: channel_public | channel_private
+  bridge: messaging app display name, "Switch Console", or "{param}"
+  channel_type: channel_private (the default) | channel_public
   agents: [agent keys, or names of agents that exist]
   users: [usernames on its messaging app; "{$creator}" is the deployer]
   roles: [{name, instructions, exclusive: true | false}]
@@ -132,8 +132,9 @@ attaches one that exists, and a missing, ambiguous or unreadable one stops
 the run; a full entry creates a new one of a reference type (google_drive,
 confluence, github, jira, or one the server defines), private unless
 read_visibility / write_visibility say otherwise. docs are documents created
-in the room; its agents see each one's description and load the content
-when they need it. Capturing a room writes roles and docs in full and
+in the room; its agents see each one's description, load the content
+when they need it, and one whose owner can edit the room may update or
+delete it. Capturing a room writes roles and docs in full and
 references by id:
 
     roles:
@@ -154,7 +155,10 @@ references by id:
 
 Without bridge the room goes on the server's default messaging app; users
 needs one (make them depend on it: [{if: "{bridge}", value: [...]},
-{value: []}]). Several rooms go in one group. packages must be ones the
+{value: []}]). bridge "Switch Console" makes a room on no messaging app
+with the deployer in it (an agent's owner, when an agent runs the
+template), one of their Switch Console chats; it names no users. A bridge
+param offers it last, and $first never picks it. Several rooms go in one group. packages must be ones the
 deployer can attach by hand; a missing or ambiguous one stops the run.
 
 ## A group (type: group)

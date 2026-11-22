@@ -6,6 +6,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
@@ -130,11 +131,49 @@ async def test_a_posted_control_is_shown_in_the_chat(chats: _Harness) -> None:
     )
     assert page.status_code == 200, page.text
     [shown] = [m for m in page.json()["messages"] if m["messageId"] == command_id]
-    assert shown["body"] == "!reset @helper"
+    assert shown["body"] == "Context reset requested for helper by alice"
+    assert shown["sender"]["kind"] == "system"
 
     listed = await chats.client.get("/chats", headers=chats.as_user(chats.alice))
     [chat] = [c for c in listed.json()["chats"] if c["roomId"] == room_id]
-    assert chat["lastMessage"]["preview"] == "!reset @helper"
+    assert (
+        chat["lastMessage"]["preview"] == "Context reset requested for helper by alice"
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "body", "kind"),
+    [
+        ("interrupt", "", "Stop requested for everyone by alice", "system"),
+        ("retry", "message-1", "Retry requested for everyone by alice", "system"),
+        ("reset", "", "Context reset requested for everyone by alice", "system"),
+        ("compact", "", "Compaction requested for everyone by alice", "system"),
+        # Not one Switch words for itself: shown as the person typed it, as theirs.
+        ("interrupt", "please @helper", "!interrupt please @helper", "human"),
+        ("unknown", "", "!unknown", "human"),
+    ],
+)
+async def test_a_control_with_no_target_is_shown_as_asked_of_everyone(
+    chats: _Harness, command: str, args: str, body: str, kind: str
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    response = await _control(chats, chats.alice, room_id, agent, "k1", "reset")
+    command_id = response.json()["commandId"]
+    async with chats.factory() as session:
+        await session.execute(
+            update(Message)
+            .where(Message.transport_event_id == command_id)
+            .values(content={"command": command, "args": args})
+        )
+        await session.commit()
+
+    page = await chats.client.get(
+        f"/chats/{room_id}/messages", headers=chats.as_user(chats.alice)
+    )
+    [shown] = [m for m in page.json()["messages"] if m["messageId"] == command_id]
+    assert shown["body"] == body
+    assert shown["sender"]["kind"] == kind
 
 
 async def test_stop_refuses_unless_the_agents_current_turn_is_in_this_chat(
@@ -315,6 +354,8 @@ async def test_a_member_is_offered_the_visible_commands_and_no_hidden_one(
     assert listed.status_code == 200, listed.text
     commands = {each["name"]: each for each in listed.json()["commands"]}
     assert "retry" not in commands
+    # Not on a server without auto-route, as this one is.
+    assert "auto-route" not in commands
     assert commands["reset"]["usage"] == "!reset <target>"
     assert commands["help"]["usage"] == "!help"
     assert all(each["description"] for each in commands.values())

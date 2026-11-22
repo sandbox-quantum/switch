@@ -7,7 +7,7 @@ import {
   MODEL_FIELD,
 } from '@renderer/features/managed-agents/managed-agent-changes';
 import { useAdvancedConfigSchema } from '@renderer/features/managed-agents/use-managed-agents';
-import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
+import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { invalidateHostProviderReadiness } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';

@@ -92,6 +92,11 @@ bot events are identical to the self-registered app's, because the app does
 the same job once installed — the differences are all in `settings` and
 `oauth_config`.
 
+`/auto-route` belongs only on an app whose server has the `decision_routing`
+feature flag on. A server with it off does not have the command, and answers
+it with "Unknown command", so leave it out of that server's app until
+auto-route is turned on there.
+
 ```json
 {
     "display_information": {
@@ -100,8 +105,8 @@ the same job once installed — the differences are all in `settings` and
     "features": {
         "app_home": {
             "home_tab_enabled": true,
-            "messages_tab_enabled": false,
-            "messages_tab_read_only_enabled": false
+            "messages_tab_enabled": true,
+            "messages_tab_read_only_enabled": true
         },
         "bot_user": {
             "display_name": "Agent Switch",
@@ -132,6 +137,7 @@ the same job once installed — the differences are all in `settings` and
             { "command": "/agents-greet", "url": "https://HOST/messaging/slack/commands", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "url": "https://HOST/messaging/slack/commands", "description": "Show the frontend URL for this room", "should_escape": false },
             { "command": "/follow-ups", "url": "https://HOST/messaging/slack/commands", "description": "Turn follow-ups without an @ on or off for this room", "usage_hint": "on | off", "should_escape": false },
+            { "command": "/auto-route", "url": "https://HOST/messaging/slack/commands", "description": "Let Switch pick the agent to answer messages that tag nobody", "usage_hint": "on | off | fallback @agent", "should_escape": true },
             { "command": "/assign-agent", "url": "https://HOST/messaging/slack/commands", "description": "Send every message in this room to one agent", "usage_hint": "@agent-name", "should_escape": true },
             { "command": "/unassign-agent", "url": "https://HOST/messaging/slack/commands", "description": "Stop sending every message to the assigned agent", "should_escape": false }
         ]

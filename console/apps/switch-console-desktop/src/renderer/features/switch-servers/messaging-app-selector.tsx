@@ -44,6 +44,7 @@ export function MessagingAppSelector({
   consoleOffered,
   value,
   onChange,
+  disabled = false,
 }: {
   /** The apps a room can be created on: running, and allowed to create channels. */
   bridges: readonly RemoteBridge[];
@@ -51,6 +52,8 @@ export function MessagingAppSelector({
   consoleOffered: boolean;
   value: string;
   onChange: (value: string) => void;
+  /** While a change is still being applied. */
+  disabled?: boolean;
 }) {
   const options = messagingOptions(bridges).filter(
     (option) => consoleOffered || option.value !== SWITCH_CONSOLE
@@ -61,7 +64,8 @@ export function MessagingAppSelector({
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={`Messaging app: ${selected.label}`}
-        className="flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-border px-3 text-sm text-foreground transition-colors hover:bg-[var(--sel-soft)]"
+        disabled={disabled}
+        className="flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-border px-3 text-sm text-foreground transition-colors hover:bg-[var(--sel-soft)] disabled:cursor-wait disabled:opacity-50"
       >
         <OptionIcon type={selected.type} />
         <span className="max-w-40 truncate">{selected.label}</span>

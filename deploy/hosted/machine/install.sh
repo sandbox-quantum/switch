@@ -1,5 +1,5 @@
 #!/bin/sh
-# Bakes a Switch cloud machine image that runs the agent controller.
+# Bakes a Switch Cloud machine image that runs the agent controller.
 #
 #   install.sh <switch-agent-controller .tgz> <node-sha256> [agent-users]
 #

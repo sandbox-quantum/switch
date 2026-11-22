@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from switch_core.bridges.agent.commands import AGENT_GREETING_KEY
 from switch_core.delivery.recipient import AgentRecipient, opening_message_for
 
 
@@ -143,3 +144,26 @@ def test_the_opening_message_is_told_only_to_the_agent_it_was_written_for() -> N
     assert opening_message_for(meta, "agent-1") == "Welcome!"  # type: ignore[arg-type]
     assert opening_message_for(meta, "agent-2") is None  # type: ignore[arg-type]
     assert opening_message_for(SimpleNamespace(agent_greeting=None), "agent-1") is None  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_the_usual_join_line_is_marked_so_a_bridge_can_say_how_to_reach_the_agent() -> (
+    None
+):
+    # A Telegram group the bot sees only replies and commands in can't take
+    # "tag @agent"; the bridge rewrites the line it can recognise.
+    send_message = _Recorder()
+    await AgentRecipient.greet(_fake_self(send_message))  # type: ignore[arg-type]
+    assert send_message.calls[0]["extra_content"] == {AGENT_GREETING_KEY: True}
+
+
+@pytest.mark.asyncio
+async def test_a_written_or_direct_greeting_is_not_marked() -> None:
+    written = _Recorder()
+    await AgentRecipient.greet(
+        _fake_self(written, agent_greeting={"agent_id": "agent-1", "body": "Welcome!"})  # type: ignore[arg-type]
+    )
+    direct = _Recorder()
+    await AgentRecipient.greet(_fake_self(direct, is_direct=True))  # type: ignore[arg-type]
+    assert written.calls[0]["extra_content"] is None
+    assert direct.calls[0]["extra_content"] is None

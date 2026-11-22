@@ -7,7 +7,6 @@ import ConnectorAppCard from "./ConnectorAppCard";
 import {
   cardOrder,
   missingPublicUrl,
-  ONLY_THE_OPERATOR,
   PUBLIC_URL_BANNER,
   sentBackTo,
 } from "./connectorApps";
@@ -16,33 +15,30 @@ import { ConnectorAppScopeContext } from "./scope";
 function Heading({ publicUrl }: { publicUrl: string | null }) {
   return (
     <Box mb={2}>
-      <Typography variant="h5">Connectors</Typography>
+      <Typography variant="h5">Connector apps</Typography>
       <Typography variant="body2" color="text.secondary">
         Some connectors sign in through an app you register at the vendor. Set each up once,
-        for the whole server, before anyone can connect it.
+        for all of Switch, before anyone can connect it.
         {publicUrl !== null && ` ${sentBackTo(publicUrl)}`}
       </Typography>
     </Box>
   );
 }
 
-const NOT_MOUNTED = "not mounted";
-
-/** Every app of `scope`, a card each, under `heading`. A 404 means the
- * routes are not mounted, and shows `notEnabled`, or nothing when it is null. */
+/** Every app of `scope`, a card each, under `heading`. Render it only where
+ * the server mounts the routes it reads: `service_connections`, and for an
+ * organization's apps `organization_connector_apps` too. */
 export function ConnectorAppsList({
   scope,
-  notEnabled,
   heading: headingOf,
+  setUp,
 }: {
   scope: ConnectorAppScope;
-  notEnabled: string | null;
   heading: (publicUrl: string | null) => ReactNode;
+  /** The app whose setup opens on arrival, from a link that sent the operator here to set it up. */
+  setUp: string | null;
 }) {
-  const { data, loading, error, refetch } = useConnectorApps(
-    scope,
-    notEnabled ?? NOT_MOUNTED,
-  );
+  const { data, loading, error, refetch } = useConnectorApps(scope);
   const [checkFailures, setCheckFailures] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<string | null>(null);
 
@@ -54,12 +50,11 @@ export function ConnectorAppsList({
         <CircularProgress />
       </>
     );
-  if (error === NOT_MOUNTED) return null;
   if (error !== null)
     return (
       <>
         {heading}
-        <Alert severity={error === notEnabled ? "info" : "error"}>{error}</Alert>
+        <Alert severity="error">{error}</Alert>
       </>
     );
   if (data === null) return heading;
@@ -75,6 +70,7 @@ export function ConnectorAppsList({
             key={app.slug}
             app={app}
             publicUrl={data.public_url}
+            openSetup={app.slug === setUp}
             checkFailure={checkFailures[app.slug] ?? null}
             onCheckFailure={(message) =>
               setCheckFailures((current) => {
@@ -84,6 +80,7 @@ export function ConnectorAppsList({
                 return next;
               })
             }
+            onChecked={refetch}
             onChanged={(message) => {
               setToast(message);
               refetch();
@@ -101,21 +98,25 @@ export function ConnectorAppsList({
   );
 }
 
-/** The server operator's page; anyone else is told whose it is, and nothing is asked of the server. */
+/** The deployment's connector apps, for whoever may set them up: the
+ * operator, and the admins of its only organization while it has no other.
+ * The route table lets no one else in (`connectorAppManagers`). */
 export default function ConnectorAppsPage() {
-  const { isOperator } = useAuth();
+  const { capabilities } = useAuth();
+  // Read once: a reload after saving finds the app set up, so nothing reopens.
+  const [setUp] = useState(() => new URLSearchParams(window.location.search).get("set_up"));
   return (
     <Box>
-      {isOperator ? (
+      {capabilities.features.service_connections ? (
         <ConnectorAppsList
           scope="server"
-          notEnabled={CONNECTORS_NOT_ENABLED}
+          setUp={setUp}
           heading={(publicUrl) => <Heading publicUrl={publicUrl} />}
         />
       ) : (
         <>
           <Heading publicUrl={null} />
-          <Alert severity="info">{ONLY_THE_OPERATOR}</Alert>
+          <Alert severity="info">{CONNECTORS_NOT_ENABLED}</Alert>
         </>
       )}
     </Box>

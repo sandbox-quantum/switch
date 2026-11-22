@@ -2,101 +2,79 @@
 
 _Make a room from scratch, or turn a channel your team already uses into one_
 
-Published at <https://docs.switchagents.ai/flintai/switch/getting-started/create-a-room> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/getting-started/create-a-room> — link readers there, not to this file.
 
-A Switch room is where people and agents work together on the same thing with the same context. It appears as a channel in your messaging app, so your team joins it the way they join any other channel — the room is the part that remembers.
+import { ChatMessage } from "/snippets/chat-message.jsx";
+import { AppNote } from "/snippets/app-note.jsx";
 
-You can create a new room in Switch Console or turn an existing channel into a room. Choose the option that matches where your work already is.
+A Switch room is where people and agents work together on the same thing with the same context. It appears as a channel in your messaging app, so your team joins it the way they join any other channel. The room keeps the instructions, documents, and references that agents work from.
 
-| Start from | Do this |
-| --- | --- |
-| Scratch | Create the room in Switch Console and let it provision the channel |
-| A channel your team already works in | Invite Switch and your agents to that channel |
+The quickest way to make a room is to ask switch-buddy, or any agent that's in a room with you. You can also turn a channel your team already works in into a room, or start one from a template your team saved. If your server doesn't offer switch-buddy, [create the room in Switch Console](#create-the-room-in-switch-console) yourself. You can also [create a room in the Gateway](../administer/rooms.md#create-a-room-in-the-gateway), including one with no messaging app.
 
-## Create the room in Switch Console
+## Ask an agent to make a room
 
-### Start a new room
+Ask switch-buddy, or any agent that's in a room with you, to set up a room. Use ordinary words. The agent makes the channel in your messaging app. Connect your messaging app first: a room made before then is private to you.
 
-In the sidebar, select **Your Rooms**, then **Create room**. The button is unavailable while you're signed out of that server, so if it looks inert, check the sign-in before anything else.
+An agent that can create a room can also invite other agents to it, give them aliases, and write its instructions.
 
-### Choose where agents and people will work together
+Ask for the room by purpose and say who belongs in it. Before you ask:
 
-Choose the **Messaging app** where your team will work in Switch. A channel there becomes your Switch room, so pick an app your team already has access to. If you've connected more than one, this is the first thing to settle.
+- **Name the agents that should be in it**, including the one you're asking. An agent isn't added to a room it creates unless you say so, so it can end up making one it can't reach
+- **Name yourself too**, unless the messaging app connection is set to add a default member. A private channel with no people in it can't be read by anyone
+- **The agents have to be registered already.** An agent can only be added by the name it was registered under. See [Add a custom agent](add-a-second-agent.md)
+- **Say if only some people should change it.** A new room lets anyone signed in to your workspace define its jobs, attach materials, link it, or archive it. Ask your own agent to restrict who can edit the room when it creates it, because the room belongs to the agent's owner. Afterward, only the owner or an admin can change that, in the Gateway
 
-### Name it for the work
+Expect it to check with you before it creates anything. Agents are told to confirm the room first, rather than guessing what you meant.
 
-Give the room a **Name** — after the piece of work it serves rather than the team that owns it — and a **Description** saying what the room is for.
-
-### Add an agent
-
-If you've already onboarded an agent in Switch Console, you can add it here. Otherwise leave this empty for now — you can [invite an agent](#invite-an-agent-to-the-room) after the room is created.
-
-### Brief the agents who arrive
-
-Whatever you write in **Instructions** is shown to every agent that connects, including agents added months later by somebody else. Conventions you would otherwise repeat in chat get stated once. Write:
-
-- What the room is working on, in a sentence.
-- Conventions that aren't obvious from reading the channel, such as where finished work goes.
-- What agents should read before doing anything.
-- What agents shouldn't do here.
-
-If you don't know yet, leave it empty and come back to it later. A room with no instructions still works — it puts the briefing back on whoever is in the channel.
-
-### Create the room
-
-Submit the form.
-
-**Info**
-
-See [Share context](../using/shared-context.md) to learn more about how a room retains and shares context.
+<AppNote app="telegram">
+  Switch can't create Telegram chats. Make the group in Telegram and [add the bot to it](../deploy/messaging-apps/telegram.md#add-the-bot-to-a-chat), and Switch turns it into a room.
+</AppNote>
 
 ## Turn an existing channel into a room
 
-If your team is already working in a channel, bring Switch there. How you do that depends on the app.
+If your team is already working in a channel, bring Switch there. Your messaging app needs to be connected to Switch first. If it isn't, see [Connect a messaging app](../deploy/messaging-apps/index.md).
 
 | Messaging app | Do this |
 | --- | --- |
 | [Slack](../deploy/messaging-apps/slack.md) | Invite the Switch app to the channel, using the name your workspace installed it under: `/invite @Agent Switch` |
-| [Microsoft Teams](../deploy/messaging-apps/microsoft-teams.md) | Add the Switch app to the channel. |
+| [Microsoft Teams](../deploy/messaging-apps/microsoft-teams.md) | Install the Switch app into the team. That covers every standard channel in it at once, with no per-channel step. Private and shared channels each need the app added to them. |
 | [Mattermost](../deploy/messaging-apps/mattermost.md) | Add one of your agents to the channel. In Mattermost, each agent has its own bot account and adding one automatically creates the room. |
-| [Discord](../deploy/messaging-apps/discord.md) | Post a message in the channel. The bot sees any channel its permissions allow, so Switch creates the room when the first message arrives — if nothing happens, check the bot has access to the channel. |
+| [Discord](../deploy/messaging-apps/discord.md) | Post a message in the channel. The bot sees any channel its permissions allow, so Switch creates the room when the first message arrives. If nothing happens, check that the bot has access to the channel. |
 | [Telegram](../deploy/messaging-apps/telegram.md) | Add the Switch bot to the group like any other member. It needs no permissions there. In a broadcast channel, add it as an administrator instead. |
-
-On Slack, Teams and Telegram, adding Switch to the channel is enough to create the room. On Discord, post a message in the channel to create the room. You don't need to add an agent first on any of these platforms.
-
-This assumes the app is already connected to your Switch server. If it isn't, see [Connect a messaging app](../deploy/messaging-apps/index.md) for what a connection gives you and the steps for each app.
 
 If the channel is already a room, repeating the setup adopts the existing room instead of creating a second one.
 
-## Confirm it worked
+## Create a room from a template
 
-After you create a room or connect an existing channel, the room appears under **Your Rooms** in Switch Console, grouped by messaging app. It also appears in the sidebar's sessions section when you group that by room. The corresponding channel is available in that app.
+A template sets up a room the way someone on your team saved it: its instructions, jobs, references, and room documents. Some templates also create the agents the room needs, which takes agent management on the server and the agents' machine online. To build one, or to tell which type you have, see [Templates](../administer/room-templates.md).
 
-**Note**
+### Open the template
 
-In Slack and Discord, Switch `/` commands may autocomplete in channels that aren't Switch rooms. Confirm that the room appears under **Your Rooms** in Switch Console.
+In the Switch Console sidebar, select **Templates**. Find the template, then select **Use**.
+
+### Fill it in and run it
+
+Fill in the fields the template asks for, then run it. Switch Console creates any agents the template defines first, then its rooms.
+
+- **A template doesn't bring packages or library documents.** Attach them once the room exists.
+- **If an agent or reference the template names is missing on this server,** the run stops before the room is made, unless the template creates that agent. A person Switch can't find doesn't stop the run. Switch reports the person after the room is created.
+- **If a run stops,** Switch Console says whether anything was created, keeps what was, and offers to retry the remaining steps. Check any agents it created before you retry.
 
 ## Invite an agent to the room
 
-If you didn’t add an agent when you created the room, you can invite one after the room exists.
+If you didn't add an agent when you created the room, you can invite one after the room exists.
 
-**Tip**
+An agent you invite reads everything the room holds, and everything that arrives in its channel. [Working safely with agents](../resources/working-safely-with-agents.md) is what to check before you do.
 
-An agent is registered with your server, not with just one room, so you can invite the same agent to multiple rooms.
-
-Use this command to invite an agent from inside the channel:
+You can invite the same agent to as many rooms as you like. Use this command to invite an agent from inside the channel:
 
 ```text
 !invite-agent @agent-name
 ```
 
-Replace `@agent-name` with the agent’s registered name as shown under **Your Agents** in Switch Console.
+Replace `@agent-name` with the agent's registered name as shown under **Your Agents** in Switch Console.
 
-You can also do it from Switch Console instead of from the channel. Open the agent's page and select **Add to room** — the shortest route if you've just onboarded the agent. Working from the room instead, use its menu in the sidebar's sessions section or its configuration page.
-
-**Info**
-
-Inviting the Switch app to a channel and inviting an agent to a room are different actions. Inviting Switch creates or connects the room; inviting an agent adds one of your registered agents to a room that already exists.
+You can also do it from Switch Console instead of from the channel. On the agent's page, select **Add to room**, which is the shortest route if you've just onboarded the agent. From the room instead, use its menu in the sidebar's sessions section or its configuration page.
 
 **Tip**
 
@@ -104,37 +82,19 @@ Some messaging apps also offer a native slash command for inviting agents, but t
 
 ### Give an agent a short name
 
-An agent's registered name is unique across the whole server, and the naming convention that keeps it that way makes it long. Once the agent is in your room, you can point a shorter handle at it:
+An agent's registered name is unique across the whole server, so it carries whatever keeps it unique, usually who owns it. In a room where that part is obvious, you can point a shorter handle at it:
 
 ```text
-!set-alias @claude-code.bug-fixer.jsmith @bug
+!set-alias @bug-fixer.jsmith @bug
 ```
 
-Be sure to list the agent's full name first, including the `@`, then the alias. Within that room, `@bug` now addresses that agent exactly as its full name does. To change it, reset the alias using the same command.
+List the agent's full name first, including the `@`, then the alias. Within that room, `@bug` now addresses that agent exactly as its full name does. To change it, reset the alias using the same command.
 
 An alias belongs to the room that set it, so the same agent can be `@bug` in one room and `@fixer` in another.
 
 **Note**
 
-Switch refuses an alias that's already spoken for in the room — another agent's name, a role, or an alias already in use. `!list-aliases` shows what's taken, and `!remove-alias @bug` clears one.
-
-## Ask an agent to make the next room
-
-Rooms don't have to be made in Switch Console. Once an agent is in a room with you, you can ask it in ordinary words to set the next one up — and it does the same thing you did above, against the same server and the same messaging app.
-
-This is worth trying once, because it's the shape of most work in Switch: the setup is not a separate job you do before the agents arrive. An agent that can create a room can also invite other agents to it, give them aliases, and write its instructions.
-
-Ask for the room by purpose and say who belongs in it. A few things make the difference between a room you can use and one you can't:
-
-- **Name the agents that should be in it**, including the one you're asking. An agent isn't added to a room it creates unless you say so, so it can end up making one it can't reach
-- **Name yourself too**, unless the messaging app connection is set to add a default member. A private channel with no people in it can't be read by anyone
-- **The agents have to be registered already.** An agent can only be added by the name it was registered under — see [Onboard your agents](onboard-your-agents.md)
-
-Expect it to check with you before it creates anything. Agents are told to confirm the room first, rather than guessing what you meant.
-
-**Note**
-
-Telegram is the exception: it can't create chats, so an agent asked for a room there tells you how to make it yourself and adopt it instead.
+Switch refuses an alias that's already in use in the room: another agent's name, a role, or another alias. `!list-aliases` shows what's taken, and `!remove-alias @bug` clears one.
 
 ## Have an agent welcome people who join
 
@@ -144,13 +104,19 @@ This setting is configured per room and per agent, and is off by default.
 
 ### Turn on the greeting
 
-Select one agent to serve as the room greeter. If you select multiple agents, each new arrival may receive similar welcomes from multiple agents.
+The quickest way is to ask switch-buddy, or any agent in the room. For example:
 
-The agent must have an active session when someone joins for the greeting to work. If possible, choose an agent that stays connected.
+<ChatMessage>
 
-The agent uses the room's **Instructions** to compose the welcome message. These instructions help tailor the greeting to the room rather than producing a generic introduction.
+Have weekly-update-agent greet people who join this room, and add a line to the room's instructions telling it to.
 
-The room greeting is set on the Switch server by the server administrator, not in Switch Console. The setting is labeled differently depending on when you set it:
+</ChatMessage>
+
+- *Pick one greeter.* If several agents greet, each new arrival gets several welcomes.
+- *Tell it to greet.* Turning the greeting on only tells the agent someone joined. The room's **Instructions** decide whether it says anything, and what.
+- *Pick an agent that's always running.* An agent greets people only while it's running. One that Switch Console runs on your computer greets them the next time Console is open, and gives up on anyone who joined more than a day earlier.
+
+You can also set the greeting yourself. It's set in the [Gateway](../resources/glossary.md#gateway), not in Switch Console. The Gateway is the server's administrative surface, and you open it at the server's address. If you don't administer the server, ask whoever does. The setting is labeled differently depending on when you set it:
 
 - *When you create the room*, it's a **Listen to join events** section with a checkbox per agent: **Notify `<agent name>` when someone joins the room**
 - *On a room that already exists*, it's a **Notify on join** toggle on each agent
@@ -159,8 +125,51 @@ The room greeting is set on the Switch server by the server administrator, not i
 
 You don't have to settle this when you create the room. Add an agent first and switch the greeting on afterwards, once you know which one is going to stay connected.
 
+## Create the room in Switch Console
+
+### Start a new room
+
+In the sidebar, select **Your Rooms**, then **Create room**. The button is unavailable while you're signed out of that server, so sign in first if it doesn't respond.
+
+### Choose where agents and people will work together
+
+Choose the **Messaging app** where your team will work in Switch. A channel there becomes your Switch room, so pick an app your team already has access to.
+
+### Name it for the work
+
+Give the room a **Name**, after the work it serves rather than the team that owns it, and a **Description** saying what the room is for.
+
+### Add an agent
+
+Add an agent you've already added in this Switch Console. The list doesn't show agents registered on the server from anywhere else. Because the room has a channel in a messaging app, you can also leave this empty and [invite an agent](#invite-an-agent-to-the-room) after the room is created.
+
+### Brief the agents who arrive
+
+Whatever you write in **Instructions** is shown to every agent that connects, including agents added months later by somebody else. Write:
+
+- What the room is working on, in a sentence.
+- Conventions that aren't obvious from reading the channel, such as where finished work goes.
+- What agents should read before doing anything.
+- What agents shouldn't do here.
+
+If you don't know yet, leave it empty. A room with no instructions still works, but people in the channel then have to brief each agent themselves.
+
+### Create the room
+
+Submit the form.
+
+**Info**
+
+See [Share context](../using/shared-context.md) to learn more about how a room retains and shares context.
+
+## Confirm it worked
+
+After you create a room or connect an existing channel, the room appears under **Your Rooms** in Switch Console, grouped by messaging app. It also appears in the sidebar's sessions section when you group that by room. The corresponding channel is available in that app.
+
+**Note**
+
+In Slack and Discord, Switch `/` commands may autocomplete in channels that aren't Switch rooms. Confirm that the room appears under **Your Rooms** in Switch Console.
+
 ## Next steps
 
-Everything now exists. That isn't the same as an agent answering you.
-
-- [Run a smoke test](smoke-test.md) — Prove the setup works with one human, one agent, and one task
+- [Work in a room](../using/work-in-a-room.md) — Give an agent work, share a file, answer a request and hand over, from your messaging app

@@ -11,7 +11,8 @@
 #       For each chart: pin values.yaml, package it into <out-dir>, lint the
 #       package (defaults where the chart allows, then each render's values),
 #       and render the package for each render through `verify`. The image refs
-#       the renders produce go to <out-dir>/<chart>.refs.
+#       the renders produce go to <out-dir>/<chart>.refs, which must cover
+#       every image of the chart (`covered`: an optional one in some render).
 #   publish <oci-base> <version> <out-dir>
 #       Push what `build` packaged and print `--chart-digest <chart>=<digest>`
 #       for each chart. Every chart is checked before any is pushed. A chart
@@ -91,6 +92,7 @@ build)
             helm lint "$tgz" "${args[@]}"
         done < <(field "$chart" '.renders[] | tojson')
         rendered_refs "$chart" "$tgz" "$registry" | tee "$out/$chart.refs"
+        python3 scripts/pin_chart_images.py covered --chart "$chart" <"$out/$chart.refs"
     done
     ;;
 

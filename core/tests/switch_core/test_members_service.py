@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
+import jwt
 import pytest
 
 from switch_core.members_service import MembersService
@@ -13,9 +15,14 @@ from switch_core.organization_directory import (
     DirectorySignInRequired,
     DirectoryUnavailable,
 )
+from switch_core.outbound import OutboundHostUnresolved, OutboundURLRefused
 
 URL = "https://members.example.test"
 TOKEN = "token-of-the-admin"
+
+
+def _token(expires_in: int) -> str:
+    return jwt.encode({"exp": int(time.time()) + expires_in}, "test-key-not-a-secret")
 
 
 def _service(handler) -> MembersService:
@@ -57,12 +64,29 @@ class TestChanging:
 
 
 class TestRefusals:
-    async def test_a_token_it_no_longer_takes_asks_for_a_sign_in(self) -> None:
+    async def test_a_token_it_does_not_accept_is_unavailable_not_a_sign_in(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"error": "unauthorized"})
+
+        token = _token(300)
+        with pytest.raises(
+            DirectoryUnavailable, match="doesn't accept member changes from Switch"
+        ):
+            await _service(handler).remove(token, "om_1")
+        assert any(
+            r.levelname == "ERROR" and "refused Switch's WorkOS token" in r.getMessage()
+            for r in caplog.records
+        )
+        assert token not in caplog.text
+
+    async def test_a_token_that_ran_out_asks_for_a_sign_in(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(401, json={"error": "unauthorized"})
 
         with pytest.raises(DirectorySignInRequired):
-            await _service(handler).remove(TOKEN, "om_1")
+            await _service(handler).remove(_token(-1), "om_1")
 
     async def test_its_own_rules_refuse_in_its_words(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -86,4 +110,28 @@ class TestRefusals:
             raise httpx.ConnectError("refused", request=request)
 
         with pytest.raises(DirectoryUnavailable):
+            await _service(handler).remove(TOKEN, "om_1")
+
+    async def test_an_address_switch_refuses_is_unavailable(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise OutboundURLRefused(
+                "members.example.test resolves to 10.0.0.1, which is not a public address."
+            )
+
+        with pytest.raises(DirectoryUnavailable, match="its address is refused"):
+            await _service(handler).set_role(TOKEN, "om_1", "org_admin")
+        assert any(
+            r.levelname == "ERROR" and "not a public address" in r.getMessage()
+            for r in caplog.records
+        )
+
+    async def test_a_host_that_does_not_resolve_is_unavailable_and_says_so(
+        self,
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise OutboundHostUnresolved("members.example.test does not resolve")
+
+        with pytest.raises(DirectoryUnavailable, match="its host does not resolve"):
             await _service(handler).remove(TOKEN, "om_1")

@@ -8,7 +8,7 @@
  * adding it here fails the build rather than reporting a screen nobody named.
  */
 export const VIEW_IDS = [
-  'home',
+  'noServer',
   'location',
   'session',
   'chat',
@@ -24,6 +24,8 @@ export const VIEW_IDS = [
   'remoteHosts',
   'remoteHost',
   'templateImport',
+  'library',
+  'libraryItem',
   'templates',
   'templateDetail',
   'templateUse',

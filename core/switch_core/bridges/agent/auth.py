@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
 import jwt
@@ -15,9 +16,13 @@ from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from switch_core.archived_workspace import WORKSPACE_ARCHIVED, is_archived
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
-from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.protocol.controller_presence import (
+    Binding,
+    ControllerPresence,
+)
 from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TYPES
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX as MESSAGING_INSTALL_PREFIX,
@@ -32,10 +37,28 @@ from switch_core.db.tenant_lookup import (
 )
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
+from switch_core.observability.hosted import record_credential_refusal, route_kind
 from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
+
+
+class ApiKeyExpired(Exception):
+    """A presented API key matched a row whose `expires_at` has passed."""
+
+    def __init__(self, api_key: ApiKey) -> None:
+        super().__init__(f"API key {api_key.id} expired at {api_key.expires_at}")
+        self.api_key = api_key
+
+
+class WorkspaceArchivedError(Exception):
+    """A presented credential belongs to an archived workspace, whose agents
+    may not connect until it is restored (`workspace_archive.py`)."""
+
+    def __init__(self, tenant_id: str) -> None:
+        super().__init__(f"Workspace {tenant_id} is archived")
+        self.tenant_id = tenant_id
 
 
 # Path prefixes that bypass the Bearer middleware entirely. These are either
@@ -123,11 +146,17 @@ class OIDCTokenValidator:
 
 @dataclass(frozen=True)
 class ControllerPrincipal:
-    """An authenticated agent controller, as ``scope["controller"]`` carries it."""
+    """An authenticated agent controller, as ``scope["controller"]`` carries it.
+
+    ``key_id`` is the credential (``api_keys`` row) its access token was
+    exchanged for, checked against the controller's current one on every
+    request and socket call; None for a token from before tokens named it.
+    Held in the controller auth cache, it is the controller's own credential."""
 
     controller_id: str
     owner_id: str
     tenant_id: str
+    key_id: str | None
 
 
 class ControllerAuthError(Exception):
@@ -154,6 +183,10 @@ class ControllerAuthenticator(Protocol):
 
     `auth_cache` memoises the rows a controller token makes the server read,
     and is kept in step with `presence`.
+
+    `stopped_by_archive` says whether a binding is stopped because its
+    workspace is archived, when a controller may not act for the agent at
+    all, as the agent's own key may not.
     """
 
     @property
@@ -169,6 +202,8 @@ class ControllerAuthenticator(Protocol):
     def is_controller_token(self, token: str) -> bool: ...
 
     async def authenticate(self, token: str) -> ControllerPrincipal: ...
+
+    async def stopped_by_archive(self, binding: Binding) -> bool: ...
 
 
 class BearerAuthMiddleware:
@@ -281,10 +316,25 @@ class BearerAuthMiddleware:
         # Single ApiKey lookup. If the row exists, branch on its type:
         # agent token → resolve to Agent; registration token → pass through.
         # If no row exists, fall through to OIDC (where applicable).
-        api_key, agent = await self._resolve_api_key(token)
-
-        if agent is None and api_key is None and self._oidc_validator is not None:
-            agent = await self._try_oidc(token)
+        try:
+            api_key, agent = await self._resolve_api_key(token)
+            if agent is None and api_key is None and self._oidc_validator is not None:
+                agent = await self._try_oidc(token)
+        except ApiKeyExpired as exc:
+            logger.warning(
+                "Refused API key %s (%s): it expired at %s",
+                exc.api_key.id,
+                exc.api_key.type,
+                exc.api_key.expires_at,
+            )
+            await _unauthorized(scope, receive, send, "API key expired")
+            return
+        except WorkspaceArchivedError as exc:
+            logger.info("Refused a credential of archived workspace %s", exc.tenant_id)
+            await _controller_refusal("workspace_archived", WORKSPACE_ARCHIVED, 403)(
+                scope, receive, send
+            )
+            return
 
         if agent is not None:
             if (
@@ -388,7 +438,8 @@ class BearerAuthMiddleware:
         controller and the agent row come from the controller-token cache
         when it holds them, which forgets a controller the moment it is
         revoked and an agent the moment its binding changes. The binding
-        itself is checked against `presence` every time.
+        itself is checked against `presence` every time, and an agent stopped
+        because its workspace is archived is refused as its own key is.
         """
         try:
             principal = await controller_auth.authenticate(token)
@@ -426,6 +477,11 @@ class BearerAuthMiddleware:
                 f"Agent {agent_id} is not assigned to this controller.",
                 403,
             )(scope, receive, send)
+            return
+        if await controller_auth.stopped_by_archive(binding):
+            await _controller_refusal("workspace_archived", WORKSPACE_ARCHIVED, 403)(
+                scope, receive, send
+            )
             return
 
         if path_agent is not None and _SERVED_ON_THE_CONTROLLER_STREAM.fullmatch(rest):
@@ -491,11 +547,15 @@ class BearerAuthMiddleware:
         A resolved agent is memoised for a few seconds (see
         :class:`ApiKeyCache`); everything else — an unknown token, a
         registration token, an agent key with no agent — always reads the
-        database.
+        database. A key past its ``expires_at`` raises :class:`ApiKeyExpired`,
+        whether it was read or remembered.
         """
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         cached = self._api_key_cache.get(token_hash)
         if cached is not None:
+            if cached[0].expired(datetime.now(UTC)):
+                self._api_key_cache.invalidate(token_hash)
+                raise ApiKeyExpired(cached[0])
             return cached
 
         # Two steps, because a credential's tenant has to be known before its
@@ -521,6 +581,12 @@ class BearerAuthMiddleware:
             if found is None:
                 return None, None
             api_key, agent = found
+            if api_key.expired(datetime.now(UTC)):
+                raise ApiKeyExpired(api_key)
+            # Read only here, where the row is: a remembered key is forgotten
+            # as its workspace is archived (`workspace_archive.py`).
+            if await is_archived(session, tenant_id):
+                raise WorkspaceArchivedError(tenant_id)
             if api_key.type != "agent":
                 agent = None
             session.expunge_all()
@@ -550,6 +616,8 @@ class BearerAuthMiddleware:
         if tenant_id is None:
             return None
         async with tenant_session(self._session_factory, tenant_id) as session:
+            if await is_archived(session, tenant_id):
+                raise WorkspaceArchivedError(tenant_id)
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 
@@ -566,6 +634,9 @@ def _controller_refusal(code: str, message: str, status_code: int) -> ASGIApp:
     )
 
     async def refuse(scope: Scope, receive: Receive, send: Send) -> None:
+        if status_code == 401:
+            # A refused credential, counted by its code and kind of route only.
+            record_credential_refusal(code, route_kind(scope.get("path", "")))
         if scope["type"] != "websocket":
             await response(scope, receive, send)
             return

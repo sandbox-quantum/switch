@@ -5,6 +5,7 @@
     "name": "build-box",
     "description": "The build box in the office",
     "platform": { "os": "linux", "arch": "x64", "os_version": "6.1.0" },
-    "version": "0.1.0"
+    "version": "0.1.0",
+    "device_id": "3f5b0c8e9a1d47f2b6e4c1a9d8f7e6b5a4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9"
   }
 }

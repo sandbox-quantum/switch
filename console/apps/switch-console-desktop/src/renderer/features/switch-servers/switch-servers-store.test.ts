@@ -12,11 +12,13 @@ const removeServer = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const connectToSwitchCloud = vi.hoisted(() => vi.fn());
 const oidcLogin = vi.hoisted(() => vi.fn());
+const passwordLogin = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
 const blockedHosts = vi.hoisted(() => new Set<string>());
 
+const eventsOn = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: vi.fn() },
+  events: { on: eventsOn },
   rpc: {
     switchServers: {
       getAuthConfig,
@@ -27,6 +29,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       addServer,
       connectToSwitchCloud,
       oidcLogin,
+      passwordLogin,
     },
     onboarding: { installIsEmpty },
   },
@@ -68,7 +71,13 @@ vi.mock('@renderer/lib/stores/app-state', () => ({
   appState: { navigation: { revalidate } },
 }));
 
-const { SwitchServersStore } = await import('./switch-servers-store');
+const { SwitchServersStore, switchServersStore } = await import('./switch-servers-store');
+const { gatewaySessionEndedChannel } = await import('@shared/events/switchServerEvents');
+/** What the store does with word from the main process that a session ended,
+ * taken before `beforeEach` clears the record of it being subscribed. */
+const onSessionEnded = eventsOn.mock.calls.find(
+  ([channel]) => channel === gatewaySessionEndedChannel
+)?.[1] as ((payload: { serverId: string }) => void) | undefined;
 
 /** Scope the window to a server, the way choosing one of its workspaces does. */
 function selectServer(serverId: string | null): void {
@@ -742,14 +751,177 @@ describe('keeping a server active', () => {
 
 describe('the error banner', () => {
   it('survives a background refresh, which cannot tell whether it is stale', async () => {
-    // A rejected password lives in the same field. A background sweep clearing
-    // it would delete the one thing telling the user what went wrong.
+    // A background sweep clearing it would delete the one thing telling the
+    // user what went wrong.
     const store = newStore([server('srv-a')]);
     await store.ensureAuthConfig('srv-a');
-    store.error = 'Invalid email or password';
+    store.error = 'Could not rename the server.';
 
     await store.recoverStale();
 
-    expect(store.error).toBe('Invalid email or password');
+    expect(store.error).toBe('Could not rename the server.');
+  });
+});
+
+describe('a failed sign-in', () => {
+  const rejected = {
+    success: false,
+    error: { kind: 'invalid_credentials', message: 'Invalid email or password.' },
+  };
+
+  it('stays on its own server, so another workspace shows no error banner', async () => {
+    const store = newStore([server('srv-a'), server('srv-b')]);
+    passwordLogin.mockResolvedValueOnce(rejected);
+
+    expect(await store.passwordLogin('srv-a', 'ada@example.test', 'wrong')).toBe(false);
+
+    expect(store.signInError('srv-a')).toBe('Invalid email or password.');
+    expect(store.signInError('srv-b')).toBeNull();
+    expect(store.error).toBeNull();
+  });
+
+  it('is cleared when that server is signed in', async () => {
+    const store = newStore([server('srv-a')]);
+    passwordLogin.mockResolvedValueOnce(rejected);
+    await store.passwordLogin('srv-a', 'ada@example.test', 'wrong');
+
+    passwordLogin.mockResolvedValueOnce({ success: true, data: true });
+    expect(await store.passwordLogin('srv-a', 'ada@example.test', 'right')).toBe(true);
+
+    expect(store.signInError('srv-a')).toBeNull();
+  });
+
+  it('through the browser stays on its own server too', async () => {
+    const store = newStore([server('srv-a'), server('srv-b')]);
+    oidcLogin.mockResolvedValueOnce({
+      success: false,
+      error: { kind: 'failed', message: 'Sign-in failed.' },
+    });
+
+    await store.oidcLogin('srv-a', null);
+
+    expect(store.signInError('srv-a')).toBe('Sign-in failed.');
+    expect(store.signInError('srv-b')).toBeNull();
+    expect(store.error).toBeNull();
+  });
+});
+
+describe('a session the server has ended', () => {
+  const user = { id: 'u1', name: 'Ada', email: 'ada@example.test', role: 'user' } as never;
+
+  it('re-checks a signed-in server and shows it signed out once the check is refused', async () => {
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    expect(store.isConnected('a')).toBe(true);
+
+    // The session was revoked (a password change elsewhere): `/auth/me` now refuses it.
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: false, user: null });
+    await store.noteSessionEnded('a');
+
+    expect(store.isConnected('a')).toBe(false);
+    // Signed out, not unreachable: the sidebar asks for a sign-in rather than
+    // calling the rooms out of date or the server offline.
+    expect(store.isUnreachable('a')).toBe(false);
+  });
+
+  it('stays signed in when the re-check finds the session still good', async () => {
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValue({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    await store.noteSessionEnded('a');
+    expect(store.isConnected('a')).toBe(true);
+  });
+
+  it('does not re-check a server already signed out, so a refused re-check cannot loop', async () => {
+    const store = newStore([server('a')]);
+    await store.refreshStatus('a');
+    getConnectionStatus.mockClear();
+    await store.noteSessionEnded('a');
+    expect(getConnectionStatus).not.toHaveBeenCalled();
+  });
+
+  it('does not start a second check while one is running', async () => {
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    const pending = deferred<unknown>();
+    getConnectionStatus.mockReturnValueOnce(pending.promise);
+    const first = store.noteSessionEnded('a');
+    await store.noteSessionEnded('a');
+    expect(getConnectionStatus).toHaveBeenCalledTimes(2);
+    pending.resolve({ serverId: 'a', connected: false, user: null });
+    await first;
+  });
+
+  it('comes back signed in when a hint that raced a password change is followed by a re-read', async () => {
+    // The old session ended a moment before Console kept the new one: the
+    // hint's re-check used the old cookie and read signed out. The account
+    // page re-reads the status once the change is done, with the new cookie.
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: false, user: null });
+    await store.noteSessionEnded('a');
+    expect(store.isConnected('a')).toBe(false);
+
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    expect(store.isConnected('a')).toBe(true);
+  });
+
+  it('keeps the answer of the latest check when an earlier one lands after it', async () => {
+    // A check that set out with the old cookie (refused) is overtaken by the
+    // one the account page starts once the new cookie is kept (accepted). The
+    // old one landing last must not show the server signed out again.
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+
+    const withOldCookie = deferred<unknown>();
+    const withNewCookie = deferred<unknown>();
+    getConnectionStatus.mockReturnValueOnce(withOldCookie.promise);
+    getConnectionStatus.mockReturnValueOnce(withNewCookie.promise);
+    const first = store.refreshStatus('a');
+    const second = store.refreshStatus('a');
+
+    withNewCookie.resolve({ serverId: 'a', connected: true, user });
+    await second;
+    expect(store.refreshing.has('a')).toBe(false);
+    withOldCookie.resolve({ serverId: 'a', connected: false, user: null });
+    await first;
+
+    expect(store.isConnected('a')).toBe(true);
+    expect(store.refreshing.has('a')).toBe(false);
+  });
+
+  it('keeps the running check marked as running when an earlier one lands first', async () => {
+    const store = newStore([server('a')]);
+    const earlier = deferred<unknown>();
+    const later = deferred<unknown>();
+    getConnectionStatus.mockReturnValueOnce(earlier.promise);
+    getConnectionStatus.mockReturnValueOnce(later.promise);
+    const first = store.refreshStatus('a');
+    const second = store.refreshStatus('a');
+
+    earlier.resolve({ serverId: 'a', connected: false, user: null });
+    await first;
+    expect(store.refreshing.has('a')).toBe(true);
+
+    later.resolve({ serverId: 'a', connected: true, user });
+    await second;
+    expect(store.refreshing.has('a')).toBe(false);
+    expect(store.isConnected('a')).toBe(true);
+  });
+
+  it('listens for the main process saying so', async () => {
+    expect(onSessionEnded).toBeDefined();
+    switchServersStore.servers = [server('a')];
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await switchServersStore.refreshStatus('a');
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: false, user: null });
+    onSessionEnded!({ serverId: 'a' });
+    await flush();
+    expect(switchServersStore.isConnected('a')).toBe(false);
   });
 });

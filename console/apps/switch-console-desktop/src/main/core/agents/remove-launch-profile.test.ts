@@ -24,7 +24,7 @@ vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), info: vi.fn(), error:
 
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 
-const agent = { id: 'a1', providerId: 'codex', name: 'codex-hoot' } as never;
+const agent = { id: 'a1', providerId: 'codex', name: 'codex-agent' } as never;
 const localLocation = { sshHost: null, dir: '/repo' } as never;
 const remoteLocation = { sshHost: 'vm', dir: '/home/agent/repo' } as never;
 
@@ -35,22 +35,22 @@ describe('removeAgentLaunchProfile', () => {
   });
 
   it('deletes the profile from the local home for a local agent', async () => {
-    await removeAgentLaunchProfile(agent, localLocation, 'codex-hoot');
+    await removeAgentLaunchProfile(agent, localLocation, 'codex-agent');
 
     expect(h.launchProfilePaths).toHaveBeenCalledWith({
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: '/repo',
     });
-    expect(h.localDelete).toHaveBeenCalledWith('.codex/codex-hoot-digest.config.toml');
+    expect(h.localDelete).toHaveBeenCalledWith('.codex/codex-agent-digest.config.toml');
     expect(h.connectRemoteAgent).not.toHaveBeenCalled();
   });
 
   it('deletes the profile from the VM home for a remote agent', async () => {
-    await removeAgentLaunchProfile(agent, remoteLocation, 'codex-hoot');
+    await removeAgentLaunchProfile(agent, remoteLocation, 'codex-agent');
 
     // Reaches the VM home over the exec-backed remote FS, not the no-op stub.
     expect(h.connectRemoteAgent).toHaveBeenCalledWith(agent);
-    expect(h.remoteDelete).toHaveBeenCalledWith('.codex/codex-hoot-digest.config.toml');
+    expect(h.remoteDelete).toHaveBeenCalledWith('.codex/codex-agent-digest.config.toml');
     expect(h.localDelete).not.toHaveBeenCalled();
   });
 
@@ -61,7 +61,7 @@ describe('removeAgentLaunchProfile', () => {
 
   it('does nothing for a provider that writes no launch profile', async () => {
     h.mcp = {};
-    await removeAgentLaunchProfile(agent, remoteLocation, 'codex-hoot');
+    await removeAgentLaunchProfile(agent, remoteLocation, 'codex-agent');
     expect(h.connectRemoteAgent).not.toHaveBeenCalled();
     expect(h.localDelete).not.toHaveBeenCalled();
     expect(h.remoteDelete).not.toHaveBeenCalled();
@@ -70,7 +70,7 @@ describe('removeAgentLaunchProfile', () => {
   it('logs and returns without throwing when the remote home cannot be reached', async () => {
     h.connectRemoteAgent.mockRejectedValueOnce(new Error('vm unreachable'));
     await expect(
-      removeAgentLaunchProfile(agent, remoteLocation, 'codex-hoot')
+      removeAgentLaunchProfile(agent, remoteLocation, 'codex-agent')
     ).resolves.toBeUndefined();
     expect(h.remoteDelete).not.toHaveBeenCalled();
   });
