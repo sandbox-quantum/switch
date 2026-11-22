@@ -61,6 +61,15 @@ version of their own to them without also giving them a release of their own.
   chart.
 
 #### Security
+- **Adding an agent to a channel on the platform follows the invite rule.**
+  Someone who puts an agent's bot into a bridged channel, or adds the app to
+  a channel its agents are in, is judged as the account the platform says
+  did it, the same as an invite from Switch: an agent that doesn't take
+  requests from them stays out of the room, and the channel is told why. An
+  account nobody has linked to a Switch user is never trusted. When the
+  platform doesn't say who added an agent, it is let in, and the channel
+  and the agent's owner are told that Switch couldn't check. Agents already
+  in a room, lobbies and direct conversations are unchanged.
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
   at once, leaving the rest to its own work, such as renewing its lease,
