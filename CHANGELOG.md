@@ -140,6 +140,11 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A slow re-read of a workspace's clients no longer undoes a newer change.**
+  A re-check or resync that read the clients before a rename or deletion, and
+  finished after it, could put an agent's old name back, or start again a
+  deleted client with no agent behind it, until the next re-check. A
+  workspace's re-reads and renames now take turns.
 - **The decision service is ready behind vLLM.** A model server whose
   `/health` answers 200 with an empty body counts as healthy; before, the
   service reported 503 while `/decide` worked.

@@ -62,6 +62,10 @@ class FakeClientLifecycle:
     def announce(self, tenant_id: str, client_ids: object = None) -> None:
         return None
 
+    async def rename(self, tenant_id: str, client_id: str, display_name: str) -> None:
+        """No client runs here, so a rename has no copy to tell."""
+        return None
+
 
 class NoBridges:
     def bridges_for_tenant(self, tenant_id: str) -> list[object]:
