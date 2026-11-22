@@ -849,8 +849,13 @@ class Erasure(RuleBasedStateMachine):
                 ),
                 "files": set(
                     await session.scalars(
+                        # The stored files, not the attachment rows: an erasure
+                        # that deleted a file someone else still posts would
+                        # leave their attachment pointing at nothing.
                         text(
-                            "SELECT DISTINCT a.uri FROM message_attachments a "
+                            "SELECT DISTINCT b.uri FROM media_blobs b "
+                            "JOIN message_attachments a "
+                            "ON a.uri = b.uri AND a.tenant_id = b.tenant_id "
                             "JOIN messages m ON m.id = a.message_id "
                             "WHERE m.sender_id <> :person"
                         ).bindparams(person=person)
