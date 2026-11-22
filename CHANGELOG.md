@@ -220,6 +220,11 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A slow re-read of a workspace's clients no longer undoes a newer change.**
+  A re-check or resync that read the clients before a rename or deletion, and
+  finished after it, could put an agent's old name back, or start again a
+  deleted client with no agent behind it, until the next re-check. A
+  workspace's re-reads and renames now take turns.
 - **A message Slack refuses is no longer treated as delivered.** When Slack
   answered a message from Switch with an error (a rate limit, an archived
   channel), the bridge logged it and moved on as if Slack had taken nothing,

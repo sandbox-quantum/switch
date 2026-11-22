@@ -142,6 +142,10 @@ class _FakeClientLifecycle:
         """No client is ever started here, so a rename has no actor to tell."""
         return None
 
+    async def rename(self, tenant_id: str, client_id: str, display_name: str) -> None:
+        """No client is ever started here, so a rename has no actor to tell."""
+        return None
+
 
 class _NoBridges:
     def bridges_for_tenant(self, tenant_id: str) -> list[object]:
