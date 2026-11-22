@@ -184,6 +184,7 @@ class ErasureService:
         await self._clients.stop(person.client_id)
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
             await self._erasures.scrub_approval_answers(db, person.transport_user_id)
+            await self._erasures.scrub_card_answers(db, person)
             await self._erasures.scrub_direct_rooms(db, person)
             await self._erasures.delete_identity(db, person.external_user_id)
             await self._clients.delete_record(db, person.client_id)
@@ -225,9 +226,7 @@ class ErasureService:
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
             room_ids = await self._erasures.rooms_sent_in(db, participant.sender_id)
             await self._erasures.scrub_approval_answers(db, participant.sender_id)
-            await self._erasures.scrub_former_direct_rooms(
-                db, room_ids, participant.names
-            )
+            await self._erasures.scrub_former_direct_rooms(db, participant, room_ids)
             await self._erasures.add_progress(
                 db, erasure_id, messages=0, files=0, identities=1
             )

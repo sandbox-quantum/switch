@@ -67,6 +67,10 @@ AUTO_ROUTE_FALLBACK_KEY = "auto_route_fallback_agent"
 # most once an hour however many processes and restarts there are.
 DECISION_NOTICE_AT_KEY = "decision_notice_at"
 
+#: The key in a detached room's metadata saying which bridge it was on and what
+#: kind of channel it was there (`RoomStore.clear_bridge`).
+DETACHED_FROM = "detached_from"
+
 
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
     """Whether a room's metadata leaves follow-ups on."""
@@ -500,9 +504,21 @@ class RoomStore:
         return list(result.scalars().all())
 
     async def clear_bridge(self, session: AsyncSession, room_id: str) -> None:
+        """Detach the room from its bridge. Which bridge, and what kind of
+        channel it was there, stay in the room's metadata (`DETACHED_FROM`):
+        nothing else would say afterwards that the room was a direct chat
+        named after a person on that bridge, which erasing them needs."""
         room = await session.get(Room, room_id)
         if room is None:
             return
+        if room.bridge_id is not None:
+            room.metadata_ = {
+                **(room.metadata_ or {}),
+                DETACHED_FROM: {
+                    "bridge_id": room.bridge_id,
+                    "channel_type": room.channel_type,
+                },
+            }
         room.bridge_id = None
         room.channel_type = None
         room.external_channel_id = None

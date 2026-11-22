@@ -220,6 +220,19 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **Erasing a person takes their name off the cards they answered.** A card
+  pressed on a chat app now reads "erased" as its answerer once they are
+  erased; which button was pressed stays. A card answer now records who
+  pressed by id as well as by the name the platform showed. One answered
+  before this release is found by the person's username, which misses an
+  answer shown under a different display name.
+- **Erasing someone from a disconnected chat app takes their name off their
+  direct rooms.** Disconnecting an app detached its rooms in a way erasure
+  could no longer recognise, so their name stayed on every direct room,
+  including ones they wrote in. A detached room now remembers which app it was
+  on and that it was a direct chat, and erasure finds it whether or not they
+  wrote in it. Rooms detached before this release are found as before, by the
+  messages they wrote there.
 - **Work no longer stays unowned after a server recovers from a short
   stall.** A server whose lease renewals stalled stopped its work but kept its
   claims, so work that had meanwhile moved to another server, such as a
