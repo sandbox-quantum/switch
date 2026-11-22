@@ -1,11 +1,28 @@
 properties:
   - id: retention.erasure-complete
     title: An erased person leaves nothing behind
-    statement: After a person is erased, no row names them.
+    statement: >
+      After a person is erased, no row outside what the design keeps names
+      them, nothing only their messages carried (platform post mappings,
+      files) is left, and nothing of anyone else's is taken.
     kind: safety
     formality: semi-formal
     levels: [code, system]
     owner: platform
-    status: proposed
-    gaps:
-      code: core's erasure tests are not tagged for the gate yet
+    status: checked
+    notes: >
+      The code check is a state machine (`erasure_machine.py`) that builds a
+      history around a person of each kind (a chat-platform identity, a member
+      client, a former participant whose app is gone): messages, commands,
+      files, agent copies, approvals and cards they answered, links to an
+      account, rooms they joined, and sends during the erasure itself. After
+      the erasure it casts every row of every table to text and looks for any
+      of the person's identifiers, so a table added later is searched without
+      being listed. What may still name them is listed in `KEPT`, each with
+      its reason: others' messages that quote them, the erasure's own record
+      and audit trail, and usage counters keyed by a deleted client. Mappings
+      and files name nobody, so they are checked against what the person's
+      messages carried before the erasure. Two known issues are allowed until
+      they are fixed: a card the person answered keeps their name on its post
+      mapping, and a detached direct room of a former participant keeps their
+      name.

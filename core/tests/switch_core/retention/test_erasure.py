@@ -231,6 +231,7 @@ async def _disconnect(session: AsyncSession, person: ExternalUser) -> str:
     return sender_id
 
 
+@pytest.mark.property("retention.erasure-complete")
 class TestErasing:
     async def test_everything_they_sent_goes_and_everything_else_stays(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -770,6 +771,7 @@ class TestQueue:
         await _queue(session_factory, [bo_id])
 
 
+@pytest.mark.property("retention.erasure-complete")
 class TestFormerParticipants:
     async def test_people_of_a_disconnected_app_are_listed_and_no_one_else(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -898,6 +900,7 @@ async def _member_client(session: AsyncSession, name: str, *, linked: bool) -> C
     return client
 
 
+@pytest.mark.property("retention.erasure-complete")
 class TestMembers:
     async def test_what_a_member_sent_goes_and_their_client_stays(
         self, session_factory: async_sessionmaker[AsyncSession]
