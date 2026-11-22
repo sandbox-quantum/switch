@@ -350,6 +350,79 @@ class TestReconcile:
         assert lifecycle.get(registered[0]) is not None
         await lifecycle.stop_all()
 
+    async def test_a_rename_here_during_a_reread_is_not_undone(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A re-read that read the row before a rename here committed must
+        not put the old name back after the rename gave the copy the new one:
+        no signal would come to correct it."""
+        agent = await _register(session_factory)
+        client_id = agent.client_id
+        assert client_id is not None
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        read, release = _pause_full_reads(lifecycle)
+        reread = asyncio.create_task(lifecycle.reconcile_tenant(TENANT_ZERO_ID))
+        await asyncio.wait_for(read.wait(), DELIVERY_TIMEOUT)
+
+        # As `AgentCore.rename_agent` does: commit the row, rename the copy.
+        async with session_factory() as session:
+            client = await session.get(Client, client_id)
+            assert client is not None
+            client.display_name = "renamed-agent"
+            await session.commit()
+        renaming = asyncio.create_task(
+            lifecycle.rename(TENANT_ZERO_ID, client_id, "renamed-agent")
+        )
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(reread, renaming), DELIVERY_TIMEOUT)
+
+        try:
+            assert getattr(lifecycle.get(client_id), "display_name", None) == (
+                "renamed-agent"
+            )
+        finally:
+            await lifecycle.stop_all()
+
+    async def test_a_client_deleted_during_a_reread_is_not_started_again(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A re-read that read a client before its deletion here, and applies
+        after the deletion's own re-read found the row gone, must not start
+        it again. A client with no agent row has nothing else to stop it."""
+        async with session_factory() as session:
+            record = Client(
+                transport_user_id=f"@admin-{uuid.uuid4().hex[:8]}:test",
+                display_name="admin",
+                type="admin",
+            )
+            session.add(record)
+            await session.commit()
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        assert lifecycle.get(record.id) is not None
+        read, release = _pause_full_reads(lifecycle)
+        reread = asyncio.create_task(lifecycle.reconcile_tenant(TENANT_ZERO_ID))
+        await asyncio.wait_for(read.wait(), DELIVERY_TIMEOUT)
+
+        # As a deletion does: stop the copy, delete the row, re-read it.
+        await lifecycle.stop(record.id)
+        async with session_factory() as session:
+            await session.execute(delete(Client).where(Client.id == record.id))
+            await session.commit()
+        named = asyncio.create_task(
+            lifecycle.reconcile_clients(TENANT_ZERO_ID, [record.id])
+        )
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(reread, named), DELIVERY_TIMEOUT)
+
+        try:
+            assert lifecycle.get(record.id) is None
+        finally:
+            await lifecycle.stop_all()
+
     async def test_a_named_client_stopped_on_purpose_stays_stopped(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -420,6 +493,25 @@ class TestRecheck:
 
         assert told == [(TENANT_ZERO_ID, None)]
         await lifecycle.stop_all()
+
+
+def _pause_full_reads(
+    lifecycle: ClientLifecycleService,
+) -> tuple[asyncio.Event, asyncio.Event]:
+    """Make `lifecycle`'s full reads wait, once they have read, until released:
+    the first event is set when a read is done, the second releases it."""
+    read, release = asyncio.Event(), asyncio.Event()
+    store = lifecycle._client_store
+    real_get_running = store.get_running
+
+    async def read_then_wait(session: Any, *args: Any) -> Any:
+        records = await real_get_running(session, *args)
+        read.set()
+        await release.wait()
+        return records
+
+    store.get_running = read_then_wait  # type: ignore[method-assign]
+    return read, release
 
 
 def _count_full_reads(lifecycle: ClientLifecycleService) -> list[str]:
