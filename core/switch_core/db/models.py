@@ -4648,6 +4648,58 @@ class UsageBudget(TenantScoped, Base):
     )
 
 
+class SessionFreshnessPolicy(TenantScoped, Base):
+    """A limit on how old an agent session's accumulated context may be.
+
+    `agent_id` null covers every agent in the tenant; otherwise the one agent.
+    When an inbound message addresses an idle agent whose session is older
+    than `max_age_hours`, the policy acts (`action`):
+    - `reset` (default): resets session context before starting the turn,
+      posting a notice in the room explaining that context moved on.
+    - `refuse`: refuses the work and posts a refusal note in the room.
+    """
+
+    __tablename__ = "session_freshness_policies"
+    __table_args__ = (
+        Index("ix_session_freshness_policies_tenant_id", "tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_session_freshness_policies_agent",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "max_age_hours > 0",
+            name="ck_session_freshness_policies_max_age_hours",
+        ),
+        CheckConstraint(
+            "action IN ('reset', 'refuse')",
+            name="ck_session_freshness_policies_action",
+        ),
+        Index(
+            "uq_session_freshness_policies_tenant_wide",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("agent_id IS NULL"),
+        ),
+        Index(
+            "uq_session_freshness_policies_agent",
+            "tenant_id",
+            "agent_id",
+            unique=True,
+            postgresql_where=text("agent_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    max_age_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False, default="reset")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Data retention ────────────────────────────────────────────────────────────
 
 #: The longest message-retention window a workspace may set, ten years.

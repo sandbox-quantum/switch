@@ -87,6 +87,7 @@ from switch_core.delivery.conversation import ConversationRoute
 from switch_core.events import (
     CommandEvent,
 )
+from switch_core.freshness import FreshnessExceeded, FreshnessGuard
 from switch_core.gateway.cloud_controllers import wake_controller_machine
 from switch_core.gateway.known_agents import known_agent_for
 from switch_core.observability.catalogue import OBSERVER_FAILURES
@@ -523,6 +524,7 @@ class AgentRecipient:
         clients: ClientNames,
         notices: SwitchNotices,
         cloud_waking_notices: set[tuple[str, int]],
+        freshness_guard: FreshnessGuard | None = None,
     ) -> None:
         self.actor = actor
         self.tenant_id = tenant_id
@@ -550,6 +552,9 @@ class AgentRecipient:
         )
         self._addressing = addressing
         self._budget_guard = budget_guard
+        self._freshness_guard = freshness_guard or FreshnessGuard(
+            session_store=services.agent_session_store
+        )
         self._clients = clients
         self._notices = notices
         # The "machine is waking" notices this process has posted for the
@@ -1820,7 +1825,16 @@ class AgentRecipient:
                     agent_id=agent.id,
                     room_id=meta.room_id,
                 )
+                await self._freshness_guard.check_freshness(
+                    session,
+                    tenant_id=self.tenant_id,
+                    agent_id=agent.id,
+                    agent_name=agent.name,
+                    room_id=meta.room_id,
+                )
             except BudgetExceeded as exc:
+                refusal = str(exc)
+            except FreshnessExceeded as exc:
                 refusal = str(exc)
             else:
                 return _GateOutcome(addressed=True, refusal=None)

@@ -23,6 +23,7 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.erasure_store import ErasureStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.freshness_policy_store import FreshnessPolicyStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
@@ -238,6 +239,10 @@ def get_budget_store() -> BudgetStore:
 
 def get_retention_store() -> RetentionStore:
     return RetentionStore()
+
+
+def get_freshness_policy_store() -> FreshnessPolicyStore:
+    return FreshnessPolicyStore()
 
 
 def get_erasure_store() -> ErasureStore:
