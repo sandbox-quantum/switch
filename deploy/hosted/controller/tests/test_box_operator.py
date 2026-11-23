@@ -1785,3 +1785,90 @@ def test_a_box_with_a_changed_starter_is_refused():
     BoxOperator(FakeCore(), kube, cfg()).provision(action())
     _sts_pod(kube)["initContainers"][0]["command"] = ["sh", "-c", "cat /etc/switch/enrol/code"]
     assert _again(kube, cfg())[0] == "failed"
+
+
+# ---- t2 refused by admission (P4 not updated yet): make t1, keep pool and bind off for an hour ----
+
+
+class P4OldKube(ProbeKube):
+    """A cluster whose admission refuses a StatefulSet with an init container (P4 from before t2), or fails on the
+    network, as told."""
+
+    def __init__(self, network_error=False):  # type: ignore[no-untyped-def]
+        super().__init__([False] * 10)
+        self.network_error = network_error
+        self.t2_attempts = 0
+
+    def create_or_get(self, obj):  # type: ignore[no-untyped-def]
+        if obj["kind"] == "StatefulSet" and obj["spec"]["template"]["spec"].get("initContainers"):
+            self.t2_attempts += 1
+            if self.network_error:
+                raise OSError("connection reset")
+            raise Refused(422)
+        return super().create_or_get(obj)
+
+
+def test_t2_refused_makes_the_box_as_t1_and_keeps_pool_and_bind_off(monkeypatch, caplog):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller import box_operator
+
+    monkeypatch.setattr(
+        box_operator, "POOL_BIND_READY", True
+    )  # as in the build that makes pool boxes
+    clock = {"now": 0.0}
+    kube, core = P4OldKube(), FakeCore()
+    op = BoxOperator(core, kube, cfg(), clock=lambda: clock["now"])
+    caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
+    op.provision(action())
+    assert result(core)[2:] == ("done", NS, None)
+    pod = _sts_pod(kube)
+    assert "initContainers" not in pod and "login-check" not in {v["name"] for v in pod["volumes"]}
+    assert any(
+        "Template t2 refused" in r.getMessage() and "422" in r.getMessage() for r in caplog.records
+    )
+    assert op.report()["capabilities"] == []  # no pool or bind: Core makes no pool boxes
+    # Within the hour, the next box goes straight to t1 without trying t2 again.
+    op.provision(
+        action(
+            machine_id="22222222-2222-4222-8222-222222222222", user_keyed_id="k1-1111111111111111"
+        )
+    )
+    assert kube.t2_attempts == 1
+    # After the hour, t2 is tried again.
+    clock["now"] += 3601
+    assert op.report()["capabilities"] == ["pool", "bind"]
+
+
+def test_t2_admitted_makes_t2_and_lists_pool_and_bind(monkeypatch):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller import box_operator
+
+    monkeypatch.setattr(box_operator, "POOL_BIND_READY", True)
+    kube, core = ProbeKube([False] * 3), FakeCore()
+    op = BoxOperator(core, kube, cfg())
+    op.provision(action())
+    assert _sts_pod(kube)["initContainers"][0]["name"] == "starter"
+    assert op.report()["capabilities"] == ["pool", "bind"]
+
+
+def test_pool_and_bind_are_not_listed_in_this_build():
+    op = BoxOperator(FakeCore(), ProbeKube([False]), cfg())
+    assert "pool" not in op.report()["capabilities"] and "bind" not in op.report()["capabilities"]
+
+
+def test_a_network_error_on_t2_is_a_failure_to_retry_never_a_fallback():
+    kube, core = P4OldKube(network_error=True), FakeCore()
+    op = BoxOperator(core, kube, cfg())
+    with pytest.raises(OSError):
+        op.provision(action())
+    assert ("StatefulSet", NS, "box") not in kube.objects
+    assert op.t2_admitted()  # nothing remembered: the next claim tries t2 again
+
+
+def test_a_t1_box_made_by_the_fallback_is_reused_later(caplog):  # type: ignore[no-untyped-def]
+    kube = P4OldKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    # P4 is updated meanwhile: the same box is claimed again by an operator for which t2 is fine.
+    plain = FakeKube()
+    plain.objects, plain.boxes, plain.created = kube.objects, kube.boxes, kube.created
+    caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
+    assert _again(plain, cfg()) == ("done", NS, None)
+    assert any("before the starter container" in r.getMessage() for r in caplog.records)

@@ -403,6 +403,12 @@ BOX_KEYED_NAMES = "box_keyed_names"
 # (`box-owners`). Until they do, a box-keyed box gets no login (fail closed), so listing it would leave every new box,
 # fallback included, with no egress. True only in the build whose egress reads `box-owners`.
 BOX_KEYED_EGRESS_READY = False
+POOL, BIND = "pool", "bind"
+# This build makes no pool boxes and binds none yet; True only in the build with the pool create and bind steps.
+POOL_BIND_READY = False
+# A pool box needs the starter (template t2). If the cluster's admission refuses a t2 box (P4 not updated yet), the
+# operator makes the box as template t1 in the same step, and for an hour neither tries t2 nor lists pool or bind.
+T2_REFUSED_RETRY_S = 3600.0
 NAMES_RECHECK_S = 3600.0
 PROBE_NAMESPACE = box_namespace("k1-0000000000000000")
 PROBE_MACHINE = "00000000-0000-4000-8000-000000000000"
@@ -1120,6 +1126,23 @@ def _earlier_templates(spec: dict) -> list[tuple[str | None, dict]]:
     ]
 
 
+class _T2Refused(Exception):
+    def __init__(self, status: int | None):
+        super().__init__(status)
+        self.status = status
+
+
+def _is_t2(sts: dict) -> bool:
+    return bool(sts["spec"]["template"]["spec"].get("initContainers"))
+
+
+def _as_t1(sts: dict) -> dict:
+    """The same StatefulSet as template t1 made it (`_before_starter`)."""
+    out = copy.deepcopy(sts)
+    out["spec"] = _before_starter(out["spec"])
+    return out
+
+
 def _before_starter(spec: dict) -> dict:
     """The template before the starter container (template t1): no init container, no `login-check` volume, the
     code Secret at the server's default mode, and no pod annotation. Such a box waits for nothing at start, as
@@ -1230,7 +1253,12 @@ class OperatorKube(Protocol):
 
 
 class Refused(Exception):
-    """The cluster refused a create (the account's rights or an admission policy)."""
+    """The cluster refused a create (the account's rights or an admission policy). `status` is the HTTP status
+    (403 or 422), when known."""
+
+    def __init__(self, status: int | None = None):
+        super().__init__(status)
+        self.status = status
 
 
 # What the Kubernetes client answers for a Secret that already exists: the operator has no right to read any Secret,
@@ -1256,6 +1284,11 @@ class BoxOperator:
         self._clock = clock
         self._names_admitted = False
         self._names_checked: float | None = None
+        self._t2_refused_until = 0.0
+
+    def t2_admitted(self) -> bool:
+        """False for an hour after the cluster refused a t2 box."""
+        return self._clock() >= self._t2_refused_until
 
     def _check_names(self) -> None:
         """At start and hourly: does the cluster admit a box-keyed namespace? A refusal drops `box_keyed_names`; an
@@ -1283,12 +1316,12 @@ class BoxOperator:
     def report(self) -> dict:
         """What each claim tells Core: this build's template revision and what it can make."""
         self._check_names()
-        return {
-            "template_revision": template_revision(self._config),
-            "capabilities": [BOX_KEYED_NAMES]
-            if self._names_admitted and BOX_KEYED_EGRESS_READY
-            else [],
-        }
+        capabilities = []
+        if self._names_admitted and BOX_KEYED_EGRESS_READY:
+            capabilities.append(BOX_KEYED_NAMES)
+        if POOL_BIND_READY and self.t2_admitted():
+            capabilities += [POOL, BIND]
+        return {"template_revision": template_revision(self._config), "capabilities": capabilities}
 
     def run_once(self) -> bool:
         """Claims and makes at most one box. False when Core had nothing waiting."""
@@ -1333,6 +1366,24 @@ class BoxOperator:
             )
 
     def _make(self, step: str, obj: dict) -> None:
+        if obj["kind"] == "StatefulSet" and _is_t2(obj):
+            if not self.t2_admitted():
+                obj = _as_t1(obj)
+            else:
+                try:
+                    self._make_one(step, obj, quiet_refusal=True)
+                    return
+                except _T2Refused as refusal:
+                    self._t2_refused_until = self._clock() + T2_REFUSED_RETRY_S
+                    logger.warning(
+                        "Template t2 refused by the cluster's admission (%s); making this box as t1, and pool and"
+                        " bind stay off for an hour.",
+                        refusal.status or "refused",
+                    )
+                    obj = _as_t1(obj)
+        self._make_one(step, obj)
+
+    def _make_one(self, step: str, obj: dict, quiet_refusal: bool = False) -> None:
         refused = (
             "name_refused"
             if step == "namespace_ready"
@@ -1340,7 +1391,9 @@ class BoxOperator:
         )
         try:
             existing = self._kube.create_or_get(obj)
-        except Refused:
+        except Refused as error:
+            if quiet_refusal:
+                raise _T2Refused(error.status) from None
             logger.warning("Create refused: %s %s", obj["kind"], obj["metadata"]["name"])
             raise ProvisionFailed(refused) from None
         if existing is EXISTS_UNREAD:

@@ -118,7 +118,7 @@ class OperatorKubeApi:
                     return EXISTS_UNREAD  # never read: the operator has no `get` on Secrets
                 return self._call("GET", f"{collection}/{quote(meta['name'])}")
             if error.code in (403, 422):
-                raise Refused() from None
+                raise Refused(error.code) from None
             raise
 
     def admits(self, obj: dict) -> bool | None:
