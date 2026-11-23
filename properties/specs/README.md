@@ -126,8 +126,9 @@ The view's bound includes the time its reads take: a read that began before a
 change it did not see still applies, until a newer read does. Every read and
 every change a process makes takes a stamp as it begins, and a read applies
 only if the view came from an older stamp, so whichever began last wins
-whatever order they finish in. A queued re-read gives up after a timeout and
-is tried again. The model keeps each stamp as its rank among those in use,
+whatever order they finish in. A read has no timeout of its own: one stuck
+on the database fails through the pool and TCP timeouts and is tried again,
+and those bound it. The model keeps each stamp as its rank among those in use,
 which bounds the states without changing which reads apply.
 
 ## Mutants
