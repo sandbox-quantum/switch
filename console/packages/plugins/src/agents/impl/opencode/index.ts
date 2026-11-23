@@ -30,7 +30,7 @@ const validateSessionId = (id: string) => id.startsWith('ses');
  * has no Node and so no npm: the release zip, unpacked into
  * `~\.opencode\bin`, which is added to the user's PATH.
  */
-const OPENCODE_PACKAGE = 'opencode-ai';
+export const OPENCODE_PACKAGE = 'opencode-ai';
 
 /** The newest OpenCode 1 release, the last one Switch's OpenCode session speaks to. */
 export const OPENCODE_WINDOWS_RELEASE = 'v1.19.5';

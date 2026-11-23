@@ -1,7 +1,7 @@
 import { definePlugin, registerPluginBehavior } from '@switch-console/core/agents/plugins';
 import { icon } from './icon';
 
-const KIRO_INSTALL_COMMAND = 'curl -fsSL https://cli.kiro.dev/install | bash';
+export const KIRO_INSTALL_COMMAND = 'curl -fsSL https://cli.kiro.dev/install | bash';
 /**
  * Kiro's documented Windows install, `irm 'https://cli.kiro.dev/install.ps1' | iex`
  * (https://kiro.dev/docs/getting-started/installation/), run through `powershell -c` so it

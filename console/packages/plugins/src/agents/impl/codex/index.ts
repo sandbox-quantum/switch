@@ -9,7 +9,7 @@ import type { HostDependencyDescriptor, InstallOption } from '@switch-console/co
 import { icon } from './icon';
 import { codexLaunchProfile, codexLaunchProfileSettings, codexProfilePaths } from './profile';
 
-const CODEX_WINDOWS_INSTALL_SCRIPT =
+export const CODEX_WINDOWS_INSTALL_SCRIPT =
   'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"';
 
 /**
@@ -26,7 +26,7 @@ const CODEX_WINDOWS_INSTALL_SCRIPT =
  * resolved for install commands: PowerShell would interpolate `$env:...` before
  * `powershell -c` ever saw it, and cmd.exe would expand `%LOCALAPPDATA%`.
  */
-const CODEX_WINDOWS_UNINSTALL_SCRIPT =
+export const CODEX_WINDOWS_UNINSTALL_SCRIPT =
   'powershell -ExecutionPolicy ByPass -c "' +
   "Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\\OpenAI\\Codex') -Recurse -Force -ErrorAction SilentlyContinue; " +
   "Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex\\packages\\standalone') -Recurse -Force -ErrorAction SilentlyContinue" +

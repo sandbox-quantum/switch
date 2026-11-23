@@ -1,3 +1,4 @@
+import type { ProviderSetupSnapshot } from '@shared/core/provider-setup/provider-setup';
 import type { AgentInstallationStatus } from '@shared/core/providers/agent-payload';
 import type { ProviderLoginExit, ProviderLoginLine } from '@shared/core/providers/provider-login';
 import { defineEvent } from '@shared/lib/ipc/events';
@@ -56,6 +57,9 @@ export const providerLoginLineChannel = defineEvent<ProviderLoginLine>('provider
 
 /** A provider's sign-in command ended. */
 export const providerLoginExitChannel = defineEvent<ProviderLoginExit>('provider-login:exit');
+
+/** A provider's setup on this computer, sent whole each time it changes. */
+export const providerSetupChannel = defineEvent<ProviderSetupSnapshot>('provider-setup:snapshot');
 
 /** Emitted when an agent installation status changes (probe, install, update, or selection change). */
 export const agentInstallationStatusUpdatedChannel = defineEvent<AgentInstallationStatus>(

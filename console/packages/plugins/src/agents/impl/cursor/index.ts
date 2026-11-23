@@ -5,7 +5,7 @@ import {
 } from '@switch-console/core/agents/plugins/helpers';
 import { icon } from './icon';
 
-const CURSOR_INSTALL_UNIX = 'curl https://cursor.com/install -fsS | bash';
+export const CURSOR_INSTALL_UNIX = 'curl https://cursor.com/install -fsS | bash';
 /**
  * Cursor's documented Windows install, `irm 'https://cursor.com/install?win32=true' | iex`
  * (https://cursor.com/docs/cli/installation), run through `powershell -c` so it works from

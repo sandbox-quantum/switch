@@ -2,15 +2,11 @@ import { observer } from 'mobx-react-lite';
 import { useAgentSettings } from '@renderer/lib/stores/use-agent-settings';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
-import { Field } from '@renderer/lib/ui/field';
-import { Label } from '@renderer/lib/ui/label';
 import { Sheet, SheetContent, SheetHeader } from '@renderer/lib/ui/sheet';
-import { asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AgentSheetHeaderSection } from './AgentSheetHeaderSection';
 import { InstalledAgentContent } from './InstalledAgentContent';
-import { InstallSection } from './InstallSection';
-import { ThisComputerProviderStatus } from './this-computer-provider-status';
-import { installedHere, installSourcesDiffer, reportedProvider } from './this-computer-status';
+import { ProviderSetup } from './ProviderSetup';
+import { installedHere, reportedProvider } from './this-computer-status';
 
 interface AgentDetailSheetProps {
   agentId: string | null;
@@ -31,45 +27,29 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
   const { data: report } = useThisComputerReport();
   const reported = reportedProvider(report, agentId);
   const isInstalled = installedHere(reported, agentPayload?.status);
-  const sourcesDiffer = installSourcesDiffer(reported, agentPayload?.status);
 
   return (
     <>
       <SheetHeader label={isInstalled ? 'Agent Settings' : 'Install Agent'} />
-      <div className="overflow-y-auto px-4">
-        {agentPayload && (
-          <div className="space-y-6">
-            <AgentSheetHeaderSection agent={agentPayload} />
-            <ThisComputerProviderStatus providerId={asAgentProviderId(agentId)} />
-            <Field>
-              <Label>Installation</Label>
-              {sourcesDiffer && (
-                <p className="text-xs text-foreground-muted">
-                  What Console finds, used to install and update, including an executable chosen
-                  here. The status above is what this computer’s agents controller reported to
-                  Switch: it looks for the CLI on its own PATH and does not use an executable chosen
-                  here.
-                </p>
-              )}
-              <InstallSection
-                agentId={agentId}
-                agentPayload={agentPayload}
-                installOptions={agentPayload.installOptions}
-                hideOverrideOptions={!isInstalled}
-              />
-            </Field>
-          </div>
+      <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+        <div className="px-4">
+          {agentPayload && (
+            <div className="space-y-6">
+              <AgentSheetHeaderSection agent={agentPayload} />
+              <ProviderSetup providerId={agentId} />
+            </div>
+          )}
+        </div>
+        {agentPayload && isInstalled && (
+          <InstalledAgentContent
+            storedConfig={storedConfig}
+            isOverridden={isOverridden}
+            isLoading={isLoading}
+            update={update}
+            reset={reset}
+          />
         )}
       </div>
-      {agentPayload && isInstalled && (
-        <InstalledAgentContent
-          storedConfig={storedConfig}
-          isOverridden={isOverridden}
-          isLoading={isLoading}
-          update={update}
-          reset={reset}
-        />
-      )}
     </>
   );
 });
