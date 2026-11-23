@@ -16,6 +16,11 @@ controller token the scaler already holds) and writes it into the Secret, then t
   returned or reported; log lines carry machine ids, namespaces and times only.
 - Asks Core at most once per box every 5 minutes; Core mints a new one only once the box's last code
   has expired (so at most once per box per code lifetime).
+- A box already running whose starter is waiting with no code (a warm pool box just given to its owner: it was
+  started before it was anyone's, so it had no code to be given) is asked for at once, and its code written with no
+  restart: the starter polls the file and picks it up when the kubelet refreshes the Secret (seconds), so the box
+  keeps its head start. A refused or failed ask there is tried again after 10 seconds, not 5 minutes, so a refusal
+  can't hold a claimed box back past its start limit.
 Nothing here ever stops a start: every failure is logged by type and the box starts as it would have.
 """
 
@@ -33,6 +38,9 @@ logger = logging.getLogger(__name__)
 REGISTERED_KEY = "registered"
 REGISTERED_VALUE = "yes"
 ASK_INTERVAL_S = 300.0  # at most one `prepare` per box per 5 minutes
+RETRY_AFTER_REFUSAL_S = (
+    10.0  # for a box whose starter is waiting: a refused or failed ask is tried again this soon
+)
 # Core's box code lifetime (`MACHINE_ENROLLMENT_CODE_LIFETIME`, 15 minutes with hosted agents v2 on). Not used to
 # decide anything here; the scaler's waits are tested against it (`box_scaler.ROOM_LIMIT_S`), so a box that waited
 # for room is still on the code it was given when it's placed.
@@ -69,21 +77,27 @@ class RegistrationCodes:
         self._cleared: set[str] = (
             set()
         )  # machines whose Secret was emptied since this scaler started
+        self._given: dict[
+            str, float
+        ] = {}  # machine id -> when its waiting starter was last given a code or mark
 
     def _ours(self, machine_id: str, namespace: str) -> bool:
         return self._boxes.get(machine_id) == namespace
 
-    def _ask(self, machine_id: str) -> list[str] | None:
+    def _ask(self, machine_id: str, retry_after: float | None = None) -> list[str] | None:
         """The codes Core holds for the machine's workspaces, [] when it is registered everywhere, or None when not
-        asked (too soon) or the call failed."""
+        asked (too soon) or the call failed. With `retry_after`, a failed or refused ask may be made again that many
+        seconds later, instead of `ASK_INTERVAL_S`."""
         now = self._clock()
         last = self._asked.get(machine_id)
         if last is not None and now - last < ASK_INTERVAL_S:
             return None
         self._asked[machine_id] = now
+        failed_at = now if retry_after is None else now - ASK_INTERVAL_S + retry_after
         try:
             answer = self._core.prepare(machine_id)
         except Exception as exc:  # never stop a start over it
+            self._asked[machine_id] = failed_at
             logger.warning(
                 "Machine %s: could not ask Core for its registration code (%s).",
                 machine_id,
@@ -92,6 +106,7 @@ class RegistrationCodes:
             return None
         controllers = answer.get("controllers") if isinstance(answer, dict) else None
         if not isinstance(controllers, list):
+            self._asked[machine_id] = failed_at
             logger.warning("Machine %s: Core's prepare answer has no controller list.", machine_id)
             return None
         return [
@@ -133,6 +148,52 @@ class RegistrationCodes:
         codes = self._ask(machine_id)
         if codes:
             self._write(machine_id, namespace, codes)
+
+    def starter_waiting(self, machine_id: str, namespace: str) -> None:
+        """A box running with its starter still waiting: when its Secret holds no code, ask Core now and write the
+        code (or, when Core says it's registered, the `registered` mark), with no restart. The starter picks it up
+        when the kubelet refreshes the Secret. A refused or failed ask is tried again after
+        `RETRY_AFTER_REFUSAL_S`. Once given, the box is left alone for `ASK_INTERVAL_S` (it's waiting on the
+        kubelet, or on its login), and `stuck` still restarts it if its code goes dead."""
+        if not self._ours(machine_id, namespace):
+            return
+        given = self._given.get(machine_id)
+        if given is not None and self._clock() - given < ASK_INTERVAL_S:
+            return
+        try:
+            current = self._kube.enrol_code(namespace)
+        except Exception as exc:
+            logger.warning(
+                "Machine %s: could not read the registration code for %s (%s).",
+                machine_id,
+                namespace,
+                type(exc).__name__,
+            )
+            return
+        if current:
+            return  # it has a code: the kubelet's refresh, or its login, is all it waits for
+        codes = self._ask(machine_id, retry_after=RETRY_AFTER_REFUSAL_S)
+        if codes is None:
+            return
+        if codes:
+            if self._write(machine_id, namespace, codes):
+                self._given[machine_id] = self._clock()
+            return
+        try:  # registered already, with no mark: mark it, so its starter lets it start
+            self._kube.set_enrol_code(namespace, None)
+        except Exception as exc:
+            logger.warning(
+                "Machine %s: could not mark %s registered (%s).",
+                machine_id,
+                namespace,
+                type(exc).__name__,
+            )
+            return
+        self._given[machine_id] = self._clock()
+        self._cleared.add(machine_id)
+        logger.info(
+            "Machine %s: registered; %s marked so its starter lets it start.", machine_id, namespace
+        )
 
     def stuck(self, machine_id: str, namespace: str, waited_s: float) -> bool:
         """A box running but not ready: when it isn't registered and Core has a code its Secret doesn't hold (its

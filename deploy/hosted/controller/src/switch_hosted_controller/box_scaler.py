@@ -41,6 +41,7 @@ BOX = "box"
 BOX_POD = "box-0"
 ENROL_SECRET = "switch-enrol"  # the box reads its one-time registration code from here at boot
 ENROL_KEY = "code"
+STARTER = "starter"  # template t2's init container (`box_operator._starter`)
 ENROL_TIMEOUT_S = 10.0
 RUNNING, STOPPED = "running", "stopped"
 # What the readers accept from the box map: exact box-keyed names, and person-keyed ones as before (`box_names`).
@@ -257,6 +258,15 @@ def unschedulable(pods: list[dict[str, Any]]) -> bool:
                 and condition.get("status") == "False"
                 and condition.get("reason") == "Unschedulable"
             ):
+                return True
+    return False
+
+
+def starter_waiting(pods: list[dict[str, Any]]) -> bool:
+    """The box's pod is in its starter container (template t2), still waiting for its code or mark and its login."""
+    for pod in pods:
+        for status in (pod.get("status") or {}).get("initContainerStatuses") or []:
+            if status.get("name") == STARTER and "running" in (status.get("state") or {}):
                 return True
     return False
 
@@ -481,6 +491,22 @@ def reconcile_once(
                         waiting_for_room = True
                 elif room_since is not None:
                     room_since.pop(machine_id, None)
+                if (
+                    codes is not None
+                    and action is None
+                    and replicas >= 1
+                    and error is None
+                    and not waiting_for_room
+                ):
+                    # Already running, its starter waiting with no code (a warm pool box just given to its owner):
+                    # its code now, with no restart, so it keeps its head start.
+                    if pods is None:
+                        if watch is not None and machine_id in watch.last_pods:
+                            pods = watch.last_pods[machine_id]
+                        elif hasattr(kube, "box_pods"):
+                            pods = kube.box_pods(namespace)
+                    if pods and starter_waiting(pods):
+                        codes.starter_waiting(machine_id, namespace)
                 if error is not None or waiting_for_room:
                     pass
                 elif (

@@ -6,9 +6,10 @@ import logging
 
 import pytest
 
-from switch_hosted_controller.box_scaler import CoreApi, KubeApi, reconcile_once
+from switch_hosted_controller.box_scaler import CoreApi, CoreRefused, KubeApi, reconcile_once
 from switch_hosted_controller.registration_codes import (
     ASK_INTERVAL_S,
+    RETRY_AFTER_REFUSAL_S,
     WAIT_BEFORE_RESTART_S,
     RegistrationCodes,
 )
@@ -313,3 +314,113 @@ def test_a_new_code_takes_the_mark_out(tmp_path):
         _apply(data, patch)
     assert set(data) == {"code"}
     assert _starter_exits(tmp_path, data, wait_s=5)
+
+
+# --- a running box whose starter waits (a warm pool box just given to its owner) ---------------------------------
+
+
+POOL_NS = "agents-box-k1-00000000000000aa"
+
+
+def _pod(starter: str) -> dict:
+    """The box's pod with its starter `running` (still waiting), `terminated` (done), or absent (template t1)."""
+    statuses = [] if starter == "absent" else [{"name": "starter", "state": {starter: {}}}]
+    return {"status": {"phase": "Pending", "initContainerStatuses": statuses}}
+
+
+class PodKube(FakeKube):
+    def __init__(self, starter="running", **kwargs):  # type: ignore[no-untyped-def]
+        super().__init__(**kwargs)
+        self.starter = starter
+
+    def box_pods(self, ns):  # type: ignore[no-untyped-def]
+        return [_pod(self.starter)]
+
+
+class RefusingOnce(FakeCore):
+    def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+        super().__init__(**kwargs)
+        self.refusals = 1
+
+    def prepare(self, machine_id):  # type: ignore[no-untyped-def]
+        if self.refusals:
+            self.refusals -= 1
+            self.asked.append(machine_id)
+            raise CoreRefused("/machines/x/prepare", 409, "Conflict")
+        return super().prepare(machine_id)
+
+
+def _passes(core, kube, boxes, clock, until_s, step_s=2.0):  # type: ignore[no-untyped-def]
+    codes, waiting = codes_for(core, kube, clock, boxes), {}
+    start = clock.t
+    while clock.t - start <= until_s:
+        reconcile_once(core, kube, boxes, waiting=waiting, now=clock, codes=codes)
+        clock.t += step_s
+    return codes
+
+
+@pytest.mark.parametrize("ns", [POOL_NS, NS])
+def test_a_running_unregistered_box_gets_its_code_with_no_restart(ns, caplog):
+    """Its starter is waiting and its Secret is empty: the code is written on the first pass, and the box is never
+    stopped or started again while the starter picks it up, past the 90 s check too."""
+    boxes, clock = {M: ns}, Clock()
+    core, kube = FakeCore(answer=unregistered(CODE)), PodKube(replicas=1, ready=0)
+    with caplog.at_level(logging.DEBUG):
+        reconcile_once(
+            core, kube, boxes, waiting={}, now=clock, codes=codes_for(core, kube, clock, boxes)
+        )
+    assert kube.calls == [("secret", ns, "written")] and kube.code == CODE
+    clock2 = Clock()
+    core2, kube2 = FakeCore(answer=unregistered(CODE)), PodKube(replicas=1, ready=0)
+    _passes(core2, kube2, boxes, clock2, until_s=WAIT_BEFORE_RESTART_S + 30)
+    assert kube2.calls == [("secret", ns, "written")]  # no ("scale", …): no restart
+    assert core2.asked == [M]
+    assert CODE not in caplog.text
+
+
+def test_a_refused_ask_for_a_waiting_starter_is_tried_again_in_seconds():
+    """A refusal (Core not ready to give a code yet) is asked again after 10 s, not 5 minutes, so the code still
+    comes well inside the 3-minute start limit."""
+    clock = Clock()
+    core, kube = RefusingOnce(answer=unregistered(CODE)), PodKube(replicas=1, ready=0)
+    _passes(core, kube, {M: POOL_NS}, clock, until_s=RETRY_AFTER_REFUSAL_S + 2)
+    assert core.asked == [M, M]
+    assert kube.calls == [("secret", POOL_NS, "written")]
+    assert "error" not in core.seen
+
+
+def test_a_waiting_starter_core_says_is_registered_gets_the_mark():
+    """Registered already but with no mark (its Secret was emptied by an older scaler): marked, no restart."""
+    clock = Clock()
+    core, kube = FakeCore(answer=REGISTERED), PodKube(replicas=1, ready=0)
+    _passes(core, kube, {M: POOL_NS}, clock, until_s=WAIT_BEFORE_RESTART_S + 10)
+    assert kube.calls == [("secret", POOL_NS, "emptied")]  # the code out, the mark in
+    assert core.asked == [M]
+
+
+def test_a_waiting_starter_that_has_its_code_is_left_alone():
+    clock = Clock()
+    core, kube = FakeCore(answer=unregistered(CODE)), PodKube(replicas=1, ready=0, code=CODE)
+    _passes(core, kube, {M: POOL_NS}, clock, until_s=WAIT_BEFORE_RESTART_S + 10)
+    assert kube.calls == []
+
+
+@pytest.mark.parametrize("starter", ["terminated", "absent"])
+def test_a_box_not_in_its_starter_keeps_the_old_path(starter):
+    """Past its starter, or a t1 box with none (it reads its code only at boot): not asked early, and after 90 s
+    given a live code and restarted, exactly as before."""
+    clock = Clock()
+    core, kube = FakeCore(answer=unregistered(CODE)), PodKube(starter=starter, replicas=1, ready=0)
+    asked_at = []
+    plain = core.prepare
+    core.prepare = lambda mid: (asked_at.append(clock.t - 1000.0), plain(mid))[1]  # type: ignore[method-assign]
+    _passes(core, kube, {M: POOL_NS}, clock, until_s=WAIT_BEFORE_RESTART_S + 4)
+    assert asked_at == [WAIT_BEFORE_RESTART_S]  # first asked at 90 s, not before
+    assert kube.calls[:2] == [("secret", POOL_NS, "written"), ("scale", POOL_NS, 0)]
+
+
+def test_the_scaler_looks_for_the_operator_s_starter_by_its_name():
+    from switch_hosted_controller.box_operator import _starter
+    from switch_hosted_controller.box_scaler import STARTER
+
+    assert _starter.__code__.co_consts.count(STARTER) == 1
