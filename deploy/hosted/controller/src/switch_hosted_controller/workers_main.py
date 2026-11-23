@@ -77,6 +77,7 @@ from .box_scaler import (
     boxes_from_secret,
     load_boxes,
     reconcile_once,
+    scale_pool_boxes,
 )
 from .cluster_watch import (
     ENV_BOX_FACTS,
@@ -215,6 +216,9 @@ class FreshCore:
 
     def machines(self) -> list[dict[str, Any]]:
         return self._api().machines()
+
+    def pool(self) -> list[dict[str, Any]]:
+        return self._api().pool()
 
     def prepare(self, machine_id: str) -> dict[str, Any]:
         return self._api().prepare(machine_id)  # carries a code: never logged
@@ -370,6 +374,7 @@ class Workers:
             room=self._room,
         )
         self._scaled = sum(1 for step in steps if step.action)
+        self._scaled += scale_pool_boxes(self.core, self.kube)
         self._observed.update({step.machine_id: step.reported for step in steps})
 
     def _look_at_the_rest(self) -> None:

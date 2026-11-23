@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 from urllib.error import HTTPError
 
 import pytest
@@ -199,3 +200,103 @@ def test_the_names_check_is_a_dry_run_of_a_box_namespace_only(monkeypatch):  # t
     ):
         with pytest.raises(ValueError):
             api.admits(bad)
+
+
+# ---- the bind calls and the long-poll ----
+
+
+class _Resp:
+    def __init__(self, status=200, body=b"{}"):  # type: ignore[no-untyped-def]
+        self.status, self._body = status, body
+
+    def read(self):  # type: ignore[no-untyped-def]
+        return self._body
+
+    def __enter__(self):  # type: ignore[no-untyped-def]
+        return self
+
+    def __exit__(self, *a):  # type: ignore[no-untyped-def]
+        return False
+
+
+def _core_api(tmp_path, monkeypatch, answers):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller import box_operator_main as m
+
+    token = tmp_path / "t"
+    token.write_text("provisioner-token")
+    api = m.OperatorCoreApi("https://core.example.invalid", token, None)
+    seen = []
+
+    class Opener:
+        def open(self, req, timeout):  # type: ignore[no-untyped-def]
+            seen.append(
+                (req.get_method(), req.full_url, dict(req.header_items()), req.data, timeout)
+            )
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    monkeypatch.setattr(m, "opener", lambda ctx: Opener())
+    return api, seen
+
+
+TOKEN_X = "c" * 43
+
+
+def test_the_bind_calls_send_the_claim_token_in_a_header_only(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    from urllib.error import HTTPError
+
+    api, seen = _core_api(
+        tmp_path,
+        monkeypatch,
+        [
+            _Resp(204, b""),
+            HTTPError("u", 409, "x", None, None),
+            _Resp(200, b'{"open": true}'),
+            _Resp(200, b'{"open": false}'),
+        ],
+    )
+    assert api.step("a1", TOKEN_X, "owner_writing") is True
+    assert api.step("a1", TOKEN_X, "owner_writing") is False  # 409: not open
+    assert api.is_open("a1", TOKEN_X) is True and api.is_open("a1", TOKEN_X) is False
+    for method, url, headers, data, _ in seen:
+        assert headers.get("X-claim-token") == TOKEN_X
+        assert TOKEN_X not in url and TOKEN_X.encode() not in (data or b"")
+    assert [(s[0], s[1].rsplit("/hosted-provisioner", 1)[1]) for s in seen] == [
+        ("POST", "/actions/a1/steps"),
+        ("POST", "/actions/a1/steps"),
+        ("GET", "/actions/a1"),
+        ("GET", "/actions/a1"),
+    ]
+    with pytest.raises(ValueError):
+        api.step("a1", TOKEN_X, "anything")
+
+
+def test_the_claim_long_polls_and_says_what_this_build_can_do(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    api, seen = _core_api(tmp_path, monkeypatch, [_Resp(204, b"")])
+    assert api.claim({"template_revision": "t2-abc", "capabilities": []}) is None
+    method, url, headers, data, timeout = seen[0]
+    assert method == "POST" and url.endswith("/claim?wait_s=25") and timeout == 35
+    assert json.loads(data) == {"template_revision": "t2-abc", "capabilities": []}
+    assert "X-claim-token" not in headers
+
+
+def test_an_empty_long_poll_goes_straight_to_the_next_and_a_quick_one_pauses(monkeypatch):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller import box_operator_main as m
+
+    clock = {"now": 0.0}
+    sleeps: list[float] = []
+
+    class Op:
+        def __init__(self, waits):  # type: ignore[no-untyped-def]
+            self.waits = list(waits)
+
+        def run_once(self):  # type: ignore[no-untyped-def]
+            clock["now"] += self.waits.pop(0)
+            return False
+
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock["now"])
+    rounds = iter([False, False, True])
+    m.run(Op([25.0, 0.1]), stop=lambda: next(rounds), sleep=sleeps.append)
+    assert sleeps == [m.IDLE_WAIT_S]  # only after the one that came back at once

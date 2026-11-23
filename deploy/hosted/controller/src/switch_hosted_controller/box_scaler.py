@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 from uuid import UUID
 
-from .box_names import KNOWN_BOX_NAMESPACE_RE
+from .box_names import KNOWN_BOX_NAMESPACE_RE, is_box_keyed
 from .cluster_watch import ClusterWatch, RestartCounter, box_node
 from .evictions import EvictionWatch, status_document
 from .registration_codes import RegistrationCodes
@@ -749,6 +749,29 @@ def _report_missing(
     logger.warning("Machine %s: its box is missing (%s); told Core.", machine_id, why)
 
 
+def scale_pool_boxes(core: Any, kube: Kube) -> int:
+    """The waiting pool boxes Core lists (`GET /hosted-controller/pool`): started while Core wants them running
+    (requested or waiting), stopped once retiring. Only scaled: a pool box is never reported on, and no code is
+    ever asked for it (Core refuses `prepare` for one until it's bound). Only exact box-keyed names are touched.
+    Returns how many were scaled."""
+    scaled = 0
+    for raw in core.pool():
+        namespace, desired = raw.get("namespace"), raw.get("desired_state")
+        if not isinstance(namespace, str) or not is_box_keyed(namespace):
+            continue  # not made yet (Core names it once the pool action is handed out), or not one of ours
+        if desired not in (RUNNING, STOPPED):
+            continue
+        try:
+            replicas, _ = kube.scale(namespace)
+            want = 1 if desired == RUNNING else 0
+            if (replicas >= 1) != (want == 1):
+                kube.set_replicas(namespace, want)
+                scaled += 1
+        except Exception as exc:
+            logger.warning("Pool box %s: not scaled this pass (%s).", namespace, type(exc).__name__)
+    return scaled
+
+
 class CoreApi:
     """Core's hosted-controller routes, as the existing controller calls them."""
 
@@ -791,6 +814,16 @@ class CoreApi:
     def machines(self) -> list[dict[str, Any]]:
         listed = self._call("/machines")
         return listed.get("machines", []) if isinstance(listed, dict) else []
+
+    def pool(self) -> list[dict[str, Any]]:
+        """The waiting pool boxes, with no owner (warm pool). A Core from before has no such route: none."""
+        try:
+            listed = self._call("/pool")
+        except CoreRefused as refused:
+            if refused.status == 404:
+                return []
+            raise
+        return listed.get("boxes", []) if isinstance(listed, dict) else []
 
     def observe(
         self,

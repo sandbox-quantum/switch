@@ -88,6 +88,7 @@ class FakeCore:
         self.fail_machines: Exception | None = None
         self.codes: dict[str, str] = {}  # machine id -> its live one-time code
         self.prepared: list[str] = []
+        self.pool_boxes: list[dict[str, Any]] = []
 
     def prepare(self, machine_id: str) -> dict[str, Any]:
         self.prepared.append(machine_id)
@@ -98,6 +99,9 @@ class FakeCore:
         if self.fail_machines is not None:
             raise self.fail_machines
         return self.listed
+
+    def pool(self) -> list[dict[str, Any]]:
+        return self.pool_boxes
 
     def observe(self, machine_id: str, state: str, revision: int, error=None, **extra) -> None:  # type: ignore[no-untyped-def]
         self.observed.append((machine_id, {"state": state, **extra}))
@@ -1197,3 +1201,30 @@ def test_the_round_line_counts_legacy_names_without_naming_them(
         workers.run_round()
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Round:")]
     assert "legacy_names=1" in line and legacy not in line and NS1 not in line
+
+
+# ---- warm pool: the scaler starts and stops pool boxes, and does nothing else for them ----
+
+POOL_NS = "agents-box-k1-00000000000000bb"
+
+
+def test_pool_boxes_are_started_and_stopped_as_core_lists_them_and_never_reported() -> None:
+    core, kube = FakeCore([]), SlowKube()
+    kube.replicas[POOL_NS] = 0
+    core.pool_boxes = [
+        {"pool_box_id": "p1", "namespace": POOL_NS, "desired_state": "running"},
+        {"pool_box_id": "p2", "namespace": None, "desired_state": "running"},  # not made yet
+        {
+            "pool_box_id": "p3",
+            "namespace": "agents-user-ada",
+            "desired_state": "running",
+        },  # never a person's box
+        {"pool_box_id": "p4", "namespace": "kube-system", "desired_state": "running"},
+    ]
+    workers = Workers(core, kube, lambda: {}, SCALER)
+    workers.run_round()
+    assert kube.replicas[POOL_NS] == 1 and kube.order == ["replicas=1"]
+    assert core.observed == [] and core.prepared == []  # never reported on, never a code
+    core.pool_boxes = [{"pool_box_id": "p1", "namespace": POOL_NS, "desired_state": "stopped"}]
+    workers.run_round()
+    assert kube.replicas[POOL_NS] == 0

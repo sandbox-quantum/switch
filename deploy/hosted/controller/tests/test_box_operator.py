@@ -18,6 +18,7 @@ from switch_hosted_controller.box_operator import (
     FAILURES,
     MACHINE_NAME,
     NAMESPACE_RE,
+    ActionError,
     BoxMapConflict,
     BoxOperator,
     ConfigError,
@@ -1587,19 +1588,17 @@ def test_a_box_keyed_namespace_made_for_another_machine_is_not_this_boxs():
     assert result(core)[2] == "failed"
 
 
-def test_a_pool_or_bind_action_is_refused_until_this_operator_makes_them(caplog):  # type: ignore[no-untyped-def]
-    for kind in ("pool", "bind", "anything"):
-        raw = {
-            "action_id": "a1",
-            "machine_id": MACHINE,
-            "user_keyed_id": USER,
-            "claim_token": TOKEN,
-            "kind": kind,
-        }
-        core, kube = FakeCore([raw]), FakeKube()
-        BoxOperator(core, kube, cfg()).run_once()
-        assert kube.objects == {}
-    assert "bad kind" in caplog.text
+def test_an_unknown_kind_is_refused(caplog):  # type: ignore[no-untyped-def]
+    raw = {
+        "action_id": "a1",
+        "machine_id": MACHINE,
+        "user_keyed_id": USER,
+        "claim_token": TOKEN,
+        "kind": "x",
+    }
+    core, kube = FakeCore([raw]), FakeKube()
+    BoxOperator(core, kube, cfg()).run_once()
+    assert kube.objects == {} and "bad kind" in caplog.text
 
 
 # ---- what each claim tells Core: template revision, and box-keyed names only once the cluster admits them ----
@@ -1872,3 +1871,199 @@ def test_a_t1_box_made_by_the_fallback_is_reused_later(caplog):  # type: ignore[
     caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
     assert _again(plain, cfg()) == ("done", NS, None)
     assert any("before the starter container" in r.getMessage() for r in caplog.records)
+
+
+# ---- warm pool: pool create and bind (B1-B4) ----
+
+POOL_ID = "33333333-3333-4333-8333-333333333333"
+POOL_BOX = "k1-00000000000000bb"
+POOL_NS = f"agents-box-{POOL_BOX}"
+
+
+class PoolKube(ProbeKube):
+    """FakeKube plus the two add-only lists and a namespace read."""
+
+    def __init__(self):  # type: ignore[no-untyped-def]
+        super().__init__([False] * 50)
+        self.lists: dict[str, dict[str, str]] = {"pool-map": {}, "box-owners": {}}
+        self.list_writes: list[str] = []
+
+    def read_list(self, name):  # type: ignore[no-untyped-def]
+        if name == "box-map":
+            return dict(self.boxes), str(self.version)
+        return dict(self.lists[name]), "1"
+
+    def write_list(self, name, data, resource_version):  # type: ignore[no-untyped-def]
+        current = self.boxes if name == "box-map" else self.lists[name]
+        for key, value in current.items():  # what the cluster's add-only policy enforces
+            assert data.get(key) == value, "an existing entry changed or went"
+        self.list_writes.append(name)
+        if name == "box-map":
+            self.boxes = dict(data)
+        else:
+            self.lists[name] = dict(data)
+
+    def get_namespace(self, name):  # type: ignore[no-untyped-def]
+        return copy.deepcopy(self.objects.get(("Namespace", "", name)))
+
+
+class PoolCore(FakeCore):
+    def __init__(self, actions=None, step_ok=True, open_=True):  # type: ignore[no-untyped-def]
+        super().__init__(actions)
+        self.step_ok, self.open_ = step_ok, open_
+        self.steps: list[str] = []
+
+    def step(self, action_id, claim_token, step):  # type: ignore[no-untyped-def]
+        assert claim_token == TOKEN
+        self.steps.append(step)
+        return self.step_ok
+
+    def is_open(self, action_id, claim_token):  # type: ignore[no-untyped-def]
+        assert claim_token == TOKEN
+        self.steps.append("recheck")
+        return self.open_
+
+
+def pool_action(**over):  # type: ignore[no-untyped-def]
+    raw = {
+        "action_id": "p1",
+        "machine_id": POOL_ID,
+        "user_keyed_id": None,
+        "claim_token": TOKEN,
+        "kind": "pool",
+        "box_keyed_id": POOL_BOX,
+        "namespace": POOL_NS,
+        **over,
+    }
+    return ProvisionAction.parse(raw)
+
+
+def bind_action(**over):  # type: ignore[no-untyped-def]
+    return pool_action(action_id="b1", kind="bind", user_keyed_id=USER, **over)
+
+
+def _pooled():  # type: ignore[no-untyped-def]
+    kube, core = PoolKube(), PoolCore()
+    BoxOperator(core, kube, cfg()).pool(pool_action())
+    return kube, core
+
+
+def test_a_pool_box_has_no_egress_rule_no_box_map_entry_and_no_person():
+    kube, core = _pooled()
+    assert ("NetworkPolicy", POOL_NS, "agent-egress") not in kube.objects
+    assert ("NetworkPolicy", POOL_NS, "default-deny") in kube.objects
+    assert kube.boxes == {} and kube.lists["pool-map"] == {POOL_ID: POOL_NS}
+    assert kube.lists["box-owners"] == {}
+    assert USER not in json.dumps(list(kube.objects.values()))
+    assert result(core)[2:] == ("done", POOL_NS, None)
+    assert kube.objects[("StatefulSet", POOL_NS, "box")]["spec"]["replicas"] == 0
+
+
+def test_a_bind_adds_owner_then_egress_then_the_box_map_in_that_order():
+    kube, _ = _pooled()
+    core = PoolCore()
+    order: list[str] = []
+    BoxOperator(core, kube, cfg()).bind(bind_action(), stop_after=order.append)
+    assert order == ["B1", "owner_writing", "B2", "B3", "B4"]
+    assert core.steps == ["owner_writing", "recheck"]
+    assert kube.lists["box-owners"] == {POOL_NS: USER}
+    assert ("NetworkPolicy", POOL_NS, "agent-egress") in kube.objects
+    assert kube.boxes == {POOL_ID: POOL_NS}
+    assert kube.list_writes == [
+        "pool-map",
+        "box-owners",
+    ]  # the box map goes through write_box_map, last
+    assert result(core)[2:] == ("done", POOL_NS, None)
+
+
+def test_a_bind_for_another_machine_is_refused_before_anything_is_written():
+    kube, _ = _pooled()
+    core = PoolCore()
+    BoxOperator(core, kube, cfg()).bind(
+        bind_action(machine_id="44444444-4444-4444-8444-444444444444")
+    )
+    assert result(core)[2:] == ("failed", POOL_NS, "bind_machine_mismatch")
+    assert core.steps == [] and kube.lists["box-owners"] == {} and kube.boxes == {}
+
+
+def test_core_refusing_owner_writing_writes_nothing_and_reports_bind_closed():
+    kube, _ = _pooled()
+    core = PoolCore(step_ok=False)
+    BoxOperator(core, kube, cfg()).bind(bind_action())
+    assert result(core)[2:] == ("failed", POOL_NS, "bind_closed")
+    assert kube.lists["box-owners"] == {} and kube.boxes == {}
+    assert ("NetworkPolicy", POOL_NS, "agent-egress") not in kube.objects
+
+
+def test_a_closed_bind_at_the_recheck_never_reaches_the_box_map():
+    kube, _ = _pooled()
+    core = PoolCore(open_=False)
+    BoxOperator(core, kube, cfg()).bind(bind_action())
+    assert result(core)[2:] == ("failed", POOL_NS, "bind_closed")
+    assert kube.lists["box-owners"] == {
+        POOL_NS: USER
+    }  # Core already counts it as the person's (owner_writing)
+    assert kube.boxes == {}
+
+
+def test_another_owner_already_there_is_bind_owner_taken_and_an_alert(caplog):  # type: ignore[no-untyped-def]
+    kube, _ = _pooled()
+    kube.lists["box-owners"] = {POOL_NS: "k1-ffffffffffffffff"}
+    core = PoolCore()
+    caplog.set_level("ERROR", logger="switch_hosted_controller.box_operator")
+    BoxOperator(core, kube, cfg()).bind(bind_action())
+    assert result(core)[2:] == ("failed", POOL_NS, "bind_owner_taken")
+    assert kube.boxes == {} and "ALERT" in caplog.text and "k1-ffffffffffffffff" not in caplog.text
+
+
+def test_a_retried_bind_after_a_crash_at_each_step_ends_bound_once():
+    """Stop after each step, then bind again (the lease ran out and the action came back): it carries on, writes
+    nothing twice, and ends bound."""
+    for stop in ("B1", "owner_writing", "B2", "B3"):
+        kube, _ = _pooled()
+
+        def crash(step, stop=stop):  # type: ignore[no-untyped-def]
+            if step == stop:
+                raise RuntimeError("crash")
+
+        with pytest.raises(RuntimeError):
+            BoxOperator(PoolCore(), kube, cfg()).bind(bind_action(), stop_after=crash)
+        core = PoolCore()
+        BoxOperator(core, kube, cfg()).bind(bind_action())
+        assert result(core)[2:] == ("done", POOL_NS, None), stop
+        assert kube.lists["box-owners"] == {POOL_NS: USER} and kube.boxes == {POOL_ID: POOL_NS}
+
+
+def test_pool_and_bind_actions_only_ever_name_the_box_keyed_namespace():
+    for bad in (
+        {"namespace": f"agents-user-{USER}"},
+        {"namespace": "agents-box-k1-0000000000000001"},
+        {"box_keyed_id": None},
+    ):
+        with pytest.raises(ActionError):
+            pool_action(**bad)
+        with pytest.raises(ActionError):
+            bind_action(**bad)
+    with pytest.raises(ActionError):
+        pool_action(kind="anything")
+
+
+def test_the_claim_token_never_reaches_a_log_on_any_bind_path(caplog):  # type: ignore[no-untyped-def]
+    caplog.set_level("DEBUG")
+    for core in (PoolCore(), PoolCore(step_ok=False), PoolCore(open_=False)):
+        kube, _ = _pooled()
+        BoxOperator(core, kube, cfg()).bind(bind_action())
+    kube, _ = _pooled()
+    BoxOperator(PoolCore(), kube, cfg()).bind(
+        bind_action(machine_id="44444444-4444-4444-8444-444444444444")
+    )
+    assert caplog.records and TOKEN not in caplog.text
+    assert TOKEN not in repr(bind_action())
+
+
+def test_pool_and_bind_wait_for_the_build_whose_egress_reads_box_owners():
+    """A bound pool box is box-keyed, and a box-keyed box gets no egress login until egress reads `box-owners`: so
+    pool and bind are listed in the same build as box-keyed names, never before."""
+    from switch_hosted_controller import box_operator
+
+    assert box_operator.POOL_BIND_READY is False and box_operator.BOX_KEYED_EGRESS_READY is False

@@ -66,6 +66,14 @@ DAILY_CALLS_ENV = "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS"
 # The failure codes Core accepts in a result. Core records the claim itself; every step
 # here is safe to repeat, so a retried action needs no record of how far the last try got.
 FAILURES = ("name_refused", "policy_refused", "object_refused", "box_map_failed", "ceiling_reached")
+# A bind's own failures (Core's contract): before B2, `bind_machine_mismatch` and `bind_closed` leave the pool box
+# reapable; `bind_owner_taken` should never happen, and Core alerts on it.
+BIND_FAILURES = ("bind_machine_mismatch", "bind_closed", "bind_owner_taken")
+POOL, BIND = "pool", "bind"
+POOL_MAP_SECRET = "pool-map"  # in switch-hosted: pool box id -> namespace, add-only (P5-style)
+BOX_OWNERS_SECRET = (
+    "box-owners"  # in switch-hosted: namespace -> user keyed id, add-only (P5-style)
+)
 
 
 class ConfigError(ValueError):
@@ -86,7 +94,7 @@ class BoxMapConflict(Exception):
 
 class ProvisionFailed(Exception):
     def __init__(self, code: str):
-        if code not in FAILURES:
+        if code not in FAILURES + BIND_FAILURES:
             raise ValueError(f"not a failure code Core accepts: {code!r}")
         super().__init__(code)
         self.code = code
@@ -307,6 +315,7 @@ class ProvisionAction:
     # names none, so it's the person-keyed one, as before.
     namespace: str = ""
     box_keyed_id: str | None = None
+    kind: str = "provision"  # `provision`, `pool` (make a pool box) or `bind` (give a waiting pool box to a person)
 
     @classmethod
     def parse(cls, raw: Any) -> ProvisionAction:
@@ -316,35 +325,45 @@ class ProvisionAction:
         action_id, machine_id = raw.get("action_id"), raw.get("machine_id")
         user, size = raw.get("user_keyed_id"), raw.get("size")
         claim_token = raw.get("claim_token")
+        kind = raw.get("kind", "provision")
+        if kind not in ("provision", POOL, BIND):
+            raise ActionError("kind")
+        if kind == POOL and user is None:
+            user = ""  # a pool box has no person until it's bound
         if not isinstance(action_id, str) or not ACTION_ID_RE.fullmatch(action_id):
             raise ActionError("action_id")
         if not isinstance(machine_id, str) or not MACHINE_ID_RE.fullmatch(machine_id):
             raise ActionError("machine_id")
-        if not isinstance(user, str) or not USER_RE.fullmatch(user):
+        if not isinstance(user, str) or not (
+            USER_RE.fullmatch(user) or (kind == POOL and user == "")
+        ):
             raise ActionError("user_keyed_id")
         if size is not None and (not isinstance(size, str) or not SIZE_RE.fullmatch(size)):
             raise ActionError("size")
         if not isinstance(claim_token, str) or not CLAIM_TOKEN_RE.fullmatch(claim_token):
             raise ActionError("claim_token")
-        # `kind`: only `provision` until this operator makes pool boxes and binds them (it doesn't list them).
-        if raw.get("kind", "provision") != "provision":
-            raise ActionError("kind")
         box_keyed_id = raw.get("box_keyed_id")
         if box_keyed_id is not None and (
             not isinstance(box_keyed_id, str) or not USER_RE.fullmatch(box_keyed_id)
         ):
             raise ActionError("box_keyed_id")
         namespace = raw.get("namespace")
-        if namespace is None:
-            namespace = user_namespace(user)
-        # Core decides the name; this only checks it is one of the two this action may have, so a bad name from Core
-        # is refused rather than made: the person-keyed one, or the box-keyed one of the box Core names.
-        allowed = {user_namespace(user)}
-        if box_keyed_id is not None:
-            allowed.add(box_namespace(box_keyed_id))
-        if not isinstance(namespace, str) or namespace not in allowed:
-            raise ActionError("namespace")
-        return cls(action_id, machine_id, user, size, claim_token, namespace, box_keyed_id)
+        if kind in (POOL, BIND):
+            # A pool box, and a bind, only ever name the box-keyed namespace of the box Core names. Never a
+            # person-keyed one, and never the readers' loose pattern.
+            if box_keyed_id is None or namespace != box_namespace(box_keyed_id):
+                raise ActionError("namespace")
+        else:
+            if namespace is None:
+                namespace = user_namespace(user)
+            # Core decides the name; this only checks it is one of the two this action may have, so a bad name from
+            # Core is refused rather than made: the person-keyed one, or the box-keyed one of the box Core names.
+            allowed = {user_namespace(user)}
+            if box_keyed_id is not None:
+                allowed.add(box_namespace(box_keyed_id))
+            if not isinstance(namespace, str) or namespace not in allowed:
+                raise ActionError("namespace")
+        return cls(action_id, machine_id, user, size, claim_token, namespace, box_keyed_id, kind)
 
 
 def namespace_for(user: str) -> str:
@@ -403,7 +422,6 @@ BOX_KEYED_NAMES = "box_keyed_names"
 # (`box-owners`). Until they do, a box-keyed box gets no login (fail closed), so listing it would leave every new box,
 # fallback included, with no egress. True only in the build whose egress reads `box-owners`.
 BOX_KEYED_EGRESS_READY = False
-POOL, BIND = "pool", "bind"
 # This build makes no pool boxes and binds none yet; True only in the build with the pool create and bind steps.
 POOL_BIND_READY = False
 # A pool box needs the starter (template t2). If the cluster's admission refuses a t2 box (P4 not updated yet), the
@@ -1126,6 +1144,11 @@ def _earlier_templates(spec: dict) -> list[tuple[str | None, dict]]:
     ]
 
 
+def _stop(stop_after: Callable[[str], None] | None, step: str) -> None:
+    if stop_after is not None:
+        stop_after(step)
+
+
 class _T2Refused(Exception):
     def __init__(self, status: int | None):
         super().__init__(status)
@@ -1229,6 +1252,10 @@ def with_box(
 
 class OperatorCore(Protocol):
     def claim(self, report: dict | None = None) -> dict | None: ...
+    def is_open(
+        self, action_id: str, claim_token: str
+    ) -> bool: ...  # the bind is still this claim's
+    def step(self, action_id: str, claim_token: str, step: str) -> bool: ...  # False on Core's 409
     def result(
         self,
         action_id: str,
@@ -1250,6 +1277,13 @@ class OperatorKube(Protocol):
     def admits(
         self, obj: dict
     ) -> bool | None: ...  # a dry-run create: True, False (refused), None (unknown)
+    def read_list(
+        self, name: str
+    ) -> tuple[dict[str, str], str]: ...  # an add-only list and its resourceVersion
+    def write_list(
+        self, name: str, data: dict[str, str], resource_version: str
+    ) -> None: ...  # BoxMapConflict on 409
+    def get_namespace(self, name: str) -> dict | None: ...  # None when there's none
 
 
 class Refused(Exception):
@@ -1336,8 +1370,119 @@ class BoxOperator:
             # and Core ends the action as expired after its 15 minutes.
             logger.error("Provision action refused: bad %s", error)
             return True
-        self.provision(action)
+        if action.kind == POOL:
+            self.pool(action)
+        elif action.kind == BIND:
+            self.bind(action)
+        else:
+            self.provision(action)
         return True
+
+    # ---- the warm pool ----
+
+    def pool(self, action: ProvisionAction) -> None:
+        """A pool box: a normal new box made early, without its network rule to Core and squid (`agent-egress`) and
+        without a box-map entry, so it reaches nothing and nothing that serves people knows it; and a `pool-map`
+        entry, so the scaler starts it (its starter waits for a code it can't get until it's bound)."""
+        namespace = action.namespace
+        self._agents_disk = None
+        try:
+            for step, obj in box_objects(action, self._config):
+                if obj["kind"] == "NetworkPolicy" and obj["metadata"]["name"] == "agent-egress":
+                    continue
+                self._make(step, obj)
+            self._add_to_list(POOL_MAP_SECRET, action.machine_id, namespace)
+            self._core.result(action.action_id, action.claim_token, "done", namespace, None)
+            logger.info("Pool box made: action=%s namespace=%s", action.action_id, namespace)
+        except ProvisionFailed as failure:
+            logger.warning(
+                "Pool box not made: action=%s failed at %s", action.action_id, failure.code
+            )
+            self._core.result(
+                action.action_id, action.claim_token, "failed", namespace, failure.code
+            )
+
+    def bind(
+        self, action: ProvisionAction, stop_after: Callable[[str], None] | None = None
+    ) -> None:
+        """Give a waiting pool box to a person. Every step only adds, and the box-map entry (what makes it the
+        person's live box) comes last:
+
+        - B1: the namespace exists and its `machine-id` annotation is the machine Core is binding.
+        - Before B2, Core records `owner_writing`; a 409 there means the bind isn't open: nothing written.
+        - B2: `box-owners[namespace] = person`, add-only.
+        - B3: the box's `agent-egress` network rule, exactly as a normal box has it.
+        - Before B4, Core is asked again whether this claim is still open; if not, nothing more is written.
+        - B4: the box-map entry. Then `done`.
+
+        `stop_after` is for tests only (to crash at each step): no setting or input reaches it."""
+        namespace = action.namespace
+        failed_at: str | None = None
+        try:
+            existing = self._kube.get_namespace(namespace)
+            annotations = ((existing or {}).get("metadata") or {}).get("annotations") or {}
+            if existing is None or annotations.get(MACHINE_ANNOTATION) != action.machine_id:
+                raise ProvisionFailed("bind_machine_mismatch")
+            _stop(stop_after, "B1")
+            if not self._core.step(action.action_id, action.claim_token, "owner_writing"):
+                raise ProvisionFailed("bind_closed")
+            _stop(stop_after, "owner_writing")
+            self._add_owner(namespace, action.user)
+            _stop(stop_after, "B2")
+            (egress,) = [
+                obj
+                for _, obj in box_objects(action, self._config)
+                if obj["kind"] == "NetworkPolicy" and obj["metadata"]["name"] == "agent-egress"
+            ]
+            self._make("policies_ready", egress)
+            _stop(stop_after, "B3")
+            if not self._core.is_open(action.action_id, action.claim_token):
+                raise ProvisionFailed("bind_closed")
+            self._add_to_box_map(action.machine_id, namespace)
+            _stop(stop_after, "B4")
+        except ProvisionFailed as failure:
+            failed_at = failure.code
+            if failed_at == "bind_owner_taken":
+                logger.error(
+                    "Box operator ALERT: a pool box being bound already has another owner."
+                )
+            else:
+                logger.warning("Bind not done: action=%s failed at %s", action.action_id, failed_at)
+        result = "failed" if failed_at else "done"
+        self._core.result(action.action_id, action.claim_token, result, namespace, failed_at)
+        if not failed_at:
+            logger.info("Pool box bound: action=%s namespace=%s", action.action_id, namespace)
+
+    def _add_owner(self, namespace: str, user: str) -> None:
+        """`box-owners[namespace] = user`, add-only. The same entry again is fine (a retried bind); any other
+        owner already there is `bind_owner_taken`."""
+        for _ in range(BOX_MAP_TRIES):
+            owners, version = self._kube.read_list(BOX_OWNERS_SECRET)
+            if owners.get(namespace) == user:
+                return
+            if namespace in owners:
+                raise ProvisionFailed("bind_owner_taken")
+            try:
+                self._kube.write_list(BOX_OWNERS_SECRET, {**owners, namespace: user}, version)
+                return
+            except BoxMapConflict:
+                continue
+        raise ProvisionFailed("box_map_failed")
+
+    def _add_to_list(self, name: str, key: str, value: str) -> None:
+        """An add-only list (`pool-map`): this entry added, the same entry again fine, any other refused."""
+        for _ in range(BOX_MAP_TRIES):
+            current, version = self._kube.read_list(name)
+            if current.get(key) == value:
+                return
+            if key in current or value in current.values():
+                raise ProvisionFailed("box_map_failed")
+            try:
+                self._kube.write_list(name, {**current, key: value}, version)
+                return
+            except BoxMapConflict:
+                continue
+        raise ProvisionFailed("box_map_failed")
 
     def provision(self, action: ProvisionAction) -> None:
         namespace: str | None = None
