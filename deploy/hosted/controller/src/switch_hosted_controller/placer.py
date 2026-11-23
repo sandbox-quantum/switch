@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping
 from typing import Protocol
 from urllib.parse import quote
 
+from .box_names import KNOWN_BOX_NAMESPACE_RE
 from .placement import (
     GATE1_TAINT,
     ZONE_KEY,
@@ -34,7 +35,7 @@ from .placement import (
 logger = logging.getLogger(__name__)
 
 BOX_LABEL = "app=switch-box"
-NAMESPACE_RE = re.compile(r"agents-user-[a-z0-9-]+")  # the box scaler's own pattern
+NAMESPACE_RE = KNOWN_BOX_NAMESPACE_RE  # the readers' pattern (`box_names`), the scaler's too
 CALL_TIMEOUT_S = 4.0  # a slow API must not hold up every box's start
 SNAPSHOT_MAX_AGE_S = 5.0  # a burst of wakes in one scaler pass shares one read of nodes and pods
 POOL_LABEL = "switch.dev/pool"

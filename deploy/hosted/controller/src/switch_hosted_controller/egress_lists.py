@@ -35,6 +35,7 @@ from typing import Protocol
 from urllib.error import HTTPError
 from uuid import UUID
 
+from .box_names import is_box_keyed
 from .box_scaler import NAMESPACE_RE, ScalerConfigError
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,9 @@ def parse_egress(
             or namespace not in known
         ):
             raise EgressConfigError(f"not a box in the box map: {namespace!r}")
+        if is_box_keyed(namespace):
+            # A box-keyed box's settings follow its owner (`box-owners`), never its name: not taken here yet.
+            raise EgressConfigError(f"settings for a box-keyed box go by its owner: {namespace!r}")
         if not BOX_ID_RE.fullmatch(namespace.removeprefix("agents-user-")):
             raise EgressConfigError(f"box id too long or malformed: {namespace!r}")
         if not isinstance(settings, dict) or set(settings) - {"parts", "extras", "split"}:
@@ -201,6 +205,10 @@ def parse_egress(
             namespace, tuple(sorted(set(parts))), tuple(sorted(set(extras))), split
         )
     for namespace in known - set(result) - {GATE_NAMESPACE}:
+        if is_box_keyed(namespace):
+            # Fail closed: a box-keyed box gets no login (so no egress at all) until its owner's settings are read
+            # from `box-owners`. Never the defaults, which can include optional parts such as GitHub.
+            continue
         if BOX_ID_RE.fullmatch(namespace.removeprefix("agents-user-")):
             result[namespace] = BoxEgress(
                 namespace, tuple(sorted(set(default_parts))), split=default_split

@@ -143,11 +143,7 @@ def test_the_gvisor_scope_policy_names_exactly_the_two_box_name_shapes() -> None
     """`switch-gvisor-class-scope` lets a pod use a gVisor class only in box namespaces (and the gate's, the
     placeholders' and the drain room). Its box patterns must be `box_names`' two exact shapes, so the code and the
     policy can't drift: a pool box under a name the policy didn't know would never start."""
-    from switch_hosted_controller.box_operator import NAMESPACE_RE as USER_NAMESPACE_RE
-
-    # The person-keyed shape is the operator's own pattern today; the box-keyed one, exact, is the warm pool's
-    # (`box_names`), whose names commit then checks this against its own constants.
-    BOX_KEYED_NAMESPACE_RE = re.compile(r"agents-box-k1-[0-9a-f]{16}")
+    from switch_hosted_controller.box_names import BOX_KEYED_NAMESPACE_RE, USER_NAMESPACE_RE
 
     policies = (HOSTED / "k8s" / "30-admission-policies.yaml").read_text()
     (doc,) = [

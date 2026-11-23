@@ -559,7 +559,7 @@ def test_one_info_line_a_round_with_counts_only(
         workers.run_round()
     rounds = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Round:")]
     assert rounds == [
-        "Round: boxes=2 scaled=1 evicted=0 box_map=ok scaler=ok evictions=ok"
+        "Round: boxes=2 legacy_names=0 scaled=1 evicted=0 box_map=ok scaler=ok evictions=ok"
         " box_facts=off cluster_report=off restart=off"
     ]
     assert NS1 not in rounds[0] and M1 not in rounds[0]
@@ -1186,3 +1186,14 @@ def test_missing_reports_are_remembered_only_for_machines_core_lists_now() -> No
     core.listed = [_expected(M1)]
     workers.run_round()
     assert set(workers._reported_missing) == {M1}
+
+
+def test_the_round_line_counts_legacy_names_without_naming_them(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    legacy = "agents-user-ada"
+    workers = Workers(FakeCore([]), FakeKube(), lambda: {M1: NS1, M2: legacy}, SCALER)
+    with caplog.at_level(logging.INFO, logger="switch_hosted_controller.workers_main"):
+        workers.run_round()
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Round:")]
+    assert "legacy_names=1" in line and legacy not in line and NS1 not in line

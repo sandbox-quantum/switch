@@ -158,3 +158,44 @@ def test_results_out_of_form_are_refused_without_asserts(args, message):
     api._call = lambda *a, **k: pytest.fail("sent")  # type: ignore[method-assign]
     with pytest.raises(ValueError, match=message):
         api.result(*args)
+
+
+def test_the_names_check_is_a_dry_run_of_a_box_namespace_only(monkeypatch):  # type: ignore[no-untyped-def]
+    """`admits` posts with `dryRun=All` (the admission policies run, nothing is made), only ever for a box namespace,
+    and maps a refusal to False and anything else to None."""
+    from urllib.error import HTTPError, URLError
+
+    from switch_hosted_controller.box_operator import (
+        PROBE_MACHINE,
+        PROBE_NAMESPACE,
+        namespace_object,
+    )
+    from switch_hosted_controller.box_operator_main import OperatorKubeApi
+
+    api = OperatorKubeApi.__new__(OperatorKubeApi)
+    calls = []
+    answers: list = [
+        {},
+        HTTPError("u", 422, "x", None, None),
+        HTTPError("u", 403, "x", None, None),
+        HTTPError("u", 500, "x", None, None),
+        URLError("down"),
+    ]
+
+    def call(method, path, body=None):  # type: ignore[no-untyped-def]
+        calls.append((method, path))
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(api, "_call", call)
+    probe = namespace_object(PROBE_NAMESPACE, PROBE_MACHINE)
+    assert [api.admits(probe) for _ in range(5)] == [True, False, False, None, None]
+    assert calls == [("POST", "/api/v1/namespaces?dryRun=All")] * 5
+    for bad in (
+        {**probe, "kind": "Secret"},
+        {"kind": "Namespace", "metadata": {"name": "kube-system"}},
+    ):
+        with pytest.raises(ValueError):
+            api.admits(bad)

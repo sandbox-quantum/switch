@@ -121,6 +121,23 @@ class OperatorKubeApi:
                 raise Refused() from None
             raise
 
+    def admits(self, obj: dict) -> bool | None:
+        """A server-side dry run of creating `obj` (a namespace): the admission policies run and nothing is made.
+        True when admitted, False when refused (403 or 422), None for anything else (the caller keeps its last
+        answer). Logs the status only."""
+        if obj.get("kind") != "Namespace" or not NAMESPACE_RE.fullmatch(obj["metadata"]["name"]):
+            raise ValueError("only a box namespace is ever checked")
+        try:
+            self._call("POST", "/api/v1/namespaces?dryRun=All", obj)
+            return True
+        except HTTPError as error:
+            if error.code in (403, 422):
+                logger.info("Dry run refused (%d).", error.code)
+                return False
+            return None
+        except (URLError, OSError):
+            return None
+
     def box_map(self) -> tuple[dict[str, str], str]:
         secret = self._call("GET", f"/api/v1/namespaces/{HOME_NAMESPACE}/secrets/{BOX_MAP_SECRET}")
         data = secret.get("data") or {}
@@ -177,8 +194,10 @@ class OperatorCoreApi:
             raw = r.read()
             return json.loads(raw) if raw else None
 
-    def claim(self) -> dict | None:
-        return self._call("/claim")
+    def claim(self, report: dict | None = None) -> dict | None:
+        """Core's next action, telling it this build's template revision and capabilities. Unknown keys in the
+        answer are ignored (`ProvisionAction.parse`)."""
+        return self._call("/claim", report)
 
     def result(
         self,

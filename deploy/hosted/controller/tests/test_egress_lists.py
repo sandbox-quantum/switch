@@ -1004,3 +1004,27 @@ def test_main_reads_the_open_setting_and_refuses_a_bad_one(tmp_path, monkeypatch
     env = {"KUBERNETES_SERVICE_HOST": "10.100.0.1", "SWITCH_EGRESS_OPEN": "maybe"}
     assert egress_lists.main(env, sa_dir=tmp_path) == 2
     assert egress_lists.main({**env, "SWITCH_EGRESS_OPEN": "true"}, sa_dir=tmp_path) == 0
+
+
+# ---- box-keyed boxes (warm pool): no login until their owner's settings are read ----
+
+
+def test_a_box_keyed_box_gets_no_login_never_the_defaults():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    boxes = {
+        "11111111-1111-1111-1111-111111111111": "agents-user-ada",
+        "22222222-2222-2222-2222-222222222222": "agents-box-k1-00000000000000aa",
+    }
+    listed = parse_egress("{}", boxes, ("github",), True)
+    assert [b.namespace for b in listed] == [
+        "agents-user-ada"
+    ]  # a person-keyed box keeps the defaults, as before
+
+
+def test_settings_keyed_by_a_box_keyed_name_are_refused():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    boxes = {"22222222-2222-2222-2222-222222222222": "agents-box-k1-00000000000000aa"}
+    with pytest.raises(EgressConfigError):
+        parse_egress(json.dumps({"agents-box-k1-00000000000000aa": {"parts": []}}), boxes, (), True)

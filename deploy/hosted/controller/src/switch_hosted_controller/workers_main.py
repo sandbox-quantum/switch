@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .box_names import is_legacy
 from .box_operator_main import BOX_MAP_SECRET, HOME_NAMESPACE, SA_DIR, read_token
 from .box_scaler import (
     START_LIMIT_S,
@@ -397,8 +398,11 @@ class Workers:
             outcome["restart"] = self._guard("restart", self.restart.tick)
         # One line a round, so the pod's log shows it is alive: counts and fixed words only.
         logger.info(
-            "Round: boxes=%d scaled=%d evicted=%d %s",
+            "Round: boxes=%d legacy_names=%d scaled=%d evicted=%d %s",
             len(self.boxes),
+            sum(
+                1 for ns in self.boxes.values() if is_legacy(ns)
+            ),  # a count only, never a name (`box_names`)
             self._scaled,
             0 if self.watch is None else self.watch.found,
             " ".join(f"{name}={state}" for name, state in outcome.items()),

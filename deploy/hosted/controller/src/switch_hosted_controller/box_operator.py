@@ -21,16 +21,18 @@ import copy
 import hashlib
 import logging
 import re
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .box_names import BOX_NAMESPACE_RE, USER_LABEL, box_namespace, name_label, user_namespace
 from .egress_lists import LOGIN_SECRET, check_box_pod_spec
 
 logger = logging.getLogger(__name__)
 
 USER_RE = re.compile(r"k1-[0-9a-f]{16}")
-NAMESPACE_RE = re.compile(r"agents-user-k1-[0-9a-f]{16}")  # the admission policy's pattern
+NAMESPACE_RE = BOX_NAMESPACE_RE  # exact, both shapes, as the admission policy (P1) (`box_names`)
 MACHINE_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 ACTION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 CLAIM_TOKEN_RE = re.compile(
@@ -301,6 +303,10 @@ class ProvisionAction:
     # Core's token for this claim, sent back with the result so a stale worker's result is refused. Kept
     # out of repr, so it never reaches a log line.
     claim_token: str = field(repr=False)
+    # The exact namespace Core named for this action (fixed the first time it was handed out). A Core from before
+    # names none, so it's the person-keyed one, as before.
+    namespace: str = ""
+    box_keyed_id: str | None = None
 
     @classmethod
     def parse(cls, raw: Any) -> ProvisionAction:
@@ -320,14 +326,33 @@ class ProvisionAction:
             raise ActionError("size")
         if not isinstance(claim_token, str) or not CLAIM_TOKEN_RE.fullmatch(claim_token):
             raise ActionError("claim_token")
-        return cls(action_id, machine_id, user, size, claim_token)
+        # `kind`: only `provision` until this operator makes pool boxes and binds them (it doesn't list them).
+        if raw.get("kind", "provision") != "provision":
+            raise ActionError("kind")
+        box_keyed_id = raw.get("box_keyed_id")
+        if box_keyed_id is not None and (
+            not isinstance(box_keyed_id, str) or not USER_RE.fullmatch(box_keyed_id)
+        ):
+            raise ActionError("box_keyed_id")
+        namespace = raw.get("namespace")
+        if namespace is None:
+            namespace = user_namespace(user)
+        # Core decides the name; this only checks it is one of the two this action may have, so a bad name from Core
+        # is refused rather than made: the person-keyed one, or the box-keyed one of the box Core names.
+        allowed = {user_namespace(user)}
+        if box_keyed_id is not None:
+            allowed.add(box_namespace(box_keyed_id))
+        if not isinstance(namespace, str) or namespace not in allowed:
+            raise ActionError("namespace")
+        return cls(action_id, machine_id, user, size, claim_token, namespace, box_keyed_id)
 
 
 def namespace_for(user: str) -> str:
-    namespace = f"agents-user-{user}"
-    if not NAMESPACE_RE.fullmatch(namespace):
-        raise ProvisionFailed("name_refused")
-    return namespace
+    """The person-keyed name (`box_names.user_namespace`), for a box that had one before."""
+    try:
+        return user_namespace(user)
+    except ValueError:
+        raise ProvisionFailed("name_refused") from None
 
 
 def zone_for(user: str, zones: Sequence[str]) -> str:
@@ -348,6 +373,48 @@ def _bytes(quantity: str) -> int:
     return int(quantity[:-2]) * units[quantity[-2:]]
 
 
+def namespace_object(ns: str, machine_id: str) -> dict:
+    """The box's namespace: the five labels (its one name label is its shape's own) and the one `machine-id`
+    annotation, as P1 requires."""
+    label, ident = name_label(ns)
+    return {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+            "name": ns,
+            "labels": {
+                "app.kubernetes.io/part-of": "hosted-agents-test",
+                "app.kubernetes.io/managed-by": MANAGED_BY,
+                label: ident,
+                "pod-security.kubernetes.io/enforce": "restricted",
+                "pod-security.kubernetes.io/warn": "restricted",
+            },
+            "annotations": {MACHINE_ANNOTATION: machine_id},
+        },
+    }
+
+
+# What this operator tells Core with every claim (Core's `capabilities`), so Core names and hands out only what this
+# build can make. `box_keyed_names` is listed only while the cluster admits a box-keyed namespace: a server-side dry
+# run (`dryRun=All`, which runs the admission policies and creates nothing) of a fixed probe, at start and hourly.
+# So a skipped or rolled-back policy step (P1) keeps new boxes person-keyed rather than breaking them.
+BOX_KEYED_NAMES = "box_keyed_names"
+# Also required before `box_keyed_names` is listed: this build's egress lists give a box-keyed box its owner's settings
+# (`box-owners`). Until they do, a box-keyed box gets no login (fail closed), so listing it would leave every new box,
+# fallback included, with no egress. True only in the build whose egress reads `box-owners`.
+BOX_KEYED_EGRESS_READY = False
+NAMES_RECHECK_S = 3600.0
+PROBE_NAMESPACE = box_namespace("k1-0000000000000000")
+PROBE_MACHINE = "00000000-0000-4000-8000-000000000000"
+# Bumped with any change to what a box is made of; with the image digest, Core's `template_revision`. Core retires
+# waiting pool boxes made at an older one.
+TEMPLATE_VERSION = "t1"
+
+
+def template_revision(config: OperatorConfig) -> str:
+    return f"{TEMPLATE_VERSION}-{hashlib.sha256(config.image.encode()).hexdigest()[:12]}"
+
+
 def box_objects(action: ProvisionAction, config: OperatorConfig) -> list[tuple[str, dict]]:
     """Every object of the user's box, each with the step it belongs to, in the order they must exist: the namespace,
     then its network policies (before anything that could run), then the rest, the StatefulSet last and at 0
@@ -356,29 +423,21 @@ def box_objects(action: ProvisionAction, config: OperatorConfig) -> list[tuple[s
     size = config.sizes.get(action.size or config.default_size)
     if size is None:
         raise ProvisionFailed("object_refused")
-    ns = namespace_for(action.user)
-    user_name = f"user-{action.user}"  # the template's __USER__
+    ns = action.namespace or namespace_for(action.user)
+    if not NAMESPACE_RE.fullmatch(ns):
+        raise ProvisionFailed("name_refused")
+    # The box's identity (the template's __USER__): its name minus `agents-`, so `user-k1-…` for a person-keyed box,
+    # exactly as before, and `box-k1-…` for a box-keyed one. Its one name label is the shape's own (P1).
+    label, user_name = name_label(ns)
+    # The zone from the name's own keyed id: unchanged for a person-keyed box, so an existing box still matches.
+    zone = zone_for(user_name.split("-", 1)[1], config.zones)
 
     def meta(name: str) -> dict:
         return {"name": name, "namespace": ns}
 
     # As split template v2 has it. The machine-id annotation is what makes an existing namespace this box's own: one
     # made for any other machine never matches.
-    namespace = {
-        "apiVersion": "v1",
-        "kind": "Namespace",
-        "metadata": {
-            "name": ns,
-            "labels": {
-                "app.kubernetes.io/part-of": "hosted-agents-test",
-                "app.kubernetes.io/managed-by": MANAGED_BY,
-                "switch.dev/user": user_name,
-                "pod-security.kubernetes.io/enforce": "restricted",
-                "pod-security.kubernetes.io/warn": "restricted",
-            },
-            "annotations": {MACHINE_ANNOTATION: action.machine_id},
-        },
-    }
+    namespace = namespace_object(ns, action.machine_id)
     default_deny = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -479,15 +538,15 @@ def box_objects(action: ProvisionAction, config: OperatorConfig) -> list[tuple[s
         "kind": "StatefulSet",
         "metadata": {
             **meta("box"),
-            "labels": {"app": "switch-box", "switch.dev/user": user_name},
+            "labels": {"app": "switch-box", label: user_name},
         },
         "spec": {
             "replicas": 0,  # the scaler starts it, once Core wants it running
             "serviceName": "box",
             "selector": {"matchLabels": {"app": "switch-box"}},
             "template": {
-                "metadata": {"labels": {"app": "switch-box", "switch.dev/user": user_name}},
-                "spec": _box_pod_spec(config, size, user_name, zone_for(action.user, config.zones)),
+                "metadata": {"labels": {"app": "switch-box", label: user_name}},
+                "spec": _box_pod_spec(config, size, user_name, zone, label),
             },
         },
     }
@@ -560,7 +619,9 @@ _HARDENED = {
 }
 
 
-def _box_pod_spec(config: OperatorConfig, size: BoxSize, user_name: str, zone: str) -> dict:
+def _box_pod_spec(
+    config: OperatorConfig, size: BoxSize, user_name: str, zone: str, label: str = USER_LABEL
+) -> dict:
     """The split box (two containers on loopback, two disks), as split template v2 has it. Fixed apart from the image
     digest, the agents' size and the server address, all from the operator's own configuration."""
     no_proxy = f"{config.server_ip},.svc,.cluster.local,localhost,127.0.0.1"
@@ -673,7 +734,9 @@ def _box_pod_spec(config: OperatorConfig, size: BoxSize, user_name: str, zone: s
                             "labelSelector": {"matchLabels": {"app": "switch-box"}},
                             "namespaceSelector": {
                                 "matchExpressions": [
-                                    {"key": "switch.dev/user", "operator": "Exists"}
+                                    # Spread among boxes of the same name shape. Soft, and for a
+                                    # person-keyed box exactly as before, so an existing box still matches.
+                                    {"key": label, "operator": "Exists"}
                                 ]
                             },
                         },
@@ -1057,7 +1120,7 @@ def with_box(
 
 
 class OperatorCore(Protocol):
-    def claim(self) -> dict | None: ...
+    def claim(self, report: dict | None = None) -> dict | None: ...
     def result(
         self,
         action_id: str,
@@ -1076,6 +1139,9 @@ class OperatorKube(Protocol):
     def write_box_map(
         self, boxes: dict[str, str], resource_version: str
     ) -> None: ...  # BoxMapConflict on 409
+    def admits(
+        self, obj: dict
+    ) -> bool | None: ...  # a dry-run create: True, False (refused), None (unknown)
 
 
 class Refused(Exception):
@@ -1092,14 +1158,56 @@ BOX_MAP_TRIES = 5
 
 
 class BoxOperator:
-    def __init__(self, core: OperatorCore, kube: OperatorKube, config: OperatorConfig):
+    def __init__(
+        self,
+        core: OperatorCore,
+        kube: OperatorKube,
+        config: OperatorConfig,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self._core = core
         self._kube = kube
         self._config = config
+        self._clock = clock
+        self._names_admitted = False
+        self._names_checked: float | None = None
+
+    def _check_names(self) -> None:
+        """At start and hourly: does the cluster admit a box-keyed namespace? A refusal drops `box_keyed_names`; an
+        error that isn't one keeps the last answer."""
+        now = self._clock()
+        if self._names_checked is not None and now - self._names_checked < NAMES_RECHECK_S:
+            return
+        self._names_checked = now
+        try:
+            admitted = self._kube.admits(namespace_object(PROBE_NAMESPACE, PROBE_MACHINE))
+        except Exception as error:  # never stops a claim
+            logger.warning(
+                "Box-keyed names check failed (%s); keeping the last answer.", type(error).__name__
+            )
+            return
+        if admitted is None:
+            return
+        if admitted != self._names_admitted:
+            logger.info(
+                "Box-keyed names %s by the cluster's admission policy.",
+                "admitted" if admitted else "refused",
+            )
+        self._names_admitted = admitted
+
+    def report(self) -> dict:
+        """What each claim tells Core: this build's template revision and what it can make."""
+        self._check_names()
+        return {
+            "template_revision": template_revision(self._config),
+            "capabilities": [BOX_KEYED_NAMES]
+            if self._names_admitted and BOX_KEYED_EGRESS_READY
+            else [],
+        }
 
     def run_once(self) -> bool:
         """Claims and makes at most one box. False when Core had nothing waiting."""
-        raw = self._core.claim()
+        raw = self._core.claim(self.report())
         if raw is None:
             return False
         try:
@@ -1117,7 +1225,7 @@ class BoxOperator:
         namespace: str | None = None
         self._agents_disk: str | None = None  # the agents disk's storage request, made or found
         try:
-            namespace = namespace_for(action.user)
+            namespace = action.namespace or namespace_for(action.user)
             for step, obj in box_objects(action, self._config):
                 self._make(step, obj)
             self._add_to_box_map(action.machine_id, namespace)

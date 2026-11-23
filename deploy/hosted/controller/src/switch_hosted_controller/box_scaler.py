@@ -18,7 +18,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import re
 import ssl
 import time
 from collections.abc import Callable, Collection
@@ -30,6 +29,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 from uuid import UUID
 
+from .box_names import KNOWN_BOX_NAMESPACE_RE
 from .cluster_watch import ClusterWatch, RestartCounter, box_node
 from .evictions import EvictionWatch, status_document
 from .registration_codes import RegistrationCodes
@@ -43,7 +43,8 @@ ENROL_SECRET = "switch-enrol"  # the box reads its one-time registration code fr
 ENROL_KEY = "code"
 ENROL_TIMEOUT_S = 10.0
 RUNNING, STOPPED = "running", "stopped"
-NAMESPACE_RE = re.compile(r"agents-user-[a-z0-9-]+")
+# What the readers accept from the box map: exact box-keyed names, and person-keyed ones as before (`box_names`).
+NAMESPACE_RE = KNOWN_BOX_NAMESPACE_RE
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 

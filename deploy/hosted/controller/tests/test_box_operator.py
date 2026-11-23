@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 from email.message import Message
 from pathlib import Path
 from urllib.error import HTTPError
@@ -82,8 +83,10 @@ class FakeCore:
     def __init__(self, actions=None):  # type: ignore[no-untyped-def]
         self.actions = list(actions or [])
         self.calls: list[tuple] = []
+        self.reports: list = []  # what each claim told Core (revision and capabilities)
 
-    def claim(self):  # type: ignore[no-untyped-def]
+    def claim(self, report=None):  # type: ignore[no-untyped-def]
+        self.reports.append(report)
         return self.actions.pop(0) if self.actions else None
 
     def result(self, action_id, claim_token, result, namespace, failed_at):  # type: ignore[no-untyped-def]
@@ -306,22 +309,43 @@ def test_anything_off_in_the_action_is_refused_before_any_call(field, bad):
     assert core.calls == []
 
 
-def test_only_the_three_fields_are_used_whatever_else_core_sends():
+def test_only_the_checked_fields_are_used_whatever_else_core_sends():
     raw = {
         "action_id": "a1",
         "machine_id": MACHINE,
         "user_keyed_id": USER,
         "size": "standard",
         "claim_token": TOKEN,
-        "namespace": "kube-system",
         "image": "evil:latest",
+        "lease_seconds": 120,
     }
     core, kube = FakeCore([raw]), FakeKube()
     BoxOperator(core, kube, cfg()).run_once()
     assert {ns for (_, ns, _) in kube.objects if ns} == {NS}
-    text = json.dumps(list(kube.objects.values()))
-    assert 'kube-system"' not in text.replace('"kubernetes.io/metadata.name": "kube-system"', "")
-    assert "evil:latest" not in text
+    assert "evil:latest" not in json.dumps(list(kube.objects.values()))
+
+
+def test_a_namespace_core_names_outside_this_actions_two_is_refused_and_nothing_made(caplog):  # type: ignore[no-untyped-def]
+    """Core names the namespace now; the operator still makes only one of the two this action may have (the
+    person-keyed one, or the box-keyed one of the box Core names), so a bad name from Core is never made."""
+    for bad in (
+        "kube-system",
+        "switch-hosted",
+        "agents-user-k1-ffffffffffffffff",
+        "agents-box-k1-0000000000000001",
+    ):
+        raw = {
+            "action_id": "a1",
+            "machine_id": MACHINE,
+            "user_keyed_id": USER,
+            "claim_token": TOKEN,
+            "box_keyed_id": "k1-00000000000000aa",
+            "namespace": bad,
+        }
+        core, kube = FakeCore([raw]), FakeKube()
+        BoxOperator(core, kube, cfg()).run_once()
+        assert kube.objects == {} and core.calls == [], bad
+    assert "bad namespace" in caplog.text and "kube-system" not in caplog.text
 
 
 # ── Safe to repeat, create-only ─────────────────────────────────────────────
@@ -1466,3 +1490,163 @@ def test_the_documented_ca_change_loads_in_one_step():  # type: ignore[no-untype
         _ca_cfg(CA_BUNDLE, earlier_box_cas=[CA_BUNDLE])
     deploy = (Path(__file__).resolve().parents[2] / "DEPLOY.md").read_text()
     assert "in one apply and one roll" in deploy and "Don't list the current bundle there" in deploy
+
+
+# ---- box-keyed names (warm pool, `box_names`) ----
+
+BOX_ID = "k1-00000000000000aa"
+BOX_NS = f"agents-box-{BOX_ID}"
+
+
+def box_action(**over):  # type: ignore[no-untyped-def]
+    return action(box_keyed_id=BOX_ID, namespace=BOX_NS, **over)
+
+
+def test_a_box_keyed_action_makes_the_box_under_the_name_core_gave():
+    """Core names the box after the box: every object goes in that namespace, the one name label is
+    `switch.dev/box` (never `switch.dev/user`), the hostname is `box-k1-…`, the box map holds that name, and the
+    result reports it. Nothing carries the person's keyed id."""
+    kube, core = FakeKube(), FakeCore()
+    BoxOperator(core, kube, cfg()).provision(box_action())
+    assert {ns for (_, ns, _) in kube.objects if ns} == {BOX_NS}
+    namespace = kube.objects[("Namespace", "", BOX_NS)]
+    assert namespace["metadata"]["labels"]["switch.dev/box"] == f"box-{BOX_ID}"
+    assert "switch.dev/user" not in namespace["metadata"]["labels"]
+    box = kube.objects[("StatefulSet", BOX_NS, "box")]
+    pod = box["spec"]["template"]
+    assert pod["metadata"]["labels"] == {"app": "switch-box", "switch.dev/box": f"box-{BOX_ID}"}
+    assert pod["spec"]["hostname"] == f"box-{BOX_ID}"
+    assert USER not in json.dumps(list(kube.objects.values()))
+    assert kube.boxes == {MACHINE: BOX_NS}
+    assert result(core)[2:] == ("done", BOX_NS, None)
+
+
+def test_a_person_keyed_box_is_made_exactly_as_before():
+    """A Core from before names no namespace, and one that names the person-keyed one gets the same objects."""
+    before, named = FakeKube(), FakeKube()
+    BoxOperator(FakeCore(), before, cfg()).provision(action())
+    BoxOperator(FakeCore(), named, cfg()).provision(action(namespace=NS, box_keyed_id=BOX_ID))
+    assert before.objects == named.objects
+    assert (
+        before.objects[("Namespace", "", NS)]["metadata"]["labels"]["switch.dev/user"]
+        == f"user-{USER}"
+    )
+
+
+@pytest.mark.parametrize("make", [action, box_action])
+def test_an_existing_box_is_reused_for_both_name_shapes(make):  # type: ignore[no-untyped-def]
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(make())
+    ns = BOX_NS if make is box_action else NS
+    assert _again_with(kube, cfg(), make()) == ("done", ns, None)
+
+
+def _again_with(kube, config, act):  # type: ignore[no-untyped-def]
+    made = list(kube.created)
+    core = FakeCore()
+    BoxOperator(core, kube, config).provision(act)
+    assert kube.created == made
+    return result(core)[2:]
+
+
+def test_a_box_keyed_namespace_made_for_another_machine_is_not_this_boxs():
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(box_action())
+    other = "22222222-2222-4222-8222-222222222222"
+    core = FakeCore()
+    BoxOperator(core, kube, cfg()).provision(box_action(machine_id=other))
+    assert result(core)[2] == "failed"
+
+
+def test_a_pool_or_bind_action_is_refused_until_this_operator_makes_them(caplog):  # type: ignore[no-untyped-def]
+    for kind in ("pool", "bind", "anything"):
+        raw = {
+            "action_id": "a1",
+            "machine_id": MACHINE,
+            "user_keyed_id": USER,
+            "claim_token": TOKEN,
+            "kind": kind,
+        }
+        core, kube = FakeCore([raw]), FakeKube()
+        BoxOperator(core, kube, cfg()).run_once()
+        assert kube.objects == {}
+    assert "bad kind" in caplog.text
+
+
+# ---- what each claim tells Core: template revision, and box-keyed names only once the cluster admits them ----
+
+
+class ProbeKube(FakeKube):
+    def __init__(self, answers):  # type: ignore[no-untyped-def]
+        super().__init__()
+        self.answers = list(answers)
+        self.probes: list[dict] = []
+
+    def admits(self, obj):  # type: ignore[no-untyped-def]
+        self.probes.append(obj)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def test_box_keyed_names_are_never_listed_before_egress_reads_box_owners():
+    """In this build a box-keyed box gets no egress login, so even a passing dry run lists nothing: otherwise every
+    new box would be made box-keyed and have no egress."""
+    from switch_hosted_controller import box_operator
+
+    assert box_operator.BOX_KEYED_EGRESS_READY is False
+    core = FakeCore()
+    BoxOperator(core, ProbeKube([True]), cfg()).run_once()
+    assert core.reports[0]["capabilities"] == []
+
+
+def test_box_keyed_names_are_listed_only_while_the_cluster_admits_them(monkeypatch):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller import box_operator
+
+    monkeypatch.setattr(
+        box_operator, "BOX_KEYED_EGRESS_READY", True
+    )  # as in the build whose egress reads box-owners
+    clock = {"now": 0.0}
+    kube = ProbeKube([False, True, None, RuntimeError("x"), False])
+    core = FakeCore()
+    op = BoxOperator(core, kube, cfg(), clock=lambda: clock["now"])
+    seen = []
+    for step in range(6):
+        op.run_once()
+        seen.append(core.reports[-1]["capabilities"])
+        clock["now"] += 3600.0 if step != 2 else 10.0  # one claim within the hour: no new probe
+    assert seen == [
+        [],
+        ["box_keyed_names"],
+        ["box_keyed_names"],
+        ["box_keyed_names"],
+        ["box_keyed_names"],
+        [],
+    ]
+    # Refused, admitted, (no probe within the hour), unknown keeps it, error keeps it, refused drops it.
+    assert len(kube.probes) == 5
+    probe = kube.probes[0]
+    assert (
+        probe["kind"] == "Namespace"
+        and probe["metadata"]["name"] == "agents-box-k1-0000000000000000"
+    )
+    assert probe["metadata"]["labels"]["switch.dev/box"] == "box-k1-0000000000000000"
+    assert probe["metadata"]["annotations"] == {
+        "switch.dev/machine-id": "00000000-0000-4000-8000-000000000000"
+    }
+
+
+def test_every_claim_carries_this_builds_template_revision():
+    core = FakeCore()
+    op = BoxOperator(core, ProbeKube([False]), cfg())
+    op.run_once()
+    revision = core.reports[0]["template_revision"]
+    assert re.fullmatch(r"t1-[0-9a-f]{12}", revision)
+    from switch_hosted_controller.box_operator import template_revision
+
+    other = cfg(image="registry.example/hosted-agents-box@sha256:" + "b" * 64)
+    assert (
+        template_revision(other) != revision
+    )  # a new image is a new revision: Core retires older pool boxes
+    assert template_revision(cfg()) == revision
