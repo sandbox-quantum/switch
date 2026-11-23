@@ -54,6 +54,10 @@ describe('RENDERER_CSP', () => {
     expect(directive('base-uri')).toBe("'none'");
   });
 
+  it('frames nothing', () => {
+    expect(directive('frame-src')).toBe("'none'");
+  });
+
   it('sends nothing to another origin from the window', () => {
     expect(directive('connect-src')).not.toMatch(/https?:|\*/);
   });

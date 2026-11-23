@@ -7,11 +7,10 @@ import { getMainWindow } from './window';
 /**
  * The browser permissions any page in Console is given.
  *
- * Most of what Console shows is someone else's page — a server's sign-in and
- * dashboard, the room view's Mattermost — and Electron grants a page whatever
- * it asks for unless told otherwise: the camera and microphone, location,
- * notifications in Console's name, reading the clipboard. Nothing Console
- * shows needs those. What is granted: writing the clipboard (every copy
+ * Console shows someone else's page in a server's OIDC sign-in window, and
+ * Electron grants a page whatever it asks for unless told otherwise: the
+ * camera and microphone, location, notifications in Console's name, reading
+ * the clipboard. Nothing Console shows needs those. What is granted: writing the clipboard (every copy
  * button), going full screen, and letting an embedded page use the cookies it
  * already has, which a sign-in page embedding its provider may ask for.
  */
@@ -97,8 +96,8 @@ function applyPermissionPolicy(ses: Session): void {
 
 /**
  * Put the permission policy on every session: the default one the app window
- * uses, and each partition made later (sign-in, gateway, room view). Called
- * before the app is ready, so it is in place before any window opens.
+ * uses, and each partition made later (one per sign-in). Called before the
+ * app is ready, so it is in place before any window opens.
  */
 export function registerWebSecurity(): void {
   app.on('session-created', applyPermissionPolicy);

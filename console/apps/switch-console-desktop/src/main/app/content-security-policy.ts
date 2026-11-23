@@ -6,11 +6,10 @@
  * Script comes only from the app's own files — no inline script and no
  * `eval` — and so do workers (Monaco's editor worker is one of those files,
  * never a `blob:`). Nothing is sent anywhere directly: the renderer reaches
- * every server through the main process. What stays open is what the window shows:
- * inline styles (KaTeX, Mermaid and the UI library set them), images from
- * anywhere (agents' and members' messages show remote images today), and
- * http(s) frames, which is how the room view's `<webview>` attaches to its
- * Mattermost.
+ * every server through the main process, and nothing is framed. What stays
+ * open is what the window shows: inline styles (KaTeX, Mermaid and the UI
+ * library set them) and images from anywhere (agents' and members' messages
+ * show remote images today).
  */
 const DIRECTIVES: Record<string, string> = {
   'default-src': "'self'",
@@ -21,7 +20,7 @@ const DIRECTIVES: Record<string, string> = {
   'font-src': "'self' data:",
   'media-src': "'self' data: blob:",
   'connect-src': "'self' data: blob:",
-  'frame-src': "'self' http: https:",
+  'frame-src': "'none'",
   'object-src': "'none'",
   'base-uri': "'none'",
   'form-action': "'none'",
