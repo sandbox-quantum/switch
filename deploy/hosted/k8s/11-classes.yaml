@@ -26,6 +26,11 @@ metadata:
 scheduling:
   nodeSelector:
     switch.dev/pool: agents
+  tolerations:
+  - effect: NoSchedule
+    key: switch.dev/pool
+    operator: Equal
+    value: agents
 ---
 apiVersion: node.k8s.io/v1
 handler: runsc-tuned
@@ -37,3 +42,8 @@ metadata:
 scheduling:
   nodeSelector:
     switch.dev/pool: agents
+  tolerations:
+  - effect: NoSchedule
+    key: switch.dev/pool
+    operator: Equal
+    value: agents

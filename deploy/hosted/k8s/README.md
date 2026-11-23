@@ -8,9 +8,9 @@ them from `controller/src/switch_hosted_controller/box_operator.py`.
 | File | What |
 |---|---|
 | `10-namespaces.yaml` | `switch-hosted`, `egress-proxy`, `egress-lists`, `switch-drain-room` |
-| `11-classes.yaml` | PriorityClasses `switch-placeholder`, `switch-shared-services`; RuntimeClasses `gvisor`, `gvisor-tuned` |
+| `11-classes.yaml` | PriorityClasses `switch-placeholder`, `switch-shared-services`; RuntimeClasses `gvisor`, `gvisor-tuned`. Both classes add the toleration for the agent pool's taint (`switch.dev/pool=agents:NoSchedule`) to every pod that uses them, so only sandboxed pods run on agent nodes |
 | `20-cluster-rbac.yaml` | ClusterRoles and bindings for the provisioner, the hosted controller, the egress-lists generator, drain, restart and the box watch |
-| `30-admission-policies.yaml` | ValidatingAdmissionPolicies P1 to P8 and the three operator policies, with their bindings. Every one is `failurePolicy: Fail` and matched to one account |
+| `30-admission-policies.yaml` | ValidatingAdmissionPolicies P1 to P8 and the three operator policies, with their bindings, each matched to one account; and `switch-gvisor-class-scope`, for every account: only box namespaces, the node gate's check namespaces, `switch-placeholders` and `switch-drain-room` may use the gVisor classes. Every one is `failurePolicy: Fail` |
 | `40-switch-hosted.yaml` | The provisioner, hosted controller, operator and drain Deployments; their NetworkPolicies, Roles and ConfigMaps (box size and allowed images in `switch-box-operator-config`) |
 | `50-egress-proxy.yaml` | The shared squid: Deployment, Service, `squid-conf`, `squid-reload` and `squid-boxes-base` (one fixed, empty `_none.conf`, so squid starts with no box yet). Its NetworkPolicy is `../egress/egress-proxy-networkpolicy.yaml`. The per-box `squid-boxes` ConfigMap and the `squid-passwd` Secret are filled by the egress-lists generator and are never in the repo; they're created empty once, before the first apply (`../DEPLOY.md`, step 3) |
 | `51-egress-lists.yaml` | The egress-lists generator's Deployment, account, Role and NetworkPolicies |

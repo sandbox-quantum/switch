@@ -277,9 +277,11 @@ spec:
         !has(object.spec.tolerations) ||
         object.spec.tolerations.all(t, has(t.key) && has(t.operator) && (
           (t.key in ['switch.dev/gate1', 'switch.dev/level'] && t.operator == 'Equal') ||
+          (t.key == 'switch.dev/pool' && t.operator == 'Equal' && has(t.value) && t.value == 'agents' &&
+           has(t.effect) && t.effect == 'NoSchedule') ||
           (t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] && t.operator == 'Exists' &&
            has(t.effect) && t.effect == 'NoExecute' && has(t.tolerationSeconds) && t.tolerationSeconds <= 300)))
-      message: "a check pod may tolerate only the switch.dev/gate1 and switch.dev/level taints by exact value, plus the API server's own not-ready and unreachable defaults"
+      message: "a check pod may tolerate only the switch.dev/gate1 and switch.dev/level taints by exact value, the agent pool's taint (which the gvisor class adds), plus the API server's own not-ready and unreachable defaults"
     - expression: >-
         (!has(object.spec.hostNetwork) || !object.spec.hostNetwork) &&
         (!has(object.spec.hostPID) || !object.spec.hostPID) &&

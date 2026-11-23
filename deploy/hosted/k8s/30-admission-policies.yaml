@@ -115,9 +115,11 @@ spec:
   - expression: |-
       object.spec.all(k, k in ['containers', 'restartPolicy', 'terminationGracePeriodSeconds', 'dnsPolicy', 'securityContext',
         'schedulerName', 'tolerations', 'priority', 'priorityClassName', 'preemptionPolicy', 'enableServiceLinks',
-        'serviceAccountName', 'serviceAccount', 'nodeSelector', 'automountServiceAccountToken'])
-    message: a placeholder's spec may only carry the listed keys (no affinity, runtimeClassName,
-      volumes, host settings or overrides)
+        'serviceAccountName', 'serviceAccount', 'nodeSelector', 'automountServiceAccountToken', 'runtimeClassName'])
+    message: a placeholder's spec may only carry the listed keys (no affinity, volumes,
+      host settings or overrides)
+  - expression: object.spec.?runtimeClassName.orValue('') == 'gvisor'
+    message: a placeholder runs under gVisor, like everything on an agent node
   - expression: |-
       object.spec.containers[0].all(k, k in ['name', 'image', 'resources', 'securityContext', 'terminationMessagePath',
         'terminationMessagePolicy', 'imagePullPolicy'])
@@ -139,10 +141,13 @@ spec:
     message: a placeholder uses the default scheduler and the default service account
   - expression: |-
       object.spec.?tolerations.orValue([]).all(t,
-        t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] &&
-        t.?operator.orValue('') == 'Exists' && t.?effect.orValue('') == 'NoExecute')
+        (t.?key.orValue('') in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] &&
+         t.?operator.orValue('') == 'Exists' && t.?effect.orValue('') == 'NoExecute') ||
+        (t.?key.orValue('') == 'switch.dev/pool' && t.?operator.orValue('') == 'Equal' &&
+         t.?value.orValue('') == 'agents' && t.?effect.orValue('') == 'NoSchedule'))
     message: a placeholder tolerates only the two default not-ready and unreachable
-      taints (never gate1 or any other)
+      taints and the agent pool's taint, which the gvisor class adds (never gate1 or
+      any other)
   - expression: object.spec.?automountServiceAccountToken.orValue(true) == false &&
       !has(object.spec.volumes) && !object.spec.?hostNetwork.orValue(false) && !object.spec.?hostPID.orValue(false)
       && !object.spec.?hostIPC.orValue(false)
@@ -152,6 +157,58 @@ spec:
       && !has(object.spec.nodeName)
     message: a placeholder asks only for an agents machine in one zone, and never
       names a node
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-gvisor-class-scope
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - pods
+      scope: Namespaced
+  validations:
+  # A pod's class can't change after it's created, so the first rule checks CREATE only.
+  - expression: |-
+      request.operation != 'CREATE' ||
+      !(object.spec.?runtimeClassName.orValue('') in ['gvisor', 'gvisor-tuned']) ||
+      request.namespace.matches('^agents-user-k1-[0-9a-f]{16}$') ||
+      request.namespace.matches('^agents-box-k1-[0-9a-f]{16}$') ||
+      request.namespace.matches('^agents-check-[a-z0-9]([a-z0-9-]*[a-z0-9])?-(g1|px|rs)$') ||
+      request.namespace in ['switch-placeholders', 'switch-drain-room']
+    message: the gvisor classes carry the agent pool's toleration, so only box namespaces
+      (agents-user-k1-<16 hex> and the warm pool's agents-box-k1-<16 hex>), the node
+      gate's check namespaces, switch-placeholders and switch-drain-room may use them
+  # Nothing may write the agents toleration by hand to run on an agent node outside the sandbox: a pod whose
+  # tolerations cover switch.dev/pool=agents:NoSchedule (that exact key, or a key-less Exists) must name a gVisor
+  # class, and so falls under the rule above. kube-system is excepted: EKS's node DaemonSets live there and tolerate
+  # every taint. Known follow-on: the Datadog agent's DaemonSet will live in its own namespace and tolerate
+  # everything, so that namespace must join this exception when Datadog is added, or it is refused on agent nodes.
+  # On UPDATE the check applies only if the tolerations changed.
+  - expression: |-
+      request.namespace == 'kube-system' ||
+      object.spec.?runtimeClassName.orValue('') in ['gvisor', 'gvisor-tuned'] ||
+      (request.operation == 'UPDATE' &&
+       object.spec.?tolerations.orValue([]) == oldObject.spec.?tolerations.orValue([])) ||
+      !object.spec.?tolerations.orValue([]).exists(t,
+        ((t.?key.orValue('') == '' && t.?operator.orValue('') == 'Exists') ||
+         (t.?key.orValue('') == 'switch.dev/pool' &&
+          (t.?operator.orValue('Equal') == 'Exists' || t.?value.orValue('') == 'agents'))) &&
+        t.?effect.orValue('') in ['', 'NoSchedule'])
+    message: a pod that tolerates the agent pool's taint must run under a gVisor class
+      (outside kube-system)
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -869,6 +926,15 @@ metadata:
   name: switch-operator-placeholder-shape
 spec:
   policyName: switch-operator-placeholder-shape
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-gvisor-class-scope
+spec:
+  policyName: switch-gvisor-class-scope
   validationActions:
   - Deny
 ---
