@@ -220,6 +220,9 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A change made in one process reaches the others within a bound.** A
+  re-read a signal queues now gives up after 15 seconds and is tried again,
+  so one stuck on the database no longer holds up every change behind it.
 - **A connector app saved in the dashboard is no longer briefly replaced by
   the one before it.** A re-read of the app already under way when an
   administrator saved a new one could finish last and put the older app back
