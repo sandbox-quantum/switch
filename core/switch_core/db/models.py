@@ -3101,7 +3101,14 @@ class OrganizationTrustSettings(OrganizationScoped, Base):
 # The backends a workspace may choose for decision routing
 # (`decision/settings.py`): none (auto-route off in the workspace), its own
 # endpoint, or Haiku run by the server's decision service.
-DECISION_BACKENDS = ("none", "endpoint", "haiku_anthropic", "haiku_bedrock")
+DECISION_BACKENDS = (
+    "none",
+    "endpoint",
+    "haiku_anthropic",
+    "haiku_bedrock",
+    "self_hosted",
+    "gemini",
+)
 
 
 class DecisionSettings(TenantScoped, Base):
@@ -3113,7 +3120,8 @@ class DecisionSettings(TenantScoped, Base):
     backend `none` turns auto-route off in the workspace even when the server
     has a default. `api_key_encrypted` is under `config.keyring`: the bearer
     token for an `endpoint`, the Anthropic key for `haiku_anthropic`, never
-    set for `haiku_bedrock`. `threshold` is sent to the service as the
+    set for the other choices the server's decision service runs
+    (`haiku_bedrock`, `self_hosted`, `gemini`). `threshold` is sent to the service as the
     confidence it needs to name an agent; None leaves it to the service.
     """
 
@@ -3121,7 +3129,8 @@ class DecisionSettings(TenantScoped, Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", name="pk_decision_settings"),
         CheckConstraint(
-            "backend IN ('none', 'endpoint', 'haiku_anthropic', 'haiku_bedrock')",
+            "backend IN ('none', 'endpoint', 'haiku_anthropic', 'haiku_bedrock', "
+            "'self_hosted', 'gemini')",
             name="ck_decision_settings_backend",
         ),
         CheckConstraint(

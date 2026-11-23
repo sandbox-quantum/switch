@@ -214,7 +214,8 @@ does, and there is no polling tool to call.
 
   Which decision service a room uses is its workspace's choice, made by a
   workspace admin in Switch Console → Settings → Message routing: the server's
-  own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
+  own default, another model the server runs for it (such as a self-hosted
+  model, Gemini or Claude Haiku), the workspace's own endpoint, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without
   it. When the decision service fails, the message goes to nobody and Switch

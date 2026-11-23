@@ -699,13 +699,15 @@ RUNTIME_GC_PAUSE = _spec(
 # Auto-route asks a decision backend which agent, if any, should answer a
 # person's untagged message (`decision/client.py`, `delivery/router.py`).
 # `backend` is the kind of backend that was asked — `server_default`,
-# `endpoint`, `haiku_anthropic`, `haiku_bedrock` or `machine` — never which
-# endpoint, workspace or machine: those are per tenant and live in the decision
-# record the router logs for each message. `model` is the model that answered,
-# as the server's own decision service names it (`gemini-decision-1`,
-# `claude-haiku-5-5`, ...): a workspace's own endpoint is `workspace_endpoint`
-# whatever it says, a decision with no answer is `unknown`, and a name that is
-# not plain, or past the few a process keeps, is `other`
+# `endpoint`, `haiku_anthropic`, `haiku_bedrock`, `self_hosted`, `gemini` or
+# `machine` — never which endpoint, workspace or machine: those are per tenant
+# and live in the decision record the router logs for each message. `model` is
+# the model that answered, as the server's own decision service names it
+# (`gemini-decision-1`, `claude-haiku-5-5`, ...; for `gemini`, the fallback's
+# model when the fallback answered): a workspace's own endpoint is
+# `workspace_endpoint` whatever it says, a decision with no answer is
+# `unknown`, and a name that is not plain, or past the few a process keeps, is
+# `other`
 # (`decision.client.MAX_MODEL_LABELS`). `backend` says who was asked, `model`
 # what answered: the server default is one backend whichever model it runs.
 DECISION_LATENCY_BOUNDS_MS: tuple[float, ...] = (

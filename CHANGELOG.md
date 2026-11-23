@@ -105,6 +105,27 @@ version of their own to them without also giving them a release of their own.
 - **The decision service's `/health` lists what each choice gets**
   (`backends`: model, a label for people, threshold and fallback), so
   Switch Console can offer only what the service has.
+- **Workspaces can choose the decision service's self-hosted model, or
+  Gemini with its fallback, and Settings → Message routing names every choice
+  by its model.** Two more choices a workspace admin can save: `self_hosted`
+  (the model the server's decision service runs on its own model server, asked
+  as `X-Decision-Backend: systemone`) and `gemini` (Gemini in that service, as
+  `gemini_decision`, which applies whatever fallback its operator configured).
+  Which of the choices that run in the decision service are offered now comes
+  from the backends the service lists in its `/health`, read when an admin
+  opens, saves or tests the page and kept for 15 seconds; the gateway's
+  `GET /decision-settings` returns how the service describes the server
+  default and each choice (label, model, default threshold, fallback). A
+  service that lists no backends (one older than this release) is offered as
+  before: Haiku with a workspace's key, and Haiku on Bedrock only with
+  `DECISION_BEDROCK_ENABLED`. One that can't be read offers only what is saved,
+  and the page says why. Migration `c18f5ebeef66` widens the check on
+  `decision_settings.backend` (expand only). A saved choice a release doesn't
+  know, written by a newer one, turns auto-route off in that workspace with a
+  warning rather than failing. `switch.decision.*` and the `decision_made` /
+  `decision_failed` events gain the backend labels `self_hosted` and `gemini`,
+  and the `Decision routing:` record names the service's own backend that
+  answered (`answered_by`), so a fallback's answer can be told apart.
 - **The WorkOS directory mirror reports whether it is keeping up.** With
   `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
   `switch.workos.cursor_age` (seconds since it last read WorkOS's events
@@ -4795,6 +4816,20 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Added
+
+- **Settings → Message routing names the server default and each choice by
+  its model, and offers the server's self-hosted model and Gemini.** The
+  server default reads, for instance, "Server default: Qwen3 235B (Bedrock)";
+  the choices are the server's self-hosted model, Gemini (with the model it
+  falls back to when slow, and after how long), Claude Haiku on Bedrock,
+  Claude Haiku with your Anthropic key, your own endpoint and none, each
+  offered where the server's decision service runs it. Each choice shows its
+  model and the confidence threshold it uses by default, and the threshold
+  field shows the one that applies when left blank. When the server can't
+  read its decision service, the page says so and keeps the saved choice.
+  "Self-hosted endpoint" is now "Your own endpoint".
 
 #### Fixed
 
