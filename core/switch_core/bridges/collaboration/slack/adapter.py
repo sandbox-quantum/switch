@@ -619,11 +619,6 @@ WORKING_NOTE = "Working…"
 #: Slack's limit on a plan block's title.
 _MAX_PLAN_TITLE = 150
 
-#: A section's text is capped at 3,000 characters; an answer longer than one
-#: is drawn across several, and one too long for this many is left as it was.
-_MAX_SECTION_TEXT = 3000
-_MAX_ANSWER_SECTIONS = 40
-
 
 def _work_plan(title: str, status: str, link: tuple[str, str] | None) -> dict[str, Any]:
     """A work message as one line: a plan block of one card.
@@ -665,39 +660,6 @@ def _session_title(label: str, asked: AskedQuestion | None) -> str:
     """
     question = asked.text if asked is not None else ""
     return (question or label)[:200]
-
-
-def _answer_sections(text: str) -> list[dict[str, Any]] | None:
-    """An answer's text as section blocks, split at line breaks to fit.
-
-    What `chat.postMessage` drew from `text` alone, rebuilt as blocks so a plan
-    can sit under it: a message with blocks shows them and not its text. None
-    when it will not fit in the sections a message can spare.
-    """
-    sections: list[str] = []
-    current = ""
-    for line in text.split("\n"):
-        while len(line) > _MAX_SECTION_TEXT:
-            if current:
-                sections.append(current)
-                current = ""
-            sections.append(line[:_MAX_SECTION_TEXT])
-            line = line[_MAX_SECTION_TEXT:]
-        candidate = f"{current}\n{line}" if current else line
-        if len(candidate) > _MAX_SECTION_TEXT:
-            sections.append(current)
-            current = line
-        else:
-            current = candidate
-    if current.strip():
-        sections.append(current)
-    if not sections or len(sections) > _MAX_ANSWER_SECTIONS:
-        return None
-    return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": section}}
-        for section in sections
-        if section.strip()
-    ]
 
 
 class SlackAdapter(PlatformAdapter):
@@ -2100,65 +2062,6 @@ class SlackAdapter(PlatformAdapter):
                 "status": "processing" if working else "active",
             }
         )
-
-    async def attach_activity(
-        self,
-        channel_id: str,
-        answer_ref: str,
-        answer_text: str,
-        content: TurnActivity,
-    ) -> bool:
-        """Put a finished turn's plan under its answer, in one edit.
-
-        The answer is rebuilt from `answer_text`, the text the bridge posted it
-        with, rather than read back: Slack allows some apps one history read a
-        minute. The plan is the collapsed block an ordinary post of the turn
-        carries. An edit of a message, so it notifies nobody.
-
-        False, with a warning, when it could not be done; the caller keeps the
-        work thread then. A rate limit is raised as `RichContentThrottled` so
-        the caller tries again after it.
-        """
-        client = self._web_client
-        _, ts = self._parse_message_ref(answer_ref)
-        if client is None or not ts:
-            return False
-        sections = _answer_sections(answer_text)
-        if sections is None:
-            logger.warning(
-                "The answer %s is too long to rebuild with a plan under it; "
-                "keeping the turn's work thread.",
-                answer_ref,
-            )
-            return False
-        drawn = render_activity_plan(
-            content.items,
-            content.turn,
-            elapsed_seconds=content.elapsed_seconds,
-            stopped_by=content.stopped_by,
-        )
-        plans = [block for block in drawn.blocks if block.get("type") == "plan"]
-        if len(plans) != 1:
-            return False
-        try:
-            await client.chat_update(
-                channel=channel_id,
-                ts=ts,
-                text=answer_text,
-                blocks=[*sections, *plans],
-            )
-        except SlackApiError as error:
-            throttled = self._throttled(error, answer_text)
-            if throttled is not None:
-                raise throttled from error
-            logger.warning(
-                "Slack would not put the plan under answer %s (%s); keeping the "
-                "turn's work thread.",
-                answer_ref,
-                error.response.get("error"),
-            )
-            return False
-        return True
 
     async def remove_work_thread(
         self,

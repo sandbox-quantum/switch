@@ -16,7 +16,6 @@ from slack_sdk.errors import SlackApiError
 from switch_core.bridges.collaboration.adapter import (
     AskedQuestion,
     RichContentFailed,
-    RichContentThrottled,
     TurnActivity,
     WorkEnding,
 )
@@ -272,63 +271,6 @@ def _work(items: list[Item], status: str = "running") -> TurnActivity:
 
 
 # ── The ending ───────────────────────────────────────────────────────────────
-
-
-async def test_the_plan_goes_under_the_answer_rebuilt_from_its_text() -> None:
-    client = FakeWebClient()
-    adapter = _adapter(client)
-    ok = await adapter.attach_activity(
-        CHANNEL,
-        f"{CHANNEL}:8.0",
-        "Counted to 30.\nIt's *15:59*.",
-        _work([_done_tool()], "completed"),
-    )
-    assert ok
-    [edit] = client.updated
-    assert (edit["ts"], edit["text"]) == ("8.0", "Counted to 30.\nIt's *15:59*.")
-    section, plan = edit["blocks"]
-    assert section == {
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": "Counted to 30.\nIt's *15:59*."},
-    }
-    assert plan["type"] == "plan"
-    assert client.api_calls == [], "the answer is not read back from Slack"
-
-
-async def test_a_long_answer_is_rebuilt_across_sections() -> None:
-    client = FakeWebClient()
-    adapter = _adapter(client)
-    text = "\n".join(["x" * 1000] * 7)
-    assert await adapter.attach_activity(
-        CHANNEL, f"{CHANNEL}:8.0", text, _work([_done_tool()], "completed")
-    )
-    blocks = client.updated[0]["blocks"]
-    sections = [b["text"]["text"] for b in blocks if b["type"] == "section"]
-    assert len(sections) == 4, "two 1,000-character lines and a break fit in one"
-    assert all(len(section) <= 3000 for section in sections)
-    assert "\n".join(sections) == text
-    assert blocks[-1]["type"] == "plan"
-
-
-async def test_an_attach_slack_refuses_is_reported() -> None:
-    client = FakeWebClient()
-    client.update_error = "cant_update_message"
-    adapter = _adapter(client)
-    assert not await adapter.attach_activity(
-        CHANNEL, f"{CHANNEL}:8.0", "hi", _work([_done_tool()], "completed")
-    )
-
-
-async def test_an_attach_slack_rate_limits_is_tried_again() -> None:
-    client = FakeWebClient()
-    client.update_error = FakeResponse(
-        {"error": "ratelimited"}, headers={"Retry-After": "5"}
-    )
-    adapter = _adapter(client)
-    with pytest.raises(RichContentThrottled):
-        await adapter.attach_activity(
-            CHANNEL, f"{CHANNEL}:8.0", "hi", _work([_done_tool()], "completed")
-        )
 
 
 async def test_removing_a_work_thread_takes_the_replies_first() -> None:

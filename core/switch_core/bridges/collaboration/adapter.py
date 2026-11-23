@@ -1864,17 +1864,6 @@ class PlatformAdapter(ABC):
         """
         raise NotImplementedError
 
-    async def attach_activity(
-        self,
-        channel_id: str,
-        answer_ref: str,
-        answer_text: str,
-        content: TurnActivity,
-    ) -> bool:
-        """Put a finished turn's plan under its answer, the agent's message
-        `answer_ref` posted as `answer_text`. True once done."""
-        raise NotImplementedError
-
     async def remove_work_thread(
         self,
         channel_id: str,

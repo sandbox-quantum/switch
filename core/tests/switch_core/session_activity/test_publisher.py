@@ -1426,18 +1426,8 @@ class WorkThreadPlatform(RecordingPlatform):
             Drawn("settle_work_message", channel_id, message_ref, None, summary)
         )
 
-    attach_refused: bool = False
-    remove_refused: bool = False
     # A redraw that carries on in a new message, as a stream Slack closed does.
     move_next_update: bool = False
-
-    async def attach_activity(
-        self, channel_id: str, answer_ref: str, answer_text: str, content: Any
-    ) -> bool:
-        self.drawn.append(
-            Drawn("attach_activity", channel_id, answer_ref, None, answer_text)
-        )
-        return not self.attach_refused
 
     async def remove_work_thread(
         self,
@@ -1453,7 +1443,7 @@ class WorkThreadPlatform(RecordingPlatform):
         self.drawn.append(
             Drawn("remove_work_thread", channel_id, work_ref, None, list(stream_refs))
         )
-        return not self.remove_refused
+        return True
 
     async def update_rich(
         self,
@@ -1782,7 +1772,6 @@ async def test_an_answered_turn_keeps_its_work_message_and_thread(
     [settled] = platform.of("settle_work_message")
     assert settled.ref == opened.ref
     assert settled.content.startswith("Worked for ")
-    assert platform.of("attach_activity") == []
     assert platform.of("remove_work_thread") == []
     post = await _turn_post(session_factory)
     assert post.folded_into is None
@@ -1798,7 +1787,6 @@ async def test_an_interrupted_turn_keeps_the_work_message_even_with_an_answer(
     await _answer(session_factory, bridged)
     await _turn(service, bridged.room_id, "interrupted", 5)
     await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
-    assert platform.of("attach_activity") == []
     assert platform.of("settle_work_message")[0].content.startswith("Turn interrupted.")
     [ending] = platform.endings
     assert ending is not None and ending.failed, "drawn with an error mark"
@@ -1944,7 +1932,6 @@ async def test_an_inline_turn_is_one_message_at_the_root_kept_at_the_end(
     assert closed.ref == first.ref
     assert closed.content.endswith(" 1 tool call.")
     assert platform.of("remove_work_thread") == []
-    assert platform.of("attach_activity") == [], "the message is the record"
     post = await _turn_post(session_factory)
     assert post.work_finished_at is not None
     assert post.folded_into is None
