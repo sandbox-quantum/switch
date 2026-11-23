@@ -57,6 +57,7 @@ _SLACK_DESCRIPTIONS: dict[str, str] = {
     "list-aliases": "List agent aliases here",
     "follow-ups": "Turn follow-ups on or off",
     "auto-route": "Let Switch pick who answers untagged messages",
+    "agent-change": "Confirm or drop a change an agent asked for",
     "assign-agent": "Send every message here to one agent",
     "unassign-agent": "Stop sending every message to one agent",
     "add-room-admin": "Make someone a room admin",

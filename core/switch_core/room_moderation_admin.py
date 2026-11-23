@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from collections.abc import Awaitable, Callable
 
 from sqlalchemy import func, select
@@ -50,6 +51,7 @@ from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import MessageRouter
+from switch_core.delivery.send_limits import SendLimits
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_moderation import (
     AccountRemoval,
@@ -190,6 +192,7 @@ async def _router(
         ),
         decisions=None,
         decision_max_age_seconds=config.decision_pending_max_age_seconds,
+        send_limits=SendLimits.from_config(config, clock=time.monotonic),
     )
 
     async def close() -> None:

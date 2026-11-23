@@ -359,3 +359,101 @@ async def test_a_cancelled_pump_closes_its_stream() -> None:
         await pump
 
     assert closed.is_set()
+
+
+def _close_code(ws: Any) -> int:
+    """The code the server closes the socket with, reading past what it sends
+    until then."""
+    for _ in range(200):
+        try:
+            ws.receive_json()
+        except WebSocketDisconnect as closed:
+            return closed.code
+    raise AssertionError("the socket stayed open")
+
+
+class TestWhatAClientMaySend:
+    """A client sends only pongs. Anything it should not send ends its socket,
+    rather than being read and dropped for as long as it cares to send it."""
+
+    def test_a_frame_over_the_limit_closes_the_socket(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(handlers, "MAX_INBOUND_FRAME_BYTES", 64)
+        with client.websocket_connect(_url()) as ws:
+            ws.receive_json()
+            ws.send_text('{"type": "pong", "pad": "' + "x" * 64 + '"}')
+
+            assert _close_code(ws) == 1009
+
+    def test_a_large_position_fits(
+        self, client: TestClient, protocol: _Protocol
+    ) -> None:
+        """A pong carries a number for every room the agent reads, so an agent
+        in thousands of rooms still fits."""
+        position = {f"room-{n:05d}-{'r' * 30}": n for n in range(5000)}
+        with client.websocket_connect(_url()) as ws:
+            ws.receive_json()
+            conn = protocol.connections.get("c1")
+            assert conn is not None
+            beats_before = conn.beats
+
+            ws.send_json({"type": "pong", "cursor": 0, "position": position})
+            _next(ws, "ping")
+            _next(ws, "ping")
+
+            assert conn.beats > beats_before
+
+    def test_a_frame_that_is_not_json_closes_the_socket(
+        self, client: TestClient
+    ) -> None:
+        with client.websocket_connect(_url()) as ws:
+            ws.receive_json()
+            ws.send_text("pong")
+
+            assert _close_code(ws) == 1003
+
+    def test_a_binary_frame_closes_the_socket(self, client: TestClient) -> None:
+        with client.websocket_connect(_url()) as ws:
+            ws.receive_json()
+            ws.send_bytes(b'{"type": "pong"}')
+
+            assert _close_code(ws) == 1003
+
+    def test_a_few_stray_frames_are_let_go(
+        self, client: TestClient, protocol: _Protocol
+    ) -> None:
+        with client.websocket_connect(_url()) as ws:
+            ws.receive_json()
+            conn = protocol.connections.get("c1")
+            assert conn is not None
+            beats_before = conn.beats
+
+            for _ in range(handlers.MAX_STRAY_FRAMES_PER_WINDOW):
+                ws.send_json({"type": "chatter"})
+            ws.send_json({"type": "pong", "cursor": 0})
+            _next(ws, "ping")
+            _next(ws, "ping")
+
+            assert conn.beats > beats_before
+
+    def test_a_client_that_keeps_sending_stray_frames_is_closed(
+        self, client: TestClient
+    ) -> None:
+        with client.websocket_connect(_url()) as ws:
+            ws.receive_json()
+            for _ in range(handlers.MAX_STRAY_FRAMES_PER_WINDOW + 1):
+                ws.send_json({"type": "chatter"})
+
+            assert _close_code(ws) == 1008
+
+    def test_a_flood_of_pongs_is_closed(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(handlers, "MAX_INBOUND_FRAMES_PER_WINDOW", 5)
+        with client.websocket_connect(_url()) as ws:
+            ws.receive_json()
+            for _ in range(6):
+                ws.send_json({"type": "pong", "cursor": 0})
+
+            assert _close_code(ws) == 1008

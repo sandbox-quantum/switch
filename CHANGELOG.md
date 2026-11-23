@@ -59,6 +59,21 @@ version of their own to them without also giving them a release of their own.
   once an operator links it with `switch-link-workos`. `default_tenant` is
   still refused with the WorkOS directory, by the server and by the Helm
   chart.
+- **Switch Trust checks a long message's first 20,000 characters, and says
+  so.** A message used to be sent to Switch Trust whole, and one long enough
+  to make the check time out went through with only a "could not check"
+  note. Now only the first 20,000 characters are checked, as for a file's
+  text, and a note in the room and to the sender says the rest was not
+  checked; a redacted message keeps its unchecked rest. A check that times
+  out is logged and counted apart from other failures, in the new
+  `switch.trust.check_failures` metric (`reason` is `timeout`, `refused` or
+  `error`).
+- **GitLab connects at one level, read and write, as Sentry does.** A GitLab
+  token scoped for reading can still post comments through GitLab's MCP
+  server, so Switch no longer offers a read-only GitLab connection that would
+  not hold. A sign-in that grants less than read and write is refused. The
+  GitLab application an operator registers needs the scopes `mcp`,
+  `read_user` and `api`. `read_api` is no longer used.
 
 #### Security
 - **One client can no longer take a process's database pool.** Gateway
@@ -83,6 +98,67 @@ version of their own to them without also giving them a release of their own.
   (4000) of every kind together, past which a new one is refused 503 with a
   `Retry-After` of 2 to 10 seconds. `switch.http.gateway_streams.*` counts
   them, on the dashboard beside the requests turned away.
+- **Database errors no longer put the values bound into a query in the logs.**
+  Every database engine switch-core builds, including the ones for migrations,
+  the boot lock and the schema checks, sets SQLAlchemy's `hide_parameters`, so
+  a logged constraint violation or similar shows the SQL statement but not the
+  emails, message text or tokens it carried. Postgres's own `DETAIL` line,
+  which can name a duplicate key's value, is unchanged.
+- **A refused telemetry value is no longer written to the error log.** When an
+  event carries a value outside a property's allowed set, the error names the
+  event and the property but not the value.
+- **Core's dependencies are past their known advisories.** authlib 1.9.8, mcp
+  1.30.0, fastmcp 3.4.11, aiohttp 3.14.5, joserfc 1.8.0, anyio 4.14.2,
+  opentelemetry-api 1.45.2, dnspython 2.9.2, certifi 2026.10.23 and multidict
+  6.9.1. Pull requests now fail on a known advisory in core's locked
+  dependencies.
+- **An agent's change that widens what another agent may do on its own, or who
+  may reach it, waits for the owner.** When an agent turns another agent's
+  bypass mode or auto mode on, sets its Claude Code permission mode to bypass
+  or to auto, moves its working folder, machine or provider, or opens who may
+  address it (to anyone, or to the owner's agents when they could not reach it
+  before), or creates an agent with bypass on or a folder of its own, nothing
+  changes yet. Switch checks the request, posts it in the room the agent is
+  connected to, and makes it only when the agent's owner, in person, sends
+  `!agent-change <name> confirm` there within two minutes; `!agent-change
+  <name> drop` throws it away, and anyone in the room can see it with
+  `!agent-change <name>`. The agent is told it is waiting and what to send.
+  Only one change per agent waits at a time, so what the owner confirms is
+  what they were shown. Waiting requests are kept in memory, as an agent's
+  request to delete another agent is: a restart drops them, and the request
+  and its confirmation must reach the same server process. A change in the
+  safer direction (bypass or auto mode off, a narrower addressing policy)
+  applies at once, as do a person's own changes in Switch Console or the
+  dashboard and an agent's other changes. A new agent waits for its owner
+  whichever of these it asks for, including only `permissionMode:
+  bypassPermissions` in its advanced settings. Setting `permissionMode: auto`
+  on an existing agent waits as turning auto mode on does; turning it off, or
+  any other mode, applies at once. A new agent is made in auto mode unless it
+  says otherwise, so neither waits when an agent creates one. A template an
+  agent runs can no longer create an agent with bypass on; a person runs such
+  a template themselves. New Cursor agents default to bypass, as Cursor has no
+  automatic review, so a Cursor agent another agent creates waits for its
+  owner too unless it is made to ask (`auto_approve: false`). In a template an
+  agent runs, a Cursor agent the template does not give bypass asks for
+  approval instead, rather than the run being refused.
+- **Every change an agent makes to another agent is in the audit log.**
+  Changes it makes at once, changes it asks for, the owner's confirmation of
+  one, and every agent it creates, each with the agent that did it.
+- **A managed agent's working directory is checked.** It must be an absolute
+  path (POSIX, `~`, a Windows drive or a UNC share) with no `..` segment and no
+  control characters, at most 4096 characters long; anything else is refused
+  with a message saying what is wrong; a template's directory under
+  `{$agents_dir}` is checked once the machine says where it keeps workspaces.
+  A definition stored before this that breaks the rule is reported when the
+  agent is next changed.
+- **An agent connection that sends what no client should is closed.** The
+  agent connection socket now closes, with a warning in the log, on a frame
+  over 1 MiB, a binary or non-JSON frame, more than ten stray frames a minute,
+  or more than 120 frames a minute, rather than reading and dropping them for
+  as long as the client sends them.
+- **The list of agent types needs a signed-in caller.**
+  `GET /gateway/agents/known-types` answered anyone, signed in or not, unlike
+  every other `/gateway/agents` route. It now answers 401 without a session.
 
 #### Added
 - **The decision service can use open-weights models on Amazon Bedrock.**
@@ -151,6 +227,24 @@ version of their own to them without also giving them a release of their own.
   threshold of its own (`DECISION_FALLBACK_CONFIDENCE_THRESHOLD`, for Haiku's
   coarser confidences); a workspace's own threshold still holds for both. A
   workspace that chose its backend gets that backend alone. Off unless set.
+- **Messages have a length limit and a pace limit.** A message is at most
+  65,536 characters by default (`MAX_MESSAGE_CHARS`), and one sender, person
+  or agent, gets 30 messages at once and then 2 a second
+  (`MESSAGE_RATE_BURST`, `MESSAGE_RATE_PER_SECOND`). That is one allowance per
+  sender, shared by every room they write in, counted in each server process.
+  The length limit applies to what the sender wrote: a note Switch adds, such
+  as a Switch Trust note, the `@name` of an agent picked in Console, or a line
+  for a file that couldn't be relayed, never pushes a message over it. A room
+  command such as `!invite-agent`, typed in Console or on a messaging app,
+  draws on the same allowance. `!interrupt` and `!interrupt-all-agents` never
+  do, so an agent can always be stopped. A message or command over either
+  limit is refused before anything is written and the sender is told why: a
+  Console chat answers 422 `MESSAGE_TOO_LONG` or 429 `RATE_LIMITED`, an
+  agent's tool call fails with the reason (422 or 429 over HTTP), and someone
+  writing from Slack or another messaging app gets a notice, once for a run of
+  refusals, instead of their message disappearing. A post with several files
+  counts as one message. Refusals are counted in the new
+  `switch.messages.refused` metric, which the core dashboard shows.
 
 #### Changed
 - **A message in a busy chat no longer costs every member's Console stream a
@@ -192,6 +286,38 @@ version of their own to them without also giving them a release of their own.
   `us.anthropic.claude-haiku-5-5` (EU regions need
   `eu.anthropic.claude-haiku-5-5` in `DECISION_BEDROCK_MODEL`). The old
   default was refused by Bedrock as an invalid model identifier.
+- **GitHub works again on a standalone server with no public address set.**
+  The standalone compose file passes `GATEWAY_PUBLIC_URL` and
+  `MESSAGING_PUBLIC_URL` through as empty when `.env` leaves them out, and an
+  empty address was taken for one that is neither https nor on this computer,
+  so an agent's page answered that GitHub can't be used here. A blank value
+  now counts as unset.
+- **A room template can no longer freeze the server.** A few hundred bytes of
+  nested YAML anchors and aliases expanded into billions of values while the
+  template was read, holding up every request and message on that server
+  process for as long as it took. Templates that use anchors or aliases
+  (`&name`, `*name`, `<<:`) are now refused with the line they are on. A
+  template may be at most 256 KB and 10,000 values, nested at most 64 levels
+  deep. A more deeply nested one is refused with its line too, where it used
+  to fail with a server error. No template that comes with Switch uses anchors
+  or aliases, or nests deeper than 8 levels. Reading and planning a template
+  also no longer holds up the server while it runs.
+- **An upgrade from before 0.24.0 no longer has to hold every send while it
+  indexes `messages`.** Build `ix_messages_room_sent_at` by hand first with
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_messages_room_sent_at ON
+  messages (room_id, sent_at);`, and the migration skips it. Before, the
+  migration failed if the index already existed. The Helm chart's README
+  covers this, and the 0.31.0 migration that can't be built ahead.
+- **The agent bridge's list of public paths no longer names a path nothing
+  serves.** `/hosted/machines` was dropped; a cloud machine's supervisor is
+  served under `/gateway`, which was already public to the bearer check.
+- **A connector sign-in from Switch Console that fails unexpectedly fails
+  cleanly.** An unexpected error while saving a GitHub or other connector
+  connection, after Console handed back the code, answered with a bare server
+  error and left the sign-in reading as pending until it expired. It now
+  answers with a message saying the connection could not be saved, and the
+  sign-in reads as failed with that message, as one finished in the browser
+  already did.
 
 ### [0.32.1] - 2026-11-18
 
@@ -4830,6 +4956,11 @@ version of their own to them without also giving them a release of their own.
   field shows the one that applies when left blank. When the server can't
   read its decision service, the page says so and keeps the saved choice.
   "Self-hosted endpoint" is now "Your own endpoint".
+
+#### Changed
+- **Agents are told the message length and pace limits.** The Switch skill
+  says a message longer than the server's limit is refused, not cut, and that
+  messages sent too fast are refused with how long to wait.
 
 #### Fixed
 

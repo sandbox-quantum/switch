@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
+from switch_core.bridges.agent.auth import PUBLIC_PATH_PREFIXES
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.keys import Keyring
 from switch_core.management.controller_routes import router as controller_router
@@ -30,6 +31,15 @@ _NOT_PUBLISHED = {"/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
 # `create_agent_bridge_app`. `/gateway` is absent on purpose: it is reached
 # through the gateway, which proxies it to switch-core.
 _ADDED_IN_MAIN = {"/health", "/messaging"}
+
+# Mounted on the agent bridge app in `main.run`, and public to the bearer
+# middleware because the gateway runs its own cookie auth.
+_GATEWAY_MOUNT = "/gateway"
+
+# Public with no route behind them: the ingress sends OAuth and MCP discovery
+# probes here (`ingress.agentApiPaths`) rather than to the gateway SPA, and
+# Switch offers no OAuth, so a probe is answered 404 rather than 401.
+_DISCOVERY_WITHOUT_ROUTES = {"/.well-known", "/oauth"}
 
 
 def _config() -> Any:
@@ -115,4 +125,16 @@ def test_the_sample_ingress_routes_every_agent_bridge_prefix() -> None:
         f"The agent bridge serves {missing}, but "
         "deploy/remote/helm/switch/samples/ingress.example.yaml does not "
         "route them to switch-core on port 8000."
+    )
+
+
+def test_every_public_prefix_names_something_served() -> None:
+    """A prefix in the bearer middleware's allowlist that matches no route is
+    dead weight that reads as protection: `/hosted/machines` sat there while
+    the cloud machine's supervisor was served under `/gateway`."""
+    served = _served_prefixes() | {_GATEWAY_MOUNT}
+    dead = sorted(set(PUBLIC_PATH_PREFIXES) - served - _DISCOVERY_WITHOUT_ROUTES)
+    assert not dead, (
+        f"{dead} in PUBLIC_PATH_PREFIXES (bridges/agent/auth.py) match no "
+        "route the agent bridge serves; remove them or route them."
     )

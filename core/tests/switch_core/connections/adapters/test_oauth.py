@@ -1101,7 +1101,7 @@ class TestTheShippedGitLabEntry:
                         "token_type": "Bearer",
                         "expires_in": 7200,
                         "refresh_token": "example-refresh",
-                        "scope": "mcp read_api read_user",
+                        "scope": "mcp api read_user",
                     },
                 )
             return httpx.Response(404)

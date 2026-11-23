@@ -90,6 +90,7 @@ class FakeTransport:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> SendResult:
         if self._fail_send:
             raise TransportError(self._fail_send)
@@ -103,6 +104,7 @@ class FakeTransport:
                 "mentions": mentions,
                 "thread_root_id": thread_root_id,
                 "extra_content": extra_content,
+                "authored": authored,
             }
         )
         content: dict[str, object] = {
@@ -148,6 +150,7 @@ class FakeTransport:
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> SendResult:
         if self._fail_send:
             raise TransportError(self._fail_send)
@@ -165,6 +168,7 @@ class FakeTransport:
                 "thread_root_id": thread_root_id,
                 "group": group,
                 "extra_content": extra_content,
+                "authored": authored,
             }
         )
         content: dict[str, object] = {

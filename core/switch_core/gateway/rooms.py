@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Annotated, Any, Literal, cast
@@ -732,7 +733,7 @@ async def create_room_from_yaml(
         builtins = await rooms_yaml.builtins_for(
             user_id=user.id, name=user.name, email=user.email, text=text, inputs=inputs
         )
-        parsed = rooms_yaml.parse_template(text, inputs=inputs, builtins=builtins)
+        parsed = await rooms_yaml.read_template(text, inputs=inputs, builtins=builtins)
         await rooms_yaml.check_entity_params(parsed, reader=reader)
         if isinstance(parsed.spec, GroupSpec):
             return await rooms_yaml.provision_group(
@@ -950,7 +951,8 @@ async def run_template_document(
             if port is not None
             else None
         )
-        plan = plan_template(
+        plan = await asyncio.to_thread(
+            plan_template,
             body.template,
             body.filled,
             inputs,
@@ -1041,7 +1043,7 @@ async def _run_as_person(
                 text=document,
                 inputs=inputs,
             )
-            parsed = rooms_yaml.parse_template(
+            parsed = await rooms_yaml.read_template(
                 document, inputs=inputs, builtins=builtins
             )
             await rooms_yaml.check_entity_params(parsed, reader=reader)

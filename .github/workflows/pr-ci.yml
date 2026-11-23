@@ -230,6 +230,41 @@ jobs:
       - name: E2E surface snapshot is current
         run: uv run --project core python scripts/e2e_surface.py --check
 
+  # Known advisories in every package core/uv.lock pins, runtime and dev. A
+  # job of its own, so that an advisory published against a dependency, which
+  # can turn a PR red without any change in it, says so in the check's name
+  # rather than looking like a failure in the PR's code. An advisory that
+  # cannot be fixed yet goes in core/pip-audit-ignore.txt, with its reason.
+  backend-audit:
+    name: Backend (core) dependency audit
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+
+      # From the lock, with its hashes, so what is audited is exactly what
+      # `uv sync` installs, and pip-audit resolves nothing of its own.
+      - name: pip-audit
+        run: |
+          uv export --project core --frozen --all-groups --no-emit-project \
+            --format requirements-txt > "$RUNNER_TEMP/core-requirements.txt"
+          ignored=()
+          for id in $(awk '!/^[[:space:]]*(#|$)/ {print $1}' core/pip-audit-ignore.txt); do
+            ignored+=(--ignore-vuln "$id")
+          done
+          uvx pip-audit@2.10.1 \
+            --requirement "$RUNNER_TEMP/core-requirements.txt" \
+            --disable-pip \
+            --progress-spinner off \
+            "${ignored[@]}"
+
   # The tests, apart from the checks above so they can be split across
   # runners. Store tests boot real Postgres via testcontainers; ubuntu-latest
   # ships Docker so the containers come up without extra setup. The slow

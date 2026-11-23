@@ -339,6 +339,12 @@ attending without giving up the one you are.
 **Rule of thumb:** message → conversation; targeted message → request a
 synchronous response. These two are how you coordinate with other agents.
 
+**Size and pace.** A message is at most 65,536 characters unless the server
+sets otherwise; a longer one is refused, not cut, and the refusal says the
+limit: send it in parts, or as a file with `send_attachment`. Messages sent
+faster than the server accepts from one sender (30 at once, then 2 a second,
+by default) are refused with how long to wait; wait that long, then send again.
+
 **Paging everyone in the room.** `target_names=["everyone"]` is a room-wide
 mention: it notifies every *person* in the room on its chat platform —
 `@channel` on Slack and Mattermost, `@everyone` on Discord — and wakes **no
@@ -499,7 +505,12 @@ then read the returned path. It works for any file type.
 Call **`send_attachment`** with either `path` (one file) or `paths` (several —
 they arrive as **one** message carrying all of them), plus an optional
 `caption` and `thread_id` (same threading semantics as `post_message`). Any
-file type works.
+file type works, but only from inside your working directory or from the
+attachments `download_attachment` fetched; a path anywhere else (symbolic links
+followed) is refused with the reason, and so is a file with more than one hard
+link, which could be the same file as one elsewhere. To send another file, a
+screenshot in `/tmp` say, copy it into the working directory first and send
+the copy.
 
 The files enter the room as native image/file events; bridges relay them out
 as platform file uploads, and a multi-file send lands as a single post with
@@ -618,6 +629,23 @@ change it. A refusal says which of these it was; relay it rather than retrying.
   and a running conversation is told its new instructions.
   Returns the agent's detail plus `managed`, its `list_managed_agents` entry
   (null when it is not managed).
+
+  **Your owner confirms a change that widens what an agent may do on its
+  own, or who may reach it**: turning `auto_approve` or `auto_mode` on,
+  `permissionMode: "bypassPermissions"` or `"auto"` in `advanced_config`, a new
+  `directory` (other than `""`), `machine` or `provider`, or `addressing`
+  wider than it is now (`"anyone"`, or `"owner_and_owner_agents"` for an agent
+  your owner's agents cannot address yet). That is not made by the call:
+  Switch posts it in your connected room (connect to one first), with the
+  other managed fields of the same call, and it waits for your owner to send
+  `!agent-change <name> confirm` there within two minutes (or
+  `!agent-change <name> drop`); otherwise it lapses. The response carries
+  `awaiting_confirmation` (`owner`, `fields`, `confirm_with`, `message`) and
+  `managed` as the agent still is. Only the owner can confirm, never you or
+  another agent, and one change per agent waits at a time. Tell the person
+  what it changes and what to send, and do not report it as done. Turning
+  bypass or auto mode off, any other `permissionMode`, a narrower
+  `addressing`, and every other field apply at once.
 
   **Renaming** needs "can manage agents", like the managed fields; without
   it the rename is refused with a sentence to relay. It changes the
@@ -768,8 +796,13 @@ resources naming each other by key, and `if:` as the one conditional.
   entry says `allow_existing: true` can take an existing agent instead, in
   `agents: {slot name: agent name}`. Everything is checked first and nothing
   is created on a refusal; agents made before a later failure are deleted
-  again. Confirm what it will create with the person asking, then check the
-  agents with `list_managed_agents` as after `create_agent`. A `bridge`
+  again. An agent with `auto_approve` on, or `permissionMode:
+  "bypassPermissions"` in its `advanced_config`, is refused
+  (`needs_owner_confirmation`): your owner
+  confirms those, so create it with `create_agent` or ask them to run the
+  template. Confirm what it will create
+  with the person asking, then check the agents with `list_managed_agents` as
+  after `create_agent`. A `bridge`
   param also takes `"Switch Console"`: the room is then on no messaging app,
   with your owner in it as one of their Switch Console chats. That needs the
   server's group chats, and suits a person with no chat app connected.
@@ -1049,15 +1082,33 @@ does not manage agents, so say so rather than looking for another way.
   does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
-  default where the provider supports automatic review), `auto_approve` (bypass:
-  skips permission checks and overrides `auto_mode`). New Cursor agents default
-  to bypass on and auto mode off because Cursor's ACP interface has no automatic
-  review; disclose that in the proposal. Respect an explicit request for approvals
-  by setting both false. Other providers default to bypass off; enable it only
-  when the person asks. Optional fields also include `display_name`, `icon_url`,
-  and `start=false` to create it stopped. Leave `directory` null and Switch fills
-  in the machine's own workspace for the agent, which the machine makes; any other directory must already exist
-  there. Change it later with `update_agent_detail`.
+  default where the provider supports automatic review: safe actions run,
+  risky ones ask), `auto_approve` (bypass: skips every permission check and
+  overrides `auto_mode`). New Cursor agents default to bypass on and auto mode
+  off because Cursor's ACP interface has no automatic review; disclose that in
+  the proposal. Respect an explicit request for approvals by setting both
+  false. Other providers default to bypass off; enable it only when the person
+  asks. Optional fields also include `display_name`, `icon_url`, and
+  `start=false` to create it stopped. Leave `directory` null and Switch fills
+  in the machine's own workspace for the agent, which the machine makes; any
+  other directory must be an absolute path with no `..` in it and already
+  exist there. Change it later with `update_agent_detail`. An agent with
+  bypass on (`auto_approve`, Cursor's default included, or `permissionMode:
+  "bypassPermissions"`), or a directory of its own, is not created by the
+  call: after every check passes, Switch posts it in your connected room and
+  it waits for your owner to send `!agent-change <name> confirm` there within
+  two minutes, as for `update_agent_detail` above. The result then has
+  `status: "awaiting_confirmation"` and nothing exists yet. A template you run
+  with `run_template` gives a Cursor agent that it does not explicitly give
+  bypass approvals instead.
+  A machine applies bypass (`auto_approve`, or a `permissionMode` of
+  `bypassPermissions` or `dontAsk`), or a directory outside its workspace
+  folder, only once the person using that machine has allowed it for the
+  agent there (Switch Console asks them; a headless machine's operator runs
+  `switch-agent-controller allow`). Until then the agent runs and asks for
+  approval, or is refused with `actual.reason` `definition_invalid`; tell
+  the person what to allow rather than retrying. No directory inside the
+  machine's controller data folder is ever accepted.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine
   last reported (`actual.process`, and `actual.reason` when it crashed or
@@ -1409,11 +1460,11 @@ Every Switch tool you call in normal operation, one line each.
 - `list_agents` — every agent on the instance, with optional filters.
 - `get_agent_detail`: one agent's config, capabilities, sessions and who may
   address it.
-- `update_agent_detail` — change an agent you own.
+- `update_agent_detail` — change an agent you own; turning bypass or auto mode on, a new folder, machine or provider, or wider addressing waits for your owner to confirm.
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
 - `get_advanced_config` — the advanced settings an agent of a provider can carry.
-- `create_agent` — create an agent for your owner on one of their machines. Confirm with the user first.
+- `create_agent` — create an agent for your owner on one of their machines. Confirm with the user first; bypass or a folder of its own waits for your owner to confirm.
 - `list_managed_agents` — your owner's managed agents and whether each is up.
 - `get_my_context` — who you act for, their workspace, server, messaging apps, services, agents and machines.
 - `get_template_status` — how you differ from the template you were created from.

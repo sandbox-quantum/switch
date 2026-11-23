@@ -573,9 +573,21 @@ async def complete(
     )
     if checking is None:
         raise HTTPException(400, refused)
-    return await _sign_in_and_link(
-        session, broker, flows, checking, github, body.code, user.id
-    )
+    try:
+        return await _sign_in_and_link(
+            session, broker, flows, checking, github, body.code, user.id
+        )
+    except Exception:
+        # The flow fails with why, as the web's does, rather than read as
+        # pending until it expires.
+        logger.exception(
+            "Writing a GitHub connection from Switch Console failed: tenant=%s user=%s",
+            flow.tenant_id,
+            user.id,
+        )
+        await _settled(flows, checking, "failed", error=not_saved("GitHub"))
+        await session.rollback()
+        return JSONResponse(status_code=500, content={"detail": not_saved("GitHub")})
 
 
 async def _sign_in_and_link(

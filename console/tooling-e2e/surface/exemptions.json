@@ -8,6 +8,7 @@
     "DELETE /gateway/organizations/current/workspaces/{workspace_id}/managed-agents/{agent_id}": "Organization › Devices, mounted with agent management, which the fast lane does not turn on; the browser lane does, but no scenario there stages devices in two workspaces. Covered by core's test_organization_devices.py against real Postgres and by the role matrix.",
     "DELETE /gateway/rooms/{room_id}/admins/{target_user_id}": "A room's room admins. Covered by core's test_room_admin_routes.py and test_room_admins.py against real Postgres, and by the role matrix; no fast-lane scenario stages a second person in a room yet.",
     "DELETE /gateway/service-connections/{service}/people/{user_id}": "A workspace admin ending someone else's connection to a service; it needs a person connected, which takes a vendor's own sign-in or a key the vendor accepts, and no stack the harness builds has either. Covered by core's test_service_connections.py against real Postgres.",
+    "DELETE /gateway/users/{user_id}/sign-in-lock": "The operator lifting the lock failed password sign-ins put on an account. Locking one means failing its sign-in until it locks, which on a shared stack would lock the harness out of an account it signs in as. Covered by core's test_login_limits.py against real Postgres.",
     "DELETE /gateway/workspace/services/{service}": "A workspace admin dropping their own service switch to take their organization's setting; it matters only with organization_connector_apps on, which no stack the harness builds turns on (the rest of /gateway/workspace/services is still in the backlog). Covered by core's test_workspace_services.py against real Postgres.",
     "GET /gateway/auth/oidc/callback": "Needs a live OIDC identity provider; the harness signs in with a password.",
     "GET /gateway/auth/oidc/login": "Needs a live OIDC identity provider; the harness signs in with a password.",
@@ -76,7 +77,6 @@
     "POST /gateway/users/{user_id}/unsuspend": "Incident control for workspace admins and the server's operator: suspending or lifting a suspension. Covered by core's test_suspension.py and test_owner_suspension.py against real Postgres, and its permissions by the role matrix; no scenario drives incident control yet."
   },
   "unauthenticated": {
-    "GET /gateway/agents/known-types": "The catalogue of agent types this server can register and their option schemas; no tenant data. Public since the initial import, and nothing records whether that is deliberate.",
     "GET /gateway/auth/config": "Read by the login page before any session exists, to choose which sign-in methods to offer.",
     "GET /gateway/auth/oidc/callback": "The OIDC sign-in round trip, before any session exists.",
     "GET /gateway/auth/oidc/login": "The OIDC sign-in round trip, before any session exists.",

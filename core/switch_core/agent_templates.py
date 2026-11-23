@@ -41,13 +41,14 @@ from switch_core.template_runs import (
     Problem,
 )
 from switch_core.template_v2 import compile_v2, is_v2, resource_types
+from switch_core.template_yaml import load_template_yaml
 
 TemplateKind = Literal["room", "group", "agent"]
 
 
 def _load(text: str) -> dict[str, Any]:
     try:
-        data = yaml.safe_load(text)
+        data = load_template_yaml(text)
     except yaml.YAMLError as e:
         raise ValueError(f"Invalid YAML: {e}") from e
     if not isinstance(data, dict):
@@ -891,6 +892,7 @@ class _Planner:
             isolation=isolation,
             auto_mode=bool(auto_mode),
             auto_approve=bool(auto_approve),
+            bypass_by_default=bool(auto_approve) and "auto_approve" not in entry,
             directory=directory,
             addressing=addressing,
             can_manage_agents=bool(can_manage_agents),

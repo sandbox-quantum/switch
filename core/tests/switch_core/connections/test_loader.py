@@ -517,9 +517,8 @@ def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     # A check with a made-up code shows neither the redirect URI nor the
     # application's scopes, so the operator is told what to confirm.
     assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
-    assert {"mcp", "read_api", "read_user", "api"} <= set(
-        re.findall(r"[a-z_]+", oauth.unchecked)
-    )
+    assert {"mcp", "read_user", "api"} <= set(re.findall(r"[a-z_]+", oauth.unchecked))
+    assert "read_api" not in oauth.unchecked
     assert definition.auth.refresh == "rotating"
     assert definition.token is not None
     assert (definition.token.kind, definition.token.max_lifetime) == (
@@ -530,13 +529,14 @@ def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("gitlab", "https://gitlab.com/api/v4/mcp")
     ]
-    # The operator's application carries the REST scopes beside `mcp`:
-    # read_api at the read level, api at the write level, and read_user
-    # for the identity read below at both — the scopes a dynamically
+    # The operator's application carries the REST scopes beside `mcp`: api,
+    # and read_user for the identity read below — the scopes a dynamically
     # registered client is never given, which is why the entry is static.
+    # One level: read_api would not stop GitLab's MCP server from writing,
+    # so no GitLab connection is offered as read-only.
     assert definition.access is not None and definition.access.write is not None
-    assert definition.access.read.scopes == ["mcp", "read_api", "read_user"]
     assert definition.access.write.scopes == ["mcp", "api", "read_user"]
+    assert definition.access.read.scopes == definition.access.write.scopes
     assert definition.tools is not None
     assert definition.tools.mode == "pass_through"
     assert definition.auth.identity is not None

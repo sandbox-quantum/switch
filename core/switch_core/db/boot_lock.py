@@ -125,6 +125,7 @@ async def boot_lock(config: SwitchConfig) -> AsyncIterator[None]:
         poolclass=NullPool,
         connect_args=config.db_connect_args,
         isolation_level="AUTOCOMMIT",
+        hide_parameters=True,
     )
     try:
         async with engine.connect() as connection:

@@ -96,7 +96,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
-from switch_core.clients.agent_admin import AgentDeletionRequests
+from switch_core.clients.agent_admin import AgentRequests
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
@@ -442,10 +442,10 @@ class AgentCore:
     # The credential broker, set by the process wiring when service
     # connections are on; None means they are off, and nothing can be granted.
     service_broker: ServiceBroker | None = None
-    # Deletions agents have asked for, waiting for a person to confirm with
-    # `!delete-agent … confirm`. Set by the process wiring, shared with the
-    # admin client that runs that command.
-    deletion_requests: AgentDeletionRequests | None = None
+    # Deletions and changes agents have asked for, waiting for a person to
+    # confirm with `!delete-agent … confirm` or `!agent-change … confirm`. Set
+    # by the process wiring, shared with the admin client that runs those.
+    agent_requests: AgentRequests | None = None
     # The messaging apps this server registered as its own, set by the process
     # wiring; None when it registered none, the ordinary case.
     install_service: MessagingInstallService | None = None
@@ -1333,7 +1333,7 @@ class AgentCore:
             ValueError: no such agent or room.
             RuntimeError: deletion requests are not wired in this process.
         """
-        if self.deletion_requests is None:
+        if self.agent_requests is None:
             raise RuntimeError(
                 "Agent deletion requests are not available: the process wiring "
                 "did not set them up"
@@ -1376,7 +1376,7 @@ class AgentCore:
             target_label = agent_label_with_identifier(target.display_name, target.name)
             transport_room_id = room.transport_room_id
 
-        self.deletion_requests.add(room_id, target_agent_id, caller_name)
+        self.agent_requests.add(room_id, target_agent_id, caller_name)
         admin = next(
             (
                 c
@@ -2090,6 +2090,7 @@ class AgentCore:
             thread_root_id=thread_root_id,
             extra_content=extra_content,
             metered=True,
+            authored=content,
         )
         if event_id is None:
             raise ValueError("Failed to send message")
@@ -2273,6 +2274,9 @@ class AgentCore:
                         else None
                     ),
                     metered=True,
+                    # Held to the length limit on the agent's own caption,
+                    # without the file notes Switch added under it.
+                    authored=caption if index == 0 else None,
                 )
                 if event_id is None:
                     raise ValueError(f"Failed to send media message for '{filename}'")
@@ -2631,11 +2635,16 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
+        written = detail
         detail, pending_alert, verdict = await self._enforce_trust(
             room, detail, None, client
         )
         event_id = await client.send_message(
-            room.transport_room_id, f"*{detail}*", format="markdown", metered=True
+            room.transport_room_id,
+            f"*{detail}*",
+            format="markdown",
+            metered=True,
+            authored=written,
         )
         if event_id is None:
             if pending_alert is not None:
