@@ -18,7 +18,7 @@ Downgrading deletes the rows that chose either, so those workspaces go back
 to the server default.
 
 Revision ID: c18f5ebeef66
-Revises: f3a9c1d7e2b4
+Revises: a3f9c2d71e08
 Create Date: 2026-11-20 16:00:00.000000
 
 """
@@ -28,7 +28,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "c18f5ebeef66"
-down_revision: str | None = "f3a9c1d7e2b4"
+down_revision: str | None = "a3f9c2d71e08"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
