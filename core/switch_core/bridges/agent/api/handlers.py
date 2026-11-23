@@ -697,7 +697,9 @@ async def update_status(
     if req.detail:
         try:
             feedback = await protocol.update_status(agent.id, req.room_id, req.detail)
-        except GuardrailBlockedError as e:
+        except SendRateLimited as e:
+            raise HTTPException(status_code=429, detail=str(e)) from e
+        except (GuardrailBlockedError, MessageTooLong) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
