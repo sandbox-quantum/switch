@@ -178,6 +178,11 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A machine whose connections changed quickly no longer stays online after
+  it has gone.** When a machine opened a new connection, attached and opened
+  another before switch-core had recorded the first change, the record that
+  its earlier connection was taken over could be dropped. The machine and its
+  agents then read as online until it connected again.
 - **A full database pool no longer makes a pod drop everything it holds.**
   Each switch-core process renews its lease on a database connection of its
   own, outside the shared pool. Before, the renewal borrowed from the same

@@ -27,10 +27,12 @@ resumes each agent, for a socket that reattaches through another process.
 Each transition that took effect is announced (`announce`), so every other
 process reads the row again and knows which process holds the socket now.
 
-Writes are queued, latest per controller, and written by one task (`run`),
-woken by each transition, so a socket attaching or going never waits on the
-database. A write that fails is kept, unless something newer for the same
-controller has arrived meanwhile, and retried.
+Writes are queued, latest per connection, and written by one task (`run`) in
+the order they were last queued, woken by each transition, so a socket
+attaching or going never waits on the database. One connection's transition
+never replaces another's: the newer connection's writes may be refused, and the
+older one's closing has to land regardless. A write that fails is kept, unless
+something newer for the same connection has arrived meanwhile, and retried.
 """
 
 from __future__ import annotations
@@ -85,7 +87,7 @@ class ControllerConnectionLedger:
         self._session_factory = session_factory
         self._controllers = controllers
         self._clock = clock
-        self._pending: dict[str, _Transition] = {}
+        self._pending: dict[tuple[str, str], _Transition] = {}
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
 
@@ -96,7 +98,11 @@ class ControllerConnectionLedger:
         self._queue(conn, reason)
 
     def _queue(self, conn: ControllerConnection, reason: str | None) -> None:
-        self._pending[conn.controller_id] = _Transition(
+        key = (conn.controller_id, conn.id)
+        # Moved to the end, so transitions are written in the order they last
+        # happened.
+        self._pending.pop(key, None)
+        self._pending[key] = _Transition(
             tenant_id=conn.tenant_id,
             controller_id=conn.controller_id,
             connection_id=conn.id,
@@ -155,7 +161,9 @@ class ControllerConnectionLedger:
                     self._announce(transition.tenant_id, transition.controller_id)
         except BaseException:
             for transition in unwritten:
-                self._pending.setdefault(transition.controller_id, transition)
+                self._pending.setdefault(
+                    (transition.controller_id, transition.connection_id), transition
+                )
             raise
 
     async def _write_one(self, session: AsyncSession, transition: _Transition) -> bool:

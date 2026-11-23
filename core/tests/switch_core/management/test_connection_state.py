@@ -533,6 +533,29 @@ class TestTheLedger:
         assert (store.connected, store.disconnected) == (1, 0)
         assert row.disconnected_at is None
 
+    async def test_a_closing_queued_behind_a_newer_connection_is_still_written(
+        self, harness: Harness
+    ) -> None:
+        """The first connection is taken over, the second attaches and is
+        taken over in turn, all before the ledger writes. The second's writes
+        are refused, as the row never named it, so the first's closing must
+        not have been dropped for them: the machine is offline."""
+        owner = await add_member(harness.session_factory, "ada")
+        presence = harness.protocol.connections.controllers
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await connect(client, controller)
+            first = _current(harness, controller)
+            await open_connection(client, controller)
+            presence.attach_stream(_current(harness, controller))
+            await open_connection(client, controller)
+            await _flush(harness)
+            listed = await _listed(client, controller)
+        row = await _row(harness, controller.controller_id)
+        assert row.connection_id == first.id
+        assert row.disconnect_reason == "taken_over"
+        assert listed["state"] == "offline"
+
     async def test_a_failed_write_is_kept_for_the_next_flush(
         self, harness: Harness
     ) -> None:
