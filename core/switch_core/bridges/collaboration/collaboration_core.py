@@ -84,6 +84,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
+from switch_core.delivery.send_limits import MessageRefused, SendRateLimited
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -1646,6 +1647,10 @@ class CollaborationCore:
             return None
 
         content = self._adapter.translate_inbound(msg.content)
+        # What the person wrote, which is what the length limit is held to:
+        # the `@name`, notes and Switch Trust annotation added below are
+        # Switch's, and the room makes space for them (`send_limits.py`).
+        authored = content
 
         # Bridge threads inbound: if the external post replied into a thread,
         # resolve that external root to the room event we bridged for it.
@@ -1739,7 +1744,11 @@ class CollaborationCore:
                         thread_root_id=thread_root_id,
                         metered=True,
                         extra_content=_inbound_extra_content(msg, check),
+                        authored=authored,
                     )
+            except MessageRefused as refused:
+                await self._tell_message_refused(msg, refused, transport_room_id)
+                return None
             except RoomReadOnly as refused:
                 await self._tell_read_only(msg, refused)
                 return None
@@ -1870,16 +1879,17 @@ class CollaborationCore:
         source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
         group_id = str(uuid.uuid5(uuid.NAMESPACE_URL, source)) if total > 1 else None
         _mark_sending()
-        for index, attachment in enumerate(msg.attachments):
-            media_uri = await human_actor.upload_media(
-                attachment.data, attachment.mimetype, attachment.filename
-            )
-            msgtype = (
-                "m.image" if attachment.mimetype.startswith("image/") else "m.file"
-            )
-            # Numbered from the post and the file's place in it, as the text
-            # above is, so a second delivery of the post writes no file twice.
-            try:
+        try:
+            for index, attachment in enumerate(msg.attachments):
+                media_uri = await human_actor.upload_media(
+                    attachment.data, attachment.mimetype, attachment.filename
+                )
+                msgtype = (
+                    "m.image" if attachment.mimetype.startswith("image/") else "m.file"
+                )
+                # Numbered from the post and the file's place in it, as the
+                # text above is, so a second delivery of the post writes no
+                # file twice.
                 with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
                     event_id = await human_actor.send_media(
                         transport_room_id,
@@ -1897,19 +1907,26 @@ class CollaborationCore:
                         ),
                         metered=True,
                         extra_content=_inbound_extra_content(msg, caption_check),
+                        authored=authored if index == 0 else None,
                     )
-            except RoomReadOnly as refused:
-                await self._tell_read_only(msg, refused)
-                return None
-            if event_id is None:
-                logger.error(
-                    "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
-                    attachment.filename,
-                    msg.sender_name,
-                    transport_room_id,
-                )
-            if index == 0:
-                first_event_id = event_id
+                if event_id is None:
+                    logger.error(
+                        "[BRIDGE-IN] failed to relay attachment %s from %s into "
+                        "room %s",
+                        attachment.filename,
+                        msg.sender_name,
+                        transport_room_id,
+                    )
+                if index == 0:
+                    first_event_id = event_id
+        except MessageRefused as refused:
+            # Only the post's first file can be refused: the caption rides on
+            # it, and it alone counts against the sender's allowance.
+            await self._tell_message_refused(msg, refused, transport_room_id)
+            return None
+        except RoomReadOnly as refused:
+            await self._tell_read_only(msg, refused)
+            return None
 
         if first_event_id is not None:
             # As for a text-only message, the sender hears what Switch Trust
@@ -1938,6 +1955,47 @@ class CollaborationCore:
             )
         return first_event_id
 
+    async def _tell_message_refused(
+        self, msg: InboundMessage, refused: MessageRefused, transport_room_id: str
+    ) -> None:
+        """Tell the sender why Switch did not write their message into the
+        room: too long, or sent too fast. A sender over their allowance is told
+        once, not once for every message after it; each refusal is counted
+        either way (`send_limits.py`)."""
+        if isinstance(refused, SendRateLimited) and not refused.first:
+            return
+        logger.warning(
+            "[BRIDGE-IN] message from %s not relayed into room %s: %s",
+            msg.sender_name,
+            transport_room_id,
+            refused.reason,
+        )
+        await self._post_sender_notice(
+            msg,
+            f"🚫 Your message was not delivered to the room. {refused}",
+            AdminMessageType.MESSAGE_REFUSED,
+        )
+
+    async def _tell_command_refused(
+        self, cmd: InboundCommand, refused: MessageRefused, transport_room_id: str
+    ) -> None:
+        """Tell the sender why Switch did not run their command: it came
+        faster than their allowance (`SendLimits.admit_command`), or its
+        arguments were too long. Told once for a run of refusals, as for a
+        message (`_tell_message_refused`)."""
+        if isinstance(refused, SendRateLimited) and not refused.first:
+            return
+        logger.warning(
+            "[BRIDGE-IN] command %s from %s not run in room %s: %s",
+            cmd.command,
+            cmd.sender_name,
+            transport_room_id,
+            refused.reason,
+        )
+        await self._adapter.answer_command(
+            cmd, f"🚫 Your `{cmd.command}` command was not run. {refused}"
+        )
+
     async def _tell_read_only(self, msg: InboundMessage, refused: RoomReadOnly) -> None:
         logger.warning(
             "[BRIDGE-IN] message from %s in channel %s not relayed: the room is %s",
@@ -1954,7 +2012,8 @@ class CollaborationCore:
     ) -> None:
         """Tell the sender, and only the sender, what happened to their
         message: what Switch Trust did with it (blocked, redacted, flagged, or
-        not fully checked), or that its room takes no posts.
+        not fully checked), that its room takes no posts, or that Switch
+        refused it (`_tell_message_refused`).
 
         Each of these is about what one person wrote, so it goes to them the
         way the platform allows (`private_notice_delivery`). Where it has no
@@ -2199,6 +2258,9 @@ class CollaborationCore:
                 event_id = await human_actor.send_event(
                     transport_room_id, "com.switch.command", content
                 )
+        except MessageRefused as refused:
+            await self._tell_command_refused(cmd, refused, transport_room_id)
+            return
         except RoomReadOnly as refused:
             logger.warning(
                 "Command %s from %s in channel %s not run: the room is %s",

@@ -31,10 +31,12 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from pydantic import Field, field_validator
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     AgentIdentity,
+    MessagePartlySent,
     PlatformAdapter,
     RequestCard,
     RichContent,
@@ -102,6 +104,12 @@ _REACTION_AS_ASKED = ("REACTION_ALREADY_EXISTS", "REACTION_DOES_NOT_EXIST")
 _UPLOAD_LINK = re.compile(r"\[([^\]]*)\]\(/user_uploads/([^)\s]+)\)")
 # `@**name**` and `@_**name**` (silent), each optionally `|user_id`.
 _MENTION = re.compile(r"@_?\*\*([^*|]+)(?:\|\d+)?\*\*")
+# The `@` of a mention that notifies: `@**Name**` for a person, `@*group*` for
+# everyone in a user group. The silent `@_**name**` notifies nobody, and the
+# stream-wide ones are `defuse_mass_mentions`'s, which a room-wide post skips.
+_NOTIFYING_MENTION = re.compile(
+    r"@(?=\*)(?!\*\*(?:all|everyone|stream|channel|topic)\*\*)", re.IGNORECASE
+)
 # The mentions that notify everyone in a stream or topic.
 _MASS_MENTION = re.compile(
     r"@_?\*\*(all|everyone|stream|channel|topic)\*\*", re.IGNORECASE
@@ -619,20 +627,61 @@ class ZulipAdapter(PlatformAdapter):
             else _new_topic(content, self._topic_limit)
         )
         body = await self._labelled(sender_name, content, room_wide_mention)
+        parts = _split(body, self._message_limit)
         first: str | None = None
-        for part in _split(body, self._message_limit):
-            sent = await self._call(
-                "POST",
-                "/api/v1/messages",
-                data={
-                    "type": "stream",
-                    "to": channel_id,
-                    "topic": topic,
-                    "content": part,
-                },
-            )
+        for index, part in enumerate(parts):
+            try:
+                sent = await self._post_to_topic(channel_id, topic, part)
+            except (ZulipError, httpx.HTTPError) as exc:
+                if first is None:
+                    raise
+                logger.error(
+                    "Only %d of %d parts of a message reached Zulip stream %s: %s",
+                    index,
+                    len(parts),
+                    channel_id,
+                    exc,
+                )
+                await self._note_truncation(channel_id, topic, index, len(parts))
+                raise MessagePartlySent(
+                    platform="Zulip",
+                    first_ref=first,
+                    delivered=index,
+                    total=len(parts),
+                ) from exc
             first = first or str(sent["id"])
         return first
+
+    async def _post_to_topic(
+        self, channel_id: str, topic: str, content: str
+    ) -> dict[str, Any]:
+        return await self._call(
+            "POST",
+            "/api/v1/messages",
+            data={
+                "type": "stream",
+                "to": channel_id,
+                "topic": topic,
+                "content": content,
+            },
+        )
+
+    async def _note_truncation(
+        self, channel_id: str, topic: str, delivered: int, total: int
+    ) -> None:
+        notice = (
+            f"_Only {delivered} of {total} parts of this message could be "
+            "delivered; Zulip refused the rest._"
+        )
+        try:
+            await self._post_to_topic(channel_id, topic, notice)
+        except (ZulipError, httpx.HTTPError) as exc:
+            logger.error(
+                "Could not tell Zulip stream %s that a message is cut short; "
+                "nothing there says so: %s",
+                channel_id,
+                exc,
+            )
 
     async def send_attachment(
         self,
@@ -933,8 +982,18 @@ class ZulipAdapter(PlatformAdapter):
     # ── Markup ───────────────────────────────────────────────────────────────
 
     def _render_outbound(self, content: str) -> str:
-        """Switch Markdown is Zulip's Markdown for everything Switch writes."""
-        return content
+        """Switch Markdown is Zulip's Markdown for everything Switch writes.
+
+        Except a mention. Switch writes `@**…**` for nobody but the app itself
+        (`render_app_mention`), which notifies no person, so any other
+        `@**Name**` or `@*group*` in a body came from somewhere else — text an
+        agent echoed — and a zero-width space after its `@` shows it as
+        written without notifying anyone."""
+        own = self.render_app_mention(self._bot_name) if self._bot_name else ""
+        pieces = content.split(own) if own else [content]
+        return own.join(
+            _NOTIFYING_MENTION.sub("@" + ZERO_WIDTH_SPACE, piece) for piece in pieces
+        )
 
     def translate_inbound(self, raw_message: str) -> str:
         """Zulip's mentions as the `@name` Switch addresses agents by."""

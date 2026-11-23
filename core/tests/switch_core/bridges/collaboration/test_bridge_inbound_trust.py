@@ -11,7 +11,14 @@ from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.db.audit import AuditAction
 from switch_core.db.models import TENANT_ZERO_ID, AuditEvent
+from switch_core.delivery.send_limits import (
+    MessageRefused,
+    MessageTooLong,
+    SendLimits,
+    SendRateLimited,
+)
 from switch_core.trust.client import (
+    TRUST_MESSAGE_TEXT_LIMIT,
     GuardrailsCheckError,
     TrustCheckResult,
     TrustFinding,
@@ -43,14 +50,16 @@ class _FakeHumanActor:
         self.client_id = "alice-client"
         self.transport_user_id = "@ext_alice:switch.local"
         self.sent: list[tuple[str, str]] = []
+        self.authored: list[object] = []
         self._fail_send = fail_send
 
     async def send_message(
-        self, room_id: str, content: str, **_kw: object
+        self, room_id: str, content: str, **kw: object
     ) -> str | None:
         if self._fail_send:
             return None
         self.sent.append((room_id, content))
+        self.authored.append(kw.get("authored"))
         return "$event-1"
 
 
@@ -89,12 +98,14 @@ class _FixedTrustClient:
         self._result = result
         self.room_ids: list[str] = []
         self.tenant_ids: list[str] = []
+        self.contents: list[str] = []
 
     async def check(
         self, *, tenant_id: str, role: str, content: str, room_id: str
     ) -> TrustCheckResult:
         self.room_ids.append(room_id)
         self.tenant_ids.append(tenant_id)
+        self.contents.append(content)
         return self._result
 
 
@@ -139,6 +150,9 @@ def _bridge(
     # around a failing platform notify, same as production.
     bridge._post_sender_notice = lambda msg, body, message_type: (
         CollaborationCore._post_sender_notice(bridge, msg, body, message_type)
+    )
+    bridge._tell_message_refused = lambda msg, refused, room: (
+        CollaborationCore._tell_message_refused(bridge, msg, refused, room)
     )
     bridge.relayed = relayed
     return bridge
@@ -373,3 +387,128 @@ async def test_trust_check_failure_fails_open_and_annotates_instead_of_blocking(
     _, body, _, message_type = adapter.admin_messages[0]
     assert "Switch Trust could not check" in body
     assert message_type == AdminMessageType.TRUST_ERRORED.value
+
+
+_OK = TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
+
+
+async def test_a_long_message_is_checked_in_part_and_room_and_sender_are_told(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Padding a message cannot make Switch Trust time out: only its start is
+    sent, and the room and the sender both see that the rest went unchecked."""
+    human_actor = _FakeHumanActor()
+    adapter = _FakeAdapter()
+    trust = _FixedTrustClient(_OK)
+    bridge = _bridge(session_factory, human_actor, adapter, trust)
+    content = "a" * TRUST_MESSAGE_TEXT_LIMIT + "b" * 5_000
+
+    await CollaborationCore._handle_inbound_message(bridge, _message(content))
+
+    assert trust.contents == ["a" * TRUST_MESSAGE_TEXT_LIMIT]
+    [(_, sent)] = human_actor.sent
+    assert sent.startswith(content)
+    assert "checked only the first 20,000 characters" in sent
+    [(_, body, _, message_type)] = adapter.admin_messages
+    assert "checked only the first 20,000 characters" in body
+    assert message_type == AdminMessageType.TRUST_ERRORED.value
+
+
+async def test_switch_trusts_note_does_not_count_against_a_message_within_the_limit(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A 65,496-character paste is within the 65,536 limit as the person
+    sent it. Switch Trust checks only its first 20,000 characters, and the
+    note saying so takes the stored message to 65,599. The limit is held to
+    what the person wrote, and the row has room for the note."""
+    human_actor = _FakeHumanActor()
+    adapter = _FakeAdapter()
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_OK))
+    content = "x" * 65_496
+
+    await CollaborationCore._handle_inbound_message(bridge, _message(content))
+
+    [(_, sent)] = human_actor.sent
+    assert len(sent) == 65_599
+    assert sent.startswith(content + "\n\n")
+    assert human_actor.authored == [content]
+    limits = SendLimits(
+        max_message_chars=65_536, burst=1, per_second=1.0, clock=lambda: 0.0
+    )
+    # What the transport and the router hold this send to.
+    limits.admit(human_actor.client_id, content, actor="human", starts_post=True)
+    limits.require_row_length(sent)
+    [(_, notice, _, message_type)] = adapter.admin_messages
+    assert message_type == AdminMessageType.TRUST_ERRORED.value
+    assert "not delivered" not in notice
+
+
+async def test_the_agent_named_for_a_channel_does_not_count_against_its_sender(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A bot tagged in a channel where it stands for an agent gets the
+    agent's `@name` written in front, so the agent is addressed."""
+    human_actor = _FakeHumanActor()
+    bridge = _bridge(
+        session_factory, human_actor, _FakeAdapter(), _FixedTrustClient(_OK)
+    )
+    bridge._resolve_self_mention_target = AsyncMock(return_value="helper")
+    message = _message("hello").model_copy(update={"self_mention_token": "bot"})
+
+    await CollaborationCore._handle_inbound_message(bridge, message)
+
+    assert human_actor.sent == [(TRANSPORT_ROOM_ID, "@helper hello")]
+    assert human_actor.authored == ["hello"]
+
+
+class _RefusingHumanActor(_FakeHumanActor):
+    """A human whose sends Switch refuses, one refusal per send."""
+
+    def __init__(self, *refusals: MessageRefused) -> None:
+        super().__init__()
+        self._refusals = list(refusals)
+
+    async def send_message(
+        self, room_id: str, content: str, **_kw: object
+    ) -> str | None:
+        raise self._refusals.pop(0)
+
+
+async def test_a_message_refused_as_too_long_is_told_to_its_sender(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    human_actor = _RefusingHumanActor(MessageTooLong(70_000, 65_536))
+    adapter = _FakeAdapter()
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_OK))
+
+    assert (
+        await CollaborationCore._handle_inbound_message(bridge, _message("long"))
+        is None
+    )
+
+    assert bridge.relayed == []
+    [(channel_id, body, root_or_ref, message_type)] = adapter.admin_messages
+    assert channel_id == "chan-1"
+    assert "not delivered to the room" in body
+    assert "70,000 characters long" in body
+    assert root_or_ref == "mm-post-1"
+    assert message_type == AdminMessageType.MESSAGE_REFUSED.value
+
+
+async def test_a_sender_over_their_allowance_is_told_once_not_per_message(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    def limited(first: bool) -> SendRateLimited:
+        return SendRateLimited(retry_after=2.0, burst=30, per_second=2.0, first=first)
+
+    human_actor = _RefusingHumanActor(limited(True), limited(False), limited(False))
+    adapter = _FakeAdapter()
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_OK))
+
+    for _ in range(3):
+        await CollaborationCore._handle_inbound_message(bridge, _message("again"))
+
+    [(_, body, _, message_type)] = adapter.admin_messages
+    assert "faster than Switch accepts" in body
+    assert "Wait 2 seconds" in body
+    assert message_type == AdminMessageType.MESSAGE_REFUSED.value

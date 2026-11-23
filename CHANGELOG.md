@@ -318,6 +318,33 @@ version of their own to them without also giving them a release of their own.
   answers with a message saying the connection could not be saved, and the
   sign-in reads as failed with that message, as one finished in the browser
   already did.
+- **Slack no longer drops an agent's reply it refuses.** A reply longer than
+  Slack takes, one sent while Slack was rate-limiting the workspace, or one
+  for a channel that was archived or that the app was taken out of was
+  logged on the server and never appeared. Long messages and Switch's own
+  notices are now split to fit, a rate-limited post or edit is tried again
+  after the wait Slack names, and a message Slack stops part way through
+  says in the channel how much of it arrived.
+- **Raw mention codes in an agent's reply no longer notify anyone on Slack,
+  Discord, Google Chat or Zulip.** An agent quoting text that already held a
+  platform's mention code, such as `<@U…>` or `<!subteam^…>` on Slack, a role
+  or user code on Discord, `<users/all>` on Google Chat, or `@**Name**` or
+  `@*group*` on Zulip, notified whoever the code named. The code is now shown
+  as written, even when it names someone who has posted in the channel. Names
+  Switch resolves (`@name`) notify as before, and a request card on Discord
+  still notifies the person it is for.
+- **New Mattermost agents are no longer bridged into Town Square and
+  Off-Topic.** Mattermost puts every account added to a team in its default
+  channels, so each new agent's bot was bridged into both, with their chatter
+  relayed into Switch. A bot is now taken out of Off-Topic (tried again at the
+  next start if Mattermost refuses), and neither channel is bridged until a
+  room is connected to it, whoever is in it. Running a `!` command such as
+  `!invite-agent` in either channel connects it. A default channel that
+  already has a room is left as it is.
+- **Rocket.Chat, Webex, Google Chat and Zulip say when a long message is cut
+  short.** A refused later part of a split message used to leave the
+  channel showing only the first parts, with no sign the rest was missing.
+  A notice now says how many parts arrived, as on Mattermost and Discord.
 
 ### [0.32.1] - 2026-11-18
 
