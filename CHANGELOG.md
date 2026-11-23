@@ -220,6 +220,11 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A connector app saved in the dashboard is no longer briefly replaced by
+  the one before it.** A re-read of the app already under way when an
+  administrator saved a new one could finish last and put the older app back
+  on that server until the next re-check. A service's app is now resolved
+  one read at a time.
 - **A managed agent no longer shows as present in a room it just left.** A
   slow re-read of an agent's memberships could put back a room it had left
   (or drop one it had joined) after this process applied the change, so its
