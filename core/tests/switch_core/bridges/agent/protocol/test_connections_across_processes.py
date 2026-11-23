@@ -35,6 +35,7 @@ from switch_core.bridges.agent.api.schemas import (
     ConnectionSubscribeRequest,
 )
 from switch_core.bridges.agent.protocol.agent_connections import (
+    AGENT_SUSPENDED,
     HEARTBEAT_TTL_SECONDS,
     KEY_REISSUED,
     PROTOCOL_VERSION,
@@ -1389,6 +1390,70 @@ class TestAnAgentWhoseWorkspaceWasArchived:
             await _set_workspace_archived(session_factory, archived=False)
 
         assert conn.closure == WORKSPACE_ARCHIVED
+        assert not a.registry.is_live(AGENT)
+        assert not b.registry.is_live(AGENT)
+
+
+async def _set_suspended(session_factory: SessionFactory, *, suspended: bool) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(Agent)
+            .where(Agent.id == AGENT)
+            .values(
+                suspended_at=func.now() if suspended else None,
+                suspended_by_role="operator" if suspended else None,
+            )
+        )
+        await session.commit()
+
+
+class TestASuspendedAgent:
+    """As for a re-issued key: the rows go, and its connections end wherever
+    their sockets are held, with the ending saying it was suspended."""
+
+    async def test_suspended_through_the_other_process_its_connection_closes(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        told: list[str] = []
+        a.registry.set_ended_elsewhere_listener(told.append)
+        conn = await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+
+        await _end_agent_rows(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await b.registry.agent_suspended(AGENT)
+
+        await _eventually(lambda: conn.closure is not None)
+        assert conn.closure == AGENT_SUSPENDED
+        assert told == [AGENT]
+        assert not a.registry.is_live(AGENT)
+        assert not b.registry.is_live(AGENT)
+
+    async def test_one_opened_as_it_was_suspended_ends_at_the_next_recheck(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """Let in on a key another process remembered a moment longer, or
+        suspended by the operator's command line while no signal reached
+        this process: the re-check that reads its row ends it."""
+        a, b = processes
+        told: list[str] = []
+        a.registry.set_ended_elsewhere_listener(told.append)
+        conn = await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+        await _set_suspended(session_factory, suspended=True)
+        try:
+            await b.shared.reload_all()
+            await _eventually(lambda: conn.closure is not None)
+        finally:
+            await _set_suspended(session_factory, suspended=False)
+
+        assert conn.closure == AGENT_SUSPENDED
+        assert told == [AGENT]
         assert not a.registry.is_live(AGENT)
         assert not b.registry.is_live(AGENT)
 

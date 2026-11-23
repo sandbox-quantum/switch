@@ -36,6 +36,7 @@ const agent: AgentDetail = {
   can_edit_options: true,
   can_transfer: true,
   transfer_blocked_reason: null,
+  suspension: null,
   can_change_manage_agents: true,
   can_widen_addressing: true,
   can_grant_services: true,

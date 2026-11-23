@@ -140,6 +140,15 @@ from switch_core.observability.catalogue import (
 )
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL
+from switch_core.room_read_only import (
+    SYSTEM_CLIENT_TYPE,
+    ReadOnlyState,
+    RoomReadOnly,
+    needs_sender_check,
+    read_only_state,
+    written_regardless,
+)
+from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import (
@@ -352,6 +361,7 @@ class RoomReads:
         meta: RoomMeta,
         group_id: str | None,
         members: list[RoomMember],
+        read_only: ReadOnlyState | None,
     ) -> None:
         self.tenant_id = tenant_id
         self.room_id = room_id
@@ -359,6 +369,8 @@ class RoomReads:
         self.meta = meta
         self.group_id = group_id
         self.members = members
+        # Whether the room is frozen or archived (`room_read_only.py`).
+        self.read_only = read_only
         self._services = services
         self._client_store = client_store
         self._budget_store = budget_store
@@ -480,6 +492,7 @@ class RoomReads:
             ),
             group_id=room.group_id,
             members=sorted(members, key=lambda member: member.agent.id),
+            read_only=read_only_state(room),
         )
 
     def member(self, client_id: str | None) -> RoomMember | None:
@@ -719,6 +732,7 @@ class Routed:
         seq: int,
         stored: list[tuple[str, int]],
         deadline_in: float | None,
+        sent_by: RoomMember | None,
         announcement: str | None = None,
     ) -> None:
         self._router = router
@@ -729,6 +743,8 @@ class Routed:
         self.seq = seq
         self._stored = stored
         self._deadline_in = deadline_in
+        # The agent that posted the row, when it is a message an agent posted.
+        self._sent_by = sent_by
         # What the trigger would have announced for the row, when the writer
         # announces it and its own events itself once it has committed.
         self._announcement = announcement
@@ -766,6 +782,20 @@ class Routed:
         reads = self._reads
         if reads is None:
             return
+        if self._sent_by is not None:
+            log_security_event(
+                SecuritySignal.AGENT_MESSAGE_SENT,
+                tenant_id=reads.tenant_id,
+                actor_user_id=None,
+                target_type="room",
+                target_id=reads.room_id,
+                agent_id=self._sent_by.agent.id,
+                room_id=reads.room_id,
+                details={
+                    "message_id": self._row.event_id,
+                    "kind": "file" if isinstance(self._row, InboundMedia) else "text",
+                },
+            )
         plan = self._plan
         if plan.arrival is not None:
             router.services.connections.controllers.room_joined(
@@ -1098,6 +1128,8 @@ class MessageRouter:
             tenant_id=tenant_id,
             room_id=room_id,
         )
+        if reads is not None and reads.read_only is not None:
+            await self._require_writable(session, reads, message)
         plan = _Plan()
         if reads is not None:
             unwritten = to_inbound(
@@ -1171,6 +1203,11 @@ class MessageRouter:
             seq=message.seq,
             stored=stored,
             deadline_in=deadline_in,
+            sent_by=(
+                reads.member(message.sender_client_id)
+                if reads is not None and isinstance(row, InboundMessage)
+                else None
+            ),
             announcement=(
                 message_announcement(
                     room_id, message.seq, message.id, message.event_type
@@ -1179,6 +1216,33 @@ class MessageRouter:
                 else None
             ),
         )
+
+    @staticmethod
+    async def _require_writable(
+        session: AsyncSession, reads: RoomReads, message: Message
+    ) -> None:
+        """Refuse `message` in a frozen or archived room unless it is one of
+        the rows such a room still takes (`room_read_only.py`)."""
+        assert reads.read_only is not None
+        if written_regardless(message.event_type):
+            return
+        if (
+            needs_sender_check(message.event_type, message.content or {})
+            and message.sender_client_id is not None
+            and await session.scalar(
+                select(Client.type).where(Client.id == message.sender_client_id)
+            )
+            == SYSTEM_CLIENT_TYPE
+        ):
+            return
+        logger.warning(
+            "Refused a %s from %s in room %s: the room is %s",
+            message.event_type,
+            message.sender_id,
+            reads.room_id,
+            reads.read_only,
+        )
+        raise RoomReadOnly(reads.meta.name, reads.read_only)
 
     @staticmethod
     async def _joined_since(session: AsyncSession, reads: RoomReads) -> bool:
@@ -2522,8 +2586,16 @@ class MessageRouter:
         )
         stored = await self._store_own_events(session, reads, plan.deliveries, lead)
         await session.commit()
+        # The files were posted, and counted, as they were written.
         return Routed(
-            self, reads, plan, lead, seq=lead.seq, stored=stored, deadline_in=None
+            self,
+            reads,
+            plan,
+            lead,
+            seq=lead.seq,
+            stored=stored,
+            deadline_in=None,
+            sent_by=None,
         )
 
     # ── After the commit ──────────────────────────────────────────────────────

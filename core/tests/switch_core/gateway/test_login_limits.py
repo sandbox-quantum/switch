@@ -377,7 +377,11 @@ class TestUnlockCommand:
         assert unlocked.id == ada.id
         assert (await world.sign_in(ADA, PASSWORD)).status_code == 200
         async with world.factory() as session:
-            [event] = await session.scalars(select(ServerAuditEvent))
+            [event] = await session.scalars(
+                select(ServerAuditEvent).where(
+                    ServerAuditEvent.action == "user.sign_in_lock_cleared"
+                )
+            )
         assert (event.action, event.actor_user_id, event.target_id) == (
             "user.sign_in_lock_cleared",
             None,
@@ -528,7 +532,7 @@ class TestTheLockLeavesOtherWaysIn:
         with tenant_scope(TENANT_ZERO_ID):
             async with world.factory() as session:
                 response = await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                     config=oidc_config(),
                     session=session,
                     session_factory=world.factory,

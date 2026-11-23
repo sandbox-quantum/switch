@@ -157,9 +157,10 @@ carries `console_id` and `console_name`: on a server a Console runs for its
 user, everyone with access to the host signs in as the one seeded account, so
 `user_id` cannot tell them apart and these can. They are attribution the caller
 supplies, not authentication. Set `LOG_FORMAT=json` to get them as
-fields rather than inside the message text; the default is `text`, which is for
-reading in a terminal, so anywhere the logs are actually collected wants the
-JSON form. With `OTLP_LOGS_ENABLED` the same records are *also* posted to the
+fields rather than inside the message text; the server's default is `text`,
+which is for reading in a terminal, so anywhere the logs are actually
+collected wants the JSON form. The Helm chart defaults to `json`
+(`switchCore.logging.format`). With `OTLP_LOGS_ENABLED` the same records are *also* posted to the
 collector. The stderr copy is never replaced: `kubectl logs` keeps working, and
 a collector outage costs a copy rather than the record.
 
@@ -204,6 +205,98 @@ beneath it. Two listeners sit outside it — the Teams bridge and the
 collaboration callback ingress each run their own `aiohttp` server on their own
 port — so their traffic appears in no request metric. Read the HTTP panels as
 "the main API", not "everything this process serves".
+
+## The security event stream
+
+Every audit write (`core/switch_core/db/audit.py`: the workspace,
+organization and server audit tables) is mirrored as one INFO line on the
+`switch_core.security` logger, so a log pipeline can alert on it; the tables
+themselves are only in Postgres. The line is written after the transaction
+holding the audit row commits, from the session's own transaction events
+(`core/switch_core/security_events.py`), so a change that rolls back, or a
+savepoint around it that rolls back, leaves no line, just as it leaves no row.
+
+In the JSON format the line carries:
+
+| Field | What it holds |
+| --- | --- |
+| `switch.event` | `security.<action>`, e.g. `security.agent.deleted` |
+| `switch.action` | the audit action itself |
+| `switch.scope` | `tenant`, `organization` or `server`: which table holds the row; `log` for an event with no row (below) |
+| `switch.tenant_id` / `switch.organization_id` | whose event it is, where it has one |
+| `switch.actor_user_id` | who acted; empty when no signed-in person did |
+| `switch.target_type` / `switch.target_id` | what was acted on |
+| `switch.agent_id` / `switch.room_id` | the agent and room concerned, where the event names them |
+| `switch.audit_event_id` | the row's id, to find it in the audit log |
+| `security_details.*` | the audit event's `details`, one level deep: a list or mapping is its JSON text |
+
+`details` holds identifiers, names and field names — never secrets or message
+text. A detail whose key names an email address (an invitation's) is left out
+of the line; the audit row still has it. The usual
+context fields (`tenant_id`, `request_id`, `user_id`, ...) ride alongside as on
+any line and describe the request that made the change.
+
+A few events are written to the log only, at once, with `switch.scope` =
+`log`, because they have no transaction to ride on or come too often for a row
+each:
+
+- `security.auth.sign_in_failed`: a password, OIDC or WorkOS organization
+  sign-in refused, with `method`, `reason` and `client_ip`, and the account's
+  id when the attempt named a real one (never the email typed). A row per
+  attempt would let anyone grow an append-only table.
+- `security.budget.exceeded`: an agent stopped by a usage budget, once per
+  budget period per process rather than once per refused message.
+- `security.refusal_breaker.tripped`: a caller answered 429 for repeating a
+  refused request; the caller is a short prefix of its hashed credential.
+- `security.trust.verdict`: a Switch Trust verdict of `alerted` or `errored`,
+  with the policy, the outcome and each finding's category, detector and
+  severity — never the text it found. Nothing reaching the room changed, and
+  while Switch Trust is down every message is `errored`. A `blocked` or
+  `redacted` verdict is a workspace audit row instead (`trust.message_blocked`,
+  `trust.message_redacted`, with the same details), written on a short
+  session of its own before anything is delivered: if it cannot be written,
+  the send fails rather than going ahead unrecorded.
+
+And a few more record access, so that one actor's volume can be alerted on
+(the security detection rules in `deploy/observability/README.md`). They carry
+ids and counts only, never message text, file names or tokens, and write
+nothing to the database:
+
+- `security.agent.message_sent`: a message an agent posted, once its row
+  commits (`delivery/router.py`), with the message id and `kind` (`text` or
+  `file`). A person's message is not one. This is the busiest of them: one
+  line per agent message, which is bounded by the agents' own turns (the load
+  tests' busiest realistic step is one message per agent every 3 minutes, so
+  a thousand busy agents are about 5 lines a second). Metrics can't carry the
+  agent id and no access line names it (per-agent routes are kept out of the
+  access log), so this line is the only per-agent count there is.
+- `security.agent.room_read`: an agent reading a room's history
+  (`read_context`), with `connected` false for a room read without connecting
+  to it. One line per call, fewer than messages: an agent reads to catch up,
+  not for every event.
+- `security.agent.rooms_listed`: an agent listing rooms (`list_all_rooms`),
+  with how many rooms the page held. Never their names.
+- `security.attachment.uploaded` / `security.attachment.downloaded`: a file an
+  agent posted or fetched, or a person uploaded or fetched in Switch Console,
+  with the media handle and its size.
+- `security.service_token.issued`: a service token issued to an agent
+  (`connections/broker.py`), with the service and who asked (the agent's own
+  key or a controller). Tokens are cached for up to an hour, so this is rare.
+
+`client_ip`, like the address in the access log, is the request's client
+as uvicorn resolves it. switch-core believes `X-Forwarded-For` only from the
+addresses in `FORWARDED_ALLOW_IPS` (the Helm value
+`switchCore.forwardedAllowIps`), which defaults to `127.0.0.1`. Behind a load
+balancer or ingress, set it to that proxy's source address range (IPs or
+CIDRs, comma-separated); left at the default, every request reports the
+proxy's own address. Never `*`: then any caller can name any address. The
+chart refuses it, and the server warns at startup if it is set.
+
+The logger is held at INFO whatever `SWITCH_LOG_LEVEL` says, so turning
+switch-core's own lines down does not silence it. Filter on the logger name
+or on `switch.event:security.*`. None of these ids are metric attributes, for
+the reasons under "Why there is a catalogue"; per-actor detection is done on
+these lines.
 
 ## Why there is a catalogue
 
@@ -305,6 +398,21 @@ stale number.
 
 Each message's decision record — one log line, with its fields as `decision.*`
 — is described in `docs/old/decision-routing.md`.
+
+## The WorkOS directory mirror
+
+With `ORGANIZATION_DIRECTORY=workos`, the process holding the mirror
+(`workos_mirror.py`) reports `switch.workos.cursor_age`,
+`switch.workos.recheck.oldest_age` and `switch.workos.full_check.age`, each in
+seconds and with no attributes. They are ages rather than timestamps because a
+Datadog monitor can't subtract a timestamp from now, and they are computed when
+the metrics are collected, so a pass stuck waiting on WorkOS keeps the cursor
+age growing instead of freezing it. No other process reports them, so their
+absence means nobody runs the mirror; read them with max, which also covers
+the moment the hold changes hands. It also counts
+`switch.workos.organization_deleted`, a WorkOS organization deleted while a
+Switch organization follows it. What each means is in
+`docs/old/workos-directory.md`.
 
 ## Health: two routes, on purpose
 

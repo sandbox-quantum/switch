@@ -979,10 +979,16 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- end }}
 - name: GATEWAY_COOKIE_SECURE
   value: {{ .Values.switchCore.cookieSecure | quote }}
+{{- $forwardedAllowIps := .Values.switchCore.forwardedAllowIps | default "127.0.0.1" }}
+{{- if has "*" (splitList "," (nospace $forwardedAllowIps)) }}
+{{- fail "switchCore.forwardedAllowIps must not be \"*\": it would let any caller forge its client address. Name the ingress or load balancer's source CIDR(s)." }}
+{{- end }}
+- name: FORWARDED_ALLOW_IPS
+  value: {{ $forwardedAllowIps | quote }}
 - name: SWITCH_LOG_LEVEL
   value: {{ .Values.switchCore.logLevel | default "INFO" | quote }}
 - name: LOG_FORMAT
-  value: {{ .Values.switchCore.logging.format | quote }}
+  value: {{ .Values.switchCore.logging.format | default "json" | quote }}
 - name: LOG_LEVEL
   value: {{ .Values.switchCore.logging.rootLevel | quote }}
 - name: TENANT_ID
@@ -1280,8 +1286,8 @@ render instead of a pod.
 {{- if not .Values.switchCore.oidc.enabled }}
 {{- fail "switchCore.organizationDirectory.mode workos needs switchCore.oidc.enabled, against the same WorkOS environment: the sign-in is what names the person there." }}
 {{- end }}
-{{- if ne .Values.switchCore.signup.mode "invite_only" }}
-{{- fail "switchCore.organizationDirectory.mode workos needs switchCore.signup.mode invite_only: a customer's organization is linked by an operator, not created by whoever signs up." }}
+{{- if eq .Values.switchCore.signup.mode "default_tenant" }}
+{{- fail "switchCore.organizationDirectory.mode workos cannot be combined with switchCore.signup.mode default_tenant; use invite_only or open." }}
 {{- end }}
 {{- if and $changes (lt (len $changes) 3) }}
 {{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are set together, or not at all." }}

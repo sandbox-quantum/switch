@@ -43,7 +43,13 @@ def _load(name: str) -> object:
     ],
 )
 def test_every_metric_referenced_exists(filename: str) -> None:
-    referenced = _referenced_metrics(_load(filename))
+    document = _load(filename)
+    if filename == "monitors.json":
+        # A log alert reads logs, and its `switch.*` names are log attributes
+        # (the security event stream's `switch.agent_id` and the like), not
+        # metrics.
+        document = [m for m in document if m["type"] != "log alert"]  # type: ignore[union-attr]
+    referenced = _referenced_metrics(document)
     # The morning report sends its own "posted" mark; that one is not core's.
     from_report = set(
         re.findall(
@@ -109,7 +115,9 @@ def test_only_the_default_service_loads_the_shared_signal_board() -> None:
     deployment stops before it, so a test deployment can't overwrite it."""
     script = (_ARTIFACTS / "apply.sh").read_text()
     guard = script.index('if [[ "$SERVICE" != "switch-core" ]]; then')
-    assert script.index("exit 0", guard) < script.index("file=signal-board.json")
+    assert script.index("exit 0", guard) < script.index(
+        'title=$(jq -r .title "$dashboard_file")'
+    )
     assert guard < script.index('existing_dashboards=$(dd GET "/dashboard")')
 
 
@@ -147,8 +155,8 @@ def test_every_monitor_watches_one_deployment_only() -> None:
     script = (_ARTIFACTS / "apply.sh").read_text()
     assert "${SERVICE:?" in script
     assert "${ENV:?" in script
-    assert "monitor=${monitor//REPLACE-WITH-SERVICE/$SERVICE}" in script
-    assert "monitor=${monitor//REPLACE-WITH-ENV/$ENV}" in script
+    assert 'gsub("REPLACE-WITH-SERVICE"; $service)' in script
+    assert 'gsub("REPLACE-WITH-ENV"; $env)' in script
     # The default service is refused without an explicit opt-in, and no
     # deployment of ours is named in the public script.
     assert 'ALLOW_DEFAULT_SERVICE:-}" != "1"' in script
@@ -213,6 +221,9 @@ _READ_WITH_MAX = (
     "switch.hosted.agents",
     "switch.hosted.sessions",
     "switch.hosted.provider_login_problems",
+    "switch.workos.cursor_age",
+    "switch.workos.recheck.",
+    "switch.workos.full_check.",
 )
 
 
@@ -375,3 +386,16 @@ def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:
     assert '"id"' not in text
     assert "@" not in text
     assert "$env" not in text
+
+
+def test_monitors_on_the_workos_mirror_are_imported_only_where_it_runs() -> None:
+    """Only a server with ORGANIZATION_DIRECTORY=workos reports the mirror's
+    gauges, and these monitors fire on no data. `apply.sh` imports a monitor
+    tagged requires:workos-directory only with WORKOS_DIRECTORY set, so one
+    left untagged would fire for ever on every other server."""
+    monitors = _load("monitors.json")
+    assert isinstance(monitors, list)
+    for monitor in monitors:
+        reads_mirror = "switch.workos." in monitor["query"]
+        tagged = "requires:workos-directory" in monitor["tags"]
+        assert reads_mirror == tagged, monitor["name"]

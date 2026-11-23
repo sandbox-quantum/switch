@@ -23,6 +23,7 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.chats import is_console_chat, people_are_members
+from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.content_disposition import UNTRUSTED_FILE_CSP, content_disposition
 from switch_core.db.models import Agent, Room, RoomGroup, User, require_tenant_id
@@ -50,11 +51,13 @@ from switch_core.gateway.auth import (
     get_current_user,
     get_tenant_is_admin,
     require_group_filing_or_403,
+    require_tenant_admin,
 )
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_agent_store,
     get_bridge_store,
+    get_client_lifecycle,
     get_collab_lifecycle,
     get_config,
     get_external_user_store,
@@ -64,6 +67,7 @@ from switch_core.gateway.dependencies import (
     get_room_store,
     get_room_yaml_service,
     get_session,
+    get_session_factory,
     get_template_store,
     get_user_store,
 )
@@ -81,9 +85,11 @@ from switch_core.gateway.schemas import (
     RoomCreateRequest,
     RoomDeleteResponse,
     RoomDetail,
+    RoomFreezeRequest,
+    RoomFreezeResult,
+    RoomFreezeState,
     RoomObserveRequest,
     RoomPerson,
-    RoomProtectionRequest,
     RoomRoleCreateRequest,
     RoomRoleDetail,
     RoomRoleUpdateRequest,
@@ -94,6 +100,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
+from switch_core.private_channel_rooms import notice_poster
 from switch_core.providers.registry import offered_provider_ids
 from switch_core.room_invites import (
     InviteRefused,
@@ -101,6 +108,11 @@ from switch_core.room_invites import (
     require_user_may_add_to_new_room,
     require_user_may_invite,
     with_subagents,
+)
+from switch_core.room_moderation import (
+    ModerationConflict,
+    ModerationTargetNotFound,
+    RoomFreeze,
 )
 from switch_core.room_policy import (
     FIXED_MEMBERSHIP,
@@ -321,6 +333,7 @@ async def _build_room_detail(
         write_visibility=room.write_visibility,
         created_at=str(room.created_at),
         archived=room.archived_at is not None,
+        frozen=room.frozen_at is not None,
         viewer_is_member=takes_part,
         viewer_is_room_admin=where.room_admin,
         room_admins=[
@@ -338,7 +351,6 @@ async def _build_room_detail(
         matrix_room_id=room.transport_room_id,
         external_channel_id=room.external_channel_id,
         instructions=room.instructions,
-        protection_config=room.protection_config,
         observe_config=room.observe_config,
         agent_ids=agent_ids,
         agent_statuses={
@@ -347,6 +359,15 @@ async def _build_room_detail(
         roles=roles,
         join_event_listeners=join_event_listeners,
         archived_at=str(room.archived_at) if room.archived_at else None,
+        freeze=(
+            RoomFreezeState(
+                frozen_at=str(room.frozen_at),
+                frozen_by=room.frozen_by if principal.is_admin else None,
+                reason=room.frozen_reason if principal.is_admin else None,
+            )
+            if room.frozen_at is not None
+            else None
+        ),
         channel_on_delete=_channel_on_delete(room, bridge_type),
         linked_channel_name=(
             (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY)
@@ -562,6 +583,7 @@ async def list_rooms(
                     else None
                 ),
                 archived=room.archived_at is not None,
+                frozen=room.frozen_at is not None,
                 viewer_is_member=room.id in involved,
                 viewer_is_room_admin=room.id in administered,
                 is_console_chat=is_console_chat(room),
@@ -1393,42 +1415,6 @@ async def put_room_group(
     )
 
 
-@router.put("/{room_id}/protection")
-async def put_protection(
-    room_id: str,
-    req: RoomProtectionRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    room_service: Annotated[RoomService, Depends(get_room_service)],
-    room_store: Annotated[RoomStore, Depends(get_room_store)],
-    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
-    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
-    user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> RoomDetail:
-    principal = Principal(user.id, is_admin)
-    await _require_room_released(session, room_store, room_id, principal, "configure")
-    try:
-        await room_service.update_protection_config(room_id, req.protection_config)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Room not found")
-    await session.commit()
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    return await _build_room_detail(
-        session,
-        room,
-        room_store,
-        bridge_store,
-        external_user_store,
-        protocol,
-        principal,
-        decisions,
-    )
-
-
 @router.put("/{room_id}/observe")
 async def put_observe(
     room_id: str,
@@ -1959,6 +1945,121 @@ async def sync_room_name(
     )
 
 
+def get_room_freeze(
+    session_factory: Annotated[Any, Depends(get_session_factory)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+) -> RoomFreeze:
+    return RoomFreeze(
+        session_factory=session_factory,
+        room_store=room_store,
+        post_notice=notice_poster(client_lifecycle),
+    )
+
+
+@router.post("/{room_id}/freeze")
+async def freeze_room(
+    room_id: str,
+    req: RoomFreezeRequest,
+    user: Annotated[User, Depends(require_tenant_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    freeze: Annotated[RoomFreeze, Depends(get_room_freeze)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
+) -> RoomFreezeResult:
+    """Make a room read-only during an incident: nothing new is posted in it,
+    by agents or people, until it is unfrozen (`room_read_only.py`). A
+    workspace admin or the server's operator only, never a room's own admins.
+    The room is told it was frozen; the reason is kept for admins and in the
+    audit log (`room.frozen`)."""
+    try:
+        notice_error = await freeze.freeze(
+            require_tenant_id(), room_id, actor_user_id=user.id, reason=req.reason
+        )
+    except ModerationTargetNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ModerationConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return await _freeze_result(
+        session,
+        room_id,
+        notice_error,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        decisions,
+        user,
+    )
+
+
+@router.post("/{room_id}/unfreeze")
+async def unfreeze_room(
+    room_id: str,
+    user: Annotated[User, Depends(require_tenant_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    freeze: Annotated[RoomFreeze, Depends(get_room_freeze)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
+) -> RoomFreezeResult:
+    """Let a frozen room take posts again, telling it so. A workspace admin
+    or the server's operator only (`room.unfrozen`)."""
+    try:
+        notice_error = await freeze.unfreeze(
+            require_tenant_id(), room_id, actor_user_id=user.id
+        )
+    except ModerationTargetNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ModerationConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return await _freeze_result(
+        session,
+        room_id,
+        notice_error,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        decisions,
+        user,
+    )
+
+
+async def _freeze_result(
+    session: AsyncSession,
+    room_id: str,
+    notice_error: str | None,
+    room_store: RoomStore,
+    bridge_store: CollaborationBridgeStore,
+    external_user_store: ExternalUserStore,
+    protocol: AgentCore,
+    decisions: DecisionAvailability,
+    user: User,
+) -> RoomFreezeResult:
+    room = await room_store.get(session, room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    detail = await _build_room_detail(
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        Principal(user.id, True),
+        decisions,
+    )
+    return RoomFreezeResult(room=detail, notice_error=notice_error)
+
+
 @router.post("/{room_id}/archive")
 async def archive_room(
     room_id: str,
@@ -1972,8 +2073,9 @@ async def archive_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    """: hide it from the default active list. Reversible and
-    metadata-only: the room, members, and bridge channel are intact."""
+    """: hide it from the default active list and make it read-only
+    (`room_read_only.py`). Reversible: the room, members, history and bridge
+    channel are intact, and unarchiving lets it take posts again."""
     return await _set_archived(
         room_id,
         True,

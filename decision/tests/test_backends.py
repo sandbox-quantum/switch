@@ -365,7 +365,8 @@ def test_health_reports_backend_model_threshold(monkeypatch):
         and body["model"] == "clef-flash"
         and body["confidence_threshold"] == 0.6
     )
-    assert body["backends_available"] == ["default", "anthropic"]
+    # The default backend can be named too.
+    assert body["backends_available"] == ["default", "anthropic", "systemone"]
 
 
 def test_health_fails_when_model_server_down(monkeypatch):
