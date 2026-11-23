@@ -18,7 +18,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Switch } from '@renderer/lib/ui/switch';
 import type { WorkspaceService } from '@shared/core/switch-servers/connection-catalog';
-import { switchStanding, switchTiles } from './workspace-switches';
+import { cannotWorkOnThisServer, switchStanding, switchTiles } from './workspace-switches';
 
 type Outcome = { warning: string | null; error: string | null };
 
@@ -28,9 +28,11 @@ type Outcome = { warning: string | null; error: string | null };
  * is connected or any agent uses it, it asks first, naming both counts. A
  * switch shows what the server says: it never flips before the server has
  * answered, and a failure leaves it as it was, with the reason under it. A
- * service the server can't serve keeps its switch, with the server's reason
- * under it, so an admin can set it before the app is set up. A switch the
- * organization locked can't be flipped, and says so.
+ * service the server can't serve is disabled when off and the server says it
+ * can never work here, with the reason under it; an operator-fixable issue
+ * (app to set up, public URL to configure) keeps its switch usable, so an
+ * admin can set it before setup. A switch the organization locked can't be
+ * flipped, and says so.
  */
 export function WorkspaceSwitchesTab({
   workspaceId,
@@ -146,7 +148,11 @@ export function WorkspaceSwitchesTab({
                 <Switch
                   aria-label={`${service.name} for this workspace`}
                   checked={service.enabled}
-                  disabled={busy || !service.can_change}
+                  disabled={
+                    busy ||
+                    !service.can_change ||
+                    (!service.enabled && cannotWorkOnThisServer(service.unavailable_code))
+                  }
                   onCheckedChange={(on) => flip(service, on)}
                 />
               </>

@@ -48,7 +48,10 @@ MACHINES = [
         "id": "m-laptop",
         "name": "laptop",
         "state": "online",
-        "providers": [{"provider": "claude", "installed": True, "auth": "ok"}],
+        "providers": [
+            {"provider": "claude", "installed": True, "auth": "ok"},
+            {"provider": "cursor", "installed": True, "auth": "ok"},
+        ],
     },
     {
         "id": "m-box",
@@ -545,6 +548,31 @@ async def test_an_agent_cannot_make_a_bypass_agent_through_a_template(managed, l
 
 
 @pytest.mark.asyncio
+async def test_an_agent_run_template_gives_a_cursor_agent_approvals_not_bypass(
+    managed,
+):
+    """Cursor's default is bypass, which an agent may not give another agent
+    without its owner; a template that does not ask for bypass is not refused
+    for that default, and its Cursor agent asks for approval instead."""
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: solo\n"
+        "  instructions: Work alone.\n"
+        "  provider: cursor\n"
+        "  machine: laptop\n"
+        "  directory: /srv/solo\n",
+        kind="agent",
+    )
+
+    result = await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert [a["name"] for a in result["created_agents"]] == ["solo"]
+    created = managed["management"].created[0]
+    assert (created.auto_mode, created.auto_approve) == (False, False)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("written", "expected"), [("true", True), (None, False)])
 async def test_a_template_says_whether_its_agent_can_manage_agents(
     managed, written, expected
@@ -760,8 +788,12 @@ agent:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel_type", ["direct", "group"])
+@pytest.mark.parametrize(
+    ("owner_in_it", "refusal"),
+    [(False, "join_unknown_room"), (True, "join_fixed_membership")],
+)
 async def test_a_new_agent_never_joins_a_direct_or_group_conversation(
-    managed, channel_type
+    managed, channel_type, owner_in_it, refusal
 ):
     """Its platform fixes who is in it, however writable its room is: a DM the
     bridge adopted is writable by every member of the workspace."""
@@ -777,6 +809,7 @@ async def test_a_new_agent_never_joins_a_direct_or_group_conversation(
                 transport_room_id="!someones-dm:test.local",
                 name="someones-dm",
                 description="d",
+                owner_id=managed["user_id"] if owner_in_it else None,
                 channel_type=channel_type,
                 write_visibility="public",
             )
@@ -794,7 +827,10 @@ agent:
     stored = await _stored(managed, template, kind="agent")
     with pytest.raises(AgentsNotCreated) as e:
         await _as(managed["agent_id"], run_template, template_id=stored)
-    assert {p.code for p in e.value.problems} == {"join_fixed_membership"}
+    # Someone else's DM or group is hidden from the agent's owner, so it is
+    # not a room the template can name at all; one they are in is refused
+    # for what it is.
+    assert {p.code for p in e.value.problems} == {refusal}
     assert managed["management"].created == []
     assert added == []
 

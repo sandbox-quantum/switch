@@ -230,9 +230,15 @@ TRISTATE = one_of("true", "false", "unknown")
 
 
 # Which decision backend a workspace's auto-route used: the server's own
-# decision service as its default, the workspace's own endpoint, or Haiku.
+# decision service as its default, the workspace's own endpoint, or a choice
+# that service runs (Haiku, its self-hosted model, Gemini).
 DECISION_BACKEND = one_of(
-    "server_default", "endpoint", "haiku_anthropic", "haiku_bedrock"
+    "server_default",
+    "endpoint",
+    "haiku_anthropic",
+    "haiku_bedrock",
+    "self_hosted",
+    "gemini",
 )
 
 # The confidence the decision service gave its choice, in tenths above one
@@ -432,7 +438,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # shipped. Together they are the activation funnel.
     "deployment_installed": dict(_SINCE_INSTALL),
     # The first connector a person added. One the setup step registered itself
-    # never claims it, or the bundled Mattermost would, seconds after install.
+    # never claims it, or a bundled connector would, seconds after install.
     "first_connector_added": {**_SINCE_INSTALL, "bridge_platform": BRIDGE_PLATFORM},
     "first_room_created": {
         **_SINCE_INSTALL,
@@ -556,7 +562,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         # Left out where the deployment has no install clock.
         "seconds_since_install": optional(NUMBER),
         "seconds_since_configured": optional(NUMBER),
-        # Registered by the deployment's setup step (the bundled Mattermost)
+        # Registered by the deployment's setup step (a bundled connector)
         # rather than by a person. Filter these out to measure onboarding.
         "is_preconfigured": BOOLEAN,
         # The first connector a person added: never true for a preconfigured

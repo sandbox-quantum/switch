@@ -138,6 +138,11 @@ You need one Slack app for the whole bridge. There are two ways to create it —
 
 </details>
 
+`/auto-route` belongs only on a server with the `decision_routing` feature flag
+on; the manifest Switch Console offers when you add your own Slack app leaves
+it out on a server without it. If you paste this one into such a server's app,
+delete that line: the server answers it with "Unknown command".
+
 Then continue with [Generate tokens and install](#2-generate-tokens-and-install).
 
 The manifest turns on the app's **Messages tab**, read only. That's where Switch

@@ -8,7 +8,6 @@ import {
   Chip,
   CircularProgress,
   IconButton,
-  Snackbar,
   Stack,
   ToggleButton,
   ToggleButtonGroup,
@@ -21,6 +20,7 @@ import CatalogueGrid from "../../components/connectors/CatalogueGrid";
 import ConnectorCard from "../../components/connectors/ConnectorCard";
 import InfoTip from "../../components/InfoTip";
 import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { type ServiceConnection, fetchServiceConnections, fetchWorkspaceServices } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { brokenLine, catalogueMeta, connectWay, isConnected, offNotice } from "./connectorProfile";
@@ -172,7 +172,7 @@ export default function ConnectorsPage() {
       setPasteFor(connection);
       return;
     }
-    leave(connection.slug).catch((err: unknown) =>
+    leave(connection.slug, null).catch((err: unknown) =>
       setConnectError(err instanceof Error ? err.message : String(err)),
     );
   };
@@ -229,9 +229,9 @@ export default function ConnectorsPage() {
               emptyMessage={
                 shown === "yours"
                   ? query.trim()
-                    ? "You haven't connected anything that matches. The All tab lists every connector."
-                    : "You haven't connected anything yet. The All tab lists every connector."
-                  : `No connectors match "${query.trim()}".`
+                    ? "You haven't connected anything that matches. The All tab lists every connector you can use here."
+                    : "You haven't connected anything yet. The All tab lists every connector you can use here."
+                  : "No connectors match that search."
               }
               renderCard={(connection) => {
                 const off = connection.enabled ? offNotice(connection, workspaceName) : null;
@@ -246,7 +246,9 @@ export default function ConnectorsPage() {
                         <Reason label="Off here" why={off.text} icon={<BlockOutlined />} />
                       ) : (
                         !connection.connectable && (
-                          <Reason label="Unavailable" why={connection.unavailable_reason ?? "It can't be connected here."} />
+                          <Reason
+                            label={connection.unavailable_code === "app_not_set_up" ? "Needs setup" : "Unavailable"}
+                            why={connection.unavailable_reason ?? "It can't be connected here."} />
                         )
                       )
                     }
@@ -274,7 +276,7 @@ export default function ConnectorsPage() {
           replacing={false}
           onClose={() => setKeyFor(null)}
           onSaved={(warning) => {
-            setToast(`${keyFor.name} is connected.`);
+            setToast(`Connected ${keyFor.name}.`);
             setNotice(warning);
             setKeyFor(null);
             void load();
@@ -287,14 +289,14 @@ export default function ConnectorsPage() {
           replacing={false}
           onClose={() => setPasteFor(null)}
           onSaved={(warning) => {
-            setToast(`${pasteFor.name} is connected.`);
+            setToast(`Connected ${pasteFor.name}.`);
             setNotice(warning);
             setPasteFor(null);
             void load();
           }}
         />
       )}
-      <Snackbar open={toast !== null} autoHideDuration={5000} onClose={() => setToast(null)} message={toast} />
+      <SuccessSnackbar message={toast} onClose={() => setToast(null)} />
     </Box>
   );
 }

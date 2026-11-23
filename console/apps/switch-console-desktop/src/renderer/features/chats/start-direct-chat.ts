@@ -42,6 +42,7 @@ export const directChats = new DirectChatStarter({
       for (const viewId of ['chat', 'managedAgent'] as const)
         if (appState.navigation.viewParamsStore[viewId]?.roomId === from)
           appState.navigation.updateViewParams(viewId, { roomId: chat.roomId });
+      appState.navigation.replaceAgentChatRoomId(serverId, from, chat.roomId);
     });
     // Saved now, not on the next debounce: a reload before then would reopen the unsaved id, which is gone.
     void rpc.viewState.save('navigation', appState.navigation.snapshot);

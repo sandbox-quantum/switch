@@ -45,8 +45,7 @@ function ToolRows({
 
 /**
  * The turn's earlier tool calls as one line ("12 tool calls"), opening to the
- * calls themselves. A failure is named on the line so it is not hidden by the
- * fold.
+ * calls themselves. A failed call shows only once the group is opened.
  */
 function ToolGroup({
   items,
@@ -58,16 +57,10 @@ function ToolGroup({
   activity: AgentActivity;
 }) {
   const [open, setOpen] = useState(false);
-  const failed = items.filter((item) => toolState(item, turn.status) === 'failed').length;
   return (
     <WorkLogRow
       icon={<ToolKindIcon kind="other" />}
       label={`${items.length} ${items.length === 1 ? 'tool call' : 'tool calls'}`}
-      trailing={
-        failed > 0 ? (
-          <span className="shrink-0 text-xs text-foreground-destructive">· {failed} failed</span>
-        ) : null
-      }
       open={open}
       onToggle={() => setOpen(!open)}
     >
@@ -168,10 +161,14 @@ export function queuedLabel(turn: TurnActivity): string {
     : 'Queued…';
 }
 
-/** Whether a turn has anything to show in its work log. */
-export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean {
+/** Whether a turn has anything to show in its work log; `withReasoning`: its reasoning shows there. */
+export function turnShown(
+  activity: AgentActivity,
+  turn: TurnActivity,
+  withReasoning: boolean
+): boolean {
   const running = turn.status === 'queued' || turn.status === 'running';
-  const reasoning = activity.reasoning.get(turn.turnId) ?? null;
+  const reasoning = withReasoning ? (activity.reasoning.get(turn.turnId) ?? null) : null;
   const work = turnTools(turn);
   return (
     reasoningLabel(reasoning, running && reasoning !== null) !== null ||
@@ -189,13 +186,15 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
 /**
  * What the agent did for one room message, from Switch's activity feed: its
  * reasoning (local and SSH hosts only, read from the host), each tool it ran,
- * and the requests it put to people, as a compact work log under the message that started the turn. The
+ * and the requests it put to people, as a compact work log under the message that started the turn,
+ * split around the agent's own messages so it reads in the order it worked (`splitTurn`). The
  * text the agent wrote is not shown: its reply arrives as a room message of
  * its own, and that is the copy shown.
  */
 export const ChatActivityBlock = observer(function ChatActivityBlock({
   activity,
   turn,
+  withReasoning,
   agent,
   asker,
   head,
@@ -204,7 +203,10 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   className,
 }: {
   activity: AgentActivity;
+  /** The turn, or the part of it shown here (`splitTurn`). */
   turn: TurnActivity;
+  /** Whether the turn's reasoning shows here. */
+  withReasoning: boolean;
   agent: RowAgent;
   /** Who the turn's requests come from, as their cards name them. */
   asker: RequestAsker;
@@ -216,14 +218,14 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   className?: string;
 }) {
   const running = turn.status === 'queued' || turn.status === 'running';
-  const reasoning = activity.reasoning.get(turn.turnId) ?? null;
+  const reasoning = withReasoning ? (activity.reasoning.get(turn.turnId) ?? null) : null;
   const label = reasoningLabel(reasoning, running && reasoning !== null);
   const work = turnTools(turn);
   const thinking = isThinking(turn) && !(label && !reasoning?.completedAt);
   const children = turnSubagents(turn);
   const ended = turn.status === 'interrupted' || turn.status === 'error';
   const requests = turn.requests;
-  if (!turnShown(activity, turn)) return null;
+  if (!turnShown(activity, turn, withReasoning)) return null;
   return (
     <AgentRow
       agent={agent}

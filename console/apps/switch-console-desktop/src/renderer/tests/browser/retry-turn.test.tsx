@@ -88,6 +88,7 @@ async function render(
         <ChatActivityBlock
           activity={activity}
           turn={turn}
+          withReasoning
           agent={{ id: 'agent-1', name: 'helper', uniqueName: null, iconUrl: null }}
           asker={{ name: 'helper', ownerName: null, ownedByViewer: true }}
           head

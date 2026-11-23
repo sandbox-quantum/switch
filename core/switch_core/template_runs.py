@@ -36,6 +36,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceError
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.room_service import FIXED_MEMBERSHIP
@@ -105,6 +106,9 @@ class NewAgentPlan:
     connections: list[ConnectionPlan] = field(default_factory=list)
     # Rooms that already exist, by name, the agent is added to once created.
     joins: list[str] = field(default_factory=list)
+    # Bypass came from the provider's default (Cursor, which has no automatic
+    # review), not from the template asking for it.
+    bypass_by_default: bool = False
 
 
 @dataclass(frozen=True)
@@ -180,6 +184,23 @@ def _directory(
         )
     root = placement.workspaces_dir.rstrip("/\\")
     return plan.directory.replace(AGENTS_DIR, root), None
+
+
+def asking_instead_of_default_bypass(
+    plans: Sequence[NewAgentPlan],
+) -> list[NewAgentPlan]:
+    """The agents of a run an agent asks for, with bypass that came only from
+    the provider's default (`bypass_by_default`) turned into asking for every
+    action. An agent may not give another agent bypass without its owner
+    (`owner_confirmation_problems`), and a provider's default is not the
+    template asking for it, so such an agent asks rather than the run being
+    refused. Its owner can turn bypass on themselves."""
+    return [
+        replace(plan, auto_mode=False, auto_approve=False, bypass_by_default=False)
+        if plan.bypass_by_default
+        else plan
+        for plan in plans
+    ]
 
 
 def owner_confirmation_problems(plans: Sequence[NewAgentPlan]) -> list[Problem]:
@@ -608,6 +629,16 @@ class TemplateAgents:
                 addressing_policy=agent.addressing_policy,
                 can_manage_agents=agent.plan.can_manage_agents,
             )
+            if agent.plan.can_manage_agents:
+                await record_audit_event(
+                    session,
+                    tenant_id=tenant_id,
+                    actor_user_id=owner_id,
+                    action=AuditAction.AGENT_MANAGEMENT_GRANTED,
+                    target_type="agent",
+                    target_id=agent_id,
+                    details={"agent_name": agent.plan.name, "via": "template"},
+                )
             await session.commit()
         if not agent.grants:
             return

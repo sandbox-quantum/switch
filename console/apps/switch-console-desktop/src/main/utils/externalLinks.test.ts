@@ -13,7 +13,7 @@ vi.mock('@main/app/window', () => ({ getMainWindow }));
 vi.mock('@main/lib/events', () => ({ events: { emit } }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
 
-const { registerExternalLinkHandlers, registerGuestLinkHandlers, registerServerPageLinkHandlers } =
+const { registerExternalLinkHandlers, registerServerPageLinkHandlers } =
   await import('./externalLinks');
 const { externalLinkOpenRequestedChannel } = await import('@shared/events/appEvents');
 
@@ -144,35 +144,5 @@ describe('registerExternalLinkHandlers', () => {
     expect(page.refused('will-navigate', 'https://example.com')).toBe(true);
     expect(page.refused('will-navigate', 'switchdash://open/rooms/r1')).toBe(true);
     expect(handleDeeplinkUrl).toHaveBeenCalledOnce();
-  });
-});
-
-describe('registerGuestLinkHandlers', () => {
-  it('refuses a subframe navigating to a custom scheme', () => {
-    const guest = fakeContents();
-    registerGuestLinkHandlers(guest.contents as never);
-
-    expect(guest.refused('will-frame-navigate', 'some-app://run', false)).toBe(true);
-    expect(guest.refused('will-frame-navigate', 'https://cdn.example.com/embed', false)).toBe(
-      false
-    );
-  });
-
-  it('leaves the main frame to will-navigate, which routes Console links', () => {
-    const guest = fakeContents();
-    registerGuestLinkHandlers(guest.contents as never);
-
-    expect(guest.refused('will-frame-navigate', 'switchdash://open/rooms/r1')).toBe(false);
-    expect(guest.refused('will-navigate', 'switchdash://open/rooms/r1')).toBe(true);
-    expect(handleDeeplinkUrl).toHaveBeenCalledExactlyOnceWith('switchdash://open/rooms/r1');
-  });
-
-  it('refuses a redirect to a custom scheme in any frame', () => {
-    const guest = fakeContents();
-    registerGuestLinkHandlers(guest.contents as never);
-
-    expect(guest.refused('will-redirect', 'some-app://run')).toBe(true);
-    expect(guest.refused('will-redirect', 'some-app://run', false)).toBe(true);
-    expect(guest.refused('will-redirect', 'https://chat.example.com/login')).toBe(false);
   });
 });

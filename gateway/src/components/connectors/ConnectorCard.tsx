@@ -8,6 +8,8 @@ export interface CatalogueConnector {
   name: string;
   category: string;
   description: string;
+  /** Who makes it, where the page's list says; search matches it too. */
+  publisher?: string | null;
 }
 
 /**

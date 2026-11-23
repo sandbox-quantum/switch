@@ -35,7 +35,7 @@ const VERTEX_SOURCES: { value: VertexSource; label: string }[] = [
   { value: 'this-computer', label: "This computer's Google sign-in" },
 ];
 
-/** Claude on Vertex AI is served from the global endpoint unless the project pins a region. */
+/** Vertex AI serves Claude and Gemini from the global endpoint unless the project pins a region. */
 const VERTEX_DEFAULT_REGION = 'global';
 
 /** The ways a machine can be given each provider's login. */
@@ -55,8 +55,12 @@ export function loginKindsFor(provider: AgentProviderId): { value: LoginKind; la
     case 'cursor':
       return [{ value: 'api-key', label: 'API key' }];
     case 'opencode':
-    case 'antigravity':
       return [{ value: 'this-computer', label: "This computer's sign-in" }];
+    case 'antigravity':
+      return [
+        { value: 'this-computer', label: "This computer's sign-in" },
+        { value: 'vertex', label: 'Vertex AI' },
+      ];
     default:
       return [];
   }

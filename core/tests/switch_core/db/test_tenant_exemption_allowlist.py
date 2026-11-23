@@ -135,6 +135,18 @@ _ALLOWED_MODULES = {
     # holds no membership. Everything it then reads or deletes in a workspace
     # is bound to that workspace.
     "switch_core.accounts.organization_purge",
+    # The operator taking an account out of every room of a workspace names
+    # the workspace by id, holding no membership of it: whether that id is a
+    # workspace is asked with nothing bound, and everything after is bound to
+    # it.
+    "switch_core.room_moderation_admin",
+    # Suspending a person suspends every agent they own, in every workspace,
+    # their former ones included, and an admin may suspend them only if they
+    # administer every workspace the person belongs to: enumerate, then read
+    # and write each workspace's agents with it bound. The operator's command
+    # line also finds an agent named by id alone the same way.
+    "switch_core.accounts.suspension",
+    "switch_core.suspension_admin",
     # Enumerating tenants at boot, and starting one bridge by id from a
     # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
@@ -178,6 +190,12 @@ _ALLOWED_MODULES = {
     # report a page of zeroes on a correctly configured deployment and look
     # perfectly healthy doing it.
     "switch_core.telemetry.snapshot",
+    # The platform operator's server commands run with no caller to take a
+    # tenant from: `switch-orgs list` enumerates every organization and its
+    # workspaces to print them, and `switch-promote-org-admin` resolves the
+    # organization it was named before binding it for the change.
+    "switch_core.organizations_admin",
+    "switch_core.promote_org_admin",
 }
 
 # Every module allowed to open a session straight from the factory. Not short,
@@ -273,6 +291,20 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`); every workspace and organization it touches
     # is bound.
     "switch_core.accounts.organization_purge",
+    # Deleting an account counts the server's other platform operators, a
+    # read of `users` alone (`rls_ddl.GLOBAL_TABLES`); every workspace and
+    # organization the account leaves is bound.
+    "switch_core.accounts.deletion",
+    # Leaving an organization one has no workspace in reads the person's own
+    # `users` row (`rls_ddl.GLOBAL_TABLES`) for the organizations they may
+    # be left in; the workspace and organization it reads next are bound.
+    "switch_core.gateway.organizations",
+    # Suspending a person, or lifting it, reads and writes their `users` row,
+    # which is global (`rls_ddl.GLOBAL_TABLES`); every workspace whose agents
+    # it touches is bound. The gateway's suspension routes read the same row
+    # back for their answer.
+    "switch_core.accounts.suspension",
+    "switch_core.gateway.suspension",
     # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
     # and reads `oidc_identities` to match people, both global
     # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.
@@ -289,13 +321,27 @@ _RAW_SESSION_FACTORY_MODULES = {
     # deployment and service, shared by every tenant's sign-ins, so read at
     # boot and after the operator changes one, in a session bound to none.
     "switch_core.connections.app_credentials",
+    # Account deletion reads the account that asked, in `users`, which is
+    # global (`rls_ddl.GLOBAL_TABLES`); every workspace and organization it
+    # leaves is bound.
+    "switch_core.accounts.deletion",
+    # The platform operator's server commands (`operator_commands.py`) look
+    # accounts up in `users` and read and write the deployment's connector
+    # apps in `service_app_credentials`, both global (`rls_ddl.GLOBAL_TABLES`)
+    # and read with no tenant bound (`no_tenant()`); whatever they change in a
+    # workspace or organization they bind first.
+    "switch_core.operator_commands",
+    "switch_core.accounts_admin",
+    "switch_core.connector_apps_admin",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a
 # session with it.
 _FACTORY_ACCESSORS = {"create_session_factory", "get_session_factory"}
 
-_LOOKUP_NAMES = {lookup.name for lookup in TENANT_LOOKUPS}
+# The lookups, and the helpers in `tenant_lookup.py` that read one of them
+# for a narrower answer: importing one reaches the exemption just the same.
+_LOOKUP_NAMES = {lookup.name for lookup in TENANT_LOOKUPS} | {"only_organization_id"}
 
 _LOOKUP_MODULE = "switch_core.db.tenant_lookup"
 _LOOKUP_PACKAGE, _, _LOOKUP_MODULE_LEAF = _LOOKUP_MODULE.rpartition(".")

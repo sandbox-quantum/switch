@@ -200,21 +200,7 @@ if (postgres) {
   for (const drop of ['share/doc', 'share/man', 'share/locale']) {
     await rm(path.join(dir, drop), { recursive: true, force: true });
   }
-  // The Windows build links against the VC++ runtime, which a clean Windows
-  // lacks. Ship it next to the binaries (app-local deployment, which the
-  // Redistributable's licence allows) so they load without it installed.
-  if (process.platform === 'win32') {
-    const system32 = path.win32.join(process.env.SystemRoot, 'System32');
-    for (const dll of pins.VC_RUNTIME_DLLS) {
-      const source = path.win32.join(system32, dll);
-      if (!existsSync(source)) {
-        throw new Error(
-          `${source} is missing; the bundled PostgreSQL needs it on a clean Windows.`
-        );
-      }
-      await copyFile(source, path.join(dir, 'bin', dll));
-    }
-  }
+  await shipVcRuntime(path.join(dir, 'bin'));
   // Recreate the shared-library links npm packaging cannot carry.
   const linksFile = path.join(dir, 'pg-symlinks.json');
   if (existsSync(linksFile)) {
@@ -232,6 +218,24 @@ if (postgres) {
 
 // A relocatable CPython, as uv installs it.
 console.log(`local-server bundle: Python ${pins.SWITCH_CORE_PYTHON}`);
+/**
+ * Copies the VC++ runtime into `dir` on Windows. PostgreSQL and the C++
+ * extensions switch-core's packages bring (greenlet's, for one) link against
+ * it, and a clean Windows lacks it. Shipped next to what loads it: app-local
+ * deployment, which the Redistributable's licence allows.
+ */
+async function shipVcRuntime(dir) {
+  if (process.platform !== 'win32') return;
+  const system32 = path.win32.join(process.env.SystemRoot, 'System32');
+  for (const dll of pins.VC_RUNTIME_DLLS) {
+    const source = path.win32.join(system32, dll);
+    if (!existsSync(source)) {
+      throw new Error(`${source} is missing; the local server needs it on a clean Windows.`);
+    }
+    await copyFile(source, path.join(dir, dll));
+  }
+}
+
 const pythons = path.join(work, 'pythons');
 execFileSync(
   uv,
@@ -253,6 +257,8 @@ await cp(path.join(pythons, pythonDir.name), path.join(stage, 'python'), {
   recursive: true,
   verbatimSymlinks: true,
 });
+// CPython ships vcruntime140 but not msvcp140, which C++ extensions load.
+await shipVcRuntime(path.join(stage, 'python'));
 const python =
   process.platform === 'win32'
     ? path.join(stage, 'python', 'python.exe')
@@ -275,15 +281,11 @@ await download(
 );
 tar(['-xzf', tarball, '-C', source, '--strip-components=1']);
 const switchDir = path.join(stage, 'switch');
-await mkdir(path.join(switchDir, 'src', 'deploy', 'shared_resources'), { recursive: true });
+await mkdir(path.join(switchDir, 'src'), { recursive: true });
 await cp(path.join(source, 'core'), path.join(switchDir, 'src', 'core'), {
   recursive: true,
   filter: (p) => !p.includes(`${path.sep}tests${path.sep}`) && !p.endsWith(`${path.sep}tests`),
 });
-await cp(
-  path.join(source, 'deploy', 'shared_resources', 'setup.py'),
-  path.join(switchDir, 'src', 'deploy', 'shared_resources', 'setup.py')
-);
 
 // The release's gateway pages, built from the same source, as the published
 // image builds them: switch-core serves them when GATEWAY_UI_DIR names them.

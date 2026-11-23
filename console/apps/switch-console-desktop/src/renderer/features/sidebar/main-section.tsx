@@ -22,6 +22,7 @@ import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useCurrentViewId } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
+import { Badge } from '@renderer/lib/ui/badge';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
@@ -119,6 +120,12 @@ const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { server
     >
       <BuddyAvatar size={20} shape="round" />
       <span className="min-w-0 flex-1 truncate">{name}</span>
+      <Badge
+        variant="outline"
+        className="h-5 border-border-info bg-background-info px-2 text-[11px] text-foreground-info"
+      >
+        Set up
+      </Badge>
     </SidebarMenuRow>
   );
 });

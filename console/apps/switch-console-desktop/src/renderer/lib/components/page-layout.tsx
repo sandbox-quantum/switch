@@ -20,8 +20,8 @@ export function PageSidebarMenu<T extends string>({
   onSelect: (item: PageSidebarItem<T>) => void;
 }) {
   return (
-    <div className="sticky top-0 self-start py-10 [-webkit-app-region:drag]">
-      <nav className="flex w-52 flex-col gap-0.5 [-webkit-app-region:no-drag]">
+    <div className="sticky top-0 self-start py-10">
+      <nav className="flex w-52 flex-col gap-0.5">
         {items.map((item) => (
           <PageSidebarButton
             key={item.id}
@@ -58,8 +58,8 @@ export function PageSidebarGroups<T extends string>({
   onSelect: (item: PageSidebarItem<T>) => void;
 }) {
   return (
-    <div className="sticky top-0 self-start py-10 [-webkit-app-region:drag]">
-      <nav className="flex w-52 flex-col gap-5 [-webkit-app-region:no-drag]">
+    <div className="sticky top-0 self-start py-10">
+      <nav className="flex w-52 flex-col gap-5">
         {groups.map((group) => (
           <div
             key={group.label}
@@ -101,8 +101,8 @@ export function PageSidebarSections<T extends string>({
   onSelect: (item: PageSidebarItem<T>) => void;
 }) {
   return (
-    <div className="sticky top-0 self-start py-10 [-webkit-app-region:drag]">
-      <nav className="flex w-52 flex-col [-webkit-app-region:no-drag]">
+    <div className="sticky top-0 self-start py-10">
+      <nav className="flex w-52 flex-col">
         {sections
           .filter((items) => items.length > 0)
           .map((items, index) => (

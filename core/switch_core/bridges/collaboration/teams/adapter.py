@@ -822,6 +822,8 @@ class TeamsAdapter(PlatformAdapter):
     """
 
     display_name: ClassVar[str] = "Microsoft Teams"
+    # Graph's people search matches a name, a handle or an address.
+    directory_search_hint: ClassVar[str] = "Your name, handle or email"
     # Switch is not granted Channel.Delete.All, so a deleted room's channel
     # stays for someone to remove in Teams.
     channel_on_delete = "kept"
@@ -3311,6 +3313,15 @@ class TeamsAdapter(PlatformAdapter):
         return (
             "From that account, @mention the Switch app in a channel or chat it "
             f"is in and add `link-account {code}`."
+        )
+
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        return (
+            "@mention the Switch app in a channel or chat it is in and add "
+            f"`unlink-account {name}`"
         )
 
     def is_placeholder_username(self, username: str) -> bool:

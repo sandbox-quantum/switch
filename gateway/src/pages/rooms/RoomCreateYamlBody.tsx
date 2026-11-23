@@ -18,9 +18,7 @@ const PLACEHOLDER = `room:
   description: "Pilot room for ACME"
   instructions: "Be helpful."
   bridge: "Mattermost"            # bridge display name; omit for internal-only
-  channel_type: channel_public
-  read_visibility: public
-  write_visibility: public
+  channel_type: channel_private  # channel_public to make it public
   agents: [claude-code.my-project.alice]
   users: [alice]
   roles:

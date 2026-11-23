@@ -15,12 +15,10 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from switch_core.feature_flags import (
-    AGENT_CHATS,
-    AGENT_MANAGEMENT,
+    ALWAYS_ON_FEATURE_FLAGS,
     BUDDY_SLACK_HANDOFF,
     DECISION_ROUTING,
     FOLLOW_THE_CONVERSATION,
-    GROUP_CHATS,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
     ORGANIZATION_CONNECTOR_APPS,
@@ -235,9 +233,9 @@ class SwitchConfig(BaseSettings):
     outbound_allowed_private_hosts: str = ""
 
     # Feature flags that are on for this deployment: comma-separated keys from
-    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off. Fixed for
-    # the life of the process; an unknown key is a startup error rather than a
-    # silently ignored typo.
+    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off, except the
+    # `ALWAYS_ON_FEATURE_FLAGS`. Fixed for the life of the process; an unknown
+    # key is a startup error rather than a silently ignored typo.
     feature_flags_enabled: str = ""
     # Set by Switch Console on a server it runs for someone (MANAGED_BY_CONSOLE),
     # so an agent can tell them apart from Switch Cloud and a self-hosted server.
@@ -389,7 +387,8 @@ class SwitchConfig(BaseSettings):
     # the two ways a person creates their own. The edge must therefore add it
     # only to requests it refuses, never set it to a "no" value for the rest.
     # Existing accounts sign in as before, and accounts that are not sign-ups
-    # (`POST /users`, the seeded admin, the bootstrap owner) are unaffected.
+    # (`switch-accounts create`, the seeded admin, the bootstrap owner) are
+    # unaffected.
     # Trusting the header's presence is safe, since a client that sends it
     # only refuses itself; its absence proves nothing, because the edge
     # decides where a request comes from and this server never checks. Unset
@@ -397,8 +396,6 @@ class SwitchConfig(BaseSettings):
     gateway_signup_refused_header: str | None = None
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
-    # Cloud machines run the agent controller, so above 0 this needs the
-    # `agent_management` flag.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
@@ -479,8 +476,8 @@ class SwitchConfig(BaseSettings):
     #   gateway_max_workspaces_per_user.
     #
     # Who may sign in at all is the IdP's decision, not this one: this only
-    # decides where a new account lands. Accounts an administrator creates
-    # (`POST /users`) always join that administrator's workspace.
+    # decides where a new account lands. Accounts the operator creates
+    # (`switch-accounts create`) join no workspace.
     gateway_signup_mode: Literal["default_tenant", "invite_only", "open"] = (
         "default_tenant"
     )
@@ -688,6 +685,13 @@ class SwitchConfig(BaseSettings):
 
     server_host: str = "0.0.0.0"
     server_port: int = 8000
+    # The addresses whose `X-Forwarded-For` / `X-Forwarded-Proto` uvicorn
+    # believes: comma-separated IPs or CIDRs of the ingress or load balancer
+    # in front of this server. A request from anywhere else keeps its own
+    # connection address, which is what the access log, sign-in events and
+    # the refusal breaker report. The same variable uvicorn itself reads.
+    # `*` believes every caller, so anyone can claim any address.
+    forwarded_allow_ips: str = "127.0.0.1"
 
     # Where collaboration bridges take platform callbacks. Only a Mattermost
     # button press needs one today: the press is delivered by the Mattermost
@@ -954,6 +958,42 @@ class SwitchConfig(BaseSettings):
     # agent lost, against 161 pool timeouts and 56 agents lost without the
     # gate (dev-abel, 28 Oct 2026). 0 turns it off.
     agent_open_limit: int = Field(default=8, ge=0)
+    # The share of a process's pool (its size and overflow) gateway requests
+    # may hold at once. The rest stays for the process's own work: renewing
+    # its lease, recording controllers' connections, storing and delivering
+    # agents' events. Past it, requests wait their turn and then are answered
+    # 503 (`gateway/admission.py`). Without it, one client sending enough
+    # requests at once fills the pool, and a lease that lapses behind them
+    # drops the process's agents. 0.75 of 30 + 10 is 30, leaving 10.
+    gateway_pool_share: float = Field(default=0.75, gt=0, le=1)
+    # Gateway requests one caller (a signed-in person, a bearer token, or an
+    # address) may run at once in a process, so one caller cannot take the
+    # share everyone's requests run in. Past it, its requests wait their turn
+    # and then are answered 429. A Switch Console sidebar sends two at a
+    # time; one from before `GET /gateway/agents/rooms` sends one per agent,
+    # which queue.
+    gateway_requests_per_caller: int = Field(default=8, ge=1)
+    # The longest one statement of a gateway read (GET or HEAD) may run, a
+    # Postgres interval. A read that slow is a bug or someone loading the
+    # database on purpose, and its client gave up well before: the tailnet's
+    # proxy gives up after about 10 s. It is answered 503. Writes are not
+    # limited, as some do a workspace's worth of work in one statement.
+    gateway_read_statement_timeout: str = "10s"
+    # Long-lived gateway streams of one kind (the chats feed, the activity
+    # feed, the change notices) one person may hold in one workspace, in a
+    # process. Console opens one of each per workspace, so 16 leaves room for
+    # a person's machines and browser tabs, as the change notices' own limit
+    # did before (`gateway/changes.py`). Past it, the caller's oldest of that kind is closed
+    # for the new one, or the new one is refused 429 when the oldest is under
+    # 30 s old (`gateway/stream_caps.py`).
+    gateway_streams_per_caller: int = Field(default=16, ge=1)
+    # Long-lived gateway streams of every kind a process holds at once,
+    # counting those still opening. Each holds no database connection while
+    # it waits, but a task, a file handle and a subscription, and reads again
+    # each time its rooms move, so a pod past this many would slow down for
+    # everyone on it. Past it, new ones are refused 503 with a `Retry-After`
+    # and the load balancer sends them elsewhere. 0 turns it off.
+    gateway_streams_per_process: int = Field(default=4000, ge=0)
 
     # Resolving a bearer token to its agent is the highest-frequency query in
     # the system — it runs before every authenticated request, and a fleet of
@@ -989,15 +1029,14 @@ class SwitchConfig(BaseSettings):
     # `AGENT_AUTH_CACHE_TTL_SECONDS` or while the signal connection listens.
     room_access_cache_max_entries: int = Field(default=20_000, ge=1)
 
-    # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
-    # Read only to refuse a deployment that still turns it on, which would
-    # otherwise lose agent management without a word.
+    # AGENT_MANAGEMENT_ENABLED, replaced: agent management is always on. Read
+    # only to refuse a deployment that still turns it on.
     legacy_agent_management_enabled: bool | None = Field(
         default=None, validation_alias="agent_management_enabled"
     )
-    # Signs controller access tokens. Required (at least 32 characters) when
-    # agent management is on, and deliberately separate from SECRET_KEYS so
-    # rotating one never invalidates the other.
+    # Signs controller access tokens. Required (at least 32 characters), and
+    # deliberately separate from SECRET_KEYS so rotating one never invalidates
+    # the other.
     controller_token_secret: str | None = None
     # How often a controller must report status. Sent to controllers as
     # `report_within_s`; a controller that has not reported for three of these
@@ -1120,22 +1159,14 @@ class SwitchConfig(BaseSettings):
             )
         if self.legacy_agent_management_enabled:
             raise ValueError(
-                "AGENT_MANAGEMENT_ENABLED has been replaced by a feature flag: "
-                f"remove it and add {AGENT_MANAGEMENT!r} to FEATURE_FLAGS_ENABLED."
+                "AGENT_MANAGEMENT_ENABLED has been replaced: remove it. "
+                "Agent management is always on."
             )
-        if not self.agent_management_enabled:
-            if self.hosted_launch_capacity > 0:
-                raise ValueError(
-                    "HOSTED_LAUNCH_CAPACITY needs the "
-                    f"{AGENT_MANAGEMENT!r} feature flag: cloud machines run the "
-                    "agent controller."
-                )
-            return self
         if not self.controller_token_secret:
             raise ValueError(
-                "CONTROLLER_TOKEN_SECRET is required when the "
-                f"{AGENT_MANAGEMENT!r} feature flag is on: it signs the access "
-                "tokens agent controllers use."
+                "CONTROLLER_TOKEN_SECRET is required: it signs the access "
+                "tokens agent controllers use. Set it to a random value of at "
+                "least 32 characters."
             )
         if len(self.controller_token_secret) < 32:
             raise ValueError(
@@ -1536,8 +1567,9 @@ class SwitchConfig(BaseSettings):
 
     @property
     def feature_flags(self) -> dict[str, bool]:
-        """Every known flag and whether this deployment turned it on."""
-        enabled = self._enabled_feature_flags()
+        """Every known flag and whether this deployment turned it on, or
+        whether it is on whatever the deployment says."""
+        enabled = self._enabled_feature_flags() | ALWAYS_ON_FEATURE_FLAGS
         return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
 
     @property
@@ -1549,10 +1581,6 @@ class SwitchConfig(BaseSettings):
         if self.managed_by_console:
             return "managed_by_console"
         return "self_hosted"
-
-    @property
-    def agent_management_enabled(self) -> bool:
-        return self.feature_flags[AGENT_MANAGEMENT]
 
     @property
     def hosted_agents_enabled(self) -> bool:
@@ -1573,14 +1601,6 @@ class SwitchConfig(BaseSettings):
     @property
     def decision_routing_enabled(self) -> bool:
         return self.feature_flags[DECISION_ROUTING]
-
-    @property
-    def agent_chats_enabled(self) -> bool:
-        return self.feature_flags[AGENT_CHATS]
-
-    @property
-    def group_chats_enabled(self) -> bool:
-        return self.feature_flags[GROUP_CHATS]
 
     @property
     def buddy_slack_handoff_enabled(self) -> bool:
@@ -1623,6 +1643,22 @@ class SwitchConfig(BaseSettings):
                 f"milliseconds, got {value!r}."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_admission(self) -> "SwitchConfig":
+        if not _PG_INTERVAL_RE.match(self.gateway_read_statement_timeout):
+            raise ValueError(
+                "GATEWAY_READ_STATEMENT_TIMEOUT must be a Postgres interval such "
+                "as '10s', '500ms' or a bare count of milliseconds, got "
+                f"{self.gateway_read_statement_timeout!r}."
+            )
+        return self
+
+    @property
+    def gateway_requests_at_once(self) -> int:
+        """Gateway requests a process runs at once (`gateway_pool_share`)."""
+        pool = self.db_pool_size + self.db_max_overflow
+        return max(1, int(pool * self.gateway_pool_share))
 
     @model_validator(mode="after")
     def _validate_github_app(self) -> "SwitchConfig":
@@ -1774,12 +1810,13 @@ class SwitchConfig(BaseSettings):
                 "(GATEWAY_OIDC_*) set up against the same WorkOS environment: "
                 "the sign-in is what names the person there."
             )
-        if self.gateway_signup_mode != "invite_only":
+        # An organization someone creates for themselves under `open` is
+        # Switch's own (`WorkOSDirectory.create_organization` records nothing
+        # in WorkOS) until an operator links it with switch-link-workos.
+        if self.gateway_signup_mode == "default_tenant":
             raise ValueError(
-                "ORGANIZATION_DIRECTORY=workos needs GATEWAY_SIGNUP_MODE=invite_only: "
-                "until organizations can be created in WorkOS from Switch, a "
-                "customer's organization is linked by an operator "
-                "(switch-link-workos), not created by whoever signs up."
+                "ORGANIZATION_DIRECTORY=workos cannot be combined with "
+                "GATEWAY_SIGNUP_MODE=default_tenant; use invite_only or open."
             )
         changes = (
             self.members_service_url,

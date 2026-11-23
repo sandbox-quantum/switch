@@ -42,12 +42,18 @@ import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from switch_core.agent_runs import AgentOrigin, kickoff_fingerprint
-from switch_core.authz import Principal, can, require_group_filing
+from switch_core.authz import Principal, require_group_filing
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.db.models import User, require_tenant_id
+from switch_core.names import Name
+from switch_core.room_invites import (
+    require_agent_may_add_to_new_room,
+    require_user_may_add_to_new_room,
+)
+from switch_core.room_policy import visible_from_outside
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 from switch_core.telemetry import TelemetryService, emit_after_commit
 from switch_core.template_yaml import load_template_yaml
@@ -455,20 +461,33 @@ class DocSpec(BaseModel):
     content: str
 
 
+# The most rooms a group document creates, and agents and people a room
+# document names. Each is created or added on its own, with platform calls, by
+# the request that asked.
+GROUP_ROOMS_MAX = 50
+ROOM_AGENTS_MAX = 50
+ROOM_USERS_MAX = 200
+
+
 class RoomSpec(BaseModel):
-    name: str
+    name: Name
     description: str
     instructions: str | None = None
     # Collaboration bridge display name; omit for an internal-only room.
     bridge: str | None = None
-    channel_type: Literal["channel_public", "channel_private"] = "channel_public"
+    # Omitted, the room is private (`RoomService.create_room`); a public room
+    # has to be asked for.
+    channel_type: Literal["channel_public", "channel_private"] | None = None
     # Omitted, the room follows its channel (`room_policy.visibility_for_channel`).
     read_visibility: str | None = None
+    # Kept for templates that set it. A template's room never falls back to a
+    # public channel for a creator with no linked account: they are refused.
+    require_private: bool = False
     # Accepted from older templates and ignored: a room has no write
     # visibility of its own.
     write_visibility: str | None = None
-    agents: list[str] = []
-    users: list[str] = []
+    agents: list[str] = Field(default=[], max_length=ROOM_AGENTS_MAX)
+    users: list[str] = Field(default=[], max_length=ROOM_USERS_MAX)
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     packages: list[PackageEntry] = []
@@ -493,14 +512,14 @@ class GroupLinkSpec(BaseModel):
 
 class GroupMeta(BaseModel):
     model_config = {"extra": "forbid"}
-    name: str
+    name: Name
     description: str | None = None
     color: str | None = None
 
 
 class GroupSpec(BaseModel):
     group: GroupMeta
-    rooms: list[RoomSpec]
+    rooms: list[RoomSpec] = Field(max_length=GROUP_ROOMS_MAX)
     links: list[GroupLinkSpec] = []
 
 
@@ -516,7 +535,7 @@ class GroupTemplateDocument(BaseModel):
     """Top-level shape of a group template file."""
 
     group: GroupMeta
-    rooms: list[RoomSpec]
+    rooms: list[RoomSpec] = Field(max_length=GROUP_ROOMS_MAX)
     links: list[GroupLinkSpec] = []
     params: dict[str, ParamSpec] | None = None
 
@@ -580,18 +599,16 @@ _SpecDumper.add_representer(str, _str_representer)
 # that puts the room in Switch Console rather than on a messaging app: an
 # internal room with the person who runs the template as a member, so it is
 # one of their Switch Console chats. An agent running a template puts its
-# owner there. It needs the server's `group_chats` flag.
+# owner there.
 CONSOLE_ROOM = "Switch Console"
 
 
 @dataclass(frozen=True)
 class ConsoleRooms:
-    """What a template needs to put a room in Switch Console: whether the
-    server offers them, and the chat service's way to add a person to a room
-    (``add_member``) and to say beforehand why it would refuse them
-    (``require_can_join``)."""
+    """What a template needs to put a room in Switch Console: the chat
+    service's way to add a person to a room (``add_member``) and to say
+    beforehand why it would refuse them (``require_can_join``)."""
 
-    enabled: bool
     add_member: Callable[[str, User, str, str], Awaitable[Room]]
     require_can_join: Callable[[str, str], Awaitable[None]]
 
@@ -792,6 +809,11 @@ class RoomYamlService:
         raw_rooms = body["rooms"]
         if not isinstance(raw_rooms, list) or not raw_rooms:
             raise ValueError("'rooms:' must be a non-empty list")
+        if len(raw_rooms) > GROUP_ROOMS_MAX:
+            raise ValueError(
+                f"A group creates at most {GROUP_ROOMS_MAX} rooms; this one "
+                f"lists {len(raw_rooms)}"
+            )
         rooms: list[RoomSpec] = []
         for i, entry in enumerate(raw_rooms):
             try:
@@ -1009,7 +1031,7 @@ class RoomYamlService:
         return [
             r.name
             for r in await self._room_store.get_all(session)
-            if r.id in member_of or can(reader.principal, "read", r)
+            if r.id in member_of or visible_from_outside(reader.principal, r)
         ]
 
     async def builtins_for(
@@ -1133,9 +1155,11 @@ class RoomYamlService:
 
         With ``origin`` an agent is creating the room: it is recorded in that
         agent's run (see ``agent_runs``), and the kickoff carries the agent's
-        authority, not its owner's, with the run so far appended. The checks
-        that can refuse an agent's room have run before this is called.
-        ``template_name`` is what the room's run is listed under.
+        authority, not its owner's, with the run so far appended. The run's
+        guards that can refuse an agent's room have run before this is
+        called; the invite rule is asked here, of every caller
+        (``_require_invitable``). ``template_name`` is what the room's run is
+        listed under.
         """
         console = is_console_room(spec.bridge)
         owner: User | None = None
@@ -1161,6 +1185,12 @@ class RoomYamlService:
                 "Cannot attach users to a room with no bridge "
                 "(users live on a collaboration bridge)"
             )
+        await self._require_invitable(
+            spec,
+            user_id=user_id,
+            agent_id=origin.agent_id if origin is not None else None,
+            group_id=group_id,
+        )
 
         attached_ref_ids, inline_refs = await self._resolve_references(
             spec.references, user_id=user_id, is_admin=is_admin
@@ -1173,7 +1203,7 @@ class RoomYamlService:
             name=spec.name,
             description=spec.description,
             instructions=spec.instructions,
-            channel_type=cast(ChannelType, spec.channel_type),
+            channel_type=cast(ChannelType | None, spec.channel_type),
             agent_names=spec.agents or None,
             user_names=None if console else (spec.users or None),
             bridge_id=bridge_id,
@@ -1182,6 +1212,7 @@ class RoomYamlService:
             created_by=user_id,
             created_by_kind="agent" if origin is not None else "user",
             from_template=True,
+            channel_type_is_default=not spec.require_private,
             created_by_agent_id=origin.agent_id if origin else None,
             parent_room_id=origin.parent_room_id if origin else None,
             run_id=origin.run_id if origin else None,
@@ -1271,6 +1302,13 @@ class RoomYamlService:
         is made.
         """
         require_group_filing(is_admin)
+        for room_spec in spec.rooms:
+            await self._require_invitable(
+                room_spec,
+                user_id=user_id,
+                agent_id=origin.agent_id if origin is not None else None,
+                group_id=None,
+            )
         async with self._session_factory() as session:
             group = await self._room_groups.create(
                 session,
@@ -1367,14 +1405,74 @@ class RoomYamlService:
                     "users out, or make them depend on a bridge."
                 )
 
+    async def check_invites(
+        self, parsed: ParsedTemplate, *, user_id: str, agent_id: str | None
+    ) -> None:
+        """Raise `InviteRefused` unless every agent the rooms name may be put
+        in them, checked before anything is created: a run that creates agents
+        first would otherwise find out only once they exist. ``provision``
+        asks it again of each room as it makes it.
+
+        Arguments as ``_require_invitable``. A name no agent has yet is left
+        to provisioning: one the run creates is ``user_id``'s, and any other
+        fails there as unknown."""
+        specs = (
+            list(parsed.spec.rooms)
+            if isinstance(parsed.spec, GroupSpec)
+            else [parsed.spec]
+        )
+        for spec in specs:
+            await self._require_invitable(
+                spec, user_id=user_id, agent_id=agent_id, group_id=None
+            )
+
+    async def _require_invitable(
+        self,
+        spec: RoomSpec,
+        *,
+        user_id: str,
+        agent_id: str | None,
+        group_id: str | None,
+    ) -> None:
+        """The invite rule every way into a room asks (`room_invites`), for
+        the agents a room made from a template names. Its maker owns the new
+        room, so is in it; what is left is whether they may address each
+        agent. ``agent_id`` is the agent provisioning for its owner
+        ``user_id``, judged as its ``create_room`` is; None when ``user_id``
+        provisions it themselves. ``group_id`` is the group the room goes
+        in, None for one that does not exist yet."""
+        if not spec.agents:
+            return
+        async with self._session_factory() as session:
+            targets = await self._agent_store.get_by_names(session, spec.agents)
+            if agent_id is None:
+                await require_user_may_add_to_new_room(
+                    session,
+                    self._external_users,
+                    targets=targets,
+                    user_id=user_id,
+                    group_id=group_id,
+                )
+                return
+            caller = await self._agent_store.get(session, agent_id)
+            if caller is None:
+                raise ValueError(f"Unknown agent: {agent_id}")
+            await require_agent_may_add_to_new_room(
+                session,
+                self._external_users,
+                targets=targets,
+                caller=caller,
+                group_id=group_id,
+            )
+
     def _console_offered(self) -> bool:
-        return self._console_rooms is not None and self._console_rooms.enabled
+        return self._console_rooms is not None
 
     def _require_console_rooms(self) -> ConsoleRooms:
-        if self._console_rooms is None or not self._console_rooms.enabled:
+        if self._console_rooms is None:
             raise ValueError(
-                "this server does not offer Switch Console rooms (its group_chats "
-                "feature flag is off): choose a messaging app"
+                "this server does not offer Switch Console rooms: choose a "
+                "messaging app"
             )
         return self._console_rooms
 

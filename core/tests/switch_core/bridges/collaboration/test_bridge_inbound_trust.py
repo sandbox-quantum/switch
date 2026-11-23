@@ -3,9 +3,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.clients.admin_messages import AdminMessageType
+from switch_core.db.audit import AuditAction
+from switch_core.db.models import TENANT_ZERO_ID, AuditEvent
 from switch_core.delivery.send_limits import (
     MessageRefused,
     MessageTooLong,
@@ -114,7 +119,10 @@ class _FailingTrustClient:
 
 
 def _bridge(
-    human_actor: _FakeHumanActor, adapter: _FakeAdapter, trust_client: object
+    session_factory: async_sessionmaker[AsyncSession],
+    human_actor: _FakeHumanActor,
+    adapter: _FakeAdapter,
+    trust_client: object,
 ) -> SimpleNamespace:
     relayed: list[tuple[str, str]] = []
 
@@ -135,12 +143,13 @@ def _bridge(
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
         _trust_client=trust_client,
-        _room_tenant=AsyncMock(return_value="tenant-1"),
+        _session_factory=session_factory,
+        _room_tenant=AsyncMock(return_value=TENANT_ZERO_ID),
     )
     # The real implementation, not a re-fake of it: exercises its try/except
     # around a failing platform notify, same as production.
-    bridge._post_trust_notice = lambda msg, body, message_type: (
-        CollaborationCore._post_trust_notice(bridge, msg, body, message_type)
+    bridge._post_sender_notice = lambda msg, body, message_type: (
+        CollaborationCore._post_sender_notice(bridge, msg, body, message_type)
     )
     bridge._tell_message_refused = lambda msg, refused, room: (
         CollaborationCore._tell_message_refused(bridge, msg, refused, room)
@@ -160,7 +169,9 @@ def _message(content: str) -> InboundMessage:
     )
 
 
-async def test_blocked_message_never_reaches_the_room_and_sender_is_notified() -> None:
+async def test_blocked_message_never_reaches_the_room_and_sender_is_notified(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     human_actor = _FakeHumanActor()
     adapter = _FakeAdapter()
     result = TrustCheckResult(
@@ -171,7 +182,7 @@ async def test_blocked_message_never_reaches_the_room_and_sender_is_notified() -
             TrustFinding(category="pii/email", detector_name="email", severity="high"),
         ),
     )
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(result))
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(result))
 
     await CollaborationCore._handle_inbound_message(
         bridge, _message("my email is alice@example.com")
@@ -185,11 +196,18 @@ async def test_blocked_message_never_reaches_the_room_and_sender_is_notified() -
     assert "blocked by Switch Trust" in body
     assert root_or_ref == "mm-post-1"
     assert message_type == AdminMessageType.TRUST_BLOCKED.value
+    async with session_factory() as session:
+        [row] = (await session.execute(select(AuditEvent))).scalars().all()
+    assert row.action == AuditAction.TRUST_MESSAGE_BLOCKED
+    assert row.target_id == "room-uuid"
+    assert row.details is not None
+    assert row.details["role"] == "user"
+    assert "alice@example.com" not in str(row.details)
 
 
-async def test_redacted_message_reaches_the_room_redacted_and_sender_is_notified() -> (
-    None
-):
+async def test_redacted_message_reaches_the_room_redacted_and_sender_is_notified(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     human_actor = _FakeHumanActor()
     adapter = _FakeAdapter()
     result = TrustCheckResult(
@@ -201,7 +219,7 @@ async def test_redacted_message_reaches_the_room_redacted_and_sender_is_notified
         ),
         redacted_content="my email is [redacted]",
     )
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(result))
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(result))
 
     await CollaborationCore._handle_inbound_message(
         bridge, _message("my email is alice@example.com")
@@ -217,7 +235,9 @@ async def test_redacted_message_reaches_the_room_redacted_and_sender_is_notified
     assert message_type == AdminMessageType.TRUST_REDACTED.value
 
 
-async def test_redacted_outcome_with_nothing_to_redact_is_treated_as_blocked() -> None:
+async def test_redacted_outcome_with_nothing_to_redact_is_treated_as_blocked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """`redacted_content` can stay `None` even on a REDACTED verdict (no
     finding carried usable detected text) — sending the original content then
     would be indistinguishable from not checking at all."""
@@ -232,7 +252,7 @@ async def test_redacted_outcome_with_nothing_to_redact_is_treated_as_blocked() -
         ),
         redacted_content=None,
     )
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(result))
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(result))
 
     await CollaborationCore._handle_inbound_message(
         bridge, _message("my email is alice@example.com")
@@ -245,7 +265,9 @@ async def test_redacted_outcome_with_nothing_to_redact_is_treated_as_blocked() -
     assert message_type == AdminMessageType.TRUST_BLOCKED.value
 
 
-async def test_a_failed_redaction_notice_does_not_block_the_redacted_message() -> None:
+async def test_a_failed_redaction_notice_does_not_block_the_redacted_message(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     human_actor = _FakeHumanActor()
     adapter = _FakeAdapter(raise_on_admin_message=True)
     result = TrustCheckResult(
@@ -257,7 +279,7 @@ async def test_a_failed_redaction_notice_does_not_block_the_redacted_message() -
         ),
         redacted_content="my email is [redacted]",
     )
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(result))
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(result))
 
     await CollaborationCore._handle_inbound_message(
         bridge, _message("my email is alice@example.com")
@@ -267,12 +289,14 @@ async def test_a_failed_redaction_notice_does_not_block_the_redacted_message() -
     assert human_actor.sent == [(TRANSPORT_ROOM_ID, "my email is [redacted]")]
 
 
-async def test_allowed_message_is_relayed_unaffected() -> None:
+async def test_allowed_message_is_relayed_unaffected(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     human_actor = _FakeHumanActor()
     adapter = _FakeAdapter()
     result = TrustCheckResult(outcome="ok", policy_id="policy-1", policy_name="default")
     trust_client = _FixedTrustClient(result)
-    bridge = _bridge(human_actor, adapter, trust_client)
+    bridge = _bridge(session_factory, human_actor, adapter, trust_client)
 
     await CollaborationCore._handle_inbound_message(bridge, _message("hello there"))
 
@@ -281,11 +305,13 @@ async def test_allowed_message_is_relayed_unaffected() -> None:
     # The check is scoped to the room it happened in, and made against the
     # policy of the room's own workspace's organization.
     assert trust_client.room_ids == ["room-uuid"]
-    assert trust_client.tenant_ids == ["tenant-1"]
+    assert trust_client.tenant_ids == [TENANT_ZERO_ID]
     bridge._room_tenant.assert_awaited_once_with("room-uuid")
 
 
-async def test_alerted_message_reaches_the_room_and_sender_is_notified() -> None:
+async def test_alerted_message_reaches_the_room_and_sender_is_notified(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     human_actor = _FakeHumanActor()
     adapter = _FakeAdapter()
     result = TrustCheckResult(
@@ -296,7 +322,7 @@ async def test_alerted_message_reaches_the_room_and_sender_is_notified() -> None
             TrustFinding(category="pii/email", detector_name="email", severity="low"),
         ),
     )
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(result))
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(result))
 
     await CollaborationCore._handle_inbound_message(
         bridge, _message("my email is alice@example.com")
@@ -316,9 +342,9 @@ async def test_alerted_message_reaches_the_room_and_sender_is_notified() -> None
     assert message_type == AdminMessageType.TRUST_ALERTED.value
 
 
-async def test_a_failed_relay_does_not_notify_the_sender_of_an_alert_never_sent() -> (
-    None
-):
+async def test_a_failed_relay_does_not_notify_the_sender_of_an_alert_never_sent(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """If the message never actually reached the room, telling the sender it
     was flagged/redacted would be misleading — the notice must wait until the
     send is confirmed."""
@@ -332,7 +358,7 @@ async def test_a_failed_relay_does_not_notify_the_sender_of_an_alert_never_sent(
             TrustFinding(category="pii/email", detector_name="email", severity="low"),
         ),
     )
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(result))
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(result))
 
     await CollaborationCore._handle_inbound_message(
         bridge, _message("my email is alice@example.com")
@@ -342,12 +368,12 @@ async def test_a_failed_relay_does_not_notify_the_sender_of_an_alert_never_sent(
     assert adapter.admin_messages == []
 
 
-async def test_trust_check_failure_fails_open_and_annotates_instead_of_blocking() -> (
-    None
-):
+async def test_trust_check_failure_fails_open_and_annotates_instead_of_blocking(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     human_actor = _FakeHumanActor()
     adapter = _FakeAdapter()
-    bridge = _bridge(human_actor, adapter, _FailingTrustClient())
+    bridge = _bridge(session_factory, human_actor, adapter, _FailingTrustClient())
 
     await CollaborationCore._handle_inbound_message(bridge, _message("hello there"))
 
@@ -366,13 +392,15 @@ async def test_trust_check_failure_fails_open_and_annotates_instead_of_blocking(
 _OK = TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
 
 
-async def test_a_long_message_is_checked_in_part_and_room_and_sender_are_told() -> None:
+async def test_a_long_message_is_checked_in_part_and_room_and_sender_are_told(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """Padding a message cannot make Switch Trust time out: only its start is
     sent, and the room and the sender both see that the rest went unchecked."""
     human_actor = _FakeHumanActor()
     adapter = _FakeAdapter()
     trust = _FixedTrustClient(_OK)
-    bridge = _bridge(human_actor, adapter, trust)
+    bridge = _bridge(session_factory, human_actor, adapter, trust)
     content = "a" * TRUST_MESSAGE_TEXT_LIMIT + "b" * 5_000
 
     await CollaborationCore._handle_inbound_message(bridge, _message(content))
@@ -386,16 +414,16 @@ async def test_a_long_message_is_checked_in_part_and_room_and_sender_are_told() 
     assert message_type == AdminMessageType.TRUST_ERRORED.value
 
 
-async def test_switch_trusts_note_does_not_count_against_a_message_within_the_limit() -> (
-    None
-):
+async def test_switch_trusts_note_does_not_count_against_a_message_within_the_limit(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """A 65,496-character paste is within the 65,536 limit as the person
     sent it. Switch Trust checks only its first 20,000 characters, and the
     note saying so takes the stored message to 65,599. The limit is held to
     what the person wrote, and the row has room for the note."""
     human_actor = _FakeHumanActor()
     adapter = _FakeAdapter()
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(_OK))
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_OK))
     content = "x" * 65_496
 
     await CollaborationCore._handle_inbound_message(bridge, _message(content))
@@ -415,13 +443,15 @@ async def test_switch_trusts_note_does_not_count_against_a_message_within_the_li
     assert "not delivered" not in notice
 
 
-async def test_the_agent_named_for_a_channel_does_not_count_against_its_sender() -> (
-    None
-):
+async def test_the_agent_named_for_a_channel_does_not_count_against_its_sender(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """A bot tagged in a channel where it stands for an agent gets the
     agent's `@name` written in front, so the agent is addressed."""
     human_actor = _FakeHumanActor()
-    bridge = _bridge(human_actor, _FakeAdapter(), _FixedTrustClient(_OK))
+    bridge = _bridge(
+        session_factory, human_actor, _FakeAdapter(), _FixedTrustClient(_OK)
+    )
     bridge._resolve_self_mention_target = AsyncMock(return_value="helper")
     message = _message("hello").model_copy(update={"self_mention_token": "bot"})
 
@@ -444,10 +474,12 @@ class _RefusingHumanActor(_FakeHumanActor):
         raise self._refusals.pop(0)
 
 
-async def test_a_message_refused_as_too_long_is_told_to_its_sender() -> None:
+async def test_a_message_refused_as_too_long_is_told_to_its_sender(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     human_actor = _RefusingHumanActor(MessageTooLong(70_000, 65_536))
     adapter = _FakeAdapter()
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(_OK))
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_OK))
 
     assert (
         await CollaborationCore._handle_inbound_message(bridge, _message("long"))
@@ -463,13 +495,15 @@ async def test_a_message_refused_as_too_long_is_told_to_its_sender() -> None:
     assert message_type == AdminMessageType.MESSAGE_REFUSED.value
 
 
-async def test_a_sender_over_their_allowance_is_told_once_not_per_message() -> None:
+async def test_a_sender_over_their_allowance_is_told_once_not_per_message(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     def limited(first: bool) -> SendRateLimited:
         return SendRateLimited(retry_after=2.0, burst=30, per_second=2.0, first=first)
 
     human_actor = _RefusingHumanActor(limited(True), limited(False), limited(False))
     adapter = _FakeAdapter()
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(_OK))
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_OK))
 
     for _ in range(3):
         await CollaborationCore._handle_inbound_message(bridge, _message("again"))

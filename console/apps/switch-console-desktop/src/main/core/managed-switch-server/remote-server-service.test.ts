@@ -150,7 +150,7 @@ vi.mock('./managed-upgrade', async (importOriginal) => ({
   readUpgradeJournal,
 }));
 
-const ports = { gateway: 41000, api: 41001, mattermost: 41002, postgres: 41003 };
+const ports = { gateway: 41000, api: 41001, postgres: 41003 };
 const secrets = {
   dbPassword: 'owner-pw',
   dbRuntimePassword: 'runtime-pw',
@@ -159,8 +159,6 @@ const secrets = {
   secretKeys: 'console:secret-keys',
   controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'admin-pw',
-  mattermostAdminPassword: 'mm-admin',
-  mattermostUserPassword: 'mm-user',
 };
 
 function present(running: boolean): StackOnHost {

@@ -107,7 +107,14 @@ async def read_leases(
 
 class ProcessLease:
     """This process's lease. The sessions are opened with no tenant bound:
-    the table carries none."""
+    the table carries none.
+
+    The lease's own writes (`renew`, `stop`) go through
+    `renewal_session_factory` when given: in a server, a connection of its own
+    (`db/engine.create_lease_engine`), so a pool the rest of the process has
+    filled cannot make the lease lapse. Reading every process's lease
+    (`read_all`) is no more urgent than the work that asks for it, and stays on
+    `session_factory`, leaving the lease's connection to its renewals."""
 
     def __init__(
         self,
@@ -116,9 +123,11 @@ class ProcessLease:
         session_factory: async_sessionmaker[AsyncSession],
         processes: SwitchCoreProcessStore,
         key_ids: list[str],
+        renewal_session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self.process_id = process_id
         self._session_factory = session_factory
+        self._renewal_session_factory = renewal_session_factory or session_factory
         self._processes = processes
         # The ids of the keys this process can read, recorded on its row so a
         # process starting with a new front key can check them
@@ -133,6 +142,10 @@ class ProcessLease:
         # answered: the database stamped the lease at some moment after this,
         # so a deadline counted from here can only be early.
         self._renewed_at: float | None = None
+        # The task running `run`, which `stop` ends before it writes: the
+        # lease's one connection is then free, and no renewal can land after
+        # the stop and clear `stopped_at` again.
+        self._renewing: asyncio.Task[None] | None = None
 
     def surely_held(self) -> bool:
         """Whether no other process can yet read this lease as lapsed.
@@ -160,10 +173,13 @@ class ProcessLease:
         if self._stopped:
             return
         sent_at = time.monotonic()
-        async with self._session_factory() as session:
+        async with self._renewal_session_factory() as session:
             await self._processes.renew(session, self.process_id, self._key_ids)
             pruned = await self._processes.prune(session, PRUNE_AFTER)
             await session.commit()
+        if self._stopped:
+            # `stop` ran while this was in flight: its release stands.
+            return
         self._renewed_at = sent_at
         if pruned:
             logger.info("Pruned %d switch-core process lease(s) long stale", pruned)
@@ -179,8 +195,14 @@ class ProcessLease:
         if self._stopped:
             return
         self._stopped = True
+        renewing = self._renewing
+        if renewing is not None and renewing is not asyncio.current_task():
+            # A renewal stalled on the database would otherwise hold the
+            # lease's one connection, and this write would time out behind it.
+            renewing.cancel()
+            await asyncio.wait({renewing})
         self._renewed_at = None
-        async with self._session_factory() as session:
+        async with self._renewal_session_factory() as session:
             await self._processes.stop(session, self.process_id)
             await session.commit()
         logger.info("Released switch-core process lease %s", self.process_id)
@@ -193,8 +215,10 @@ class ProcessLease:
 
         Counted from the last renewal, wherever it was made, so a loop started
         late (after a slow boot, whose renewal came from `Ownership.start`)
-        renews at once rather than an interval after it starts."""
-        while True:
+        renews at once rather than an interval after it starts. Ended by
+        `stop`."""
+        self._renewing = asyncio.current_task()
+        while not self._stopped:
             await asyncio.sleep(self._until_next_renewal())
             try:
                 await self.renew()

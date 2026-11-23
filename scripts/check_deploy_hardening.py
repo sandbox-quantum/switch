@@ -242,20 +242,14 @@ WRITABLE = {
     "create-runtime-role": {"/tmp"},
     "gateway": {"/tmp", "/var/cache/nginx"},
     "postgresql": {"/tmp", "/var/run/postgresql", "/var/lib/postgresql/data"},
-    "mattermost": {"/mattermost/data"},
 }
-# Containers whose root filesystem stays writable, and why.
-WRITABLE_ROOT = {
-    # Rewrites its web app's root.html, inside the image, at every start for
-    # the path in its site URL.
-    "mattermost",
-}
+# Containers whose root filesystem stays writable, and why. None today.
+WRITABLE_ROOT: set[str] = set()
 # The images the chart runs as the user they declare (`USER` in their Dockerfile).
 IMAGE_USERS = {
     "switch-core": "Dockerfile.switch",
     "migrate": "Dockerfile.switch",
     "gateway": "Dockerfile.gateway",
-    "setup": "Dockerfile.setup",
 }
 
 
@@ -350,8 +344,6 @@ def test_every_pod_runs_unprivileged() -> None:
         "switch-core",
         "gateway",
         "postgresql",
-        "mattermost",
-        "setup",
         "migrate",
         "create-runtime-role",
         "teams-listener-test",
@@ -374,7 +366,7 @@ def test_postgres_admits_only_the_release_clients() -> None:
     assert policy["policyTypes"] == ["Ingress"]
     [rule] = policy["ingress"]
     assert sorted(peers(rule)) == sorted(
-        ["switch-core", "create-runtime-role", "migrate", "mattermost"]
+        ["switch-core", "create-runtime-role", "migrate"]
     ), rule
     assert rule["ports"] == [{"protocol": "TCP", "port": 5432}]
     assert "postgresql" not in policies(
@@ -397,16 +389,12 @@ def test_what_serves_the_outside_admits_only_who_ingress_from_names() -> None:
     assert core[0]["from"] == outside
     assert {p["port"] for p in core[0]["ports"]} == {8000, 3978, 8081}
     assert {tuple(peers(r)): {p["port"] for p in r["ports"]} for r in core[1:]} == {
-        ("gateway", "setup"): {8000},
-        ("mattermost",): {8081},
+        ("gateway",): {8000},
         ("teams-listener-test",): {3978},
     }
     assert found["gateway"]["ingress"] == [
         {"from": outside, "ports": [{"protocol": "TCP", "port": 3000}]}
     ]
-    [mattermost] = found["mattermost"]["ingress"]
-    assert peers(mattermost) == ["outside", "switch-core", "setup"]
-    assert mattermost["ports"] == [{"protocol": "TCP", "port": 8065}]
     # Off: none of the chart's own, the decision service's (its own switch) aside.
     off = policies(
         render("-f", OPTIONAL, *INGRESS_FROM, "--set", "networkPolicy.enabled=false")
@@ -444,6 +432,7 @@ def published(compose: Path, **env: str) -> dict[tuple[str, int], str]:
             "HOME": os.environ.get("HOME", "/"),
             "SWITCH_VERSION": "0.0.0-check",
             "SECRET_KEYS": "check:" + "0" * 40,
+            "CONTROLLER_TOKEN_SECRET": "0" * 64,
             **env,
         },
     ).stdout
@@ -460,15 +449,12 @@ def opened(binds: dict[tuple[str, int], str]) -> set[str]:
 
 def test_only_switch_leaves_loopback_when_its_bind_address_says_so() -> None:
     standalone = published(STANDALONE_COMPOSE, SWITCH_BIND_ADDR="0.0.0.0")
-    assert {name for name, _ in standalone} >= {"postgres", "mattermost", *APP_SERVICES}
+    assert {name for name, _ in standalone} >= {"postgres", *APP_SERVICES}
     assert opened(standalone) == APP_SERVICES, standalone
     assert opened(published(STANDALONE_COMPOSE)) == set()
     assert opened(published(DEV_COMPOSE, SWITCH_BIND_ADDR="0.0.0.0")) == set()
     for compose in (STANDALONE_COMPOSE, DEV_COMPOSE):
         assert opened(published(compose, POSTGRES_BIND_ADDR="0.0.0.0")) == {"postgres"}
-        assert opened(published(compose, MATTERMOST_BIND_ADDR="0.0.0.0")) == {
-            "mattermost"
-        }
 
 
 TESTS = [

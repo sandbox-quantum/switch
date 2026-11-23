@@ -127,6 +127,7 @@ resources:
     name: "INC - {incident}"
     description: "{severity} incident: {incident}. Active incident response coordination."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [incident_coordinator, log_analyst, comms_drafter]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

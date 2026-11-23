@@ -97,8 +97,10 @@ function deps(server = core.url): ControllerDeps {
     workspacesFor: () => join(dir, 'workspaces'),
     devicePolicy: new DevicePolicySource(dir, silentLogger),
     version: '0.1.0',
+    deviceId: 'd'.repeat(64),
     updatedBy: 'self',
     selfUpdate: null,
+    supervised: false,
     now: Date.now,
     random: () => 0,
     timing: {
@@ -109,6 +111,7 @@ function deps(server = core.url): ControllerDeps {
       streamIdleMs: 2_000,
       streamInitialBackoffMs: 10,
       streamMaxBackoffMs: 50,
+      streamSuspendedRetryMs: 30,
       eventBufferLimit: 100,
     },
   };
@@ -658,6 +661,52 @@ describe('runController', () => {
     expect(runtime.credentials.get('agent-1')!.endpoint).not.toBe('http://127.0.0.1:1');
     stop.abort();
     expect(await running).toBe('stopped');
+  });
+
+  it('stops every agent while its owner is suspended, keeps its credential, and starts them once let in again', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+
+    core.suspendOwner();
+    await waitFor(
+      () => runtime.calls.some((call) => call.kind === 'stop' && call.agentId === 'agent-1'),
+      'the agent stopped'
+    );
+    // Held stopped, on disk too, so a restart starts nothing either.
+    const saved = store.cachedAssignment();
+    expect(saved.kind === 'saved' && saved.assignment.agents[0]!.desired_state).toBe('stopped');
+    expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBe(core.credential);
+    expect(store.revokedAt()).toBeNull();
+    expect(runtime.calls).not.toContainEqual({ kind: 'deleteCredentials', agentId: 'agent-1' });
+
+    core.liftOwnerSuspension({ revision: 3, agents: [agent(3)] });
+    await waitFor(() => runtime.launches('agent-1').length === 2, 'the agent started again');
+    expect(await Promise.race([running, delay(50).then(() => 'running')])).toBe('running');
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('starts nothing from its saved assignment while its owner is still suspended', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    core.suspendOwner();
+    await waitFor(() => {
+      const saved = store.cachedAssignment();
+      return saved.kind === 'saved' && saved.assignment.agents[0]!.desired_state === 'stopped';
+    }, 'the stopped assignment saved');
+    stop.abort();
+    expect(await running).toBe('stopped');
+
+    stop = new AbortController();
+    running = runController(deps(), stop.signal);
+    await waitFor(
+      () => core.requests.filter((r) => r.path.endsWith('/token')).length >= 2,
+      'a refused exchange after the restart'
+    );
+    await delay(100);
+    expect(runtime.launches('agent-1')).toHaveLength(1);
   });
 
   it('exits as revoked when the credential exchange is refused as revoked', async () => {

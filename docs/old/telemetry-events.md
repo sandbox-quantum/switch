@@ -671,15 +671,13 @@ claimed, so asking again costs nothing.
 | `is_first_connector` | boolean — the first connector a person added |
 | `failed_attempts_before_success` | number |
 
-**Preconfigured connectors.** The standalone stack, the Helm chart and every
-Console-managed local server run a setup step that registers the bundled
-Mattermost seconds after install. That connector reports `is_preconfigured:
-true`, is never `is_first_connector`, and never claims `first_connector_added`
-— so that milestone is the first connector a person added, not the deployment
-booting. Filter `connector_added` on `is_preconfigured = false` to measure
-onboarding. A bundled connector registered before the flag existed is marked
-on the setup step's next run; if it first connects before that, its one
-`connector_added` reports `false`.
+**Preconfigured connectors.** A deployment's own setup step, rather than a
+person, may register a connector; releases before the bundled Mattermost was
+removed did so seconds after install. Such a connector reports
+`is_preconfigured: true`, is never `is_first_connector`, and never claims
+`first_connector_added` — so that milestone is the first connector a person
+added, not the deployment booting. Filter `connector_added` on
+`is_preconfigured = false` to measure onboarding.
 
 **`connector_added` fires only for a first connect that was seen.** A
 connector's first connect is recorded whether telemetry is on or not, so one
@@ -975,7 +973,7 @@ failures by reason and latency percentiles can be read per backend.
 
 | Property | Type |
 |---|---|
-| `backend` | `server_default` \| `endpoint` \| `haiku_anthropic` \| `haiku_bedrock` — the server's own decision service as a workspace's default, a workspace's own endpoint, or Haiku |
+| `backend` | `server_default` \| `endpoint` \| `haiku_anthropic` \| `haiku_bedrock` \| `self_hosted` \| `gemini` — the server's own decision service as a workspace's default, a workspace's own endpoint, or a choice that service runs: Haiku, its self-hosted model, or Gemini |
 | `outcome` | `agent` \| `none` |
 | `confidence` | `none` \| `lt_0.5` \| `0.5_0.6` \| `0.6_0.7` \| `0.7_0.8` \| `0.8_0.9` \| `0.9_1.0` — the service's confidence in its choice, in tenths above one half; `none` when it gave none |
 | `latency_ms` | number — measured by Switch around the whole request |
@@ -1240,9 +1238,10 @@ cloud machines, with a controller that reports; a plain local server sends
 none of them.
 
 - `account_created` — sign up on the sign-up page (`POST /gateway/auth/signup`,
-  `method: signup`), sign in with single sign-on as someone with no account
-  yet (`oidc`), or create a user as an admin (`POST /gateway/users`, `admin`).
-  A single sign-on sign-in that links an existing account sends nothing.
+  `method: signup`), or sign in with single sign-on as someone with no account
+  yet (`oidc`). A single sign-on sign-in that links an existing account sends
+  nothing, and so does an operator's `switch-accounts create`. `admin` was the
+  operator's `POST /gateway/users`, which is gone.
 - `signup_refused` — sign up while sign-up is switched off (`disabled`), with
   an email that already has an account (`email_taken`), or past the hourly cap
   (`rate_limited`).
@@ -1339,7 +1338,7 @@ connection registry
 - `connector_added` — the *first* successful connect for that bridge, ever.
   Restarting a working bridge correctly emits nothing.
 - `first_connector_added` — the first connector a person added on the
-  deployment. The bundled Mattermost the setup step registers never claims it.
+  deployment. A connector a setup step registers never claims it.
 - `bridge_disconnected` — stopping a bridge (`reason: shutdown`), restarting
   one (`restart`), or a live bridge crashing.
 - `connector_removed` — `DELETE /gateway/collaborations/{id}`. Check

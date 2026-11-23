@@ -78,7 +78,7 @@ function renderAt(path = "/settings/org/connectors") {
   );
 }
 
-describe("Organization settings › Connectors and apps", () => {
+describe("Organization settings › Connectors", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -146,6 +146,7 @@ describe("Organization settings › Connectors and apps", () => {
       ),
     );
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText("Each workspace now decides whether to use GitHub.")).toBeTruthy();
   });
 
   it("sets the other settings from the menu beside the switch", async () => {
@@ -187,6 +188,29 @@ describe("Organization settings › Connectors and apps", () => {
     );
     // Today's setup wizard, opened for that app.
     expect(await screen.findByRole("dialog")).toBeTruthy();
+  });
+
+  it("offers no set-up anywhere while the server has no public address, and says why", async () => {
+    answer({
+      ...lists(
+        [service({ slug: "google-workspace", name: "Google Workspace" })],
+        [app({ source: "none", saved_client_id: null, server_app: false, created_at: null, needs_public_url: true })],
+      ),
+      "GET /organizations/current/connector-apps": {
+        public_url: null,
+        apps: [app({ source: "none", saved_client_id: null, server_app: false, created_at: null, needs_public_url: true })],
+      },
+    });
+    renderAt();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Set up org account" }));
+
+    // The app's panel opens in place of the wizard, beside the reason.
+    expect(await screen.findByRole("region", { name: "Google Workspace app" })).toBeTruthy();
+    expect(screen.getByText(/Set GATEWAY_PUBLIC_URL first/)).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Set up Google Workspace" })).toBeNull();
+    const row = screen.getByTestId("org-app-google-workspace");
+    expect(within(row).queryByRole("button", { name: /Set up/ })).toBeNull();
   });
 
   it("keeps the switch where Switch's own app serves the workspaces", async () => {

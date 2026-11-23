@@ -58,6 +58,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
       oidcProviderLabel: null,
       oidcLoginOptions: [],
       oidcBrowserHandoff: false,
+      testAccountResetEnabled: false,
     }),
     authConfigCheckFailed: () => false,
     authConfigChecking: () => false,
@@ -82,7 +83,6 @@ const localServer = vi.hoisted(() => ({
   isTransitioning: false,
   phase: 'stopped',
   runtime: 'native' as 'native' | 'docker' | null,
-  mattermost: true,
   message: null as string | null,
   error: null as string | null,
   errorDetail: null as string | null,
@@ -142,7 +142,6 @@ beforeEach(() => {
     isTransitioning: false,
     phase: 'stopped',
     runtime: 'native',
-    mattermost: true,
     message: null,
     error: null,
     errorDetail: null,
@@ -248,23 +247,28 @@ describe('the first-run flow', () => {
 
     await act(async () => button(el, 'Get started').click());
 
-    expect(el.textContent).toContain('How do you want to run Switch?');
+    expect(el.textContent).toContain('How do you want to run Switch Rooms?');
     expect(el.textContent).toContain('On this computer');
     expect(el.textContent).toContain('Join an existing server');
     expect(el.textContent).not.toContain('remote host');
     expect(listHosts).not.toHaveBeenCalled();
   });
 
-  it('shows Switch Cloud as coming soon, and not choosable, when the build names none', async () => {
+  it('lists Switch Cloud last, as coming soon, and not choosable', async () => {
     const el = await renderFlow();
     await act(async () => button(el, 'Get started').click());
 
-    expect(el.textContent).toContain('Switch Cloud');
-    expect(el.textContent).toContain('Coming soon');
-    const card = [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
-      b.textContent?.includes('Switch Cloud')
-    );
-    expect(card?.disabled).toBe(true);
+    const options = [...el.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    expect(options.map((o) => o.textContent)).toEqual([
+      expect.stringContaining('On this computer'),
+      expect.stringContaining('Join an existing server'),
+      expect.stringContaining('Switch Cloud'),
+    ]);
+    const card = options.at(-1)!;
+    expect(card.textContent).toContain('Coming soon');
+    expect(card.disabled).toBe(true);
+    expect(card.getAttribute('aria-disabled')).toBe('true');
+    expect(card.getAttribute('aria-checked')).toBe('false');
   });
 
   it('goes back from the question to the welcome', async () => {
@@ -430,17 +434,10 @@ describe('the first-run flow', () => {
 });
 
 describe('the first-run flow with Switch Cloud named', () => {
-  const CLOUD = {
-    id: 'cloud-1',
-    name: 'Switch Cloud',
-    url: 'https://cloud.example.com',
-    dashboardUrl: null,
-  };
-
+  // Switch Cloud is not open to first runs yet: a build that has been told
+  // where it is must still show it as coming soon and never start its path.
   beforeEach(() => {
     switchCloud.mockResolvedValue({ url: 'https://cloud.example.com' });
-    servers.push(CLOUD);
-    connectToSwitchCloud.mockResolvedValue(CLOUD);
   });
 
   async function atHowToRun(): Promise<HTMLDivElement> {
@@ -449,34 +446,75 @@ describe('the first-run flow with Switch Cloud named', () => {
     return el;
   }
 
-  it('recommends the Cloud and goes straight to signing in to it', async () => {
+  function cloudCard(el: HTMLElement): HTMLButtonElement {
+    const card = [...el.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) =>
+      b.textContent?.includes('Switch Cloud')
+    );
+    expect(card, 'no Switch Cloud card').toBeDefined();
+    return card!;
+  }
+
+  it('still lists the Cloud last, as coming soon and disabled, never recommended', async () => {
     const el = await atHowToRun();
-    expect(el.textContent).toContain('Recommended');
+    // Give a Cloud configuration the chance to arrive, as it used to.
+    await act(async () => {});
 
-    await act(async () => button(el, 'Continue').click());
-
-    expect(connectToSwitchCloud).toHaveBeenCalled();
-    expect(onboardingStore.page).toBe('signIn');
-    expect(onboardingStore.server?.id).toBe('cloud-1');
+    const options = [...el.querySelectorAll('[role="radio"]')];
+    expect(options.at(-1)).toBe(cloudCard(el));
+    expect(cloudCard(el).disabled).toBe(true);
+    expect(el.textContent).toContain('Coming soon');
+    expect(el.textContent).not.toContain('Recommended');
   });
 
-  it('goes back from signing in to the question, not to a connect page it never showed', async () => {
+  it('preselects the stack on this computer, not the Cloud', async () => {
     const el = await atHowToRun();
+    await act(async () => {});
+
+    const checked = el.querySelectorAll('[role="radio"][aria-checked="true"]');
+    expect(checked).toHaveLength(1);
+    expect(checked[0].textContent).toContain('On this computer');
+
     await act(async () => button(el, 'Continue').click());
 
-    await act(async () => button(el, 'Back').click());
-
-    expect(onboardingStore.page).toBe('howToRun');
+    expect(onboardingStore.page).toBe('local');
+    expect(connectToSwitchCloud).not.toHaveBeenCalled();
   });
 
-  it('stays on the question and says why when the Cloud cannot be registered', async () => {
-    connectToSwitchCloud.mockRejectedValue(new Error('disk full'));
+  it('ignores a click on the Cloud card and keeps the choice made', async () => {
     const el = await atHowToRun();
+    await choose(el, 'Join an existing server');
 
+    await act(async () => cloudCard(el).click());
+    cloudCard(el).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(cloudCard(el).getAttribute('aria-checked')).toBe('false');
     await act(async () => button(el, 'Continue').click());
+    expect(onboardingStore.page).toBe('connect');
+    expect(connectToSwitchCloud).not.toHaveBeenCalled();
+  });
 
+  it('cannot be reached from the keyboard', async () => {
+    const el = await atHowToRun();
+    const card = cloudCard(el);
+
+    card.focus();
+
+    expect(document.activeElement).not.toBe(card);
+  });
+
+  it('still offers no Cloud after walking back to the question and forward again', async () => {
+    const el = await atHowToRun();
+    await act(async () => button(el, 'Continue').click());
+    expect(onboardingStore.page).toBe('local');
+
+    // Back as the local page's own Back goes, whichever of its two faces is up.
+    await act(async () => onboardingStore.back());
     expect(onboardingStore.page).toBe('howToRun');
-    expect(el.querySelector('[role="alert"]')?.textContent).toContain('disk full');
+    expect(cloudCard(el).disabled).toBe(true);
+    expect(el.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain(
+      'On this computer'
+    );
+    expect(connectToSwitchCloud).not.toHaveBeenCalled();
   });
 });
 

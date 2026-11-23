@@ -140,6 +140,7 @@ async def _process(
         connections=AgentConnectionRegistry(),
         frontend_base_url=None,
         follow_the_conversation_enabled=False,
+        feature_flags={},
         decision_availability=DecisionAvailability(
             enabled=False,
             server=ServerDefault(

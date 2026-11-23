@@ -52,7 +52,511 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **`ORGANIZATION_DIRECTORY=workos` now works with `GATEWAY_SIGNUP_MODE=open`.**
+  Someone signing in with no workspace may then create an organization of
+  their own. It is kept in Switch, not in WorkOS, and follows WorkOS only
+  once an operator links it with `switch-link-workos`. `default_tenant` is
+  still refused with the WorkOS directory, by the server and by the Helm
+  chart.
+- **Switch Trust checks a long message's first 20,000 characters, and says
+  so.** A message used to be sent to Switch Trust whole, and one long enough
+  to make the check time out went through with only a "could not check"
+  note. Now only the first 20,000 characters are checked, as for a file's
+  text, and a note in the room and to the sender says the rest was not
+  checked; a redacted message keeps its unchecked rest. A check that times
+  out is logged and counted apart from other failures, in the new
+  `switch.trust.check_failures` metric (`reason` is `timeout`, `refused` or
+  `error`).
+- **GitLab connects at one level, read and write, as Sentry does.** A GitLab
+  token scoped for reading can still post comments through GitLab's MCP
+  server, so Switch no longer offers a read-only GitLab connection that would
+  not hold. A sign-in that grants less than read and write is refused. The
+  GitLab application an operator registers needs the scopes `mcp`,
+  `read_user` and `api`. `read_api` is no longer used.
+
+#### Security
+- **One client can no longer take a process's database pool.** Gateway
+  requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
+  at once, leaving the rest to its own work, such as renewing its lease,
+  which drops the process's agents when it lapses. One signed-in person (else one address)
+  runs at most `GATEWAY_REQUESTS_PER_CALLER` (8) at once. A request
+  past either waits its turn for up to 3 seconds, then is answered 429 (its
+  caller's) or 503 (the process's), with `Retry-After`. A read (GET or HEAD)
+  runs each statement under `GATEWAY_READ_STATEMENT_TIMEOUT` (10s), apart
+  from the sign-in and connection callbacks, which write; any request a
+  statement timeout stops is answered 503. Requests turned away are counted in
+  `switch.http.gateway_turned_away`, on the dashboard beside the other
+  refusals.
+- **One person can no longer hold unbounded live streams.** The chats feed,
+  the activity feed and the change-notice socket stay open for as long as
+  Console or a tab runs, and nothing bounded how many one caller opened. One
+  signed-in person in one workspace (else one address) now holds at most
+  `GATEWAY_STREAMS_PER_CALLER` (16) of each kind per process: a newer one
+  closes their oldest of that kind, or is refused 429 while that oldest is
+  under 30 seconds old. A process holds at most `GATEWAY_STREAMS_PER_PROCESS`
+  (4000) of every kind together, past which a new one is refused 503 with a
+  `Retry-After` of 2 to 10 seconds. `switch.http.gateway_streams.*` counts
+  them, on the dashboard beside the requests turned away.
+- **Database errors no longer put the values bound into a query in the logs.**
+  Every database engine switch-core builds, including the ones for migrations,
+  the boot lock and the schema checks, sets SQLAlchemy's `hide_parameters`, so
+  a logged constraint violation or similar shows the SQL statement but not the
+  emails, message text or tokens it carried. Postgres's own `DETAIL` line,
+  which can name a duplicate key's value, is unchanged.
+- **A refused telemetry value is no longer written to the error log.** When an
+  event carries a value outside a property's allowed set, the error names the
+  event and the property but not the value.
+- **Core's dependencies are past their known advisories.** authlib 1.9.8, mcp
+  1.30.0, fastmcp 3.4.11, aiohttp 3.14.5, joserfc 1.8.0, anyio 4.14.2,
+  opentelemetry-api 1.45.2, dnspython 2.9.2, certifi 2026.10.23 and multidict
+  6.9.1. Pull requests now fail on a known advisory in core's locked
+  dependencies.
+- **An agent's change that widens what another agent may do on its own, or who
+  may reach it, waits for the owner.** When an agent turns another agent's
+  bypass mode or auto mode on, sets its Claude Code permission mode to bypass
+  or to auto, moves its working folder, machine or provider, or opens who may
+  address it (to anyone, or to the owner's agents when they could not reach it
+  before), or creates an agent with bypass on or a folder of its own, nothing
+  changes yet. Switch checks the request, posts it in the room the agent is
+  connected to, and makes it only when the agent's owner, in person, sends
+  `!agent-change <name> confirm` there within two minutes; `!agent-change
+  <name> drop` throws it away, and anyone in the room can see it with
+  `!agent-change <name>`. The agent is told it is waiting and what to send.
+  Only one change per agent waits at a time, so what the owner confirms is
+  what they were shown. Waiting requests are kept in memory, as an agent's
+  request to delete another agent is: a restart drops them, and the request
+  and its confirmation must reach the same server process. A change in the
+  safer direction (bypass or auto mode off, a narrower addressing policy)
+  applies at once, as do a person's own changes in Switch Console or the
+  dashboard and an agent's other changes. A new agent waits for its owner
+  whichever of these it asks for, including only `permissionMode:
+  bypassPermissions` in its advanced settings. Setting `permissionMode: auto`
+  on an existing agent waits as turning auto mode on does; turning it off, or
+  any other mode, applies at once. A new agent is made in auto mode unless it
+  says otherwise, so neither waits when an agent creates one. A template an
+  agent runs can no longer create an agent with bypass on; a person runs such
+  a template themselves. New Cursor agents default to bypass, as Cursor has no
+  automatic review, so a Cursor agent another agent creates waits for its
+  owner too unless it is made to ask (`auto_approve: false`). In a template an
+  agent runs, a Cursor agent the template does not give bypass asks for
+  approval instead, rather than the run being refused.
+- **Every change an agent makes to another agent is in the audit log.**
+  Changes it makes at once, changes it asks for, the owner's confirmation of
+  one, and every agent it creates, each with the agent that did it.
+- **A managed agent's working directory is checked.** It must be an absolute
+  path (POSIX, `~`, a Windows drive or a UNC share) with no `..` segment and no
+  control characters, at most 4096 characters long; anything else is refused
+  with a message saying what is wrong; a template's directory under
+  `{$agents_dir}` is checked once the machine says where it keeps workspaces.
+  A definition stored before this that breaks the rule is reported when the
+  agent is next changed.
+- **An agent connection that sends what no client should is closed.** The
+  agent connection socket now closes, with a warning in the log, on a frame
+  over 1 MiB, a binary or non-JSON frame, more than ten stray frames a minute,
+  or more than 120 frames a minute, rather than reading and dropping them for
+  as long as the client sends them.
+- **The list of agent types needs a signed-in caller.**
+  `GET /gateway/agents/known-types` answered anyone, signed in or not, unlike
+  every other `/gateway/agents` route. It now answers 401 without a session.
+- **The Helm chart runs every pod unprivileged.** switch-core, the gateway,
+  Postgres and the migration and runtime-role Jobs used to run as root. They
+  now run as their image's own user: 10001 for switch-core, 101 for nginx and
+  70 for Postgres. Each also gets no privilege escalation, no capabilities,
+  the runtime's default seccomp profile and a read-only root filesystem, with
+  emptyDirs where it writes. No pod mounts a ServiceAccount token any more.
+  Each component's `podSecurityContext` and `securityContext` are values. A
+  Postgres volume that an earlier release started as root keeps working: it
+  already belongs to the `postgres` user. If `postgresql.image` is the Debian
+  image, set its user, group and fsGroup to 999.
+- **The in-cluster Postgres admits only Switch.** With `networkPolicy.enabled`
+  (on by default), a NetworkPolicy admits only the release's switch-core and
+  migration Jobs to port 5432. switch-core and the gateway get policies too
+  once `networkPolicy.ingressFrom` names your ingress controller or load
+  balancer. Each then admits those peers and the release's own pods that call
+  it, and nothing else.
+- **The switch-core, setup and gateway images no longer run as root.**
+  switch-core and setup run as 10001, and the gateway's nginx runs as 101,
+  with its pid file in `/tmp`.
+- **`SWITCH_BIND_ADDR` opens only Switch's own ports.** In the standalone
+  compose, setting it publishes the API (8000) and the dashboard (3000).
+  Postgres now stays on loopback, and `POSTGRES_BIND_ADDR` moves it. Before
+  this, Postgres was published with the schema owner's login. In the
+  development compose, Postgres takes the same variable, and the mail catcher
+  and decision service stay on loopback.
+- **The gateway container sends the dashboard with security headers.** Its
+  nginx, and the chart's copy of the same config, now send the dashboard's
+  own files with switch-core's Content-Security-Policy, `X-Frame-Options:
+  DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`,
+  and no longer name the nginx version in the `Server` header.
+- **Images Switch does not build are pinned by digest.** The switch-core and
+  setup images build from `python:3.12.16-slim-trixie` (what `3.12-slim` is
+  today), and switch-core's uv is 0.13.1, no longer `latest`. The gateway
+  image builds from `nginx:1.31.8-alpine`. The chart's and the compose files'
+  Postgres and busybox images now carry a digest, as do the gitleaks image CI
+  runs. Renovate keeps the digests current.
+
 #### Added
+- **The decision service can use open-weights models on Amazon Bedrock.**
+  `DECISION_BACKEND=bedrock_openai` (or a request's `X-Decision-Backend:
+  bedrock_openai` with `DECISION_BEDROCK_OPENAI_ENABLED=1`) asks Qwen3 235B
+  A22B Instruct 2507 (`DECISION_BEDROCK_OPENAI_MODEL`) in
+  `DECISION_BEDROCK_OPENAI_REGION` (eu-central-1), scoring every option from
+  the first token's letter probabilities. On 260 labelled real decisions it
+  scored 0.962 at a threshold of 0.89, answering in 0.23 s at the median.
+- **A request can choose the service's own model server.** With
+  `DECISION_SYSTEMONE_ENABLED=1`, `SYSTEMONE_URL` and
+  `DECISION_SYSTEMONE_MODEL`, `X-Decision-Backend: systemone` asks it, for
+  example vllm-sr d3-mini on vLLM.
+- **Each decision backend can have a threshold of its own**
+  (`DECISION_THRESHOLD_<BACKEND>`), applied to the backend that answered; a
+  workspace's own threshold still wins.
+- **Fallbacks per backend.** `DECISION_FALLBACKS=gemini_decision:bedrock`
+  races Haiku against Gemini whenever Gemini is used, as the default or
+  because a workspace chose it; `bedrock_openai` can be a fallback too.
+- **The decision service's `/health` lists what each choice gets**
+  (`backends`: model, a label for people, threshold and fallback), so
+  Switch Console can offer only what the service has.
+- **Workspaces can choose the decision service's self-hosted model, or
+  Gemini with its fallback, and Settings → Message routing names every choice
+  by its model.** Two more choices a workspace admin can save: `self_hosted`
+  (the model the server's decision service runs on its own model server, asked
+  as `X-Decision-Backend: systemone`) and `gemini` (Gemini in that service, as
+  `gemini_decision`, which applies whatever fallback its operator configured).
+  Which of the choices that run in the decision service are offered now comes
+  from the backends the service lists in its `/health`, read when an admin
+  opens, saves or tests the page and kept for 15 seconds; the gateway's
+  `GET /decision-settings` returns how the service describes the server
+  default and each choice (label, model, default threshold, fallback). A
+  service that lists no backends (one older than this release) is offered as
+  before: Haiku with a workspace's key, and Haiku on Bedrock only with
+  `DECISION_BEDROCK_ENABLED`. One that can't be read offers only what is saved,
+  and the page says why. Migration `c18f5ebeef66` widens the check on
+  `decision_settings.backend` (expand only). A saved choice a release doesn't
+  know, written by a newer one, turns auto-route off in that workspace with a
+  warning rather than failing. `switch.decision.*` and the `decision_made` /
+  `decision_failed` events gain the backend labels `self_hosted` and `gemini`,
+  and the `Decision routing:` record names the service's own backend that
+  answered (`answered_by`), so a fallback's answer can be told apart.
+- **The WorkOS directory mirror reports whether it is keeping up.** With
+  `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
+  `switch.workos.cursor_age` (seconds since it last read WorkOS's events
+  through), `switch.workos.recheck.oldest_age` (how long an organization has
+  been waiting for a full recheck) and `switch.workos.full_check.age`
+  (seconds since every linked organization was last checked in full).
+  `deploy/observability/` adds three monitors on them, imported with
+  `WORKOS_DIRECTORY=1`, and a dashboard section. A removal made in WorkOS
+  that isn't reaching Switch now raises an alert instead of going unnoticed.
+- **A WorkOS organization deleted while Switch follows it is counted and
+  alerted on, and no longer checked.** `switch.workos.organization_deleted`
+  counts each one, with a monitor of its own, and the mirror stops checking
+  that organization against WorkOS, where it used to retry it on every pass.
+  The Switch organization keeps its members, rooms and agents, and its
+  admins still see the "organization deleted" notice. Delete it with
+  `switch-purge-organization`, as `docs/old/workos-directory.md` describes.
+- **The decision service can race a fallback backend.** With
+  `DECISION_FALLBACK_BACKEND=bedrock`, a decision on the service's default
+  backend that has no answer after `DECISION_FALLBACK_AFTER_S` (2 s), or that
+  failed, also asks Claude Haiku on Amazon Bedrock, and the first answer
+  wins. The answer names the model that gave it, so switch-core's `model`
+  attribute shows which one decided. The fallback's answer can be held to a
+  threshold of its own (`DECISION_FALLBACK_CONFIDENCE_THRESHOLD`, for Haiku's
+  coarser confidences); a workspace's own threshold still holds for both. A
+  workspace that chose its backend gets that backend alone. Off unless set.
+- **Messages have a length limit and a pace limit.** A message is at most
+  65,536 characters by default (`MAX_MESSAGE_CHARS`), and one sender, person
+  or agent, gets 30 messages at once and then 2 a second
+  (`MESSAGE_RATE_BURST`, `MESSAGE_RATE_PER_SECOND`). That is one allowance per
+  sender, shared by every room they write in, counted in each server process.
+  The length limit applies to what the sender wrote: a note Switch adds, such
+  as a Switch Trust note, the `@name` of an agent picked in Console, or a line
+  for a file that couldn't be relayed, never pushes a message over it. A room
+  command such as `!invite-agent`, typed in Console or on a messaging app,
+  draws on the same allowance. `!interrupt` and `!interrupt-all-agents` never
+  do, so an agent can always be stopped. A message or command over either
+  limit is refused before anything is written and the sender is told why: a
+  Console chat answers 422 `MESSAGE_TOO_LONG` or 429 `RATE_LIMITED`, an
+  agent's tool call fails with the reason (422 or 429 over HTTP), and someone
+  writing from Slack or another messaging app gets a notice, once for a run of
+  refusals, instead of their message disappearing. A post with several files
+  counts as one message. Refusals are counted in the new
+  `switch.messages.refused` metric, which the core dashboard shows.
+
+#### Changed
+- **A message in a busy chat no longer costs every member's Console stream a
+  database pass of its own at the same instant.** Chat stream passes hold at
+  most a quarter of the process's database pool at once, and a pass over that
+  waits holding no connection. The new rows of a room are read and rendered once
+  and handed to every stream its message woke, so each stream reads only what
+  its own person may see. A stream woken by its rooms passes at most every
+  200 ms, sending what came in meanwhile together.
+- **A request that names a backend with a fallback now races it.** Before,
+  only a request on the default backend raced its fallback;
+  `DECISION_FALLBACK_BACKEND` now means the default backend's fallback
+  however it is chosen.
+- **Member changes that also apply in Switch Trust ask first.** On an
+  organization whose members come from WorkOS and whose changes are sent
+  there, making someone Org Admin, making an Org Admin a Viewer, and removing
+  someone each open a confirmation that says what the change also does in
+  Switch Trust, which reads the same membership: an Org Admin there has
+  billing permissions, a demotion makes the person a Viewer there and drops
+  the role they had, and a removal takes them out of the organization there
+  and revokes their API keys. Cancelling sends nothing. A change made again
+  after the sign-in it waited on is not asked about twice. On such an
+  organization the lower organization role is shown as Viewer, the name
+  Switch Trust uses, and Org admin as Org Admin; the stored role is unchanged.
+  Organizations kept in Switch are unaffected.
+
+#### Fixed
+- **A full database pool no longer makes a pod drop everything it holds.**
+  Each switch-core process renews its lease on a database connection of its
+  own, outside the shared pool. Before, the renewal borrowed from the same
+  pool as requests and streams, so when they filled it the renewal timed out,
+  the lease lapsed, and the pod stopped its owned work and put every agent
+  and controller it held offline. Each process now holds one more
+  connection, which the boot-time connection budget counts.
+- **The decision service is ready behind vLLM.** A model server whose
+  `/health` answers 200 with an empty body counts as healthy; before, the
+  service reported 503 while `/decide` worked.
+- **The decision service's default Bedrock model is a valid id:**
+  `us.anthropic.claude-haiku-5-5` (EU regions need
+  `eu.anthropic.claude-haiku-5-5` in `DECISION_BEDROCK_MODEL`). The old
+  default was refused by Bedrock as an invalid model identifier.
+- **GitHub works again on a standalone server with no public address set.**
+  The standalone compose file passes `GATEWAY_PUBLIC_URL` and
+  `MESSAGING_PUBLIC_URL` through as empty when `.env` leaves them out, and an
+  empty address was taken for one that is neither https nor on this computer,
+  so an agent's page answered that GitHub can't be used here. A blank value
+  now counts as unset.
+- **A room template can no longer freeze the server.** A few hundred bytes of
+  nested YAML anchors and aliases expanded into billions of values while the
+  template was read, holding up every request and message on that server
+  process for as long as it took. Templates that use anchors or aliases
+  (`&name`, `*name`, `<<:`) are now refused with the line they are on. A
+  template may be at most 256 KB and 10,000 values, nested at most 64 levels
+  deep. A more deeply nested one is refused with its line too, where it used
+  to fail with a server error. No template that comes with Switch uses anchors
+  or aliases, or nests deeper than 8 levels. Reading and planning a template
+  also no longer holds up the server while it runs.
+- **Slack no longer drops an agent's reply it refuses.** A reply longer than
+  Slack takes, one sent while Slack was rate-limiting the workspace, or one
+  for a channel that was archived or that the app was taken out of was
+  logged on the server and never appeared. Long messages and Switch's own
+  notices are now split to fit, a rate-limited post or edit is tried again
+  after the wait Slack names, and a message Slack stops part way through
+  says in the channel how much of it arrived.
+- **Raw mention codes in an agent's reply no longer notify anyone on Slack,
+  Discord, Google Chat or Zulip.** An agent quoting text that already held a
+  platform's mention code, such as `<@U…>` or `<!subteam^…>` on Slack, a role
+  or user code on Discord, `<users/all>` on Google Chat, or `@**Name**` or
+  `@*group*` on Zulip, notified whoever the code named. The code is now shown
+  as written, even when it names someone who has posted in the channel. Names
+  Switch resolves (`@name`) notify as before, and a request card on Discord
+  still notifies the person it is for.
+- **New Mattermost agents are no longer bridged into Town Square and
+  Off-Topic.** Mattermost puts every account added to a team in its default
+  channels, so each new agent's bot was bridged into both, with their chatter
+  relayed into Switch. A bot is now taken out of Off-Topic (tried again at the
+  next start if Mattermost refuses), and neither channel is bridged until a
+  room is connected to it, whoever is in it. Running a `!` command such as
+  `!invite-agent` in either channel connects it. A default channel that
+  already has a room is left as it is.
+- **Rocket.Chat, Webex, Google Chat and Zulip say when a long message is cut
+  short.** A refused later part of a split message used to leave the
+  channel showing only the first parts, with no sign the rest was missing.
+  A notice now says how many parts arrived, as on Mattermost and Discord.
+- **An upgrade from before 0.24.0 no longer has to hold every send while it
+  indexes `messages`.** Build `ix_messages_room_sent_at` by hand first with
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_messages_room_sent_at ON
+  messages (room_id, sent_at);`, and the migration skips it. Before, the
+  migration failed if the index already existed. The Helm chart's README
+  covers this, and the 0.31.0 migration that can't be built ahead.
+- **The agent bridge's list of public paths no longer names a path nothing
+  serves.** `/hosted/machines` was dropped; a cloud machine's supervisor is
+  served under `/gateway`, which was already public to the bearer check.
+- **A connector sign-in from Switch Console that fails unexpectedly fails
+  cleanly.** An unexpected error while saving a GitHub or other connector
+  connection, after Console handed back the code, answered with a bare server
+  error and left the sign-in reading as pending until it expired. It now
+  answers with a message saying the connection could not be saved, and the
+  sign-in reads as failed with that message, as one finished in the browser
+  already did.
+
+### [0.32.1] - 2026-11-18
+
+#### Added
+- **A computer enrolled again keeps its device and agents.** A controller
+  enrolling from a machine, OS account and data folder its owner already has
+  a device for in the workspace (Switch Console set up again after a
+  reinstall or with its data folder wiped, or a headless controller enrolled
+  again) takes that device over when it isn't running: same id, name and
+  agents, with a new credential and its old service tokens revoked. Before,
+  it was added as another device of the same name, and its agents stayed on
+  the old one. A second install on the same account with a data folder of
+  its own (a development build beside Switch Console, say) is a device of
+  its own, so the two don't take a device from each other. A device running
+  at that moment is left alone, as is a device enrolled or taken over in the
+  last minute that hasn't reported since.
+  Switch Cloud machines never are. Enrollment (`POST
+  /gateway/management/controllers` and `POST
+  /v1/management/controllers/enroll`) and status reports take an optional
+  `device_id`; Switch keeps only a hash of it with the owner's id, never the
+  id itself, and the enroll responses add `adopted`. A status report keeps
+  the device current, so a device enrolled before it could say is matched
+  from its next report. `device_id` in the Console enroll body raises the
+  `gateway-api` revision to 7.
+- **`GET /gateway/agents/rooms` lists the rooms of up to 100 agents in one
+  request** (`agent_id`, repeated), each as `GET /gateway/agents/{agent_id}`
+  lists them, in the same few statements however many agents are asked
+  about. An id with no agent behind it is left out.
+
+#### Changed
+- **Decision metrics name the model that answered.** `switch.decision.requests`,
+  `failures`, `backend_errors`, `duration`, `model_time` and `confidence`
+  carry `model` beside `backend`: the model the server's decision service
+  answered with (for example `gemini-decision-1` or `claude-haiku-5-5`), so a
+  change of model behind the server default can be compared before and after.
+  A decision with no answer is `unknown`, a workspace's own endpoint is
+  `workspace_endpoint` (its model name is never kept), and a name that isn't
+  plain, or past the first eight a process sees, is `other`. `backend` is
+  unchanged, so existing queries keep working. The core health dashboard in
+  `deploy/observability/` groups its decision panels by model, marks 0.80 on
+  the confidence panel, compares models side by side, and gains the release
+  comparison panels and the `version` and `baseline` pickers.
+
+#### Fixed
+- **Reading an agent no longer reads every room in the workspace.**
+  `GET /gateway/agents/{agent_id}` loaded every room its reader may see, to
+  learn which of the agent's rooms to name, and held a database connection
+  while it did. Switch Console reads each of its agents this way on every
+  refresh of its sidebar, so one open window with a few dozen agents could
+  take every connection in the pool for a moment. It now asks only about the
+  agent's own rooms, and the agent tools that describe an agent do the same.
+
+#### Changed
+- **Auto-route (preview — behind a feature flag, off by default).** A room's
+  assigned agent and auto-route are now mutually exclusive, and an auto-route
+  room with a single agent delivers an untagged message straight to it when a
+  single person is present. The decision service also gains a **Gemini** backend
+  option alongside the existing ones.
+
+### [0.32.0] - 2026-11-17
+
+#### Added
+- **Group chats.** A room can be a group chat: `POST /chats` with
+  `kind: "group"`, read positions and unread counts (`chat_reads`), mention
+  spans, and naming people in a message without waking agents. Fleet-wide
+  behind the `group_chats` flag, which this release turns on by default.
+- **Retry a failed turn.** A turn that failed can be retried without posting
+  the message again, from the room or with the `!retry` command, which is held
+  to the same permission rules as the Retry control.
+- **Restart a device's controller from Switch.** A device's agent controller
+  can be restarted from Switch (Workspace/Organization settings › Devices),
+  without touching the host.
+- **More messaging platforms (preview — behind a feature flag, off by
+  default).** Cisco Webex, Rocket.Chat, Matrix (through a bot account on any
+  homeserver), Signal, Zulip and Google Chat can be connected as collaboration
+  platforms alongside the existing ones. Gated by the newer-platforms feature
+  flag and off unless a deployment turns it on.
+- **Unrecognized WorkOS roles are reported.** Under
+  `ORGANIZATION_DIRECTORY=workos`, a membership whose role is not `org_admin`,
+  `admin`, `editor` or `viewer` is still a Member, as before, but it is now
+  logged at `warning`, so a new role or a wrongly assigned one can be found.
+- **`switch-promote-org-admin`, a break-glass command.** When an
+  organization's admins can't make someone an admin themselves, the platform
+  operator can run `switch-promote-org-admin <organization id or slug>
+  <email> --reason "<text>" --execute` where switch-core runs. The person
+  must already be in one of the organization's workspaces. The change is
+  recorded in the organization's audit log as made by a platform operator,
+  with the reason, and its organization admins are e-mailed. Without
+  `--execute` it only shows what it would do. An organization whose admins
+  come from WorkOS is refused.
+- **Server commands for the platform operator.** Three commands run where
+  switch-core runs, with its configuration:
+  - `switch-orgs list` shows every organization with its admins and
+    workspaces.
+  - `switch-accounts` lists, creates, deletes and signs out accounts, and
+    grants or revokes platform operator.
+  - `switch-connector-apps` lists, sets and removes the deployment's
+    connector apps.
+
+  `switch-accounts create` reads the password from a file or standard input,
+  never the command line. `switch-accounts delete` first lists what is
+  connected to the account: its workspaces and role in each, the
+  organizations it is an admin of, and in each workspace its agents,
+  devices, open chats, API keys and service connections, and the rooms and
+  invitations that stay or pass to another admin. It uses the same account
+  deletion and refusals as the dashboard, and also refuses while the account
+  owns agents, devices or open chats, which only a running server can
+  remove; a refusal says what has to happen first and exits non-zero. It
+  only shows what it would do until given `--execute`, and then asks for the
+  account's e-mail to be typed before deleting. `--yes` skips that question
+  for scripts; without it, a run with no terminal to ask on is refused.
+  Either way it looks at every workspace again just before deleting, and
+  deletes nothing if the account has changed since it was shown.
+  `switch-connector-apps set` checks the app with the vendor first, as the
+  dashboard does, and never prints a secret. A password file or app file
+  that is missing or can't be read is refused with a one-line message, as
+  every other problem is. The account at
+  `GATEWAY_ADMIN_EMAIL` stays an operator, and the server keeps at least
+  one. Every change is recorded in the audit log as made by a platform
+  operator command.
+- **On a deployment with one organization, its admins manage the
+  deployment's connector apps.** The connector apps every workspace signs in
+  through were the platform operator's alone. When the deployment has
+  exactly one organization, that organization's admins may now set them up
+  too. This is checked again on every request, so they lose it as soon as a
+  second organization exists. `GET /gateway/auth/session` reports
+  `can_manage_connector_apps`, and `connector_apps_in_dashboard`: whether the
+  deployment has exactly one organization, so its admins set the apps up in
+  the dashboard, where with several the operator does with
+  `switch-connector-apps`. The dashboard and Switch Console use it to tell
+  someone who can't set an app up whom to ask. The server audit log notes
+  when a change came from an organization admin rather than the operator.
+- **An organization's admins are e-mailed when one of them stops being an
+  admin.** When an organization admin is made a member by another admin,
+  steps down, is removed from the organization, leaves it, or has their
+  account deleted, every organization admin and the person themselves get an
+  e-mail. It says who made the change (or that they made it themselves), whom
+  it was made to, the organization and when, and links to the organization's
+  audit log. It goes through the relay invitation e-mails use
+  (`GATEWAY_SMTP_*`), after the change is made: from the dashboard, once the
+  response has been sent, with no database connection held while the relay
+  is talked to. Without a relay, nothing is sent and the server logs a
+  warning for each change. Anything that goes wrong sending is logged as an
+  error and doesn't undo the change. Deleting an organization admin's account
+  is now recorded in the organization's audit log too, and e-mailed, only
+  once the account is gone; a deletion that fails partway is recorded there
+  as one that did not finish, since the person is no longer an admin either
+  way, and nobody is told the account was deleted. Changes brought in from
+  WorkOS are not e-mailed.
+- **Devices say how each device is doing.** Beside a device's state, a
+  warning when its controller is behind the release Switch names (or is
+  waiting to update, needs a restart or failed to) or a provider it has
+  installed is not signed in; on the state's hover, when it connected or
+  when and why it went; and a Details dialog with its controller and each
+  provider's install, sign-in, version and when it last checked. A managed
+  agent's state says why, and that its device is still applying the latest
+  change. On Workspace and Organization settings › Devices.
+- **Switch Console can open a dashboard page in a browser that is already
+  signed in.** `POST /gateway/auth/handoff` gives a signed-in session a
+  one-time sign-in link to a dashboard page, good once for 60 seconds, with
+  its code in the link's fragment so it reaches no server log; a person can
+  make 20 a minute, and the 429 for one more says in `Retry-After` when the
+  next will be let through. The dashboard's new `/auth/handoff` page reads it,
+  asks `POST /gateway/auth/handoff/peek` whose link it is, and redeems it with
+  `POST /gateway/auth/handoff/redeem` for a session of the browser's own: the
+  same account and workspace, and the minting session's sign-in time, so it
+  never outlives that session. Only a browser already signed in as the same
+  person goes straight through: any other asks first, one with no session
+  included, so a link someone made for their own account can't sign you into
+  it unasked. A link that was used or has expired, or whose session was signed
+  out or ended everywhere since, is refused with 410. Signing out of the
+  session that made a link signs out the browser sessions it opened; signing
+  out in the browser leaves the other session alone. Each redeemed link is
+  recorded in the workspace's audit log as `auth.browser_handoff`. The page a
+  link opens must be one of the dashboard's own. The new request bodies raise
+  the `gateway-api` revision to 5.
 - **A room's page in the web dashboard says who owns it and where you
   stand.** Room info names the owner, or says the room has none, and a "Your
   access" line says whether you own the room, administer the workspace or
@@ -255,7 +759,12 @@ version of their own to them without also giving them a release of their own.
   not run it by hand (switch-buddy, which Switch Console sets up itself).
   `POST /templates/{id}/runs` counts a run of a template the caller may read.
   Switch Console reports each finished run there, and the agent operation
-  `run_template` counts its own. Runs from before this release are not
+  `run_template` counts its own, as does `POST /rooms/from-template-document`
+  when it is given the template's id and runs that template's own document.
+  Nothing checks that a reported run
+  happened, so a person's report counts at most once per template in ten
+  minutes, and not at all just after a run the server counted for them; the
+  answer's `counted` says which. Runs from before this release are not
   counted.
 - **`switch-purge-organization` deletes an organization when its owner
   asks.** Run where switch-core runs, it shows what would go and what stays;
@@ -455,26 +964,103 @@ version of their own to them without also giving them a release of their own.
   admin, and for making the registration service account an admin. The last
   admin's `can_change_role` and `can_remove` are now false, as the routes
   already refused both, so the current Workspace page no longer offers them.
-- **Messages have a length limit and a pace limit.** A message is at most
-  65,536 characters by default (`MAX_MESSAGE_CHARS`), and one sender, person
-  or agent, gets 30 messages at once and then 2 a second
-  (`MESSAGE_RATE_BURST`, `MESSAGE_RATE_PER_SECOND`). That is one allowance per
-  sender, shared by every room they write in, counted in each server process.
-  The length limit applies to what the sender wrote: a note Switch adds, such
-  as a Switch Trust note, the `@name` of an agent picked in Console, or a line
-  for a file that couldn't be relayed, never pushes a message over it. A room
-  command such as `!invite-agent`, typed in Console or on a messaging app,
-  draws on the same allowance. `!interrupt` and `!interrupt-all-agents` never
-  do, so an agent can always be stopped. A message or command over either
-  limit is refused before anything is written and the sender is told why: a
-  Console chat answers 422 `MESSAGE_TOO_LONG` or 429 `RATE_LIMITED`, an
-  agent's tool call fails with the reason (422 or 429 over HTTP), and someone
-  writing from Slack or another messaging app gets a notice, once for a run of
-  refusals, instead of their message disappearing. A post with several files
-  counts as one message. Refusals are counted in the new
-  `switch.messages.refused` metric, which the core dashboard shows.
+- **A platform operator's account can be deleted while another operator
+  remains.** Deleting another operator goes ahead like anyone's, and an
+  operator may delete their own account. Only the account at
+  `GATEWAY_ADMIN_EMAIL`, which Switch recreates every time it starts, stays an
+  operator and can't be deleted.
+- **An invitation says what it's to before you accept it.**
+  `POST /gateway/invitations/preview` takes an invitation token from a
+  signed-in person and returns the workspace, its organization and the role,
+  and nothing else, refused exactly as accepting it would be.
+- **Someone left in an organization with no workspace can leave it.**
+  `GET /gateway/organizations/without-workspace` lists the organizations the
+  caller is still in after being removed from their last workspace there,
+  and `POST /gateway/organizations/{id}/leave` takes them out, recorded in
+  the organization's audit log. An org admin, someone still in one of its
+  workspaces, and an organization whose members a directory keeps are
+  refused.
+- **The invite page says what you're joining:** "Join <workspace> in
+  <organization> as <role>", or why the invitation won't work, before
+  Accept. Accepting one for a workspace you're already in at that role says
+  so.
+- **The onboarding screen and Your account offer to leave an organization
+  you're left in with no workspace.**
 
 #### Changed
+- **The dashboard has one layout: the one built behind `gateway_v2`.**
+  Home, Agents, Rooms, Templates, Connectors and Resources on the rail, and
+  Workspace and Organization settings as their own areas, on every server. The earlier layout's
+  pages are gone, and each of their URLs redirects to the page that
+  replaced it, so links from older Switch Console versions, the docs and
+  bookmarks still land. `gateway_v2` is still accepted in
+  `FEATURE_FLAGS_ENABLED`, so a deployment that names it keeps starting,
+  and the server always reports it on, which is how Switch Console picks
+  its links into the dashboard. Entries in this release that describe a
+  page behind `gateway_v2`, or with it on, describe this layout, which every
+  server now has; its landing page, called Overview in them, is Home.
+- **The dashboard follows its design more closely.** The landing page is
+  Home. Rooms has the same dropdown filters as the other lists (group,
+  owner, messaging app and connected users), and its Users column, which
+  counted only people reaching the room from a messaging app or a Console
+  chat, is Connected users. Settings and Organization settings have a title
+  bar and a menu of their own, and Usage & budget sits before Devices.
+  Organization settings opened directly lead back to workspace settings. A
+  page you may not open keeps the rail. Successes are a short message at the foot of the
+  window; failures stay on the page.
+- **The dashboard's Templates page is a card library.** All, Official and
+  Workspace tabs with live counts, one search (name, description, use case
+  and owner), type chips and Only mine; the workspace's own templates come
+  first, then the official ones (six, with See all), most used first. Each
+  card says what the template is for, how many agents and rooms it creates
+  and when it was last used, and Use hands it to Switch Console. Create
+  template offers your personal agent, Switch Console, or writing the YAML
+  in the dashboard. A template's page gains Use and Duplicate as my own, and
+  says plainly when a template isn't available to you. Templates carry a
+  `use_case` from a fixed list (engineering, product, support, research,
+  ops, personal, sales, marketing), set in the dashboard or through `POST`
+  and `PATCH /gateway/templates`, and every official template has one;
+  template listings and details add `agent_count`, `room_count` and
+  `last_run_at`. `use_case` in the create and update bodies raises the
+  `gateway-api` revision to 6.
+- **The dashboard no longer has a Platform area, on any deployment.** The
+  platform operator's own pages are gone: All workspaces, Users and
+  Platform › Connectors. Old addresses still lead somewhere: `/platform`,
+  `/platform/workspaces` and `/operator/workspaces` go to Organization
+  settings › Workspaces, `/platform/users` and `/users` to Organization
+  settings › Users, and `/platform/connectors` to Organization settings ›
+  Connector apps.
+
+  The deployment's connector apps are now in Organization settings ›
+  Connector apps, for whoever may manage them: the operator, or the admins of
+  a deployment's only organization. They reach it from a workspace in no
+  organization too, which an older release could make; Organization settings
+  then lists Connector apps alone. On a deployment with several
+  organizations, deployment-wide work (accounts, organizations, connector
+  apps) is done with the `switch-accounts`, `switch-orgs` and
+  `switch-connector-apps` commands.
+- **The Discord connect form asks for the Server ID.** Discord's own app
+  calls the guild id a Server ID, and that is what you copy from the server
+  icon; the setting's key stays `guild_id`.
+- **The dashboard's budget page is called Usage & budget,** and its Add
+  budget button no longer squeezes until its label wraps out of it on a
+  narrower window. Back to workspace, in Organization settings, returns to
+  the page you came from rather than always to home.
+- **Auto-route's messages send workspace admins to Settings, not Admin.**
+  Where a room says auto-route needs a decision service, or that the
+  workspace turned it off, it points at Switch Console → Settings → Decision
+  routing, where the page now lives.
+- **An auto-route room with one person and one agent no longer asks the
+  decision model.** Every untagged message from that person reaches the agent,
+  in the channel and in threads, as in a direct message; a second person or
+  agent brings the decision back. The model's scores in such rooms sit close
+  to its threshold, so people had to tag the only agent there.
+- **An assigned agent and auto-route can't both be on.** `!assign-agent` in a
+  room with auto-route on assigns the agent and turns auto-route off, saying
+  so; turning auto-route on (`!auto-route on`, the dashboard and Switch
+  Console) is refused while an agent is assigned. A room that has both from
+  before keeps them, and `!auto-route` and the room pages say auto-route is on
+  but not acting.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -689,29 +1275,149 @@ version of their own to them without also giving them a release of their own.
   confirm in a dialog, which keeps the server's reason if it is refused.
   Deleting a resource names, before you confirm, the packages it is taken out
   of as well as the rooms.
-- **Switch Trust checks a long message's first 20,000 characters, and says
-  so.** A message used to be sent to Switch Trust whole, and one long enough
-  to make the check time out went through with only a "could not check"
-  note. Now only the first 20,000 characters are checked, as for a file's
-  text, and a note in the room and to the sender says the rest was not
-  checked; a redacted message keeps its unchecked rest. A check that times
-  out is logged and counted apart from other failures, in the new
-  `switch.trust.check_failures` metric (`reason` is `timeout`, `refused` or
-  `error`).
-- **GitLab connects at one level, read and write, as Sentry does.** A GitLab
-  token scoped for reading can still post comments through GitLab's MCP
-  server, so Switch no longer offers a read-only GitLab connection that would
-  not hold. A sign-in that grants less than read and write is refused. The
-  GitLab application an operator registers needs the scopes `mcp`,
-  `read_user` and `api`. `read_api` is no longer used.
+- **An agent's addressing policy offers someone other than its owner only
+  ways to narrow it.** An admin sees why the rest is held, and can remove
+  rules or restrict the agent to its owner; making it Open, adding rules and
+  editing them stay with the owner.
+- **Accepting an invitation to a workspace you're already in.** An
+  invitation above your role there raises you to it and is spent; one at or
+  below it changes nothing, spends nothing, and the answer says so
+  (`already_member`). `GET /gateway/invitations/mine` lists an invitation
+  addressed to you that would raise your role.
+- **The organization's audit log records member changes from its pages, and
+  people joining it.** Manage admins, changing someone's role in a workspace
+  and removing them from one, from the organization's pages, and someone new
+  joining it through an invitation or an e-mail domain, are each recorded
+  there, naming the workspace and the role.
+- **Someone an admin removed can't rejoin straight away through their e-mail
+  domain.** A workspace open to their domain isn't offered to them, and
+  joining is refused, until they're invited again or an organization admin
+  adds them. Someone who left on their own can still use the domain.
+- **The organization's Audit log names every kind of event it records**,
+  with a Details column for the workspace and the role change.
+- **An admin's reference, document and package lists hold everyone's.**
+  They left out other people's private items, which the detail routes gave
+  an admin in full; now the lists hold them, whole, as the detail routes do.
+- **`can_read` says whether what is in an item came with it.** A room's and
+  a package's lists said `false` for items whose contents they returned. It
+  is now true wherever the contents come and false only where they are
+  withheld, and an item's own page opens for whoever a room or package
+  showed it to, so a link from one never ends on a refusal.
+- **The ecosystem graph shows a member only their own agents.**
+  `GET /gateway/ecosystem/graph` returned every agent in the workspace to
+  everyone; whoever administers the workspace still gets them all.
+- **A member's counts are of what they may see.** `GET /gateway/tenants/counts`
+  counts only a member's own agents in a workspace they do not administer,
+  and `GET /gateway/organizations/current/workspaces` counts only their own
+  agents and the rooms they may read, so private rooms they are not in are no
+  longer counted to them. Admins' counts are unchanged.
+- **Private now reads "Only you and admins can see or change it. Anyone who
+  can read a room it's attached to, or a package of yours it's in, can see it
+  there."** on references, documents and packages, as the documentation
+  describes it.
+- **A package's members and a room's packages open when the server says
+  so**, which now includes what the room or package shares; someone else's
+  private item in a package stays locked.
+- **An item's packages are named to an admin**, whose package list holds
+  them all.
+- **The ecosystem graph is narrowed by the server**, so the page no longer
+  loads the agent list to narrow it for a member.
+- **Another person's agent's page says its options are its owner's and
+  admins' to see**, rather than showing the option defaults as if they were
+  its options, and no longer shows an empty OAuth client line.
+- **Budgets say they are soft limits.** The Usage & budget page and the budget
+  dialog say that an agent that reaches a budget takes no new work until it
+  resets, but that work it already started finishes and can go past it.
+- **Workspace settings say plainly when no retention policy is set.** The Data
+  retention section reads "No retention policy is set, so Switch keeps every
+  message and the files attached to it."
+- **The guardrails pages say which files Switch Trust cannot read.** Beside the
+  policy, the workspace and organization guardrails pages say that images,
+  audio, video, archives and Office files other than Word documents are
+  delivered unchecked.
+- **Usage & budget is off in the dashboard until it is offered.** It is out of
+  Workspace settings, and `/usage` opens Settings.
+
+#### Removed
+- **Breaking for HTTP clients: the operator's account and workspace-list
+  routes are removed.** `GET /gateway/users`, `POST /gateway/users`,
+  `DELETE /gateway/users/{user_id}`,
+  `POST /gateway/users/{user_id}/sessions/revoke` and
+  `GET /gateway/operator/workspaces` now answer `404`. Run the commands that
+  replace them where switch-core runs: `switch-accounts list`, `create`,
+  `delete` and `sign-out`, and `switch-orgs list`. `switch-accounts create`,
+  which replaces `POST /gateway/users`, puts the account in no workspace,
+  where the route put it in the caller's: invite it to one, or give it an
+  address at a domain a workspace is open to, or a script moved onto it
+  makes accounts that can't reach anything. People still delete their own
+  account (`DELETE /gateway/auth/me`) and sign out of every device
+  (`POST /gateway/auth/sessions/revoke`) as before.
 
 #### Fixed
-- **GitHub works again on a standalone server with no public address set.**
-  The standalone compose file passes `GATEWAY_PUBLIC_URL` and
-  `MESSAGING_PUBLIC_URL` through as empty when `.env` leaves them out, and an
-  empty address was taken for one that is neither https nor on this computer,
-  so an agent's page answered that GitHub can't be used here. A blank value
-  now counts as unset.
+- **On a deployment with one organization, an agent's service access names
+  one person to set up a connector app.** For a service waiting on its app,
+  it said "Whoever runs Switch can set it up. An admin of your organization
+  sets it up in Organization settings › Connector apps." It now says only
+  the second.
+- **Organization settings › Connector apps is headed Connector apps**, not
+  Connectors, the page above it in the menu.
+- **Your account's Delete account card keeps its description readable on a
+  narrow window.** It was squeezed to a word a line beside the button; the
+  button now drops below it, as a page header's do. A page header's buttons
+  also keep their own height beside a tall title.
+- **A platform operator following a link to a workspace they aren't in is
+  told what to do instead.** The dashboard doesn't take them into it, and
+  now adds that `switch-promote-org-admin`, where Switch runs, makes someone
+  an admin of an organization they aren't in.
+- **An organization's admins hear when deleting one of them fails
+  partway.** The person's organization admin role goes before anything
+  else, and a retry finds no role left to tell anyone about, so the admins
+  and the person were never told. They are now e-mailed when the deletion
+  fails, saying it didn't finish but had already ended that admin access.
+- **The e-mail about a change to who administers an organization links its
+  audit log only for those who can open it**: not for the person demoted,
+  removed or deleted.
+- **A server command's refusal comes after what it printed before it.**
+  Run without a terminal, `switch-accounts delete --execute` could print
+  "Refused" above the plan it refused.
+- **Add a device no longer shows commands that can't work.** On a Switch
+  that Switch Console runs, or whose public address (`GATEWAY_PUBLIC_URL`)
+  is a loopback one such as `http://localhost:8000` or the unspecified
+  `0.0.0.0` or `::`, no other device can reach it, so the dashboard's Add a
+  device dialog now says why and what to do instead of printing install and
+  enroll commands that would fail. The address is read as the operating
+  system reads it, so shorthand such as `http://127.1` or `http://0`, a
+  trailing dot, and an IPv4 address written as IPv6
+  (`[::ffff:127.0.0.1]`) count too, and the bridges' warning about a
+  loopback `GATEWAY_PUBLIC_URL` catches them as well.
+  `POST /gateway/management/enrollment-codes` also returns `remote_devices`,
+  `{supported, reason}`, saying whether another device could enroll and, if
+  not, why. The code is still issued. Against a server from before it, the
+  dialog shows the commands as it always did.
+- **A private Discord chat Discord refuses says why.** "Continue in a
+  private Discord channel" failed with a bare 500 when the Switch bot's role
+  lacked Manage Channels, the same refusal rooms already explain. It now fails
+  with Discord's reason and what to change, and Switch Console shows that
+  message instead of "Switch did not answer". When Discord makes the channel
+  but won't let the person into it (the bot lacks Manage Roles, or the person
+  isn't in the server), the channel is removed again and the reason given.
+- **A room Discord refuses to make a channel for says why.** When Discord
+  turned down the new channel, for example because the Switch bot's role
+  lacks Manage Channels, creating the room failed with a bare 500 and
+  switch-buddy could only say the server had an internal error. It now fails
+  with Discord's reason and what to change (the permission to turn on, a bot
+  missing from the server, the server's 500-channel limit), so buddy and the
+  Console can pass it on. A room name with no letters or digits Discord
+  accepts is refused before Discord is asked.
+- **A stopped agent's unfinished turn is ended.** The sweep that ends
+  abandoned turns now treats a session whose connection closed as gone, so a
+  turn left open when its agent stopped is ended after the quiet window.
+- **Connectors in the web dashboard: turn on and set up from the
+  connector's page.** A workspace admin turns a connector on from its page,
+  in place of a link to the workspace settings. When its app is not set up,
+  whoever sets up the deployment's connector apps gets a "Set up" button that
+  opens that app's setup. The
+  list shows "Needs setup" for such a connector.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
@@ -915,61 +1621,106 @@ version of their own to them without also giving them a release of their own.
   last column has a header menu could be scrolled 23px to the side at any
   width, because the menu button the table hides until the header is hovered
   stuck out past it.
-- **A room template can no longer freeze the server.** A few hundred bytes of
-  nested YAML anchors and aliases expanded into billions of values while the
-  template was read, holding up every request and message on that server
-  process for as long as it took. Templates that use anchors or aliases
-  (`&name`, `*name`, `<<:`) are now refused with the line they are on. A
-  template may be at most 256 KB and 10,000 values, nested at most 64 levels
-  deep. A more deeply nested one is refused with its line too, where it used
-  to fail with a server error. No template that comes with Switch uses anchors
-  or aliases, or nests deeper than 8 levels. Reading and planning a template
-  also no longer holds up the server while it runs.
-- **Slack no longer drops an agent's reply it refuses.** A reply longer than
-  Slack takes, one sent while Slack was rate-limiting the workspace, or one
-  for a channel that was archived or that the app was taken out of was
-  logged on the server and never appeared. Long messages and Switch's own
-  notices are now split to fit, a rate-limited post or edit is tried again
-  after the wait Slack names, and a message Slack stops part way through
-  says in the channel how much of it arrived.
-- **Raw mention codes in an agent's reply no longer notify anyone on Slack,
-  Discord, Google Chat or Zulip.** An agent quoting text that already held a
-  platform's mention code, such as `<@U…>` or `<!subteam^…>` on Slack, a role
-  or user code on Discord, `<users/all>` on Google Chat, or `@**Name**` or
-  `@*group*` on Zulip, notified whoever the code named. The code is now shown
-  as written, even when it names someone who has posted in the channel. Names
-  Switch resolves (`@name`) notify as before, and a request card on Discord
-  still notifies the person it is for.
-- **New Mattermost agents are no longer bridged into Town Square and
-  Off-Topic.** Mattermost puts every account added to a team in its default
-  channels, so each new agent's bot was bridged into both, with their chatter
-  relayed into Switch. A bot is now taken out of Off-Topic (tried again at the
-  next start if Mattermost refuses), and neither channel is bridged until a
-  room is connected to it, whoever is in it. Running a `!` command such as
-  `!invite-agent` in either channel connects it. A default channel that
-  already has a room is left as it is.
-- **Rocket.Chat, Webex, Google Chat and Zulip say when a long message is cut
-  short.** A refused later part of a split message used to leave the
-  channel showing only the first parts, with no sign the rest was missing.
-  A notice now says how many parts arrived, as on Mattermost and Discord.
-- **An upgrade from before 0.24.0 no longer has to hold every send while it
-  indexes `messages`.** Build `ix_messages_room_sent_at` by hand first with
-  `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_messages_room_sent_at ON
-  messages (room_id, sent_at);`, and the migration skips it. Before, the
-  migration failed if the index already existed. The Helm chart's README
-  covers this, and the 0.31.0 migration that can't be built ahead.
-- **The agent bridge's list of public paths no longer names a path nothing
-  serves.** `/hosted/machines` was dropped; a cloud machine's supervisor is
-  served under `/gateway`, which was already public to the bearer check.
-- **A connector sign-in from Switch Console that fails unexpectedly fails
-  cleanly.** An unexpected error while saving a GitHub or other connector
-  connection, after Console handed back the code, answered with a bare server
-  error and left the sign-in reading as pending until it expired. It now
-  answers with a message saying the connection could not be saved, and the
-  sign-in reads as failed with that message, as one finished in the browser
-  already did.
+- **A page or section title's buttons cope with a narrow window.** Add
+  budget, Create API key and the other buttons beside a dashboard heading
+  could wrap onto the title, get clipped, or run past the edge of the page as
+  the window narrowed, instead of moving to their own line. Where there are
+  several, such as Rooms' four with rooms selected, they now wrap among
+  themselves within the page's width, each staying whole. The usage period
+  picker, the resources tabs and the sign-out buttons on Your account had
+  the same problem; all now give way cleanly.
+- **Bulk archive and delete say which rooms they left alone, and why.**
+  `POST /rooms/bulk-archive` and `/rooms/bulk-delete` still act on every room
+  the caller may change and answer 200, and now add `refused`, each
+  `{room_id, reason}` with the reason the route for that one room would give
+  ("Room not found" for one that is gone). Before, a room the caller could
+  not touch was only left out of the count.
+- **Making a workspace or an organization keeps the name rules renaming
+  does.** A name is trimmed and must be 1 to 255 characters on one line with
+  something visible, for an organization, its first workspace and a
+  workspace added to it. A 200 KB or multi-line name was stored, and a long
+  random one failed with a server error.
+- **Archiving or unarchiving several rooms names each room that was left
+  alone, and why**, instead of a count of rooms "you can't change or no
+  longer exist".
+- **A demoted or removed admin can no longer rejoin as admin with an
+  invitation they made earlier.** Demoting an admin, removing anyone, ending
+  an org admin's access to a workspace they were in only through the
+  organization, and deleting an account revoke the invitations that person
+  made there, shareable links included. Accepting an invitation is refused
+  while its maker no longer administers the workspace, which covers
+  invitations made before this release.
+- **Clearing a workspace's message retention takes the caller's own admin
+  membership**, as setting it does. An organization admin acting through the
+  organization, and the platform operator, could clear a policy they weren't
+  allowed to set.
+- **The last org admin's row says they can't step down or leave.**
+  `GET /gateway/organizations/current/members` answered `can_change_role` and
+  `can_remove` true for the organization's only org admin, and confirming
+  either ended in a 409. Both are false for them now, with the reason in
+  `change_role_blocked_reason` and `remove_blocked_reason`.
+- **Two admins leaving a workspace at the same moment no longer deadlock.**
+  One stays, as before, and the other is told it can't remove the last admin
+  instead of getting a server error.
+- **The only org admin is told to make someone else an org admin first.**
+  Organization › Users offered them "Step down to Member" and "Leave
+  organization", which failed, and the help for leaving a workspace pointed
+  back to stepping down. Those actions are greyed with the reason now.
+- **A dashboard tab showing one workspace can no longer write into
+  another.** The session's workspace is shared by every tab, so a tab left on
+  one workspace after another tab switched could create an API key, an
+  invitation or a room in the new workspace while still showing the old.
+  The dashboard now names the workspace it shows on every write, and
+  switch-core refuses a write that names another workspace than the
+  session's with "This tab is showing another workspace. Reload to
+  continue." Switch Console and other clients that name none are unaffected.
+- **The links `!room-url`, `!documents` and `!references` post open in the
+  room's workspace.** They now carry `?workspace=`, so someone in several
+  workspaces no longer lands in whichever one their browser used last, where
+  the room or resource is not found.
+- **A section that couldn't load says so instead of looking empty.** The
+  room page's packages, references, documents, linked rooms, group and
+  participants, the New room form's bridges, groups and agents, an agent's
+  options and addressing policy, the Add agent, Add messaging app and budget
+  dialogs, the attach pickers, the graphs, People, invite links and the org
+  audit log now show the server's reason when their load fails, and never an
+  empty state beside it. An agent's options no longer claim Switch has
+  forgotten its type when the list of types simply failed to load, and the
+  "Public rooms on private channels" warning no longer vanishes when its
+  count can't be read.
+- **The dashboard follows the session when the server says it changed.** A
+  session that ended (signed out elsewhere, expired, or every device signed
+  out) now goes to sign-in, and back to the same page afterwards, instead of
+  leaving every section saying "Session ended". When the server refuses
+  something, the session is read again, so a demoted admin stops being
+  offered what they may no longer do.
+- **Errors say what went wrong.** A room, agent or resource page that can't
+  load now gives the server's reason rather than "Failed to fetch data", and
+  adds "This may be in another workspace — switch workspace or check the
+  link." when the server can't find it or won't show it. Registering an
+  agent, creating or revealing an API key, adding a messaging app and
+  unlinking a room no longer show "[object Object]" for an invalid request.
+- **A server that doesn't answer is reported.** Requests give up after 30
+  seconds (two minutes for creating a room from YAML) with "The server
+  didn't answer", where a spinner used to turn for good.
+- **A long room or agent name wraps** instead of pushing the page header's
+  actions off screen.
+- **Ecosystem's "Show owners" is offered only when the server sends owners**
+  (the `ecosystem.show_owners` flag).
+- **A connector page's Back survives the vendor's sign-in,** leading to the
+  agent or settings page that opened it rather than the catalogue.
+- **The review of Public rooms on private channels is a Settings page,** at
+  `/settings/general/private-channel-rooms`, and its Back leads to General
+  rather than out of the dashboard. `/workspace/private-channel-rooms`
+  redirects to it.
 
 #### Security
+- **A controller's access token works only with the credential it was
+  exchanged for.** Tokens now name their credential, and one whose
+  controller no longer has it (rotated away, or replaced when another
+  controller took the device over) is refused as expired, so only the
+  holder of the current credential can exchange a new one. A token issued
+  before this release keeps working until it expires, within the hour.
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,
   PUT, PATCH and DELETE that carries the sign-in cookie, sign-in itself and the
   change socket are checked against `GATEWAY_PUBLIC_URL`, `FRONTEND_BASE_URL`
@@ -1143,64 +1894,70 @@ version of their own to them without also giving them a release of their own.
   making it an organization admin handed them every workspace in the
   organization. `PATCH /gateway/tenants/{id}/members/{user_id}` and
   `PATCH /gateway/organizations/current/members/{user_id}` now refuse it with
-  409, the workspace members list says why and the organization's never offers
+  409, and so does accepting an admin invitation as it; the workspace members
+  list says why and the organization's never offers
   it, and an organization whose members come from a WorkOS directory keeps it a
   member however the directory lists it, recording the conflict in its audit
   log.
-- **Database errors no longer put the values bound into a query in the logs.**
-  Every database engine switch-core builds, including the ones for migrations,
-  the boot lock and the schema checks, sets SQLAlchemy's `hide_parameters`, so
-  a logged constraint violation or similar shows the SQL statement but not the
-  emails, message text or tokens it carried. Postgres's own `DETAIL` line,
-  which can name a duplicate key's value, is unchanged.
-- **A refused telemetry value is no longer written to the error log.** When an
-  event carries a value outside a property's allowed set, the error names the
-  event and the property but not the value.
-- **Core's dependencies are past their known advisories.** authlib 1.9.8, mcp
-  1.30.0, fastmcp 3.4.11, aiohttp 3.14.5, joserfc 1.8.0, anyio 4.14.2,
-  opentelemetry-api 1.45.2, dnspython 2.9.2, certifi 2026.10.23 and multidict
-  6.9.1. Pull requests now fail on a known advisory in core's locked
-  dependencies.
-- **An agent's change that widens what another agent may do on its own, or who
-  may reach it, waits for the owner.** When an agent turns another agent's
-  bypass mode or auto mode on, sets its Claude Code permission mode to bypass
-  or to auto, moves its working folder, machine or provider, or opens who may
-  address it (to anyone, or to the owner's agents when they could not reach it
-  before), or creates an agent with bypass on or a folder of its own, nothing
-  changes yet. Switch checks the request, posts it in the room the agent is
-  connected to, and makes it only when the agent's owner, in person, sends
-  `!agent-change <name> confirm` there within two minutes; `!agent-change
-  <name> drop` throws it away, and anyone in the room can see it with
-  `!agent-change <name>`. The agent is told it is waiting and what to send.
-  Only one change per agent waits at a time, so what the owner confirms is
-  what they were shown. Waiting requests are kept in memory, as an agent's
-  request to delete another agent is: a restart drops them, and the request
-  and its confirmation must reach the same server process. A change in the
-  safer direction (bypass or auto mode off, a narrower addressing policy)
-  applies at once, as do a person's own changes in Switch Console or the
-  dashboard and an agent's other changes. A new agent waits for its owner
-  whichever of these it asks for, including only `permissionMode:
-  bypassPermissions` in its advanced settings. Setting `permissionMode: auto`
-  on an existing agent waits as turning auto mode on does; turning it off, or
-  any other mode, applies at once. A new agent is made in auto mode unless it
-  says otherwise, so neither waits when an agent creates one. A template an
-  agent runs can no longer create an agent with bypass on; a person runs such
-  a template themselves.
-- **Every change an agent makes to another agent is in the audit log.**
-  Changes it makes at once, changes it asks for, the owner's confirmation of
-  one, and every agent it creates, each with the agent that did it.
-- **A managed agent's working directory is checked.** It must be an absolute
-  path (POSIX, `~`, a Windows drive or a UNC share) with no `..` segment and no
-  control characters, at most 4096 characters long; anything else is refused
-  with a message saying what is wrong; a template's directory under
-  `{$agents_dir}` is checked once the machine says where it keeps workspaces.
-  A definition stored before this that breaks the rule is reported when the
-  agent is next changed.
-- **An agent connection that sends what no client should is closed.** The
-  agent connection socket now closes, with a warning in the log, on a frame
-  over 1 MiB, a binary or non-JSON frame, more than ten stray frames a minute,
-  or more than 120 frames a minute, rather than reading and dropping them for
-  as long as the client sends them.
+- **A room made from a template asks the same invite rule as any other.**
+  `POST /rooms/from-yaml`, `/rooms/from-template`,
+  `/rooms/from-template-document` and the agent tools `create_room_from_yaml`
+  and `run_template` put any agent a document named into the new room, so a member could bring
+  in somebody else's agent that takes no requests from them, which
+  `POST /rooms` and adding agents refuse. They now refuse it with the same
+  403 sentence, before anything is made: no room, no group, and no agents a
+  template run would have created. An agent provisioning is judged as for
+  its `create_room`: as its owner, or as itself where the target trusts it by
+  name.
+- **Only an agent's owner lets more people address it.** A workspace or
+  organization admin could clear any member's agent's addressing policy,
+  opening it to everyone, then bring it into their own rooms and give it
+  work, acting with the service access its owner granted it.
+  `PUT /agents/{id}/addressing-policy` now refuses anyone but the owner a
+  policy that lets in someone the current one doesn't: a person, an agent
+  (the owner's own included) or the platform, in any room it did not already
+  admit them in. An admin may still narrow it, to stop an agent misbehaving,
+  and that change is recorded in the workspace audit log as
+  `agent.addressing_changed`, with the policy before and after. An agent
+  that acts for no person, added with the registration token or left with
+  no owner, an admin may open as well, since it lends nobody's service
+  access. An agent's detail carries `can_widen_addressing`, which says which
+  applies.
+- **Only a parent agent's owner registers subagents under it.**
+  `POST /agents/register-known-bulk` let a workspace admin register
+  subagents under a member's agent, which then sat under it in its working
+  directory with keys of the admin's.
+- **Names refuse characters that change how they read without showing.**
+  Bidirectional controls (U+202A-U+202E, U+2066-U+2069) and zero-width or
+  invisible characters (U+200B, U+200E, U+200F, U+2060, U+FEFF) are refused
+  with a 422 naming the character when a room, room group, reference,
+  document, package, workspace or organization is created or renamed, and in
+  a person's name at sign-up, in their profile and when an operator creates
+  their account. The zero-width joiners (U+200C, U+200D) are kept, as emoji
+  and Persian and Indic names need them. A room "fe-rtl" followed by
+  a right-to-left override showed "exe.perls" for "slrep.exe". Agent display
+  names refuse them as they refuse other unsafe text (400), and so do room
+  and group names in templates and an agent's `create_room`, `update_room`
+  and `create_room_group`. Text in any script is kept.
+- **A package no longer re-shares someone else's private item.** A package
+  handed out everything in it, so a reference or document someone else made
+  private after it went in still reached every reader of the package, and
+  making the package public shared it with the whole workspace. A package
+  now shares only what its own owner put in it of theirs: anything else in
+  it that its owner keeps private comes with its `value`, `instructions` and
+  content null and `can_read: false` in `GET /gateway/packages/{id}/references`
+  and `/documents`. For agents it comes marked `"withheld": true`, and
+  `load_internal_documents` refuses it. Its owner and the workspace's admins
+  still read it through the package.
+- **How an agent is set up on its owner's machine is its owner's and admins'
+  to see.** `GET /gateway/agents`, `GET /gateway/agents/{id}` and the agent
+  tools `list_agents` and `get_agent_detail` gave everyone each agent's
+  `known_agent_options`, which hold the directory its sessions run in, and
+  its `oauth_client_id`. To whoever neither owns nor administers the agent
+  they are now null, and so is a session's `controller_id`; an agent's
+  detail also leaves out sessions in rooms the viewer may not read. Every
+  agent is still listed to everyone, with its name, description, type, owner
+  and status.
 - **Password sign-in locks out after repeated failures.** Ten failed password
   sign-ins with one email address within 15 minutes lock that address out for
   15 minutes; after the first three failures each further one makes the next
@@ -1215,8 +1972,8 @@ version of their own to them without also giving them a release of their own.
   `GATEWAY_LOGIN_FAILURE_WINDOW_MINUTES` and `GATEWAY_LOGIN_LOCK_MINUTES`. The
   counts are kept in Postgres (a new `auth_attempts` table, holding digests
   rather than emails or addresses; the same migration adds
-  `revoked_sessions`), so they hold across replicas. The operator can lift an
-  account's lock at once with `DELETE /gateway/users/{user_id}/sign-in-lock`,
+  `revoked_sessions`), so they hold across replicas. Whoever runs Switch can
+  lift an account's lock at once with `switch-accounts unlock EMAIL`,
   recorded in the server's audit log. Since failures from anywhere count,
   anyone who knows a person's email can pause that person's password sign-in
   for `GATEWAY_LOGIN_LOCK_MINUTES` by failing `GATEWAY_LOGIN_MAX_FAILURES`
@@ -1265,60 +2022,14 @@ version of their own to them without also giving them a release of their own.
   before this release can't be signed out of on its own until it is next
   refreshed, which gives it an id; until then signing out clears the cookie
   as before.
-- **The list of agent types needs a signed-in caller.**
-  `GET /gateway/agents/known-types` answered anyone, signed in or not, unlike
-  every other `/gateway/agents` route. It now answers 401 without a session.
-- **The Helm chart runs every pod unprivileged.** switch-core, the gateway,
-  Postgres, Mattermost and the setup, migration and runtime-role Jobs used to
-  run as root. They now run as their image's own user: 10001 for switch-core
-  and setup, 101 for nginx, 70 for Postgres and 2000 for Mattermost. Each
-  also gets no privilege escalation, no capabilities, the runtime's default
-  seccomp profile and a read-only root filesystem, with emptyDirs where it
-  writes. Mattermost is the one exception to the read-only root: it rewrites
-  its web app's `root.html` at every start. No pod mounts a ServiceAccount
-  token any more. Each component's
-  `podSecurityContext` and `securityContext` are values. A Postgres volume
-  that an earlier release started as root keeps working: it already belongs
-  to the `postgres` user. If `postgresql.image` is the Debian image, set its
-  user, group and fsGroup to 999.
-- **The in-cluster Postgres admits only Switch.** With `networkPolicy.enabled`
-  (on by default), a NetworkPolicy admits only the release's switch-core,
-  Mattermost and migration Jobs to port 5432. switch-core, the gateway and
-  Mattermost get policies too once `networkPolicy.ingressFrom` names your
-  ingress controller or load balancer. Each then admits those peers and the
-  release's own pods that call it, and nothing else.
-- **The switch-core, setup and gateway images no longer run as root.**
-  switch-core and setup run as 10001, and the gateway's nginx runs as 101,
-  with its pid file in `/tmp`.
-- **`SWITCH_BIND_ADDR` opens only Switch's own ports.** In the standalone
-  compose, setting it publishes the API (8000) and the dashboard (3000).
-  Postgres and Mattermost now stay on loopback, and `POSTGRES_BIND_ADDR` and
-  `MATTERMOST_BIND_ADDR` move them, one at a time. Before this, Postgres was
-  published with the schema owner's login. In the development compose,
-  Postgres and Mattermost take the same two variables, and the mail catcher
-  and decision service stay on loopback.
-- **The gateway container sends the dashboard with security headers.** Its
-  nginx, and the chart's copy of the same config, now send the dashboard's
-  own files with switch-core's Content-Security-Policy, `X-Frame-Options:
-  DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`,
-  and no longer name the nginx version in the `Server` header.
-- **Images Switch does not build are pinned by digest.** The switch-core and
-  setup images build from `python:3.12.16-slim-trixie` (what `3.12-slim` is
-  today), and switch-core's uv is 0.13.1, no longer `latest`. The gateway
-  image builds from `nginx:1.31.8-alpine`. The chart's and the compose files'
-  Postgres, Mattermost and busybox images now carry a digest, as do the
-  gitleaks image CI runs. Renovate keeps the digests current.
 
 #### Added
-- **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,
-  Templates and Connectors on the rail; Workspace and Organization settings
-  as areas of their own, each with a menu of only the pages you may open,
-  reopening the page you last used; and the operator's pages under Platform.
-  Today's pages move into it, and their old URLs lead there. It is still
-  being built, so turn it on for development and staging only. With it off,
-  the dashboard is laid out as before, and the new URLs lead back to today's
-  pages.
-- **The new layout's Overview counts the workspace's agents, users and
+- **The dashboard's new layout.** Home, Templates and Connectors on the
+  rail; Workspace and Organization settings as areas of their own, each with
+  a menu of only the pages you may open, reopening the page you last used;
+  and the operator's pages under Platform. Today's pages move into it, and
+  their old URLs lead there.
+- **The new layout's Home counts the workspace's agents, users and
   rooms.** Each card opens its list, and View graph opens the ecosystem
   graph, which leaves the new rail. A workspace's admins see its totals; a
   member sees the agents they own and the rooms they take part in, marked
@@ -4296,6 +5007,301 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+
+- **Settings → Message routing names the server default and each choice by
+  its model, and offers the server's self-hosted model and Gemini.** The
+  server default reads, for instance, "Server default: Qwen3 235B (Bedrock)";
+  the choices are the server's self-hosted model, Gemini (with the model it
+  falls back to when slow, and after how long), Claude Haiku on Bedrock,
+  Claude Haiku with your Anthropic key, your own endpoint and none, each
+  offered where the server's decision service runs it. Each choice shows its
+  model and the confidence threshold it uses by default, and the threshold
+  field shows the one that applies when left blank. When the server can't
+  read its decision service, the page says so and keeps the saved choice.
+  "Self-hosted endpoint" is now "Your own endpoint".
+
+#### Changed
+- **The Switch Trust settings say what it cannot check.** Images, audio,
+  video, archives and Office files other than Word documents can't be read,
+  so they are sent unchecked; messages and the text in files are checked up
+  to their first 20,000 characters, with a note on the rest.
+- **Agents are told the message length and pace limits.** The Switch skill
+  says a message longer than the server's limit is refused, not cut, and that
+  messages sent too fast are refused with how long to wait.
+- **The bundled standalone compose follows switch-core's.** Its Postgres
+  image is pinned by digest, and Postgres binds to loopback through
+  `POSTGRES_BIND_ADDR`, which the local server's `.env` now sets to loopback.
+  The helper image that reaches the stack's state volume is the same
+  digest-pinned Postgres image.
+
+#### Fixed
+
+- **Creating an agent no longer flashes "An agent called … already exists
+  on this server".** The form checked the name against the server's agent
+  list, which picks up the new agent before the dialog closes, so for a moment
+  it reported its own agent as a clash.
+- **A file's name in a chat shows its real extension.** A name carrying
+  hidden or text-reversing characters could read as something else: a file
+  named with a right-to-left override showed as `invoiceexe.pdf` when it was
+  `invoice<…>fdp.exe`. The file, the line above it and replies naming it now
+  show each such character, and any path or control character, as `_`, and
+  that is also the name offered when you save it.
+- **HTML and other web-page attachments can be downloaded.** Saving one used
+  to fail with a message telling you to ask whoever runs the server to fix
+  its routing. It now saves like any other file, and is never opened in
+  Switch Console.
+- **Links in room documents, library items and transcripts no longer open a
+  blank Switch Console window or another app.** A `mailto:`, `irc:` or
+  relative link there now does what it does in chat: a web link asks before
+  it opens in your browser, and any other link is refused with a notice.
+- **An agent's sessions move with its folder.** After an agent's directory
+  changed, its rooms kept being answered, and `!reset` started over, in the old
+  folder. The next message, or a reset, now starts a session where the agent
+  works now, and live sessions in the old folder stop once their turn ends.
+
+#### Removed
+- **The "Environment variables" and "Additional parameters" fields in a
+  provider's settings.** Nothing ever applied them to an agent, and they were
+  stored unencrypted. Values saved by earlier versions are deleted from the
+  database when Console starts.
+
+#### Security
+- **Claude sessions keep their MCP tokens off the command line.** The Switch
+  tools' token and every connector's used to be written into the `claude`
+  process's arguments, where another user on a Linux machine could read them
+  and act as the agent. Each is now passed in the process environment, which
+  only the agent's own user can read. A session picks this up when it next
+  starts.
+- **Agents can send files only from their working directory.** A file sent
+  with `send_attachment` must be inside the session's working directory or
+  among the attachments it downloaded, with links followed; anything else is
+  refused with the reason, in every permission mode. A file with more than one
+  hard link is refused too, unless it is an attachment the session downloaded,
+  since a hard link in the working directory can be the same file as a key
+  kept elsewhere. Before, a manipulated agent could post a key or credential
+  file from anywhere on the machine without asking. To send a file from
+  elsewhere, a screenshot in `/tmp` say, the agent copies it into its working
+  directory first.
+- **Pi asks before touching files outside its working directory.** In auto
+  mode Pi used to change any file without asking, and in every mode it read
+  any file. It now changes files on its own only inside its working directory,
+  and asks before changing anything else: files outside it, git's hooks and
+  config, the dot files in your home folder, and Switch's own settings,
+  including the one that sets the agent's permission mode. Unless bypass is
+  on, it also asks before reading outside its working directory. A file with
+  another hard link counts as outside, wherever it is.
+- **Session folders and downloaded room files are private to you.** Each
+  session's folder is created readable by you alone, and one an earlier
+  version left open is tightened when the session next starts. Files an agent
+  downloads from a room are saved the same way.
+- **A login you give a machine is sealed only to a key Console can vouch
+  for.** Console used to seal it to whatever key the server listed for the
+  machine, so a server that listed its own key could open the API key, setup
+  token or sign-in file. Now an SSH host's key is read from the host itself,
+  this computer takes no given logins (its controller keeps no key), and any
+  other machine is held to the key Console sealed its first login to. Giving
+  a login shows that key's fingerprint; if the server later sends another,
+  Console shows both and seals nothing until you choose "Trust the new key".
+  The agent controller's `enroll` and `status` print the same fingerprint, and
+  a new `switch-agent-controller sealing-key` command prints the key.
+- **Signing out of a server tells the server.** Console now calls the
+  server's sign-out before it forgets its copy of the session. A server that
+  can't be reached is logged and the session is still forgotten here. A
+  server from this release ends that one session on sign-out, so a copy of it
+  stops working too; an older server only clears the cookie.
+- **Switch Console's data folder, database and log are readable by your user
+  alone on Linux and macOS.** The folder is made private (0700), and the
+  database, its write-ahead files and the log private (0600), including ones
+  an earlier version created with the default permissions.
+- **The log keeps more kinds of credential out.** camelCase names such as
+  accessToken, refreshToken and clientSecret, cookie headers, Basic
+  authorization, and Switch agent keys written without a label are now
+  redacted in Switch Console's log and its diagnostics export.
+- **A repository can no longer make an agent's token committable.** Console
+  keeps its own `.gitignore` in `.switch/agents/` even where a repository
+  ships a different one, and refuses to write the token into a file the
+  repository tracks, saying how to untrack it. Tokens that earlier versions
+  left in `.claude/settings.local.json` or `.claude/switch-subagents/` are
+  removed once the agent's own credentials file holds them.
+- **A template's Use page shows what its agents will be allowed to do, and
+  asks before creating a risky one.** Anyone in a workspace can write a
+  template, and a link to it opens this page. The preview now says who the
+  template is from and, for each agent, whether it runs every command without
+  asking, who can talk to it, and its instructions. When an agent would run
+  without asking or answer anyone in the workspace, Create asks first and
+  names the risks. What it shows is what the run creates. A version 1
+  template's `auto_approve` or `addressing` written as a list of `if:` cases,
+  which only version 2 reads, is shown as the default the agent actually gets.
+- **Files saved from a chat are marked as downloaded.** On macOS a saved
+  attachment now carries the quarantine mark a browser gives a download, so
+  Gatekeeper checks it the first time it is opened; on Windows it is marked
+  as coming from the Internet zone. If the mark cannot be written, the file
+  is still saved and the log says so.
+- **Console asks before making your computer a managed-agent machine.**
+  Opening the New agent form or switch-buddy's setup, including from a link in
+  a chat or on a web page, no longer enrolls the computer. A button and a
+  confirmation that names the server do. On Meet switch-buddy, picking a
+  provider signed in on this computer while it is not yet a machine asks the
+  same question, and starts switch-buddy once you confirm.
+- **You decide on this computer whether a managed agent may skip approvals or
+  work outside its folder.** The agents controller Console runs no longer
+  applies either just because the server's copy of the agent asks for it.
+  Console asks you, naming the agent, the server and what it could then do,
+  and this computer's page under Machines lists what you allowed, with Revoke.
+  Until you allow it, an agent that asks for bypass runs and asks for
+  approval, and one that asks for a folder outside `~/.switch/agents` does not
+  start. Agents that ran with bypass or in their own folder before this
+  release need allowing once. The question names the agent by its unique name
+  and its server; a display name its owner set follows, marked as what the
+  agent is shown as.
+- **Images from other computers load only when you ask.** Remote images in
+  chats, room documents and library items show as a placeholder naming their
+  host until you click Load image, and are then fetched without a Referer.
+- **Room references show where they go and ask before opening.** The Resources
+  tab shows each link's host, and opening one, or a link on a reference's
+  page, goes through the same confirmation as chat links, showing the whole
+  address. A reference whose link is not a web link is refused with a notice,
+  as in chat.
+- **Only your own switch-buddy wears switch-buddy's picture.** Another agent
+  using the buddy's icon address is drawn as if it had no picture. That holds
+  in each workspace you belong to on a server: reading another workspace's
+  agents no longer takes the picture from your buddy.
+- **Chats show an agent's unique name beside its display name.** An agent's
+  owner can set its display name to anything, including switch-buddy or
+  another agent's name. Messages, an agent's work, kickoff cards and the chat
+  header now show the agent's unique name, muted, after a display name that
+  differs from it, and a display name that reads as switch-buddy's is shown
+  only for your own buddy: any other agent goes by its unique name.
+- **Question cards always say which agent is asking.** Each open card names the
+  agent by its unique name and whose it is, quotes its title, and says a typed
+  answer goes to that agent, not to Switch.
+- **A session's shell setup can no longer add environment variables.** It may
+  still change the variables a session inherits (prepend to `PATH`, point
+  `CLAUDE_CONFIG_DIR` elsewhere) and the agent's own, but anything else it or
+  your login profile exports no longer reaches the provider. Set such a
+  variable in the agent's environment instead.
+- **Dependencies move past their known advisories.** The MCP TypeScript SDK
+  goes to 1.32.2, and proxy-addr, body-parser, fast-uri, brace-expansion, hono,
+  @hono/node-server, qs, ip-address and smol-toml to fixed releases.
+- **Console checks every SSH host's key before it connects.** A remote agent
+  host or a remote-managed server is reached only when its key matches your
+  `known_hosts` (hashed entries, `[host]:port` and `HostKeyAlias` included) or a
+  key you trusted in Console. The first time Console meets a host it shows the
+  key's SHA256 fingerprint and asks whether to trust it. A key that differs from
+  the one on record is refused, with both fingerprints shown, and can only be
+  replaced after you confirm you checked it; a revoked key is never accepted.
+  Reconnects and background work only use a decision you made. Console keeps its
+  own record and never edits your `known_hosts`. Agent forwarding follows only
+  the host's own `ForwardAgent` setting.
+- **A remote managed server's secrets file is never readable by other
+  accounts.** Its `.env` (database passwords, signing keys, the admin password)
+  is written to a file only you can read and moved into place, inside a folder
+  only you can open, instead of being created with the host's default
+  permissions and narrowed afterwards. The same holds for the local server's
+  `.env` when it is rewritten.
+- **Console reaches the server it runs at 127.0.0.1, not localhost.** `localhost`
+  resolves to the IPv6 loopback first, where the server does not listen, so
+  another program on the machine could answer there and receive the admin
+  password and session. The server's address and its agents move to
+  127.0.0.1 on the next start, and a start stops with a clear message if
+  another program holds the server's port on the IPv6 loopback.
+- **Adding a server at a plain http address asks first.** For an http address on
+  another machine, the add and edit forms explain that your password, session
+  and agents' tokens would cross the network unencrypted, and save it only after
+  you confirm. http to this computer still works without asking.
+- **The OIDC sign-in window says at once when it can't save your session.** If
+  the operating system's keychain refuses the session, sign-in ends straight away
+  with the same message password sign-in shows, instead of waiting five minutes
+  and reporting a timeout.
+- **Pages inside Console can no longer launch other apps or use your devices.**
+  A server's sign-in page can't open windows, hand a link to another app, or
+  use the camera, microphone, location, notifications or clipboard reading.
+  Its web links go to your browser through the usual confirmation.
+- **Packaged builds no longer include DevTools.** Development builds keep them.
+- **"Open in" only opens folders.** A file or a macOS app bundle is shown in the
+  file manager instead of being opened, and folder names are passed to apps
+  safely.
+- **The app window has a Content-Security-Policy.** It runs only Console's own
+  scripts, so a flaw in how messages are displayed can't run code.
+- **The packaged app is harder to tamper with.** It refuses debugger flags,
+  loads its code only from its signed archive and checks that archive on macOS
+  and Windows. On macOS it no longer loads libraries signed by anyone else.
+
+### [0.41.1] - 2026-11-18
+
+#### Fixed
+- **The workspace switcher shows on every build, not only one that can reach
+  Switch Cloud.** A build without a Switch Cloud address, stable included,
+  kept the older list of servers at the top of the sidebar, so a second
+  workspace on a server, and Create organization, New workspace and the
+  invitations waiting for you, couldn't be reached from it. Workspaces belong
+  to the server, so the switcher now lists each server's workspaces whether or
+  not the build knows a Cloud.
+- **The sidebar reads a workspace's agents' rooms in one request**, rather
+  than one request per agent on every refresh (every 20 seconds while the
+  window is open, and whenever it is focused). On a server from before that
+  request it still asks for one agent at a time.
+- **Install failures show the whole error.** A provider install that fails now
+  surfaces the full error in the UI, and logs it in full, instead of a
+  truncated message.
+- **Cursor sessions use supported permission modes.** Cursor launches with a
+  permission mode its CLI accepts, falling back to the provider's default
+  rather than one it would reject.
+
+#### Changed
+- **switch-buddy's opening messages slide in** on the way from onboarding or
+  Home, rather than appearing all at once.
+
+### [0.41.0] - 2026-11-17
+
+#### Added
+- **This computer keeps its agents when Switch Console is set up again on
+  it.** Console tells the server which computer, OS account and data folder
+  it runs from when it turns on managed agents, so a reinstall, or its data
+  folder wiped and set up again, takes over the device this Console already
+  was, agents included, instead of adding another of the same name. A
+  Console with a data folder of its own beside it (a development build, a
+  second profile) stays a device of its own. It needs a server that takes it
+  (`gateway-api` 7); an older one adds a device as before. In the Move
+  dialog, devices that share a name now say when each was last seen.
+- **switch-buddy's first message slides in.** At the end of onboarding its
+  welcome fades in as it rises into place, and the "Where does your team
+  chat?" cards follow just after. From Home, the message you sent comes in
+  the same way, and its first answer when it arrives. Only those first
+  messages move, and only on the way in from onboarding or Home: reopening
+  the chat draws them at once, as does reduced motion.
+- **Group chats.** Create a group chat from New room, open it in the room
+  view, and manage its agents and people from its Configuration tab. Offered
+  only where the server has them on (`group_chats`), which this release does by
+  default.
+- **Reworked Rooms experience.** New Room at the top of the sidebar's Rooms tab
+  (name and who's in it, in one field); rooms shown as cards with a filter by
+  messaging-app connection and archive from a card's menu; unread counts on
+  rooms and chats; leave a room as any member; and `@`-mention autocomplete
+  with badges in the chat composer.
+- **Room admins.** A room can have room admins, shown and managed on every
+  surface alongside the room's owner.
+- **Linear connector.** Linear joins the available connectors.
+- **Decision routing / auto-route (preview — behind a feature flag, off by
+  default).** Where the server offers it, a room can route untagged messages
+  through a decision service to the agent best placed to answer; the Decision
+  routing settings and the room auto-route toggle appear in Console and the
+  dashboard. Off unless the server turns the flag on.
+- **More agent providers (preview — behind a feature flag, off by default).**
+  Goose, Qwen Code, Factory Droid, Cline and DeepSeek Harness join the provider
+  list, behind the additional-providers flag (Pi, GitHub Copilot CLI, Kiro and
+  Junie are already available).
+- **Antigravity can be given a Vertex AI login, as Claude can.** Giving a
+  cloud machine an Antigravity login now offers Vertex AI beside this
+  computer's sign-in: a Google Cloud project, a region, and a service account
+  key or this computer's `gcloud auth application-default login` sign-in. It
+  needs Google's `agy` CLI on the machine.
+- **Home's chat bar takes several lines, and switch-buddy comes alive
+  beside it.** The box grows with what you type, up to ten lines, then
+  scrolls; Enter sends and Shift+Enter starts a new line. Each time Home
+  opens, switch-buddy slides up into its tile and then blinks and smiles now
+  and then, as it does when it is first introduced (still, with reduced
+  motion). The bar's shadow is softer.
 - **A new Home for each workspace.** One row at the top names the server and
   workspace, shows the connection, and holds Refresh and the server's actions.
   Signed out, the page is the sign-in card. Signed in, it offers to connect an
@@ -4489,6 +5495,35 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Set up for a connector's app goes to whoever may set it up.** Console
+  asks the server who may set up its connector apps, whichever layout its
+  dashboard uses. Set up opens Organization settings › Connector apps in the
+  new layout and Connectors in the default one, for the operator and, where
+  the server allows, the admins of its only organization. Anyone else is
+  told that an admin of their organization sets it up, on a server with one
+  organization, or that whoever runs the server does with the
+  `switch-connector-apps` command, on one with several. Older servers keep
+  today's link and wording.
+- **Dashboard pages open in your default browser, already signed in.**
+  Opening a room, an agent or a settings page in the dashboard used to open a
+  Switch Console window for the server Console runs, and your browser, signed
+  out, for any other. Every page now opens in your default browser, signed in
+  as the account Console is signed in with, in the same workspace. Console's
+  own session never leaves Console: it asks the server for a one-time sign-in
+  link, good for a minute, which the browser trades for a session of its own.
+  Signing out of Console signs those browsers out too. Where Console isn't
+  signed in, or the server is older than the sign-in link, the page opens
+  signed out as before. The sessions the old Console windows kept, those of
+  servers you have since removed included, are cleared once, at the next start.
+- **The Admin pages are in Settings.** The Admin item is gone from the
+  sidebar. Workspace admins find Connectors and Decision routing in Settings,
+  after Agent providers, and every workspace admin sees Guardrails there:
+  which Switch Trust policy checks the workspace, or that none does, with the
+  way to the workspace's Guardrails page in the dashboard, or for an
+  organization admin to Organization settings. Each page says under its title
+  what your role lets you do there. Messaging apps is one page for everyone,
+  with Connect and each app's settings for admins and without the tooltips
+  and second heading. Links that opened Admin open the matching Settings page.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button
@@ -4559,20 +5594,70 @@ version of their own to them without also giving them a release of their own.
   The delete dialog on a server's page now calls it "this Switch server that
   Console runs" rather than a "managed server", which read like "managed
   agent"; it was the only place Console showed that name.
-- **The Switch Trust settings say what it cannot check.** Images, audio,
-  video, archives and Office files other than Word documents can't be read,
-  so they are sent unchecked; messages and the text in files are checked up
-  to their first 20,000 characters, with a note on the rest.
-- **Agents are told the message length and pace limits.** The Switch skill
-  says a message longer than the server's limit is refused, not cut, and that
-  messages sent too fast are refused with how long to wait.
-- **The bundled standalone compose follows switch-core's.** Its Postgres and
-  Mattermost images are pinned by digest. Postgres and Mattermost bind to
-  loopback through `POSTGRES_BIND_ADDR` and `MATTERMOST_BIND_ADDR`, which
-  the local server's `.env` now sets to loopback. The helper image that
-  reaches the stack's state volume is the same digest-pinned Postgres image.
 
 #### Fixed
+- **A button with a tooltip is one labelled button.** Back, Forward, the
+  sidebar toggle, Reset to default, the install and copy buttons and a few
+  others sat inside the tooltip's own button, so screen readers met a
+  button within a button, named by nothing. The marks on an agent's row (its
+  device, a failed session, a host problem) were unlabelled buttons inside
+  the row's; each is now an image named by what its tooltip says.
+- **A chat's work log reads in the order the agent worked.** An agent's
+  tool calls all showed in one block above its first reply, even the calls
+  it made after it, and a question it asked showed as a raw AskUserQuestion
+  call far from the question's card. Each call now shows after the agent's
+  message it followed, so the question's call sits beside its card.
+- **Connectors stops trusting an old answer about who sets up connector
+  apps.** When asking the server again failed, the page said it couldn't
+  check but still offered Set up by the last answer; it now goes by none, as
+  it says.
+- **Add device no longer shows commands that can't work.** On a server
+  Switch Console runs on this computer, Settings › Devices no longer offers
+  Add device and says why: no other device can reach it. On any other
+  server, when the server says no other device can reach it, or the address
+  the commands would use is this computer's own (such as
+  `http://localhost:8000`), the dialog says why and what to change instead of
+  showing install and enroll commands that would fail on another device.
+  Enrolling this computer, and the SSH hosts Switch Console sets up, works as
+  before.
+- **Switch Console no longer locks out a local server's admin by signing in
+  again and again.** When the session with a server it runs had ended, every
+  part of the app that needed it signed in with the stored password at once,
+  and a refused password was retried on every call, so the server paused
+  password sign-in for its only admin within a minute. One sign-in now
+  answers every call waiting on it, and once the server refuses the password
+  or pauses sign-in, Console waits five minutes before trying it again. A
+  server that didn't answer is tried again at once. A paused sign-in shows
+  the server's own sentence rather than calling it a problem on the server.
+- **Connectors: turn a service on before you set it up.** A connector whose
+  app is not set up, and which is off in the workspace, now shows "Turn on" in
+  Discover. "Set up" shows after it is on. In Admin → Connectors, the switch of
+  a service that is off and can never work on this server is disabled; it can
+  still be turned off.
+- **Turning an agent off ends its reply in progress.** The reply is marked
+  interrupted and reported to Switch before the agent stops, so the chat no
+  longer shows "Thinking…" and a spinner until the next message.
+- **Cursor, Goose, Kiro and Mistral Vibe can be installed on Windows.** Each
+  offers its vendor's Windows install, which works from PowerShell or Command
+  Prompt, where before it said "Not found" with nothing to install. Cursor and
+  Kiro are found straight after installing, without restarting Switch Console.
+  An agent with no install for your system, such as DeepSeek Harness on
+  Windows, now says it is not available to install there and links its install
+  docs.
+- **DeepSeek Harness installs a version its sessions accept.** The install
+  took npm's latest release, which sessions with approvals refused. It now
+  installs the release they are verified with, with the npm install scripts it
+  needs allowed.
+- **Switch buddy setup finds a CLI installed in a terminal.** The provider
+  card always offers Check again, also before anything was installed from
+  Console, and the step checks again when its window is focused (at most every
+  15 seconds), which is when someone comes back from a terminal. Before, a CLI
+  installed outside Console while the step was open stayed "Not installed".
+- **An install that needs a missing program says so.** When an install command
+  fails because the shell can't find the program it runs (npm, winget, curl),
+  the card says what is missing and how to get it, for example "Installing
+  OpenCode needs Node.js…", instead of PowerShell's "Check the spelling of the
+  name". It is reported as `missing_prerequisite` in `agent_cli_action`.
 - **Workspace settings opens the web dashboard's settings in its new
   layout.** On a server with the new layout on, Settings › Workspace settings
   landed on its Users page. It now opens the settings home, on the page you
@@ -4802,26 +5887,17 @@ version of their own to them without also giving them a release of their own.
   the workspace has switched off. It now names only what you could connect
   and then turn on here. A card for a service the workspace or the server
   stops says why, as Connectors does, even when it is turned on.
-- **A file's name in a chat shows its real extension.** A name carrying
-  hidden or text-reversing characters could read as something else: a file
-  named with a right-to-left override showed as `invoiceexe.pdf` when it was
-  `invoice<…>fdp.exe`. The file, the line above it and replies naming it now
-  show each such character, and any path or control character, as `_`, and
-  that is also the name offered when you save it.
-- **HTML and other web-page attachments can be downloaded.** Saving one used
-  to fail with a message telling you to ask whoever runs the server to fix
-  its routing. It now saves like any other file, and is never opened in
-  Switch Console.
-- **Links in room documents, library items and transcripts no longer open a
-  blank Switch Console window or another app.** A `mailto:`, `irc:` or
-  relative link there now does what it does in chat: a web link asks before
-  it opens in your browser, and any other link is refused with a notice.
-- **An agent's sessions move with its folder.** After an agent's directory
-  changed, its rooms kept being answered, and `!reset` started over, in the old
-  folder. The next message, or a reset, now starts a session where the agent
-  works now, and live sessions in the old folder stop once their turn ends.
+- **Admin › Switch Trust offers "Open organization guardrails" only to an
+  admin of the organization,** and opens it in the workspace in scope. An
+  operator who isn't one is told that only the organization's admins set its
+  guardrails, rather than being sent to a page that refuses them.
 
 #### Removed
+- **The "Onboarding checklist" setting.** Turning it on or off under Settings ›
+  Preferences changed nothing: the sidebar's "Setting up Switch" checklist it
+  controlled is no longer shown, since the first run now sets things up with
+  you through switch-buddy. The setting and the checklist behind it are gone,
+  and a value an older version saved is ignored.
 - **The welcome page.** The Switch mark in the sidebar, and deleting the agent
   or server on screen, now go to the active workspace's Home, or to an "Add a
   server" page when no server is left. "About Switch" in the workspace menu is
@@ -4841,175 +5917,6 @@ version of their own to them without also giving them a release of their own.
   over the WebSocket, so it can no longer reach a Switch server older than the
   socket (agent-protocol 7 and older), and it stops sending its own heartbeat
   requests (#673).
-- **The "Environment variables" and "Additional parameters" fields in a
-  provider's settings.** Nothing ever applied them to an agent, and they were
-  stored unencrypted. Values saved by earlier versions are deleted from the
-  database when Console starts.
-
-#### Security
-- **Claude sessions keep their MCP tokens off the command line.** The Switch
-  tools' token and every connector's used to be written into the `claude`
-  process's arguments, where another user on a Linux machine could read them
-  and act as the agent. Each is now passed in the process environment, which
-  only the agent's own user can read. A session picks this up when it next
-  starts.
-- **Agents can send files only from their working directory.** A file sent
-  with `send_attachment` must be inside the session's working directory or
-  among the attachments it downloaded, with links followed; anything else is
-  refused with the reason, in every permission mode. A file with more than one
-  hard link is refused too, unless it is an attachment the session downloaded,
-  since a hard link in the working directory can be the same file as a key
-  kept elsewhere. Before, a manipulated agent could post a key or credential
-  file from anywhere on the machine without asking. To send a file from
-  elsewhere, a screenshot in `/tmp` say, the agent copies it into its working
-  directory first.
-- **Pi asks before touching files outside its working directory.** In auto
-  mode Pi used to change any file without asking, and in every mode it read
-  any file. It now changes files on its own only inside its working directory,
-  and asks before changing anything else: files outside it, git's hooks and
-  config, the dot files in your home folder, and Switch's own settings,
-  including the one that sets the agent's permission mode. Unless bypass is
-  on, it also asks before reading outside its working directory. A file with
-  another hard link counts as outside, wherever it is.
-- **Session folders and downloaded room files are private to you.** Each
-  session's folder is created readable by you alone, and one an earlier
-  version left open is tightened when the session next starts. Files an agent
-  downloads from a room are saved the same way.
-- **A login you give a machine is sealed only to a key Console can vouch
-  for.** Console used to seal it to whatever key the server listed for the
-  machine, so a server that listed its own key could open the API key, setup
-  token or sign-in file. Now an SSH host's key is read from the host itself,
-  this computer takes no given logins (its controller keeps no key), and any
-  other machine is held to the key Console sealed its first login to. Giving
-  a login shows that key's fingerprint; if the server later sends another,
-  Console shows both and seals nothing until you choose "Trust the new key".
-  The agent controller's `enroll` and `status` print the same fingerprint, and
-  a new `switch-agent-controller sealing-key` command prints the key.
-- **Signing out of a server tells the server.** Console now calls the
-  server's sign-out before it forgets its copy of the session. A server that
-  can't be reached is logged and the session is still forgotten here. A
-  server from this release ends that one session on sign-out, so a copy of it
-  stops working too; an older server only clears the cookie.
-- **Switch Console's data folder, database and log are readable by your user
-  alone on Linux and macOS.** The folder is made private (0700), and the
-  database, its write-ahead files and the log private (0600), including ones
-  an earlier version created with the default permissions.
-- **The log keeps more kinds of credential out.** camelCase names such as
-  accessToken, refreshToken and clientSecret, cookie headers, Basic
-  authorization, and Switch agent keys written without a label are now
-  redacted in Switch Console's log and its diagnostics export.
-- **A repository can no longer make an agent's token committable.** Console
-  keeps its own `.gitignore` in `.switch/agents/` even where a repository
-  ships a different one, and refuses to write the token into a file the
-  repository tracks, saying how to untrack it. Tokens that earlier versions
-  left in `.claude/settings.local.json` or `.claude/switch-subagents/` are
-  removed once the agent's own credentials file holds them.
-- **A template's Use page shows what its agents will be allowed to do, and
-  asks before creating a risky one.** Anyone in a workspace can write a
-  template, and a link to it opens this page. The preview now says who the
-  template is from and, for each agent, whether it runs every command without
-  asking, who can talk to it, and its instructions. When an agent would run
-  without asking or answer anyone in the workspace, Create asks first and
-  names the risks. What it shows is what the run creates. A version 1
-  template's `auto_approve` or `addressing` written as a list of `if:` cases,
-  which only version 2 reads, is shown as the default the agent actually gets.
-- **Files saved from a chat are marked as downloaded.** On macOS a saved
-  attachment now carries the quarantine mark a browser gives a download, so
-  Gatekeeper checks it the first time it is opened; on Windows it is marked
-  as coming from the Internet zone. If the mark cannot be written, the file
-  is still saved and the log says so.
-- **Console asks before making your computer a managed-agent machine.**
-  Opening the New agent form or switch-buddy's setup, including from a link in
-  a chat or on a web page, no longer enrolls the computer. A button and a
-  confirmation that names the server do. On Meet switch-buddy, picking a
-  provider signed in on this computer while it is not yet a machine asks the
-  same question, and starts switch-buddy once you confirm.
-- **You decide on this computer whether a managed agent may skip approvals or
-  work outside its folder.** The agents controller Console runs no longer
-  applies either just because the server's copy of the agent asks for it.
-  Console asks you, naming the agent, the server and what it could then do,
-  and this computer's page under Machines lists what you allowed, with Revoke.
-  Until you allow it, an agent that asks for bypass runs and asks for
-  approval, and one that asks for a folder outside `~/.switch/agents` does not
-  start. Agents that ran with bypass or in their own folder before this
-  release need allowing once. The question names the agent by its unique name
-  and its server; a display name its owner set follows, marked as what the
-  agent is shown as.
-- **Images from other computers load only when you ask.** Remote images in
-  chats, room documents and library items show as a placeholder naming their
-  host until you click Load image, and are then fetched without a Referer.
-- **Room references show where they go and ask before opening.** The Resources
-  tab shows each link's host, and opening one, or a link on a reference's
-  page, goes through the same confirmation as chat links, showing the whole
-  address. A reference whose link is not a web link is refused with a notice,
-  as in chat.
-- **Only your own switch-buddy wears switch-buddy's picture.** Another agent
-  using the buddy's icon address is drawn as if it had no picture. That holds
-  in each workspace you belong to on a server: reading another workspace's
-  agents no longer takes the picture from your buddy.
-- **Chats show an agent's unique name beside its display name.** An agent's
-  owner can set its display name to anything, including switch-buddy or
-  another agent's name. Messages, an agent's work, kickoff cards and the chat
-  header now show the agent's unique name, muted, after a display name that
-  differs from it, and a display name that reads as switch-buddy's is shown
-  only for your own buddy: any other agent goes by its unique name.
-- **Question cards always say which agent is asking.** Each open card names the
-  agent by its unique name and whose it is, quotes its title, and says a typed
-  answer goes to that agent, not to Switch.
-- **A session's shell setup can no longer add environment variables.** It may
-  still change the variables a session inherits (prepend to `PATH`, point
-  `CLAUDE_CONFIG_DIR` elsewhere) and the agent's own, but anything else it or
-  your login profile exports no longer reaches the provider. Set such a
-  variable in the agent's environment instead.
-- **Dependencies move past their known advisories.** The MCP TypeScript SDK
-  goes to 1.32.2, and proxy-addr, body-parser, fast-uri, brace-expansion, hono,
-  @hono/node-server, qs, ip-address and smol-toml to fixed releases.
-- **Console checks every SSH host's key before it connects.** A remote agent
-  host or a remote-managed server is reached only when its key matches your
-  `known_hosts` (hashed entries, `[host]:port` and `HostKeyAlias` included) or a
-  key you trusted in Console. The first time Console meets a host it shows the
-  key's SHA256 fingerprint and asks whether to trust it. A key that differs from
-  the one on record is refused, with both fingerprints shown, and can only be
-  replaced after you confirm you checked it; a revoked key is never accepted.
-  Reconnects and background work only use a decision you made. Console keeps its
-  own record and never edits your `known_hosts`. Agent forwarding follows only
-  the host's own `ForwardAgent` setting.
-- **A remote managed server's secrets file is never readable by other
-  accounts.** Its `.env` (database passwords, signing keys, the admin password)
-  is written to a file only you can read and moved into place, inside a folder
-  only you can open, instead of being created with the host's default
-  permissions and narrowed afterwards. The same holds for the local server's
-  `.env` when it is rewritten.
-- **Console reaches the server it runs at 127.0.0.1, not localhost.** `localhost`
-  resolves to the IPv6 loopback first, where the server does not listen, so
-  another program on the machine could answer there and receive the admin
-  password and session. The server's address, its Mattermost and its agents move
-  to 127.0.0.1 on the next start, and a start stops with a clear message if
-  another program holds the server's port on the IPv6 loopback.
-- **Adding a server at a plain http address asks first.** For an http address on
-  another machine, the add and edit forms explain that your password, session
-  and agents' tokens would cross the network unencrypted, and save it only after
-  you confirm. http to this computer still works without asking.
-- **The OIDC sign-in window says at once when it can't save your session.** If
-  the operating system's keychain refuses the session, sign-in ends straight away
-  with the same message password sign-in shows, instead of waiting five minutes
-  and reporting a timeout.
-- **Pages inside Console can no longer launch other apps or use your devices.**
-  A server's sign-in page, its dashboard and the room view can't open windows,
-  hand a link to another app, or use the camera, microphone, location,
-  notifications or clipboard reading. Their web links go to your browser through
-  the usual confirmation.
-- **Packaged builds no longer include DevTools.** Development builds keep them.
-- **"Open in" only opens folders.** A file or a macOS app bundle is shown in the
-  file manager instead of being opened, and folder names are passed to apps
-  safely.
-- **The app window has a Content-Security-Policy.** It runs only Console's own
-  scripts, so a flaw in how messages are displayed can't run code.
-- **The packaged app is harder to tamper with.** It refuses debugger flags,
-  loads its code only from its signed archive and checks that archive on macOS
-  and Windows. On macOS it no longer loads libraries signed by anyone else.
-- **Embedded room views are always sandboxed,** in the session Console prepared
-  for them and on their own Mattermost.
 
 ### [0.40.1] - 2026-10-21
 
@@ -6975,6 +7882,24 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Says which machine, OS account and data folder it runs from.**
+  Enrolling, and every status report, carry `device_id`: a SHA-256 of the
+  platform's machine id (a Mac's hardware UUID, Windows's MachineGuid,
+  Linux's machine-id), the OS user name and the data directory (or
+  `--device-root`, which Switch Console passes as its own data folder), with
+  the host name on Linux and Windows, where a cloned image can share a
+  machine id. A server that keeps it takes over the device that install
+  already was rather than adding another, and the enroll output says so. A
+  container whose host name changes each time it starts still enrolls as a
+  new device each time. `--device-id --device-root <folder>` prints it, for
+  Switch Console, which enrolls its computer itself. Left out wherever it
+  can't be read.
+- **Signs Antigravity in through Vertex AI.** A Vertex AI login given for
+  Antigravity is taken, its Google credential written to the agent's own
+  `provider-home/google-credentials.json`, and `agy` run with `AGY_ADC_AUTH`,
+  the project as `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_QUOTA_PROJECT`, the
+  region as `GOOGLE_CLOUD_LOCATION`, and `GOOGLE_APPLICATION_CREDENTIALS`. The
+  retired `antigravity-acp` runtime is refused one, since it cannot use it.
 - **Reports when its process started.** Each status report carries
   `controller.started_at`, so Core can count a cloud machine's controller
   restarting. An older Core ignores it.
@@ -7383,6 +8308,9 @@ published on its own.
   session, the GitHub credential helper and `gh` wrapper, and scrubbing of
   issued tokens, as Switch Console does.
 
+#### Fixed
+- **An agent's sessions move with its folder**, as in Switch Console.
+
 #### Security
 - **The control socket compares its secret in constant time.**
 - **Shell setup can no longer add environment variables beyond the inherited
@@ -7391,9 +8319,6 @@ published on its own.
   as the agent-controller does, a Claude Code `permissionMode` that skips
   approvals included: an SSH host's controller needs `switch-agent-controller
   allow` run on that host.
-
-#### Fixed
-- **An agent's sessions move with its folder**, as in Switch Console.
 
 ### [1.9.12] - 2026-10-01
 

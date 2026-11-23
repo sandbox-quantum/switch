@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { events, rpc } from '@renderer/lib/ipc';
+import { log } from '@renderer/utils/logger';
 import { offeredAgentProviders } from '@shared/core/providers/agent-provider-registry';
 import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/events/appEvents';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
@@ -12,6 +13,9 @@ import type { ThisComputer } from './use-this-computer';
 
 /** How many lines of a sign-in command's output are kept on screen. */
 const KEPT_LINES = 40;
+
+/** The least time between re-checks run because the window was focused. */
+const FOCUS_RECHECK_INTERVAL_MS = 15_000;
 
 export type Login = {
   attemptId: string;
@@ -80,6 +84,12 @@ export function useProviderSetup({
   );
 
   const [login, setLogin] = useState<Login | null>(null);
+  /**
+   * The sign-in attempt under way, read where an event has to know whether it
+   * is this one's. Not from inside a state updater: React runs those when it
+   * renders, which is after the handler has already decided.
+   */
+  const attempt = useRef<string | null>(null);
   /** The provider whose install last failed, so its card offers a way on. */
   const [installFailed, setInstallFailed] = useState<string | null>(null);
   /** What the last Check again found, when it found nothing new: said, not left blank. */
@@ -99,6 +109,24 @@ export function useProviderSetup({
     }
   }, [recheck, setError]);
 
+  // Someone who installed a CLI in a terminal comes back to this window: look
+  // again then, so the card does not keep saying it is missing.
+  // When it last did, kept across re-renders: `recheck` changes identity as
+  // its query refetches, which re-subscribes this effect.
+  const lastFocusRecheck = useRef(0);
+  useEffect(() => {
+    if (working !== null) return;
+    const onFocus = () => {
+      if (Date.now() - lastFocusRecheck.current < FOCUS_RECHECK_INTERVAL_MS) return;
+      lastFocusRecheck.current = Date.now();
+      recheck().catch((cause: unknown) =>
+        log.warn('switch-buddy: re-checking providers on focus failed', { error: String(cause) })
+      );
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [recheck, working]);
+
   useEffect(() => {
     const offLine = events.on(providerLoginLineChannel, ({ attemptId, line }) =>
       setLogin((current) =>
@@ -108,13 +136,14 @@ export function useProviderSetup({
       )
     );
     const offExit = events.on(providerLoginExitChannel, ({ attemptId, exitCode, error: why }) => {
-      let ours = false;
-      setLogin((current) => {
-        if (current?.attemptId !== attemptId) return current;
-        ours = true;
-        return { ...current, ended: { ok: exitCode === 0 && why === null, error: why } };
-      });
-      if (ours) void checkAgain();
+      if (attempt.current !== attemptId) return;
+      attempt.current = null;
+      setLogin((current) =>
+        current?.attemptId === attemptId
+          ? { ...current, ended: { ok: exitCode === 0 && why === null, error: why } }
+          : current
+      );
+      void checkAgain();
     });
     return () => {
       offLine();
@@ -129,6 +158,7 @@ export function useProviderSetup({
     setError(null);
     try {
       const { attemptId } = await rpc.providers.startLogin(provider.id);
+      attempt.current = attemptId;
       setLogin({ attemptId, providerId: provider.id, lines: [], ended: null });
     } catch (cause) {
       setError(failureText(cause, `Could not start signing in to ${provider.name}.`));
@@ -161,7 +191,18 @@ export function useProviderSetup({
     started.start(provider.id);
   };
 
+  const sendSignInCode = async (code: string) => {
+    if (!login) return;
+    setError(null);
+    try {
+      await rpc.providers.loginInput({ attemptId: login.attemptId, line: code });
+    } catch (cause) {
+      setError(failureText(cause, 'Could not send the code to the sign-in.'));
+    }
+  };
+
   const cancelSignIn = () => {
+    attempt.current = null;
     void rpc.providers.cancelLogin();
     setLogin(null);
     setChecked(null);
@@ -179,6 +220,7 @@ export function useProviderSetup({
     checkAgain,
     signIn,
     cancelSignIn,
+    sendSignInCode,
     install,
     start,
   };

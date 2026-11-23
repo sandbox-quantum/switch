@@ -20,6 +20,7 @@ def _token(controller_id: str = "c1") -> str:
         controller_id=controller_id,
         tenant_id="t1",
         owner_id="o1",
+        key_id="k1",
         now=datetime.now(UTC),
     )
     return token
@@ -46,7 +47,7 @@ def test_a_token_is_decoded_once(decodes: list[str]) -> None:
     first = verified.verify(token)
     again = verified.verify(token)
 
-    assert first == again == tokens.AccessTokenClaims("c1", "t1", "o1")
+    assert first == again == tokens.AccessTokenClaims("c1", "t1", "o1", "k1")
     assert len(decodes) == 1
 
 

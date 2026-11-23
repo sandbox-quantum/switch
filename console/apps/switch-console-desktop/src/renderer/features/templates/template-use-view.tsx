@@ -53,7 +53,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
-import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
+import { newAgentPermissions } from '@shared/core/agents/agents';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
   type AgentProviderId,
@@ -590,7 +590,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             onSuccess: () => refreshIdentities(),
           })
       : null;
-  const noMessagingApp = parsed !== null && bridgesQuery.data !== undefined && bridges.length === 0;
 
   const lists = useMemo(
     (): EntityLists => ({
@@ -1013,9 +1012,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                           ? null // no room is made, so nothing below applies
                           : creatorBlocked
                             ? 'Link your messaging account first.'
-                            : !isV2 && parsed !== null && noMessagingApp && parsed.usesCreator
-                              ? 'This server has no messaging app, so the room would have no chat.'
-                              : null;
+                            : null;
   // Existing agents in the room whose addressing policy blocks messages from
   // another member. New agents get the template's addressing at creation.
   const handoffBlocked = useMemo(() => {
@@ -1443,7 +1440,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 ? setup.displayName.trim()
                 : null,
             iconUrl: null,
-            ...NEW_AGENT_PERMISSIONS,
+            ...newAgentPermissions(providerId),
             instructions: slot.entry.instructions,
             definitionAttributes: {},
             providerConfig: null,

@@ -57,6 +57,36 @@ async function controllerVersion(bundle: string): Promise<string> {
 const controllerLog = log.child({ component: 'embedded-agent-controller' });
 
 /**
+ * This machine, OS account and Console data folder (`root`) as the controller
+ * names them (`--device-id`), so the server takes over the device this
+ * Console already was here rather than adding another. Null when it cannot
+ * tell, and this computer enrolls as a new device, as it always did; a
+ * controller that fails to say is logged.
+ */
+async function controllerDeviceId(bundle: string, root: string): Promise<string | null> {
+  try {
+    const { stdout } = await execute(
+      process.execPath,
+      [bundle, '--device-id', '--device-root', root],
+      {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        timeout: 15_000,
+      }
+    );
+    const id = stdout.trim();
+    if (/^[0-9a-f]{64}$/.test(id)) return id;
+    if (id)
+      controllerLog.warn('The agent controller named this computer oddly; enrolling without it');
+    return null;
+  } catch (error) {
+    controllerLog.warn('Could not ask the agent controller which computer this is', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
  * The name people know this computer by: on a Mac the computer name from its
  * Sharing settings, which the host name often is not; elsewhere the host name.
  */
@@ -137,6 +167,10 @@ export const embeddedControllerService = new EmbeddedControllerService({
     sharedHost: resolveSharedHostBundlePath,
   },
   controllerVersion,
+  controllerDeviceId,
+  // This Console's own data folder: one device per Console, wherever its
+  // per-server controller data lives inside it.
+  deviceRoot: () => app.getPath('userData'),
   spawn: (command, args, options) => spawn(command, args, options),
   execPath: process.execPath,
   env: () => process.env,

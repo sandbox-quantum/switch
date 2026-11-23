@@ -1,14 +1,11 @@
 import { join } from 'node:path';
 import { app, BrowserWindow, dialog } from 'electron';
 import appIcon from '@/assets/images/switch-console/icon-dock.png?asset';
-import { roomEmbedOrigin } from '@main/core/switch-rooms/room-embed-grants';
 import { events } from '@main/lib/events';
-import { log } from '@main/lib/logger';
-import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/utils/externalLinks';
+import { registerExternalLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { appCommandNavigateChannel } from '@shared/events/appEvents';
 import { DEVTOOLS_ENABLED } from './devtools';
-import { constrainGuest } from './guest-webview';
 import { APP_ORIGIN } from './protocol';
 
 let mainWindow: BrowserWindow | null = null;
@@ -29,10 +26,6 @@ export function createMainWindow(): BrowserWindow {
       sandbox: false,
       // import.meta.dirname resolves to out/main/ at runtime; preload is at out/preload/index.mjs
       preload: join(import.meta.dirname, '../preload/index.mjs'),
-      // Enables the embedded room view's <webview> (CHOO-1674). Guests are
-      // constrained in the will-attach-webview handler below, which is what
-      // actually keeps this from widening the app's attack surface.
-      webviewTag: true,
       devTools: DEVTOOLS_ENABLED,
     },
     ...(process.platform === 'darwin'
@@ -66,8 +59,6 @@ export function createMainWindow(): BrowserWindow {
 
   // Route external links to the user’s default browser
   registerExternalLinkHandlers(mainWindow);
-
-  constrainEmbeddedWebviews(mainWindow);
 
   // Show when ready
   mainWindow.once('ready-to-show', () => {
@@ -111,35 +102,6 @@ export function createMainWindow(): BrowserWindow {
   });
 
   return mainWindow;
-}
-
-/** Hold every `<webview>` the renderer attaches to what {@link constrainGuest} allows. */
-function constrainEmbeddedWebviews(window: BrowserWindow): void {
-  const guestPreload = join(import.meta.dirname, '../preload/mattermost-guest.mjs');
-
-  window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
-    const refusal = constrainGuest(
-      webPreferences,
-      params,
-      guestPreload,
-      DEVTOOLS_ENABLED,
-      roomEmbedOrigin
-    );
-    if (refusal !== null) {
-      log.warn('Blocked a webview attach', {
-        reason: refusal,
-        src: params.src,
-        partition: params.partition,
-      });
-      event.preventDefault();
-    }
-  });
-
-  // A guest inherits none of the window's link handling, so wire it up as each
-  // one attaches — otherwise every link in a message is silently inert.
-  window.webContents.on('did-attach-webview', (_event, guest) => {
-    registerGuestLinkHandlers(guest);
-  });
 }
 
 export function getMainWindow(): BrowserWindow | null {

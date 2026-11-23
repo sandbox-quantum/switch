@@ -1,5 +1,5 @@
 {{- if and .Values.networkPolicy.enabled (eq .Values.postgresql.mode "managed") }}
-# Only this release's switch-core, Mattermost and migration Jobs reach the
+# Only this release's switch-core and migration Jobs reach the
 # in-cluster Postgres, and only on its port: no other pod in the namespace or
 # the cluster. Egress is left open.
 apiVersion: networking.k8s.io/v1
@@ -20,9 +20,6 @@ spec:
         {{- $clients := list "switch-core" "create-runtime-role" }}
         {{- if .Values.switchCore.migrations.preUpgradeJob }}
         {{- $clients = append $clients "migrate" }}
-        {{- end }}
-        {{- if .Values.mattermost.enabled }}
-        {{- $clients = append $clients "mattermost" }}
         {{- end }}
         {{- range $clients }}
         - podSelector:

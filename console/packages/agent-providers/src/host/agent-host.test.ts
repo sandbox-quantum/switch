@@ -21,6 +21,7 @@ import {
 import type { AgentStreamDeps } from './agent-host';
 import type { Handoff } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
+import { replaceFile } from './replace-file';
 import { type SessionRequest, SessionLinks } from './session-channel';
 import type * as sessionServices from './session-services';
 import { sharedConfigSchema } from './shared-config';
@@ -510,7 +511,7 @@ it('resumes at the server head after its numbering restarts', async () => {
 async function writeFlags(root: string, flags: { enabled: boolean; spawn: boolean }) {
   const temporary = join(root, 'watch.json.tmp');
   await writeFile(temporary, JSON.stringify(flags));
-  await rename(temporary, join(root, 'watch.json'));
+  await replaceFile(temporary, join(root, 'watch.json'));
 }
 
 async function spawning(root: string) {
@@ -1733,7 +1734,7 @@ it('brings live sessions in step with a rewritten definition, each once its turn
     edited.start.input.model = { id: 'claude-sonnet-4-6' };
     edited.execution!.context = 'New instructions.';
     await writeFile(join(root, 'config.json.next'), JSON.stringify(edited));
-    await rename(join(root, 'config.json.next'), join(root, 'config.json'));
+    await replaceFile(join(root, 'config.json.next'), join(root, 'config.json'));
     await eventually(() => restarted.length === 1);
     // The session in the middle of a turn is left to finish it.
     expect(restarted).toEqual([

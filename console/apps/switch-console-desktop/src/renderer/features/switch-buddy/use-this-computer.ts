@@ -98,14 +98,16 @@ export function useThisComputer(serverId: string, workspaceId: string) {
    * resolves to a line saying when the check found nothing ready that was not
    * before, or null when something changed.
    */
+  // The query result is a new object on every render; its refetch is stable.
+  const refetchMachines = machines.refetch;
   const recheck = useCallback(async (): Promise<string | null> => {
     const before = readyOn(machines.data);
     await rpc.embeddedController.recheckProviders(serverId);
-    const after = readyOn((await machines.refetch()).data);
+    const after = readyOn((await refetchMachines()).data);
     return after > before
       ? null
       : 'Checked just now: nothing new is signed in yet. Finish signing in, then check again.';
-  }, [serverId, machines]);
+  }, [serverId, machines.data, refetchMachines]);
 
   const machine = thisComputerIn(machines.data);
   const reported = machine !== null && machine.providers.length > 0;

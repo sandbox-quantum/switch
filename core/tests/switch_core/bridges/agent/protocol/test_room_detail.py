@@ -172,6 +172,7 @@ def _room(**overrides: Any) -> SimpleNamespace:
         "read_visibility": "public",
         "write_visibility": "public",
         "archived_at": None,
+        "frozen_at": None,
         "metadata_": None,
     }
     base.update(overrides)
@@ -189,6 +190,7 @@ def _build_service(
     ext_users: dict[str, list[Any]] | None = None,
     statuses: dict[str, AgentStatus] | None = None,
     roles: list[dict[str, Any]] | None = None,
+    channel_adapter: Any = None,
 ) -> AgentCore:
     svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
@@ -201,6 +203,9 @@ def _build_service(
     svc.agent_store = _FakeAgentStore(agents or {})  # type: ignore[assignment]
     svc.bridge_store = _FakeBridgeStore(bridges or {})  # type: ignore[assignment]
     svc.external_user_store = _FakeExternalUserStore(ext_users or {})  # type: ignore[assignment]
+    svc.collab_lifecycle = SimpleNamespace(
+        get_adapter=lambda bridge_id: channel_adapter
+    )  # type: ignore[assignment]
 
     resolved = statuses or {aid: AgentStatus.NO_SESSION for aid in agent_ids}
 
@@ -562,3 +567,33 @@ class TestSetRoomArchived:
 
         # The room must not have been archived.
         assert room.archived_at is None
+
+
+class _ChannelAdapter:
+    def __init__(self, url: str | None) -> None:
+        self.url = url
+
+    async def channel_deeplink(self, external_channel_id: str) -> str | None:
+        return self.url
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://discord.com/channels/1/2", "https://discord.com/channels/1/2"),
+        ("slack://channel?team=T&id=C", None),
+        (None, None),
+    ],
+)
+async def test_a_channel_link_is_given_only_as_a_web_address(
+    url: str | None, expected: str | None
+) -> None:
+    """Buddy ends a setup with this link, so only one a chat message can open."""
+    room = _room(bridge_id="bridge-1", external_channel_id="C1")
+    svc = _build_service(
+        room=room, agent_ids=["agent-1"], channel_adapter=_ChannelAdapter(url)
+    )
+
+    detail = await svc.get_room_detail("agent-1", "room-1")
+
+    assert detail.channel_url == expected

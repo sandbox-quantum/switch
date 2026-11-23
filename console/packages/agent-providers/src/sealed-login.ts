@@ -44,7 +44,7 @@ export type SealedLogin = z.infer<typeof sealedLoginSchema>;
 
 /**
  * What is sealed: a login as Switch's provider connections hold one. A
- * `vertex` login (Claude only) holds a `VertexLogin` as JSON.
+ * `vertex` login (Claude or Antigravity) holds a `VertexLogin` as JSON.
  */
 export const providerLoginSchema = z
   .strictObject({

@@ -210,6 +210,28 @@ def create_unpooled_engine(config: SwitchConfig) -> AsyncEngine:
     )
 
 
+def create_lease_engine(config: SwitchConfig) -> AsyncEngine:
+    """An engine of one connection, for the writes that keep this process's
+    lease (`process_lease.py`).
+
+    Everything else in the process borrows from the shared pool, and when that
+    pool is full a borrower waits out `DB_POOL_TIMEOUT` and fails. A lease
+    renewal that fails that way a few times in a row lets the lease lapse, and
+    a lapsed lease stops every piece of work this process owns and puts every
+    agent and controller it holds offline: one overloaded part of the process
+    takes the rest down with it. Seen on staging when agents reconnected after
+    a pod loss (#1139) and on dev-abel under open Consoles (#1987). On a
+    connection of its own, a renewal waits for nothing but the database.
+
+    Pooled rather than opened per renewal, so a renewal costs one round trip,
+    not a connection's handshake every few seconds. The same dead-peer options
+    and closed-connection check as the shared pool, so after a failover the
+    first renewal fails, the connection is replaced, and the retry goes
+    through.
+    """
+    return create_engine_from_config(config, pool_size=1, max_overflow=0)
+
+
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     """The factory every session in the process comes from.
 

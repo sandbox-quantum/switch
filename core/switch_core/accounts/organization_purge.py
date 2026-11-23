@@ -475,6 +475,8 @@ class OrganizationPurge:
     ) -> str | None:
         if is_server_administrator(user, self.admin_email):
             return "the server's administrator account"
+        if user.role == "admin":
+            return "a platform operator account"
         elsewhere = set(await tenants_of_user(self.session_factory, user.id))
         if elsewhere - tenant_ids:
             return "a member of another workspace"

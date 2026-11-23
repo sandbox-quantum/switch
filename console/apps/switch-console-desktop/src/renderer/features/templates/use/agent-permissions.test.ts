@@ -93,6 +93,7 @@ describe('permissionsOnCreate', () => {
     cloud: false,
     workspacesDir: '/home/me/.switch/agents',
     os: 'linux',
+    lastSeenAt: null,
     local: { kind: 'this-computer' },
   };
   // Version 2's cases, as the Switch expert template writes them.

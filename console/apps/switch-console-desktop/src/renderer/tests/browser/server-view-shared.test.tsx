@@ -206,6 +206,17 @@ async function click(element: HTMLElement): Promise<void> {
   await act(async () => element.click());
 }
 
+describe('the header', () => {
+  it('reads workspace / Home like every workspace page, and keeps the status and actions', async () => {
+    await render();
+
+    const header = document.querySelector('header')!;
+    expect(header.textContent).toMatch(/\/\s*Home/);
+    expect(menuTrigger()).not.toBeNull();
+    expect(document.querySelector('[aria-label="Refresh"]')).not.toBeNull();
+  });
+});
+
 describe('the server menu', () => {
   it('offers to disconnect from or delete a remote server, which others may use', async () => {
     await render();

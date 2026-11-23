@@ -47,6 +47,8 @@ from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec, coerce_param, inte
 from switch_core.template_yaml import load_template_yaml
 
 RESOURCE_TYPES = ("agent", "room", "group")
+# The most resources one template creates, each by the request that runs it.
+RESOURCES_MAX = 50
 
 # A reference to the name a resource is created under.
 _NAME_REF = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\.name\}")
@@ -176,6 +178,11 @@ def _resources(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     raw = data.get("resources")
     if not isinstance(raw, dict) or not raw:
         raise TemplateError("'resources' must map each resource's key to it.")
+    if len(raw) > RESOURCES_MAX:
+        raise TemplateError(
+            f"A template creates at most {RESOURCES_MAX} resources; this one "
+            f"lists {len(raw)}."
+        )
     out: dict[str, dict[str, Any]] = {}
     for key, spec in raw.items():
         if not isinstance(spec, dict):
@@ -191,6 +198,12 @@ def _resources(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
         out[str(key)] = spec
     return out
+
+
+def resource_types(data: dict[str, Any]) -> list[str]:
+    """Each resource's type, in the order the document writes them,
+    conditional ones included; raises for resources a run would refuse."""
+    return [spec["type"] for spec in _resources(data).values()]
 
 
 def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> Compiled:

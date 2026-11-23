@@ -51,6 +51,7 @@ from switch_core.connections.loader import ChoicesError
 from switch_core.db.models import ServiceConnection, Tenant, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.admission import writes_on_get
 from switch_core.gateway.auth import get_current_user, session_belongs_to
 from switch_core.gateway.dependencies import (
     get_config,
@@ -361,7 +362,7 @@ async def authorize(
     return response
 
 
-@router.get("/callback")
+@router.get("/callback", dependencies=[Depends(writes_on_get)])
 async def callback(
     service: str,
     request: Request,

@@ -88,6 +88,7 @@ resources:
     name: "{site} - SEO & Analytics"
     description: "SEO and organic growth tracking for {site}. Keyword performance, content gaps, and traffic analysis."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [seo_analyst, performance_reporter]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

@@ -70,6 +70,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import ORMExecuteState, Session, SessionTransaction
 
+from switch_core.db.statement_timeout import current_statement_timeout
 from switch_core.tenant_context import current_organization_id, current_tenant_id
 
 _registered = False
@@ -140,6 +141,13 @@ def register_tenant_session_hook() -> None:
 
 _SET_TENANT = "SELECT set_config('app.tenant_id', $1, true)"
 _SET_ORGANIZATION = "SELECT set_config('app.organization_id', $1, true)"
+# The tenant and the statement timeout bound for this work
+# (`db/statement_timeout.py`) in one round trip, as most gateway reads set both.
+_SET_TENANT_AND_TIMEOUT = (
+    "SELECT set_config('app.tenant_id', $1, true), "
+    "set_config('statement_timeout', $2, true)"
+)
+_SET_TIMEOUT = "SELECT set_config('statement_timeout', $1, true)"
 
 
 def _set_tenant_on_begin(
@@ -164,8 +172,13 @@ def _set_tenant_on_begin(
     session.info[_STAMPED_ORGANIZATION] = organization_id
     # Sent to the driver as they are: a `text()` construct would be built and
     # compiled again for every transaction, which is every session.
-    if tenant_id is not None:
+    timeout = current_statement_timeout()
+    if tenant_id is not None and timeout is not None:
+        connection.exec_driver_sql(_SET_TENANT_AND_TIMEOUT, (tenant_id, timeout))
+    elif tenant_id is not None:
         connection.exec_driver_sql(_SET_TENANT, (tenant_id,))
+    elif timeout is not None:
+        connection.exec_driver_sql(_SET_TIMEOUT, (timeout,))
     if organization_id is not None:
         connection.exec_driver_sql(_SET_ORGANIZATION, (organization_id,))
 

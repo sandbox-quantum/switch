@@ -63,7 +63,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
   const serviceConnections = useFeatureFlags(serverId).service_connections;
 
   useEffect(() => {
-    if (buddy) void openBuddyChat(serverId, buddy);
+    if (buddy) void openBuddyChat(serverId, buddy, 'in-place');
   }, [buddy, serverId]);
 
   const connect = () => {
@@ -72,7 +72,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
     showModal('buddySetupModal', {
       serverId,
       workspaceId,
-      onSuccess: (agent) => void openBuddyChat(serverId, agent),
+      onSuccess: (agent) => void openBuddyChat(serverId, agent, 'in-place'),
     });
   };
 

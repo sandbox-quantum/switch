@@ -111,7 +111,10 @@ export const AgentAvatar = observer(function AgentAvatar({
   if (src === null || failedSrc === src) {
     return (
       <span
-        className={cn(shape, 'bg-background-tertiary font-medium text-foreground-muted')}
+        className={cn(
+          shape,
+          'bg-background-tertiary font-medium text-foreground-muted emdark:bg-background-3'
+        )}
         style={{ width: size, height: size, fontSize: Math.max(8, Math.round(size * 0.4)) }}
         title={
           src === null && avatarSettings.error !== null

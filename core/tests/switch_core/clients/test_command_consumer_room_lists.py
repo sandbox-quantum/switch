@@ -55,6 +55,7 @@ def _consumer() -> CommandConsumer:
         agent_requests=MagicMock(),
         frontend_base_url=None,
         follow_the_conversation_enabled=False,
+        feature_flags={},
         decision_availability=MagicMock(),
     )
 

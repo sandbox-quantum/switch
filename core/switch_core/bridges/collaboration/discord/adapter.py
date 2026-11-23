@@ -152,6 +152,16 @@ _REACTION: dict[ActivityMark, str] = {"working": "👀", "queued": "⏳"}
 # Discord's error code for "Maximum number of guild roles reached" (250).
 _MAX_GUILD_ROLES_CODE = 30005
 
+# The error codes Discord answers a channel creation with that a person can do
+# something about: "Missing Permissions" (the bot's role lacks Manage
+# Channels), "Missing Access" (the bot can't see where it was asked to create
+# the channel), "Unknown Guild" (the bot isn't in the server the connection
+# names), and "Maximum number of guild channels reached" (500 per server).
+_MISSING_PERMISSIONS_CODE = 50013
+_MISSING_ACCESS_CODE = 50001
+_UNKNOWN_GUILD_CODE = 10004
+_MAX_GUILD_CHANNELS_CODE = 30013
+
 # "Unknown Message". The only 404 that is about the message rather than about
 # what was asked to act on it — a webhook route answers 10015 "Unknown Webhook"
 # with the same status, and reading that as a card that is gone retires a card
@@ -262,6 +272,72 @@ _REFRESH_LABEL = "Refresh"
 # sent it as well as the prompt and the position: the shared connection routes
 # a press by server, and has nothing else to route this one by.
 _PROMPT_PREFIX = "swlnk"
+
+
+def _channel_creation_refused(
+    error: discord.HTTPException, channel_name: str
+) -> BridgeOperationError:
+    """What to raise when Discord refuses to create channel `channel_name`:
+    Discord's own error, and what would fix it where a person can.
+
+    A `BridgeOperationError` is what room creation reports back with the
+    reason (a 502), so whoever asked for the room, often switch-buddy on a
+    person's behalf, can say why it failed. Anything else leaves the request
+    as a bare 500 with the reason only in the server log.
+    """
+    prefix = (
+        f"Discord would not create channel #{channel_name} "
+        f"({error.status}, code {error.code}: {error.text or 'no message'})"
+    )
+    if error.code == _MISSING_PERMISSIONS_CODE:
+        return BridgeOperationError(
+            f"{prefix}. The Switch bot's role on this Discord server is missing "
+            "the Manage Channels permission. In Discord, open Server Settings, "
+            "then Roles, select the bot's role and turn on Manage Channels, or "
+            "re-invite the bot with the permissions in the Connect Discord docs."
+        )
+    if error.code == _MISSING_ACCESS_CODE:
+        return BridgeOperationError(
+            f"{prefix}. The Switch bot can't see where the channel would go. "
+            "Check that its role has View Channels on this Discord server."
+        )
+    if error.code == _UNKNOWN_GUILD_CODE:
+        return BridgeOperationError(
+            f"{prefix}. The Switch bot isn't in the Discord server this "
+            "connection names. Invite the bot to that server, or check the "
+            "connection's Server ID."
+        )
+    if error.code == _MAX_GUILD_CHANNELS_CODE:
+        return BridgeOperationError(
+            f"{prefix}. This Discord server has reached Discord's limit of 500 "
+            "channels. Delete some, or bind the room to an existing channel."
+        )
+    return BridgeOperationError(f"{prefix}.")
+
+
+def _private_chat_member_refused(
+    error: discord.HTTPException, channel_name: str, user_name: str
+) -> BridgeOperationError:
+    """What to raise when Discord made a private chat's channel but refused to
+    let its person see it. Like `_channel_creation_refused`, a
+    `BridgeOperationError` so the chat fails with the reason, not a bare 500."""
+    prefix = (
+        f"Discord would not add {user_name} to private channel #{channel_name} "
+        f"({error.status}, code {error.code}: {error.text or 'no message'})"
+    )
+    if error.code == _MISSING_PERMISSIONS_CODE:
+        return BridgeOperationError(
+            f"{prefix}. The Switch bot's role on this Discord server is missing "
+            "the Manage Roles permission, which Discord asks for to change who "
+            "can see a channel. In Discord, open Server Settings, then Roles, "
+            "select the bot's role and turn on Manage Roles."
+        )
+    if error.code == _UNKNOWN_MEMBER_CODE:
+        return BridgeOperationError(
+            f"{prefix}. {user_name} isn't a member of the Discord server this "
+            "connection names. Join that server, then try again."
+        )
+    return BridgeOperationError(f"{prefix}.")
 
 
 def _custom_id(token: str, position: int) -> str:
@@ -585,7 +661,8 @@ class DiscordConnectionConfig(BridgeConnectionConfig):
     #: needs a token; the distributed bridge routes through the one shared
     #: connection and carries none — its token is deployment config.
     bot_token: str | None = None
-    guild_id: str
+    #: Discord's API calls a server a guild; its own app calls the id a Server ID.
+    guild_id: str = Field(title="Server ID")
     #: How this bridge's events reach it, and which is decided by which Discord
     #: app the install came from rather than by an operator's preference.
     #:
@@ -896,7 +973,7 @@ class DiscordAdapter(PlatformAdapter):
         conn.set_member_change_handler(self._member_changes.add)
         conn.set_permission_change_handler(self._permission_changes.add)
         await conn.connect(
-            commands=build_app_commands(self._handle_slash_command),
+            commands=build_app_commands(self._handle_slash_command, self.feature_flags),
         )
         logger.info(
             "Discord adapter connected as %s (guild %s)",
@@ -1774,6 +1851,17 @@ class DiscordAdapter(PlatformAdapter):
         return None
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        if connection_config.get("event_delivery") != "shared":
+            return f"!{name} {argument}"
+        # The shared connection is not given message text, so only the slash
+        # command reaches Switch. Discord names each argument as its own field.
+        option = COMMANDS_BY_NAME[name].args_spec[0].name
+        return f"/{name} {option}:{argument.removeprefix('@')}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
@@ -1787,6 +1875,13 @@ class DiscordAdapter(PlatformAdapter):
             f"Run {slash} from that account in a server channel Switch is in, "
             f"or post `!link-account {code}` there."
         )
+
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        option = COMMANDS_BY_NAME["unlink-account"].args_spec[0].name
+        return f"run `/unlink-account {option}:{name}` in a server channel Switch is in"
 
     async def answer_command(self, command: InboundCommand, text: str) -> None:
         """Answer an account command where only its sender sees it.
@@ -3186,16 +3281,31 @@ class DiscordAdapter(PlatformAdapter):
                 f"Cannot create {channel_type} channels — they are initiated from the messaging platform"
             )
 
-        guild = await self._get_guild()
-        channel = await guild.create_text_channel(
-            name=self.channel_name_for(name),
-            topic=topic,
-            overwrites=(
-                self._private_channel_overwrites(guild)
-                if channel_type == "channel_private"
-                else {}
-            ),
-        )
+        channel_name = self.channel_name_for(name)
+        if not channel_name:
+            # Discord channel names keep only lowercase letters, digits, "-"
+            # and "_", so a room named only in other characters (all emoji,
+            # or a non-Latin script) leaves nothing to send, and Discord would
+            # refuse the empty name with a form error.
+            raise ValueError(
+                f"Discord can't name a channel after the room name {name!r}: "
+                "nothing is left once characters other than lowercase letters, "
+                "digits, hyphens and underscores are removed. Give the room a "
+                "name with some of those."
+            )
+        try:
+            guild = await self._get_guild()
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                topic=topic,
+                overwrites=(
+                    self._private_channel_overwrites(guild)
+                    if channel_type == "channel_private"
+                    else {}
+                ),
+            )
+        except discord.HTTPException as error:
+            raise _channel_creation_refused(error, channel_name) from error
         return CreatedChannel(id=str(channel.id), name=channel.name)
 
     @classmethod
@@ -3314,14 +3424,35 @@ class DiscordAdapter(PlatformAdapter):
         # so no per-agent identity — and DM traffic maps to the deprecated
         # "lobby" flow. Mirror Slack instead: a private channel named after
         # the pair, visible only to the bridge and the user.
-        guild = await self._get_guild()
-        channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(f"{agent_name}-{user_name}"),
-            topic=f"Direct conversation between {user_name} and {agent_name}",
-            overwrites=self._private_channel_overwrites(guild),
-        )
-        member = await self._get_member(guild, user_external_id)
-        await channel.set_permissions(member, view_channel=True)
+        channel_name = self._sanitize_channel_name(f"{agent_name}-{user_name}")
+        try:
+            guild = await self._get_guild()
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                topic=f"Direct conversation between {user_name} and {agent_name}",
+                overwrites=self._private_channel_overwrites(guild),
+            )
+        except discord.HTTPException as error:
+            raise _channel_creation_refused(error, channel_name) from error
+        try:
+            member = await self._get_member(guild, user_external_id)
+            await channel.set_permissions(member, view_channel=True)
+        except discord.HTTPException as error:
+            # The channel exists but its person can't see it, so nobody could
+            # use it: take it down again rather than leave it behind.
+            try:
+                await channel.delete(reason="Switch could not add the person to it")
+            except discord.HTTPException:
+                logger.warning(
+                    "Could not delete Discord channel %s after failing to add "
+                    "user %s to it",
+                    channel.id,
+                    user_external_id,
+                    exc_info=True,
+                )
+            raise _private_chat_member_refused(
+                error, channel_name, user_name
+            ) from error
         return str(channel.id)
 
     @staticmethod

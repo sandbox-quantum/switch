@@ -13,6 +13,11 @@
       "name": "flint_env",
       "prefix": "flint_env",
       "default": "REPLACE-WITH-ENV"
+    },
+    {
+      "name": "version",
+      "prefix": "version",
+      "default": "*"
     }
   ],
   "widgets": [
@@ -65,11 +70,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.hosted.boxes_reporting{$service,$flint_env} by {backend}",
+            "q": "max:switch.hosted.boxes_reporting{$service,$flint_env,$version,!version:0.27.0} by {backend}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.hosted.boxes_expected{$service,$flint_env} by {backend}",
+            "q": "max:switch.hosted.boxes_expected{$service,$flint_env,$version,!version:0.27.0} by {backend}",
             "display_type": "line"
           }
         ]
@@ -88,7 +93,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "min:switch.hosted.reconciler_silence{$service,$flint_env}",
+            "q": "min:switch.hosted.reconciler_silence{$service,$flint_env,$version,!version:0.27.0}",
             "display_type": "line"
           }
         ]
@@ -107,7 +112,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.machine_events{$service,$flint_env} by {event,reason}.as_count()",
+            "q": "sum:switch.hosted.machine_events{$service,$flint_env,$version,!version:0.27.0} by {event,reason}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -126,11 +131,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.hosted.provision_seconds{$service,$flint_env}",
+            "q": "p95:switch.hosted.provision_seconds{$service,$flint_env,$version,!version:0.27.0}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.hosted.provision_seconds{$service,$flint_env}",
+            "q": "max:switch.hosted.provision_seconds{$service,$flint_env,$version,!version:0.27.0}",
             "display_type": "line"
           }
         ]
@@ -149,7 +154,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.hosted.agents{$service,$flint_env} by {process,session,backend}",
+            "q": "max:switch.hosted.agents{$service,$flint_env,$version,!version:0.27.0} by {process,session,backend}",
             "display_type": "area"
           }
         ]
@@ -168,7 +173,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.hosted.sessions{$service,$flint_env} by {kind,backend}",
+            "q": "max:switch.hosted.sessions{$service,$flint_env,$version,!version:0.27.0} by {kind,backend}",
             "display_type": "line"
           }
         ]
@@ -187,7 +192,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.cloud_errors{$service,$flint_env} by {call,kind}.as_count()",
+            "q": "sum:switch.hosted.cloud_errors{$service,$flint_env,$version,!version:0.27.0} by {call,kind}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -206,7 +211,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.controller_errors{$service,$flint_env} by {kind}.as_count()",
+            "q": "sum:switch.hosted.controller_errors{$service,$flint_env,$version,!version:0.27.0} by {kind}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -225,7 +230,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.controller_restarts{$service,$flint_env}.as_count()",
+            "q": "sum:switch.hosted.controller_restarts{$service,$flint_env,$version,!version:0.27.0}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -244,7 +249,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.controller.credential_refusals{$service,$flint_env} by {reason,route}.as_rate()",
+            "q": "sum:switch.controller.credential_refusals{$service,$flint_env,$version,!version:0.27.0} by {reason,route}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -263,7 +268,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.hosted.provider_login_problems{$service,$flint_env} by {provider,reason}",
+            "q": "max:switch.hosted.provider_login_problems{$service,$flint_env,$version,!version:0.27.0} by {provider,reason}",
             "display_type": "bars"
           }
         ]
@@ -282,7 +287,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.hosted.agents_stopped{$service,$flint_env} by {reason,backend}",
+            "q": "max:switch.hosted.agents_stopped{$service,$flint_env,$version,!version:0.27.0} by {reason,backend}",
             "display_type": "line"
           }
         ]
@@ -301,11 +306,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.hosted.box_memory_used{$service,$flint_env}",
+            "q": "p95:switch.hosted.box_memory_used{$service,$flint_env,$version,!version:0.27.0}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.hosted.box_memory_used{$service,$flint_env}",
+            "q": "max:switch.hosted.box_memory_used{$service,$flint_env,$version,!version:0.27.0}",
             "display_type": "line"
           }
         ]
@@ -324,11 +329,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.hosted.disk_used{$service,$flint_env}",
+            "q": "p95:switch.hosted.disk_used{$service,$flint_env,$version,!version:0.27.0}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.hosted.disk_used{$service,$flint_env}",
+            "q": "max:switch.hosted.disk_used{$service,$flint_env,$version,!version:0.27.0}",
             "display_type": "line"
           }
         ]
@@ -347,7 +352,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.observability.sample_failures{$service,$flint_env} by {sampler}.as_count()",
+            "q": "sum:switch.observability.sample_failures{$service,$flint_env,$version,!version:0.27.0} by {sampler}.as_count()",
             "display_type": "bars"
           }
         ]

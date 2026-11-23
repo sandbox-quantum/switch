@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
 import { isThirdPartyAvatarUrl, randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
-import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
+import { NEW_AGENT_PERMISSIONS, newAgentPermissions } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { defaultAgentPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
@@ -25,6 +25,21 @@ export function usePickMode() {
 export type PickModeState = ReturnType<typeof usePickMode>;
 
 /**
+ * The display name a name suggests, for a display name the form filled in
+ * rather than the user: an identifier written out ("mo-second-helper" reads
+ * "Mo Second Helper"), or text the identifier cannot hold yet, as typed.
+ */
+export function displayNameFromName(value: string): string {
+  const trimmed = value.trim();
+  if (!AGENT_NAME_PATTERN.test(trimmed)) return trimmed;
+  return trimmed
+    .split(/[._-]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word[0]!.toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+/**
  * Form state for creating a brand-new Switch agent in a directory. Collects the
  * Switch agent name and description (advanced definition attributes are gathered
  * separately in the Advanced section). Switch Console always registers the agent
@@ -41,7 +56,7 @@ export type PickModeState = ReturnType<typeof usePickMode>;
  * local agent, one for a remote one — and switching between them swapped which
  * was on screen, so the name and description the user had typed vanished.
  */
-export function useConfigureAgentForm(serverId: string | null) {
+export function useConfigureAgentForm(serverId: string | null, providerId: string | null) {
   const [agentName, setAgentNameFolded] = useState('');
   // What was typed, before the identifier folded it to lowercase. The slug
   // offer hands this back as the display name, so the capitals in a typed
@@ -51,13 +66,22 @@ export function useConfigureAgentForm(serverId: string | null) {
   // none is shown under its identifier.
   const [displayName, setDisplayNameRaw] = useState('');
   const [displayNameTouched, setDisplayNameTouched] = useState(false);
+  // The display name is one the slug offer filled in, not one the user wrote:
+  // it follows the name from then on, so renaming the agent before creating it
+  // does not leave it labelled as the name it no longer has.
+  const [displayNameSuggested, setDisplayNameSuggested] = useState(false);
   const [description, setDescription] = useState('');
   // What the agent is for, in its own words (CHOO-2228). Optional: an agent
   // with none runs on its provider's defaults, and the description stands in
   // where a provider needs a prompt.
   const [instructions, setInstructions] = useState('');
-  const [autoApprove, setAutoApprove] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoApprove);
-  const [autoMode, setAutoMode] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoMode);
+  const defaults = providerId === null ? NEW_AGENT_PERMISSIONS : newAgentPermissions(providerId);
+  const [autoApprove, setAutoApprove] = useState<boolean>(defaults.autoApprove);
+  const [autoMode, setAutoMode] = useState<boolean>(defaults.autoMode);
+  useEffect(() => {
+    setAutoApprove(defaults.autoApprove);
+    setAutoMode(defaults.autoMode);
+  }, [defaults.autoApprove, defaults.autoMode]);
   // Scoped addressing policy (CHOO-1585). null = open; a new agent starts on
   // the default, its owner and the owner's agents. Applied via a follow-up PUT
   // after creation.
@@ -88,6 +112,7 @@ export function useConfigureAgentForm(serverId: string | null) {
   const setDisplayName = useCallback((value: string) => {
     setDisplayNameRaw(value);
     setDisplayNameTouched(true);
+    setDisplayNameSuggested(false);
   }, []);
 
   /**
@@ -98,10 +123,14 @@ export function useConfigureAgentForm(serverId: string | null) {
    * slug offer to answer, because rewriting text under the cursor is worse
    * than an error.
    */
-  const setAgentName = useCallback((value: string) => {
-    setTypedName(value);
-    setAgentNameFolded(value.replace(/[A-Z]/g, (c) => c.toLowerCase()));
-  }, []);
+  const setAgentName = useCallback(
+    (value: string) => {
+      setTypedName(value);
+      setAgentNameFolded(value.replace(/[A-Z]/g, (c) => c.toLowerCase()));
+      if (displayNameSuggested) setDisplayNameRaw(displayNameFromName(value));
+    },
+    [displayNameSuggested]
+  );
 
   const nameIsValid = AGENT_NAME_PATTERN.test(agentName);
   const nameIsRejected = agentName.length > 0 && !nameIsValid;
@@ -116,13 +145,18 @@ export function useConfigureAgentForm(serverId: string | null) {
    * the display name. "Switch Dev" is both the label someone wants and the
    * thing the charset rejects, so the slug must not be all that survives it.
    * A display name the user wrote themselves is an answer, not a guess, and
-   * stands.
+   * stands. One filled in here is a guess, and follows later changes of the
+   * name (`displayNameFromName`).
    */
   const acceptSuggestedName = useCallback(() => {
     if (suggestedName === '') return;
-    if (!displayNameTouched) setDisplayNameRaw(typedName);
-    setAgentName(suggestedName);
-  }, [typedName, displayNameTouched, suggestedName, setAgentName]);
+    if (!displayNameTouched) {
+      setDisplayNameRaw(typedName);
+      setDisplayNameSuggested(true);
+    }
+    setTypedName(suggestedName);
+    setAgentNameFolded(suggestedName);
+  }, [typedName, displayNameTouched, suggestedName]);
 
   return {
     agentName,
@@ -137,6 +171,7 @@ export function useConfigureAgentForm(serverId: string | null) {
     setDescription,
     instructions,
     setInstructions,
+    supportsAutoMode: defaults.autoMode,
     autoApprove,
     setAutoApprove,
     autoMode,

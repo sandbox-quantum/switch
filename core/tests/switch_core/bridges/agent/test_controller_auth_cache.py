@@ -48,7 +48,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
 
 def _principal(controller_id: str = "c1", tenant_id: str = "t1") -> ControllerPrincipal:
     return ControllerPrincipal(
-        controller_id=controller_id, owner_id="owner", tenant_id=tenant_id
+        controller_id=controller_id, owner_id="owner", tenant_id=tenant_id, key_id=None
     )
 
 

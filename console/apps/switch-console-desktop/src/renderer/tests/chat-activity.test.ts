@@ -9,6 +9,7 @@ import {
   subagentStatus,
   turnSubagents,
   placeTurns,
+  splitTurn,
   toolState,
   type TurnActivity,
   turnTools,
@@ -90,6 +91,17 @@ function approval(turnId: string, extra: Partial<ChatApproval> = {}): ChatApprov
   };
 }
 
+/** Where a turn's state shows: the anchor of its last part (`splitTurn`). */
+function stateAnchor(
+  messages: ChatMessage[],
+  bound: Map<string, TurnActivity>,
+  anchorId: string,
+  turn: TurnActivity
+): string {
+  const parts = splitTurn(messages, 'helper', bound, anchorId, turn);
+  return parts[parts.length - 1].anchorId;
+}
+
 function turnOf(items: ChatActivityItem[], status: TurnActivity['status']): TurnActivity {
   return {
     sessionId: 's1',
@@ -129,7 +141,9 @@ describe('placeRequests', () => {
   it('keeps an answered request above the text posted after the answer', () => {
     const turn = withRequests([approval('t1', { state: 'answered', answeredAt: at(2) })]);
     const messages = [said('q1', null, 0), said('r1', 'helper', 1), said('r2', 'helper', 3)];
-    expect(ids(placeRequests(messages, 'helper', new Map([['q1', turn]]), 'q1', turn))).toEqual({
+    const bound = new Map([['q1', turn]]);
+    expect(stateAnchor(messages, bound, 'q1', turn)).toBe('r2');
+    expect(ids(placeRequests(messages, 'helper', bound, 'q1', turn))).toEqual({
       r1: ['req-t1'],
     });
   });
@@ -285,6 +299,29 @@ describe('placeTurns', () => {
     });
   });
 
+  it('moves running activity to the latest own reply across steered messages', () => {
+    const running = {
+      ...turn('t1', 'running'),
+      items: [row('t1', 'tool')],
+    };
+    const bound = new Map([['q1', running]]);
+    const messages = [said('q1', null), said('r1', 'helper')];
+    expect(stateAnchor(messages, bound, 'q1', running)).toBe('r1');
+    messages.push(said('steer', null), said('r2', 'helper'), said('other', 'reviewer'));
+    expect(stateAnchor(messages, bound, 'q1', running)).toBe('r2');
+    messages.push({
+      ...said('notice', 'helper'),
+      body: 'I finished without replying.',
+    });
+    expect(stateAnchor(messages, bound, 'q1', running)).toBe('r2');
+    messages.push(said('q2', null), said('r3', 'helper'));
+    const queued = turn('t2', 'queued');
+    bound.set('q2', queued);
+    expect(stateAnchor(messages, bound, 'q1', running)).toBe('r2');
+    expect(stateAnchor(messages, bound, 'q2', queued)).toBe('r3');
+    expect(stateAnchor(messages, bound, 'missing', running)).toBe('missing');
+  });
+
   it('does not wait on a reply from a turn that ended with an error', () => {
     const messages = [said('q1', null), said('q2', null), said('r2', 'helper')];
     const bound = new Map([
@@ -292,6 +329,110 @@ describe('placeTurns', () => {
       ['q2', turn('t2')],
     ]);
     expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], q2: ['t2'] });
+  });
+});
+
+describe('splitTurn', () => {
+  const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
+  const said = (messageId: string, agentId: string | null, second: number): ChatMessage =>
+    ({
+      messageId,
+      body: messageId,
+      sentAt: at(second),
+      sender: { kind: agentId ? 'agent' : 'human', agentId, clientId: agentId ?? 'me' },
+    }) as unknown as ChatMessage;
+  const step = (itemId: string, second: number, title = 'Bash') =>
+    row('t1', itemId, { title, occurredAt: at(second), createdAt: at(second) });
+  const parts = (
+    messages: ChatMessage[],
+    turn: TurnActivity
+  ): { at: string; steps: string[]; status: string; reasoning: boolean }[] =>
+    splitTurn(messages, 'helper', new Map([['q1', turn]]), 'q1', turn).map((part) => ({
+      at: part.anchorId,
+      steps: part.turn.items.map((item) => item.itemId),
+      status: part.turn.status,
+      reasoning: part.reasoning,
+    }));
+
+  it('shows each step after the agent’s message it followed, as the agent worked', () => {
+    // The buddy looks up its tools, says "On it…", then works, then asks.
+    const turn = {
+      ...turnOf(
+        [
+          step('search', 1, 'ToolSearch'),
+          step('read', 3),
+          step('ask', 6, 'AskUserQuestion'),
+          step('write', 8),
+        ],
+        'completed'
+      ),
+      requests: [approval('t1', { state: 'answered', answeredAt: at(7) })],
+    };
+    const messages = [
+      said('q1', null, 0),
+      said('on-it', 'helper', 2),
+      said('asking', 'helper', 5),
+      said('done', 'helper', 9),
+    ];
+    expect(parts(messages, turn)).toEqual([
+      { at: 'q1', steps: ['search'], status: 'completed', reasoning: true },
+      { at: 'on-it', steps: ['read'], status: 'completed', reasoning: false },
+      { at: 'asking', steps: ['ask', 'write'], status: 'completed', reasoning: false },
+      { at: 'done', steps: [], status: 'completed', reasoning: false },
+    ]);
+    // The question's card shows where its call does.
+    expect([
+      ...placeRequests(messages, 'helper', new Map([['q1', turn]]), 'q1', turn).keys(),
+    ]).toEqual(['asking']);
+  });
+
+  it('keeps the turn’s state, its requests and, while it runs, its reasoning to the last part', () => {
+    const turn = {
+      ...turnOf([step('read', 1), step('edit', 3)], 'running'),
+      requests: [approval('t1')],
+    };
+    const split = splitTurn(
+      [said('q1', null, 0), said('on-it', 'helper', 2)],
+      'helper',
+      new Map([['q1', turn]]),
+      'q1',
+      turn
+    );
+    expect(
+      split.map((part) => [
+        part.anchorId,
+        part.turn.status,
+        part.turn.requests.length,
+        part.reasoning,
+      ])
+    ).toEqual([
+      ['q1', 'completed', 0, false],
+      ['on-it', 'running', 1, true],
+    ]);
+  });
+
+  it('leaves a turn with no message of its own in between whole', () => {
+    const turn = turnOf([step('read', 1), step('edit', 3)], 'completed');
+    expect(parts([said('q1', null, 0), said('elsewhere', 'reviewer', 2)], turn)).toEqual([
+      { at: 'q1', steps: ['read', 'edit'], status: 'completed', reasoning: true },
+    ]);
+  });
+
+  it('stops at the message that starts the agent’s next turn', () => {
+    const turn = turnOf([step('read', 1), step('late', 5)], 'completed');
+    const next = { ...turnOf([], 'running'), turnId: 't2' };
+    const messages = [said('q1', null, 0), said('q2', null, 2), said('r2', 'helper', 4)];
+    const split = splitTurn(
+      messages,
+      'helper',
+      new Map([
+        ['q1', turn],
+        ['q2', next],
+      ]),
+      'q1',
+      turn
+    );
+    expect(split.map((part) => part.anchorId)).toEqual(['q1']);
   });
 });
 

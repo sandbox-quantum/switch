@@ -50,6 +50,7 @@ const MACHINE: OwnedMachine = {
   cloud: true,
   workspacesDir: null,
   os: null,
+  lastSeenAt: null,
   local: null,
 };
 
@@ -139,6 +140,13 @@ describe('giving a machine a Claude login through Vertex AI', () => {
       'Vertex AI',
     ]);
     expect(loginKindsFor('codex').map((kind) => kind.value)).not.toContain('vertex');
+  });
+
+  it('offers Vertex AI to Antigravity beside this computer’s sign-in', () => {
+    expect(loginKindsFor('antigravity').map((kind) => kind.label)).toEqual([
+      "This computer's sign-in",
+      'Vertex AI',
+    ]);
   });
 
   it('recommends a service account key, and sends a pasted one with the project and region', async () => {

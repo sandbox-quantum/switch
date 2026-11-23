@@ -31,6 +31,7 @@ describe('machineEnrollment', () => {
       code: 'c',
       expiresAt: '2026-11-04T10:10:00Z',
       serverUrl: 'https://switch.example.com',
+      remoteDevices: { supported: true, reason: null },
     });
     expect(await managedAgentsController.machineEnrollment('server-1')).toEqual({
       code: 'c',
@@ -38,6 +39,31 @@ describe('machineEnrollment', () => {
       serverUrl: 'https://switch.example.com',
       loopback: false,
       fallback: false,
+      remoteDevices: { supported: true, reason: null },
+    });
+  });
+
+  it('passes on what the server says about other devices, or that it said nothing', async () => {
+    const refused = { supported: false, reason: 'Switch Console runs this Switch.' };
+    mocks.issueMachineEnrollment.mockResolvedValue({
+      code: 'c',
+      expiresAt: '2026-11-04T10:10:00Z',
+      serverUrl: 'http://localhost:8000',
+      remoteDevices: refused,
+    });
+    expect(await managedAgentsController.machineEnrollment('server-1')).toMatchObject({
+      loopback: true,
+      remoteDevices: refused,
+    });
+
+    mocks.issueMachineEnrollment.mockResolvedValue({
+      code: 'c',
+      expiresAt: '2026-11-04T10:10:00Z',
+      serverUrl: 'https://switch.example.com',
+      remoteDevices: null,
+    });
+    expect(await managedAgentsController.machineEnrollment('server-1')).toMatchObject({
+      remoteDevices: null,
     });
   });
 

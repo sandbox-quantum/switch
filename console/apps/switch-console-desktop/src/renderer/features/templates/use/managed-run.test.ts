@@ -24,6 +24,7 @@ function machine(overrides: Partial<OwnedMachine>): OwnedMachine {
     cloud: false,
     workspacesDir: '/home/me/.switch/agents',
     os: 'linux',
+    lastSeenAt: null,
     local: { kind: 'this-computer' },
     ...overrides,
   };

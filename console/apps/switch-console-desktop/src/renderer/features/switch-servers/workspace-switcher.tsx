@@ -21,6 +21,7 @@ import {
   usePendingInvitations,
 } from '@renderer/features/workspaces/pending-invitations';
 import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
+import { workspaceDisplayName } from '@renderer/features/workspaces/workspace-title';
 import {
   workspaceCreationKey,
   workspacesStore,
@@ -45,7 +46,6 @@ import { cn } from '@renderer/utils/utils';
 import { runsOnThisComputer, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import {
-  administersWorkspace,
   type Workspace,
   type WorkspaceUnavailability,
   workspaceUnavailability,
@@ -57,7 +57,6 @@ import { remoteServerStore } from './remote-server-store';
 import { serverAvailability } from './server-availability';
 import { serverIcon } from './server-icon';
 import {
-  ServerAvatar,
   ServerDriftIndicator,
   ServerStatusDot,
   serverDrift,
@@ -66,7 +65,7 @@ import {
   serverStatusLabel,
 } from './server-presentation';
 import { switchServersStore } from './switch-servers-store';
-import { type SwitchCloudAvailability, useSwitchCloud } from './use-switch-cloud';
+import { administersWorkspaceById } from './workspace-admin';
 
 /**
  * A server this Console does not run, said only when something is wrong with
@@ -86,48 +85,15 @@ const ServerProblemDot = observer(function ServerProblemDot({ server }: { server
 });
 
 /**
- * Whether the sidebar shows servers rather than workspaces.
- *
- * Workspaces are a Switch Cloud idea, so a build that cannot reach the Cloud
- * keeps the server list it had before them. A server row opens one workspace
- * on that server; any others the account has there are not offered from the
- * sidebar on such a build. A build whose Cloud configuration could not be read
- * keeps the workspace menu, so the broken configuration stays visible.
- */
-export function showsServers(cloud: SwitchCloudAvailability['kind']): boolean {
-  return cloud === 'reading' || cloud === 'closed';
-}
-
-/**
- * The workspace a server row opens: the one the window is already in when it
- * is on that server, otherwise the first that can be opened. Null when there is
- * none to open, with the first workspace's reason when there is one to give.
- */
-export function serverRowWorkspace(
-  workspaces: Workspace[],
-  activeId: string | null
-): { workspace: Workspace | null; unavailable: WorkspaceUnavailability | null } {
-  const active = workspaces.find((w) => w.id === activeId);
-  if (active) return { workspace: active, unavailable: null };
-  const open = workspaces.find((w) => workspaceUnavailability(w, workspaces.length) === null);
-  if (open) return { workspace: open, unavailable: null };
-  const first = workspaces[0];
-  return {
-    workspace: null,
-    unavailable: first ? workspaceUnavailability(first, workspaces.length) : null,
-  };
-}
-
-/**
- * The switcher at the top of the sidebar: the workspace, or on a build without
- * Switch Cloud the server, that the window is scoped to.
+ * The switcher at the top of the sidebar: the workspace the window is scoped
+ * to, under the server hosting it. Workspaces are a server's, not Switch
+ * Cloud's, so every build shows them, whether or not it can reach the Cloud.
  *
  * With nothing to switch between it collapses to the one action that leads
  * anywhere.
  */
 export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
   const store = switchServersStore;
-  const cloud = useSwitchCloud();
 
   useEffect(() => {
     void store.init();
@@ -147,11 +113,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
 
   if (!active || !activeServer) return <NoServerYet />;
 
-  return showsServers(cloud.kind) ? (
-    <ServerMenu activeServer={activeServer} />
-  ) : (
-    <WorkspaceMenu active={active} activeServer={activeServer} />
-  );
+  return <WorkspaceMenu active={active} activeServer={activeServer} />;
 });
 
 const NoServerYet = observer(function NoServerYet() {
@@ -170,149 +132,6 @@ const NoServerYet = observer(function NoServerYet() {
         </button>
       )}
     </div>
-  );
-});
-
-/** One row per server, as the sidebar had before workspaces. */
-const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer: SwitchServer }) {
-  const store = switchServersStore;
-  const showAddServerModal = useShowModal('addServerModal');
-  const ActiveIcon = serverIcon(activeServer);
-
-  return (
-    <div className="px-2">
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <button
-              type="button"
-              aria-label="Switch server"
-              className="flex w-full items-center gap-[10px] rounded-lg px-2 py-1.5 text-left hover:bg-[var(--sel-soft)]"
-            >
-              <ServerAvatar server={activeServer} size="md" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-foreground">
-                  {activeServer.name}
-                </span>
-                <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
-                  <ActiveIcon className="size-3 shrink-0" />
-                  {activeServer.managed ? (
-                    <>
-                      <span className="truncate">{serverPlacementLabel(activeServer)}</span>
-                      <ManagedServerDot server={activeServer} size={6} />
-                    </>
-                  ) : (
-                    <ServerProblemDot server={activeServer} />
-                  )}
-                  <ChatsOfflineNote server={activeServer} />
-                </span>
-              </span>
-              <ChevronsUpDown className="size-3.5 shrink-0 text-foreground-muted" />
-            </button>
-          }
-        />
-        <DropdownMenuContent align="start" className="min-w-72">
-          <DropdownMenuGroup>
-            <DropdownMenuLabel className="text-xs font-medium text-foreground-passive">
-              Servers
-            </DropdownMenuLabel>
-            {store.servers.map((server) => (
-              <ServerMenuItem
-                key={server.id}
-                server={server}
-                active={server.id === activeServer.id}
-              />
-            ))}
-          </DropdownMenuGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => showAddServerModal({})}>
-            <Plus className="size-4" />
-            Add server
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onClick={() =>
-              openExternalUrl(SWITCH_CONSOLE_REPO_URL, 'Could not open the repository')
-            }
-          >
-            <ExternalLink className="size-4" />
-            Switch on GitHub
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
-  );
-});
-
-/**
- * A server, opened by switching to its one workspace.
- *
- * A server with no workspace has not finished registering, and one whose only
- * workspace this account has lost cannot be opened; both stay listed, disabled
- * and saying why, for the same reasons the workspace menu keeps such rows.
- */
-const ServerMenuItem = observer(function ServerMenuItem({
-  server,
-  active,
-}: {
-  server: SwitchServer;
-  active: boolean;
-}) {
-  const { navigate } = useNavigate();
-  const { toast } = useToast();
-  const Icon = serverIcon(server);
-  const placement = serverPlacementLabel(server);
-  const drift = serverDrift(server);
-  const { workspace, unavailable } = serverRowWorkspace(
-    workspacesStore.onServer(server.id),
-    workspacesStore.activeId
-  );
-  const reason = unavailable
-    ? UNAVAILABLE_REASON[unavailable](server.name)
-    : !workspace
-      ? 'This server has not finished being set up.'
-      : undefined;
-
-  return (
-    <DropdownMenuItem
-      aria-current={active ? 'true' : undefined}
-      className={cn(active && 'bg-[var(--sel)]')}
-      disabled={reason !== undefined}
-      title={reason}
-      onClick={() => {
-        if (!workspace) return;
-        const dormant = serverAvailability(server.id) === 'dormant';
-        void workspacesStore
-          .setActive(workspace.id)
-          .then(() => navigate(dormant ? 'managedServer' : 'server', { serverId: server.id }))
-          .catch(() => {
-            toast({
-              title: 'Could not switch server',
-              description: `${server.name} is still there; the app stayed where it was.`,
-              variant: 'destructive',
-            });
-          });
-      }}
-    >
-      <ServerAvatar server={server} size="md" />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium text-foreground">{server.name}</span>
-        <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground-muted">
-          <Icon className="size-3 shrink-0" />
-          {server.managed ? (
-            <ManagedServerDot server={server} size={6} />
-          ) : (
-            <ServerProblemDot server={server} />
-          )}
-          {(placement || unavailable) && (
-            <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
-              {unavailable ? UNAVAILABLE_BADGE[unavailable] : placement}
-            </span>
-          )}
-        </span>
-      </span>
-      {drift && !server.managed && <ServerDriftIndicator drift={drift} />}
-    </DropdownMenuItem>
   );
 });
 
@@ -350,6 +169,10 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
     active.tenantId === null &&
     serverAvailability(activeServer.id) === 'available' &&
     workspacesStore.hasNoMembership(activeServer.id);
+  const activeName = workspaceDisplayName(active, activeServer);
+  // Named after its server, the line under it says where the server runs instead.
+  const serverLine =
+    activeName === activeServer.name ? serverPlacementLabel(activeServer) : activeServer.name;
   const anyMatch =
     query.trim() === '' ||
     store.servers.some(
@@ -368,13 +191,16 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
               aria-label="Switch workspace"
               className="flex w-full items-center gap-[10px] rounded-[9px] px-2 py-1.5 text-left hover:bg-[var(--sel-soft)] data-[popup-open]:bg-[var(--sel-soft)]"
             >
-              <WorkspaceAvatar name={active.name} size="md" active />
+              <WorkspaceAvatar name={activeName} size="md" active />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-foreground">
-                  {noWorkspaceYet ? 'No workspace yet' : active.name}
+                <span
+                  className="block truncate text-sm font-medium text-foreground"
+                  title={noWorkspaceYet ? undefined : activeName}
+                >
+                  {noWorkspaceYet ? 'No workspace yet' : activeName}
                 </span>
                 <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
-                  <span className="truncate">{activeServer.name}</span>
+                  {serverLine && <span className="truncate">{serverLine}</span>}
                   {activeServer.managed ? (
                     <ManagedServerDot server={activeServer} size={6} />
                   ) : (
@@ -878,7 +704,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
   const canInvite =
     !dormant &&
     unavailable === null &&
-    administersWorkspace(workspace) &&
+    administersWorkspaceById(workspace.id) &&
     !runsOnThisComputer(server);
 
   return (

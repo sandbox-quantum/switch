@@ -123,6 +123,9 @@ class AdminMessageType(StrEnum):
     AUTO_ROUTE_UNAVAILABLE = "auto_route_unavailable"
     # A change an admin made to the room's settings, told in the room.
     ROOM_SETTINGS_NOTICE = "room_settings_notice"
+    # A person's message or command refused because its room is frozen or
+    # archived (`room_read_only.py`), told to them.
+    ROOM_READ_ONLY = "room_read_only"
 
 
 def admin_extra_content(message_type: AdminMessageType | None) -> dict[str, object]:

@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -465,7 +466,9 @@ class PostgresTransport:
         """
         with no_tenant():
             while not self._stopping:
-                await asyncio.sleep(RECHECK_SECONDS)
+                # Spread: readers started together, as when a process takes
+                # over another's work, would otherwise all ask at once.
+                await asyncio.sleep(RECHECK_SECONDS * random.uniform(0.75, 1.25))
                 cursors = {
                     room_id: cursor
                     for room_id, cursor in self._cursors.items()

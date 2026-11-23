@@ -266,7 +266,7 @@ export default function LinkConfirmation({
     }
   };
 
-  const handle = accountHandle(target.username);
+  const handle = target.displayName ?? accountHandle(target.username);
   // The whole command, since that is what gets posted: the code alone would
   // be retyped around.
   const command = code === null ? null : (commandsIn(code.code.instructions)[0] ?? code.code.code);

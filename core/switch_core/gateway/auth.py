@@ -8,7 +8,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import bcrypt
 import jwt
@@ -17,6 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
 from switch_core import room_admins, room_policy
+from switch_core.accounts.suspension import (
+    ACCOUNT_SUSPENDED_CODE,
+    ACCOUNT_SUSPENDED_MESSAGE,
+)
 from switch_core.archived_workspace import WORKSPACE_ARCHIVED, archived_since
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
@@ -26,13 +30,21 @@ from switch_core.authz import (
 )
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import Organization, Room, Tenant, User, require_tenant_id
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.models import (
+    Organization,
+    OrganizationMember,
+    Room,
+    Tenant,
+    User,
+    require_tenant_id,
+)
+from switch_core.db.session_scope import organization_session, tenant_session
+from switch_core.db.stores.browser_handoff_store import BrowserHandoffStore
 from switch_core.db.stores.revoked_session_store import RevokedSessionStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import (
-    all_tenant_ids,
+    only_organization_id,
     tenant_of_invitation,
     tenants_bindable_by_user,
     tenants_inviting_email,
@@ -84,6 +96,10 @@ SESSION_MAX_AGE = datetime.timedelta(days=14)
 SESSION_ID_CLAIM = "sid"
 
 REVOKED_SESSIONS = RevokedSessionStore()
+# The one-time sign-ins Switch Console hands a browser
+# (`gateway/browser_handoff.py`). Signing out of a session signs out the
+# browser sessions it opened, so this module reads them too.
+BROWSER_HANDOFFS = BrowserHandoffStore(session_max_age=SESSION_MAX_AGE)
 
 # The `error` discriminator on the three tenant-resolution failures a client
 # has to tell apart. A bare `{"detail": [...]}` is indistinguishable from
@@ -95,6 +111,15 @@ TENANT_SELECTION_INVALID = "tenant_selection_invalid"
 TENANT_MEMBERSHIP_UNRESOLVED = "tenant_membership_unresolved"
 # The workspace a member's session names, or their only one, was archived.
 TENANT_ARCHIVED = "tenant_archived"
+# A write from a dashboard tab showing another workspace than the session's.
+WORKSPACE_MISMATCH = "workspace_mismatch"
+
+# The workspace the dashboard page sending a request shows. The session's
+# workspace is a claim in a cookie every tab shares, so a tab left open after
+# another tab switched workspace would otherwise write into the new one while
+# still showing the old. Only the dashboard sends it; a request without it is
+# bound as it always was.
+WORKSPACE_HEADER = "X-Switch-Workspace"
 
 
 SIGNUP_REFUSED_DETAIL = "New Switch accounts are not available in your country."
@@ -249,6 +274,14 @@ def session_signed_in(request: Request) -> SignedIn:
     )
 
 
+def new_session_id() -> str:
+    """An id for a session no one has signed in to yet (`SESSION_ID_CLAIM`),
+    for a sign-in proved somewhere else: a browser redeeming the code Switch
+    Console handed it (`gateway/browser_handoff.py`) opens a session of its
+    own, with Console's sign-in time."""
+    return secrets.token_urlsafe(16)
+
+
 def session_id_of(request: Request) -> str | None:
     """The id of the request's session (`SESSION_ID_CLAIM`), or None for a
     cookie minted before sessions had ids. Set wherever the session cookie
@@ -286,7 +319,11 @@ def set_session_cookie(
     `session_signed_in(request)` for every re-mint, so refreshing or switching
     workspace keeps the session's id and never extends it past
     `SESSION_MAX_AGE`.
+
+    A suspended account is refused here, which is every way a session
+    starts (`accounts/suspension.py`).
     """
+    refuse_suspended_account(user)
     now = datetime.datetime.now(datetime.UTC)
     expires_at = session_expires_at(now, signed_in.at)
     token = create_jwt(
@@ -310,6 +347,20 @@ def set_session_cookie(
     )
 
 
+def refuse_suspended_account(user: User) -> None:
+    """403 for a suspended account (`accounts/suspension.py`). Suspending one
+    also ends its sessions, so this is what keeps it from starting another,
+    and the check on every request is what stands if that were missed."""
+    if user.suspended_at is not None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": ACCOUNT_SUSPENDED_CODE,
+                "message": ACCOUNT_SUSPENDED_MESSAGE,
+            },
+        )
+
+
 def _session_key(token: str, keyring: Keyring) -> bytes | str:
     """The key a session token was signed with, named by its `kid`.
 
@@ -327,6 +378,26 @@ def _session_key(token: str, keyring: Keyring) -> bytes | str:
         return keyring.derive(Purpose.SESSION, key_id)
     except KeyringError as exc:
         raise jwt.InvalidTokenError(str(exc)) from exc
+
+
+def session_claims(token: str, keyring: Keyring) -> dict[str, Any] | None:
+    """A session token's claims, if its signature checks out and it has not
+    expired; None otherwise. Reads nothing: whether the session was ended
+    since, or the user is still there, is for authentication to ask."""
+    try:
+        payload = jwt.decode(
+            token, _session_key(token, keyring), algorithms=[JWT_ALGORITHM]
+        )
+    except jwt.InvalidTokenError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def session_subject(token: str, keyring: Keyring) -> str | None:
+    """The user a session token names, as `session_claims` reads it."""
+    payload = session_claims(token, keyring)
+    subject = payload.get("sub") if payload is not None else None
+    return subject if isinstance(subject, str) else None
 
 
 def decode_jwt(token: str, keyring: Keyring) -> dict:
@@ -443,7 +514,8 @@ async def sign_out_session(
     session: AsyncSession, request: Request, config: SwitchConfig
 ) -> None:
     """Revoke the session the request's cookie belongs to, so that no copy
-    of it is accepted again. Commits.
+    of it is accepted again, and every browser session it handed a sign-in
+    to (`_sign_out_sessions_opened_by`). Commits.
 
     A missing, expired or forged cookie is no session to revoke, and a cookie
     minted before sessions had ids cannot be told apart from the person's
@@ -470,7 +542,40 @@ async def sign_out_session(
     await REVOKED_SESSIONS.revoke(
         session, session_id, expires_at=_auth_time(payload) + SESSION_MAX_AGE
     )
+    await _sign_out_sessions_opened_by(session, session_id)
     await session.commit()
+
+
+async def _sign_out_sessions_opened_by(session: AsyncSession, session_id: str) -> None:
+    """Revoke every browser session `session_id` handed a sign-in to
+    (`gateway/browser_handoff.py`), and any those handed one to in turn, so
+    signing out of Switch Console signs out the browsers it opened. Each is
+    kept revoked as long as a copy of it could be live."""
+    seen = {session_id}
+    opened_by = [session_id]
+    while opened_by:
+        opened = [
+            each
+            for each in await BROWSER_HANDOFFS.lock_sessions_opened_by(
+                session, opened_by
+            )
+            if each.session_id not in seen
+        ]
+        for each in opened:
+            seen.add(each.session_id)
+            await REVOKED_SESSIONS.revoke(
+                session,
+                each.session_id,
+                expires_at=each.signed_in_at + SESSION_MAX_AGE,
+            )
+        opened_by = [each.session_id for each in opened]
+
+
+async def session_signed_out(session: AsyncSession, session_id: str | None) -> bool:
+    """Whether `session_id` was signed out of (`/auth/logout`). False for a
+    session from before sessions had ids, which cannot be signed out of on
+    its own."""
+    return await _signed_out(session, session_id)
 
 
 async def session_is_current(
@@ -566,6 +671,32 @@ async def get_authenticated_session(
     )
 
 
+async def signed_in_user(
+    request: Request,
+    session: AsyncSession,
+    user_store: UserStore,
+    config: SwitchConfig,
+) -> User | None:
+    """The person the request's session cookie signs in, or None for no
+    cookie, or one that is invalid, expired, ended or signed out of.
+
+    For a route that answers with or without a session and only says who is
+    signed in: the browser sign-in page asking whose browser it is before it
+    replaces the session (`gateway/browser_handoff.py`). Binds no tenant, as
+    it reads only `users` and `revoked_sessions`.
+    """
+    try:
+        payload = _session_claims(request, config)
+    except HTTPException:
+        return None
+    user = await user_store.get(session, payload["sub"])
+    if user is None or user.session_version != _session_version(payload):
+        return None
+    if await _signed_out(session, _session_id(payload)):
+        return None
+    return user
+
+
 async def session_belongs_to(
     request: Request,
     session_factory: async_sessionmaker[AsyncSession],
@@ -641,6 +772,7 @@ async def get_authenticated_caller(
             raise HTTPException(status_code=401, detail="User not found")
         _refuse_ended_session(user.session_version, payload)
         await _refuse_signed_out_session(system_session, payload)
+        refuse_suspended_account(user)
     return AuthenticatedCaller(
         id=user.id, email=user.email, is_operator=user.role == "admin"
     )
@@ -1036,26 +1168,6 @@ async def record_operator_entry(
         await session.commit()
 
 
-async def all_workspaces(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> list[tuple[Tenant, Organization | None]]:
-    """Every workspace on the server, oldest first, with its organization,
-    each read on its own short session. For the platform operator's list
-    only."""
-    found: list[tuple[Tenant, Organization | None]] = []
-    for tenant_id in await all_tenant_ids(session_factory):
-        async with tenant_session(session_factory, tenant_id) as session:
-            tenant = await session.get(Tenant, tenant_id)
-            organization = (
-                await session.get(Organization, tenant.organization_id)
-                if tenant is not None and tenant.organization_id is not None
-                else None
-            )
-        if tenant is not None:
-            found.append((tenant, organization))
-    return found
-
-
 async def may_bind_tenant(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
@@ -1257,6 +1369,8 @@ def describe_session_state(
     tenants: list[TenantMembershipResponse],
     operator_entered: TenantMembershipResponse | None,
     tenants_isolated: bool,
+    can_manage_connector_apps: bool,
+    connector_apps_in_dashboard: bool,
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
 
@@ -1308,6 +1422,8 @@ def describe_session_state(
         and tenant.organization_role == ORGANIZATION_ADMIN_ROLE
         and refusal(False) is None,
         invite_email_enabled=config.invite_email_enabled,
+        can_manage_connector_apps=can_manage_connector_apps,
+        connector_apps_in_dashboard=connector_apps_in_dashboard,
     )
 
 
@@ -1426,6 +1542,32 @@ async def _resolve_tenant_id(
     )
 
 
+def _refuse_a_write_from_another_workspace(
+    request: Request, user_id: str, tenant_id: str
+) -> None:
+    """409 for a write whose `WORKSPACE_HEADER` names another workspace than
+    the one this request binds. Reads go ahead: they change nothing, and the
+    tab showing them is told when it next writes."""
+    if request.method in _SAFE_METHODS:
+        return
+    shown = request.headers.get(WORKSPACE_HEADER)
+    if shown is None or shown == tenant_id:
+        return
+    logger.info(
+        "Refused a write from a tab showing workspace %s; user %s's session is in %s",
+        shown,
+        user_id,
+        tenant_id,
+    )
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": WORKSPACE_MISMATCH,
+            "message": "This tab is showing another workspace. Reload to continue.",
+        },
+    )
+
+
 @asynccontextmanager
 async def _bound_user(
     request: Request,
@@ -1445,6 +1587,7 @@ async def _bound_user(
         tenant_claim,
         config.gateway_tenant_choice_enabled,
     )
+    _refuse_a_write_from_another_workspace(request, user_id, tenant_id)
     request.state.tenant_id = tenant_id
 
     with tenant_scope(tenant_id), log_context(user_id=user_id, tenant_id=tenant_id):
@@ -1454,6 +1597,7 @@ async def _bound_user(
             raise HTTPException(status_code=401, detail="User not found")
         _refuse_ended_session(user.session_version, payload)
         await _refuse_signed_out_session(session, payload)
+        refuse_suspended_account(user)
         request.state.platform_access = (
             user.role == "admin"
             and not await user_store.administers_by_role(session, tenant_id, user_id)
@@ -1599,6 +1743,75 @@ async def require_admin(
     return user
 
 
+@dataclass(frozen=True)
+class DeploymentManager:
+    """Someone who may manage what the deployment sets up for every
+    workspace, its connector apps (`gateway/connector_apps.py`): the
+    platform operator, or, while the deployment has exactly one
+    organization, an `org_admin` of it, whose `organization_id` is set."""
+
+    user: User
+    organization_id: str | None
+
+    def audit_details(self) -> dict[str, str]:
+        """What the server audit log records of how they may: nothing for the
+        operator, the organization for its admin."""
+        if self.organization_id is None:
+            return {}
+        return {"as_admin_of_only_organization": self.organization_id}
+
+
+async def deployment_manager(
+    session_factory: async_sessionmaker[AsyncSession], user: User
+) -> DeploymentManager | None:
+    """How `user` may manage the deployment, or None when they may not. Read
+    afresh on every call, so the `org_admin`s of the only organization lose
+    it as soon as a second organization exists, and a demoted one at once."""
+    if user.role == "admin":
+        return DeploymentManager(user, None)
+    organization_id = await only_organization_id(session_factory)
+    if organization_id is None:
+        return None
+    async with organization_session(session_factory, organization_id) as session:
+        member = await session.get(OrganizationMember, (organization_id, user.id))
+    if member is None or member.role != ORGANIZATION_ADMIN_ROLE:
+        return None
+    return DeploymentManager(user, organization_id)
+
+
+async def connector_apps_in_dashboard(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> bool:
+    """Whether the deployment's connector apps are set up in the dashboard,
+    by the `org_admin`s of its organization: while it has exactly one, as
+    `deployment_manager` allows. With several, the platform operator sets
+    them up with `switch-connector-apps`."""
+    return await only_organization_id(session_factory) is not None
+
+
+async def require_deployment_manager(
+    user: Annotated[User, Depends(get_current_user)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+) -> DeploymentManager:
+    """Raise 403 unless `user` may manage the deployment
+    (`deployment_manager`). For the routes that set up what serves every
+    workspace and that a one-organization deployment's own admins run, the
+    connector apps, and nowhere else: everything else deployment-wide stays
+    `require_admin`."""
+    manager = await deployment_manager(session_factory, user)
+    if manager is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the platform operator, or an admin of the only "
+                "organization here, may do this"
+            ),
+        )
+    return manager
+
+
 async def get_tenant_is_admin(
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
@@ -1700,11 +1913,14 @@ async def ensure_room_action(
     owns_target: bool = False,
 ) -> None:
     """Raise HTTP 403 with the policy's reason unless `principal` may do
-    `action` to `room`."""
+    `action` to `room`. A room they may not see is not found, so the answer
+    does not confirm that a private room exists."""
     decision = await decide_room_action(
         session, room_store, room, principal, action, owns_target=owns_target
     )
     if not decision.allowed:
+        if action == "read":
+            raise HTTPException(status_code=404, detail="Room not found")
         raise HTTPException(status_code=403, detail=decision.reason)
 
 

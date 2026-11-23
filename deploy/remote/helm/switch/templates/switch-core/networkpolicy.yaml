@@ -1,8 +1,9 @@
 {{- if and .Values.networkPolicy.enabled .Values.networkPolicy.ingressFrom }}
 {{- $core := .Values.switchCore }}
 # switch-core's ports admit networkPolicy.ingressFrom, and the release's own
-# pods that call it: the gateway and the setup Job on the API, the bundled
-# Mattermost on the callback port, the Teams test on the Teams port. Rendered
+# pods that call it: the gateway on the API and the Teams test on the Teams
+# port. A Mattermost that calls the callback port reaches it through
+# ingressFrom, like anything else outside the release. Rendered
 # only once ingressFrom names who reaches switch-core from outside (see
 # networkPolicy in values.yaml).
 apiVersion: networking.k8s.io/v1
@@ -33,23 +34,12 @@ spec:
           port: {{ $core.collaborationCallback.port }}
         {{- end }}
     - from:
-        {{- range (list "gateway" "setup") }}
         - podSelector:
             matchLabels:
-              {{- include "switch.selectorLabels" (dict "Release" $.Release "component" .) | nindent 14 }}
-        {{- end }}
+              {{- include "switch.selectorLabels" (dict "Release" .Release "component" "gateway") | nindent 14 }}
       ports:
         - protocol: TCP
           port: 8000
-    {{- if and $core.collaborationCallback.enabled .Values.mattermost.enabled }}
-    - from:
-        - podSelector:
-            matchLabels:
-              {{- include "switch.selectorLabels" (dict "Release" .Release "component" "mattermost") | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: {{ $core.collaborationCallback.port }}
-    {{- end }}
     {{- if $core.teamsBridge.enabled }}
     - from:
         - podSelector:

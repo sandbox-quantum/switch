@@ -319,7 +319,7 @@ describe('starting a session', () => {
       { outcome: 'error', message: error!.message },
     ]);
     expect(eventsOf(events, 'session.exited')).toMatchObject([{ reason: error!.message }]);
-    await expect(stat(sessionDir(pi))).rejects.toMatchObject({ code: 'ENOENT' });
+    await vi.waitFor(() => expect(stat(sessionDir(pi))).rejects.toMatchObject({ code: 'ENOENT' }));
   });
 
   it('removes its directory even when Pi does not stop, and says so', async () => {

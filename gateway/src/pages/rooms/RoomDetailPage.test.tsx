@@ -87,7 +87,6 @@ const room = {
   matrix_room_id: "!r1:example.test",
   external_channel_id: null,
   instructions: null,
-  protection_config: null,
   observe_config: null,
   agent_ids: ["a1"],
   agent_statuses: {},
@@ -359,6 +358,26 @@ describe("RoomDetailPage permissions", () => {
     screen.getByText(/^In the room\. You can add agents, people and resources\./);
   });
 
+  it("shows no auto-route on a server without it, and the section where it has it", () => {
+    viewAs({ can_write: true, can_manage: false, can_unlink: false, auto_route: null });
+    expect(screen.queryByText("Auto-route")).toBeNull();
+    cleanup();
+
+    viewAs({
+      can_write: true,
+      can_manage: false,
+      can_unlink: false,
+      auto_route: {
+        on: false,
+        available: true,
+        reason: null,
+        fallback_agent: null,
+        fallback_agent_name: null,
+      },
+    });
+    expect(screen.getByText("Auto-route")).toBeTruthy();
+  });
+
   it("lists a Switch Console chat's members as its people, to change in Console", () => {
     vi.mocked(hooks.useRoom).mockReturnValue({
       data: {
@@ -612,5 +631,62 @@ describe("RoomDetailPage archive, delete and roles", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete role" }));
     await waitFor(() => expect(api.deleteRoomRole).toHaveBeenCalledWith("r1", "reviewer"));
     await waitFor(() => expect(refetchRoom).toHaveBeenCalled());
+  });
+});
+
+describe("RoomDetailPage when the room can't be opened", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  function failWith(error: string, errorStatus: number | null) {
+    vi.mocked(hooks.useRoom).mockReturnValue({ data: null, loading: false, error, errorStatus, refetch: vi.fn() });
+    render(<RoomDetailPage />);
+  }
+
+  it.each([404, 403])("says a room the server answers %s for may be in another workspace", (status) => {
+    failWith("Room not found", status);
+    expect(screen.getByText("Room not found")).toBeTruthy();
+    expect(
+      screen.getByText("This may be in another workspace — switch workspace or check the link."),
+    ).toBeTruthy();
+  });
+
+  it("says nothing of another workspace for a server fault", () => {
+    failWith("500 Internal Server Error", 500);
+    expect(screen.getByText("500 Internal Server Error")).toBeTruthy();
+    expect(screen.queryByText(/another workspace/)).toBeNull();
+  });
+});
+
+describe("RoomDetailPage header", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("lets a long room name wrap, so the header's actions stay on screen", () => {
+    vi.mocked(hooks.useRoomGroups).mockReturnValue({ data: [], loading: false, error: null, refetch: vi.fn() });
+    vi.mocked(hooks.useAgents).mockReturnValue({ data: [], loading: false, error: null, refetch: vi.fn() });
+    vi.mocked(hooks.useBridgeUsers).mockReturnValue({ data: [], loading: false, error: null, refetch: vi.fn() });
+    vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue({
+      data: { agent_ids: null },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    const name = "W".repeat(200);
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: { ...room, name },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    const title = screen.getByRole("heading", { name });
+    expect(getComputedStyle(title).minWidth).toBe("0px");
+    expect(getComputedStyle(title).overflowWrap).toBe("anywhere");
   });
 });

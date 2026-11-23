@@ -9,6 +9,7 @@ from switch_decision.prompt import (
     SPEAKER_INSTRUCTIONS,
     SPEAKER_QUESTION,
     SYSTEM,
+    SYSTEM_CONVERSATION_RULE,
     build_messages,
     build_state,
     conversation_state,
@@ -156,18 +157,27 @@ def test_no_exchange_payloads_are_unchanged_for_every_backend():
         lambda r: systemone_request(r, "m", 8)["questions"][SPEAKER_QUESTION][
             "instructions"
         ],
-        lambda r: build_messages(r, 8)[0]["content"],
         lambda r: letter_messages(r, 8)[0][0]["content"],
     ],
-    ids=["strands", "chat", "letters"],
+    ids=["strands", "letters"],
 )
 def test_exchange_payloads_carry_the_rule(instructions):
     text = instructions(EXCHANGE)
     assert CONVERSATION_RULE in text
+    assert SYSTEM_CONVERSATION_RULE not in text
+
+
+def test_chat_prompt_carries_the_spelled_out_rule():
+    system = build_messages(EXCHANGE, 8)[0]["content"]
+    assert SYSTEM_CONVERSATION_RULE in system
+    assert CONVERSATION_RULE not in system
+    assert "replies to another person is for nobody" in system
 
 
 def test_chat_prompt_keeps_the_answer_format_last():
     system = build_messages(EXCHANGE, 8)[0]["content"]
-    assert system.index(CONVERSATION_RULE) < system.index("Give a short reason first")
+    assert system.index(SYSTEM_CONVERSATION_RULE) < system.index(
+        "Give a short reason first"
+    )
     letters = letter_messages(EXCHANGE, 8)[0][0]["content"]
     assert letters.endswith("Answer with the letter of your choice only.")

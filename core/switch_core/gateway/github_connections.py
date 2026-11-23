@@ -40,6 +40,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.admission import writes_on_get
 from switch_core.gateway.auth import get_current_user, session_belongs_to
 from switch_core.gateway.dependencies import (
     get_config,
@@ -416,7 +417,7 @@ async def _back_from_github(
     return code
 
 
-@router.get("/callback")
+@router.get("/callback", dependencies=[Depends(writes_on_get)])
 async def callback(
     request: Request,
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],

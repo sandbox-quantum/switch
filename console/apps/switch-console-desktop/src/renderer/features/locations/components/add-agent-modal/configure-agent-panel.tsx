@@ -153,16 +153,18 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
         />
         {settingsOpen && (
           <FieldGroup className="pt-3">
-            <PermissionToggle
-              setting="autoMode"
-              description={
-                form.autoApprove
-                  ? `${PERMISSION_COPY.autoMode.description} ${PERMISSION_COPY.autoMode.overridden}`
-                  : PERMISSION_COPY.autoMode.description
-              }
-              checked={form.autoMode}
-              onCheckedChange={form.setAutoMode}
-            />
+            {form.supportsAutoMode && (
+              <PermissionToggle
+                setting="autoMode"
+                description={
+                  form.autoApprove
+                    ? `${PERMISSION_COPY.autoMode.description} ${PERMISSION_COPY.autoMode.overridden}`
+                    : PERMISSION_COPY.autoMode.description
+                }
+                checked={form.autoMode}
+                onCheckedChange={form.setAutoMode}
+              />
+            )}
             <PermissionToggle
               setting="autoApprove"
               description={PERMISSION_COPY.autoApprove.description}

@@ -94,6 +94,7 @@ resources:
     name: "Prep - {event}"
     description: "Preparation room for {event}. Collecting updates, building the deck, and coordinating speakers."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [allhands_compiler, slide_builder]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

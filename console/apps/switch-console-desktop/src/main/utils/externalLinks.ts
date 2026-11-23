@@ -25,76 +25,6 @@ function requestExternalLinkOpen(url: string) {
   });
 }
 
-/**
- * Link handling for an embedded `<webview>` guest (the room view's Mattermost).
- *
- * A guest gets none of the main window's handlers, and Electron's default for
- * an unhandled `window.open` is to deny it — so every external link in a
- * message silently did nothing when clicked. Mattermost renders those as
- * `target="_blank"`, which is `window.open`.
- *
- * Three destinations, in order of specificity:
- *
- *  - our own `switchdash://` deeplinks, which agents post into rooms so a human
- *    can jump to the session behind a message. Handled in-process rather than
- *    handed to the OS: the app is already running and is the registered
- *    handler, so a round trip through the shell would at best come back to us.
- *  - the guest's own origin, which moves the pane rather than opening a window.
- *  - anything else http(s), which belongs in the user's browser.
- */
-export function registerGuestLinkHandlers(guest: WebContents) {
-  const guestOrigin = (): string | null => {
-    try {
-      return new URL(guest.getURL()).origin;
-    } catch {
-      return null;
-    }
-  };
-
-  const isSameOrigin = (url: string): boolean => {
-    const origin = guestOrigin();
-    return origin !== null && (url === origin || url.startsWith(`${origin}/`));
-  };
-
-  // Never let the guest spawn a window: it would be chrome-less, unmanaged and
-  // outside the room pane. Every case below therefore denies, having routed the
-  // URL somewhere useful first.
-  const route = (url: string): void => {
-    if (url.startsWith(`${DEEPLINK_SCHEME}://`)) {
-      handleDeeplinkUrl(url);
-      return;
-    }
-    if (isSameOrigin(url)) {
-      void guest.loadURL(url);
-      return;
-    }
-    if (/^https?:\/\//i.test(url)) {
-      requestExternalLinkOpen(url);
-      return;
-    }
-    log.warn('Blocked link with an unsupported scheme from the embedded room view', { url });
-  };
-
-  guest.setWindowOpenHandler(({ url }) => {
-    route(url);
-    return { action: 'deny' };
-  });
-
-  guest.on('will-navigate', (event, url) => {
-    if (isSameOrigin(url)) return;
-    event.preventDefault();
-    route(url);
-  });
-
-  // `will-navigate` sees the main frame's own navigations only. A subframe, or
-  // a same-origin page answering with a redirect, would otherwise reach a
-  // custom scheme without passing through `route`.
-  guest.on('will-frame-navigate', (navigation) => {
-    if (!navigation.isMainFrame) refuseNonWebNavigation(navigation, 'room view');
-  });
-  guest.on('will-redirect', (navigation) => refuseNonWebNavigation(navigation, 'room view'));
-}
-
 type FrameNavigation = { url: string; preventDefault: () => void };
 
 /**
@@ -109,8 +39,7 @@ function refuseNonWebNavigation(navigation: FrameNavigation, source: string): vo
 }
 
 /**
- * Link handling for a window showing a server's own pages: the in-app sign-in
- * and the gateway dashboard.
+ * Link handling for a window showing a server's own pages: the in-app sign-in.
  *
  * The pages are the server's, and through it an identity provider's, so they
  * get no say over windows or schemes. They open no windows of their own — a

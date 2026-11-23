@@ -8,6 +8,7 @@ import {
   AccessTokens,
   ControllerClient,
   type Fetch,
+  isAccountSuspended,
   isCredentialRefused,
   isRevoked,
   isUpgradeRequired,
@@ -65,6 +66,12 @@ export type ControllerTiming = {
    * every agent on the controller is offline while the stream is down.
    */
   streamMaxBackoffMs: number;
+  /**
+   * How often Switch is asked again while it refuses the controller because
+   * its owner is suspended: its agents are stopped meanwhile, so nobody waits
+   * on it, and it is back within this long of the suspension being lifted.
+   */
+  streamSuspendedRetryMs: number;
   /** The most events held per agent while its agent host is not taking them. */
   eventBufferLimit: number;
 };
@@ -78,8 +85,22 @@ export const DEFAULT_TIMING: ControllerTiming = {
   streamIdleMs: 10_000,
   streamInitialBackoffMs: 1_000,
   streamMaxBackoffMs: 8_000,
+  streamSuspendedRetryMs: 60_000,
   eventBufferLimit: 5_000,
 };
+
+/**
+ * The assignment with every agent stopped: what the controller holds, and
+ * keeps on disk so a restart starts nothing, while Switch refuses it because
+ * its owner is suspended. The next assignment it pulls once let in again says
+ * how each agent should run.
+ */
+export function allStopped(held: Assignment): Assignment {
+  return {
+    ...held,
+    agents: held.agents.map((entry) => ({ ...entry, desired_state: 'stopped' })),
+  };
+}
 
 /**
  * How long an agent host restarted onto this controller's shared-host bundle
@@ -128,6 +149,8 @@ export type ControllerDeps = {
    */
   tellConsentNeeds?: (needs: DeviceConsentNeed[]) => void;
   version: string;
+  /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
+  deviceId: string | null;
   /** Who moves it onto another release, as its status reports to Switch. */
   updatedBy: UpdatedBy;
   /**
@@ -135,6 +158,8 @@ export type ControllerDeps = {
    * Console updates it instead.
    */
   selfUpdate: SelfUpdater | null;
+  /** Whether ending with `restarting` starts this controller again: a service, or Switch Console. */
+  supervised: boolean;
   now: () => number;
   random: () => number;
   timing: ControllerTiming;
@@ -243,9 +268,13 @@ class SerialQueue {
  * pulls the assignment (with its ETag) and reconciles, each
  * `operation.pending` runs the pending operations, and `credential.revoked`
  * — or any request refused as `controller_revoked` — stops every agent,
- * wipes the credential and ends the loop with `'revoked'`. A full resync runs
- * every ten minutes regardless. Status goes out when something changes, and
- * at least every `report_within_s`.
+ * wipes the credential and ends the loop with `'revoked'`. A refusal saying
+ * `account_suspended` (its owner is suspended) is not a revocation: every
+ * agent is stopped by holding the assignment with each one stopped, the
+ * credential is kept, and the stream asks again every
+ * `streamSuspendedRetryMs`; once Switch lets it in, the assignment it pulls
+ * starts them again. A full resync runs every ten minutes regardless. Status
+ * goes out when something changes, and at least every `report_within_s`.
  *
  * Before any of that, the cached assignment is reconciled, so agents come back
  * after a reboot even while the server is unreachable.
@@ -404,10 +433,14 @@ export async function runController(
   };
 
   let restarting = false;
+  let restartReason: 'update' | 'requested' = 'update';
   const restart = () => {
     restarting = true;
     stop.abort();
   };
+  // Asked for through Switch: taken up once the operation saying it will be
+  // done is reported, so the person asking sees it succeed before it goes.
+  let restartRequested = false;
 
   const failed = (what: string, error: unknown) => {
     if (isRevoked(error)) {
@@ -416,6 +449,7 @@ export async function runController(
     }
     if (isUpgradeRequired(error)) return refuse('upgrade_required');
     if (isCredentialRefused(error)) return refuse('credential_invalid');
+    if (isAccountSuspended(error)) return suspend(errorMessage(error));
     log.warn(`${what} failed; it is retried on the next nudge, reconnect or resync.`, {
       error: errorMessage(error),
     });
@@ -453,6 +487,7 @@ export async function runController(
     dataDir: deps.dataDir,
     workspacesDir: workspaces,
     context: definitionContext,
+    deviceId: deps.deviceId,
     version: deps.version,
     updatedBy: deps.updatedBy,
     now: deps.now,
@@ -477,6 +512,45 @@ export async function runController(
     log,
   };
 
+  /** Set while Switch refuses this controller because its owner is suspended. */
+  let suspended = false;
+  /**
+   * Stops every agent, without forgetting any or touching a credential: the
+   * assignment is held, and saved, with each agent stopped, so neither a
+   * reconcile nor a restart starts one, and the next assignment pulled once
+   * Switch lets the controller in again says how each should run.
+   */
+  const suspend = (message: string): void => {
+    if (!suspended)
+      log.error(
+        'Switch refuses this controller because the account it belongs to is suspended: stopping every agent and asking again every so often. Its credential is kept, so it carries on by itself once the suspension is lifted.',
+        { detail: message }
+      );
+    suspended = true;
+    void queue.run(async () => {
+      if (!assignment || stop.signal.aborted) return;
+      if (assignment.agents.some((entry) => entry.desired_state !== 'stopped')) {
+        assignment = allStopped(assignment);
+        etag = null;
+        store.saveAssignment(assignment, etag, new Date(deps.now()).toISOString());
+      }
+      try {
+        await reconcile(assignment, reconcileDeps);
+      } catch (error) {
+        log.error('Could not stop the agents of a suspended account', {
+          error: errorMessage(error),
+        });
+      }
+    });
+  };
+  /** Switch let the controller in again: the next pull is a full one. */
+  const unsuspend = (): void => {
+    if (!suspended) return;
+    suspended = false;
+    etag = null;
+    log.info('Switch lets this controller in again; pulling its assignment to start its agents.');
+  };
+
   let syncQueued = false;
   const sync = (why: string): Promise<void> => {
     if (syncQueued) return Promise.resolve();
@@ -487,8 +561,12 @@ export async function runController(
       try {
         const pulled = await client.assignment(etag);
         if (pulled.kind === 'changed') {
-          assignment = pulled.assignment;
-          etag = pulled.etag;
+          // Still refused for anything else, so it keeps every agent stopped,
+          // at the revision it already holds: stopping them at a revision
+          // pulled meanwhile would record that revision as applied, and once
+          // let in again the same revision would start nothing.
+          assignment = suspended ? allStopped(assignment ?? pulled.assignment) : pulled.assignment;
+          etag = suspended ? null : pulled.etag;
           store.saveAssignment(assignment, etag, new Date(deps.now()).toISOString());
           log.info('Pulled assignment', { revision: assignment.revision, why });
           placeAgents(assignment);
@@ -544,9 +622,24 @@ export async function runController(
             void reconcileLocally();
             return { status, problem: providers.loginProblem(provider) };
           },
+          restartController: () => {
+            if (!deps.supervised)
+              return {
+                reason: 'not_supervised',
+                detail:
+                  'This controller runs outside a service, so ending it would only stop it. Restart it on the machine instead.',
+              };
+            restartRequested = true;
+            return null;
+          },
           log,
         });
         if (ran) reporter?.request();
+        if (restartRequested) {
+          log.info('Restarting, as asked through Switch');
+          restartReason = 'requested';
+          restart();
+        }
       } catch (error) {
         failed('Running operations', error);
       }
@@ -588,6 +681,10 @@ export async function runController(
     // A recheck is asked for by someone setting up or fixing a login, so
     // each login is tried for real, not only reported as there.
     await providers.checkAll({ verify: true });
+    deps.log.info('Rechecked providers', {
+      path: process.env.PATH,
+      found: providers.locations(),
+    });
     await reporter?.sendFresh();
     // Agents waiting on a provider can start now.
     void reconcileLocally();
@@ -793,6 +890,7 @@ export async function runController(
         }),
       onConnected: () => {
         log.info('Connected to Switch');
+        unsuspend();
         hub.streamAttached();
         void sync('connected');
         void runOperations();
@@ -806,6 +904,8 @@ export async function runController(
       idleTimeoutMs: timing.streamIdleMs,
       initialBackoffMs: timing.streamInitialBackoffMs,
       maxBackoffMs: timing.streamMaxBackoffMs,
+      suspendedRetryMs: timing.streamSuspendedRetryMs,
+      onSuspended: suspend,
       random: deps.random,
       calls,
     });
@@ -824,7 +924,11 @@ export async function runController(
         'Switch knows no controller by this credential; it stops its agents and exits. Enroll this machine again.'
       );
     if (restarting && !refused && !revocation)
-      log.info('Exiting for the service to start this controller on its new release.');
+      log.info(
+        restartReason === 'update'
+          ? 'Exiting for the service to start this controller on its new release.'
+          : 'Exiting for whatever runs this controller to start it again.'
+      );
   } finally {
     stopServingRechecks();
     clearInterval(resync);

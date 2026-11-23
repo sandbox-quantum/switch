@@ -53,7 +53,9 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
+from switch_core.logging_context import structured_fields
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.standing import (
@@ -294,6 +296,28 @@ class TestIssue:
             tuple(sorted(point.attributes.items())): point.value
             for point in payload.numbers
         } == {(("connector", "github"), ("outcome", "issued")): 1}
+
+    async def test_an_issue_is_a_security_event_naming_the_agent_not_the_token(
+        self, broker, session_factory, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+        world = await _world(session_factory)
+        token = await _issue(broker, session_factory, world.agent.id)
+
+        [fields] = [
+            structured_fields(record)
+            for record in caplog.records
+            if record.name == SECURITY_LOGGER_NAME
+            and structured_fields(record)["switch"]["event"]
+            == "security.service_token.issued"
+        ]
+        assert fields["switch"]["agent_id"] == world.agent.id
+        assert fields["security_details"] == {
+            "service": "github",
+            "principal": "agent_key",
+            "controller_id": None,
+        }
+        assert token.token not in str(fields)
 
     async def test_a_token_the_vendor_cannot_revoke_is_recorded_without_it(
         self, broker, session_factory, vendor
@@ -839,7 +863,7 @@ class TestConnectOnly:
 READ_ONLY = (
     "Switch's GitHub App lets agents read only, so GitHub can't be granted "
     "for writing. Whoever runs Switch can change that in Switch Console, under "
-    "Admin → Connector apps."
+    "Settings → Connector apps."
 )
 
 

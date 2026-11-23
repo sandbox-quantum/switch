@@ -6,6 +6,7 @@ import { workspaceRosterQuery } from '@renderer/features/chats/chat-people';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { ParticipantPicker } from '@renderer/lib/components/participant-picker';
@@ -34,7 +35,6 @@ import { type ChatSummary } from '@shared/core/chats/chats';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
-import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 import { addableAgents, addableBridgePeople, addablePeople } from './room-labels';
 import { agentKindFor, localAgentFor, PersonMark, roomDetailKey } from './room-participants';
 
@@ -202,36 +202,28 @@ export const ChatAddParticipantPanel = observer(function ChatAddParticipantPanel
           </p>
         )
       )}
-      <InviteHint workspaceId={workspaceId} canInvite={canInvite(serverId, workspaceId)} />
+      <InviteHint serverId={serverId} workspaceId={workspaceId} />
     </div>
   );
 });
 
-/** Whether the viewer may invite people to the workspace, as the workspace menu decides it. */
-function canInvite(serverId: string, workspaceId: string | null): boolean {
-  const workspace = workspacesStore.workspaces.find((each) => each.id === workspaceId) ?? null;
-  const server = switchServersStore.servers.find((each) => each.id === serverId) ?? null;
-  return (
-    workspace !== null &&
-    server !== null &&
-    administersWorkspace(workspace) &&
-    !runsOnThisComputer(server)
-  );
-}
-
 /** Where to go for someone the roster does not have yet. */
-export function InviteHint({
+export const InviteHint = observer(function InviteHint({
+  serverId,
   workspaceId,
-  canInvite,
 }: {
+  serverId: string;
   workspaceId: string | null;
-  canInvite: boolean;
 }) {
   const showInvitePeopleModal = useShowModal('invitePeopleModal');
+  const server = switchServersStore.serverById(serverId);
+  const onThisComputer = server !== null && runsOnThisComputer(server);
   return (
     <p className="px-1 text-xs text-foreground-muted">
       Don&apos;t see someone?{' '}
-      {canInvite && workspaceId !== null ? (
+      {onThisComputer ? (
+        'To invite new people, use a Switch server they can reach. This server runs on your computer.'
+      ) : workspaceId !== null && server !== null && administersWorkspaceById(workspaceId) ? (
         <button
           type="button"
           className="cursor-pointer underline hover:text-foreground"
@@ -244,7 +236,7 @@ export function InviteHint({
       )}
     </p>
   );
-}
+});
 
 /**
  * Invite people to a bridged room from the messaging app's users Switch knows.

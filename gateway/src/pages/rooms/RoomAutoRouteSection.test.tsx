@@ -4,7 +4,7 @@ import type { AgentSummary, RoomAutoRoute, RoomDetail } from "../../data/api";
 import RoomAutoRouteSection from "./RoomAutoRouteSection";
 
 const NO_BACKEND =
-  "Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Decision routing.";
+  "Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Settings → Message routing.";
 
 function agent(id: string, name: string): AgentSummary {
   return {
@@ -28,6 +28,7 @@ function agent(id: string, name: string): AgentSummary {
     can_edit_options: false,
     can_transfer: false,
     transfer_blocked_reason: null,
+    suspension: null,
   };
 }
 
@@ -136,6 +137,35 @@ describe("RoomAutoRouteSection", () => {
     );
 
     expect(toggle().disabled).toBe(false);
+  });
+
+  it("cannot be turned on while an agent is assigned, and says how to unassign it", () => {
+    mockServer(() => routed(OFF));
+    render(
+      <RoomAutoRouteSection
+        room={room}
+        autoRoute={{ ...OFF, assigned_agent: "a-1", assigned_agent_name: "helper" }}
+        canWrite
+      />,
+    );
+
+    expect(toggle().disabled).toBe(true);
+    expect(screen.getByText(/Every message goes to helper/)).toBeTruthy();
+    expect(screen.getByText("!unassign-agent")).toBeTruthy();
+  });
+
+  it("can be turned off in a room that has both, and says auto-route is not acting", () => {
+    mockServer(() => routed(OFF));
+    render(
+      <RoomAutoRouteSection
+        room={room}
+        autoRoute={{ ...OFF, on: true, assigned_agent: "a-1", assigned_agent_name: "helper" }}
+        canWrite
+      />,
+    );
+
+    expect(toggle().disabled).toBe(false);
+    expect(screen.getByText(/on but not acting/)).toBeTruthy();
   });
 
   it("lets someone who may write to the room, such as a room admin, turn it on", async () => {

@@ -34,6 +34,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.suspension import SuspensionEffects
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
@@ -243,6 +244,9 @@ class _Bridges:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: object
     ) -> str | None:
@@ -253,6 +257,9 @@ class _Bridges:
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
+
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
 
     def receives_webhooks(self, bridge_type: str) -> bool:
         return False
@@ -401,6 +408,13 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         OrganizationApps,
         "organization_apps",
         _store=OrganizationAppCredentialStore(settings.keyring),
+    )
+    gateway.state.suspension_effects = SuspensionEffects(
+        session_factory=session_factory,
+        connections=protocol.connections,
+        api_key_cache=protocol.api_key_cache,
+        broker=gateway.state.service_broker,
+        management=management.service,
     )
     gateway.state.controller_revoker = management.service
     gateway.state.workspace_archive = Fake("workspace_archive")

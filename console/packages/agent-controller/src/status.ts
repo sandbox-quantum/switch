@@ -488,6 +488,16 @@ export class ProviderStatuses {
   }
 
   /** Checks every provider now, whatever its last check, all at once. */
+  /** Where each provider's CLI was found at its last check, or `not found`. */
+  locations(): Partial<Record<Provider, string>> {
+    return Object.fromEntries(
+      PROVIDERS.flatMap((provider) => {
+        const entry = this.entries.get(provider);
+        return entry ? [[provider, entry.path ?? 'not found']] : [];
+      })
+    );
+  }
+
   async checkAll(options: { verify?: boolean } = {}): Promise<void> {
     await Promise.all(PROVIDERS.map((provider) => this.check(provider, options)));
   }
@@ -664,6 +674,8 @@ export class StatusCollector {
       workspacesDir: string;
       /** What definitions are checked against here, as it stands now: what the device allows. */
       context: () => DefinitionContext;
+      /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
+      deviceId: string | null;
       version: string;
       updatedBy: UpdatedBy;
       now: () => number;
@@ -737,6 +749,7 @@ export class StatusCollector {
         // v1 enforces no session limit; 0 says so rather than inventing one.
         sessions_max: 0,
         workspaces_dir: this.deps.workspacesDir,
+        ...(this.deps.deviceId === null ? {} : { device_id: this.deps.deviceId }),
       },
       providers: this.deps.providers.snapshot(),
       tools: await this.deps.tools(),

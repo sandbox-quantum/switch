@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
+from switch_core.addressing import owner_only_policy
 from switch_core.bridges.agent.operations.callctx import (
     CallContext,
     reset_call_context,
@@ -20,9 +21,13 @@ from switch_core.bridges.agent.operations.callctx import (
 )
 from switch_core.bridges.agent.operations.definitions import create_room_from_yaml
 from switch_core.db.models import (
+    Agent,
     Room,
     RoomGroup,
+    User,
 )
+from switch_core.room_invites import InviteRefused
+from tests.switch_core.bridges.agent.operations.conftest import _make_agent
 from tests.switch_core.test_template_yaml import alias_bomb
 
 SINGLE_ROOM_YAML = """\
@@ -150,3 +155,32 @@ async def test_an_alias_bomb_is_refused_at_once_and_creates_nothing(env):
 async def test_ownerless_agent_cannot_provision(env):
     with pytest.raises(ValueError, match="no owner"):
         await _call(env["orphan_id"], yaml=SINGLE_ROOM_YAML)
+
+
+@pytest.mark.asyncio
+async def test_a_room_holding_an_agent_its_owner_may_not_address_is_refused(env):
+    """The invite rule, judged as for `create_room`: as the calling agent's
+    owner, who owns the room, or as the agent where the target trusts it."""
+    async with env["session_factory"]() as session:
+        mallory = User(name="mallory", email="m@example.com", role="member")
+        session.add(mallory)
+        await session.flush()
+        private = await _make_agent(session, "mallorys-agent", mallory.id, mallory.id)
+        private.addressing_policy = owner_only_policy([]).model_dump()
+        await session.commit()
+    document = SINGLE_ROOM_YAML.replace(
+        '["claude-code.alice"]', '["claude-code.alice", "mallorys-agent"]'
+    )
+
+    with pytest.raises(InviteRefused, match="mallorys-agent"):
+        await _call(env["agent_id"], yaml=document)
+    async with env["session_factory"]() as session:
+        assert (await session.execute(select(Room))).scalars().all() == []
+
+    async with env["session_factory"]() as session:
+        trusting = await session.get(Agent, private.id)
+        assert trusting is not None
+        trusting.addressing_policy = owner_only_policy([env["agent_id"]]).model_dump()
+        await session.commit()
+    result = await _call(env["agent_id"], yaml=document)
+    assert result["room_name"] == "Test Room"

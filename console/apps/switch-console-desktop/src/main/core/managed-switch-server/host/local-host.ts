@@ -118,7 +118,7 @@ export class LocalServerHost implements ServerHost {
   async checkNetworking(ports: LocalServerPorts): Promise<void> {
     // Nothing is forwarded; the stack publishes on 127.0.0.1 itself. What can
     // be in the way is a program on the IPv6 loopback at the same port.
-    await assertIpv6LoopbackFree([ports.gateway, ports.api, ports.mattermost]);
+    await assertIpv6LoopbackFree([ports.gateway, ports.api]);
   }
 
   async establishNetworking(): Promise<void> {

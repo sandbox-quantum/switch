@@ -7,6 +7,7 @@ from sqlalchemy import (
     ColumnElement,
     DateTime,
     Text,
+    and_,
     cast,
     delete,
     exists,
@@ -25,6 +26,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 
 from switch_core.authz import require_group_filing
 from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.db.audit import AuditAction, record_audit_event, request_actor
 from switch_core.db.id_lists import any_of
 from switch_core.db.models import (
     Agent,
@@ -42,6 +44,7 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
+from switch_core.room_policy import PRIVATE_CHANNELS
 
 # Where a room's name came from, in its `metadata`. Both "channel" and
 # "created" follow the linked channel's renames:
@@ -102,6 +105,14 @@ class Membership:
     room_id: str
     transport_room_id: str
     joined_at: datetime
+
+
+class AgentRoom(NamedTuple):
+    """A room an agent is a member of, as its list of rooms names it."""
+
+    room_id: str
+    name: str
+    archived: bool
 
 
 class RoomStore:
@@ -355,15 +366,17 @@ class RoomStore:
         result = await session.execute(stmt.limit(limit))
         return [row[0] for row in result.all()]
 
-    async def count(self, session: AsyncSession) -> int:
-        """How many rooms the bound tenant has that are not archived, as the
-        rooms list shows them."""
+    async def count(self, session: AsyncSession, shown: ColumnElement[bool]) -> int:
+        """How many rooms the bound tenant has that are not archived and
+        `shown` (`readable_by`) admits, as the rooms list shows them."""
         return (
             await session.scalar(
                 select(sa_func.count())
                 .select_from(Room)
                 .where(
-                    Room.tenant_id == require_tenant_id(), Room.archived_at.is_(None)
+                    Room.tenant_id == require_tenant_id(),
+                    Room.archived_at.is_(None),
+                    shown,
                 )
             )
         ) or 0
@@ -396,9 +409,11 @@ class RoomStore:
         may read (as `list_readable`; every room for a workspace admin) and
         those `member_agent_id` is in. An agent with no owner sees public
         rooms and its own."""
-        stmt = select(Room)
-        if not reader_is_admin:
-            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
+        stmt = select(Room).where(
+            visible_to_agent(
+                reader_id, reader_is_admin=reader_is_admin, agent_id=member_agent_id
+            )
+        )
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         if name_contains:
@@ -421,9 +436,11 @@ class RoomStore:
         include_archived: bool,
     ) -> list[Room]:
         """Every room an agent may see, as `page_all` filters them, unpaged."""
-        stmt = select(Room)
-        if not reader_is_admin:
-            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
+        stmt = select(Room).where(
+            visible_to_agent(
+                reader_id, reader_is_admin=reader_is_admin, agent_id=member_agent_id
+            )
+        )
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         return list((await session.execute(stmt)).scalars().all())
@@ -458,6 +475,21 @@ class RoomStore:
             select(Room.id).where(Room.id.in_(room_ids), visible)
         )
         return set(result.scalars().all())
+
+    async def visible_names(
+        self,
+        session: AsyncSession,
+        room_ids: Collection[str],
+        visible: ColumnElement[bool],
+    ) -> dict[str, str]:
+        """Of `room_ids`, the names of the rooms `visible` holds for, keyed by
+        room id."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(Room.id, Room.name).where(any_of(Room.id, room_ids), visible)
+        )
+        return {room_id: name for room_id, name in result.tuples()}
 
     async def involved_room_ids(
         self, session: AsyncSession, user_id: str, room_ids: Collection[str]
@@ -507,6 +539,23 @@ class RoomStore:
                     RoomAdmin.room_id == Room.id, RoomAdmin.user_id == user_id
                 ),
                 _still_a_member(user_id),
+            )
+        )
+        return set(result.scalars().all())
+
+    async def people_present(self, session: AsyncSession, room_id: str) -> set[str]:
+        """The transport ids of the people present in the room: the platform
+        accounts and Switch Console members with a membership row. Agents and
+        Switch's own clients (the admin, the bridges) are not people."""
+        result = await session.execute(
+            select(Client.transport_user_id)
+            .join(ClientRoom, ClientRoom.client_id == Client.id)
+            .where(
+                ClientRoom.room_id == room_id,
+                or_(
+                    Client.type == MEMBER_CLIENT_TYPE,
+                    exists().where(ExternalUser.client_id == Client.id),
+                ),
             )
         )
         return set(result.scalars().all())
@@ -809,6 +858,36 @@ class RoomStore:
             by_agent[agent_id].add(room_id)
         return by_agent
 
+    async def rooms_of_agents(
+        self,
+        session: AsyncSession,
+        agent_ids: Collection[str],
+        visible: ColumnElement[bool],
+    ) -> dict[str, list[AgentRoom]]:
+        """The rooms each agent is a member of that `visible` holds for,
+        archived rooms included, in one query. Every agent asked about has a
+        key.
+
+        Reads only the agents' own rooms, and only what a membership names, so
+        its cost follows how many rooms those agents are in, not how many the
+        reader could see."""
+        by_agent: dict[str, list[AgentRoom]] = {agent_id: [] for agent_id in agent_ids}
+        if not by_agent:
+            return by_agent
+        # Aliased: `visible` may ask about `room_agents` in a subquery of its
+        # own (an agent's own rooms, a room with an agent the reader owns),
+        # which would otherwise be correlated to this membership row.
+        member = room_agents.alias("member")
+        result = await session.execute(
+            select(member.c.agent_id, Room.id, Room.name, Room.archived_at)
+            .select_from(member)
+            .join(Room, Room.id == member.c.room_id)
+            .where(any_of(member.c.agent_id, by_agent), visible)
+        )
+        for agent_id, room_id, name, archived_at in result.tuples():
+            by_agent[agent_id].append(AgentRoom(room_id, name, archived_at is not None))
+        return by_agent
+
     async def get_agent_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(
             select(room_agents.c.agent_id).where(room_agents.c.room_id == room_id)
@@ -940,6 +1019,10 @@ class RoomStore:
         # the cursor it has.
         await DeliveryCursorStore().seed(session, client_id, room_id)
         await session.flush()
+        if recorded is not None:
+            await self._record_membership(
+                session, client_id, room_id, AuditAction.ROOM_MEMBER_ADDED
+            )
         return recorded is not None
 
     async def remove_client(
@@ -962,7 +1045,57 @@ class RoomStore:
         await session.flush()
         if removed is not None:
             await self.prune_admins(session, room_id)
+            await self._record_membership(
+                session, client_id, room_id, AuditAction.ROOM_MEMBER_REMOVED
+            )
         return removed is not None
+
+    async def _record_membership(
+        self,
+        session: AsyncSession,
+        client_id: str,
+        room_id: str,
+        action: AuditAction,
+    ) -> None:
+        """The audit event for a membership this call wrote, in its
+        transaction. Agents and people only: a bridge's or Switch's own
+        client joining a room is plumbing. Attributed to whoever the request
+        acts for, since membership has writers at every level and only the
+        request knows who asked."""
+        client = await session.get(Client, client_id)
+        if client is None:
+            raise ValueError(f"Client {client_id} not found")
+        details: dict[str, str | None] = {
+            "client_type": client.type,
+            "client_id": client_id,
+        }
+        if client.type == "agent":
+            agent = await session.scalar(
+                select(Agent).where(Agent.client_id == client_id)
+            )
+            if agent is not None:
+                details["agent_id"] = agent.id
+                details["agent_name"] = agent.name
+        elif client.type == MEMBER_CLIENT_TYPE:
+            details["user_id"] = client.user_id
+        elif client.type == "user":
+            details["external_user_id"] = await session.scalar(
+                select(ExternalUser.id).where(ExternalUser.client_id == client_id)
+            )
+        else:
+            return
+        actor_user_id, acting_agent_id = request_actor()
+        if acting_agent_id is not None:
+            details["acting_agent_id"] = acting_agent_id
+        await record_audit_event(
+            session,
+            tenant_id=client.tenant_id,
+            actor_user_id=actor_user_id,
+            action=action,
+            target_type="room",
+            target_id=room_id,
+            details=details,
+        )
 
     async def get_for_client(self, session: AsyncSession, client_id: str) -> list[Room]:
         """The rooms a client is a member of.
@@ -1131,15 +1264,6 @@ class RoomStore:
         room.external_channel_id = external_channel_id
         await session.flush()
 
-    async def update_protection_config(
-        self, session: AsyncSession, room_id: str, config: dict[str, object]
-    ) -> None:
-        room = await session.get(Room, room_id)
-        if room is None:
-            raise ValueError(f"Room not found: {room_id}")
-        room.protection_config = config  # type: ignore[assignment]
-        await session.flush()
-
     async def update_observe_config(
         self, session: AsyncSession, room_id: str, config: dict[str, object]
     ) -> None:
@@ -1164,6 +1288,40 @@ class RoomStore:
             room.archived_at = datetime.now(UTC)  # type: ignore[assignment]
         else:
             room.archived_at = None
+        await session.flush()
+
+    async def set_archived_many(
+        self, session: AsyncSession, room_ids: Collection[str], archived: bool
+    ) -> None:
+        """`set_archived` for many rooms in one statement. An id with no room
+        changes nothing."""
+        if not room_ids:
+            return
+        await session.execute(
+            update(Room)
+            .where(any_of(Room.id, room_ids))
+            .values(archived_at=datetime.now(UTC) if archived else None)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def set_frozen(
+        self,
+        session: AsyncSession,
+        room: Room,
+        *,
+        frozen_by: str | None,
+        reason: str | None,
+    ) -> None:
+        """Freeze `room`, stamping when, by whom and why."""
+        room.frozen_at = datetime.now(UTC)
+        room.frozen_by = frozen_by
+        room.frozen_reason = reason
+        await session.flush()
+
+    async def clear_frozen(self, session: AsyncSession, room: Room) -> None:
+        room.frozen_at = None
+        room.frozen_by = None
+        room.frozen_reason = None
         await session.flush()
 
     async def update_fields(
@@ -1365,22 +1523,48 @@ class AttachedRooms(NamedTuple):
 
 
 def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
-    """True for a `Room` row the user may read: publicly readable, or one they
-    take part in (`involves`). Every room, for a tenant admin; only public ones
-    for a reader with no user (an agent nobody owns), who takes part in none."""
+    """True for a `Room` row the user may read: open to the workspace
+    (`open_to_workspace`), or one they take part in (`involves`). Every room,
+    for a tenant admin; only open ones for a reader with no user (an agent
+    nobody owns), who takes part in none."""
     if is_admin:
         return true()
     if user_id is None:
-        return Room.read_visibility == "public"
-    return or_(Room.read_visibility == "public", involves(user_id))
+        return open_to_workspace()
+    return or_(open_to_workspace(), involves(user_id))
+
+
+def open_to_workspace() -> ColumnElement[bool]:
+    """True for a `Room` row people not in it may see: `room_policy.open_to_workspace`
+    as a query. Never NULL, so a room it does not hold for is never let in."""
+    return and_(
+        Room.read_visibility == "public",
+        or_(
+            and_(Room.channel_type.is_(None), Room.external_channel_id.is_(None)),
+            and_(
+                Room.channel_type.is_not(None),
+                Room.channel_type.not_in(PRIVATE_CHANNELS),
+            ),
+        ),
+    )
+
+
+def visible_to_agent(
+    reader_id: str | None, *, reader_is_admin: bool, agent_id: str
+) -> ColumnElement[bool]:
+    """True for a `Room` row an agent may see: every room when its owner
+    `reader_id` is a workspace admin, otherwise as `_visible_to_agent`."""
+    if reader_is_admin:
+        return true()
+    return _visible_to_agent(reader_id, agent_id)
 
 
 def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[bool]:
     """True for a `Room` row an agent may see when its owner is not a
-    workspace admin: public, one the owner takes part in, or one the agent is
-    in. An agent with no owner sees public rooms and its own."""
+    workspace admin: open to the workspace, one the owner takes part in, or one
+    the agent is in. An agent with no owner sees open rooms and its own."""
     visible = [
-        Room.read_visibility == "public",
+        open_to_workspace(),
         exists().where(
             room_agents.c.room_id == Room.id,
             room_agents.c.agent_id == agent_id,
