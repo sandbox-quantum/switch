@@ -522,7 +522,7 @@ class TestOneProcessReports:
 
 class TestCatalogueAdditions:
     """Provider login problems, disk, provisioning time, sampler failures, and
-    the finer failure reasons (`wake_failed`, `stop_failed`)."""
+    the finer failure reasons (`wake_failed`, `stop_failed`, `launch_refused`)."""
 
     def test_login_problems_are_counted_by_provider_and_reason_only(self) -> None:
         summary = box_summary(
@@ -602,13 +602,14 @@ class TestCatalogueAdditions:
             session.execute(text("SELECT 1"))
             record_machine_event(wrapper, "failed", "wake_failed")
             record_machine_event(wrapper, "failed", "stop_failed")
+            record_machine_event(wrapper, "failed", "launch_refused")
             session.commit()
         finally:
             session.close()
         reasons = sorted(
             a["reason"] for a, _ in _points(registry)["switch.hosted.machine_events"]
         )
-        assert reasons == ["stop_failed", "wake_failed"]
+        assert reasons == ["launch_refused", "stop_failed", "wake_failed"]
 
 
 class TestControllerErrorCounts:
