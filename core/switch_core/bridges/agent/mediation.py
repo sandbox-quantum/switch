@@ -1,12 +1,8 @@
 """Whether an agent may use the model it is about to use: a lookup against
 the models the agent has attached.
 
-There is no check for tools. One existed, answering `proceed` for any tool
-attached by name without seeing what the call did, and the retired Claude Code
-connector plugin turned that answer into skipping Claude Code's own permission
-prompt, so text in a room could drive shell commands nobody approved. Its
-route is gone, and a copy of that plugin still installed gets a 404, which it
-treats as no decision: Claude Code asks as it always would.
+Tool calls are not mediated here: Switch gives no verdict on one, so an
+agent's provider asks for approval as its own permission settings say.
 
 Post-invocation mediation is not here, because there is nothing to decide: the
 `post_tool_result` and `post_llm_response` hooks exist as places to inspect
