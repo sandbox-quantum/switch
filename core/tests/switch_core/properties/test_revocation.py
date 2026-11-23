@@ -13,21 +13,33 @@ from hypothesis import settings
 from hypothesis.stateful import run_state_machine_as_test
 
 from switch_core import signals
+from switch_core.transport import postgres
 from tests.switch_core.properties.revocation_machine import (
     COVERAGE,
     HELD_ROWS_MODULE,
     TTL,
     Clock,
-    ControllerAccess,
     held_rows_clock,
     machine_on,
+)
+from tests.switch_core.properties.revocation_resources import (
+    ControllerAccess,
+    RoomAccess,
+    RoomMembership,
 )
 
 SHOULD_REACH = (
     "a listening connection is severed",
     "a severed process connects again",
-    "a process that missed the revocation acts on it within the TTL",
     "a read straddled other steps",
+)
+HELD_SHOULD_REACH = (
+    *SHOULD_REACH,
+    "a process that missed the revocation acts on it within the TTL",
+)
+REREAD_SHOULD_REACH = (
+    *SHOULD_REACH,
+    "a process that missed the change is behind until it re-reads",
 )
 
 
@@ -42,12 +54,13 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     monkeypatch.setattr(signals, "RECONNECT_BACKOFF_BASE", 0.01)
     monkeypatch.setattr(signals, "RECONNECT_BACKOFF_CAP", 0.02)
     monkeypatch.setattr(signals, "RECHECK_SECONDS", 3600.0)
+    monkeypatch.setattr(postgres, "RECHECK_SECONDS", 3600.0)
     return clock
 
 
-def _reached() -> None:
+def _reached(should: tuple[str, ...]) -> None:
     if settings.get_current_profile_name() == "nightly":
-        unreached = [what for what in SHOULD_REACH if COVERAGE[what] == 0]
+        unreached = [what for what in should if COVERAGE[what] == 0]
         assert not unreached, (
             f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
         )
@@ -59,7 +72,25 @@ def test_a_revoked_controller_is_refused_everywhere(
 ) -> None:
     COVERAGE.clear()
     run_state_machine_as_test(machine_on(postgres_schema, ControllerAccess, clock))
-    _reached()
+    _reached(HELD_SHOULD_REACH)
+
+
+@pytest.mark.property("revocation.takes-effect-everywhere")
+def test_an_agent_removed_from_a_room_is_refused_everywhere(
+    postgres_schema: str, clock: Clock
+) -> None:
+    COVERAGE.clear()
+    run_state_machine_as_test(machine_on(postgres_schema, RoomAccess, clock))
+    _reached(HELD_SHOULD_REACH)
+
+
+@pytest.mark.property("revocation.takes-effect-everywhere")
+def test_a_client_removed_from_a_room_stops_reading_it_everywhere(
+    postgres_schema: str, clock: Clock
+) -> None:
+    COVERAGE.clear()
+    run_state_machine_as_test(machine_on(postgres_schema, RoomMembership, clock))
+    _reached(REREAD_SHOULD_REACH)
 
 
 @pytest.mark.property("revocation.takes-effect-everywhere")
@@ -151,6 +182,78 @@ def test_revoking_again_does_not_move_the_bound(
         machine.tick(TTL)
         machine.revoke()
         machine.check(1)
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.property("revocation.takes-effect-everywhere")
+def test_an_agent_removed_from_a_room_while_a_process_listened(
+    postgres_schema: str, clock: Clock
+) -> None:
+    """Each process has the membership in memory; the one that hears the
+    removal refuses the next post at once, the other within the TTL."""
+    machine = machine_on(postgres_schema, RoomAccess, clock)()
+    try:
+        machine.check(1)
+        machine.check(2)
+        machine.sever(_drawing(2))
+        machine.revoke()
+        machine.check(1)
+        machine.check(2)
+        machine.tick(TTL)
+        machine.check(2)
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.property("revocation.takes-effect-everywhere")
+def test_a_copy_that_missed_a_removal_stops_reading_on_reconnect(
+    postgres_schema: str, clock: Clock
+) -> None:
+    COVERAGE.clear()
+    machine = machine_on(postgres_schema, RoomMembership, clock)()
+    try:
+        machine.sever(_drawing(1))
+        machine.revoke()
+        machine.check(1)
+        assert COVERAGE["a process that missed the change is behind until it re-reads"]
+        machine.check(2)
+        machine.reconnect(_drawing(1))
+        machine.check(1)
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.property("revocation.takes-effect-everywhere")
+def test_a_copy_that_missed_a_removal_stops_reading_on_the_recheck(
+    postgres_schema: str, clock: Clock
+) -> None:
+    """Severed and connected again before the removal's signal could be
+    resent: the periodic re-check is what catches the copy up."""
+    machine = machine_on(postgres_schema, RoomMembership, clock)()
+    try:
+        machine.sever(_drawing(1))
+        machine.revoke()
+        machine.recheck()
+        machine.check(1)
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.property("revocation.takes-effect-everywhere")
+def test_a_reread_that_straddled_a_removal_does_not_keep_the_room(
+    postgres_schema: str, clock: Clock
+) -> None:
+    machine = machine_on(postgres_schema, RoomMembership, clock)()
+    try:
+        machine.begin_slow_check(_drawing(1))
+        machine.revoke()
+        machine.finish_slow_check(_drawing(1))
+        machine.recheck()
+        machine.check(1)
+        machine.grant()
+        machine.check(1)
+        machine.check(2)
     finally:
         machine.teardown()
 
