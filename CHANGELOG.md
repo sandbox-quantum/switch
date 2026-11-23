@@ -140,6 +140,12 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A managed agent no longer shows as present in a room it just left.** A
+  slow re-read of an agent's memberships could put back a room it had left
+  (or drop one it had joined) after this process applied the change, so its
+  controller was told the old room list and the agent showed as present
+  there until the next re-check. Which messages reach the agent was not
+  affected.
 - **The decision service is ready behind vLLM.** A model server whose
   `/health` answers 200 with an empty body counts as healthy; before, the
   service reported 503 while `/decide` worked.
