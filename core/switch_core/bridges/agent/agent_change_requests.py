@@ -539,8 +539,8 @@ async def _hold(
     request: ChangeRequest,
 ) -> dict[str, Any]:
     tenant_id = require_tenant_id()
-    requests = _requests(protocol)
-    requests.hold_change(room_id, request)
+    waiting = _requests(protocol)
+    waiting.hold_change(room_id, request)
 
     admin = next(
         (
@@ -570,13 +570,13 @@ async def _hold(
         )
     except Exception as exc:
         # The owner was never shown it, so it must not stay confirmable.
-        requests.take_change(room_id, request.agent_name)
+        waiting.take_change(room_id, request.agent_name)
         raise RuntimeError(
             "Nothing was changed: the request for your owner to confirm could "
             f"not be posted in the room: {exc}"
         ) from exc
     if posted is None:
-        requests.take_change(room_id, request.agent_name)
+        waiting.take_change(room_id, request.agent_name)
         raise RuntimeError(
             "Nothing was changed: the request for your owner to confirm could "
             "not be posted in the room."
