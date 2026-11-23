@@ -571,14 +571,26 @@ class EgressKubeApi:
 
     def box_owners(self) -> dict[str, str]:
         """`box-owners`, read by name (the generator's `get` on that one name): box-keyed namespace to its owner's
-        keyed id. Refused whole if any entry is off."""
+        keyed id.
+
+        Unlike the box map, a bad entry is skipped, not the whole list refused. The list is add-only, so a bad entry
+        could never be taken out again, and refusing the whole list would hold every box's egress at the last good
+        pass for good (and give none at all after a restart). Skipped, the bad entry's box has no owner here, so it
+        gets no login (fail closed, as `parse_egress` does for any box-keyed box with no owner), and every other box
+        is unaffected. Each skip is logged as an alert, naming the namespace only when it is a box-keyed name, and
+        never the value."""
         owners: dict[str, str] = {}
         for key, value in self._secret_data(self._hosted_ns, BOX_OWNERS_SECRET).items():
             owner = value.strip()
-            if not is_box_keyed(key) or not KEYED_ID_RE.fullmatch(owner):
-                raise EgressConfigError(
-                    "box-owners: an entry is not a box-keyed namespace and a keyed id"
+            if not is_box_keyed(key):
+                logger.error("box-owners ALERT: an entry is not a box-keyed namespace; skipped.")
+                continue
+            if not KEYED_ID_RE.fullmatch(owner):
+                logger.error(
+                    "box-owners ALERT: %s's owner is not a keyed id; skipped, so it gets no egress.",
+                    key,
                 )
+                continue
             owners[key] = owner
         return owners
 

@@ -1151,23 +1151,47 @@ def test_a_box_keyed_boxs_squid_id_is_the_box_never_the_person():
     assert box.user != person.user
 
 
-def test_box_owners_is_read_by_name_and_refused_whole_if_off():
+def test_box_owners_is_read_by_name_and_a_bad_entry_is_skipped_alone(caplog):
     from switch_hosted_controller.egress_lists import EgressKubeApi
 
-    good = FakeCall(
-        {
-            ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-owners"): {
-                "data": {BK: _b64(OWNER)}
-            }
-        }
-    )
-    assert EgressKubeApi(good).box_owners() == {BK: OWNER}
-    for data in ({"agents-user-ada": _b64(OWNER)}, {BK: _b64("someone")}):
-        bad = FakeCall(
-            {("GET", "/api/v1/namespaces/switch-hosted/secrets/box-owners"): {"data": data}}
-        )
-        with pytest.raises(EgressConfigError):
-            EgressKubeApi(bad).box_owners()
+    path = ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-owners")
+    assert EgressKubeApi(FakeCall({path: {"data": {BK: _b64(OWNER)}}})).box_owners() == {BK: OWNER}
+    other = "agents-box-k1-00000000000000bb"
+    secret_looking = "not-an-id-" + "x" * 20
+    for bad in ({"agents-user-ada": _b64(OWNER)}, {other: _b64(secret_looking)}, {"???": _b64("")}):
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            got = EgressKubeApi(FakeCall({path: {"data": {BK: _b64(OWNER), **bad}}})).box_owners()
+        assert got == {BK: OWNER}  # the good entry stays
+        assert "box-owners ALERT" in caplog.text
+        assert (
+            secret_looking not in caplog.text and OWNER not in caplog.text
+        )  # values are never logged
+
+
+def test_a_bad_box_owners_entry_drops_only_that_boxs_egress():
+    """One bad entry in the add-only list takes away that box's login, and leaves every other box's alone."""
+    from switch_hosted_controller.egress_lists import EgressKubeApi, box_files, parse_egress
+
+    other = "agents-box-k1-00000000000000bb"
+    person = f"agents-user-{OWNER}"
+    boxes = {
+        "11111111-1111-1111-1111-111111111111": person,
+        "22222222-2222-2222-2222-222222222222": BK,
+        "33333333-3333-3333-3333-333333333333": other,
+    }
+    path = ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-owners")
+    owners = EgressKubeApi(
+        FakeCall({path: {"data": {BK: _b64(OWNER), other: _b64("bad owner")}}})
+    ).box_owners()
+    for open_web in (False, True):
+        listed = parse_egress("{}", boxes, ("github",), True, open_web, owners)
+        assert {b.namespace for b in listed} == {
+            person,
+            BK,
+        }  # no login for the bad entry's box only
+        for box in listed:
+            assert "00000000000000bb" not in "".join(box_files(box).values())
 
 
 def test_with_the_open_web_an_owned_box_keyed_box_is_open_and_an_unowned_one_gets_nothing():
