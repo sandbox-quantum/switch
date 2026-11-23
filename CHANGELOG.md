@@ -186,6 +186,15 @@ version of their own to them without also giving them a release of their own.
   Switch Trust uses, and Org admin as Org Admin; the stored role is unchanged.
   Organizations kept in Switch are unaffected.
 
+#### Removed
+- **The rest of the mediation routes.** `POST
+  /agents/{agent_id}/mediation/pre-llm-request`, `post-tool-result` and
+  `post-llm-response` are gone and answer 404. No client called them: the
+  first checked a model against the agent's attached models, and the other
+  two always answered `ok`. A connector plugin copy still installed that calls
+  `post-tool-result` treats the 404 as no change to the tool's output, as it
+  did any failed call.
+
 #### Fixed
 - **A full database pool no longer makes a pod drop everything it holds.**
   Each switch-core process renews its lease on a database connection of its

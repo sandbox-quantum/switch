@@ -286,14 +286,10 @@ agent's name/icon, preserving threads and attachments.
   same buffer** — each is a filtered view with a server-held cursor, so no path
   can diverge from another or destroy what another has yet to read. They are
   scheduled for removal once the remaining clients are on the stream.
-- **Mediation is synchronous.** The bridge exposes
-  `POST /agents/.../mediation/{pre-llm-request,post-tool-result,post-llm-response}`.
-  `RequestTracker`
-  ([`bridges/agent/request_tracker.py`](../core/switch_core/bridges/agent/request_tracker.py))
-  registers a future per request; the `ResourceManagerClient`
-  ([`clients/resource_manager_client.py`](../core/switch_core/clients/resource_manager_client.py))
-  evaluates the request (e.g. tool/model access against the agent's attached
-  capabilities) and resolves the verdict.
+- **There is no mediation.** The bridge once served synchronous mediation
+  routes under `POST /agents/.../mediation/`; none decided anything a client
+  relied on, and they are gone. An agent's provider asks for approval as its
+  own permission settings say.
 - **Room-level protection is stubbed, not wired.**
   `BridgeCore.handle_protection_verdict`
   ([`bridges/collaboration/bridge_core.py`](../core/switch_core/bridges/collaboration/bridge_core.py))
