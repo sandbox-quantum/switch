@@ -206,6 +206,34 @@ To create their accounts, sign in to the Gateway as the administrator of the Swi
 
 Leave **Role** set to **User**. Choosing **Admin** makes the person another administrator of the server and an owner of the workspace you're working in.
 
+## Platform operator commands
+
+Platform operator commands (`switch-accounts`, `switch-orgs`, `switch-promote-org-admin`, `switch-connector-apps`) run where the Switch server runs.
+
+- **Docker Compose:**
+  ```sh
+  docker compose exec switch switch-accounts list
+  ```
+- **Helm on Kubernetes:**
+  ```sh
+  kubectl exec -it <core-pod> -- switch-accounts list
+  ```
+- **Console-run server:** Run the stable wrappers generated in `<userData>/local-switch-server/bin/`:
+  - **macOS:**
+    ```sh
+    ~/Library/Application\ Support/switch-console/local-switch-server/bin/switch-accounts list
+    ```
+  - **Linux:**
+    ```sh
+    ~/.config/switch-console/local-switch-server/bin/switch-accounts list
+    ```
+  - **Windows (Command Prompt / PowerShell):**
+    ```cmd
+    "%APPDATA%\switch-console\local-switch-server\bin\switch-accounts.cmd" list
+    ```
+
+You can also run any server command using `switch-server-exec <command> [args...]`.
+
 ## What to back up
 
 **Warning**
