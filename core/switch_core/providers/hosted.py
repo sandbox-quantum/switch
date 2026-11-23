@@ -74,6 +74,10 @@ class HostedControllerSettings(BaseModel):
     # whether or not it's still here. Both or neither.
     operator_token_previous: SecretStr | None = Field(default=None, min_length=32)
     operator_token_previous_until: datetime | None = None
+    # The warm pool's reaper (hosted agents v2): its own bearer, accepted only
+    # on the two reaper routes (`/hosted-provisioner/pool/retiring` and
+    # `…/pool/{id}/gone`). Unset, those routes refuse every call.
+    reaper_token: SecretStr | None = Field(default=None, min_length=32)
     # The move-over from the controller bearer: until this time (UTC) the two
     # operator routes also take the controller's `token`. Only with
     # `operator_token` set.
@@ -116,6 +120,7 @@ class HostedControllerSettings(BaseModel):
                 ("provisioner_token", self.provisioner_token),
                 ("operator_token", self.operator_token),
                 ("operator_token_previous", self.operator_token_previous),
+                ("reaper_token", self.reaper_token),
             )
             if value is not None
         ]
@@ -303,7 +308,12 @@ def load_hosted_settings(
     )
     holds = [
         name
-        for name in ("provisioner_token", "operator_token", "operator_token_previous")
+        for name in (
+            "provisioner_token",
+            "operator_token",
+            "operator_token_previous",
+            "reaper_token",
+        )
         if getattr(settings, name) is not None
     ]
     if holds and Path(path).stat().st_mode & 0o077:

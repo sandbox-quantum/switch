@@ -635,6 +635,13 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/hosted-controller/pool",
+      "auth": "operator-token",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
       "route": "GET /gateway/hosted-machines",
       "auth": "session",
       "flags": []
@@ -643,6 +650,20 @@
       "route": "GET /gateway/hosted-machines/{machine_id}",
       "auth": "session",
       "flags": []
+    },
+    {
+      "route": "GET /gateway/hosted-provisioner/actions/{action_id}",
+      "auth": "none",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "GET /gateway/hosted-provisioner/pool/retiring",
+      "auth": "none",
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "GET /gateway/invitations/mine",
@@ -1472,7 +1493,21 @@
       ]
     },
     {
+      "route": "POST /gateway/hosted-provisioner/actions/{action_id}/steps",
+      "auth": "none",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
       "route": "POST /gateway/hosted-provisioner/claim",
+      "auth": "none",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "POST /gateway/hosted-provisioner/pool/{pool_box_id}/gone",
       "auth": "none",
       "flags": [
         "hosted_v2"

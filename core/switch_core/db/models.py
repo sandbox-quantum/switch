@@ -582,6 +582,67 @@ class ProviderConnection(TenantScoped, Base):
     )
 
 
+class HostedPoolBox(Base):
+    """A hosted agents v2 box made ahead of anyone asking: the warm pool.
+
+    Global, and no person's: it has no owner until a claim turns it into that
+    person's `CloudMachine`, with the same id. Kept apart from
+    `cloud_machines` so a machine row always has an owner, and no
+    tenant-scoped query can ever see a pool box. Its state only moves forward:
+    `requested` → `waiting` → `claimed` | `retiring` → `gone`, with `claimed` →
+    `retiring` for a claim that failed before its owner was written. Touched
+    only by `visibility.box_provision` and the hosted controller, provisioner
+    and reaper routes.
+    """
+
+    __tablename__ = "hosted_pool_boxes"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('requested', 'waiting', 'claimed', 'retiring', 'gone')",
+            name="ck_hosted_pool_box_state",
+        ),
+        CheckConstraint(
+            "retire_reason IS NULL OR retire_reason IN "
+            "('image', 'age', 'size', 'make_failed', 'failed_before_owner')",
+            name="ck_hosted_pool_box_retire_reason",
+        ),
+        Index("ix_hosted_pool_boxes_state", "state", "requested_at"),
+    )
+
+    # Becomes the machine id at claim, so the namespace's `machine-id`
+    # annotation is already right.
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    # The operator's template revision it was made at: a claim takes only a
+    # box made at the current one.
+    template_revision: Mapped[str | None] = mapped_column(Text)
+    # The namespace Core handed out for it (`agents-box-<keyed id>`), fixed
+    # when the pool action was first claimed.
+    namespace: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retire_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class HostedOperatorReport(Base):
+    """What the hosted agents v2 box operator last said about itself when it
+    polled for work: its template revision and its capabilities
+    (`box_keyed_names`, `pool`, `bind`). One row (`id = "operator"`), global:
+    every Core process reads the same answer. Refill and the pool's freshness
+    check read it; a claim decides from the claiming operator's own words."""
+
+    __tablename__ = "hosted_operator_reports"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    template_revision: Mapped[str | None] = mapped_column(Text)
+    capabilities: Mapped[list] = mapped_column(JSONB, nullable=False)
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class CloudMachine(Base):
     """One user's Switch Cloud VM, whichever workspaces it serves.
 

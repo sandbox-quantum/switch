@@ -186,6 +186,15 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # codes only cross, and nothing per workspace is returned.
     ("POST", "/hosted-provisioner/claim"),
     ("POST", "/hosted-provisioner/actions/{action_id}/result"),
+    # The warm pool's re-check and write-ahead step, on the same bearer and
+    # the same global tables (`server_audit_events`, `hosted_pool_boxes`).
+    ("GET", "/hosted-provisioner/actions/{action_id}"),
+    ("POST", "/hosted-provisioner/actions/{action_id}/steps"),
+    # The warm pool's reaper, on its own bearer (`reaper_session`): pool
+    # boxes belong to no person or workspace, and only their ids, namespaces
+    # and states cross.
+    ("GET", "/hosted-provisioner/pool/retiring"),
+    ("POST", "/hosted-provisioner/pool/{pool_box_id}/gone"),
 }
 
 
@@ -295,6 +304,9 @@ def test_controller_credential_is_confined_to_the_controller_routes() -> None:
         # listed services' copies, nothing per tenant; the body is strict and
         # capped at 64 KiB, and nothing in it is echoed back.
         ("POST", "/hosted-controller/cluster"),
+        # The warm pool's boxes for the scaler: ids, namespaces, revisions and
+        # wanted states; no owner, nothing per tenant.
+        ("GET", "/hosted-controller/pool"),
     }
 
 

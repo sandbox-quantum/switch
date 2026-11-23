@@ -64,6 +64,7 @@ _TENTH_MERGE = "efd7dfbd0bb7"
 _AFTER_MERGE = (
     "c118ea00053c",  # hosted migrations
     "e5c1a8f3b294",  # a box stopped because its owner is suspended
+    "b3e9a4c71d52",  # the warm pool tables
 )
 _HEAD = _AFTER_MERGE[-1]
 _EIGHTH_MAIN_MERGE = "97c1c62e3ca3"
@@ -348,6 +349,8 @@ def test_there_is_exactly_one_head_and_it_is_the_merge() -> None:
     assert after is not None and after.down_revision == _TWELFTH_MERGE
     suspended = script.get_revision(_AFTER_MERGE[1])
     assert suspended is not None and suspended.down_revision == _AFTER_MERGE[0]
+    pool = script.get_revision(_AFTER_MERGE[2])
+    assert pool is not None and pool.down_revision == _AFTER_MERGE[1]
     twelfth = script.get_revision(_TWELFTH_MERGE)
     assert twelfth is not None
     assert set(twelfth._all_down_revisions) == {_ELEVENTH_MERGE, _MAIN_TWELFTH[-1]}

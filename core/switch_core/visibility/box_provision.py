@@ -71,6 +71,9 @@ ACTION = ServerAuditAction.HOSTED_BOX_PROVISION.value
 TTL = timedelta(minutes=15)
 LEASE = timedelta(seconds=120)
 NAMESPACE_PREFIX = "agents-user-"
+# New boxes, pool and fallback alike, once the operator can make them
+# (`box_keyed_names`): named by the box, never the person.
+BOX_NAMESPACE_PREFIX = "agents-box-"
 # The provisioner's own steps, as it names where a failure stopped.
 FAILED_AT = frozenset(
     {
@@ -81,6 +84,17 @@ FAILED_AT = frozenset(
         "ceiling_reached",
     }
 )
+# A bind's own failures (warm pool), only for a `bind` action. The first two
+# come before its owner is written (the box is reapable); the third should
+# never happen and is an alert.
+BIND_FAILED_AT = frozenset({"bind_machine_mismatch", "bind_closed", "bind_owner_taken"})
+# What a provision action asks the operator for: `provision`, a person's box
+# made and bound at once (today's); `pool`, a box made with no person; `bind`,
+# a waiting pool box given to its person.
+Kind = Literal["provision", "pool", "bind"]
+KINDS: frozenset[str] = frozenset({"provision", "pool", "bind"})
+# The operator capability each kind, and box-keyed naming, needs.
+NEEDS: dict[str, str] = {"pool": "pool", "bind": "bind"}
 
 Waiting = Literal["rate", "ceiling"]
 
@@ -95,9 +109,15 @@ BOX_NOT_MADE_MESSAGE = (
 class ClaimedProvision:
     action_id: str
     machine_id: str
-    user_keyed_id: str
+    # None for a `pool` action: a pool box has no person.
+    user_keyed_id: str | None
     size: str | None
     lease_seconds: int
+    kind: Kind
+    # The box's keyed id, Core's alone to compute (the operator never holds
+    # the key), and the exact namespace Core expects the result to name.
+    box_keyed_id: str
+    namespace: str
     # Proves which claim a result belongs to: a stale worker whose lease
     # passed and whose action was claimed again is refused. Only
     # its hash is kept.
@@ -118,6 +138,90 @@ def _token_hash(token: str) -> str:
 
 def namespace_for(user_keyed_id: str) -> str:
     return f"{NAMESPACE_PREFIX}{user_keyed_id}"
+
+
+def box_namespace_for(box_keyed_id: str) -> str:
+    return f"{BOX_NAMESPACE_PREFIX}{box_keyed_id}"
+
+
+def kind_of(request: ServerAuditEvent) -> Kind:
+    """A request's kind; one from before kinds is a `provision`."""
+    kind = (request.details or {}).get("kind")
+    return kind if kind in KINDS else "provision"  # type: ignore[return-value]
+
+
+async def _recorded_namespace(session: AsyncSession, machine_id: str) -> str | None:
+    """The namespace an earlier claim of this machine's provisions fixed, the
+    latest one, if any: a namespace, once handed out, never changes."""
+    requests = await session.scalars(
+        select(ServerAuditEvent.id).where(
+            ServerAuditEvent.action == ACTION,
+            ServerAuditEvent.details["phase"].astext == "requested",
+            ServerAuditEvent.details["machine_id"].astext == machine_id,
+        )
+    )
+    ids = list(requests.all())
+    if not ids:
+        return None
+    found = await session.scalar(
+        select(ServerAuditEvent.details["namespace"].astext)
+        .where(
+            ServerAuditEvent.action == ACTION,
+            ServerAuditEvent.details["step"].astext == "claimed",
+            ServerAuditEvent.details["linked_to"].astext.in_(ids),
+            ServerAuditEvent.details["namespace"].astext.is_not(None),
+        )
+        .order_by(ServerAuditEvent.occurred_at.desc(), ServerAuditEvent.id.desc())
+        .limit(1)
+    )
+    return found if isinstance(found, str) else None
+
+
+async def _had_a_box_before(
+    session: AsyncSession, machine_id: str, request_id: str
+) -> bool:
+    """Whether this machine had a box before this request named one: a
+    revival, or an earlier provision that finished. Such a box was made
+    before box-keyed names (or its claim would have recorded its name), so it
+    keeps the person-keyed one."""
+    if await revived_at(session, machine_id) is not None:
+        return True
+    finished = await session.scalar(
+        select(func.count())
+        .select_from(ServerAuditEvent)
+        .where(
+            ServerAuditEvent.action == ACTION,
+            ServerAuditEvent.details["phase"].astext == "result",
+            ServerAuditEvent.details["result"].astext == "done",
+            ServerAuditEvent.details["machine_id"].astext == machine_id,
+            ServerAuditEvent.details["linked_to"].astext != request_id,
+        )
+    )
+    return bool(finished)
+
+
+async def _namespace_to_issue(
+    session: AsyncSession,
+    request: ServerAuditEvent,
+    capabilities: frozenset[str],
+) -> str:
+    """The namespace this action names, decided when it's first handed out:
+    the one an earlier claim fixed; for a box from before box-keyed names,
+    the person-keyed one; otherwise box-keyed if the claiming operator can
+    make it (`box_keyed_names`), else person-keyed, as before."""
+    details = request.details or {}
+    machine_id = str(details.get("machine_id"))
+    recorded = await _recorded_namespace(session, machine_id)
+    if recorded is not None:
+        return recorded
+    kind = kind_of(request)
+    if kind in ("pool", "bind"):
+        return box_namespace_for(str(request.target_id))
+    if "box_keyed_names" in capabilities and not await _had_a_box_before(
+        session, machine_id, request.id
+    ):
+        return box_namespace_for(str(request.target_id))
+    return namespace_for(str(details.get("user")))
 
 
 def _size_of(machine: CloudMachine) -> str | None:
@@ -604,12 +708,21 @@ async def claim_provision(
     session: AsyncSession,
     now: datetime,
     is_blocked: Callable[[str], Awaitable[bool]] | None = None,
+    capabilities: frozenset[str] = frozenset(),
+    pool_blocked: Callable[[str], Awaitable[bool]] | None = None,
+    template_revision: str | None = None,
 ) -> ClaimedProvision | None:
-    """The oldest open provision whose lease is free, claimed for `LEASE`.
+    """The oldest open provision whose lease is free, claimed for `LEASE`,
+    among the kinds the claiming operator can carry out (`capabilities`; with
+    none, `provision` only, as before).
 
     One claim at a time under its own lock. An expired request is never
     handed out, and one whose lease has passed with no result can be claimed
-    again, since the provisioner's steps are safe to repeat. The caller commits.
+    again, since the provisioner's steps are safe to repeat. The namespace is
+    decided when an action is first handed out and recorded on its `claimed`
+    entry; a later claim of the same action names the same one. A `pool`
+    action is checked with `pool_blocked` (no person to gate), the others
+    with `is_blocked`. The caller commits.
     """
     await _advisory_lock(session, "box-provision-claims")
     rows = await session.execute(
@@ -622,6 +735,9 @@ async def claim_provision(
         .order_by(ServerAuditEvent.occurred_at, ServerAuditEvent.id)
     )
     for request in rows.scalars().all():
+        kind = kind_of(request)
+        if kind in NEEDS and NEEDS[kind] not in capabilities:
+            continue  # this operator can't carry it out
         # The action's own lock, as a result takes it, so a claim and a result
         # can't cross: the order is always claims, then action.
         await _advisory_lock(session, f"box-provision:{request.id}")
@@ -638,7 +754,8 @@ async def claim_provision(
             continue
         details = request.details or {}
         machine_id = str(details.get("machine_id"))
-        if is_blocked is not None and await is_blocked(machine_id):
+        check = pool_blocked if kind == "pool" else is_blocked
+        if check is not None and await check(machine_id):
             # Paused, turned off or off the lists since Core asked:
             # the box isn't made, and the request ends here.
             await record_server_audit_event(
@@ -656,6 +773,11 @@ async def claim_provision(
                 },
             )
             continue
+        namespace = await _namespace_to_issue(session, request, capabilities)
+        if namespace.startswith(BOX_NAMESPACE_PREFIX) and (
+            "box_keyed_names" not in capabilities
+        ):
+            continue  # fixed box-keyed by an earlier claim: not this operator's
         token = secrets.token_urlsafe(24)
         await record_server_audit_event(
             session,
@@ -669,15 +791,27 @@ async def claim_provision(
                 "linked_to": request.id,
                 "lease_until": (now + LEASE).isoformat(),
                 "claim": _token_hash(token),
+                "namespace": namespace,
+                # The claiming operator's template revision: a pool box is
+                # recorded as made at it.
+                **(
+                    {"template_revision": template_revision}
+                    if template_revision is not None
+                    else {}
+                ),
             },
         )
+        user = details.get("user")
         return ClaimedProvision(
             action_id=request.id,
             machine_id=machine_id,
-            user_keyed_id=str(details.get("user")),
+            user_keyed_id=user if isinstance(user, str) and kind != "pool" else None,
             size=details.get("size") if isinstance(details.get("size"), str) else None,
             lease_seconds=int(LEASE.total_seconds()),
             claim_token=token,
+            kind=kind,
+            box_keyed_id=str(request.target_id),
+            namespace=namespace,
         )
     return None
 
@@ -696,7 +830,7 @@ async def record_provision_result(
     commits. Raises `ProvisionRefused` with a fixed phrase otherwise."""
     if result not in ("done", "failed"):
         raise ProvisionRefused(422, "Unknown result.")
-    if result == "failed" and failed_at not in FAILED_AT:
+    if result == "failed" and failed_at not in FAILED_AT | BIND_FAILED_AT:
         raise ProvisionRefused(422, "Unknown step.")
     if result == "done" and failed_at is not None:
         raise ProvisionRefused(422, "A finished provision names no failed step.")
@@ -711,17 +845,23 @@ async def record_provision_result(
     linked = await _linked(session, request.id)
     if _result_of(linked) is not None:
         raise ProvisionRefused(409, "This provision already has its result.")
-    claims = [
-        (e.details or {}).get("claim")
-        for e in linked
-        if (e.details or {}).get("step") == "claimed"
+    claimed = [
+        e.details or {} for e in linked if (e.details or {}).get("step") == "claimed"
     ]
-    if not claims or not hmac.compare_digest(str(claims[-1]), _token_hash(claim_token)):
+    if not claimed or not hmac.compare_digest(
+        str(claimed[-1].get("claim")), _token_hash(claim_token)
+    ):
         raise ProvisionRefused(409, "This isn't the provision's current claim.")
     if now >= _expires_at(request):
         raise ProvisionRefused(409, "This provision has expired.")
     details = request.details or {}
-    if namespace != namespace_for(str(details.get("user"))):
+    kind = kind_of(request)
+    if failed_at in BIND_FAILED_AT and kind != "bind":
+        raise ProvisionRefused(422, "Unknown step.")
+    # The namespace Core issued with the claim; a claim from before issued
+    # names was always the person-keyed one.
+    issued = claimed[-1].get("namespace") or namespace_for(str(details.get("user")))
+    if namespace != issued:
         raise ProvisionRefused(422, "The namespace isn't this provision's.")
     await record_server_audit_event(
         session,
@@ -738,6 +878,22 @@ async def record_provision_result(
         },
     )
     machine_id = details.get("machine_id")
+    if kind == "pool" and isinstance(machine_id, str):
+        # A pool box: made, it's waiting, at the revision its claim recorded;
+        # not made, it retires (reapable: no person ever had it).
+        from switch_core.db.stores import hosted_pool_store
+
+        if result == "done":
+            await hosted_pool_store.mark_waiting(
+                session,
+                machine_id,
+                namespace=namespace,
+                template_revision=claimed[-1].get("template_revision"),
+                now=now,
+            )
+        else:
+            await hosted_pool_store.retire(session, machine_id, "make_failed", now)
+        return
     if isinstance(machine_id, str):
         await lock_machine(session, machine_id)
         machine = await session.get(CloudMachine, machine_id, populate_existing=True)
@@ -746,6 +902,235 @@ async def record_provision_result(
             machine.updated_at = now
         elif machine is not None and machine.state != "deleted":
             _box_not_made(session, machine, now)
+
+
+# A capable operator must have polled within this for refill to run: a Core
+# deployed before the cluster changes makes no pool boxes.
+OPERATOR_FRESH = timedelta(minutes=5)
+
+
+async def refill_pool(
+    session_factory: async_sessionmaker[AsyncSession],
+    config: SwitchConfig,
+    now: datetime,
+) -> list[str]:
+    """Ask for pool boxes up to `hosted_pool_size`: `size − (waiting +
+    requested)` new `pool` requests, only with box provisioning on, a key to
+    name them, and a box operator that said it can make pool boxes within
+    `OPERATOR_FRESH`. Under the claims lock, counted against the per-minute
+    limit and the ceiling like any request, and never taking the last free
+    slot of the per-minute window (a person's fallback comes first). Returns
+    the new pool box ids."""
+    from switch_core.db.stores import hosted_pool_store
+
+    size = getattr(config, "hosted_pool_size", 0)
+    key = process_keyed_id_key()
+    if size <= 0 or key is None or not box_provisioning_on(config):
+        return []
+    made: list[str] = []
+    with no_tenant():
+        async with session_factory() as session:
+            await lock_claims(session)
+            operator = await hosted_pool_store.operator(session)
+            if (
+                operator is None
+                or now - operator.seen_at > OPERATOR_FRESH
+                or "pool" not in (operator.capabilities or [])
+            ):
+                await session.commit()
+                return []
+            counted = await hosted_pool_store.counts(session)
+            wanted = size - counted["waiting"] - counted["requested"]
+            for _ in range(max(0, wanted)):
+                waiting = await _cap_reached(
+                    session,
+                    now=now,
+                    per_minute=max(0, config.hosted_provisions_per_minute - 1),
+                    ceiling=config.hosted_box_ceiling,
+                )
+                if waiting is not None:
+                    break
+                (box_id,) = await hosted_pool_store.request_boxes(session, 1, now)
+                await record_server_audit_event(
+                    session,
+                    actor_user_id=None,
+                    action=ServerAuditAction.HOSTED_BOX_PROVISION,
+                    target_type="box",
+                    target_id=key.keyed_id(KeyedIdKind.BOX, box_id),
+                    details={
+                        "phase": "requested",
+                        "by": "core",
+                        "kind": "pool",
+                        "machine_id": box_id,
+                        "size": None,
+                        "expires_at": (now + TTL).isoformat(),
+                    },
+                )
+                made.append(box_id)
+            await session.commit()
+    return made
+
+
+# A bind that reached this step is the person's: never reaped, never pooled.
+OWNER_WRITING = "owner_writing"
+
+
+async def _current_claim(
+    session: AsyncSession, action_id: str, claim_token: str, now: datetime
+) -> tuple[ServerAuditEvent, list[ServerAuditEvent]] | None:
+    """The request and its linked entries, when `claim_token` is its current
+    claim's, it has no result, and it hasn't expired; else None. The caller
+    holds the action's lock."""
+    request = await session.get(ServerAuditEvent, action_id, populate_existing=True)
+    if (
+        request is None
+        or request.action != ACTION
+        or (request.details or {}).get("phase") != "requested"
+        or now >= _expires_at(request)
+    ):
+        return None
+    linked = await _linked(session, request.id)
+    if _result_of(linked) is not None:
+        return None
+    claims = [
+        (e.details or {}).get("claim")
+        for e in linked
+        if (e.details or {}).get("step") == "claimed"
+    ]
+    if (
+        not claims
+        or not claim_token
+        or not hmac.compare_digest(str(claims[-1]), _token_hash(claim_token))
+    ):
+        return None
+    return request, linked
+
+
+async def action_is_open(
+    session: AsyncSession, action_id: str, claim_token: str, now: datetime
+) -> bool:
+    """Whether this claim of the action is still open: current, with no
+    result, unexpired. The bind's re-check before its last step (B4)."""
+    await _advisory_lock(session, f"box-provision:{action_id}")
+    return await _current_claim(session, action_id, claim_token, now) is not None
+
+
+def reached_owner(linked: Collection[ServerAuditEvent]) -> bool:
+    """Whether a bind recorded `owner_writing`: from then on its box is the
+    person's, whatever else Core believes about it."""
+    return any((e.details or {}).get("step") == OWNER_WRITING for e in linked)
+
+
+async def record_provision_step(
+    session: AsyncSession,
+    *,
+    action_id: str,
+    step: str,
+    claim_token: str,
+    now: datetime,
+) -> None:
+    """A bind's write-ahead `owner_writing`, recorded only while the bind is
+    open; otherwise `ProvisionRefused` (409), and the operator writes
+    nothing. The caller commits."""
+    if step != OWNER_WRITING:
+        raise ProvisionRefused(422, "Unknown step.")
+    await _advisory_lock(session, f"box-provision:{action_id}")
+    current = await _current_claim(session, action_id, claim_token, now)
+    if current is None:
+        raise ProvisionRefused(409, "This bind isn't open.")
+    request, linked = current
+    if kind_of(request) != "bind":
+        raise ProvisionRefused(422, "Only a bind writes an owner.")
+    if reached_owner(linked):
+        return  # said already: the same answer again
+    await record_server_audit_event(
+        session,
+        actor_user_id=None,
+        action=ServerAuditAction.HOSTED_BOX_PROVISION,
+        target_type="box",
+        target_id=request.target_id,
+        details={
+            "phase": "progress",
+            "step": OWNER_WRITING,
+            "linked_to": request.id,
+        },
+    )
+
+
+async def _bind_reached_owner(session: AsyncSession, pool_box_id: str) -> bool:
+    """Whether any bind of this pool box (its machine has the pool box's id)
+    recorded `owner_writing`."""
+    binds = await session.scalars(
+        select(ServerAuditEvent.id).where(
+            ServerAuditEvent.action == ACTION,
+            ServerAuditEvent.details["phase"].astext == "requested",
+            ServerAuditEvent.details["kind"].astext == "bind",
+            ServerAuditEvent.details["machine_id"].astext == pool_box_id,
+        )
+    )
+    ids = list(binds.all())
+    if not ids:
+        return False
+    found = await session.scalar(
+        select(func.count())
+        .select_from(ServerAuditEvent)
+        .where(
+            ServerAuditEvent.action == ACTION,
+            ServerAuditEvent.details["step"].astext == OWNER_WRITING,
+            ServerAuditEvent.details["linked_to"].astext.in_(ids),
+        )
+    )
+    return bool(found)
+
+
+async def record_pool_box_gone(
+    session: AsyncSession, pool_box_id: str, now: datetime
+) -> None:
+    """The reaper's report that it destroyed a pool box: accepted only for a
+    `retiring` box with a reapable reason whose bind never reached its owner;
+    then `gone`, with a `hosted.pool_box_retired` audit entry. Anything else
+    is refused (409) and alerts: the cluster's own policy is the last word on
+    the delete, but Core never agrees to one it shouldn't. The caller commits."""
+    from switch_core.db.stores import hosted_pool_store
+
+    await _advisory_lock(session, f"hosted-pool:{pool_box_id}")
+    row = await hosted_pool_store.get(session, pool_box_id)
+    reached = await _bind_reached_owner(session, pool_box_id)
+    if (
+        row is None
+        or row.state != "retiring"
+        or row.retire_reason not in hosted_pool_store.REAPABLE
+        or reached
+    ):
+        logger.error(
+            "The reaper reported a pool box gone that Core never agreed to reap "
+            "(state %s, reason %s, owner written %s).",
+            None if row is None else row.state,
+            None if row is None else row.retire_reason,
+            reached,
+        )
+        await _pool_alert(session, now)
+        raise ProvisionRefused(409, "This pool box isn't Core's to reap.")
+    await hosted_pool_store.mark_gone(session, pool_box_id, now)
+    await record_server_audit_event(
+        session,
+        actor_user_id=None,
+        action=ServerAuditAction.HOSTED_POOL_BOX_RETIRED,
+        target_type="box",
+        target_id=_keyed_box_id(pool_box_id),
+        details={"reason": row.retire_reason, "pool_box_id": pool_box_id},
+    )
+
+
+def _keyed_box_id(box_id: str) -> str | None:
+    key = process_keyed_id_key()
+    return None if key is None else key.keyed_id(KeyedIdKind.BOX, box_id)
+
+
+async def _pool_alert(session: AsyncSession, now: datetime) -> None:
+    """Placeholder for the pool's alert (`pool_reap_refused`), wired with the
+    pool's alerts; logged at error meanwhile."""
+    return None
 
 
 def _box_not_made(session: AsyncSession, machine: CloudMachine, now: datetime) -> None:
@@ -807,6 +1192,12 @@ async def expire_provisions(session: AsyncSession, now: datetime) -> int:
             },
         )
         expired += 1
+        if kind_of(request) == "pool" and isinstance(machine_id, str):
+            # A pool box never made in time retires, reapable.
+            from switch_core.db.stores import hosted_pool_store
+
+            await hosted_pool_store.retire(session, machine_id, "make_failed", now)
+            continue
         # Nothing made the box in time: the machine is marked as not made,
         # as a failed result marks it, so its owner sees an error rather than
         # a start that never ends. Only a machine still waiting for its box:

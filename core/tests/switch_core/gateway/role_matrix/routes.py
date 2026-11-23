@@ -1602,4 +1602,19 @@ UNAUTHENTICATED: dict[str, str] = {
     "POST /gateway/hosted-provisioner/actions/{action_id}/result": (
         "The box provisioner's, with its own token; no session reaches it."
     ),
+    "GET /gateway/hosted-provisioner/actions/{action_id}": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/actions/{action_id}/steps": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "GET /gateway/hosted-provisioner/pool/retiring": (
+        "The warm pool reaper's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/pool/{pool_box_id}/gone": (
+        "The warm pool reaper's, with its own token; no session reaches it."
+    ),
+    "GET /gateway/hosted-controller/pool": (
+        "The hosted controller's, with its own token; no session reaches it."
+    ),
 }

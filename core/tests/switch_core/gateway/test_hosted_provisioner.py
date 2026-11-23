@@ -249,6 +249,11 @@ async def test_a_new_machine_asks_once_and_the_provisioner_claims_it(
         "size": None,  # one box size for now: the provisioner's default
         "lease_seconds": int(LEASE.total_seconds()),
         "claim_token": body["claim_token"],
+        # Added with the warm pool: an operator that reported no capabilities
+        # gets today's kind and the person-keyed name, now named by Core.
+        "kind": "provision",
+        "box_keyed_id": KEY.keyed_id(KeyedIdKind.BOX, app.machine_id),
+        "namespace": "agents-user-" + KEY.keyed_id(KeyedIdKind.USER, app.owner.id),
     }
     assert len(body["claim_token"]) >= 32
     # Only the token's hash is kept.

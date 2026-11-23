@@ -19,6 +19,7 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import AgentController, CloudMachine
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.standing import stands_in
+from switch_core.db.stores import hosted_pool_store
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
     MACHINE_PAUSED,
@@ -582,6 +583,32 @@ async def machines(
         response["open_to_all"] = True
     await session.commit()
     return response
+
+
+@router.get("/pool", dependencies=[Depends(require_hosted_v2)])
+async def pool(
+    session: Annotated[AsyncSession, Depends(controller_session)],
+) -> dict:
+    """The warm pool's boxes, for the box scaler (hosted agents v2): each
+    pool box's id, the namespace Core issued (null until it's made), its
+    template revision, and `desired_state`, `running` while requested or
+    waiting and `stopped` once retiring. No owner: a pool box has none, and
+    `prepare` refuses a pool box id. A claimed box leaves this list and is a
+    machine in `/machines`. Hosted agents v2 only: refused with the switch off."""
+    reconciler_heard()
+    rows = await hosted_pool_store.live(session)
+    await session.commit()
+    return {
+        "boxes": [
+            {
+                "pool_box_id": row.id,
+                "namespace": row.namespace,
+                "template_revision": row.template_revision,
+                "desired_state": "stopped" if row.state == "retiring" else "running",
+            }
+            for row in rows
+        ]
+    }
 
 
 async def _locked_machine(session: AsyncSession, machine_id: str) -> CloudMachine:

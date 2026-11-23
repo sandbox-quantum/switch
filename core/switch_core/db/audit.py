@@ -293,6 +293,10 @@ class ServerAuditAction(StrEnum):
     HOSTED_MIGRATION_DONE = "hosted.migration_done"
     HOSTED_MIGRATION_ROLLED_BACK = "hosted.migration_rolled_back"
     HOSTED_MIGRATION_CLEANED = "hosted.migration_cleaned"
+    # The warm pool: a pool box given to its person (the claim), and one the
+    # reaper destroyed after Core retired it (never a person's).
+    HOSTED_POOL_BOX_CLAIMED = "hosted.pool_box_claimed"
+    HOSTED_POOL_BOX_RETIRED = "hosted.pool_box_retired"
     # Operator alerts: one row per raise and per clear, with no actor.
     # `alert.` is one of the operators' log's prefixes; it leaves them out
     # unless asked for.

@@ -87,6 +87,8 @@ async def test_each_v2_route_answers_each_persona_as_it_should(
 CONTROLLER_TOKEN = "c" * 40
 PROVISIONER_TOKEN = "p" * 40
 OPERATOR_TOKEN = "o" * 40
+# The warm pool's reaper (`hosted_provisioner.reaper_session`).
+REAPER_TOKEN = "r" * 40
 G = "/gateway"
 MACHINE_ROUTES: dict[str, tuple[str, str, object, dict[str, str], str]] = {
     "GET /gateway/hosted-controller/actions": (
@@ -124,8 +126,43 @@ MACHINE_ROUTES: dict[str, tuple[str, str, object, dict[str, str], str]] = {
         {},
         PROVISIONER_TOKEN,
     ),
+    "GET /gateway/hosted-provisioner/actions/{action_id}": (
+        "GET",
+        f"{G}/hosted-provisioner/actions/no-such-action",
+        None,
+        {},
+        PROVISIONER_TOKEN,
+    ),
+    "POST /gateway/hosted-provisioner/actions/{action_id}/steps": (
+        "POST",
+        f"{G}/hosted-provisioner/actions/no-such-action/steps",
+        {},
+        {},
+        PROVISIONER_TOKEN,
+    ),
+    "GET /gateway/hosted-provisioner/pool/retiring": (
+        "GET",
+        f"{G}/hosted-provisioner/pool/retiring",
+        None,
+        {},
+        REAPER_TOKEN,
+    ),
+    "POST /gateway/hosted-provisioner/pool/{pool_box_id}/gone": (
+        "POST",
+        f"{G}/hosted-provisioner/pool/00000000-0000-4000-8000-000000000000/gone",
+        {},
+        {},
+        REAPER_TOKEN,
+    ),
+    "GET /gateway/hosted-controller/pool": (
+        "GET",
+        f"{G}/hosted-controller/pool",
+        None,
+        {},
+        CONTROLLER_TOKEN,
+    ),
 }
-TOKENS = (CONTROLLER_TOKEN, PROVISIONER_TOKEN, OPERATOR_TOKEN)
+TOKENS = (CONTROLLER_TOKEN, PROVISIONER_TOKEN, OPERATOR_TOKEN, REAPER_TOKEN)
 REFUSED = {401, 403}
 
 
@@ -159,6 +196,7 @@ async def _v2_gateway(
         token=CONTROLLER_TOKEN,
         provisioner_token=PROVISIONER_TOKEN,
         operator_token=OPERATOR_TOKEN,
+        reaper_token=REAPER_TOKEN,
         agent_api_endpoint="https://switch.example.com/api/agent",
     )
     people = await seed_people(session_factory)
