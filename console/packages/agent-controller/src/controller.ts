@@ -539,8 +539,11 @@ export async function runController(
       try {
         const pulled = await client.assignment(etag);
         if (pulled.kind === 'changed') {
-          // Still refused for anything else, so it keeps every agent stopped.
-          assignment = suspended ? allStopped(pulled.assignment) : pulled.assignment;
+          // Still refused for anything else, so it keeps every agent stopped,
+          // at the revision it already holds: stopping them at a revision
+          // pulled meanwhile would record that revision as applied, and once
+          // let in again the same revision would start nothing.
+          assignment = suspended ? allStopped(assignment ?? pulled.assignment) : pulled.assignment;
           etag = suspended ? null : pulled.etag;
           store.saveAssignment(assignment, etag, new Date(deps.now()).toISOString());
           log.info('Pulled assignment', { revision: assignment.revision, why });
