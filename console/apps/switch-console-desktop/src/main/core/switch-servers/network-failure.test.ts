@@ -15,7 +15,8 @@ describe('describeNetworkFailure', () => {
     const error = fetchFailed(systemError('ENOTFOUND', 'getaddrinfo ENOTFOUND bad.invalid'));
 
     expect(describeNetworkFailure('https://bad.invalid', error)).toBe(
-      "Can't reach bad.invalid: the address doesn't resolve. Check it for typos (ENOTFOUND)."
+      "Can't reach bad.invalid: this address wasn't found. Check it for typos, or connect to " +
+        'your VPN if the server is private (ENOTFOUND).'
     );
   });
 

@@ -13,9 +13,11 @@ import { urlHost } from '@shared/core/switch-servers/switch-servers';
 type Reason = { text: string; code: string | null };
 
 const REASON_BY_CODE: Record<string, string> = {
-  ENOTFOUND: "the address doesn't resolve. Check it for typos",
+  ENOTFOUND:
+    "this address wasn't found. Check it for typos, or connect to your VPN if the server is private",
   EAI_AGAIN: 'the name lookup failed. Check your network connection',
-  EAI_NONAME: "the address doesn't resolve. Check it for typos",
+  EAI_NONAME:
+    "this address wasn't found. Check it for typos, or connect to your VPN if the server is private",
   ECONNREFUSED: 'nothing is answering at that address and port',
   ECONNRESET: 'the connection was closed before the server answered',
   EHOSTUNREACH: "there's no network route to it. Check that you're on its network or VPN",
@@ -60,8 +62,9 @@ function reasonOf(error: unknown): Reason {
 
 /**
  * One sentence naming the address and the reason, with the system's own code
- * in brackets so it can be searched for: "Can't reach switch.example.test: the
- * address doesn't resolve. Check it for typos (ENOTFOUND)."
+ * in brackets so it can be searched for: "Can't reach switch.example.test: this
+ * address wasn't found. Check it for typos, or connect to your VPN if the server
+ * is private (ENOTFOUND)."
  */
 export function describeNetworkFailure(url: string, error: unknown): string {
   const { text, code } = reasonOf(error);
