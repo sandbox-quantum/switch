@@ -16,6 +16,7 @@ import {
   ChatTimeline,
   type TimelineApi,
 } from '@renderer/features/chats/stores/chat-timeline-store';
+import { recordOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
 
 vi.mock('@renderer/features/chats/stores/chats', () => ({ chatsStore: { userId: 'me' } }));
@@ -69,6 +70,14 @@ const tracker: ChatAgent = {
 
 it('draws a kickoff as a card from the agent that sent it', async () => {
   document.documentElement.classList.add('emdark');
+  // The viewer's own buddy ran it: only that agent goes by a name like switch-buddy's.
+  recordOwnBuddy('srv-1', 'ws-1', [
+    {
+      agentId: 'buddy',
+      name: 'switch-buddy-simon-flack',
+      template: { id: 'official:switch-buddy', key: 'buddy', revision: 1 },
+    },
+  ]);
   const timeline = new ChatTimeline('room-1', {} as TimelineApi);
   timeline.apply(
     message(1, {

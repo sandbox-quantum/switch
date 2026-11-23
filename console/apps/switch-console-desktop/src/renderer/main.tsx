@@ -1,3 +1,4 @@
+import './zod-jitless';
 import ReactDOM from 'react-dom/client';
 import { setupNavigationGuards, views } from '@renderer/app/view-registry';
 import { prefetchAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';

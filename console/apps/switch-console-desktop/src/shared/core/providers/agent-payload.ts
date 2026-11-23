@@ -1,5 +1,3 @@
-import type { ProviderCustomConfig } from '@shared/core/app-settings';
-
 // ---------------------------------------------------------------------------
 // Install methods — mirrors INSTALL_METHODS in @switch-console/core/deps/capability.ts
 // ---------------------------------------------------------------------------
@@ -196,16 +194,6 @@ export type AgentIconAsset = {
 };
 
 // ---------------------------------------------------------------------------
-// Settings
-// ---------------------------------------------------------------------------
-
-export type AgentSettings = {
-  value: ProviderCustomConfig;
-  defaults: ProviderCustomConfig;
-  overrides: Partial<ProviderCustomConfig>;
-};
-
-// ---------------------------------------------------------------------------
 // Top-level DTOs sent over IPC
 // ---------------------------------------------------------------------------
 
@@ -240,7 +228,4 @@ export type AgentInstallationStatus = {
 };
 
 /** Combined payload — used for gradual renderer migration. */
-export type AgentPayload = AgentMetadata &
-  Omit<AgentInstallationStatus, 'id'> & {
-    settings: AgentSettings;
-  };
+export type AgentPayload = AgentMetadata & Omit<AgentInstallationStatus, 'id'>;

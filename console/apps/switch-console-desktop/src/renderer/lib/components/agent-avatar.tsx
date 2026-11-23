@@ -1,20 +1,38 @@
+import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { useAvatarSettings } from '@renderer/lib/stores/use-avatar-settings';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials, resolveAgentAvatarSrc } from '@shared/core/agents/agent-avatar';
 import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 
-/** The image an agent's avatar shows, or null for its initials. */
+/**
+ * The image an agent's avatar shows, or null for its initials. `buddy` says
+ * whether the agent is the person's own switch-buddy (`wearsBuddyPicture`).
+ */
 export function agentAvatarSrc(
   iconUrl: string | null,
   name: string,
-  thirdPartyAvatarsEnabled: boolean | null
+  thirdPartyAvatarsEnabled: boolean | null,
+  buddy: boolean
 ): string | null {
   // switch-buddy's picture ships with the app: shown from here, it needs no
-  // network and no avatar setting.
-  if (iconUrl === BUDDY_ICON_URL) return buddyAvatar;
+  // network and no avatar setting. Any agent can carry its URL, and one that
+  // did would pass for the person's buddy, so any other is drawn as if it had
+  // chosen no picture.
+  if (iconUrl === BUDDY_ICON_URL)
+    return buddy ? buddyAvatar : resolveAgentAvatarSrc(null, name, thirdPartyAvatarsEnabled);
   return resolveAgentAvatarSrc(iconUrl, name, thirdPartyAvatarsEnabled);
+}
+
+/**
+ * Whether an agent may wear switch-buddy's picture: the person's own buddy,
+ * as their managed agents say, or an agent Console is drawing before it
+ * exists (`agentId` null), whose picture Console chose itself.
+ */
+export function wearsBuddyPicture(serverId: string | null, agentId: string | null): boolean {
+  return agentId === null || isOwnBuddy(serverId, agentId);
 }
 
 /**
@@ -42,13 +60,17 @@ export function agentAvatarSrc(
  * the initials stay: the avatar service refuses a burst of requests (a sidebar
  * of twenty agents asks for twenty at once), and those refusals pass.
  */
-export function AgentAvatar({
+export const AgentAvatar = observer(function AgentAvatar({
+  agentId,
   name,
   iconUrl,
   serverId,
   size = 16,
   className,
 }: {
+  /** The agent on `serverId` this is the picture of, or null for one Console
+   * draws before it exists, such as a preview of the icon being chosen. */
+  agentId: string | null;
   name: string;
   /** The agent's chosen icon, or null to draw one from its name — subject to
    * what `serverId` allows. */
@@ -64,7 +86,12 @@ export function AgentAvatar({
 }) {
   const avatarSettings = useAvatarSettings(serverId);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  const src = agentAvatarSrc(iconUrl, name, avatarSettings.thirdPartyAvatarsEnabled);
+  const src = agentAvatarSrc(
+    iconUrl,
+    name,
+    avatarSettings.thirdPartyAvatarsEnabled,
+    wearsBuddyPicture(serverId, agentId)
+  );
   const [attempt, setAttempt] = useState({ src, count: 0 });
   const tries = attempt.src === src ? attempt.count : 0;
 
@@ -113,7 +140,7 @@ export function AgentAvatar({
       />
     </span>
   );
-}
+});
 
 /** How long to wait before each new try of an avatar that did not load. */
 const RETRY_DELAYS_MS = [1_500, 5_000, 15_000];

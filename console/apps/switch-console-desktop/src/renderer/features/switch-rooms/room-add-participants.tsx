@@ -499,7 +499,13 @@ export const AddAgentPanel = observer(function AddAgentPanel({
           id: agent.id,
           name: agent.name,
           mark: (
-            <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={22} />
+            <AgentAvatar
+              agentId={agent.id}
+              name={agent.name}
+              iconUrl={agent.iconUrl}
+              serverId={serverId}
+              size={22}
+            />
           ),
           detail: [
             localAgentFor(agent.id, workspaceId) ||

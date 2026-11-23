@@ -1,9 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { PluginFs } from '@switch-console/core/agents/plugins';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { detectSwitchAgent } from './detect';
+import { localGitIgnoreCheck } from './git-ignore-check';
 import {
   agentSettingsRelativePath,
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
@@ -18,12 +21,18 @@ import {
   mergeSwitchApiEndpoint,
   mergeSwitchSettings,
   removeSwitchSettings,
+  stripSwitchToken,
+  UnignoredAgentCredentialsError,
   writeAgentNeutralSettings,
   writeNeutralAgentSettingsFs,
   writeSwitchSettings,
 } from './write-switch-settings';
 
 let dir: string;
+
+function workdirAt(root: string, workdirFs: PluginFs = createPluginFs(root)) {
+  return { fs: workdirFs, ignored: localGitIgnoreCheck(root) };
+}
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'switch-console-settings-'));
@@ -100,7 +109,7 @@ describe('writeSwitchSettings', () => {
 
 describe('writeNeutralAgentSettingsFs', () => {
   it('writes the per-agent credentials, token included, with a gitignore', async () => {
-    await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+    await writeNeutralAgentSettingsFs(workdirAt(dir), {
       slug: 'agent-abc',
       apiEndpoint: 'https://switch.example.com',
       apiToken: 'secret-token',
@@ -125,7 +134,7 @@ describe('writeNeutralAgentSettingsFs', () => {
     async () => {
       const previous = process.umask(0o022);
       try {
-        await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+        await writeNeutralAgentSettingsFs(workdirAt(dir), {
           slug: 'agent-abc',
           apiEndpoint: 'https://switch.example.com',
           apiToken: 'secret-token',
@@ -150,7 +159,7 @@ describe('writeNeutralAgentSettingsFs', () => {
         mode: 0o644,
       });
 
-      await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+      await writeNeutralAgentSettingsFs(workdirAt(dir), {
         slug: 'agent-abc',
         apiEndpoint: 'https://switch.example.com',
         apiToken: 'new-token',
@@ -174,7 +183,7 @@ describe('writeNeutralAgentSettingsFs', () => {
       'utf8'
     );
 
-    await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+    await writeNeutralAgentSettingsFs(workdirAt(dir), {
       slug: 'agent-abc',
       apiEndpoint: 'https://switch.example.com',
       apiToken: 'new-token',
@@ -207,7 +216,7 @@ describe('writeNeutralAgentSettingsFs', () => {
       return write(p, c);
     };
 
-    await writeNeutralAgentSettingsFs(recordingFs, {
+    await writeNeutralAgentSettingsFs(workdirAt(dir, recordingFs), {
       slug: 'agent-abc',
       apiEndpoint: 'https://switch.example.com',
       apiToken: 'secret-token',
@@ -218,6 +227,85 @@ describe('writeNeutralAgentSettingsFs', () => {
       SWITCH_AGENTS_GITIGNORE_RELATIVE,
       agentSettingsRelativePath('agent-abc'),
     ]);
+  });
+});
+
+describe('writeNeutralAgentSettingsFs, in a git repository', () => {
+  const isolated = { GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: '1' };
+  const previous: Record<string, string | undefined> = {};
+  const git = (...args: string[]) =>
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.test',
+        '-c',
+        'commit.gpgsign=false',
+      ].concat(args),
+      { cwd: dir, encoding: 'utf8', env: { ...process.env, ...isolated } }
+    );
+  const write = (slug: string) =>
+    writeNeutralAgentSettingsFs(workdirAt(dir), {
+      slug,
+      apiEndpoint: 'https://switch.example.com',
+      apiToken: 'secret-token',
+      agentId: 'switch-agent-1',
+    });
+
+  beforeAll(() => {
+    for (const [name, value] of Object.entries(isolated)) {
+      previous[name] = process.env[name];
+      process.env[name] = value;
+    }
+  });
+  afterAll(() => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  beforeEach(() => {
+    git('init', '-q');
+  });
+
+  it('keeps the token out of git when the repository ships a .gitignore there ignoring nothing', async () => {
+    await fs.mkdir(path.join(dir, '.switch/agents'), { recursive: true });
+    await fs.writeFile(path.join(dir, SWITCH_AGENTS_GITIGNORE_RELATIVE), '# keep the folder\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'seed');
+
+    await write('agent-abc');
+
+    expect(await fs.readFile(path.join(dir, SWITCH_AGENTS_GITIGNORE_RELATIVE), 'utf8')).toBe('*\n');
+    expect(() =>
+      git('check-ignore', '-q', '--', agentSettingsRelativePath('agent-abc'))
+    ).not.toThrow();
+    expect(git('add', '-A', '--dry-run')).not.toContain('agent-abc.json');
+  });
+
+  it('refuses, writing no token, when the repository tracks the credentials file', async () => {
+    const relPath = agentSettingsRelativePath('agent-abc');
+    await fs.mkdir(path.join(dir, '.switch/agents'), { recursive: true });
+    await fs.writeFile(path.join(dir, relPath), '{"placeholder":true}\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'seed');
+
+    await expect(write('agent-abc')).rejects.toBeInstanceOf(UnignoredAgentCredentialsError);
+    await expect(write('agent-abc')).rejects.toThrow(`git rm --cached ${relPath}`);
+
+    expect(await fs.readFile(path.join(dir, relPath), 'utf8')).toBe('{"placeholder":true}\n');
+  });
+
+  it('writes the token in a repository that ignores it', async () => {
+    await write('agent-abc');
+
+    expect(git('status', '--porcelain', '--untracked-files=all')).toBe('');
+    expect(
+      JSON.parse(await fs.readFile(path.join(dir, agentSettingsRelativePath('agent-abc')), 'utf8'))
+        .env.SWITCH_API_TOKEN
+    ).toBe('secret-token');
   });
 });
 
@@ -241,7 +329,7 @@ describe('writeNeutralAgentSettingsFs, against another install of Switch Console
     const filePath = await seed('shared-name', otherInstall);
 
     await expect(
-      writeNeutralAgentSettingsFs(createPluginFs(dir), {
+      writeNeutralAgentSettingsFs(workdirAt(dir), {
         slug: 'shared-name',
         apiEndpoint: 'https://switch.example.com',
         apiToken: 'our-token',
@@ -265,7 +353,7 @@ describe('writeNeutralAgentSettingsFs, against another install of Switch Console
 
     // The caller passes expectedAgentId to confirm it owns the slot — without
     // this, the same-endpoint guard refuses the write (CHOO-2560).
-    await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+    await writeNeutralAgentSettingsFs(workdirAt(dir), {
       slug: 'ours',
       apiEndpoint: 'https://switch.example.com',
       apiToken: 'new-token',
@@ -291,7 +379,7 @@ describe('writeNeutralAgentSettingsFs, against another install of Switch Console
     });
 
     await expect(
-      writeNeutralAgentSettingsFs(createPluginFs(dir), {
+      writeNeutralAgentSettingsFs(workdirAt(dir), {
         slug: 'colleague',
         apiEndpoint: 'https://switch.example.com',
         apiToken: 'our-token',
@@ -312,6 +400,47 @@ describe('writeNeutralAgentSettingsFs, against another install of Switch Console
     ).toBeNull();
     expect(await foreignCredentialsOwnerFs(workdirFs, 'absent', 'https://switch.example.com')) //
       .toBeNull();
+  });
+});
+
+describe('stripSwitchToken', () => {
+  const legacy = (env: Record<string, string>) =>
+    JSON.stringify({ permissions: { allow: ['Bash'] }, env: { EXISTING: 'keep', ...env } });
+
+  it('takes out the token of a file naming the agent, keeping its identity and the rest', () => {
+    const result = stripSwitchToken(
+      legacy({
+        SWITCH_API_ENDPOINT: 'https://switch.example.com',
+        SWITCH_API_TOKEN: 'secret-token',
+        SWITCH_AGENT_ID: 'agent-1',
+      }),
+      'agent-1'
+    );
+
+    expect(result.kind).toBe('write');
+    expect(JSON.parse(result.kind === 'write' ? result.content : '')).toEqual({
+      permissions: { allow: ['Bash'] },
+      env: {
+        EXISTING: 'keep',
+        SWITCH_API_ENDPOINT: 'https://switch.example.com',
+        SWITCH_AGENT_ID: 'agent-1',
+      },
+    });
+  });
+
+  it('skips a file naming another agent or none, holding no token, or not JSON', () => {
+    expect(
+      stripSwitchToken(legacy({ SWITCH_API_TOKEN: 't', SWITCH_AGENT_ID: 'agent-2' }), 'agent-1')
+    ).toEqual({ kind: 'skip' });
+    expect(stripSwitchToken(legacy({ SWITCH_API_TOKEN: 't' }), 'agent-1')).toEqual({
+      kind: 'skip',
+    });
+    expect(stripSwitchToken(legacy({ SWITCH_AGENT_ID: 'agent-1' }), 'agent-1')).toEqual({
+      kind: 'skip',
+    });
+    expect(stripSwitchToken('{not json', 'agent-1')).toEqual({ kind: 'skip' });
+    expect(stripSwitchToken('{"env":[]}', 'agent-1')).toEqual({ kind: 'skip' });
+    expect(stripSwitchToken(null, 'agent-1')).toEqual({ kind: 'skip' });
   });
 });
 

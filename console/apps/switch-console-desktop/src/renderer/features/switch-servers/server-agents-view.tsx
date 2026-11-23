@@ -155,7 +155,13 @@ function PendingBuddyCard({ serverId, name }: { serverId: string; name: string }
   return (
     <div className="flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
       <div className="flex flex-1 items-center justify-center py-1 opacity-60 grayscale">
-        <AgentAvatar name={name} iconUrl={BUDDY_ICON_URL} serverId={serverId} size={66} />
+        <AgentAvatar
+          agentId={null}
+          name={name}
+          iconUrl={BUDDY_ICON_URL}
+          serverId={serverId}
+          size={66}
+        />
       </div>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="truncate text-sm font-medium text-foreground">{name}</span>
@@ -197,7 +203,13 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
       />
       <div className="pointer-events-none flex flex-1 flex-col p-[14px]">
         <div className="flex flex-1 items-center justify-center py-3">
-          <AgentAvatar name={label} iconUrl={agent.iconUrl} serverId={agent.serverId} size={66} />
+          <AgentAvatar
+            agentId={agent.agentId}
+            name={label}
+            iconUrl={agent.iconUrl}
+            serverId={agent.serverId}
+            size={66}
+          />
         </div>
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-foreground">{label}</div>
@@ -253,7 +265,13 @@ const AgentCard = observer(function AgentCard({
 
       <div className="pointer-events-none flex flex-1 flex-col p-[14px]">
         <div className="flex flex-1 items-center justify-center py-3">
-          <AgentAvatar name={label} iconUrl={iconUrl} serverId={serverId} size={66} />
+          <AgentAvatar
+            agentId={agent.switchAgentId}
+            name={label}
+            iconUrl={iconUrl}
+            serverId={serverId}
+            size={66}
+          />
         </div>
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-foreground">{label}</div>

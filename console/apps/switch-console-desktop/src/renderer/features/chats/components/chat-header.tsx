@@ -1,6 +1,7 @@
 import { MoreVertical, RotateCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { ReactNode } from 'react';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -14,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { log } from '@renderer/utils/logger';
-import { type ChatSummary, chatAgentLabel } from '@shared/core/chats/chats';
+import { type ChatSummary, chatAgentNaming } from '@shared/core/chats/chats';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import { chatsStore } from '../stores/chats';
 import { ChatActionItems, chatActions } from './chat-actions';
@@ -32,25 +33,40 @@ async function restartSession(activity: AgentActivity): Promise<void> {
   await rpc.sessions.restartAgent(target.sessionId);
 }
 
-/** Who and where: the chat's agent and its name. */
-export function ChatHeaderTitle({ serverId, chat }: { serverId: string; chat: ChatSummary }) {
+/** Who and where: the chat's agent, named as its rows name it (`chatAgentNaming`), and the chat's name. */
+export const ChatHeaderTitle = observer(function ChatHeaderTitle({
+  serverId,
+  chat,
+}: {
+  serverId: string;
+  chat: ChatSummary;
+}) {
   const agent = chat.agents[0] ?? null;
+  const naming = agent ? chatAgentNaming(agent, isOwnBuddy(serverId, agent.id)) : null;
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
-      {agent && (
-        <AgentAvatar
-          name={chatAgentLabel(agent)}
-          iconUrl={agent.iconUrl}
-          serverId={serverId}
-          size={18}
-        />
+      {agent && naming && (
+        <>
+          <AgentAvatar
+            agentId={agent.id}
+            name={naming.label}
+            iconUrl={agent.iconUrl}
+            serverId={serverId}
+            size={18}
+          />
+          <span className="truncate text-foreground-muted">
+            {naming.label}
+            {naming.uniqueName !== null && (
+              <span className="text-foreground-passive"> @{naming.uniqueName}</span>
+            )}
+          </span>
+        </>
       )}
-      {agent && <span className="truncate text-foreground-muted">{chatAgentLabel(agent)}</span>}
       <span className="text-foreground-passive">/</span>
       <span className="truncate font-medium">{chat.name}</span>
     </div>
   );
-}
+});
 
 /**
  * Whether the agent is working, the live feed's state, and the chat's menu —

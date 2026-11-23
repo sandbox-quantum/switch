@@ -130,7 +130,12 @@ import {
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
-import { assertServerAddress, NotTheServerAddressError } from './server-address';
+import {
+  assertEncryptedOrConfirmed,
+  assertServerAddress,
+  NotTheServerAddressError,
+} from './server-address';
+import { signOutOnServer } from './server-sign-out';
 import {
   addServer,
   DuplicateServerUrlError,
@@ -344,11 +349,17 @@ export const switchServersController = createRPCController({
   // insert, so that one press of Add produces exactly one event whichever way
   // it goes. Reported on the insert, because that is the whole of the action:
   // registering a URL is a row, and everything after it is bookkeeping.
-  addServer: async (params: AddServerParams): Promise<SwitchServer> => {
+  addServer: async (
+    params: AddServerParams & {
+      /** The user confirmed a plain http address on another machine. */
+      allowUnencrypted: boolean;
+    }
+  ): Promise<SwitchServer> => {
     let server: SwitchServer;
     try {
+      assertEncryptedOrConfirmed(params.url, params.allowUnencrypted);
       await assertServerAddress(params.url);
-      server = await addServer(params);
+      server = await addServer({ name: params.name, url: params.url });
     } catch (error) {
       trackEvent('server_added', {
         server_kind: serverKindOf({ managed: false, managementKind: null, url: params.url }),
@@ -392,13 +403,21 @@ export const switchServersController = createRPCController({
     return { kind: 'unknown', origin };
   },
 
-  updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {
+  updateServer: async (
+    params: UpdateServerParams & {
+      /** The user confirmed a plain http address on another machine. */
+      allowUnencrypted: boolean;
+    }
+  ): Promise<UpdateServerResult> => {
     const previous = await requireServer(params.id);
     // Compared normalised, so a no-op edit (or one that only respells the
     // address) neither re-checks it nor rewrites any agent's config.
     const urlChanged = normaliseServerUrl(previous.url) !== normaliseServerUrl(params.url);
-    if (urlChanged) await assertServerAddress(params.url);
-    const server = await updateServer(params);
+    if (urlChanged) {
+      assertEncryptedOrConfirmed(params.url, params.allowUnencrypted);
+      await assertServerAddress(params.url);
+    }
+    const server = await updateServer({ id: params.id, name: params.name, url: params.url });
 
     // The address is what an agent's SWITCH_API_ENDPOINT points at. When it
     // changes, cascade it to every member agent's stored config so they don't
@@ -743,6 +762,7 @@ export const switchServersController = createRPCController({
     // Read before the cookie goes, so the kind of server is still knowable — and
     // caught, because nobody should be unable to sign out because of it.
     const server = await getServer(serverId).catch(() => null);
+    if (server) await signOutOnServer(server);
     await forgetSession(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
   },

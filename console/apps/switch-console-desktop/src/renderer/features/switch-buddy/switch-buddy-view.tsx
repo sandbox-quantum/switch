@@ -80,6 +80,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
         <AgentProfile
+          agentId={null}
           name={expectedBuddyName(person)}
           iconUrl={BUDDY_ICON_URL}
           serverId={serverId}

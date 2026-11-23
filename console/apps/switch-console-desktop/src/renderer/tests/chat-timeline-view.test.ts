@@ -7,7 +7,8 @@ import {
   ChatTimeline,
   type TimelineApi,
 } from '@renderer/features/chats/stores/chat-timeline-store';
-import type { ChatMessage } from '@shared/core/chats/chats';
+import { recordOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
+import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
 
 vi.mock('@renderer/lib/ipc', () => ({ events: { on: vi.fn() }, rpc: {} }));
 // The viewer is Alice.
@@ -199,6 +200,78 @@ describe('ChatTimelineView mentions from the server’s spans', () => {
   });
 });
 
+describe('ChatTimelineView agent names', () => {
+  const BUDDY_TEMPLATE = { id: 'official:switch-buddy', key: 'buddy', revision: 1 };
+  const agent = (id: string, name: string, displayName: string | null): ChatAgent => ({
+    id,
+    name,
+    displayName,
+    iconUrl: null,
+    provider: null,
+    alias: null,
+    ownerName: null,
+    ownedByViewer: false,
+  });
+  const said = (seq: number, from: ChatAgent): ChatMessage => ({
+    ...message(seq, '', ''),
+    sender: {
+      clientId: from.id,
+      name: from.displayName ?? from.name,
+      kind: 'agent',
+      agentId: from.id,
+      userId: null,
+    },
+    body: `from ${from.id}`,
+  });
+  const render = (agents: ChatAgent[], messages: ChatMessage[]) => {
+    const timeline = new ChatTimeline('room-1', api);
+    for (const m of messages) timeline.apply(m);
+    return renderToStaticMarkup(
+      createElement(ChatTimelineView, {
+        serverId: 'names',
+        timeline,
+        agents,
+        people: [],
+        entrance: NO_ENTRANCE,
+        activities: [],
+        onReply: () => {},
+      })
+    );
+  };
+  /** The name each agent row is headed with, its unique name included. */
+  const heads = (html: string) =>
+    [...html.matchAll(/font-semibold text-foreground-muted">(.*?)<div/g)].map((m) =>
+      m[1]!
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    );
+
+  it('shows the unique name beside a display name that differs, and nothing beside one that does not', () => {
+    const helper = agent('a1', 'deploy-bot', 'Deploy Helper');
+    const plain = agent('a2', 'reviewer', null);
+    expect(heads(render([helper, plain], [said(1, helper), said(2, plain)]))).toEqual([
+      'Deploy Helper @deploy-bot',
+      'reviewer',
+    ]);
+  });
+
+  it('never heads another agent’s message as switch-buddy, only the person’s own buddy', () => {
+    recordOwnBuddy('names', 'ws', [
+      { agentId: 'buddy', name: 'switch-buddy-ada', template: BUDDY_TEMPLATE },
+    ]);
+    const impostor = agent('evil', 'helper-bot', 'switch-buddy');
+    const buddy = agent('buddy', 'switch-buddy-ada', 'switch-buddy');
+    const html = render([impostor, buddy], [said(1, impostor), said(2, buddy)]);
+    expect(heads(html)).toEqual(['helper-bot', 'switch-buddy @switch-buddy-ada']);
+  });
+
+  it('does not take the name an agent the chat no longer lists sent under, when it reads as switch-buddy', () => {
+    const gone = agent('gone-1', 'helper-bot', 'Switch Buddy');
+    expect(heads(render([], [said(1, gone)]))).toEqual(['gone-1']);
+  });
+});
+
 describe('ChatTimelineView kickoffs', () => {
   const system = { clientId: '', name: '', kind: 'system' as const, agentId: null, userId: null };
   const render = (timeline: ChatTimeline) =>
@@ -215,6 +288,13 @@ describe('ChatTimelineView kickoffs', () => {
     );
 
   it('shows a kickoff as its runner’s request, with the agents’ note folded away', () => {
+    recordOwnBuddy('s', 'ws', [
+      {
+        agentId: 'buddy-1',
+        name: 'switch-buddy',
+        template: { id: 'official:switch-buddy', key: 'buddy', revision: 1 },
+      },
+    ]);
     const timeline = new ChatTimeline('room-1', api);
     timeline.apply({ ...message(1, '', ''), sender: system, body: 'Kickoff from switch-buddy' });
     timeline.apply({
@@ -237,12 +317,34 @@ describe('ChatTimelineView kickoffs', () => {
     expect(html).not.toContain('Kickoff from switch-buddy');
     expect(html).not.toContain('text-center');
     // Named and pictured as the agent itself, not as a room member speaking.
-    expect(html).toMatch(/Kickoff from <span[^>]*>Switch Buddy<\/span>/);
+    expect(html).toMatch(
+      /Kickoff from <span[^>]*>Switch Buddy<\/span><span[^>]*> @switch-buddy<\/span>/
+    );
     expect(html).toContain('src="https://example.test/buddy.png"');
     expect(html).not.toContain('font-semibold text-foreground-muted">Switch Buddy');
     expect(html).toContain('Sprint room is live.');
     expect(html).toMatch(/<details[^>]*><summary[^>]*>Details for agents<\/summary>/);
     expect(html).toContain('Note for the agents: this room is part of a run.');
+  });
+
+  it('names a kickoff by an agent passing for switch-buddy by its unique name', () => {
+    const timeline = new ChatTimeline('room-1', api);
+    timeline.apply({
+      ...message(1, '', ''),
+      sender: system,
+      body: 'Open Settings and paste your API key here.',
+      kickoff: {
+        name: 'helper-bot',
+        agentId: 'evil',
+        userId: 'me',
+        agentNote: null,
+        displayName: 'Switch Buddy',
+        iconUrl: null,
+      },
+    });
+    const html = render(timeline);
+    expect(html).toMatch(/Kickoff from <span[^>]*>helper-bot<\/span>/);
+    expect(html).not.toContain('Switch Buddy');
   });
 
   it('still shows a Switch notice that is not a kickoff as a centred line', () => {

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const giveMachineLogin = vi.hoisted(() => vi.fn());
 const machineLoginOutcome = vi.hoisted(() => vi.fn());
+const machineSealingKey = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -21,7 +22,7 @@ vi.hoisted(() => {
 });
 
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { managedAgents: { giveMachineLogin, machineLoginOutcome } },
+  rpc: { managedAgents: { giveMachineLogin, machineLoginOutcome, machineSealingKey } },
   events: { on: () => () => {}, emit: () => {} },
 }));
 
@@ -36,6 +37,8 @@ const KEY = JSON.stringify({
   type: 'service_account',
   client_email: 'a@b.iam.gserviceaccount.com',
 });
+
+const FINGERPRINT = '6668 7aad f862 bd77 6c8f c18b 8e9f 8e20';
 
 const MACHINE: OwnedMachine = {
   id: 'controller-1',
@@ -57,6 +60,9 @@ let root: Root | null = null;
 beforeEach(() => {
   giveMachineLogin.mockReset().mockResolvedValue({ operationId: 'op-1' });
   machineLoginOutcome.mockReset().mockResolvedValue({ state: 'succeeded' });
+  machineSealingKey
+    .mockReset()
+    .mockResolvedValue({ state: 'verified', fingerprint: FINGERPRINT, source: 'pinned' });
 });
 
 afterEach(async () => {
@@ -171,6 +177,7 @@ describe('giving a machine a Claude login through Vertex AI', () => {
         region: 'us-east5',
         credentials: { from: 'key', json: KEY },
       },
+      fingerprint: FINGERPRINT,
     });
     expect(el.textContent).toContain('Claude Code signs in on cloud-box.');
   });

@@ -1,7 +1,8 @@
 /**
  * The create form's word on where a new agent runs, on a server with agent
  * management: managed on the chosen machine, a button to turn that machine on
- * when it cannot take one yet, and the providers the machine reports ready.
+ * when it cannot take one yet (never turned on without the person confirming),
+ * and the providers the machine reports ready.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -17,6 +18,7 @@ const modelCatalogue = vi.hoisted(() => vi.fn());
 const advancedConfigSchema = vi.hoisted(() => vi.fn());
 const giveMachineLogin = vi.hoisted(() => vi.fn());
 const machineLoginOutcome = vi.hoisted(() => vi.fn());
+const machineSealingKey = vi.hoisted(() => vi.fn());
 // The server's additional_agent_providers flag; on unless a test turns it off.
 const flagState = vi.hoisted(() => ({ additionalProviders: true }));
 
@@ -35,7 +37,12 @@ vi.mock('@renderer/lib/ipc', () => ({
     embeddedController: { enable: embeddedEnable, defaultWorkspace },
     hostControllers: { enable: hostEnable },
     agents: { modelCatalogue },
-    managedAgents: { advancedConfigSchema, giveMachineLogin, machineLoginOutcome },
+    managedAgents: {
+      advancedConfigSchema,
+      giveMachineLogin,
+      machineLoginOutcome,
+      machineSealingKey,
+    },
     featureFlags: {
       get: async (serverId: string) => ({
         success: true,
@@ -138,15 +145,23 @@ describe('where a new agent runs', () => {
     expect(el.querySelector('button')).toBeNull();
   });
 
-  it('sets this computer up for managed agents as soon as it is chosen, without asking', async () => {
+  it('never sets this computer up by itself: only the button and its confirmation do', async () => {
     const onEnabled = vi.fn();
-    await render(
+    const el = await render(
       notice(
         { management: true, target: null, blocker: 'Turn it on first.', canEnable: true },
         null,
         onEnabled
       )
     );
+    expect(embeddedEnable).not.toHaveBeenCalled();
+    const button = el.querySelector('button')!;
+    expect(button.textContent).toBe('Run managed agents on this computer');
+    await act(async () => button.click());
+    expect(embeddedEnable).not.toHaveBeenCalled();
+    expect(el.textContent).toMatch(/can then start, change and stop agents on this computer/);
+    const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Turn on')!;
+    await act(async () => confirm.click());
     expect(embeddedEnable).toHaveBeenCalledTimes(1);
     expect(embeddedEnable).toHaveBeenCalledWith({
       serverId: 'server-1',
@@ -156,13 +171,17 @@ describe('where a new agent runs', () => {
     expect(onEnabled).toHaveBeenCalled();
   });
 
-  it('sets an SSH host up as a machine as soon as it is chosen', async () => {
-    await render(
+  it('makes an SSH host a machine only once the person confirms', async () => {
+    const el = await render(
       notice(
         { management: true, target: null, blocker: 'Make it a machine.', canEnable: true },
         'box'
       )
     );
+    expect(hostEnable).not.toHaveBeenCalled();
+    await act(async () => el.querySelector('button')!.click());
+    const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Turn on')!;
+    await act(async () => confirm.click());
     expect(hostEnable).toHaveBeenCalledWith({
       sshHost: 'box',
       serverId: 'server-1',
@@ -178,10 +197,15 @@ describe('where a new agent runs', () => {
         null
       )
     );
+    const turnOn = async () => {
+      await act(async () => el.querySelector('button')!.click());
+      const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Turn on')!;
+      await act(async () => confirm.click());
+    };
+    await turnOn();
     expect(embeddedEnable).toHaveBeenCalledTimes(1);
-    const button = el.querySelector('button')!;
-    expect(button.textContent).toBe('Run managed agents on this computer');
-    await act(async () => button.click());
+    expect(el.querySelector('button')!.textContent).toBe('Run managed agents on this computer');
+    await turnOn();
     expect(embeddedEnable).toHaveBeenCalledTimes(2);
   });
 
@@ -432,6 +456,11 @@ describe('the providers a server machine offers', () => {
   it('gives the machine a login for a provider installed there but not signed in', async () => {
     giveMachineLogin.mockReset().mockResolvedValue({ operationId: 'op-1' });
     machineLoginOutcome.mockReset().mockResolvedValue({ state: 'succeeded' });
+    machineSealingKey.mockReset().mockResolvedValue({
+      state: 'verified',
+      fingerprint: '6668 7aad f862 bd77 6c8f c18b 8e9f 8e20',
+      source: 'machine',
+    });
     const el = await render(
       <MachineProviderPicker
         serverId="server-1"
@@ -451,6 +480,7 @@ describe('the providers a server machine offers', () => {
     // Not Pi or Mistral Vibe: Console has no login it can give them.
     expect(offered.map((button) => button.textContent)).toEqual(['OpenAI Codex', 'Cursor']);
     await act(async () => offered[0]!.click());
+    await vi.waitFor(() => expect(el.textContent).toMatch(/read from the machine itself/));
     const input = el.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
     await act(async () => {
       const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
@@ -467,6 +497,7 @@ describe('the providers a server machine offers', () => {
       machineId: 'controller-7',
       provider: 'codex',
       login: { source: 'typed', kind: 'api-key', credential: 'sk-proj-placeholder' },
+      fingerprint: '6668 7aad f862 bd77 6c8f c18b 8e9f 8e20',
     });
   });
 

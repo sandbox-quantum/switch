@@ -118,6 +118,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
           <div className="flex min-w-0 flex-1 items-center gap-[9px]" style={depthIndent(depth)}>
             <span className="flex size-[18px] shrink-0 items-center justify-center">
               <AgentAvatar
+                agentId={agent.switchAgentId}
                 name={label}
                 iconUrl={iconUrl}
                 serverId={agent.serverId}

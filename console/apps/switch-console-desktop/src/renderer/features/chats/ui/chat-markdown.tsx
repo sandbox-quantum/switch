@@ -11,13 +11,12 @@ import {
 import type { PluggableList } from 'unified';
 import { followConsoleLink } from '@renderer/features/deeplinks/console-link-handler';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
-import { confirmOpenExternalLink } from '@renderer/lib/open-external-link';
+import { contentLinkHandlers, openContentLink } from '@renderer/lib/content-link';
+import { AskBeforeLoading, loadsFromElsewhere } from '@renderer/lib/ui/ask-before-loading';
 import { cn } from '@renderer/utils/utils';
 import { CONSOLE_LINK_PREFIX, CONSOLE_LINK_SCHEME } from '@shared/core/deeplinks/console-links';
 import { CodeBlock } from './code-block';
 import { PLATFORM_LOGO_PREFIX, platformOfLogoUrl } from './platform-logo';
-
-const HTTP_URL_PATTERN = /^https?:\/\//i;
 
 /**
  * Streamdown's defaults minus `rehype-raw`: chat text is written by agents and
@@ -65,22 +64,20 @@ const urlTransform: UrlTransform = (url, key, node) =>
 type WithChildren = { children?: React.ReactNode } & ExtraProps;
 
 function ChatLink({ href, children }: React.ComponentProps<'a'> & ExtraProps) {
-  const isHttp = typeof href === 'string' && HTTP_URL_PATTERN.test(href);
   return (
     <a
       href={href}
       className="text-foreground underline decoration-foreground-passive underline-offset-2 hover:decoration-foreground"
       target="_blank"
       rel="noopener noreferrer"
-      onClick={(event) => {
-        // Never let a link navigate the app window: a link to a Console page
-        // moves the app there, and only http(s) links leave the app, through
-        // the confirm dialog.
-        event.preventDefault();
-        if (typeof href === 'string' && href.startsWith(CONSOLE_LINK_PREFIX))
-          followConsoleLink(href);
-        else if (isHttp) confirmOpenExternalLink(href);
-      }}
+      // Never let a link navigate the app window: a link to a Console page
+      // moves the app there, and only http(s) links leave the app, through
+      // the confirm dialog.
+      {...contentLinkHandlers(() =>
+        typeof href === 'string' && href.startsWith(CONSOLE_LINK_PREFIX)
+          ? followConsoleLink(href)
+          : openContentLink(href)
+      )}
     >
       {children}
     </a>
@@ -104,13 +101,19 @@ function ChatCode({
 
 /**
  * A messaging app where the message names one with its logo: the logo and the
- * app's name (the image's alt text) in bold, inline and on one line; any other
- * image as usual.
+ * app's name (the image's alt text) in bold, inline and on one line; an image
+ * from another computer once the reader asks for it; any other image as usual.
  */
 function ChatImage(props: React.ComponentProps<'img'> & ExtraProps) {
   const platform = platformOfLogoUrl(props.src);
   if (platform === null) {
     const DefaultImage = defaultComponents.img;
+    if (typeof props.src === 'string' && loadsFromElsewhere(props.src))
+      return (
+        <AskBeforeLoading src={props.src} alt={props.alt ?? ''}>
+          <DefaultImage {...props} referrerPolicy="no-referrer" />
+        </AskBeforeLoading>
+      );
     return <DefaultImage {...props} />;
   }
   return (

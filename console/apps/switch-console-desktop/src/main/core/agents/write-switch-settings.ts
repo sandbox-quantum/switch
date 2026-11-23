@@ -7,8 +7,11 @@ import {
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
+import type { WorkdirFs } from './agent-workdir-fs';
+import { localGitIgnoreCheck } from './git-ignore-check';
 import {
   agentSettingsRelativePath,
+  SWITCH_AGENTS_GITIGNORE_CONTENT,
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
   SWITCH_SETTINGS_RELATIVE_PATH,
 } from './switch-settings-paths';
@@ -270,6 +273,37 @@ export function removeSwitchSettings(
 }
 
 /**
+ * Take `SWITCH_API_TOKEN` out of a settings file an earlier Switch Console
+ * wrote it into, once the agent's token is in its per-agent file. `skip` for a
+ * file that is absent, unparseable, holds no token, or names another agent or
+ * none. Every other key stays, the endpoint and agent id included: Claude Code
+ * and subagent discovery read them there.
+ *
+ * Pure, like {@link removeSwitchSettings}: the existing text in, the command out.
+ */
+export function stripSwitchToken(
+  existingRaw: string | null,
+  switchAgentId: string
+): Exclude<RemoveSwitchSettingsResult, { kind: 'delete' }> {
+  if (existingRaw === null) return { kind: 'skip' };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(existingRaw);
+  } catch {
+    return { kind: 'skip' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'skip' };
+  const existing = parsed as Record<string, unknown>;
+  if (!existing.env || typeof existing.env !== 'object' || Array.isArray(existing.env))
+    return { kind: 'skip' };
+  const env = { ...(existing.env as Record<string, unknown>) };
+  if (!('SWITCH_API_TOKEN' in env) || env.SWITCH_AGENT_ID !== switchAgentId)
+    return { kind: 'skip' };
+  delete env.SWITCH_API_TOKEN;
+  return { kind: 'write', content: `${JSON.stringify({ ...existing, env }, null, 2)}\n` };
+}
+
+/**
  * Write the `SWITCH_*` env block into a local directory's
  * `.claude/settings.local.json`, the Claude Code settings file every session in
  * the directory reads.
@@ -317,7 +351,10 @@ export async function writeSwitchSettings(params: {
 export async function writeAgentNeutralSettings(
   params: { dir: string; slug: string } & SwitchSettingsCredentials
 ): Promise<void> {
-  await writeNeutralAgentSettingsFs(createPluginFs(params.dir), params);
+  await writeNeutralAgentSettingsFs(
+    { fs: createPluginFs(params.dir), ignored: localGitIgnoreCheck(params.dir) },
+    params
+  );
 }
 
 /**
@@ -480,8 +517,53 @@ export function existingAgentIdInSlot(
 }
 
 /**
- * Write an agent's provider-neutral per-agent Switch credentials over a
- * {@link PluginFs} (local disk or a remote repo dir via SFTP), keyed by `slug`
+ * Git would commit an agent's credentials file, so its token must not be
+ * written there. Only a file the repository tracks gets past Console's own
+ * `.gitignore`, which is in place by the time this is asked.
+ */
+export class UnignoredAgentCredentialsError extends Error {
+  constructor(readonly relPath: string) {
+    super(
+      `The git repository in this directory tracks ${relPath}, so the agent's token written there would be committed with it. Run \`git rm --cached ${relPath}\` there and commit that, then try again.`
+    );
+    this.name = 'UnignoredAgentCredentialsError';
+  }
+}
+
+/**
+ * Make `.switch/agents/.gitignore` Console's own, answering whether it was
+ * written. It is rewritten whenever it differs, not only when it is absent:
+ * the `.gitignore` in a directory overrides every parent one, so one a
+ * repository ships there, ignoring nothing, would leave the tokens free to
+ * be staged.
+ */
+export async function writeCredentialsGitignore(workdirFs: PluginFs): Promise<boolean> {
+  if ((await workdirFs.read(SWITCH_AGENTS_GITIGNORE_RELATIVE)) === SWITCH_AGENTS_GITIGNORE_CONTENT)
+    return false;
+  await workdirFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, SWITCH_AGENTS_GITIGNORE_CONTENT);
+  return true;
+}
+
+/**
+ * Get `slug`'s credentials file ready to hold a token: Console's `.gitignore`
+ * in its directory, and git's word that it ignores the file. A file the
+ * repository tracks is the one thing a `.gitignore` cannot keep out, and
+ * throws {@link UnignoredAgentCredentialsError}. Outside a repository, or with
+ * no git, there is nothing to ask.
+ */
+export async function prepareAgentCredentialsFile(
+  workdir: Pick<WorkdirFs, 'fs' | 'ignored'>,
+  slug: string
+): Promise<void> {
+  await writeCredentialsGitignore(workdir.fs);
+  const relPath = agentSettingsRelativePath(slug);
+  if ((await workdir.ignored(relPath)) === 'not-ignored')
+    throw new UnignoredAgentCredentialsError(relPath);
+}
+
+/**
+ * Write an agent's provider-neutral per-agent Switch credentials into its
+ * working directory (local disk or a remote repo dir via SFTP), keyed by `slug`
  * (the agent name) — the authoritative identity Switch Console injects at launch
  * (`agentSettingsPath`). This is the single per-agent credential writer for every
  * provider and every transport; providers with repo-agent definitions (Claude)
@@ -492,16 +574,16 @@ export function existingAgentIdInSlot(
  * can overwrite one (CHOO-1960). It throws {@link ForeignAgentCredentialsError}
  * rather than writing.
  *
- * The `.gitignore` is written before the credentials: it is what keeps
- * `SWITCH_API_TOKEN` out of version control, so it must already be in place
- * before the token reaches disk.
+ * The `.gitignore` is written, and git asked, before the credentials: it is
+ * what keeps `SWITCH_API_TOKEN` out of version control, so it must already be
+ * in place before the token reaches disk ({@link prepareAgentCredentialsFile}).
  */
 export async function writeNeutralAgentSettingsFs(
-  workdirFs: PluginFs,
+  workdir: Pick<WorkdirFs, 'fs' | 'ignored'>,
   params: { slug: string; expectedAgentId?: string } & SwitchSettingsCredentials
 ): Promise<void> {
   const relPath = agentSettingsRelativePath(params.slug);
-  const existingRaw = await workdirFs.read(relPath);
+  const existingRaw = await workdir.fs.read(relPath);
   const existingEndpoint = foreignCredentialsEndpoint(existingRaw, params.apiEndpoint);
   if (existingEndpoint !== null) {
     throw new ForeignAgentCredentialsError({
@@ -531,8 +613,6 @@ export async function writeNeutralAgentSettingsFs(
     });
   }
 
-  if (!(await workdirFs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
-    await workdirFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
-  }
-  await workdirFs.write(relPath, mergeAgentCredentials(existingRaw, params), { secret: true });
+  await prepareAgentCredentialsFile(workdir, params.slug);
+  await workdir.fs.write(relPath, mergeAgentCredentials(existingRaw, params), { secret: true });
 }

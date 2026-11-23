@@ -10,6 +10,7 @@ import {
   type LogSinkEntry,
 } from '@shared/logger';
 import { resolveLogContext } from './log-context';
+import { restrictExistingFilesToOwner } from './owner-only-files';
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const DIAGNOSTIC_LOG_BYTES = 500 * 1024;
@@ -24,7 +25,7 @@ const DIAGNOSTIC_SECTION_TIMEOUT_MS = 5000;
 
 /** The words that mark a value as a credential. */
 const SECRET_KEY_WORDS =
-  'authorization|api[_-]?key|private[_-]?key|token|password|passphrase|secret|credential';
+  'authorization|api[_-]?key|private[_-]?key(?:[_-]?id)?|token|password|passphrase|secret|credential|cookie';
 
 /**
  * A credential-bearing key name, with any number of leading qualifier segments.
@@ -32,10 +33,23 @@ const SECRET_KEY_WORDS =
  * The qualifier prefix is load-bearing, not decoration: a bare `\b` before
  * `token` does not match `bot_token`, because `_` is a word character and there
  * is no boundary inside it. Real config keys are almost always qualified —
- * `bot_token`, `app_token`, `admin_password`, `client_secret` — so without this
- * the alternation only caught the unqualified spelling nobody uses.
+ * `bot_token`, `app_token`, `admin_password`, `client_secret`, and in camelCase
+ * `accessToken`, `refreshToken`, `clientSecret` — so without this the
+ * alternation only caught the unqualified spelling nobody uses. The word has to
+ * end the name, so a count such as `inputTokens` or `maxTokens` is left alone.
  */
-const SECRET_KEY_NAMES = `(?:[a-z0-9]+[_-])*(?:${SECRET_KEY_WORDS})`;
+const SECRET_KEY_NAMES = `(?:[a-z0-9]+[_-])*[a-z0-9]*(?:${SECRET_KEY_WORDS})`;
+
+/**
+ * A Switch agent or API key: `secrets.token_urlsafe(32)`, 43 characters of
+ * base64url with no prefix, so it is matched on shape alone. The run has to
+ * stand on its own (not part of a longer one, nor of a padded base64 value),
+ * must not follow `$` (an event id of the old message bus has the same shape),
+ * and must mix upper case, lower case and digits, which keeps hex digests,
+ * long names and paths out.
+ */
+const SWITCH_TOKEN =
+  /(?<![\w$-])(?=[\w-]{0,42}[A-Z])(?=[\w-]{0,42}[a-z])(?=[\w-]{0,42}\d)[\w-]{43}(?![\w=-])/g;
 
 type RedactionReplacement = string | ((substring: string, ...args: string[]) => string);
 
@@ -46,12 +60,15 @@ const SECRET_PATTERNS: Array<[RegExp, RedactionReplacement]> = [
     (_match, openQuote: string, keyName: string, closeQuote: string, separator: string) =>
       `${openQuote}${keyName}${closeQuote}${separator}${openQuote}[REDACTED]${openQuote}`,
   ],
+  // A cookie header's whole value: several `name=value` pairs, any of which
+  // can be a session. Ahead of the rule below, which would stop at the first.
+  [/\b((?:set-)?cookie)(\s*:\s*)[^\r\n"\\]+/gi, '$1$2[REDACTED]'],
   // Unquoted: key=value, or key: <scheme> value. The scheme alternation must
   // stay in step with the auth schemes we might log: without `bot`, Discord's
   // `Authorization: Bot <token>` redacts the word "Bot" and leaves the token.
   [
     new RegExp(
-      `\\b(${SECRET_KEY_NAMES})(\\s*[:=]\\s*)(?:(?:bearer|bot|token)\\s+)?[^\\s,"'}]+`,
+      `\\b(${SECRET_KEY_NAMES})(\\s*[:=]\\s*)(?:(?:bearer|basic|bot|token)\\s+)?[^\\s,"'}]+`,
       'gi'
     ),
     '$1$2[REDACTED]',
@@ -77,6 +94,8 @@ const SECRET_PATTERNS: Array<[RegExp, RedactionReplacement]> = [
   // Telegram bot token: numeric bot id : 35-char hmac. Also unprefixed, so it
   // is matched structurally. The colon keeps it clear of the Discord rule.
   [/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, '[REDACTED_TELEGRAM_TOKEN]'],
+  // Last, so a token one of the rules above recognises is named by that rule.
+  [SWITCH_TOKEN, '[REDACTED_SWITCH_TOKEN]'],
 ];
 
 const PII_PATTERNS: Array<[RegExp, RedactionReplacement]> = [
@@ -276,17 +295,32 @@ function flushBuffer(): Promise<void> {
   pendingWrite = pendingWrite
     .then(async () => {
       if (!logDirReady) {
-        await mkdir(join(path, '..'), { recursive: true });
+        await mkdir(join(path, '..'), { recursive: true, mode: 0o700 });
+        restrictLogFilesToOwner(path);
         logDirReady = true;
       }
       await rotateIfNeeded(path, Buffer.byteLength(chunk));
-      await appendFile(path, chunk, 'utf8');
+      await appendFile(path, chunk, { encoding: 'utf8', mode: 0o600 });
     })
     .catch((error) => {
       recordWriteFailure(error);
     });
 
   return pendingWrite;
+}
+
+/**
+ * Logs written by earlier builds were created with the default mode. A new
+ * one is created 0600 by the append; rotation keeps each file's mode.
+ */
+function restrictLogFilesToOwner(path: string) {
+  const files = [path];
+  for (let index = 1; index <= RETAINED_LOG_FILES; index += 1) files.push(`${path}.${index}`);
+  try {
+    restrictExistingFilesToOwner(files);
+  } catch (error) {
+    console.warn('Could not make the application log readable by this user alone:', error);
+  }
 }
 
 export function flushLogWrites() {

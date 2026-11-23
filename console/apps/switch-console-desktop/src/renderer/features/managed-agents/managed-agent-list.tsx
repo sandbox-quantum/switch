@@ -78,6 +78,7 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
   const providerName = isValidProviderId(provider) ? getProvider(provider)?.name : null;
   return (
     <SidebarAgentRow
+      agentId={agent.agentId}
       label={label}
       iconUrl={agent.iconUrl}
       serverId={agent.serverId}

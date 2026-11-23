@@ -51,7 +51,11 @@ export const HostTroubleIndicator = observer(function HostTroubleIndicator({
   // The host being down is why this agent is idle, so say so on the row itself
   // — previously you had to select the agent to discover its host was failing
   // to connect (CHOO-1682).
-  if (status.kind === 'unreachable' || status.kind === 'auth-failed') {
+  if (
+    status.kind === 'unreachable' ||
+    status.kind === 'auth-failed' ||
+    status.kind === 'host-key-refused'
+  ) {
     return (
       <Tooltip>
         <TooltipTrigger
@@ -64,7 +68,9 @@ export const HostTroubleIndicator = observer(function HostTroubleIndicator({
         <TooltipContent>
           {status.kind === 'auth-failed'
             ? `SSH authentication to ${sshHost} failed — work is paused until you retry`
-            : `Host ${sshHost} is unreachable — work is paused until it answers`}
+            : status.kind === 'host-key-refused'
+              ? `The SSH host key of ${sshHost} was refused — work is paused until you review it`
+              : `Host ${sshHost} is unreachable — work is paused until it answers`}
         </TooltipContent>
       </Tooltip>
     );

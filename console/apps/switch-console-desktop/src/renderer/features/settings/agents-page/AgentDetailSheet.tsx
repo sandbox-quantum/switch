@@ -1,5 +1,4 @@
 import { observer } from 'mobx-react-lite';
-import { useAgentSettings } from '@renderer/lib/stores/use-agent-settings';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
 import { Field } from '@renderer/lib/ui/field';
@@ -7,7 +6,6 @@ import { Label } from '@renderer/lib/ui/label';
 import { Sheet, SheetContent, SheetHeader } from '@renderer/lib/ui/sheet';
 import { asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AgentSheetHeaderSection } from './AgentSheetHeaderSection';
-import { InstalledAgentContent } from './InstalledAgentContent';
 import { InstallSection } from './InstallSection';
 import { ThisComputerProviderStatus } from './this-computer-provider-status';
 import { installedHere, installSourcesDiffer, reportedProvider } from './this-computer-status';
@@ -25,8 +23,6 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
 }) {
   const { data: agents } = useAgents();
   const agentPayload = agents?.find((a) => a.id === agentId);
-
-  const { value: storedConfig, isOverridden, isLoading, update, reset } = useAgentSettings(agentId);
 
   const { data: report } = useThisComputerReport();
   const reported = reportedProvider(report, agentId);
@@ -61,15 +57,6 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
           </div>
         )}
       </div>
-      {agentPayload && isInstalled && (
-        <InstalledAgentContent
-          storedConfig={storedConfig}
-          isOverridden={isOverridden}
-          isLoading={isLoading}
-          update={update}
-          reset={reset}
-        />
-      )}
     </>
   );
 });

@@ -27,7 +27,12 @@ Console has discovered but never opened. If the stop outcome is unknown, the
 session remains available for inspection.
 
 The execution host supplies the working directory, provider installation,
-credentials, environment, shell setup, skills and MCP configuration. Skills and MCP changes take effect when the host restarts. Confirmed model
+credentials, environment, shell setup, skills and MCP configuration. A session
+inherits only the host variables on the allowlist in
+`packages/agent-providers/src/host/agent-env.ts`, plus the agent's own. Shell
+setup runs in a login shell and may change those variables (prepend to `PATH`,
+say), but anything else it or the user's profile exports does not reach the
+provider; set such a variable in the agent's environment instead. Skills and MCP changes take effect when the host restarts. Confirmed model
 changes apply to the next turn and survive host restart. A cold
 provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;
@@ -437,7 +442,10 @@ resumes or attaches, including ones started automatically:
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
   uses Smart Auto, Mistral Vibe uses Smart Approve where Vibe offers it, and
   Antigravity, Pi (and Mistral Vibe without Smart Approve) approve edits and ask
-  before commands. DeepSeek Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
+  before commands. Pi approves only edits inside the working directory: unless
+  bypass is on, it asks before changing a file outside it or in git's directory,
+  the home directory's dot files or Switch's own state, and before reading
+  outside it. DeepSeek Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
   Junie uses its Auto brave mode, and Kiro applies its own trust policy and safety check before anything reaches
   Console, which asks about the rest.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides

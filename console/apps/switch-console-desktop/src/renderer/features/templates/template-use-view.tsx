@@ -65,6 +65,7 @@ import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { CONSOLE_ROOM, NEW } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
+import { permissionsOnCreate } from './use/agent-permissions';
 import { CollapsibleInput } from './use/collapsible-input';
 import {
   type AgentSlot,
@@ -72,6 +73,7 @@ import {
   newSlot,
   ResolvedDocument,
   RoomCard,
+  type SlotRuntime,
   type SlotStatus,
 } from './use/creates-rail';
 import { CreatingScreen } from './use/creating-screen';
@@ -87,6 +89,7 @@ import {
   shownDirectory,
 } from './use/managed-run';
 import { ParamField } from './use/param-field';
+import { createRisks, useRiskyCreateConfirm } from './use/risky-create-confirm';
 import { RoomChoiceField } from './use/room-pick-field';
 import { LOCAL_RUN_LOCATION, runLocationLabel, useAllowedHosts } from './use/run-location-select';
 import {
@@ -126,12 +129,44 @@ function useViewParams(): Params {
   return useParams('templateUse').params as Params;
 }
 
+/** Where a template on the Use page comes from: anyone in a workspace can write one. */
+type TemplateAuthor =
+  | { kind: 'official' }
+  | { kind: 'workspace'; creator: string }
+  | { kind: 'document'; sourceName: string | null };
+
+function authorLine(author: TemplateAuthor): string {
+  switch (author.kind) {
+    case 'official':
+      return 'Official template, comes with Switch';
+    case 'workspace':
+      return `Workspace template by ${author.creator}`;
+    case 'document':
+      return author.sourceName
+        ? `From a document you opened: ${author.sourceName}`
+        : 'From a document you opened';
+  }
+}
+
+/** Who set up what a run creates, for the confirmation before a risky one. */
+function authorName(author: TemplateAuthor): string {
+  switch (author.kind) {
+    case 'official':
+      return 'Switch';
+    case 'workspace':
+      return author.creator;
+    case 'document':
+      return 'Whoever wrote this document';
+  }
+}
+
 /** A template loaded for the Use page: its document, its origin, and everything parsed from it. */
 type UsePageTemplate = {
   name: string;
   yamlText: string;
   instructions: string | null;
   origin: AgentTemplateOrigin | null;
+  author: TemplateAuthor;
   kind: TemplateKind;
   agents: ParsedAgentEntry[];
   /** True for the singular `agent:` form, whose room refers to the agent as `{agent}`. */
@@ -156,6 +191,7 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
   // A document from the server has its instructions written in.
   const instructions: string | null = null;
   let origin: AgentTemplateOrigin | null = null;
+  let author: TemplateAuthor;
   if (params.templateId) {
     const detail = await rpc.workspaces.getTemplateDetail({
       workspaceId,
@@ -163,6 +199,9 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
     });
     name = detail.name;
     yamlText = detail.definition;
+    author = detail.official
+      ? { kind: 'official' }
+      : { kind: 'workspace', creator: detail.creator };
     const serverId = workspacesStore.serverIdFor(workspaceId);
     origin = {
       id: detail.id,
@@ -174,6 +213,7 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
   } else if (params.yamlText) {
     name = params.sourceName?.replace(/(\.template)?\.ya?ml$/i, '') ?? 'Pasted template';
     yamlText = params.yamlText;
+    author = { kind: 'document', sourceName: params.sourceName ?? null };
   } else {
     throw new Error('Nothing to use: no template was given.');
   }
@@ -193,6 +233,7 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
       yamlText,
       instructions,
       origin,
+      author,
       kind,
       agents,
       singular: false,
@@ -240,6 +281,7 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
     yamlText,
     instructions,
     origin,
+    author,
     kind,
     agents,
     singular,
@@ -332,6 +374,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const [editedAgents, setEditedAgents] = useState<string[]>([]);
   const [editedUsers, setEditedUsers] = useState<string[]>([]);
   const [phase, setPhase] = useState<'form' | 'creating' | 'done' | 'failed'>('form');
+  const riskyCreate = useRiskyCreateConfirm();
   const [doneDetail, setDoneDetail] = useState<string | null>(null);
   // What the server returned for the room, kept so that a step failing after
   // it does not make Retry create the room a second time.
@@ -1598,6 +1641,66 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     return out;
   }, [slots, setups]);
 
+  /** A room an `anyone_in` names by its key, by the name it will have. */
+  const roomNameOf = (key: string): string => {
+    const room = (parsed?.rooms ?? []).find((r) => r.key === key);
+    return room?.name ? interpolate(room.name, railValues) : key;
+  };
+
+  /** What a new agent runs with, for its preview card and the risks asked about before Create. Null for an existing agent. */
+  const runtimeFor = (slot: AgentSlot, setup: SlotSetup): SlotRuntime | null => {
+    if (setup.existing !== null) return null;
+    const { bypass, reach } = permissionsOnCreate(
+      slot.entry,
+      values,
+      isV2 ? 'document' : management ? 'managed' : 'console'
+    );
+    const permissions = {
+      bypass,
+      reach: reach.kind === 'rooms' ? { ...reach, rooms: reach.rooms.map(roomNameOf) } : reach,
+      instructions: interpolate(slot.entry.instructions, { ...values, agent: setup.name }),
+    };
+    return management
+      ? {
+          provider: setup.provider ? (providerDisplayName(setup.provider) ?? setup.provider) : null,
+          location: setup.machine
+            ? setup.machine.state === 'online'
+              ? machineLabel(setup.machine)
+              : `${machineLabel(setup.machine)} (${setup.machine.state})`
+            : (setup.machineText ?? null),
+          directory:
+            setup.managedDirectory === ''
+              ? null
+              : shownDirectory(setup.managedDirectory, setup.machine),
+          model: slot.entry.model ? interpolate(slot.entry.model, values) : null,
+          connections: connectionStates(setup.connections, connectionsQuery.data ?? null),
+          managed: true,
+          ...permissions,
+        }
+      : {
+          provider: setup.provider ? (providerDisplayName(setup.provider) ?? setup.provider) : null,
+          location: setup.location === null ? null : runLocationLabel(setup.location, allowedHosts),
+          directory:
+            setup.directory === ''
+              ? null
+              : setup.directory.replace(/^\/(?:Users|home)\/[^/]+/, '~'),
+          model: null,
+          connections: [],
+          managed: false,
+          ...permissions,
+        };
+  };
+
+  // The agents still to be created that would run commands unasked or answer anyone.
+  const risks = createRisks(
+    slots.flatMap((slot, i) => {
+      const setup = setups[i];
+      if (!setup?.on || slot.status === 'created') return [];
+      const runtime = runtimeFor(slot, setup);
+      return runtime ? [{ name: slot.createdName ?? setup.name, runtime }] : [];
+    })
+  );
+
   // ── Render ──────────────────────────────────────────────────────────────
   // A run refused whole kept nothing: the next Create is a fresh run, not a retry.
   const partlyDone =
@@ -1969,7 +2072,15 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             </Button>
             <Button
               size="sm"
-              onClick={() => void createAll()}
+              onClick={() =>
+                riskyCreate.request(
+                  risks,
+                  loaded ? authorName(loaded.author) : 'The template',
+                  () => {
+                    void createAll();
+                  }
+                )
+              }
               disabled={blockedReason !== null || phase !== 'form'}
               title={blockedReason ?? undefined}
             >
@@ -2082,6 +2193,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                     Preview
                   </span>
                   <span className="text-[13px] font-semibold">What this will create</span>
+                  <span className="text-xs text-foreground-muted">{authorLine(loaded.author)}</span>
                 </span>
               </div>
               <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-5 py-4">
@@ -2094,49 +2206,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                         key={i}
                         slot={slot}
                         wantedName={setup.name}
-                        runtime={
-                          setup.existing !== null
-                            ? null
-                            : management
-                              ? {
-                                  provider: setup.provider
-                                    ? (providerDisplayName(setup.provider) ?? setup.provider)
-                                    : null,
-                                  location: setup.machine
-                                    ? setup.machine.state === 'online'
-                                      ? machineLabel(setup.machine)
-                                      : `${machineLabel(setup.machine)} (${setup.machine.state})`
-                                    : (setup.machineText ?? null),
-                                  directory:
-                                    setup.managedDirectory === ''
-                                      ? null
-                                      : shownDirectory(setup.managedDirectory, setup.machine),
-                                  model: slot.entry.model
-                                    ? interpolate(slot.entry.model, values)
-                                    : null,
-                                  connections: connectionStates(
-                                    setup.connections,
-                                    connectionsQuery.data ?? null
-                                  ),
-                                  managed: true,
-                                }
-                              : {
-                                  provider: setup.provider
-                                    ? (providerDisplayName(setup.provider) ?? setup.provider)
-                                    : null,
-                                  location:
-                                    setup.location === null
-                                      ? null
-                                      : runLocationLabel(setup.location, allowedHosts),
-                                  directory:
-                                    setup.directory === ''
-                                      ? null
-                                      : setup.directory.replace(/^\/(?:Users|home)\/[^/]+/, '~'),
-                                  model: null,
-                                  connections: [],
-                                  managed: false,
-                                }
-                        }
+                        runtime={runtimeFor(slot, setup)}
                         onChange={(next) =>
                           setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
                         }
@@ -2188,6 +2258,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           </div>
         </>
       )}
+      {riskyCreate.dialog}
     </div>
   );
 });

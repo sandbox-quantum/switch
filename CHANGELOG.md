@@ -4831,12 +4831,204 @@ version of their own to them without also giving them a release of their own.
   read its decision service, the page says so and keeps the saved choice.
   "Self-hosted endpoint" is now "Your own endpoint".
 
+#### Changed
+- **The Switch Trust settings say what it cannot check.** Images, audio,
+  video, archives and Office files other than Word documents can't be read,
+  so they are sent unchecked; messages and the text in files are checked up
+  to their first 20,000 characters, with a note on the rest.
+
 #### Fixed
 
 - **Creating an agent no longer flashes "An agent called … already exists
   on this server".** The form checked the name against the server's agent
   list, which picks up the new agent before the dialog closes, so for a moment
   it reported its own agent as a clash.
+- **A file's name in a chat shows its real extension.** A name carrying
+  hidden or text-reversing characters could read as something else: a file
+  named with a right-to-left override showed as `invoiceexe.pdf` when it was
+  `invoice<…>fdp.exe`. The file, the line above it and replies naming it now
+  show each such character, and any path or control character, as `_`, and
+  that is also the name offered when you save it.
+- **HTML and other web-page attachments can be downloaded.** Saving one used
+  to fail with a message telling you to ask whoever runs the server to fix
+  its routing. It now saves like any other file, and is never opened in
+  Switch Console.
+- **Links in room documents, library items and transcripts no longer open a
+  blank Switch Console window or another app.** A `mailto:`, `irc:` or
+  relative link there now does what it does in chat: a web link asks before
+  it opens in your browser, and any other link is refused with a notice.
+- **An agent's sessions move with its folder.** After an agent's directory
+  changed, its rooms kept being answered, and `!reset` started over, in the old
+  folder. The next message, or a reset, now starts a session where the agent
+  works now, and live sessions in the old folder stop once their turn ends.
+
+#### Removed
+- **The "Environment variables" and "Additional parameters" fields in a
+  provider's settings.** Nothing ever applied them to an agent, and they were
+  stored unencrypted. Values saved by earlier versions are deleted from the
+  database when Console starts.
+
+#### Security
+- **Claude sessions keep their MCP tokens off the command line.** The Switch
+  tools' token and every connector's used to be written into the `claude`
+  process's arguments, where another user on a Linux machine could read them
+  and act as the agent. Each is now passed in the process environment, which
+  only the agent's own user can read. A session picks this up when it next
+  starts.
+- **Agents can send files only from their working directory.** A file sent
+  with `send_attachment` must be inside the session's working directory or
+  among the attachments it downloaded, with links followed; anything else is
+  refused with the reason, in every permission mode. A file with more than one
+  hard link is refused too, unless it is an attachment the session downloaded,
+  since a hard link in the working directory can be the same file as a key
+  kept elsewhere. Before, a manipulated agent could post a key or credential
+  file from anywhere on the machine without asking. To send a file from
+  elsewhere, a screenshot in `/tmp` say, the agent copies it into its working
+  directory first.
+- **Pi asks before touching files outside its working directory.** In auto
+  mode Pi used to change any file without asking, and in every mode it read
+  any file. It now changes files on its own only inside its working directory,
+  and asks before changing anything else: files outside it, git's hooks and
+  config, the dot files in your home folder, and Switch's own settings,
+  including the one that sets the agent's permission mode. Unless bypass is
+  on, it also asks before reading outside its working directory. A file with
+  another hard link counts as outside, wherever it is.
+- **Session folders and downloaded room files are private to you.** Each
+  session's folder is created readable by you alone, and one an earlier
+  version left open is tightened when the session next starts. Files an agent
+  downloads from a room are saved the same way.
+- **A login you give a machine is sealed only to a key Console can vouch
+  for.** Console used to seal it to whatever key the server listed for the
+  machine, so a server that listed its own key could open the API key, setup
+  token or sign-in file. Now an SSH host's key is read from the host itself,
+  this computer takes no given logins (its controller keeps no key), and any
+  other machine is held to the key Console sealed its first login to. Giving
+  a login shows that key's fingerprint; if the server later sends another,
+  Console shows both and seals nothing until you choose "Trust the new key".
+  The agent controller's `enroll` and `status` print the same fingerprint, and
+  a new `switch-agent-controller sealing-key` command prints the key.
+- **Signing out of a server tells the server.** Console now calls the
+  server's sign-out before it forgets its copy of the session. A server that
+  can't be reached is logged and the session is still forgotten here. A
+  server from this release ends that one session on sign-out, so a copy of it
+  stops working too; an older server only clears the cookie.
+- **Switch Console's data folder, database and log are readable by your user
+  alone on Linux and macOS.** The folder is made private (0700), and the
+  database, its write-ahead files and the log private (0600), including ones
+  an earlier version created with the default permissions.
+- **The log keeps more kinds of credential out.** camelCase names such as
+  accessToken, refreshToken and clientSecret, cookie headers, Basic
+  authorization, and Switch agent keys written without a label are now
+  redacted in Switch Console's log and its diagnostics export.
+- **A repository can no longer make an agent's token committable.** Console
+  keeps its own `.gitignore` in `.switch/agents/` even where a repository
+  ships a different one, and refuses to write the token into a file the
+  repository tracks, saying how to untrack it. Tokens that earlier versions
+  left in `.claude/settings.local.json` or `.claude/switch-subagents/` are
+  removed once the agent's own credentials file holds them.
+- **A template's Use page shows what its agents will be allowed to do, and
+  asks before creating a risky one.** Anyone in a workspace can write a
+  template, and a link to it opens this page. The preview now says who the
+  template is from and, for each agent, whether it runs every command without
+  asking, who can talk to it, and its instructions. When an agent would run
+  without asking or answer anyone in the workspace, Create asks first and
+  names the risks. What it shows is what the run creates. A version 1
+  template's `auto_approve` or `addressing` written as a list of `if:` cases,
+  which only version 2 reads, is shown as the default the agent actually gets.
+- **Files saved from a chat are marked as downloaded.** On macOS a saved
+  attachment now carries the quarantine mark a browser gives a download, so
+  Gatekeeper checks it the first time it is opened; on Windows it is marked
+  as coming from the Internet zone. If the mark cannot be written, the file
+  is still saved and the log says so.
+- **Console asks before making your computer a managed-agent machine.**
+  Opening the New agent form or switch-buddy's setup, including from a link in
+  a chat or on a web page, no longer enrolls the computer. A button and a
+  confirmation that names the server do. On Meet switch-buddy, picking a
+  provider signed in on this computer while it is not yet a machine asks the
+  same question, and starts switch-buddy once you confirm.
+- **You decide on this computer whether a managed agent may skip approvals or
+  work outside its folder.** The agents controller Console runs no longer
+  applies either just because the server's copy of the agent asks for it.
+  Console asks you, naming the agent, the server and what it could then do,
+  and this computer's page under Machines lists what you allowed, with Revoke.
+  Until you allow it, an agent that asks for bypass runs and asks for
+  approval, and one that asks for a folder outside `~/.switch/agents` does not
+  start. Agents that ran with bypass or in their own folder before this
+  release need allowing once. The question names the agent by its unique name
+  and its server; a display name its owner set follows, marked as what the
+  agent is shown as.
+- **Images from other computers load only when you ask.** Remote images in
+  chats, room documents and library items show as a placeholder naming their
+  host until you click Load image, and are then fetched without a Referer.
+- **Room references show where they go and ask before opening.** The Resources
+  tab shows each link's host, and opening one, or a link on a reference's
+  page, goes through the same confirmation as chat links, showing the whole
+  address. A reference whose link is not a web link is refused with a notice,
+  as in chat.
+- **Only your own switch-buddy wears switch-buddy's picture.** Another agent
+  using the buddy's icon address is drawn as if it had no picture. That holds
+  in each workspace you belong to on a server: reading another workspace's
+  agents no longer takes the picture from your buddy.
+- **Chats show an agent's unique name beside its display name.** An agent's
+  owner can set its display name to anything, including switch-buddy or
+  another agent's name. Messages, an agent's work, kickoff cards and the chat
+  header now show the agent's unique name, muted, after a display name that
+  differs from it, and a display name that reads as switch-buddy's is shown
+  only for your own buddy: any other agent goes by its unique name.
+- **Question cards always say which agent is asking.** Each open card names the
+  agent by its unique name and whose it is, quotes its title, and says a typed
+  answer goes to that agent, not to Switch.
+- **A session's shell setup can no longer add environment variables.** It may
+  still change the variables a session inherits (prepend to `PATH`, point
+  `CLAUDE_CONFIG_DIR` elsewhere) and the agent's own, but anything else it or
+  your login profile exports no longer reaches the provider. Set such a
+  variable in the agent's environment instead.
+- **Dependencies move past their known advisories.** The MCP TypeScript SDK
+  goes to 1.32.2, and proxy-addr, body-parser, fast-uri, brace-expansion, hono,
+  @hono/node-server, qs, ip-address and smol-toml to fixed releases.
+- **Console checks every SSH host's key before it connects.** A remote agent
+  host or a remote-managed server is reached only when its key matches your
+  `known_hosts` (hashed entries, `[host]:port` and `HostKeyAlias` included) or a
+  key you trusted in Console. The first time Console meets a host it shows the
+  key's SHA256 fingerprint and asks whether to trust it. A key that differs from
+  the one on record is refused, with both fingerprints shown, and can only be
+  replaced after you confirm you checked it; a revoked key is never accepted.
+  Reconnects and background work only use a decision you made. Console keeps its
+  own record and never edits your `known_hosts`. Agent forwarding follows only
+  the host's own `ForwardAgent` setting.
+- **A remote managed server's secrets file is never readable by other
+  accounts.** Its `.env` (database passwords, signing keys, the admin password)
+  is written to a file only you can read and moved into place, inside a folder
+  only you can open, instead of being created with the host's default
+  permissions and narrowed afterwards. The same holds for the local server's
+  `.env` when it is rewritten.
+- **Console reaches the server it runs at 127.0.0.1, not localhost.** `localhost`
+  resolves to the IPv6 loopback first, where the server does not listen, so
+  another program on the machine could answer there and receive the admin
+  password and session. The server's address and its agents move to
+  127.0.0.1 on the next start, and a start stops with a clear message if
+  another program holds the server's port on the IPv6 loopback.
+- **Adding a server at a plain http address asks first.** For an http address on
+  another machine, the add and edit forms explain that your password, session
+  and agents' tokens would cross the network unencrypted, and save it only after
+  you confirm. http to this computer still works without asking.
+- **The OIDC sign-in window says at once when it can't save your session.** If
+  the operating system's keychain refuses the session, sign-in ends straight away
+  with the same message password sign-in shows, instead of waiting five minutes
+  and reporting a timeout.
+- **Pages inside Console can no longer launch other apps or use your devices.**
+  A server's sign-in page can't open windows, hand a link to another app, or
+  use the camera, microphone, location, notifications or clipboard reading.
+  Its web links go to your browser through the usual confirmation.
+- **Packaged builds no longer include DevTools.** Development builds keep them.
+- **"Open in" only opens folders.** A file or a macOS app bundle is shown in the
+  file manager instead of being opened, and folder names are passed to apps
+  safely.
+- **The app window has a Content-Security-Policy.** It runs only Console's own
+  scripts, so a flaw in how messages are displayed can't run code.
+- **The packaged app is harder to tamper with.** It refuses debugger flags,
+  loads its code only from its signed archive and checks that archive on macOS
+  and Windows. On macOS it no longer loads libraries signed by anyone else.
 
 ### [0.41.1] - 2026-11-18
 

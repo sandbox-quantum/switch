@@ -27,6 +27,9 @@ forwardagent /tmp/agent.sock
 connecttimeout 17
 serveraliveinterval 60
 serveralivecountmax 2
+stricthostkeychecking ask
+globalknownhostsfile /etc/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts2
+userknownhostsfile /home/deploy/.ssh/known_hosts /home/deploy/.ssh/known_hosts2
 `);
 
     expect(config).toEqual({
@@ -44,7 +47,21 @@ serveralivecountmax 2
       connectTimeout: 17,
       serverAliveInterval: 60,
       serverAliveCountMax: 2,
+      hostKeyAlias: undefined,
+      userKnownHostsFiles: ['/home/deploy/.ssh/known_hosts', '/home/deploy/.ssh/known_hosts2'],
+      globalKnownHostsFiles: ['/etc/ssh/ssh_known_hosts', '/etc/ssh/ssh_known_hosts2'],
+      strictHostKeyChecking: 'ask',
     });
+  });
+
+  it('reads HostKeyAlias and maps StrictHostKeyChecking the way ssh -G prints it', () => {
+    const parse = (extra: string) => parseSshGOutput(`hostname h\n${extra}`);
+    expect(parse('hostkeyalias build-box').hostKeyAlias).toBe('build-box');
+    expect(parse('stricthostkeychecking true').strictHostKeyChecking).toBe('yes');
+    expect(parse('stricthostkeychecking false').strictHostKeyChecking).toBe('no');
+    expect(parse('stricthostkeychecking accept-new').strictHostKeyChecking).toBe('accept-new');
+    expect(parse('').strictHostKeyChecking).toBe('ask');
+    expect(parse('userknownhostsfile none').userKnownHostsFiles).toEqual([]);
   });
 });
 

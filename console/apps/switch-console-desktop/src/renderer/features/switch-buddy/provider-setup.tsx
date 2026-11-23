@@ -26,6 +26,7 @@ export const ProviderSetup = observer(function ProviderSetup({
     state: ThisComputer;
     recheck: () => Promise<string | null>;
     retry: () => void;
+    turnOn: () => Promise<void>;
   };
 }) {
   const computer = thisComputer.state;
@@ -40,7 +41,12 @@ export const ProviderSetup = observer(function ProviderSetup({
 
   return (
     <div className="flex flex-col gap-4">
-      <ComputerNote computer={computer} onRetry={thisComputer.retry} />
+      <ComputerNote
+        serverId={serverId}
+        computer={computer}
+        onRetry={thisComputer.retry}
+        onTurnOn={() => void thisComputer.turnOn()}
+      />
       <p className="flex items-center gap-1.5 text-sm text-foreground">
         Pick an AI provider to power switch-buddy:
         <TermInfo term="provider" />

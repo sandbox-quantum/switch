@@ -37,16 +37,6 @@ export const defaultAgentSchema = z
   )
   .default(DEFAULT_AGENT_ID);
 
-/**
- * Per-provider execution settings stored as host-agnostic overrides.
- * Installation source/path/cli overrides are now stored host-specifically
- * in the HostDependencyStore (KV for local, SSH connection metadata for remote).
- */
-export const providerCustomConfigEntrySchema = z.object({
-  extraArgs: z.string().optional(),
-  env: z.record(z.string(), z.string()).optional(),
-});
-
 export const interfaceSettingsSchema = z.object({
   sessionHoverAction: z.enum(['delete', 'archive']),
   autoRightSidebarBehavior: z.boolean(),
