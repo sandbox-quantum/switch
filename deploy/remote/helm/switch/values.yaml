@@ -454,7 +454,9 @@ switchCore:
   #   local  — this server, in its own tables
   #   workos — the WorkOS environment behind the OIDC sign-in, read with
   #            secrets.workosApiKey. Needs oidc.enabled against that
-  #            environment and signup.mode invite_only.
+  #            environment, and signup.mode invite_only or open (an
+  #            organization someone creates under open is Switch's own until
+  #            it is linked).
   organizationDirectory:
     mode: local
     # Member changes made from Switch to a linked organization, sent to the
