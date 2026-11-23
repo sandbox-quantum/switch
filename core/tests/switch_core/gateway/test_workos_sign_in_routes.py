@@ -8,25 +8,31 @@ service answered in process.
 
 from __future__ import annotations
 
+import logging
 import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import jwt
+import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
     OidcIdentity,
     Organization,
+    OrganizationAuditEvent,
     OrganizationMember,
     User,
 )
 from switch_core.db.stores.identity_session_store import IdentitySessionStore
 from switch_core.gateway import dependencies as gw_deps
+from switch_core.logging_context import structured_fields
 from switch_core.members_service import MembersService
+from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 from switch_core.workos_directory import WorkOSDirectory
 from switch_core.workos_sign_in import WorkOSOrganizationSignIn
 from tests.switch_core.gateway.test_organization_routes import (
@@ -442,6 +448,47 @@ class TestSigningIn:
         assert signed_in.status_code == 403
         assert refused.status_code == 403
         assert workos.changes == []
+
+    async def test_a_sign_in_is_audited_and_a_refused_one_logged(
+        self, session_factory, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id, organization_id = await _linked(
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
+        )
+        workos = _WorkOS({})
+
+        async with _client(_with(session_factory, workos), ada, tenant_id) as client:
+            workos.signs_in_as = f"user_{bob}"
+            refused = await _sign_in_to_workos(client)
+            workos.signs_in_as = f"user_{ada}"
+            signed_in = await _sign_in_to_workos(client)
+
+        assert (refused.status_code, signed_in.status_code) == (403, 303)
+        async with session_factory() as session:
+            [event] = (
+                (
+                    await session.execute(
+                        select(OrganizationAuditEvent).where(
+                            OrganizationAuditEvent.action
+                            == OrganizationAuditAction.DIRECTORY_SIGN_IN
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert event.organization_id == organization_id
+        assert event.actor_user_id == ada
+        [failed, succeeded] = [
+            structured_fields(r)["switch"]
+            for r in caplog.records
+            if r.name == SECURITY_LOGGER_NAME
+        ]
+        assert failed["event"] == "security.auth.sign_in_failed"
+        assert failed["actor_user_id"] == ada
+        assert succeeded["event"] == "security.organization.directory_sign_in"
 
     async def test_a_token_for_another_organization_is_not_kept(
         self, session_factory

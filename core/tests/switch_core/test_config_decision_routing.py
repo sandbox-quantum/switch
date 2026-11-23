@@ -85,7 +85,7 @@ def test_on_with_follow_the_conversation() -> None:
     assert client.server.endpoint_url == "http://127.0.0.1:8100/decide"
     assert client.server.api_key == "placeholder"
     assert client.timeout_seconds == 2.5
-    assert client.server.haiku_anthropic and not client.server.haiku_bedrock
+    assert client.server.configured and not client.server.bedrock_enabled
 
 
 def test_bedrock_and_the_wait_are_settings() -> None:
@@ -97,7 +97,7 @@ def test_bedrock_and_the_wait_are_settings() -> None:
     )
 
     client = build_decision_client(config, _NO_DB, None)
-    assert client.server.haiku_bedrock
+    assert client.server.bedrock_enabled
     assert config.decision_pending_max_age_seconds == 30
 
 

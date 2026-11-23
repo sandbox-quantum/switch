@@ -389,8 +389,21 @@ it('gives the workspace’s admins Decision routing, with service connections of
         reason: null,
       },
       workspace: null,
-      serverDefault: { configured: true, endpoint: 'http://decision:8230', hasApiKey: false },
-      options: { haikuAnthropic: true, haikuBedrock: false },
+      serverDefault: {
+        configured: true,
+        endpoint: 'http://decision:8230',
+        hasApiKey: false,
+        info: null,
+      },
+      options: {
+        haikuAnthropic: true,
+        haikuBedrock: false,
+        selfHosted: false,
+        gemini: false,
+        details: {},
+        source: 'configuration',
+        note: null,
+      },
     },
   });
   navigation.navigate('settings', { tab: 'decision-routing' });

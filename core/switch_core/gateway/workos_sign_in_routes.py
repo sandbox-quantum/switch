@@ -25,6 +25,10 @@ from starlette.responses import RedirectResponse
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.config import SwitchConfig
+from switch_core.db.audit import (
+    OrganizationAuditAction,
+    record_organization_audit_event,
+)
 from switch_core.db.models import (
     Organization,
     Tenant,
@@ -44,6 +48,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
+from switch_core.gateway.sign_in_events import client_ip, sign_in_failed
 from switch_core.organization_directory import (
     DirectoryUnavailable,
     OrganizationDirectory,
@@ -173,6 +178,7 @@ async def finish_organization_sign_in(
         or not secrets.compare_digest(str(pending.get("state", "")), state)
         or pending.get("user_id") != user.id
     ):
+        _sign_in_failed(request, user, "state_mismatch")
         raise HTTPException(
             status_code=400,
             detail="This sign-in was not started here, or has expired; try again",
@@ -183,6 +189,7 @@ async def finish_organization_sign_in(
         logger.warning(
             "WorkOS organization sign-in refused for user %s: %s", user.id, error
         )
+        _sign_in_failed(request, user, "provider_refused")
         raise HTTPException(
             status_code=401, detail="WorkOS refused the sign-in; try again"
         ) from error
@@ -198,6 +205,7 @@ async def finish_organization_sign_in(
             user.id,
             token.subject,
         )
+        _sign_in_failed(request, user, "subject_mismatch")
         raise HTTPException(
             status_code=403,
             detail=(
@@ -206,6 +214,7 @@ async def finish_organization_sign_in(
             ),
         )
     if token.workos_organization_id != pending["workos_organization_id"]:
+        _sign_in_failed(request, user, "wrong_organization")
         raise HTTPException(
             status_code=403,
             detail="WorkOS signed you in to another organization; try again",
@@ -226,6 +235,7 @@ async def finish_organization_sign_in(
             )
         except IdentitySessionConflict as error:
             logger.error("WorkOS organization sign-in refused: %s", error)
+            _sign_in_failed(request, user, "identity_session_conflict")
             raise HTTPException(
                 status_code=403,
                 detail=(
@@ -234,6 +244,24 @@ async def finish_organization_sign_in(
                 ),
             ) from error
         await session.commit()
+    tenant = await session.get(Tenant, require_tenant_id())
+    if tenant is None or tenant.organization_id is None:
+        raise HTTPException(
+            status_code=409, detail="This workspace has no organization"
+        )
+    await record_organization_audit_event(
+        session,
+        organization_id=tenant.organization_id,
+        actor_user_id=user.id,
+        action=OrganizationAuditAction.DIRECTORY_SIGN_IN,
+        target_type="user",
+        target_id=user.id,
+        details={
+            "workos_organization_id": token.workos_organization_id,
+            "client_ip": client_ip(request),
+        },
+    )
+    await session.commit()
     request.session[_TOKEN_KEY] = config.keyring.encrypt(
         json.dumps(
             {
@@ -248,6 +276,16 @@ async def finish_organization_sign_in(
     origin = urlsplit(config.frontend_base_url or "")
     base = f"{origin.scheme}://{origin.netloc}" if origin.netloc else ""
     return RedirectResponse(url=f"{base}{pending['return_to']}", status_code=303)
+
+
+def _sign_in_failed(request: Request, user: User, reason: str) -> None:
+    sign_in_failed(
+        request,
+        method="workos_organization",
+        reason=reason,
+        user_id=user.id,
+        tenant_id=require_tenant_id(),
+    )
 
 
 def directory_access_token(

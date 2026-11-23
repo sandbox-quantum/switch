@@ -43,14 +43,80 @@ TENANT_B = "decision-settings-tenant-b"
 SERVER_URL = "http://decision.test/decide"
 
 
+# A decision service's /health that lists its backends, as the service from
+# this release on answers it: the server default on a hosted open model, its
+# own self-hosted model, Gemini falling back to Haiku on Bedrock after 1.5 s,
+# Haiku on Bedrock and Haiku with a workspace's Anthropic key.
+LISTED_HEALTH: dict[str, Any] = {
+    "ok": True,
+    "backend": "bedrock_openai",
+    "model": "open-model-235b",
+    "backends": {
+        "default": {
+            "backend": "bedrock_openai",
+            "model": "open-model-235b",
+            "label": "Open Model 235B (Bedrock)",
+            "threshold": 0.89,
+            "fallback": None,
+            "is_default": True,
+        },
+        "bedrock_openai": {
+            "backend": "bedrock_openai",
+            "model": "open-model-235b",
+            "label": "Open Model 235B (Bedrock)",
+            "threshold": 0.89,
+            "fallback": None,
+        },
+        "systemone": {
+            "backend": "systemone",
+            "model": "small-router",
+            "label": "Small Router (self-hosted)",
+            "threshold": 0.56,
+            "fallback": None,
+        },
+        "gemini_decision": {
+            "backend": "gemini_decision",
+            "model": "gemini-decision-1",
+            "label": "Gemini (gemini-decision-1)",
+            "threshold": 0.8,
+            "fallback": {"backend": "bedrock", "model": "haiku-model", "after_s": 1.5},
+        },
+        "bedrock": {
+            "backend": "bedrock",
+            "model": "haiku-model",
+            "label": "Claude Haiku (Bedrock)",
+            "threshold": 0.65,
+            "fallback": None,
+        },
+        "anthropic": {
+            "backend": "anthropic",
+            "model": "haiku-model",
+            "label": "Claude Haiku (Anthropic)",
+            "threshold": 0.65,
+            "fallback": None,
+        },
+    },
+}
+# The /health of a decision service older than this release: no `backends`.
+UNLISTED_HEALTH: dict[str, Any] = {"ok": True, "backend": "llamacpp", "model": "m"}
+
+
 class _Service:
-    """The decision service behind every URL, recording what it is sent."""
+    """The decision service behind every URL, recording what it is sent:
+    decisions in `calls`, reads of its `/health` (answered with `health` and
+    `health_status`) in `health_calls`."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, str], dict[str, Any]]] = []
         self.status = 200
+        self.health: dict[str, Any] = UNLISTED_HEALTH
+        self.health_status = 200
+        self.health_calls: list[str] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path.endswith("/health"):
+            self.health_calls.append(str(request.url))
+            return httpx.Response(self.health_status, json=self.health)
         self.calls.append(
             (str(request.url), dict(request.headers), json.loads(request.content))
         )
@@ -204,8 +270,17 @@ async def test_with_no_row_the_server_default_applies(
             "configured": True,
             "endpoint": SERVER_URL,
             "has_api_key": True,
+            "info": None,
         },
-        "options": {"haiku_anthropic": True, "haiku_bedrock": False},
+        "options": {
+            "haiku_anthropic": True,
+            "haiku_bedrock": False,
+            "self_hosted": False,
+            "gemini": False,
+            "details": {},
+            "source": "configuration",
+            "note": None,
+        },
     }
 
 
@@ -226,7 +301,15 @@ async def test_no_server_default_offers_no_haiku_and_says_why(
     assert body["effective"]["available"] is False
     assert "Message routing" in body["effective"]["reason"]
     assert body["server_default"]["configured"] is False
-    assert body["options"] == {"haiku_anthropic": False, "haiku_bedrock": False}
+    assert body["options"] == {
+        "haiku_anthropic": False,
+        "haiku_bedrock": False,
+        "self_hosted": False,
+        "gemini": False,
+        "details": {},
+        "source": "none",
+        "note": None,
+    }
     assert haiku.status_code == 422
 
 
@@ -724,3 +807,305 @@ class TestTheOutboundPolicy:
         assert tried.json()["ok"] is True
         [(url, _, _)] = service.calls
         assert url == "http://10.1.2.3:8230/decide"
+
+
+class TestOffersFromTheDecisionService:
+    """What a workspace may choose, and how it is named, come from the
+    service's /health `backends`."""
+
+    async def test_the_server_default_and_each_choice_are_described(
+        self, session_factory: async_sessionmaker[AsyncSession], service: _Service
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        service.health = LISTED_HEALTH
+        async with _as(_app(session_factory, service), admin) as client:
+            body = (await client.get("/decision-settings")).json()
+
+        assert body["server_default"]["info"] == {
+            "label": "Open Model 235B (Bedrock)",
+            "model": "open-model-235b",
+            "threshold": 0.89,
+            "fallback": None,
+        }
+        options = body["options"]
+        assert options["source"] == "service" and options["note"] is None
+        assert [
+            options[choice]
+            for choice in ("haiku_anthropic", "haiku_bedrock", "self_hosted", "gemini")
+        ] == [True, True, True, True]
+        assert options["details"]["self_hosted"] == {
+            "label": "Small Router (self-hosted)",
+            "model": "small-router",
+            "threshold": 0.56,
+            "fallback": None,
+        }
+        assert options["details"]["gemini"]["fallback"] == {
+            "backend": "bedrock",
+            "model": "haiku-model",
+            "label": "Claude Haiku (Bedrock)",
+            "after_s": 1.5,
+        }
+        assert options["details"]["haiku_bedrock"]["threshold"] == 0.65
+        assert service.health_calls == ["http://decision.test/health"]
+
+    async def test_a_fallback_the_service_does_not_list_is_named_by_its_model(
+        self, session_factory: async_sessionmaker[AsyncSession], service: _Service
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        backends = dict(LISTED_HEALTH["backends"])
+        del backends["bedrock"]
+        service.health = {**LISTED_HEALTH, "backends": backends}
+        async with _as(_app(session_factory, service), admin) as client:
+            body = (await client.get("/decision-settings")).json()
+
+        assert body["options"]["haiku_bedrock"] is False
+        assert (
+            body["options"]["details"]["gemini"]["fallback"]["label"] == "haiku-model"
+        )
+
+    async def test_the_list_decides_not_decision_bedrock_enabled(
+        self, session_factory: async_sessionmaker[AsyncSession], service: _Service
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        service.health = LISTED_HEALTH
+        async with _as(_app(session_factory, service, bedrock=False), admin) as client:
+            listed = await client.put(
+                "/decision-settings", json={"backend": "haiku_bedrock"}
+            )
+        backends = dict(LISTED_HEALTH["backends"])
+        del backends["bedrock"]
+        service.health = {**LISTED_HEALTH, "backends": backends}
+        async with _as(_app(session_factory, service, bedrock=True), admin) as client:
+            unlisted = await client.put(
+                "/decision-settings", json={"backend": "haiku_bedrock"}
+            )
+
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["effective"]["backend"] == "haiku_bedrock"
+        assert unlisted.status_code == 422
+        assert "doesn't run it" in unlisted.json()["detail"]
+
+    @pytest.mark.parametrize(
+        ("backend", "header"),
+        [("self_hosted", "systemone"), ("gemini", "gemini_decision")],
+    )
+    async def test_a_new_choice_saves_without_a_key_and_tests_with_its_backend(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        service: _Service,
+        backend: str,
+        header: str,
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        service.health = LISTED_HEALTH
+        async with _as(_app(session_factory, service), admin) as client:
+            saved = await client.put(
+                "/decision-settings",
+                json={"backend": backend, "api_key": "not-stored", "threshold": 0.7},
+            )
+            tried = await client.post(
+                "/decision-settings/test", json={"backend": backend}
+            )
+
+        assert saved.status_code == 200, saved.text
+        body = saved.json()
+        assert body["source"] == "workspace"
+        assert body["effective"] == {
+            "backend": backend,
+            "endpoint": None,
+            "threshold": 0.7,
+            "available": True,
+            "reason": None,
+        }
+        assert body["workspace"]["has_api_key"] is False
+        assert body["workspace"]["unrecognized_backend"] is None
+        assert tried.json()["ok"] is True
+        [(url, headers, sent)] = service.calls
+        assert url == SERVER_URL
+        assert headers["x-decision-backend"] == header
+        assert headers["authorization"] == "Bearer server-key"
+        assert "x-decision-anthropic-key" not in headers
+        assert "not-stored" not in json.dumps(headers)
+        row = await _row(session_factory, TENANT_ZERO_ID)
+        assert row is not None and row.backend == backend
+        assert row.api_key_encrypted is None
+
+    @pytest.mark.parametrize("backend", ["self_hosted", "gemini"])
+    async def test_a_choice_the_service_does_not_run_is_neither_saved_nor_tested(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        service: _Service,
+        backend: str,
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        service.health = {
+            **LISTED_HEALTH,
+            "backends": {
+                name: entry
+                for name, entry in LISTED_HEALTH["backends"].items()
+                if name not in ("systemone", "gemini_decision")
+            },
+        }
+        async with _as(_app(session_factory, service), admin) as client:
+            body = (await client.get("/decision-settings")).json()
+            refused = await client.put("/decision-settings", json={"backend": backend})
+            tried = await client.post(
+                "/decision-settings/test", json={"backend": backend}
+            )
+
+        assert body["options"][backend] is False
+        assert backend not in body["options"]["details"]
+        assert refused.status_code == 422
+        assert tried.json()["error"]["code"] == "backend_unavailable"
+        assert service.calls == []
+        assert await _row(session_factory, TENANT_ZERO_ID) is None
+
+    async def test_an_older_service_offers_neither_new_choice(
+        self, session_factory: async_sessionmaker[AsyncSession], service: _Service
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        async with _as(_app(session_factory, service, bedrock=True), admin) as client:
+            body = (await client.get("/decision-settings")).json()
+            refused = await client.put("/decision-settings", json={"backend": "gemini"})
+
+        assert body["options"]["source"] == "configuration"
+        assert body["options"]["haiku_bedrock"] is True
+        assert body["options"]["self_hosted"] is False
+        assert body["options"]["gemini"] is False
+        assert refused.status_code == 422
+        assert "older" in refused.json()["detail"]
+
+    async def test_an_unreadable_service_offers_only_what_is_saved_and_says_why(
+        self, session_factory: async_sessionmaker[AsyncSession], service: _Service
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        service.health = LISTED_HEALTH
+        async with _as(_app(session_factory, service), admin) as client:
+            await client.put("/decision-settings", json={"backend": "gemini"})
+        service.health_status = 503
+        async with _as(_app(session_factory, service), admin) as client:
+            body = (await client.get("/decision-settings")).json()
+            kept = await client.put(
+                "/decision-settings", json={"backend": "gemini", "threshold": 0.75}
+            )
+            refused = await client.put(
+                "/decision-settings", json={"backend": "self_hosted"}
+            )
+            tried = await client.post(
+                "/decision-settings/test", json={"backend": "self_hosted"}
+            )
+
+        options = body["options"]
+        assert options["source"] == "unavailable"
+        assert "status 503" in options["note"]
+        assert not any(
+            options[choice]
+            for choice in ("haiku_anthropic", "haiku_bedrock", "self_hosted", "gemini")
+        )
+        assert body["server_default"]["info"] is None
+        assert body["workspace"]["backend"] == "gemini"
+        assert body["effective"]["available"] is True
+        assert kept.status_code == 200
+        assert kept.json()["workspace"]["threshold"] == 0.75
+        assert refused.status_code == 422
+        assert "status 503" in refused.json()["detail"]
+        # A test still runs: it shows for itself whether the backend answers.
+        assert tried.json()["ok"] is True
+        [(_, headers, _)] = service.calls
+        assert headers["x-decision-backend"] == "systemone"
+
+    async def test_an_unreachable_or_garbled_service_is_unavailable(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        garbled = _Service()
+        garbled.health = {"backends": {"default": {"label": 3}}}
+        async with _as(_app(session_factory, garbled), admin) as client:
+            unreadable = (await client.get("/decision-settings")).json()
+        unreachable = _app(
+            session_factory, garbled, server_url="http://127.0.0.1:9/decide"
+        )
+        unreachable.dependency_overrides[get_decision_client] = lambda: _offline_client(
+            session_factory
+        )
+        async with _as(unreachable, admin) as client:
+            offline = (await client.get("/decision-settings")).json()
+
+        assert unreadable["options"]["source"] == "unavailable"
+        assert "something else" in unreadable["options"]["note"]
+        assert offline["options"]["source"] == "unavailable"
+        assert "could not be reached" in offline["options"]["note"]
+
+    async def test_the_reading_is_cached_briefly(
+        self, session_factory: async_sessionmaker[AsyncSession], service: _Service
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        service.health = LISTED_HEALTH
+        async with _as(_app(session_factory, service), admin) as client:
+            await client.get("/decision-settings")
+            await client.get("/decision-settings")
+            await client.put("/decision-settings", json={"backend": "self_hosted"})
+
+        assert len(service.health_calls) == 1
+
+
+async def test_a_saved_choice_this_release_does_not_know_loads_as_off(
+    session_factory: async_sessionmaker[AsyncSession],
+    service: _Service,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A newer release wrote it during a rolling deploy, or before a rollback.
+    # The CHECK keeps such a value out of this schema, so the store hands it
+    # over as the newer schema would.
+    admin = await _person(session_factory, "ada", role="admin")
+
+    async def newer_row(
+        store: DecisionSettingsStore, session: AsyncSession, tenant_id: str
+    ) -> DecisionSettings:
+        return DecisionSettings(
+            tenant_id=tenant_id,
+            backend="from_the_future",
+            endpoint=None,
+            api_key_encrypted=None,
+            threshold=None,
+            updated_at=datetime.now(UTC),
+        )
+
+    monkeypatch.setattr(DecisionSettingsStore, "get", newer_row)
+    async with _as(_app(session_factory, service), admin) as client:
+        loaded = await client.get("/decision-settings")
+
+    assert loaded.status_code == 200, loaded.text
+    body = loaded.json()
+    assert body["workspace"]["backend"] == "none"
+    assert body["workspace"]["unrecognized_backend"] == "from_the_future"
+    assert body["effective"]["backend"] == "none"
+    assert body["effective"]["available"] is False
+    assert "doesn't know" in body["effective"]["reason"]
+
+
+def _offline_client(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> DynamicDecisionClient:
+    """A client whose server decision service refuses every connection."""
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    return DynamicDecisionClient(
+        session_factory=session_factory,
+        availability=DecisionAvailability(
+            enabled=True,
+            server=ServerDefault(
+                endpoint_url=SERVER_URL, api_key="server-key", bedrock_enabled=False
+            ),
+            store=DecisionSettingsStore(),
+        ),
+        keyring=KEYRING,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(refuse)),
+        guarded_client=httpx.AsyncClient(transport=httpx.MockTransport(refuse)),
+        outbound_policy=OutboundPolicy.parse(""),
+        timeout_seconds=1.0,
+        telemetry=None,
+        cache_seconds=60,
+    )

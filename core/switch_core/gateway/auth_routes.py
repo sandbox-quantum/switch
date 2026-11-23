@@ -127,6 +127,7 @@ from switch_core.gateway.schemas import (
     SignupResponse,
     UpdateMeRequest,
 )
+from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
 from switch_core.observability.catalogue import AUTH_SIGN_IN_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.organization_admin_notices import OrganizationAdminNotices
@@ -208,19 +209,37 @@ async def login(
     # One connection at a time, and none held across bcrypt.
     await session.commit()
     if not await password_matches_off_loop(user, req.password):
-        # Counted for the alert on password guessing; nothing about who.
+        # Counted for the alert on password guessing; nothing about who. The
+        # security event names the account when there is one, for alerting
+        # on one account being guessed at.
         metrics().increment(AUTH_SIGN_IN_FAILURES, {})
         attempt.failed()
+        sign_in_failed(
+            request,
+            method="password",
+            reason="unknown_account" if user is None else "wrong_password",
+            user_id=None if user is None else user.id,
+            tenant_id=None,
+        )
         raise HTTPException(status_code=401, detail="Invalid email or password")
     assert user is not None
     await attempt.succeeded(session)
 
+    tenant_claim = await initial_tenant_claim(session_factory, user_store, user)
+    await record_sign_in(
+        session,
+        request,
+        user_id=user.id,
+        method="password",
+        details={"tenant_id": tenant_claim},
+    )
+    await session.commit()
     set_session_cookie(
         response,
         user,
         config.keyring,
         config.gateway_cookie_secure,
-        await initial_tenant_claim(session_factory, user_store, user),
+        tenant_claim,
         signed_in_now(None),
     )
     return _session_response(user)

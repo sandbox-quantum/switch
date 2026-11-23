@@ -8,7 +8,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import bcrypt
 import jwt
@@ -17,6 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
 from switch_core import room_admins, room_policy
+from switch_core.accounts.suspension import (
+    ACCOUNT_SUSPENDED_CODE,
+    ACCOUNT_SUSPENDED_MESSAGE,
+)
 from switch_core.archived_workspace import WORKSPACE_ARCHIVED, archived_since
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
@@ -333,7 +337,11 @@ def set_session_cookie(
     `session_signed_in(request)` for every re-mint, so refreshing or switching
     workspace keeps the session's id and never extends it past
     `SESSION_MAX_AGE`.
+
+    A suspended account is refused here, which is every way a session
+    starts (`accounts/suspension.py`).
     """
+    refuse_suspended_account(user)
     now = datetime.datetime.now(datetime.UTC)
     expires_at = session_expires_at(now, signed_in.at)
     token = create_jwt(
@@ -356,6 +364,20 @@ def set_session_cookie(
         max_age=int((expires_at - now).total_seconds()),
         path="/",
     )
+
+
+def refuse_suspended_account(user: User) -> None:
+    """403 for a suspended account (`accounts/suspension.py`). Suspending one
+    also ends its sessions, so this is what keeps it from starting another,
+    and the check on every request is what stands if that were missed."""
+    if user.suspended_at is not None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": ACCOUNT_SUSPENDED_CODE,
+                "message": ACCOUNT_SUSPENDED_MESSAGE,
+            },
+        )
 
 
 def _session_key(token: str, keyring: Keyring) -> bytes | str:
@@ -396,9 +418,9 @@ def signed_claims(request: HTTPConnection, keyring: Keyring) -> dict | None:
     return payload
 
 
-def session_subject(token: str, keyring: Keyring) -> str | None:
-    """The user a session token names, if its signature checks out and it has
-    not expired; None otherwise. Reads nothing: whether the session was ended
+def session_claims(token: str, keyring: Keyring) -> dict[str, Any] | None:
+    """A session token's claims, if its signature checks out and it has not
+    expired; None otherwise. Reads nothing: whether the session was ended
     since, or the user is still there, is for authentication to ask."""
     try:
         payload = jwt.decode(
@@ -406,7 +428,13 @@ def session_subject(token: str, keyring: Keyring) -> str | None:
         )
     except jwt.InvalidTokenError:
         return None
-    subject = payload.get("sub")
+    return payload if isinstance(payload, dict) else None
+
+
+def session_subject(token: str, keyring: Keyring) -> str | None:
+    """The user a session token names, as `session_claims` reads it."""
+    payload = session_claims(token, keyring)
+    subject = payload.get("sub") if payload is not None else None
     return subject if isinstance(subject, str) else None
 
 
@@ -832,6 +860,7 @@ async def get_authenticated_caller(
         if user is None:
             raise HTTPException(status_code=401, detail="User not found")
         await _check_session(request, system_session, user.session_version, payload)
+        refuse_suspended_account(user)
     return AuthenticatedCaller(
         id=user.id, email=user.email, is_operator=user.role == "admin"
     )
@@ -1655,6 +1684,7 @@ async def _bound_user(
             # Deleted between the two reads; rare, and still not a 500.
             raise HTTPException(status_code=401, detail="User not found")
         await _check_session(request, session, user.session_version, payload)
+        refuse_suspended_account(user)
         request.state.platform_access = (
             user.role == "admin"
             and not await user_store.administers_by_role(session, tenant_id, user_id)

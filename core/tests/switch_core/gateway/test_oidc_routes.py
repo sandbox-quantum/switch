@@ -154,7 +154,7 @@ class TestSigningInWithADirectory:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=self._config(),
                 session=session,
                 session_factory=session_factory,
@@ -181,7 +181,7 @@ class TestSigningInWithADirectory:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=self._config(),
                 session=session,
                 session_factory=session_factory,
@@ -206,7 +206,7 @@ class TestSigningInWithADirectory:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=self._config(),
                 session=session,
                 session_factory=session_factory,
@@ -230,7 +230,7 @@ class TestSigningInWithADirectory:
 
         async with session_factory() as session:
             refused = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=self._config(),
                 session=session,
                 session_factory=session_factory,
@@ -252,7 +252,7 @@ class TestSigningInWithADirectory:
 
         async with session_factory() as session:
             refused = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=self._config(),
                 session=session,
                 session_factory=session_factory,
@@ -283,7 +283,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -332,7 +332,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             exc = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -364,7 +364,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
                 session_factory=session_factory,
@@ -391,7 +391,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             exc = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
                 session_factory=session_factory,
@@ -430,7 +430,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             exc = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
                 session_factory=session_factory,
@@ -471,7 +471,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -514,7 +514,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             first = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -540,7 +540,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -590,7 +590,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
                 session_factory=session_factory,
@@ -629,7 +629,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             exc = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -656,7 +656,9 @@ class TestOidcCallback:
         async with session_factory() as session:
             refused = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(  # type: ignore[arg-type]
-                    session={}, headers={"x-amzn-waf-signup-refused": "country"}
+                    session={},
+                    headers={"x-amzn-waf-signup-refused": "country"},
+                    client=None,
                 ),
                 config=_config(
                     gateway_signup_refused_header="x-amzn-waf-signup-refused"
@@ -708,7 +710,9 @@ class TestOidcCallback:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(  # type: ignore[arg-type]
-                    session={}, headers={"x-amzn-waf-signup-refused": "country"}
+                    session={},
+                    headers={"x-amzn-waf-signup-refused": "country"},
+                    client=None,
                 ),
                 config=_config(
                     gateway_signup_refused_header="x-amzn-waf-signup-refused"
@@ -745,7 +749,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             first = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}, headers={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, headers={}, client=None),  # type: ignore[arg-type]
                 config=config,
                 session=session,
                 session_factory=session_factory,
@@ -755,7 +759,9 @@ class TestOidcCallback:
             assert first.status_code == 303
             again = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(  # type: ignore[arg-type]
-                    session={}, headers={"x-amzn-waf-signup-refused": "country"}
+                    session={},
+                    headers={"x-amzn-waf-signup-refused": "country"},
+                    client=None,
                 ),
                 config=config,
                 session=session,
@@ -775,7 +781,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             exc = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -802,7 +808,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             exc = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -829,7 +835,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             exc = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -858,7 +864,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             exc = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -902,7 +908,7 @@ class TestTheCallbackPlacesTheUserInATenant:
 
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -947,7 +953,7 @@ class TestTheCallbackPlacesTheUserInATenant:
 
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -987,7 +993,7 @@ class TestTheCallbackPlacesTheUserInATenant:
 
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -1035,7 +1041,7 @@ class TestSignUpWithoutADefaultTenant:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(gateway_signup_mode=mode),
                 session=session,
                 session_factory=session_factory,
@@ -1073,7 +1079,7 @@ class TestSignUpWithoutADefaultTenant:
 
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(gateway_signup_mode="open"),
                 session=session,
                 session_factory=session_factory,
@@ -1120,7 +1126,7 @@ class TestSignUpWithoutADefaultTenant:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(gateway_signup_mode="open"),
                 session=session,
                 session_factory=session_factory,
@@ -1315,7 +1321,9 @@ class _FakeAuthorizeClient:
 
 
 def _login_request() -> SimpleNamespace:
-    return SimpleNamespace(session={}, url_for=lambda _name: "https://gw/callback")
+    return SimpleNamespace(
+        session={}, client=None, url_for=lambda _name: "https://gw/callback"
+    )
 
 
 class TestLoginOptionsAndHandoff:
@@ -1426,6 +1434,7 @@ class TestLoginOptionsAndHandoff:
             with pytest.raises(HTTPException):
                 await oidc_routes.oidc_exchange(
                     req=wrong,
+                    request=request,  # type: ignore[arg-type]
                     config=config,
                     session=session,
                     session_factory=session_factory,
@@ -1433,6 +1442,7 @@ class TestLoginOptionsAndHandoff:
                 )
             exchanged = await oidc_routes.oidc_exchange(
                 req=oidc_routes.HandoffExchange(code=code, verifier=_VERIFIER),
+                request=request,  # type: ignore[arg-type]
                 config=config,
                 session=session,
                 session_factory=session_factory,
@@ -1470,7 +1480,9 @@ class TestWhereAGenericSignInLands:
         monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(self._TOKEN))
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={"oidc_next": "/rooms?tab=all"}),  # type: ignore[arg-type]
+                request=SimpleNamespace(
+                    session={"oidc_next": "/rooms?tab=all"}, client=None
+                ),  # type: ignore[arg-type]
                 config=_config(frontend_base_url="https://ui.example.com"),
                 session=session,
                 session_factory=session_factory,
@@ -1516,7 +1528,7 @@ class TestWhereAGenericSignInLands:
         monkeypatch.setattr(oidc_routes, "_client", lambda: _RefusingClient(error))
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,

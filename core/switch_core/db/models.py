@@ -377,8 +377,24 @@ class OrganizationScoped:
 # ── Users ──────────────────────────────────────────────────────────────────────
 
 
+# Who suspended an account or an agent, which decides who may lift it
+# (`accounts/suspension.py`): its owner (agents only), an admin of the
+# workspace or organization, or the server's operator.
+SUSPENDER_ROLES = ("owner", "admin", "operator")
+
+
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "suspended_by_role IN ('admin', 'operator')",
+            name="ck_users_suspended_by_role",
+        ),
+        CheckConstraint(
+            "(suspended_at IS NULL) = (suspended_by_role IS NULL)",
+            name="ck_users_suspension_complete",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -404,6 +420,21 @@ class User(Base):
     session_version: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
+    # Set while the account is suspended (`accounts/suspension.py`): no
+    # session is accepted or started, its keys are refused, and every agent
+    # it owns is suspended with it. `suspended_by` is cleared when that
+    # account is deleted, and is NULL for the operator's command line;
+    # `suspended_by_role` stays, since it decides who may lift it.
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    suspended_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_users_suspended_by"),
+        nullable=True,
+    )
+    suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspended_by_role: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # Changing a password or losing the server-admin role ends every session. As
@@ -991,6 +1022,14 @@ class Agent(TenantScoped, Base):
             "mid_turn_delivery IN ('steer', 'queue')",
             name="ck_agents_mid_turn_delivery",
         ),
+        CheckConstraint(
+            "suspended_by_role IN ('owner', 'admin', 'operator')",
+            name="ck_agents_suspended_by_role",
+        ),
+        CheckConstraint(
+            "(suspended_at IS NULL) = (suspended_by_role IS NULL)",
+            name="ck_agents_suspension_complete",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -1047,6 +1086,25 @@ class Agent(TenantScoped, Base):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Set while the agent is suspended (`accounts/suspension.py`): its
+    # credentials and its controller are refused for it, its devices assign
+    # it stopped, and its rooms keep it as a member. `suspended_with_owner`
+    # marks a suspension that came from suspending its owner, which is lifted
+    # with the owner's and not on its own. `suspended_by` is cleared when
+    # that account is deleted.
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    suspended_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_agents_suspended_by"),
+        nullable=True,
+    )
+    suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspended_by_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspended_with_owner: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
     )
 
 
@@ -1296,6 +1354,9 @@ class Room(TenantScoped, Base):
         Boolean, server_default="false", nullable=False
     )
     instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Unused: nothing reads or writes it. It stays mapped only because a pod
+    # on an earlier release still selects it during a rolling deploy; a later
+    # release drops the column.
     protection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     observe_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_by: Mapped[str | None] = mapped_column(
@@ -1336,12 +1397,25 @@ class Room(TenantScoped, Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     # When set, the room is archived: hidden from the default active room lists
-    # (gateway + agent MCP tools) but otherwise fully intact and retrievable —
-    # members, room, and bridge channel are untouched. NULL = active.
-    # Archiving is metadata-only and reversible (unarchive clears this).
+    # (gateway + agent MCP tools) and read-only (`room_read_only.py`), but
+    # otherwise intact and retrievable — members, history and bridge channel
+    # are untouched. NULL = active. Reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # When set, the room is frozen: read-only while a workspace admin or the
+    # server's operator contains it, until they unfreeze it
+    # (`room_read_only.py`). `frozen_by` is who froze it and `frozen_reason`
+    # what they gave as the reason, shown to admins only.
+    frozen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    frozen_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_rooms_frozen_by"),
+        nullable=True,
+    )
+    frozen_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The highest live `seq` retention has deleted from this room. Numbering
     # continues above it, so a room emptied by retention never hands out a
     # position a cursor has already passed. See `MessageStore._next_seq`.
@@ -3078,7 +3152,14 @@ class OrganizationTrustSettings(OrganizationScoped, Base):
 # The backends a workspace may choose for decision routing
 # (`decision/settings.py`): none (auto-route off in the workspace), its own
 # endpoint, or Haiku run by the server's decision service.
-DECISION_BACKENDS = ("none", "endpoint", "haiku_anthropic", "haiku_bedrock")
+DECISION_BACKENDS = (
+    "none",
+    "endpoint",
+    "haiku_anthropic",
+    "haiku_bedrock",
+    "self_hosted",
+    "gemini",
+)
 
 
 class DecisionSettings(TenantScoped, Base):
@@ -3090,7 +3171,8 @@ class DecisionSettings(TenantScoped, Base):
     backend `none` turns auto-route off in the workspace even when the server
     has a default. `api_key_encrypted` is under `config.keyring`: the bearer
     token for an `endpoint`, the Anthropic key for `haiku_anthropic`, never
-    set for `haiku_bedrock`. `threshold` is sent to the service as the
+    set for the other choices the server's decision service runs
+    (`haiku_bedrock`, `self_hosted`, `gemini`). `threshold` is sent to the service as the
     confidence it needs to name an agent; None leaves it to the service.
     """
 
@@ -3098,7 +3180,8 @@ class DecisionSettings(TenantScoped, Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", name="pk_decision_settings"),
         CheckConstraint(
-            "backend IN ('none', 'endpoint', 'haiku_anthropic', 'haiku_bedrock')",
+            "backend IN ('none', 'endpoint', 'haiku_anthropic', 'haiku_bedrock', "
+            "'self_hosted', 'gemini')",
             name="ck_decision_settings_backend",
         ),
         CheckConstraint(

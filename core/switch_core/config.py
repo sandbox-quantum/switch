@@ -699,6 +699,13 @@ class SwitchConfig(BaseSettings):
 
     server_host: str = "0.0.0.0"
     server_port: int = 8000
+    # The addresses whose `X-Forwarded-For` / `X-Forwarded-Proto` uvicorn
+    # believes: comma-separated IPs or CIDRs of the ingress or load balancer
+    # in front of this server. A request from anywhere else keeps its own
+    # connection address, which is what the access log, sign-in events and
+    # the refusal breaker report. The same variable uvicorn itself reads.
+    # `*` believes every caller, so anyone can claim any address.
+    forwarded_allow_ips: str = "127.0.0.1"
 
     # Where collaboration bridges take platform callbacks. Only a Mattermost
     # button press needs one today: the press is delivered by the Mattermost
@@ -969,6 +976,21 @@ class SwitchConfig(BaseSettings):
     # proxy gives up after about 10 s. It is answered 503. Writes are not
     # limited, as some do a workspace's worth of work in one statement.
     gateway_read_statement_timeout: str = "10s"
+    # Long-lived gateway streams of one kind (the chats feed, the activity
+    # feed, the change notices) one person may hold in one workspace, in a
+    # process. Console opens one of each per workspace, so 16 leaves room for
+    # a person's machines and browser tabs, as the change notices' own limit
+    # did before (`gateway/changes.py`). Past it, the caller's oldest of that kind is closed
+    # for the new one, or the new one is refused 429 when the oldest is under
+    # 30 s old (`gateway/stream_caps.py`).
+    gateway_streams_per_caller: int = Field(default=16, ge=1)
+    # Long-lived gateway streams of every kind a process holds at once,
+    # counting those still opening. Each holds no database connection while
+    # it waits, but a task, a file handle and a subscription, and reads again
+    # each time its rooms move, so a pod past this many would slow down for
+    # everyone on it. Past it, new ones are refused 503 with a `Retry-After`
+    # and the load balancer sends them elsewhere. 0 turns it off.
+    gateway_streams_per_process: int = Field(default=4000, ge=0)
 
     # Resolving a bearer token to its agent is the highest-frequency query in
     # the system — it runs before every authenticated request, and a fleet of

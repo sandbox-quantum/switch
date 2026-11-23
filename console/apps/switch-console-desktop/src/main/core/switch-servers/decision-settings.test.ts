@@ -53,6 +53,8 @@ function response(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
+/** As a server from before offers read from the decision service answers:
+ * the fields it lacks are read as "nothing described". */
 const SETTINGS_JSON = {
   source: 'workspace',
   effective: {
@@ -86,6 +88,7 @@ const SETTINGS = {
   },
   workspace: {
     backend: 'haiku_anthropic',
+    unrecognizedBackend: null,
     endpoint: null,
     threshold: 0.4,
     hasApiKey: true,
@@ -93,8 +96,60 @@ const SETTINGS = {
     apiKeyUnreadable: false,
     updatedAt: '2026-10-27T10:00:00Z',
   },
-  serverDefault: { configured: true, endpoint: 'http://decision:8230', hasApiKey: false },
-  options: { haikuAnthropic: true, haikuBedrock: false },
+  serverDefault: {
+    configured: true,
+    endpoint: 'http://decision:8230',
+    hasApiKey: false,
+    info: null,
+  },
+  options: {
+    haikuAnthropic: true,
+    haikuBedrock: false,
+    selfHosted: false,
+    gemini: false,
+    details: {},
+    source: 'configuration',
+    note: null,
+  },
+};
+
+/** As a server reading offers from its decision service answers. */
+const DESCRIBED_JSON = {
+  ...SETTINGS_JSON,
+  source: 'workspace',
+  effective: { ...SETTINGS_JSON.effective, backend: 'gemini' },
+  workspace: {
+    ...SETTINGS_JSON.workspace,
+    backend: 'gemini',
+    unrecognized_backend: null,
+    has_api_key: false,
+    api_key_last4: null,
+  },
+  server_default: {
+    ...SETTINGS_JSON.server_default,
+    info: { label: 'Qwen3 235B (Bedrock)', model: 'qwen3-235b', threshold: 0.89, fallback: null },
+  },
+  options: {
+    haiku_anthropic: true,
+    haiku_bedrock: true,
+    self_hosted: true,
+    gemini: true,
+    details: {
+      gemini: {
+        label: 'Gemini (gemini-decision-1)',
+        model: 'gemini-decision-1',
+        threshold: 0.8,
+        fallback: {
+          backend: 'bedrock',
+          model: 'claude-haiku',
+          label: 'Claude Haiku (Bedrock)',
+          after_s: 1.5,
+        },
+      },
+    },
+    source: 'service',
+    note: null,
+  },
 };
 
 const DEFAULT_JSON = {
@@ -140,6 +195,32 @@ describe('fetchDecisionSettingsFromServer', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('https://switch.example.com/gateway/decision-settings');
     expect(init.method ?? 'GET').toBe('GET');
+  });
+
+  it('reads how the decision service describes the server default and each choice', async () => {
+    fetchMock.mockResolvedValue(response(200, DESCRIBED_JSON));
+
+    const result = await fetchDecisionSettingsFromServer(SERVER);
+    expect(result).toMatchObject({
+      kind: 'loaded',
+      settings: {
+        workspace: { backend: 'gemini', unrecognizedBackend: null },
+        serverDefault: {
+          info: { label: 'Qwen3 235B (Bedrock)', model: 'qwen3-235b', threshold: 0.89 },
+        },
+        options: {
+          selfHosted: true,
+          gemini: true,
+          source: 'service',
+          details: {
+            gemini: {
+              threshold: 0.8,
+              fallback: { label: 'Claude Haiku (Bedrock)', afterS: 1.5, backend: 'bedrock' },
+            },
+          },
+        },
+      },
+    });
   });
 
   it('reads a workspace on the server default as having no setting of its own', async () => {

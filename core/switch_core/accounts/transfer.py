@@ -59,6 +59,7 @@ from switch_core.db.models import (
     ServiceGrant,
     Template,
     TenantMember,
+    User,
 )
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.room_store import RoomStore
@@ -308,20 +309,32 @@ async def _refuse(
             )
 
 
-async def _reissue_agent_key(
-    session: AsyncSession, agent: Agent, new_owner_id: str, keyring: Keyring
-) -> str:
-    """Give the agent's key to `new_owner_id` as a new secret; return the
-    retired one's hash."""
-    key = await session.get(ApiKey, agent.api_key_id)
+@dataclass(frozen=True)
+class ReissuedKey:
+    """An agent's key given a new secret: its row, the retired secret's hash
+    for the caller to drop from the key cache, and the new secret."""
+
+    key: ApiKey
+    retired_hash: str
+    plaintext: str
+
+
+async def reissue_agent_key(
+    session: AsyncSession, agent: Agent, keyring: Keyring
+) -> ReissuedKey:
+    """Give the agent's key a new secret, on `session`. The row keeps its id,
+    so everything naming the key still does; the old secret matches nothing
+    once the caller commits. The caller also deletes the agent's connection
+    rows and, once committed, ends its connections
+    (`AgentConnectionRegistry.agent_key_reissued`)."""
+    key = await session.get(ApiKey, agent.api_key_id, with_for_update=True)
     if key is None:
         raise RuntimeError(f"Agent {agent.id} has no API key row {agent.api_key_id}")
     retired = key.key_hash
     plaintext = secrets.token_urlsafe(32)
     key.key_hash = hashlib.sha256(plaintext.encode()).hexdigest()
     key.encrypted_key = keyring.encrypt(plaintext)
-    key.user_id = new_owner_id
-    return retired
+    return ReissuedKey(key=key, retired_hash=retired, plaintext=plaintext)
 
 
 async def transfer_ownership(
@@ -365,6 +378,16 @@ async def transfer_ownership(
         )
     if previous == new_owner_id:
         raise TransferRefused(400, f"They already own this {label}.")
+    new_owner = await session.get(User, new_owner_id)
+    if new_owner is not None and new_owner.suspended_at is not None:
+        raise TransferRefused(409, "The new owner's account is suspended.")
+    if isinstance(resource, Agent) and resource.suspended_with_owner:
+        # Lifted with its owner's suspension, which would no longer reach it.
+        raise TransferRefused(
+            409,
+            "This agent is suspended because its owner is. Lift the owner's "
+            "suspension first.",
+        )
     if new_owner_id == caller.id:
         # An admin taking someone's agent would also take its key.
         raise TransferRefused(
@@ -376,7 +399,9 @@ async def transfer_ownership(
 
     retired: str | None = None
     if isinstance(resource, Agent):
-        retired = await _reissue_agent_key(session, resource, new_owner_id, keyring)
+        reissued = await reissue_agent_key(session, resource, keyring)
+        reissued.key.user_id = new_owner_id
+        retired = reissued.retired_hash
         await AgentConnectionStore().delete_agent(
             session, tenant_id=tenant_id, agent_id=resource.id
         )

@@ -387,6 +387,28 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/workspace/services/{service}": delete(
         f"{G}/workspace/services/{{workspace_service}}", admins()
     ),
+    "POST /gateway/agents/{agent_id}/suspend": post(
+        f"{G}/agents/{{agent}}/suspend", owner_or_admins(), json={"reason": "matrix"}
+    ),
+    "POST /gateway/agents/{agent_id}/unsuspend": post(
+        f"{G}/agents/{{agent}}/unsuspend",
+        owner_or_admins(ok=409),
+        why="Who may suspend it may ask; this one is not suspended.",
+    ),
+    "POST /gateway/agents/{agent_id}/key/rotate": post(
+        f"{G}/agents/{{agent}}/key/rotate", owner_or_admins()
+    ),
+    "POST /gateway/users/{user_id}/suspend": post(
+        f"{G}/users/{{member_target}}/suspend",
+        admins(),
+        json={"reason": "matrix"},
+        why="An admin of every workspace the person is in, or the operator.",
+    ),
+    "POST /gateway/users/{user_id}/unsuspend": post(
+        f"{G}/users/{{member_target}}/unsuspend",
+        admins(ok=409),
+        why="Who may suspend them may ask; this one is not suspended.",
+    ),
     "POST /gateway/ownership/transfer": post(
         f"{G}/ownership/transfer",
         owner_or_admins(),
@@ -716,10 +738,30 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room_agent}}/schedules/{{room_schedule}}",
         owner_or_admins(),
     ),
-    "PUT /gateway/rooms/{room_id}/protection": put(
-        f"{G}/rooms/{{room}}/protection",
-        owner_or_admins(),
-        json={"protection_config": {}},
+    "POST /gateway/rooms/{room_id}/freeze": post(
+        f"{G}/rooms/{{room}}/freeze",
+        admins(),
+        json={"reason": "matrix incident"},
+        why="Incident control: the workspace's admins and the operator, never "
+        "the room's owner or its room admins.",
+    ),
+    "POST /gateway/rooms/{room_id}/unfreeze": post(
+        f"{G}/rooms/{{room}}/unfreeze",
+        admins(ok=409),
+        why="As freezing. The room was never frozen, so whoever may is told so.",
+    ),
+    "POST /gateway/moderation/agents/{agent_id}/remove-from-all-rooms": post(
+        f"{G}/moderation/agents/{{agent}}/remove-from-all-rooms",
+        admins(),
+        json={"request": "matrix"},
+        why="Incident control: the workspace's admins and the operator, never "
+        "the agent's owner.",
+    ),
+    "POST /gateway/moderation/people/{user_id}/remove-from-all-rooms": post(
+        f"{G}/moderation/people/{{owner}}/remove-from-all-rooms",
+        admins(),
+        json={"include_agents": True, "request": "matrix"},
+        why="As removing an agent from every room.",
     ),
     "PUT /gateway/rooms/{room_id}/observe": put(
         f"{G}/rooms/{{room}}/observe", owner_or_admins(), json={"observe_config": {}}

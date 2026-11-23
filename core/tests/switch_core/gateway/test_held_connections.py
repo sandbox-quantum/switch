@@ -505,9 +505,6 @@ class TestRoomRoutes:
             responses = [
                 await client.patch(f"/rooms/{room.id}", json={"name": "renamed"}),
                 await client.put(
-                    f"/rooms/{room.id}/protection", json={"protection_config": {}}
-                ),
-                await client.put(
                     f"/rooms/{room.id}/observe", json={"observe_config": {}}
                 ),
                 await client.post(

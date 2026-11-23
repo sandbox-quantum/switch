@@ -50,6 +50,7 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.gateway.login_limits import client_address
+from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
 from switch_core.organization_directory import (
     DirectoryUnavailable,
     OrganizationDirectory,
@@ -689,7 +690,8 @@ async def _provision(
     session: AsyncSession,
     user_store: UserStore,
     identity: _Identity,
-) -> User:
+) -> tuple[User, bool]:
+    """The account `identity` signs in to, and whether this made it."""
     # A first sign-in provisions the account just in time. Where it lands is
     # `gateway_signup_mode`'s decision. Under "default_tenant" it joins tenant
     # zero, named here rather than left to `TenantScoped`'s fallback, which
@@ -737,7 +739,7 @@ async def _provision(
         await session.commit()
     if created:
         emit_safely(current_telemetry(), "account_created", {"method": "oidc"})
-    return user
+    return user, created
 
 
 async def _record_identity_session(
@@ -785,6 +787,7 @@ async def oidc_callback(
     # below, deliberately.
     if not config.gateway_sso_enabled:
         raise HTTPException(status_code=404, detail="OIDC login is not configured")
+    method = "authkit" if config.gateway_workos_sign_in else "oidc"
     try:
         if config.gateway_workos_sign_in:
             outcome = await _authkit_identity(request, config)
@@ -795,13 +798,24 @@ async def oidc_callback(
             pending = _oidc_pending(request)
             identity = await _oidc_identity(request, config)
         _require_verified(config, identity)
-        user = await _provision(request, config, session, user_store, identity)
+        user, created = await _provision(request, config, session, user_store, identity)
         identity_session = await _record_identity_session(session, user, identity)
     except SignInError as error:
+        sign_in_failed(
+            request, method=method, reason=error.code, user_id=None, tenant_id=None
+        )
         return _sign_in_failed(config, error)
     await _bring_in_organizations(
         session_factory, organization_directory, user, identity.sub
     )
+    await record_sign_in(
+        session,
+        request,
+        user_id=user.id,
+        method=method,
+        details={"account_created": created, "handoff": pending.handoff is not None},
+    )
+    await session.commit()
 
     if pending.handoff is not None:
         # The app on this computer that started the sign-in takes it from
@@ -847,6 +861,7 @@ class HandoffExchange(BaseModel):
 @router.post("/auth/oidc/exchange")
 async def oidc_exchange(
     req: HandoffExchange,
+    request: Request,
     config: Annotated[SwitchConfig, Depends(get_config)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
@@ -857,21 +872,32 @@ async def oidc_exchange(
     """Trade a code a sign-in handed back to this computer for a session:
     only with the verifier its challenge was made from, and only while fresh."""
     refused = HTTPException(status_code=400, detail="The sign-in code is not valid")
+
+    def refuse(reason: str) -> HTTPException:
+        sign_in_failed(
+            request,
+            method="oidc_handoff",
+            reason=reason,
+            user_id=None,
+            tenant_id=None,
+        )
+        return refused
+
     if len(req.code) > 4096 or not _VERIFIER.match(req.verifier):
-        raise refused
+        raise refuse("malformed")
     try:
         payload = json.loads(config.keyring.decrypt(req.code))
     except Exception as exc:
-        raise refused from exc
+        raise refuse("undecryptable") from exc
     if not isinstance(payload, dict) or int(payload.get("exp", 0)) < int(time.time()):
-        raise refused
+        raise refuse("expired")
     if not hmac.compare_digest(
         str(payload.get("challenge", "")), _challenge_of(req.verifier)
     ):
-        raise refused
+        raise refuse("verifier_mismatch")
     user = await session.get(User, str(payload.get("user_id", "")))
     if user is None:
-        raise refused
+        raise refuse("unknown_account")
     identity_session = payload.get("isid")
     response = JSONResponse({"ok": True})
     set_session_cookie(
