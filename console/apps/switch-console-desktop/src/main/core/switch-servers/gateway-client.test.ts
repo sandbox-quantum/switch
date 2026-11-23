@@ -2617,6 +2617,18 @@ describe('sign-up support', () => {
     await expect(probeGateway(SERVER)).resolves.toBeUndefined();
   });
 
+  it('counts a redirect in place of the API as an answer to the reachability check', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 301,
+        headers: { location: 'https://switch.example.com/gateway/auth/config' },
+      })
+    );
+    await expect(
+      probeGateway({ ...(SERVER as object), url: 'http://switch.example.com' } as never)
+    ).resolves.toBeUndefined();
+  });
+
   it('reports a proxy’s 502 page as the failure it is, not as a missing route', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response('<html>Bad Gateway</html>', {
