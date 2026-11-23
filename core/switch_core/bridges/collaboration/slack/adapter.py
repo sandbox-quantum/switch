@@ -1943,7 +1943,7 @@ class SlackAdapter(PlatformAdapter):
             agent_name,
             work_ref,
             initiator_external_id,
-            _session_title(agent.field_label, asked),
+            asked,
         )
         return work_ref
 
@@ -1997,9 +1997,10 @@ class SlackAdapter(PlatformAdapter):
         agent_name: str,
         message_ref: str,
         initiator_external_id: str | None,
-        title: str,
+        asked: AskedQuestion | None = None,
     ) -> None:
-        """An agent session on a message of the agent's, for whoever asked.
+        """An agent session on a message of the agent's, for whoever asked,
+        titled by the question (`_session_title`).
 
         "<agent> is working" shows under the message while its thread is
         empty, and the turn is listed in the asker's Agents & tools. Naming
@@ -2015,7 +2016,7 @@ class SlackAdapter(PlatformAdapter):
             "channel_id": channel_id,
             "thread_ts": ts,
             "status": "processing",
-            "title": title[:200],
+            "title": _session_title(agent.field_label, asked),
             "username": agent.field_label,
         }
         icon_url = slack_icon_argument(agent.icon_url, agent_name)

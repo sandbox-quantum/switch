@@ -331,14 +331,12 @@ async def test_a_closed_stream_in_the_askers_thread_is_edited_as_before() -> Non
 async def test_a_session_opens_on_a_status_message_for_the_asker() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
-    await adapter.open_session(
-        CHANNEL, "Agent", f"{CHANNEL}:4.0", ASKER, "Agent is working on this"
-    )
+    await adapter.open_session(CHANNEL, "Agent", f"{CHANNEL}:4.0", ASKER, ASKED)
     [session] = _sessions(client)
     assert session["thread_ts"] == "4.0"
     assert session["status"] == "processing"
     assert session["initiator_user_id"] == ASKER
-    assert session["title"] == "Agent is working on this"
+    assert session["title"] == "how many PRs?"
     assert client.posted == [] and client.updated == []
 
 
@@ -448,7 +446,7 @@ def _has_own_stop(blocks: list[dict[str, Any]]) -> bool:
 
 
 async def _inline_post(adapter: SlackAdapter, client: FakeWebClient) -> list[Any]:
-    await adapter.open_session(CHANNEL, "Agent", f"{CHANNEL}:4.0", ASKER, "t")
+    await adapter.open_session(CHANNEL, "Agent", f"{CHANNEL}:4.0", ASKER)
     await adapter.post_rich(
         CHANNEL,
         "Agent",

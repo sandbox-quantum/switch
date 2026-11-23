@@ -1371,9 +1371,7 @@ class AgentSessionActivityPublisher:
                         target.agent_name,
                         _session_ref(post),
                         answering,
-                        asked.text
-                        if asked is not None and asked.text
-                        else target.agent_name,
+                        asked,
                     )
                     if (
                         content.interrupt_turn_id is not None

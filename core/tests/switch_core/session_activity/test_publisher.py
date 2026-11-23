@@ -1856,9 +1856,9 @@ class InlinePlatform(WorkThreadPlatform):
         agent_name: str,
         message_ref: str,
         initiator_external_id: str | None,
-        title: str,
+        asked: AskedQuestion | None = None,
     ) -> None:
-        self.titles.append(title)
+        self.titles.append(asked.text if asked is not None else "")
         self.drawn.append(
             Drawn("open_session", channel_id, message_ref, None, initiator_external_id)
         )

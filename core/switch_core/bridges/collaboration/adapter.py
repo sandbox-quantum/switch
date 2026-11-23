@@ -1884,10 +1884,11 @@ class PlatformAdapter(ABC):
         agent_name: str,
         message_ref: str,
         initiator_external_id: str | None,
-        title: str,
+        asked: AskedQuestion | None = None,
     ) -> None:
         """Mark a message of the agent's as a turn in progress, for whoever
-        asked, where the platform has such a thing. Nothing by default."""
+        asked, where the platform has such a thing, named by what was asked.
+        Nothing by default."""
 
     def native_stop_available(self) -> bool | None:
         """Whether the platform draws its own Stop on a turn's session, so the
