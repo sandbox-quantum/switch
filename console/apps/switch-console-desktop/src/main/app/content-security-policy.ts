@@ -4,8 +4,9 @@
  * markup rather than script with the whole main-process bridge in reach.
  *
  * Script comes only from the app's own files — no inline script and no
- * `eval` — and nothing is sent anywhere directly: the renderer reaches every
- * server through the main process. What stays open is what the window shows:
+ * `eval` — and so do workers (Monaco's editor worker is one of those files,
+ * never a `blob:`). Nothing is sent anywhere directly: the renderer reaches
+ * every server through the main process. What stays open is what the window shows:
  * inline styles (KaTeX, Mermaid and the UI library set them), images from
  * anywhere (agents' and members' messages show remote images today), and
  * http(s) frames, which is how the room view's `<webview>` attaches to its
@@ -14,6 +15,7 @@
 const DIRECTIVES: Record<string, string> = {
   'default-src': "'self'",
   'script-src': "'self'",
+  'worker-src': "'self'",
   'style-src': "'self' 'unsafe-inline'",
   'img-src': "'self' data: blob: http: https:",
   'font-src': "'self' data:",

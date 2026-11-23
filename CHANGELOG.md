@@ -5222,7 +5222,9 @@ version of their own to them without also giving them a release of their own.
   it. Only apps on Console's list can be named, and folder names are passed
   to them safely.
 - **The app window has a Content-Security-Policy.** It runs only Console's own
-  scripts, so a flaw in how messages are displayed can't run code.
+  scripts, so a flaw in how messages are displayed can't run code. The
+  template editor's Monaco now ships with the app instead of being fetched
+  from a CDN the first time the editor opens, so it also works offline.
 - **The packaged app is harder to tamper with.** It refuses debugger flags,
   loads its code only from its signed archive and checks that archive on macOS
   and Windows. On macOS it no longer loads libraries signed by anyone else.

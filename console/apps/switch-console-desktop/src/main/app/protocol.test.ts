@@ -49,6 +49,7 @@ describe('RENDERER_CSP', () => {
 
   it('runs only the app’s own script files', () => {
     expect(directive('script-src')).toBe("'self'");
+    expect(directive('worker-src')).toBe("'self'");
     expect(directive('object-src')).toBe("'none'");
     expect(directive('base-uri')).toBe("'none'");
   });
