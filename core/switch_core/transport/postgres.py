@@ -1129,6 +1129,9 @@ class PostgresTransport:
 
     # ── Outbound ──────────────────────────────────────────────────────────────
 
+    def admit_message(self, authored: str | None) -> None:
+        self._router.send_limits.admit(self.client_id, authored, actor=self._actor_role)
+
     async def send_message(
         self,
         room_id: str,
@@ -1260,16 +1263,14 @@ class PostgresTransport:
             return result
 
         if metered and kind in _METERED_KINDS:
-            # What a person or an agent says, refused here when it is too long
-            # or comes too fast, before it costs a session or the room's lock.
-            # Its length is what they wrote; what Switch wrote into it is the
-            # router's to bound (`require_row_length`).
-            group = parse_attachment_group(content)
-            self._router.send_limits.admit(
-                self.client_id,
+            # What a person or an agent says, admitted where it entered Switch
+            # (`admit_message`), held to the length limit again here, before
+            # it costs a session or the room's lock. Its length is what they
+            # wrote; what Switch wrote into it is the router's to bound
+            # (`require_row_length`).
+            self._router.send_limits.require_length(
                 content.get("body") if authored is None else authored,
                 actor=self._actor_role,
-                starts_post=group is None or group[1] == 0,
             )
         elif event_type == COMMAND_EVENT_TYPE:
             # A room command a person typed on a messaging platform: held to

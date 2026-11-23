@@ -2615,7 +2615,7 @@ class ChatService:
         limits = self._router.send_limits
         try:
             if command is None:
-                limits.admit(user_id, body, actor="human", starts_post=True)
+                limits.admit(user_id, body, actor="human")
             else:
                 limits.admit_command(user_id, command, body, actor="human")
         except MessageTooLong as error:

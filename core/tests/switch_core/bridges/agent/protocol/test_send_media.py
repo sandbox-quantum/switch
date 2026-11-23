@@ -24,6 +24,9 @@ class _FakeClient:
         self.uploads: list[tuple[bytes, str, str]] = []
         self.sends: list[dict[str, Any]] = []
 
+    def admit_message(self, authored: str | None) -> None:
+        return None
+
     async def upload_media(self, data: bytes, content_type: str, filename: str) -> str:
         self.uploads.append((data, content_type, filename))
         return "mxc://s/uploaded"

@@ -302,6 +302,9 @@ class TestSendMessage:
         class _Client:
             agent = SimpleNamespace(name="member")
 
+            def admit_message(self, authored: str | None) -> None:
+                return None
+
             async def send_message(
                 self, transport_room_id: str, content: str, **_kwargs: Any
             ) -> str:

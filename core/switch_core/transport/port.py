@@ -99,6 +99,19 @@ class MessageTransport(Protocol):
 
     # ── Outbound ──────────────────────────────────────────────────────────────
 
+    def admit_message(self, authored: str | None) -> None:
+        """Let this connection's participant send one message, of which they
+        wrote `authored` (None for files alone), or raise why not:
+        `MessageTooLong`, or `SendRateLimited` once their allowance is spent
+        (`send_limits.py`).
+
+        Called once per message where it enters Switch, before Switch Trust
+        reads it or a file of it is stored, so a refused message costs
+        neither. Every metered send is admitted first: the send holds the
+        rows to the length limit again and takes nothing more from the
+        allowance."""
+        ...
+
     async def send_message(
         self,
         room_id: str,
@@ -124,7 +137,8 @@ class MessageTransport(Protocol):
         `body` too (a Switch Trust note, a line for a file it could not relay)
         or changed it (a redaction). A metered message is held to the length
         limit on that, not on `body` (`send_limits.py`). None when `body` is
-        all the sender's.
+        all the sender's. A metered message was admitted first
+        (`admit_message`).
         """
         ...
 

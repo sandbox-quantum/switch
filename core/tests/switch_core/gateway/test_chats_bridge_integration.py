@@ -292,6 +292,7 @@ async def _fake_collab_core_full(
                 return event_id
 
         actor = SimpleNamespace(
+            admit_message=lambda _authored: None,
             send_message=send_message,
             client_id=f"fake-client-{external_user_id}",
             transport_user_id=f"@fake-{external_user_id}:switch.test",

@@ -2054,6 +2054,8 @@ class AgentCore:
         agent is not a room member, the client is not running, or thread_id
         does not resolve to an event in the room.
         Raises PermissionError if auth fails (should not happen in same-process).
+        Raises `MessageRefused` for a message too long or sent faster than the
+        agent's allowance, before Switch Trust checks it (`send_limits.py`).
         Raises GuardrailBlockedError if Switch Trust blocks the content; a
         notice is posted to the room in place of it.
         """
@@ -2064,6 +2066,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
+        client.admit_message(content)
         thread_root_id: str | None = None
         if thread_id is not None:
             thread_root_id = await self._resolve_thread_root(
@@ -2148,8 +2151,11 @@ class AgentCore:
         receivers can coalesce them into one logical message, since a media
         event carries one file.
 
-        Raises GuardrailBlockedError if Switch Trust blocks the caption or any
-        file's text; a notice is posted to the room and nothing is sent. A
+        Raises `MessageRefused` for a caption too long or a post sent faster
+        than the agent's allowance, before Switch Trust checks anything or a
+        file is stored (`send_limits.py`). Raises GuardrailBlockedError if
+        Switch Trust blocks the caption or any file's text; a notice is
+        posted to the room and nothing is sent. A
         file Switch Trust cannot read is sent with a notice saying so. When it
         redacted the caption or noted anything, the result also carries
         `trust` (`TrustFeedback.to_result`).
@@ -2173,6 +2179,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
+        client.admit_message(caption)
         thread_root_id: str | None = None
         if thread_id is not None:
             thread_root_id = await self._resolve_thread_root(
@@ -2629,12 +2636,15 @@ class AgentCore:
         """Send a status message to a room, and say what Switch Trust did to
         it, as `post_message` does (`_trust_feedback`).
 
+        Raises `MessageRefused` for one too long or sent faster than the
+        agent's allowance, before Switch Trust checks it (`send_limits.py`).
         Raises GuardrailBlockedError if Switch Trust blocks it.
         """
         room = await self.require_room_member(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
+        client.admit_message(detail)
         written = detail
         detail, pending_alert, verdict = await self._enforce_trust(
             room, detail, None, client

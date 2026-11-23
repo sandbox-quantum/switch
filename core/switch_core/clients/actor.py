@@ -220,6 +220,13 @@ class Actor[ConfigT: ClientConfig]:
 
     # ── Writing ────────────────────────────────────────────────────────────────
 
+    def admit_message(self, authored: str | None) -> None:
+        """Let this participant send one message, of which they wrote
+        `authored`, or raise `MessageRefused` saying why not
+        (`MessageTransport.admit_message`). Called before Switch Trust reads
+        it or a file of it is stored, and before the metered send."""
+        self._transport.admit_message(authored)
+
     async def send_message(
         self,
         room_id: str,

@@ -1579,7 +1579,10 @@ class CollaborationCore:
         A room that is frozen or archived takes no posts
         (`room_read_only.py`): the router refuses the row, and the sender is
         told their message did not reach the room (`_tell_read_only`), as
-        they are told of a Switch Trust block.
+        they are told of a Switch Trust block. A message too long or sent
+        faster than the sender's allowance is refused before Switch Trust
+        reads it or a file of it is stored (`send_limits.py`), and the sender
+        is told (`_tell_message_refused`).
         """
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
@@ -1651,6 +1654,13 @@ class CollaborationCore:
         # the `@name`, notes and Switch Trust annotation added below are
         # Switch's, and the room makes space for them (`send_limits.py`).
         authored = content
+        # Before Switch Trust reads it or a file of it is stored, so a
+        # message refused for its length or pace costs neither.
+        try:
+            human_actor.admit_message(authored)
+        except MessageRefused as refused:
+            await self._tell_message_refused(msg, refused, transport_room_id)
+            return None
 
         # Bridge threads inbound: if the external post replied into a thread,
         # resolve that external root to the room event we bridged for it.
@@ -1920,8 +1930,8 @@ class CollaborationCore:
                 if index == 0:
                     first_event_id = event_id
         except MessageRefused as refused:
-            # Only the post's first file can be refused: the caption rides on
-            # it, and it alone counts against the sender's allowance.
+            # Admitted above, so only a row longer than any may be: the
+            # caption with what Switch wrote into it (`require_row_length`).
             await self._tell_message_refused(msg, refused, transport_room_id)
             return None
         except RoomReadOnly as refused:

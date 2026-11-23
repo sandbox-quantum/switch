@@ -1,9 +1,12 @@
 """What one sender may put into a room: how long a message may be, and how
 fast messages may come.
 
-A message a person or an agent sends is admitted (`SendLimits.admit`) before
-it reaches the router, so a refused one costs no room lock and no decision
-pass for the agents in the room.
+A message a person or an agent sends is admitted (`SendLimits.admit`) where
+it enters Switch, before Switch Trust reads it or any file of it is stored, so
+a refused one costs no Trust check, no stored file, no room lock and no
+decision pass for the agents in the room. The transport holds what the sender
+wrote to the length limit again as it writes the row (`require_length`), and
+takes nothing more from the allowance: one message is one turn of it.
 
 The length limit is on what the sender wrote. Switch writes into some
 messages itself — a Switch Trust note, the `@name` of an agent picked in
@@ -132,9 +135,14 @@ class SendLimits:
         add to a message that keeps to it."""
         return self.max_message_chars + SWITCH_ADDITIONS_MAX_CHARS
 
-    def require_length(self, body: object) -> None:
+    def require_length(self, body: object, *, actor: str) -> None:
         """Raise `MessageTooLong` for what a sender wrote, longer than the
-        limit."""
+        limit, taking nothing from their allowance: how the transport holds
+        a message `admit` already let in, as it writes each row of it."""
+        with self._counted(actor):
+            self._check_length(body)
+
+    def _check_length(self, body: object) -> None:
         if isinstance(body, str) and len(body) > self.max_message_chars:
             raise MessageTooLong(len(body), self.max_message_chars)
 
@@ -144,22 +152,19 @@ class SendLimits:
         if isinstance(body, str) and len(body) > self.max_row_chars:
             raise MessageTooLong(len(body), self.max_row_chars)
 
-    def admit(
-        self, sender: str, body: object, *, actor: str, starts_post: bool
-    ) -> None:
+    def admit(self, sender: str, body: object, *, actor: str) -> None:
         """Let `sender` send `body`, or raise why not: `MessageTooLong`, or
-        `SendRateLimited` once their allowance is spent.
+        `SendRateLimited` once their allowance is spent. Called once per
+        message, where it enters Switch and before anything is done with it.
 
-        `body` is what the sender wrote, before Switch adds anything to it.
-        `sender` is whoever is sending, the same id for each of their
-        messages. A post with several files is written as several rows, and
-        is one message: only the row that starts it (`starts_post`) takes
-        from the allowance, so a post is never refused part way through.
-        `actor` (`human` or `agent`) labels the refusal's metric."""
+        `body` is what the sender wrote, before Switch adds anything to it
+        (a post's caption, None for files alone). `sender` is whoever is
+        sending, the same id for each of their messages. A post with several
+        files is one message, admitted once, so it is never refused part way
+        through. `actor` (`human` or `agent`) labels the refusal's metric."""
         with self._counted(actor):
-            self.require_length(body)
-            if starts_post:
-                self._take(sender)
+            self._check_length(body)
+            self._take(sender)
 
     def admit_command(
         self, sender: str, command: object, args: object, *, actor: str
@@ -170,7 +175,7 @@ class SendLimits:
         work as a message does. A command that stops an agent
         (`STOP_COMMANDS`) draws nothing, so stopping one always works."""
         with self._counted(actor):
-            self.require_length(args)
+            self._check_length(args)
             if command not in STOP_COMMANDS:
                 self._take(sender)
 

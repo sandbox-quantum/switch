@@ -51,7 +51,11 @@ class _FakeHumanActor:
         self.transport_user_id = "@ext_alice:switch.local"
         self.sent: list[tuple[str, str]] = []
         self.authored: list[object] = []
+        self.admitted: list[str | None] = []
         self._fail_send = fail_send
+
+    def admit_message(self, authored: str | None) -> None:
+        self.admitted.append(authored)
 
     async def send_message(
         self, room_id: str, content: str, **kw: object
@@ -435,8 +439,10 @@ async def test_switch_trusts_note_does_not_count_against_a_message_within_the_li
     limits = SendLimits(
         max_message_chars=65_536, burst=1, per_second=1.0, clock=lambda: 0.0
     )
-    # What the transport and the router hold this send to.
-    limits.admit(human_actor.client_id, content, actor="human", starts_post=True)
+    # What the bridge, the transport and the router hold this send to.
+    assert human_actor.admitted == [content]
+    limits.admit(human_actor.client_id, content, actor="human")
+    limits.require_length(content, actor="human")
     limits.require_row_length(sent)
     [(_, notice, _, message_type)] = adapter.admin_messages
     assert message_type == AdminMessageType.TRUST_ERRORED.value
@@ -462,16 +468,25 @@ async def test_the_agent_named_for_a_channel_does_not_count_against_its_sender(
 
 
 class _RefusingHumanActor(_FakeHumanActor):
-    """A human whose sends Switch refuses, one refusal per send."""
+    """A human whose messages Switch refuses as it admits them, one refusal
+    per message."""
 
     def __init__(self, *refusals: MessageRefused) -> None:
         super().__init__()
         self._refusals = list(refusals)
 
+    def admit_message(self, authored: str | None) -> None:
+        raise self._refusals.pop(0)
+
+
+class _RowRefusingHumanActor(_FakeHumanActor):
+    """A human whose message is admitted and its row then refused: longer
+    than any row may be with what Switch wrote into it."""
+
     async def send_message(
         self, room_id: str, content: str, **_kw: object
     ) -> str | None:
-        raise self._refusals.pop(0)
+        raise MessageTooLong(80_000, 73_728)
 
 
 async def test_a_message_refused_as_too_long_is_told_to_its_sender(
@@ -479,7 +494,8 @@ async def test_a_message_refused_as_too_long_is_told_to_its_sender(
 ) -> None:
     human_actor = _RefusingHumanActor(MessageTooLong(70_000, 65_536))
     adapter = _FakeAdapter()
-    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_OK))
+    trust = _FixedTrustClient(_OK)
+    bridge = _bridge(session_factory, human_actor, adapter, trust)
 
     assert (
         await CollaborationCore._handle_inbound_message(bridge, _message("long"))
@@ -487,6 +503,9 @@ async def test_a_message_refused_as_too_long_is_told_to_its_sender(
     )
 
     assert bridge.relayed == []
+    assert human_actor.sent == []
+    # Refused before Switch Trust was asked about it.
+    assert trust.contents == []
     [(channel_id, body, root_or_ref, message_type)] = adapter.admin_messages
     assert channel_id == "chan-1"
     assert "not delivered to the room" in body
@@ -503,7 +522,8 @@ async def test_a_sender_over_their_allowance_is_told_once_not_per_message(
 
     human_actor = _RefusingHumanActor(limited(True), limited(False), limited(False))
     adapter = _FakeAdapter()
-    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_OK))
+    trust = _FixedTrustClient(_OK)
+    bridge = _bridge(session_factory, human_actor, adapter, trust)
 
     for _ in range(3):
         await CollaborationCore._handle_inbound_message(bridge, _message("again"))
@@ -511,4 +531,23 @@ async def test_a_sender_over_their_allowance_is_told_once_not_per_message(
     [(_, body, _, message_type)] = adapter.admin_messages
     assert "faster than Switch accepts" in body
     assert "Wait 2 seconds" in body
+    assert message_type == AdminMessageType.MESSAGE_REFUSED.value
+    assert trust.contents == []
+
+
+async def test_a_row_refused_as_it_is_written_is_told_to_its_sender(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    human_actor = _RowRefusingHumanActor()
+    adapter = _FakeAdapter()
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_OK))
+
+    assert (
+        await CollaborationCore._handle_inbound_message(bridge, _message("long"))
+        is None
+    )
+
+    assert bridge.relayed == []
+    [(_, body, _, message_type)] = adapter.admin_messages
+    assert "80,000 characters long" in body
     assert message_type == AdminMessageType.MESSAGE_REFUSED.value

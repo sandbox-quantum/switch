@@ -28,19 +28,19 @@ def _limits(*, burst: int, max_message_chars: int = 100) -> SendLimits:
 def test_commands_and_messages_draw_on_one_allowance() -> None:
     limits = _limits(burst=2)
     limits.admit_command("ada", "invite-agent", "@helper", actor="human")
-    limits.admit("ada", "hello", actor="human", starts_post=True)
+    limits.admit("ada", "hello", actor="human")
 
     with pytest.raises(SendRateLimited, match="2 at once"):
         limits.admit_command("ada", "set-alias", "@helper @h", actor="human")
     with pytest.raises(SendRateLimited):
-        limits.admit("ada", "again", actor="human", starts_post=True)
+        limits.admit("ada", "again", actor="human")
     limits.admit_command("bo", "invite-agent", "@helper", actor="human")
 
 
 @pytest.mark.parametrize("command", sorted(STOP_COMMANDS))
 def test_a_command_that_stops_an_agent_is_never_held_back(command: str) -> None:
     limits = _limits(burst=1)
-    limits.admit("ada", "hello", actor="human", starts_post=True)
+    limits.admit("ada", "hello", actor="human")
 
     for _ in range(5):
         limits.admit_command("ada", command, "@helper", actor="human")

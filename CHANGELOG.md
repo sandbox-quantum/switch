@@ -281,7 +281,8 @@ version of their own to them without also giving them a release of their own.
   command such as `!invite-agent`, typed in Console or on a messaging app,
   draws on the same allowance. `!interrupt` and `!interrupt-all-agents` never
   do, so an agent can always be stopped. A message or command over either
-  limit is refused before anything is written and the sender is told why: a
+  limit is refused before anything is written, a message before Switch Trust
+  checks it or any file of it is stored, and the sender is told why: a
   Console chat answers 422 `MESSAGE_TOO_LONG` or 429 `RATE_LIMITED`, an
   agent's tool call fails with the reason (422 or 429 over HTTP), and someone
   writing from Slack or another messaging app gets a notice, once for a run of

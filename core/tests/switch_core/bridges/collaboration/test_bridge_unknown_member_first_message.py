@@ -55,6 +55,9 @@ class _FakeHumanActor:
         self.sent: list[tuple[str, str]] = []
         self.wait_joined_calls: list[tuple[str, float]] = []
 
+    def admit_message(self, authored: str | None) -> None:
+        return None
+
     async def wait_ready(self) -> None:
         return None
 

@@ -39,6 +39,7 @@ class FakeTransport:
         self._download = download or DownloadResult(body=b"", content_type="text/plain")
         self._fail_send = fail_send
 
+        self.admitted: list[str | None] = []
         self.sent_messages: list[dict[str, Any]] = []
         self.sent_events: list[tuple[str, str, dict[str, object]]] = []
         self.sent_media: list[dict[str, Any]] = []
@@ -74,6 +75,9 @@ class FakeTransport:
         return None
 
     # ── Outbound ──────────────────────────────────────────────────────────────
+
+    def admit_message(self, authored: str | None) -> None:
+        self.admitted.append(authored)
 
     def _next_id(self) -> str:
         self.next_event_id += 1
