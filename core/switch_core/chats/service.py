@@ -2041,9 +2041,9 @@ class ChatService:
         longer than any may be raises MESSAGE_TOO_LONG, and one sent faster
         than one sender's allowance RATE_LIMITED (`send_limits.py`). The
         length is of `body` as typed: the notes and mentions Switch adds to it
-        below do not count against the person.
+        below do not count against the person. A retry of a send already
+        posted is neither charged nor checked again (`_admitted_and_checked`).
         """
-        self._admit(user.id, body, None if command is None else command[0])
         mentions = sorted(set(mention_agent_ids))
         people = sorted(set(mention_user_ids))
         typed = _span_texts(body, mention_spans)
@@ -2069,13 +2069,14 @@ class ChatService:
         people = sorted(
             {*people, *(span.id for span in mention_spans if span.kind == "user")}
         )
-        body = await self._checked_by_trust(
+        body = await self._admitted_and_checked(
             tenant_id,
             user,
             room_id,
             request_id=request_id,
             body=body,
             upload_ids=upload_ids,
+            command=None if command is None else command[0],
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, client = await self.require_member(session, tenant_id, user, room_id)
@@ -2211,9 +2212,9 @@ class ChatService:
                         attachments=attachments_in(content),
                     )
                 except MessageTooLong as error:
-                    # Within the limit as typed (`_admit`), and past even the
-                    # room a row keeps for the notes and mentions Switch wrote
-                    # into it (`SWITCH_ADDITIONS_MAX_CHARS`).
+                    # Within the limit as typed (`_admitted_and_checked`),
+                    # and past even the room a row keeps for the notes and
+                    # mentions Switch wrote into it (`SWITCH_ADDITIONS_MAX_CHARS`).
                     raise ChatError(422, "MESSAGE_TOO_LONG", str(error)) from error
                 routed.append(stored)
                 posted.append(message)
@@ -2489,7 +2490,7 @@ class ChatService:
         )
         return sorted(rows, key=lambda m: m.seq)
 
-    async def _checked_by_trust(
+    async def _admitted_and_checked(
         self,
         tenant_id: str,
         user: User,
@@ -2498,17 +2499,24 @@ class ChatService:
         request_id: str,
         body: str,
         upload_ids: list[str],
+        command: str | None,
     ) -> str:
-        """The body to post once Switch Trust has checked it and the files
+        """The body to post once the sender's allowance has let it in
+        (`_admit`) and Switch Trust has checked it and the files
         (`trust/attachments.py`): redacted if it redacted the text, with a
-        note for anything flagged or not checked. Runs before the send's own
-        transaction, so no database work waits on Switch Trust."""
-        if not await trust_is_active(self._trust_client, tenant_id):
-            return body
+        note for anything flagged or not checked. A retry of a send already
+        posted is neither: `send` answers it with what was posted the first
+        time, so it is never refused for a pace the first attempt used up.
+        Admitted before Switch Trust is asked, so a refusal costs no check,
+        and run before the send's own transaction, so no database work waits
+        on Switch Trust."""
+        active = await trust_is_active(self._trust_client, tenant_id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, _ = await self.require_member(session, tenant_id, user, room_id)
             if await self._operation(session, user.id, request_id) is not None:
-                # A retry: `send` answers it with what was posted the first time.
+                return body
+            self._admit(user.id, body, command)
+            if not active:
                 return body
             files: list[tuple[bytes, str, str]] = []
             for upload_id in upload_ids:

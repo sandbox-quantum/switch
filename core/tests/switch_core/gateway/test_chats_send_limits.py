@@ -139,3 +139,22 @@ async def test_a_typed_command_takes_a_turn_and_interrupt_never_waits(
             )
         )
         assert [content["command"] for content in commands] == ["interrupt"]
+
+
+async def test_a_retry_of_a_message_already_posted_is_answered_not_refused(
+    chats: _Harness,
+) -> None:
+    """The first attempt used the turn; its retry, after the answer was lost,
+    gets what was posted rather than a 429."""
+    room_id, trust = await _chat(chats)
+    _limits(chats, max_message_chars=1000, burst=1)
+
+    first = await chats.send(chats.alice, room_id, "s1", "one")
+    again = await chats.send(chats.alice, room_id, "s1", "one")
+
+    assert first.status_code == again.status_code == 200, again.text
+    assert first.json() == again.json()
+    assert [content for _, content in trust.checked] == ["one"]
+    assert [row.body for row in await chats.message_rows(room_id)] == ["one"]
+    refused = await chats.send(chats.alice, room_id, "s2", "two")
+    assert refused.status_code == 429
