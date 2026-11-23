@@ -2292,6 +2292,10 @@ class ChatService:
         a typed `!interrupt`, so the agents' own command handling, addressing
         gate and in-room acknowledgement apply unchanged. The addressing check
         here only turns a refusal into an answer instead of a room message.
+        Drawn from the user's message allowance as the same command typed is
+        (`_admit`): a retry, reset or compact sets the agent to work, and only
+        an interrupt draws nothing, so the agent can always be stopped. A
+        retry of a request already made is not charged again.
         """
         if (command == "retry") != (message_id is not None):
             raise ChatError(
@@ -2344,6 +2348,10 @@ class ChatService:
                         "NOTHING_RUNNING_HERE",
                         f"{agent.name}'s current turn is not in this chat.",
                     )
+            args = f"@{agent.name}" + (
+                f" {message_id}" if message_id is not None else ""
+            )
+            self._admit(user.id, args, command)
 
             if not await self._claim(
                 session,
@@ -2375,8 +2383,7 @@ class ChatService:
                     event_type=COMMAND_EVENT_TYPE,
                     content={
                         "command": command,
-                        "args": f"@{agent.name}"
-                        + (f" {message_id}" if message_id is not None else ""),
+                        "args": args,
                         "user_id": client.transport_user_id,
                         "user_name": user.name,
                     },

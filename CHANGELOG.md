@@ -279,18 +279,18 @@ version of their own to them without also giving them a release of their own.
   as a Switch Trust note, the `@name` of an agent picked in Console, or a line
   for a file that couldn't be relayed, never pushes a message over it. A room
   command such as `!invite-agent`, typed in Console or on a messaging app,
-  draws on the same allowance. `!interrupt` and `!interrupt-all-agents` never
-  do, so an agent can always be stopped. A message or command over either
-  limit is refused before anything is written, a message before Switch Trust
-  checks it or any file of it is stored, and the sender is told why: a Console
-  chat answers 422 `MESSAGE_TOO_LONG` or 429 `RATE_LIMITED`, an agent's tool
-  call fails with the reason (422 or 429 over HTTP), and someone writing from
-  Slack or another messaging app gets a notice instead of their message
-  disappearing. That notice comes once for a run of refusals, however many of
-  their messages get through in between, and again only after they have let
-  their allowance fill up. A post with several files counts as one message.
-  Refusals are counted in the new `switch.messages.refused` metric, which the
-  core dashboard shows.
+  draws on the same allowance, and so do Console's retry, reset and compact
+  buttons. `!interrupt` and `!interrupt-all-agents` never do, so an agent can
+  always be stopped. A message or command over either limit is refused before
+  anything is written, a message before Switch Trust checks it or any file of
+  it is stored, and the sender is told why: a Console chat answers 422
+  `MESSAGE_TOO_LONG` or 429 `RATE_LIMITED`, an agent's tool call fails with
+  the reason (422 or 429 over HTTP), and someone writing from Slack or another
+  messaging app gets a notice instead of their message disappearing. That
+  notice comes once for a run of refusals, however many of their messages get
+  through in between, and again only after they have let their allowance fill
+  up. A post with several files counts as one message. Refusals are counted in
+  the new `switch.messages.refused` metric, which the core dashboard shows.
 
 #### Changed
 - **A message in a busy chat no longer costs every member's Console stream a

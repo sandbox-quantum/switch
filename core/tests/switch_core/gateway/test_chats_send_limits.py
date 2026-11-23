@@ -4,12 +4,14 @@ Switch Trust or the router sees it, and nothing is posted."""
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from switch_core.db.models import Message
 from switch_core.delivery.send_limits import SendLimits
 from switch_core.events import COMMAND_EVENT_TYPE
 from tests.switch_core.gateway.conftest import _Harness
+from tests.switch_core.gateway.test_chats_controls import _commands, _control
 from tests.switch_core.gateway.test_chats_trust import _chat
 
 
@@ -158,3 +160,33 @@ async def test_a_retry_of_a_message_already_posted_is_answered_not_refused(
     assert [row.body for row in await chats.message_rows(room_id)] == ["one"]
     refused = await chats.send(chats.alice, room_id, "s2", "two")
     assert refused.status_code == 429
+
+
+@pytest.mark.parametrize("command", ["reset", "compact"])
+async def test_a_console_control_takes_a_turn_as_the_typed_command_does(
+    chats: _Harness, command: str
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    _limits(chats, max_message_chars=1000, burst=1)
+
+    assert (await chats.send(chats.alice, room_id, "s1", "one")).status_code == 200
+    refused = await _control(chats, chats.alice, room_id, agent, "k1", command)
+
+    assert refused.status_code == 429
+    assert refused.json()["detail"]["code"] == "RATE_LIMITED"
+    assert await _commands(chats, room_id) == []
+
+
+async def test_a_console_control_retried_is_not_charged_again(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    _limits(chats, max_message_chars=1000, burst=1)
+
+    first = await _control(chats, chats.alice, room_id, agent, "k1", "reset")
+    again = await _control(chats, chats.alice, room_id, agent, "k1", "reset")
+
+    assert first.status_code == again.status_code == 202, again.text
+    assert len(await _commands(chats, room_id)) == 1
