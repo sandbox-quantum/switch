@@ -52,8 +52,13 @@ deploy/hosted/fill-placeholders.py --out <new folder> \
   --agents-subnet <cidr> [--agents-subnet <cidr> ...] --zone <zone> [--zone <zone> ...] \
   --box-image <repo@sha256:...> \
   --controller-image <repo@sha256:...> --pause-image <repo@sha256:...> \
-  --kubernetes-service-ip <ip> --ca-cert <file.pem> --daily-calls <n>
+  --kubernetes-service-ip <ip> --ca-cert <file.pem> --daily-calls <n> \
+  --cluster-vpc-cidr <cidr> --cluster-service-cidr <cidr>
 ```
+
+`--cluster-vpc-cidr` and `--cluster-service-cidr` are the box cluster's VPC range and its Kubernetes service range.
+They join squid's block list, so no box can reach the cluster's own addresses through the proxy, whatever name it
+asks for.
 
 `--daily-calls` is every box's daily **ceiling** on AI calls through its gateway. A box enforces the lower of this
 ceiling and its workspace's daily AI budget (set in the dashboard), so a budget above the ceiling is held to it: set
@@ -123,6 +128,17 @@ kubectl -n egress-lists get secret egress-settings >/dev/null 2>&1 \
 Empty means deny: no box files and no logins, so squid lets nothing through until egress-lists fills
 `squid-boxes` and `squid-passwd` for each box. `egress-settings`' `{}` gives every box the default parts; per-box
 settings go in it later through the secret store, never in this file.
+
+**The open web (`SWITCH_EGRESS_OPEN`, `true` in `51-egress-lists.yaml`).** Every box with a proxy login may reach
+any public host: CONNECT to port 443, and GET or HEAD on port 80. What stays refused, in both modes and before any
+box's rule: the block list (private, local, reserved, multicast and metadata ranges, IPv6's loopback, unique-local,
+link-local and IPv4-mapped ranges, and the box cluster's own VPC and service ranges), every other port and method,
+and any request without a box's login. On a split box the AI provider hosts stay the controller's: the agents'
+login is refused them, so every AI call goes through the controller's gateway and its daily cap. Each box may hold
+128 connections at once, and its traffic is paced at 5 MB/s down (after a 100 MB burst) and 2 MB/s up (after
+20 MB). A box refused for its connection limit writes one fixed line to squid's access log. Set the variable to
+`false` to go back to the per-box allow-lists (`egress-settings`' parts), which are still read and checked either
+way.
 
 **How fast a box gets egress.** egress-lists reads the box map and settings every 3 s and rewrites squid's files
 when they change. squid's wrapper checks its mounted files every 2 s: logins apply at once (a removed box loses its

@@ -225,7 +225,10 @@ data:
     http_port 3128
     max_filedescriptors 4096   # default 65536 sizes tables for 64k sockets; we need a few hundred
     acl SSL_ports port 443
+    acl HTTP_port port 80
     acl CONNECT method CONNECT
+    # Plain http (port 80) only to fetch: anything else is refused before any box's rule.
+    acl web_get method GET HEAD
     # Allow-list: GitHub and npm, plus the AI provider hosts below.
     # -n: match names only; never look up the name behind a bare IP (a request by IP must not match an allowed name)
     acl allowed dstdomain -n github.com api.github.com codeload.github.com objects.githubusercontent.com raw.githubusercontent.com
@@ -241,8 +244,16 @@ data:
     # Codex, only if it's used (separate line so it can be removed on its own):
     # acl allowed dstdomain -n api.openai.com auth.openai.com chatgpt.com   (off unless Codex is used)
     acl agents src __AGENTS_SUBNET__
-    # never forward to private ranges or metadata, even for an allowed name
-    acl private_dst dst 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10
+    # Never forward to private, local, reserved, multicast or metadata addresses, or to the box cluster's own VPC
+    # and service ranges, whatever name was asked for. `dst` checks the address squid resolved and connects to, so
+    # a public name that resolves to one of these is refused too.
+    acl private_dst dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24
+    acl private_dst dst 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4
+    acl private_dst dst ::1 fc00::/7 fe80::/10 ::ffff:0:0/96
+    acl private_dst dst __CLUSTER_VPC_CIDR__ __CLUSTER_SERVICE_CIDR__
+    # Per box (each box pod has its own address, and squid counts per client address): at most 128 connections at
+    # once, controller and agents together, so a box can't flood; a refusal for this is logged as a fixed line.
+    acl box_over maxconn 128
     # Per-box logins: the generator's hashes; a login means only that box's own list. The wrapper (run.sh)
     # copies them, and the box files, from the mounts to /run/squid-live: logins at once, box files, joined into one, after a clean parse.
     auth_param basic program /usr/lib/squid/basic_ncsa_auth /run/squid-live/passwd
@@ -252,14 +263,29 @@ data:
     auth_param basic credentialsttl 10 seconds
     acl has_login req_header Proxy-Authorization .
     http_access deny private_dst
-    http_access deny !CONNECT
+    http_access deny box_over
     http_access deny CONNECT !SSL_ports
+    http_access deny !CONNECT !web_get
+    http_access deny !CONNECT !HTTP_port
     include /run/squid-live/boxes.conf
     http_access deny all
+    # Bandwidth per box. Download: 5 MB/s sustained after a 100 MB burst (class 3 keys by the address's last two
+    # octets, unique inside the VPC; class 2's last octet would share a bucket across /24s). Upload: 2 MB/s after a
+    # 20 MB burst. Slowed, never refused.
+    delay_pools 1
+    delay_class 1 3
+    delay_parameters 1 -1/-1 -1/-1 5000000/100000000
+    delay_access 1 allow all
+    client_delay_pools 1
+    client_delay_parameters 1 2000000 20000000
+    client_delay_access 1 allow all
     cache deny all
     strip_query_terms on   # never log query strings (CONNECT tunnels only log host:port anyway)
     logfile_rotate 0
     access_log stdio:/var/log/squid/access.log
+    # A box refused for its connection limit: one fixed line in the same in-cluster log, no host and no address.
+    logformat box_limit %ts switch-egress: a box is over its connection limit
+    access_log stdio:/var/log/squid/access.log logformat=box_limit box_over
     cache_log /var/log/squid/cache.log
     pinger_enable off   # the ICMP pinger needs NET_RAW, which this pod rightly lacks
     pid_filename none

@@ -31,6 +31,10 @@ spec:
           value: github
         - name: SWITCH_EGRESS_DEFAULT_SPLIT
           value: 'true'
+        # The open web: every box with a login may reach any public host on 443 (and GET or HEAD on 80), with squid's
+        # block list first; AI providers stay the controller's. `false` goes back to the per-box allow-lists.
+        - name: SWITCH_EGRESS_OPEN
+          value: 'true'
         image: __EGRESS_LISTS_IMAGE__
         imagePullPolicy: IfNotPresent
         name: egress-lists

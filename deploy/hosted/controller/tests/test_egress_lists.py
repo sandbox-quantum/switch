@@ -921,3 +921,86 @@ def test_a_refused_map_is_logged_once_per_interval_not_every_check(monkeypatch, 
         None, load, PROXY, stop=lambda: clock["now"] >= 66, sleep=sleep, clock=lambda: clock["now"]
     )
     assert caplog.text.count("refused, nothing changed") == 3  # at 0, 30 and 60 s
+
+
+# ---- the open web (SWITCH_EGRESS_OPEN) ----
+
+
+def _conf(box):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller.egress_lists import box_files
+
+    files = box_files(box)
+    return files, files[f"{box.box_id}.conf"].splitlines()
+
+
+def test_an_open_split_box_reaches_any_host_but_the_ai_providers_and_its_controller_keeps_its_list():
+    box = BoxEgress("agents-user-ada", ("github",), split=True, open_web=True)
+    files, conf = _conf(box)
+    assert "http_access allow b_ada" in conf
+    deny = conf.index("http_access deny b_ada ai_ada")
+    assert deny < conf.index("http_access allow b_ada")  # the AI providers are refused first
+    assert "acl ai_ada dstdomain -n aiplatform.googleapis.com oauth2.googleapis.com" in conf
+    assert "ada.list" not in files  # no list limits the agents
+    assert files["ada.ctl.list"].split() == box.ctl_hosts()  # the controller's login is unchanged
+    assert "http_access allow CONNECT c_ada lc_ada" in conf
+
+
+def test_an_open_unsplit_box_keeps_its_ai_providers_on_its_own_login():
+    """An unsplit box has no controller login: its agents call the AI providers themselves, as today."""
+    _, conf = _conf(BoxEgress("agents-user-ada", (), split=False, open_web=True))
+    assert "http_access allow b_ada" in conf and not any(" ai_" in line for line in conf)
+
+
+def test_with_the_open_web_off_a_box_is_exactly_as_before():
+    from switch_hosted_controller.egress_lists import box_files
+
+    before = BoxEgress("agents-user-ada", ("github",), split=True)
+    files = box_files(before)
+    assert files["ada.list"].split() == before.agent_hosts()
+    assert "http_access allow CONNECT b_ada l_ada" in files["ada.conf"]
+    assert "http_access allow b_ada\n" not in files["ada.conf"]
+
+
+def test_the_open_setting_reaches_every_box_with_a_login_but_never_the_gate():
+    from switch_hosted_controller.egress_lists import GATE_NAMESPACE, parse_egress
+
+    settings = json.dumps({"_gate": {"hosts": ["pypi.org"]}, "agents-user-ada": {"parts": []}})
+    listed = {
+        b.namespace: b for b in parse_egress(settings, BOXES, ("github",), True, open_web=True)
+    }
+    assert listed[GATE_NAMESPACE].open_web is False and listed[GATE_NAMESPACE].fixed_hosts == (
+        "pypi.org",
+    )
+    assert all(b.open_web for n, b in listed.items() if n != GATE_NAMESPACE)
+    # Parts are still checked, so a setting that's wrong today is still refused.
+    with pytest.raises(EgressConfigError):
+        parse_egress(
+            json.dumps({"agents-user-ada": {"parts": ["everything"]}}),
+            BOXES,
+            (),
+            True,
+            open_web=True,
+        )
+
+
+def test_the_open_setting_is_true_or_false_and_off_when_unset():
+    from switch_hosted_controller.egress_lists import open_web_from_env
+
+    assert open_web_from_env({}) is False
+    assert open_web_from_env({"SWITCH_EGRESS_OPEN": "true"}) is True
+    assert open_web_from_env({"SWITCH_EGRESS_OPEN": "false"}) is False
+    with pytest.raises(EgressConfigError):
+        open_web_from_env({"SWITCH_EGRESS_OPEN": "yes"})
+
+
+def test_main_reads_the_open_setting_and_refuses_a_bad_one(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller import egress_lists, workers_main
+
+    (tmp_path / "token").write_text("t1")
+    (tmp_path / "ca.crt").write_text("x")
+    monkeypatch.setattr(workers_main.ssl, "create_default_context", lambda cafile=None: object())
+    monkeypatch.setattr(egress_lists, "run", lambda kube, load, proxy, stop: None)
+    monkeypatch.setattr(egress_lists.signal, "signal", lambda *a: None)
+    env = {"KUBERNETES_SERVICE_HOST": "10.100.0.1", "SWITCH_EGRESS_OPEN": "maybe"}
+    assert egress_lists.main(env, sa_dir=tmp_path) == 2
+    assert egress_lists.main({**env, "SWITCH_EGRESS_OPEN": "true"}, sa_dir=tmp_path) == 0

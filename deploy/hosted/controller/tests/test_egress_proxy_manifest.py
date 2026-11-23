@@ -181,6 +181,8 @@ def test_squid_parses_the_config_with_no_box_only_with_the_base_file(
         .replace("/run/squid-live/boxes.conf", str(boxes))
         .replace("/run/squid-live/passwd", str(passwd / "passwd"))
         .replace("__AGENTS_SUBNET__", "10.1.32.0/20")
+        .replace("__CLUSTER_VPC_CIDR__", "10.64.0.0/16")
+        .replace("__CLUSTER_SERVICE_CIDR__", "172.20.0.0/16")
         .replace("/var/log/squid", str(tmp_path))
         .replace("coredump_dir /tmp", f"coredump_dir {tmp_path}")
     )
@@ -425,3 +427,155 @@ def test_squid_reads_only_the_live_folder_never_the_mounts() -> None:
     # Portable: no GNU-only flags. The live file is switched by a plain rename, atomic everywhere.
     assert "mv -T" not in run_sh and "-Tf" not in run_sh
     assert 'mv -f "$live/boxes.conf.new" "$live/boxes.conf"' in run_sh
+
+
+# ---- the open web (SWITCH_EGRESS_OPEN): squid's own rules, the same in both modes ----
+
+import ipaddress  # noqa: E402
+import socket  # noqa: E402
+
+BLOCKED_V4 = [
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+    "192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4",
+]  # fmt: skip
+BLOCKED_V6 = ["::1", "fc00::/7", "fe80::/10", "::ffff:0:0/96"]
+
+
+def _conf_lines() -> list[str]:
+    return [line.split("#", 1)[0].strip() for line in _squid_conf().splitlines()]
+
+
+def _private_dst() -> list[str]:
+    ranges: list[str] = []
+    for line in _conf_lines():
+        if line.startswith("acl private_dst dst "):
+            ranges += line.split()[3:]
+    return ranges
+
+
+def test_the_block_list_holds_every_range_and_the_clusters_own():
+    ranges = _private_dst()
+    assert set(BLOCKED_V4) | set(BLOCKED_V6) <= set(ranges)
+    assert {"__CLUSTER_VPC_CIDR__", "__CLUSTER_SERVICE_CIDR__"} <= set(ranges)
+
+
+def _blocked(address: str) -> bool:
+    ip = ipaddress.ip_address(address)
+    for r in _private_dst():
+        if r.startswith("__"):
+            continue
+        net = ipaddress.ip_network(r, strict=False)
+        if ip.version == net.version and ip in net:
+            return True
+    return False
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "127.0.0.1", "2130706433", "127.1", "0x7f.1", "0177.0.0.1",  # loopback, as decimal, short, hex and octal
+        "169.254.169.254", "2852039166",  # cloud metadata, dotted and decimal
+        "10.0.0.5", "172.20.0.10", "192.168.1.1", "100.100.100.200", "0.0.0.0", "224.0.0.1", "198.18.0.1",
+    ],
+)  # fmt: skip
+def test_every_way_of_writing_a_blocked_address_lands_in_the_block_list(written: str) -> None:
+    """squid connects to the address the name or literal resolves to, as the system resolver reads it: each
+    spelling of an internal address comes out inside a blocked range (the refusals themselves need a live squid)."""
+    assert _blocked(socket.inet_ntoa(socket.inet_aton(written)))
+
+
+@pytest.mark.parametrize(
+    "written", ["::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254", "fd00::1", "fe80::1"]
+)
+def test_ipv6_spellings_of_internal_addresses_are_blocked(written: str) -> None:
+    assert _blocked(written)
+
+
+def test_a_public_address_is_not_blocked():
+    for public in ("140.82.112.3", "104.16.0.1", "2606:4700::1111"):
+        assert not _blocked(public), public
+
+
+def test_the_rules_run_in_order_block_list_first():
+    rules = [line for line in _conf_lines() if line.startswith(("http_access", "include"))]
+    assert rules == [
+        "http_access deny private_dst",
+        "http_access deny box_over",
+        "http_access deny CONNECT !SSL_ports",
+        "http_access deny !CONNECT !web_get",
+        "http_access deny !CONNECT !HTTP_port",
+        "include /run/squid-live/boxes.conf",
+        "http_access deny all",
+    ]
+    lines = set(_conf_lines())
+    assert "acl SSL_ports port 443" in lines and "acl HTTP_port port 80" in lines
+    assert "acl web_get method GET HEAD" in lines
+
+
+def test_per_box_limits_and_their_fixed_log_line():
+    lines = _conf_lines()
+    assert "acl box_over maxconn 128" in lines
+    assert (
+        "delay_class 1 3" in lines and "delay_parameters 1 -1/-1 -1/-1 5000000/100000000" in lines
+    )
+    assert "client_delay_parameters 1 2000000 20000000" in lines
+    (fmt,) = [line for line in lines if line.startswith("logformat box_limit ")]
+    assert set(re.findall(r"%[^ ]+", fmt)) == {
+        "%ts"
+    }  # a time and fixed words: no host, address or user
+    assert "access_log stdio:/var/log/squid/access.log logformat=box_limit box_over" in lines
+
+
+def test_squid_may_leave_only_for_public_addresses_on_80_and_443():
+    policy = (HOSTED / "egress" / "egress-proxy-networkpolicy.yaml").read_text()
+    web = policy.split('cidr: "0.0.0.0/0"', 1)
+    ports = re.findall(r"port: (\d+)", web[0].rsplit("- ports:", 1)[1])
+    assert sorted(ports) == ["443", "80"]
+    excepted = set(re.findall(r'- "([0-9./]+)"', web[1].split("ingress:", 1)[0]))
+    assert set(BLOCKED_V4) <= excepted
+
+
+def test_the_shipped_egress_lists_turns_the_open_web_on():
+    manifest = (HOSTED / "k8s" / "51-egress-lists.yaml").read_text()
+    assert re.search(r"- name: SWITCH_EGRESS_OPEN\n\s+value: 'true'", manifest)
+
+
+@pytest.mark.skipif(SQUID is None, reason="needs a squid binary (SQUID_BIN or on PATH)")
+def test_squid_parses_the_config_with_open_box_files(tmp_path: Path) -> None:
+    """The real `squid -k parse`, with an open split box's file, a list box's file and the gate's included."""
+    from switch_hosted_controller.egress_lists import GATE_NAMESPACE, BoxEgress, box_files
+
+    boxes = [
+        BoxEgress("agents-user-k1-0123456789abcdef", (), split=True, open_web=True),
+        BoxEgress("agents-user-k1-fedcba9876543210", ("github",), split=True),
+        BoxEgress(GATE_NAMESPACE, (), fixed_hosts=("pypi.org",)),
+    ]
+    live = tmp_path / "boxes"
+    live.mkdir()
+    joined = [_block(_one("ConfigMap", "squid-boxes-base"), "_none.conf", 2)]
+    for box in boxes:
+        for name, text in box_files(box).items():
+            (live / name).write_text(text)
+            if name.endswith(".conf"):
+                joined.append(text.replace("/etc/squid/boxes", str(live)))
+    (tmp_path / "boxes.conf").write_text("\n".join(joined))
+    passwd = tmp_path / "passwd"
+    passwd.write_text("")
+    conf = (
+        _squid_conf()
+        .replace("/run/squid-live/boxes.conf", str(tmp_path / "boxes.conf"))
+        .replace("/run/squid-live/passwd", str(passwd))
+        .replace("__AGENTS_SUBNET__", "10.1.32.0/20")
+        .replace("__CLUSTER_VPC_CIDR__", "10.64.0.0/16")
+        .replace("__CLUSTER_SERVICE_CIDR__", "172.20.0.0/16")
+        .replace("/var/log/squid", str(tmp_path))
+        .replace("coredump_dir /tmp", f"coredump_dir {tmp_path}")
+    )
+    (tmp_path / "squid.conf").write_text(conf)
+    parsed = subprocess.run(
+        [SQUID, "-k", "parse", "-f", str(tmp_path / "squid.conf")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert parsed.returncode == 0, parsed.stderr[-2000:]

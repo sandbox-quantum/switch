@@ -157,7 +157,26 @@ def checked(args: argparse.Namespace) -> dict[str, object]:
             f"--daily-calls {args.daily_calls!r} must be a whole number of AI calls a day per box, from 1 to"
             f" {MAX_DAILY_CALLS}"
         )
+    cluster = {}
+    for flag, value in (
+        ("--cluster-vpc-cidr", args.cluster_vpc_cidr),
+        ("--cluster-service-cidr", args.cluster_service_cidr),
+    ):
+        try:
+            network = ipaddress.IPv4Network(value, strict=True)
+        except ValueError as exc:
+            raise Refused(
+                f"{flag} {value!r} isn't one IPv4 network (e.g. 10.64.0.0/16)"
+            ) from exc
+        # These join squid's block list: a box may never reach the cluster's own addresses through the proxy.
+        if network.prefixlen < 8:
+            raise Refused(
+                f"{flag} {value!r} is wider than /8: give the cluster's own range"
+            )
+        cluster[flag] = str(network)
     return {
+        "vpc": cluster["--cluster-vpc-cidr"],
+        "service": cluster["--cluster-service-cidr"],
         "daily_calls": int(args.daily_calls),
         "server_ip": _ip(args.server_ip, "--server-ip"),
         "api": [_ip(a, "--api-server-ip") for a in args.api_server_ip],
@@ -225,6 +244,8 @@ def fill(name: str, text: str, v: dict[str, object]) -> str:
         "__EGRESS_LISTS_IMAGE__": v["controller"],
         "__PAUSE_IMAGE__": v["pause"],
         "__DAILY_CALLS__": v["daily_calls"],
+        "__CLUSTER_VPC_CIDR__": v["vpc"],
+        "__CLUSTER_SERVICE_CIDR__": v["service"],
     }
     for placeholder, value in simple.items():
         text = text.replace(placeholder, str(value))
@@ -250,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--kubernetes-service-ip", required=True)
     parser.add_argument("--ca-cert", required=True)
     parser.add_argument("--daily-calls", required=True)
+    parser.add_argument("--cluster-vpc-cidr", required=True)
+    parser.add_argument("--cluster-service-cidr", required=True)
     args = parser.parse_args(argv)
     out = Path(args.out)
     try:
