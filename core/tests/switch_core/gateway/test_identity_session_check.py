@@ -296,6 +296,36 @@ async def test_requests_at_once_ask_workos_once(
     assert workos.asked == [_workos_user(ada)]
 
 
+async def test_requests_at_once_start_one_check_in_this_process(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ada = await _person(session_factory, "ada-one-task@example.test")
+    stale = datetime.now(UTC) - CHECK_EVERY - timedelta(minutes=2)
+    row_id = await _signed_in(session_factory, ada, "s-one-task", stale)
+    app, follower = _app(session_factory, _WorkOS({"s-one-task"}))
+    started: list[str] = []
+    release = asyncio.Event()
+
+    async def held_check(checked: str) -> None:
+        started.append(checked)
+        await release.wait()
+
+    monkeypatch.setattr(follower, "_check", held_check)
+    token = _cookie(ada, "ada-one-task@example.test", row_id)
+    async with _client(app, token) as client:
+        responses = await asyncio.gather(*(client.get("/auth/me") for _ in range(5)))
+        assert [r.status_code for r in responses] == [200] * 5
+        assert started == [row_id]
+        release.set()
+        await _settle(follower)
+        # Once it has finished, the next request due may start another.
+        await client.get("/auth/me")
+    assert started == [row_id, row_id]
+    release.set()
+    await _settle(follower)
+
+
 async def test_workos_not_answering_keeps_the_session(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

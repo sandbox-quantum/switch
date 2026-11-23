@@ -92,6 +92,11 @@ class IdentitySessions:
         self._store = IdentitySessionStore()
         self._checks = asyncio.Semaphore(_CONCURRENT_CHECKS)
         self._tasks: set[asyncio.Task[None]] = set()
+        # The rows a check is under way for in this process: the requests that
+        # find one due while it runs start none of their own, rather than each
+        # taking a connection to lose the claim (`claim_check`) across
+        # processes.
+        self._checking: set[str] = set()
         # WorkOS asked for a pause (a 429's Retry-After): no check starts
         # before this.
         self._paused_until: datetime | None = None
@@ -134,9 +139,17 @@ class IdentitySessions:
             return
         if self._paused_until is not None and now < self._paused_until:
             return
+        if row.id in self._checking:
+            return
+        self._checking.add(row.id)
         task = asyncio.create_task(self._check(row.id))
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def done(finished: asyncio.Task[None]) -> None:
+            self._tasks.discard(finished)
+            self._checking.discard(row.id)
+
+        task.add_done_callback(done)
 
     async def _check(self, row_id: str) -> None:
         authkit = self._authkit
