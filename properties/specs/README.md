@@ -101,11 +101,12 @@ the running system.
 `signals.qnt` has one row, the processes that hold it, and three families, one
 switched on per check (`signals_view`, `signals_cache`, `signals_room`). A check
 follows one holder; a change is made by it or by a process not modelled, so the
-holder still misses changes made elsewhere. Each check is a few seconds.
+holder still misses changes made elsewhere. `signals_view` takes a few minutes,
+the others a few seconds.
 
 | Family | Is | In the code |
 | --- | --- | --- |
-| `view` | What a process holds about the row and acts on; a signal published after the commit, lost if its sender dies first; a queued re-read; resync on reconnect; a re-check `RECHECK` ticks after the last one finished. Each re-read takes time, can fail, and applies what it read when it finishes | `SignalBus`, `PendingWork`, each family's `on_resync` and `on_recheck` |
+| `view` | What a process holds about the row and acts on; a signal published after the commit, lost if its sender dies first; a queued re-read; resync on reconnect; a re-check `RECHECK` ticks after the last one finished. Each re-read takes time, can fail, and applies what it read when it finishes, unless the view came from a re-read or change of the process's own that began after it | `SignalBus`, `PendingWork`, each family's `on_resync` and `on_recheck` |
 | `cache` | An entry kept past its TTL only while the connection it was read under listens, a read an invalidation overtook not stored, and the TTL counted from when the read began | `HeldRows`, `ReadTicket` |
 | `room` | The highest announced position kept per room, a subscriber that reads every row after its cursor, every room woken on reconnect | `MessageListener` |
 
@@ -117,14 +118,17 @@ lost when its sender dies between the commit and the send.
 | Invariant | Property | It says |
 | --- | --- | --- |
 | `NoWrongAnswerPastBound` | `revocation.takes-effect-everywhere`, `signal.loss-only-delays` | Past the bound since a change, a process's view is current (one re-check period, one more per failed re-check, and the time its reads were in flight), and its cache answers the current row (the TTL) unless the signal dropping it is still to be handled |
-| `LossOnlyDelays` | `signal.loss-only-delays` | A process that listened through every signal, or re-read since one was lost, is current or has the signal or a re-read still to do; a re-read that a change overtook counts as a lost signal |
+| `LossOnlyDelays` | `signal.loss-only-delays` | A process that listened through every signal, or re-read since one was lost, is current or has the signal or a re-read still to do: no re-read puts back what something newer replaced |
 | `NoStrandedRow` | `signal.loss-only-delays` | A row past a listening subscriber's cursor has a wake-up kept or its announcement still to handle |
 | `ReadsEveryRow` | `signal.loss-only-delays` | A subscriber has read every row up to its cursor |
 
-The view's bound includes the time its reads take because nothing discards a
-re-read that a change overtook: a re-check or resync that read the row before
-a change, and finishes after the change was acted on, puts the old row back
-until the next re-check. A read has no timeout, so neither does that bound.
+The view's bound includes the time its reads take: a read that began before a
+change it did not see still applies, until a newer read does. Every read and
+every change a process makes takes a stamp as it begins, and a read applies
+only if the view came from an older stamp, so whichever began last wins
+whatever order they finish in. A queued re-read gives up after a timeout and
+is tried again. The model keeps each stamp as its rank among those in use,
+which bounds the states without changing which reads apply.
 
 ## Mutants
 
@@ -150,6 +154,8 @@ invariant that held on such a system could not have caught that bug.
 | `view_acts_on_payload` | A handler takes the version a signal carries instead of re-reading | `LossOnlyDelays` |
 | `no_resync` | Nothing re-read when the listening connection comes back | `LossOnlyDelays` |
 | `no_recheck` | No periodic re-check, so a signal lost with its sender is lost for good | `NoWrongAnswerPastBound` |
+| `applies_overtaken_reread` | A re-read applies what it read whenever it finishes, over a newer change | `LossOnlyDelays` |
+| `skips_if_changed_since` | A re-read is skipped if anything was applied since it began, so an older read applied first makes the newer one lose | `LossOnlyDelays` |
 | `cache_acts_on_payload` | The cache stores what a signal carries instead of dropping the row | `NoWrongAnswerPastBound` |
 | `hold_survives_reconnect` | An entry held under one connection is kept under the next | `NoWrongAnswerPastBound` |
 | `no_generation` | A read that an invalidation overtook is stored anyway | `NoWrongAnswerPastBound` |

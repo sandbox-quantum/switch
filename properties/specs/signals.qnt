@@ -10,8 +10,11 @@
 //   the commit, through the `Announcer`, and is lost if its sender dies first.
 //   The handler queues a re-read (`PendingWork`); a reconnect resyncs; every
 //   process re-checks `RECHECK` ticks after its last re-check finished. Each
-//   of the three is a read of the database that takes time, can fail, and
-//   applies what it read when it finishes.
+//   of the three is a read of the database that takes time and can fail, and
+//   applies what it read when it finishes, unless what the process holds
+//   came from a newer read or a newer change of its own: each family takes
+//   its re-reads in turn, or stamps each read as it begins and applies only
+//   one newer than the read behind what it holds.
 // - `cache`: rows read on every request and kept in memory (`HeldRows`). A
 //   trigger announces every write, so a signal is lost only when the
 //   receiving process is not listening. An entry is kept past its TTL only
@@ -49,9 +52,9 @@ module signals {
 
   type Signal = { family: str, version: int }
 
-  // A read of the row for the `view` family, in flight or not, and what it
-  // read when it began.
-  type Read = { busy: bool, value: int }
+  // A read of the row for the `view` family, in flight or not, what it read
+  // when it began, and the stamp it took then.
+  type Read = { busy: bool, value: int, mark: int }
 
   // The three ways a process re-reads the row for its view.
   pure val READERS = Set("work", "recheck", "resync")
@@ -61,7 +64,9 @@ module signals {
   //
   // `view`, `pending`, `next_recheck` and `reads` are the `view` family: what
   // it holds, a re-read queued, when its re-check is next due, and each
-  // reader's read in flight. `slack` and `failed` are ghosts the bound reads:
+  // reader's read in flight. `stamps` counts the stamps the process has given
+  // its reads and its own changes; `applied` is the stamp behind its view. `slack` and `failed` are ghosts the
+  // bound reads:
   // the ticks since the last change that some read was in flight, and the
   // re-checks that failed since then.
   //
@@ -75,12 +80,8 @@ module signals {
   // has read, and the position the listener keeps for it (-1 for no wake-up,
   // 0 for "read everything").
   //
-  // `missed` is a ghost: what the process holds is out of date and no signal
-  // will say so, until a re-read brings it the row as committed. Either a
-  // `view` signal for it was lost while it listened, because its sender died,
-  // or a re-read that began before a change applied what it read after the
-  // change: nothing discards a re-read that a change overtook, the way
-  // `HeldRows`' generation does.
+  // `missed` is a ghost: a `view` signal for this process was lost while it
+  // listened, because its sender died, and nothing has re-read the row since.
   type Proc = {
     up: bool,
     conn: int,
@@ -90,6 +91,8 @@ module signals {
     next_recheck: int,
     missed: bool,
     reads: str -> Read,
+    stamps: int,
+    applied: int,
     slack: int,
     failed: int,
     cached: bool,
@@ -132,7 +135,8 @@ module signals {
       procs: PROCS.mapBy(_ => {
         up: true, conn: 1, inbox: Set(),
         view: 0, pending: false, next_recheck: RECHECK, missed: false,
-        reads: READERS.mapBy(_ => { busy: false, value: 0 }), slack: 0, failed: 0,
+        reads: READERS.mapBy(_ => { busy: false, value: 0, mark: 0 }), stamps: 0, applied: 0,
+        slack: 0, failed: 0,
         cached: false, value: 0, expires: 0, held: -1, generation: 0,
         reading: false, ticket_generation: 0, ticket_listening: -1, read_value: 0,
         read_at: 0,
@@ -142,7 +146,26 @@ module signals {
     }
   }
 
-  def with_proc(p: int, me: Proc): State = { ...s, procs: s.procs.set(p, me) }
+  // Only the order of the stamps matters, so each is kept as its rank among
+  // those still in use (the view's and those of the reads in flight), which
+  // keeps the states finite.
+  pure def rank(used: Set[int], stamp: int): int = used.filter(u => u < stamp).size()
+
+  def ranked(me: Proc): Proc = {
+    val used = READERS.filter(r => me.reads.get(r).busy).map(r => me.reads.get(r).mark)
+      .union(Set(me.applied))
+    {
+      ...me,
+      stamps: used.size() - 1,
+      applied: rank(used, me.applied),
+      reads: READERS.mapBy(r => {
+        val read = me.reads.get(r)
+        { ...read, mark: if (read.busy) rank(used, read.mark) else 0 }
+      }),
+    }
+  }
+
+  def with_proc(p: int, me: Proc): State = { ...s, procs: s.procs.set(p, ranked(me)) }
 
   // A process (or 0, one not modelled) commits a change to the row. It acts on it locally at once: its
   // own view is current, and its cache drops the row and bumps the generation.
@@ -176,6 +199,8 @@ module signals {
             ...me,
             inbox: me.inbox.union(cache_signal).union(view_signal),
             view: if (has("view") and q == p) bumped else me.view,
+            stamps: if (has("view") and q == p) me.stamps + 1 else me.stamps,
+            applied: if (has("view") and q == p) me.stamps + 1 else me.applied,
             missed: me.missed or (has("view") and heard and q != p and lost),
             slack: 0,
             failed: 0,
@@ -231,7 +256,13 @@ module signals {
   }
 
   def begin_read(me: Proc, reader: str): Proc =
-    { ...me, reads: me.reads.set(reader, { busy: true, value: s.version }) }
+    {
+      ...me,
+      stamps: me.stamps + 1,
+      reads: me.reads.set(
+        reader, { busy: true, value: s.version, mark: me.stamps + 1 }
+      ),
+    }
 
   // `PendingWork.work_all` takes the queued key and reads the row.
   action work(p: int): bool = {
@@ -256,7 +287,11 @@ module signals {
     }
   }
 
-  // A read finishes. One that worked applies what it read when it began. One
+  // A read finishes. One that worked applies what it read when it began,
+  // unless the process holds what a newer read or change brought it. The
+  // mutant `applies-overtaken-reread` applies it anyway, as the code did, and
+  // `skips-if-changed-since` leaves it alone if anything was applied since
+  // it began, so that an older read applied first makes the newer one lose. One
   // that failed is logged and changes nothing: `PendingWork` keeps its key to
   // try again, a failed resync leaves what was missed while the bus was down
   // to the re-check, and the re-check tries again at its next turn. A
@@ -265,11 +300,18 @@ module signals {
     val me = s.procs.get(p)
     val read = me.reads.get(reader)
     val done = { ...me, reads: me.reads.set(reader, { ...read, busy: false }) }
+    val overtaken =
+      if (BUGS.contains("applies-overtaken-reread")) false
+      else if (BUGS.contains("skips-if-changed-since")) me.applied > read.mark
+      else read.mark < me.applied
     val after =
-      if (ok) {
+      if (ok and overtaken) done
+      else if (ok) {
         ...done,
         view: read.value,
-        missed: read.value != s.version,
+        applied: if (BUGS.contains("skips-if-changed-since")) me.stamps + 1 else read.mark,
+        stamps: if (BUGS.contains("skips-if-changed-since")) me.stamps + 1 else me.stamps,
+        missed: me.missed and read.value != s.version,
       }
       else if (reader == "work") { ...done, pending: true }
       else if (reader == "resync") { ...done, missed: me.view != s.version }
@@ -468,8 +510,8 @@ module signals {
   /// A process that has listened through every signal sent it, or re-read
   /// since it missed one, holds the row as committed, or has the signal or
   /// the re-read still to do: nothing it acts on depends on what a signal
-  /// carried, and a reconnect loses nothing. A re-read a change overtook is
-  /// repaired by the re-check alone, which `NoWrongAnswerPastBound` bounds.
+  /// carried, a reconnect loses nothing, and no re-read puts back what
+  /// something newer replaced.
   val LossOnlyDelays = PROCS.forall(p => {
     val me = s.procs.get(p)
     has("view") and me.up and not(me.missed) implies

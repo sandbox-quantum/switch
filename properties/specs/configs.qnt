@@ -236,3 +236,17 @@ module mutant_ttl_from_store {
     MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set("ttl-from-store")
   ).* from "./signals"
 }
+
+module mutant_applies_overtaken_reread {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("applies-overtaken-reread")
+  ).* from "./signals"
+}
+
+module mutant_skips_if_changed_since {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("skips-if-changed-since")
+  ).* from "./signals"
+}

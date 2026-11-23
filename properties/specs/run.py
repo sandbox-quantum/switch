@@ -78,6 +78,8 @@ MUTANTS = [
     ("mutant_view_acts_on_payload", "LossOnlyDelays"),
     ("mutant_no_resync", "LossOnlyDelays"),
     ("mutant_no_recheck", "NoWrongAnswerPastBound"),
+    ("mutant_applies_overtaken_reread", "LossOnlyDelays"),
+    ("mutant_skips_if_changed_since", "LossOnlyDelays"),
     ("mutant_cache_acts_on_payload", "NoWrongAnswerPastBound"),
     ("mutant_hold_survives_reconnect", "NoWrongAnswerPastBound"),
     ("mutant_no_generation", "NoWrongAnswerPastBound"),
