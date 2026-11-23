@@ -452,11 +452,11 @@ jobs:
       # timing out together rather than any one of them being slow on its own.
       - name: Test agent-providers
         if: ${{ !cancelled() }}
-        run: pnpm --filter @switch-console/agent-providers exec vitest run --exclude '**/*.integration.test.ts' --maxWorkers=50%
+        run: pnpm --filter @switch-console/agent-providers run test --maxWorkers=50%
 
       - name: Test agent-controller
         if: ${{ !cancelled() }}
-        run: pnpm --filter @switch-console/agent-controller exec vitest run --maxWorkers=50%
+        run: pnpm --filter @switch-console/agent-controller run test --maxWorkers=50%
 
       - name: Test Console's embedded controller and Windows launching
         if: ${{ !cancelled() }}

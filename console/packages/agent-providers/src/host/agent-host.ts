@@ -924,14 +924,13 @@ export async function runAgentHost(
       })
     );
     /**
-     * The watcher's template as it last read it from disk, kept so a timer
-     * (`grantsCheck`) that only needs its stable identity — not anything a
-     * rewrite would change — can use it without opening `config.json` again:
-     * reading that file on an interval unrelated to it ever changing is its
-     * own source of Windows `EPERM`s, racing a legitimate replace for as long
-     * as the interval keeps a read in flight.
+     * The watcher's template as it last read it from disk, and whether
+     * `config.json` has been replaced since. Applying the definition reads the
+     * file again only when it was: the grants check runs it on a timer, and on
+     * Windows a read in flight refuses the rename that replaces the file.
      */
     let latestTemplate = template;
+    let templateReplaced = true;
     /** The watcher's template as it stands now, which admitting a room reads too. */
     const currentTemplate = async (): Promise<SharedHostConfig> => {
       latestTemplate = sharedConfigSchema.parse(
@@ -1579,7 +1578,9 @@ export async function runAgentHost(
     const redefinitionDue = new Set<string>();
     let redefining = false;
     const applyDefinition = async () => {
-      const current = await currentTemplate();
+      const replaced = templateReplaced;
+      templateReplaced = false;
+      const current = replaced ? await currentTemplate() : latestTemplate;
       redefinitionDue.clear();
       const ours = new Set(
         assignments.sessions().map((config) => sharedSessionRoot(config.session.sessionId))
@@ -1644,7 +1645,10 @@ export async function runAgentHost(
       void pending.catch((error: Error) => fail(error));
     };
     unbind.push(
-      onConfigReplaced(root, stop.signal, redefine),
+      onConfigReplaced(root, stop.signal, () => {
+        templateReplaced = true;
+        redefine();
+      }),
       links.onBusy((busyRoot) => {
         if (redefinitionDue.has(busyRoot) && links.busy(busyRoot)?.busy === false) redefine();
       }),
@@ -1664,10 +1668,6 @@ export async function runAgentHost(
       if (checkingGrants || !anyLive()) return;
       checkingGrants = true;
       void (async () => {
-        // `latestTemplate` rather than `currentTemplate()`: this runs on a timer
-        // that has no reason to think `config.json` changed, and reading it
-        // again regardless would be an extra, unsynchronized reader of a file
-        // whoever holds the agent's definition can rewrite at any time.
         const shape = await currentServicesShape(latestTemplate);
         if (shape === null) return;
         servicesNow = shape;
