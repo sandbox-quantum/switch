@@ -369,8 +369,9 @@ class _ControllerStream:
             binding = self._presence.binding(agent_id)
             if binding is None:
                 continue
+            mark = self._presence.room_mark()
             rooms = await self._rooms_of(agent_id)
-            self._presence.set_rooms(agent_id, rooms)
+            self._presence.rooms_read(agent_id, rooms, mark)
             head = await self._buffer.head(self._tenant, agent_id)
             requested = conn.resume_cursors.get(agent_id)
             cursor = head if requested is None else requested

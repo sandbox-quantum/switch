@@ -1188,6 +1188,8 @@ class MessageRouter:
         this finds nothing to do.
         """
         tenant_id, client_id, room_id = change
+        controllers = self.services.connections.controllers
+        mark = controllers.room_mark()
         async with tenant_session(self.services.session_factory, tenant_id) as session:
             found = (
                 await session.execute(
@@ -1206,12 +1208,13 @@ class MessageRouter:
             return
         agent_id, member = found
         connections = self.services.connections
-        controllers = connections.controllers
+        # Joined or left here since the read: what was read may be older.
+        current = not controllers.room_changed_since(agent_id, room_id, mark)
         if member:
-            if room_id not in controllers.rooms(agent_id):
+            if current and room_id not in controllers.rooms(agent_id):
                 controllers.room_joined(agent_id, room_id)
             return
-        if room_id in controllers.rooms(agent_id):
+        if current and room_id in controllers.rooms(agent_id):
             controllers.room_left(agent_id, room_id)
         if any(room_id in conn.rooms for conn in connections.held_here(agent_id)):
             await self._release_claims(tenant_id, agent_id, room_id)
@@ -1226,6 +1229,7 @@ class MessageRouter:
         """
         connections = self.services.connections
         controllers = connections.controllers
+        mark = controllers.room_mark()
         claimed = connections.claims_held_here()
         kept = controllers.rooms_kept()
         agents = set(claimed) | set(kept)
@@ -1250,10 +1254,14 @@ class MessageRouter:
             for room_id in sorted(claimed.get(agent_id, set()) - rooms):
                 await self._release_claims(tenant_id, agent_id, room_id)
             if agent_id in kept:
+                # A room joined or left here since the read keeps what that
+                # made it: what was read may be older.
                 for room_id in kept[agent_id] - rooms:
-                    controllers.room_left(agent_id, room_id)
+                    if not controllers.room_changed_since(agent_id, room_id, mark):
+                        controllers.room_left(agent_id, room_id)
                 for room_id in rooms - controllers.rooms(agent_id):
-                    controllers.room_joined(agent_id, room_id)
+                    if not controllers.room_changed_since(agent_id, room_id, mark):
+                        controllers.room_joined(agent_id, room_id)
 
     async def release_room(self, tenant_id: str, agent_id: str, room_id: str) -> None:
         """Take a room the agent is no longer in off a controller streaming

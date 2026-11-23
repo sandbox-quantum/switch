@@ -220,6 +220,12 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A managed agent no longer shows as present in a room it just left.** A
+  slow re-read of an agent's memberships could put back a room it had left
+  (or drop one it had joined) after this process applied the change, so its
+  controller was told the old room list and the agent showed as present
+  there until the next re-check. Which messages reach the agent was not
+  affected.
 - **A messaging app connected during a re-check is no longer stopped by it.**
   The periodic re-check of messaging apps read their rows, then compared them
   with the apps running here, so an app connected while it read looked removed
