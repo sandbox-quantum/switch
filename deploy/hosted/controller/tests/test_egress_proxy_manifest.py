@@ -438,7 +438,15 @@ BLOCKED_V4 = [
     "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
     "192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4",
 ]  # fmt: skip
-BLOCKED_V6 = ["::1", "fc00::/7", "fe80::/10", "::ffff:0:0/96"]
+BLOCKED_V6 = [
+    "::1",
+    "fc00::/7",
+    "fe80::/10",
+    "::ffff:0:0/96",
+    "64:ff9b::/96",
+    "2002::/16",
+    "2001::/32",
+]
 
 
 def _conf_lines() -> list[str]:
@@ -579,3 +587,17 @@ def test_squid_parses_the_config_with_open_box_files(tmp_path: Path) -> None:
         timeout=60,
     )
     assert parsed.returncode == 0, parsed.stderr[-2000:]
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "64:ff9b::7f00:1",  # NAT64 of 127.0.0.1
+        "64:ff9b::a9fe:a9fe",  # NAT64 of 169.254.169.254
+        "2002:7f00:1::1",  # 6to4 of 127.0.0.1
+        "2002:a00:1::1",  # 6to4 of 10.0.0.1
+        "2001:0:4136:e378:8000:63bf:3fff:fdd2",  # Teredo
+    ],
+)
+def test_ipv6_forms_that_carry_an_ipv4_address_are_blocked(written: str) -> None:
+    assert _blocked(written)

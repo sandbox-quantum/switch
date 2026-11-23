@@ -132,7 +132,7 @@ settings go in it later through the secret store, never in this file.
 **The open web (`SWITCH_EGRESS_OPEN`, `true` in `51-egress-lists.yaml`).** Every box with a proxy login may reach
 any public host: CONNECT to port 443, and GET or HEAD on port 80. What stays refused, in both modes and before any
 box's rule: the block list (private, local, reserved, multicast and metadata ranges, IPv6's loopback, unique-local,
-link-local and IPv4-mapped ranges, and the box cluster's own VPC and service ranges), every other port and method,
+link-local and IPv4-mapped ranges and the IPv6 forms that carry an IPv4 address (NAT64, 6to4, Teredo), and the box cluster's own VPC and service ranges), every other port and method,
 and any request without a box's login. On a split box the AI provider hosts stay the controller's: the agents'
 login is refused them, so every AI call goes through the controller's gateway and its daily cap. Each box may hold
 128 connections at once, and its traffic is paced at 5 MB/s down (after a 100 MB burst) and 2 MB/s up (after

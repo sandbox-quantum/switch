@@ -250,6 +250,8 @@ data:
     acl private_dst dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24
     acl private_dst dst 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4
     acl private_dst dst ::1 fc00::/7 fe80::/10 ::ffff:0:0/96
+    # IPv6 forms that carry an IPv4 address inside (NAT64, 6to4, Teredo): refused whole, so none reaches one behind.
+    acl private_dst dst 64:ff9b::/96 2002::/16 2001::/32
     acl private_dst dst __CLUSTER_VPC_CIDR__ __CLUSTER_SERVICE_CIDR__
     # Per box (each box pod has its own address, and squid counts per client address): at most 128 connections at
     # once, controller and agents together, so a box can't flood; a refusal for this is logged as a fixed line.
