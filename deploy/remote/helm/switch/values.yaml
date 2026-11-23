@@ -394,6 +394,8 @@ switchCore:
     issuerUrl: ""
     clientId: ""
     scopes: "openid profile email"
+    # The sign-in button's label ("Continue with …"). With signIn.provider
+    # workos the default "OIDC" is shown as "SSO".
     providerLabel: "OIDC"
     # One sign-in button per entry instead of one labelled providerLabel. Each
     # sends its params with the authorization request, so a provider that

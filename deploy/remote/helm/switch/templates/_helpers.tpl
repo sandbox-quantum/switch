@@ -906,8 +906,14 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ .Values.switchCore.oidc.redirectUrl | quote }}
 {{- end }}
 {{- end }}
+{{- /* The default label names the generic client's protocol, which means
+nothing on an AuthKit sign-in's button: shown as the dashboard's own default. */}}
+{{- $providerLabel := .Values.switchCore.oidc.providerLabel }}
+{{- if and (eq (include "switch.signInProvider" .) "workos") (eq $providerLabel "OIDC") }}
+{{- $providerLabel = "SSO" }}
+{{- end }}
 - name: GATEWAY_OIDC_PROVIDER_LABEL
-  value: {{ .Values.switchCore.oidc.providerLabel | quote }}
+  value: {{ $providerLabel | quote }}
 {{- if not .Values.switchCore.oidc.requireEmailVerified }}
 - name: GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED
   value: "false"
