@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     AgentIdentity,
     AgentIdentityConflict,
+    AskedQuestion,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -644,6 +645,19 @@ def _work_note(text: str) -> dict[str, Any]:
     }
 
 
+def _session_title(label: str, asked: AskedQuestion | None) -> str:
+    """An agent session's title, which is also how Agents & tools lists it.
+
+    The question the turn answers, so a list of one agent's turns reads as
+    what it was asked rather than as its name over and over; without one,
+    the agent's name. Set once, when the session opens, and never renamed:
+    Slack's spinner says the agent is working, and the session's message
+    how long it worked and on what.
+    """
+    question = asked.text if asked is not None else ""
+    return (question or label)[:200]
+
+
 def _answer_sections(text: str) -> list[dict[str, Any]] | None:
     """An answer's text as section blocks, split at line breaks to fit.
 
@@ -774,6 +788,9 @@ class SlackAdapter(PlatformAdapter):
         self._bot_user_id: str = ""
         self._bot_id: str = ""
         self._team_id: str = ""
+        # The workspace's own address ("https://acme.slack.com/"), from which
+        # a link to one of its messages is made without asking Slack for it.
+        self._team_url: str = ""
         # The bot token's scopes as Slack listed them when the adapter
         # started, or None when Slack did not say.
         self._granted_scopes: frozenset[str] | None = None
@@ -902,6 +919,7 @@ class SlackAdapter(PlatformAdapter):
         # workspace id on an Enterprise Grid org. Agent group lookup uses
         # the authenticated team identity rather than the configured org.
         self._team_id = str(auth.get("team_id", ""))
+        self._team_url = str(auth.get("url") or "")
         self._granted_scopes = _granted_scopes(auth.headers)
         logger.info(
             "Slack adapter authenticated as %s (workspace %s)",
@@ -1903,6 +1921,7 @@ class SlackAdapter(PlatformAdapter):
         agent_name: str,
         text: str,
         initiator_external_id: str | None,
+        asked: AskedQuestion | None = None,
     ) -> str:
         """A one-line note at the channel root, and the agent session on its thread.
 
@@ -1927,7 +1946,7 @@ class SlackAdapter(PlatformAdapter):
             result = await client.chat_postMessage(
                 channel=channel_id,
                 text=text,
-                blocks=[_work_note(WORKING_NOTE)],
+                blocks=self._work_blocks(WORKING_NOTE, asked),
                 username=agent.field_label,
                 icon_url=icon_url,
                 unfurl_links=False,
@@ -1949,7 +1968,11 @@ class SlackAdapter(PlatformAdapter):
             )
         work_ref = f"{channel_id}:{ts}"
         await self.open_session(
-            channel_id, agent_name, work_ref, initiator_external_id, text
+            channel_id,
+            agent_name,
+            work_ref,
+            initiator_external_id,
+            _session_title(agent.field_label, asked),
         )
         self._work_notes[work_ref] = WORKING_NOTE
         if len(self._work_notes) > _MAX_OPEN_STREAMS:
@@ -1957,7 +1980,12 @@ class SlackAdapter(PlatformAdapter):
         return work_ref
 
     async def settle_work_message(
-        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        summary: str,
+        asked: AskedQuestion | None = None,
     ) -> None:
         """Edit the note into the line the turn ended on, and end the session.
 
@@ -1976,7 +2004,7 @@ class SlackAdapter(PlatformAdapter):
                 channel=channel_id,
                 ts=ts,
                 text=summary,
-                blocks=[_work_note(summary)],
+                blocks=self._work_blocks(summary, asked),
             )
         except SlackApiError as error:
             logger.warning(
@@ -2027,25 +2055,16 @@ class SlackAdapter(PlatformAdapter):
     async def close_session(
         self, channel_id: str, agent_name: str, message_ref: str, summary: str
     ) -> None:
-        """Rename a turn's session to the line it ended on, and set it active.
+        """Set a turn's session active, its title left as it opened.
 
-        Its title is also the thread's header, which would otherwise go on
-        saying the agent is working. `active` rather than `closed`: the work
-        is over for now, and `closed` says the agent will not answer there
-        again.
+        Not renamed to how the turn ended: the title names what was asked,
+        which stays true, and the message under it already says how the turn
+        went. `active` rather than `closed`: the work is over for now, and
+        `closed` says the agent will not answer there again.
         """
         _, ts = self._parse_message_ref(message_ref)
         if not ts:
             return
-        agent = await self.agent_rendering(agent_name)
-        await self._session_call(
-            "agents.sessions.rename",
-            {
-                "channel_id": channel_id,
-                "thread_ts": ts,
-                "title": f"{agent.field_label} · {summary}"[:200],
-            },
-        )
         await self._set_session_status(
             {"channel_id": channel_id, "thread_ts": ts, "status": "active"}
         )
@@ -2079,7 +2098,10 @@ class SlackAdapter(PlatformAdapter):
             return
         try:
             await client.chat_update(
-                channel=channel_id, ts=ts, text=line, blocks=[_work_note(line)]
+                channel=channel_id,
+                ts=ts,
+                text=line,
+                blocks=self._work_blocks(line, content.asked),
             )
         except SlackApiError as error:
             # A rate limit starts the cooldown the turn's own redraws respect.
@@ -2196,6 +2218,47 @@ class SlackAdapter(PlatformAdapter):
                 return False
         self._work_notes.pop(work_ref, None)
         return True
+
+    def _permalink(self, message_ref: str) -> str | None:
+        """A link to a message of this workspace, made rather than asked for.
+
+        Slack's own links have this shape, `chat.getPermalink` would cost a
+        call per turn, and the workspace's address is already known from
+        `auth.test`. For a message at a channel's root, which is the only
+        kind a work thread points back to. None without the address.
+        """
+        channel_id, ts = self._parse_message_ref(message_ref)
+        if not self._team_url or not channel_id or not ts:
+            return None
+        return (
+            f"{self._team_url.rstrip('/')}/archives/{channel_id}/p{ts.replace('.', '')}"
+        )
+
+    def _asked_block(self, asked: AskedQuestion | None) -> dict[str, Any] | None:
+        """A line of small text pointing back at the message a turn answers.
+
+        A link, not a mention, so it notifies nobody, and the question's text
+        is escaped so it can neither forge one nor end the link early. None
+        when there is nothing to point at.
+        """
+        if asked is None:
+            return None
+        url = self._permalink(asked.message_ref)
+        if asked.text:
+            label = escape_mrkdwn(f"“{asked.text}”").replace("|", "¦")
+        elif url:
+            label = "the message this answers"
+        else:
+            return None
+        text = f"↩ <{url}|{label}>" if url else f"↩ {label}"
+        return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
+
+    def _work_blocks(
+        self, line: str, asked: AskedQuestion | None
+    ) -> list[dict[str, Any]]:
+        """A work message's blocks: what it answers, then how far it has got."""
+        pointer = self._asked_block(asked)
+        return [pointer, _work_note(line)] if pointer else [_work_note(line)]
 
     async def _set_session_status(self, arguments: dict[str, Any]) -> None:
         """`agents.sessions.setStatus`, learning from opening a session whether
@@ -2512,6 +2575,12 @@ class SlackAdapter(PlatformAdapter):
                 message.blocks[0]["block_id"] = (
                     f"switch-request:{content.publication_token}"
                 )
+            if content.has_session and not content.work_thread:
+                # Inline (`!work-threads inline`): this message is the turn's
+                # session, so it is what points back at the question.
+                pointer = self._asked_block(content.asked)
+                if pointer is not None and len(message.blocks) < 50:
+                    message.blocks.insert(0, pointer)
             return message
         assert isinstance(content, RequestCard)
         if content.turn is not None:

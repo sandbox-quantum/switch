@@ -14,6 +14,7 @@ import pytest
 from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.adapter import (
+    AskedQuestion,
     RichContentFailed,
     RichContentThrottled,
     TurnActivity,
@@ -164,7 +165,7 @@ async def test_a_work_message_slack_refuses_is_reported() -> None:
     assert _sessions(client) == []
 
 
-async def test_settling_edits_in_the_last_line_renames_and_ends_the_session() -> None:
+async def test_settling_edits_in_the_last_line_and_ends_the_session() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
     line = "Worked for 30s. 2 tool calls."
@@ -181,14 +182,6 @@ async def test_settling_edits_in_the_last_line_renames_and_ends_the_session() ->
         if method.startswith("agents.sessions.")
     ]
     assert calls == [
-        (
-            "agents.sessions.rename",
-            {
-                "channel_id": CHANNEL,
-                "thread_ts": "5.0",
-                "title": "Agent · Worked for 30s. 2 tool calls.",
-            },
-        ),
         (
             "agents.sessions.setStatus",
             {"channel_id": CHANNEL, "thread_ts": "5.0", "status": "active"},
@@ -479,15 +472,15 @@ async def test_a_session_opens_on_a_status_message_for_the_asker() -> None:
     assert client.posted == [] and client.updated == []
 
 
-async def test_closing_a_session_renames_it_and_sets_it_active() -> None:
+async def test_closing_a_session_sets_it_active_and_keeps_its_title() -> None:
+    """Never renamed to how the turn ended: Slack's spinner said it was
+    working, and the message says how it went."""
     client = FakeWebClient()
     adapter = _adapter(client)
     await adapter.close_session(CHANNEL, "Agent", f"{CHANNEL}:4.0", "Turn interrupted.")
     assert [method for method, _ in client.api_calls] == [
-        "agents.sessions.rename",
         "agents.sessions.setStatus",
     ]
-    assert client.api_calls[0][1]["json"]["title"] == "Agent · Turn interrupted."
     assert client.updated == [], "the message itself is left as last drawn"
 
 
@@ -692,3 +685,124 @@ async def test_the_plan_header_says_who_stopped_the_turn() -> None:
     )
     [plan] = [b for b in client.posted[-1]["blocks"] if b["type"] == "plan"]
     assert plan["title"].startswith("Stopped by Simon. Worked for 7s.")
+
+
+# ── Pointing back at the question ────────────────────────────────────────────
+
+TEAM_URL = "https://acme.slack.com/"
+ASKED = AskedQuestion(message_ref=f"{CHANNEL}:1700000000.123456", text="how many PRs?")
+LINK = "https://acme.slack.com/archives/C1/p1700000000123456"
+
+
+def _pointing(client: FakeWebClient) -> SlackAdapter:
+    adapter = _adapter(client)
+    adapter._team_url = TEAM_URL
+    return adapter
+
+
+def _pointer(text: str) -> dict[str, Any]:
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
+
+
+async def test_a_work_message_links_back_to_the_question_it_answers() -> None:
+    """A link, not a mention: the asker is not notified, and Agents & tools,
+    which opens on this message, has a way back to what was asked."""
+    client = FakeWebClient()
+    await _pointing(client).open_work_message(
+        CHANNEL, "Agent", "working", ASKER, asked=ASKED
+    )
+    [posted] = client.posted
+    assert posted["blocks"] == [
+        _pointer(f"↩ <{LINK}|“how many PRs?”>"),
+        _pointer("Working…"),
+    ]
+    assert "<@" not in str(posted["blocks"])
+    [session] = _sessions(client)
+    assert session["title"] == "how many PRs?"
+
+
+async def test_the_link_back_survives_the_step_count_and_the_ending() -> None:
+    client = FakeWebClient()
+    adapter = _pointing(client)
+    work = await adapter.open_work_message(
+        CHANNEL, "Agent", "working", ASKER, asked=ASKED
+    )
+    content = TurnActivity(
+        [_tool()], _turn(), recipient_external_id=ASKER, work_thread=True, asked=ASKED
+    )
+    await adapter.post_rich(CHANNEL, "Agent", content, work)
+    step = [e for e in client.updated if e["text"].startswith("Working")][0]
+    assert step["blocks"][0] == _pointer(f"↩ <{LINK}|“how many PRs?”>")
+
+    await adapter.settle_work_message(
+        CHANNEL, "Agent", work, "Worked for 3s. 1 tool call.", asked=ASKED
+    )
+    settled = client.updated[-1]
+    assert settled["blocks"] == [
+        _pointer(f"↩ <{LINK}|“how many PRs?”>"),
+        _pointer("Worked for 3s. 1 tool call."),
+    ]
+    assert all(m != "agents.sessions.rename" for m, _ in client.api_calls)
+
+
+async def test_an_inline_status_message_leads_with_the_link_back() -> None:
+    client = FakeWebClient()
+    await _pointing(client).post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity(
+            [_tool()],
+            _turn(),
+            recipient_external_id=ASKER,
+            has_session=True,
+            asked=ASKED,
+        ),
+        None,
+    )
+    [posted] = client.posted
+    assert posted["blocks"][0] == _pointer(f"↩ <{LINK}|“how many PRs?”>")
+    assert any(block["type"] == "plan" for block in posted["blocks"])
+
+
+async def test_a_turn_without_a_session_does_not_point_back() -> None:
+    """Off: the turn is drawn in the asker's own thread, which is the link."""
+    client = FakeWebClient()
+    await _pointing(client).post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), recipient_external_id=ASKER, asked=ASKED),
+        None,
+    )
+    [posted] = client.posted
+    assert all("↩" not in str(block) for block in posted["blocks"])
+
+
+async def test_a_question_cannot_forge_markup_in_the_link_back() -> None:
+    client = FakeWebClient()
+    sly = AskedQuestion(ASKED.message_ref, "ping <!channel> & <@U1|x> or a|b")
+    await _pointing(client).open_work_message(
+        CHANNEL, "Agent", "working", ASKER, asked=sly
+    )
+    text = client.posted[0]["blocks"][0]["elements"][0]["text"]
+    assert text == (f"↩ <{LINK}|“ping &lt;!channel&gt; &amp; &lt;@U1¦x&gt; or a¦b”>")
+
+
+async def test_without_the_workspace_address_the_question_is_named_unlinked() -> None:
+    client = FakeWebClient()
+    await _adapter(client).open_work_message(
+        CHANNEL, "Agent", "working", ASKER, asked=ASKED
+    )
+    assert client.posted[0]["blocks"][0] == _pointer("↩ “how many PRs?”")
+
+
+async def test_a_question_that_was_only_a_mention_is_still_linked() -> None:
+    client = FakeWebClient()
+    adapter = _pointing(client)
+    await adapter.open_work_message(
+        CHANNEL, "Agent", "working", ASKER, asked=AskedQuestion(ASKED.message_ref, "")
+    )
+    assert client.posted[0]["blocks"][0] == _pointer(
+        f"↩ <{LINK}|the message this answers>"
+    )
+    [session] = _sessions(client)
+    assert session["title"] == "Agent", "no question: the agent's name"

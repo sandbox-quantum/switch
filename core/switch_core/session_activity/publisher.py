@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 from collections import OrderedDict, deque
 from collections.abc import Callable
@@ -56,6 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
+    AskedQuestion,
     MessagePartlySent,
     PlatformAdapter,
     RemovalFailed,
@@ -322,6 +324,11 @@ class AgentSessionActivityPublisher:
         # A turn's work message (`!work-threads`), from when it is posted until
         # the turn ends: the thread its activity is drawn in.
         self._work_messages: dict[_Key, str] = {}
+        # What each turn drawn away from its question (`!work-threads`)
+        # answers, read once per turn so its redraws can point back. Bounded
+        # rather than emptied when a turn ends, since an ended turn can still
+        # be redrawn; the oldest go first.
+        self._asked: OrderedDict[_Key, AskedQuestion] = OrderedDict()
         # How many times a work thread's ending has waited for its answer.
         self._answer_waits: dict[_Key, int] = {}
         self._open_cards: dict[_Key, str] = {}
@@ -1244,6 +1251,11 @@ class AgentSessionActivityPublisher:
                 await self._platform_ref(db, target.channel_id, view.row.message_id)
                 or target.thread_ref
             )
+            asked = (
+                await self._asked_question(db, key, view, target.channel_id, asked_on)
+                if target.work_mode is not None
+                else None
+            )
             steered_refs = {
                 message_id: await self._platform_ref(db, target.channel_id, message_id)
                 for message_id in view.steered_messages
@@ -1301,6 +1313,7 @@ class AgentSessionActivityPublisher:
             and not _inline(post),
             has_session=post is not None and post.work_message_ref is not None,
             stopped_by=post.stopped_by if post is not None else None,
+            asked=asked,
         )
         if post is not None and _inline(post):
             # Switch's own room tools are talking, not work: an inline status
@@ -1327,7 +1340,7 @@ class AgentSessionActivityPublisher:
             drawn_in: _Target | None = target
             mode = await self._work_mode(target, view.row)
             if mode == "thread":
-                drawn_in = await self._work_thread(key, view, target, answering)
+                drawn_in = await self._work_thread(key, view, target, answering, asked)
             elif mode == "inline":
                 # One message of the agent's at the channel root, posted as the
                 # turn starts (not while it is queued) and edited from then on.
@@ -1362,7 +1375,9 @@ class AgentSessionActivityPublisher:
                         target.agent_name,
                         post.external_post_id,
                         answering,
-                        f"{target.agent_name} is working on this",
+                        asked.text
+                        if asked is not None and asked.text
+                        else target.agent_name,
                     )
                     if (
                         content.interrupt_turn_id is not None
@@ -1402,6 +1417,73 @@ class AgentSessionActivityPublisher:
             for other in unended:
                 self._enqueue(("turn", agent_id, session_id, other), _SOON)
 
+    async def _asked_question(
+        self,
+        db: AsyncSession,
+        key: _Key,
+        view: TurnView,
+        channel_id: str,
+        asked_on: str | None,
+    ) -> AskedQuestion | None:
+        """The message a turn answers, as a work thread points back at it.
+
+        A message that only mentioned the agent was a nudge for the one its
+        sender posted just before it, in the same place (the channel root, or
+        the same thread) and within a few minutes: that one is the question,
+        and what is pointed at. Otherwise
+        the asking message itself, named by nothing when it said nothing else.
+
+        Read once per turn and remembered. Not remembered while the asking
+        message has no platform ref yet, so a later draw can find it.
+        """
+        known = self._asked.get(key)
+        if known is not None:
+            return known
+        if asked_on is None or view.row.message_id is None:
+            return None
+        message = await db.scalar(
+            select(Message)
+            .where(
+                Message.room_id == view.row.room_id,
+                Message.transport_event_id == view.row.message_id,
+            )
+            .limit(1)
+        )
+        ref, text = asked_on, question_snippet(message.body or "") if message else ""
+        if message is not None and not text:
+            before = await db.scalar(
+                select(Message)
+                .where(
+                    Message.room_id == message.room_id,
+                    Message.sender_id == message.sender_id,
+                    Message.seq < message.seq,
+                    # Where the mention was: at the root, the root; in a
+                    # thread, that thread, its first message included.
+                    or_(
+                        Message.thread_root_event_id.is_not_distinct_from(
+                            message.thread_root_event_id
+                        ),
+                        Message.transport_event_id == message.thread_root_event_id,
+                    ),
+                    Message.event_type == "m.room.message",
+                    # Typed as text on the model, but a timestamp in the table.
+                    Message.sent_at >= _as_datetime(message.sent_at) - _NUDGE_WINDOW,
+                )
+                .order_by(Message.seq.desc())
+                .limit(1)
+            )
+            if before is not None and (snippet := question_snippet(before.body or "")):
+                text = snippet
+                ref = (
+                    await self._platform_ref(db, channel_id, before.transport_event_id)
+                    or asked_on
+                )
+        asked = AskedQuestion(message_ref=ref, text=text)
+        self._asked[key] = asked
+        if len(self._asked) > _MAX_ASKED:
+            self._asked.popitem(last=False)
+        return asked
+
     async def _work_mode(
         self, target: _Target, turn_row: AgentSessionActivityItem | None = None
     ) -> WorkThreadsMode | None:
@@ -1426,6 +1508,7 @@ class AgentSessionActivityPublisher:
         view: TurnView,
         target: _Target,
         answering: str | None,
+        asked: AskedQuestion | None = None,
     ) -> _Target | None:
         """Where a turn with a work thread is drawn, posting its message if due.
 
@@ -1448,6 +1531,7 @@ class AgentSessionActivityPublisher:
                     target.agent_name,
                     f"{target.agent_name} is working on this",
                     answering,
+                    asked=asked,
                 )
             except RichContentThrottled:
                 raise
@@ -1550,7 +1634,11 @@ class AgentSessionActivityPublisher:
             )
             try:
                 await self._adapter.settle_work_message(
-                    target.channel_id, target.agent_name, work_ref, summary
+                    target.channel_id,
+                    target.agent_name,
+                    work_ref,
+                    summary,
+                    asked=content.asked,
                 )
             except Exception:
                 logger.exception(
@@ -1643,6 +1731,7 @@ class AgentSessionActivityPublisher:
         """Stop watching a turn that is gone, or no longer published here."""
         self._live_turns.pop(key, None)
         self._work_messages.pop(key, None)
+        self._asked.pop(key, None)
         self._answer_waits.pop(key, None)
         self._drop_unposted(key)
 
@@ -2387,3 +2476,34 @@ def _asked_at_root(turn_row: AgentSessionActivityItem | None) -> bool:
     if turn_row is None or turn_row.message_id is None:
         return True
     return turn_row.thread_id in (None, turn_row.message_id)
+
+
+#: How long before a bare mention its sender's question may have come.
+_NUDGE_WINDOW = timedelta(minutes=5)
+#: How many turns' questions are remembered between draws.
+_MAX_ASKED = 1000
+#: How much of a question a work thread repeats where it points back at it.
+_QUESTION_SNIPPET = 80
+_LEADING_MENTIONS = re.compile(r"^(?:\s*@\S+)+\s*")
+_TRAILING_MENTIONS = re.compile(r"\s*(?:@\S+\s*)+$")
+
+
+def _as_datetime(value: object) -> datetime:
+    assert isinstance(value, datetime)
+    return value
+
+
+def question_snippet(body: str) -> str:
+    """The start of what a message asked, to name it by.
+
+    The mentions it opens and closes with are dropped, since they say whom
+    it asked rather than what, and the rest is cut at a word, to one line.
+    Empty for a message that was only mentions.
+    """
+    text = " ".join(_TRAILING_MENTIONS.sub("", _LEADING_MENTIONS.sub("", body)).split())
+    if len(text) <= _QUESTION_SNIPPET:
+        return text
+    cut = text[: _QUESTION_SNIPPET - 1]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,.;:") + "…"

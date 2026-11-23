@@ -148,6 +148,23 @@ class AgentRendering:
 
 
 @dataclass(frozen=True)
+class AskedQuestion:
+    """The message a turn answers, for a turn drawn away from it.
+
+    A work thread (`!work-threads`) draws a turn on a message of the agent's
+    own rather than in the asker's thread, which leaves nothing on that
+    message, or on the session the platform lists it under, saying what it
+    answers. This is what lets the adapter point back: `message_ref` is the
+    asking message as the platform knows it, and `text` the start of what it
+    said, with the mentions that addressed the agent removed. `text` is empty
+    for a message that said nothing else.
+    """
+
+    message_ref: str
+    text: str
+
+
+@dataclass(frozen=True)
 class TurnActivity:
     """A turn's items and its own status, as `post_rich` / `update_rich` draw it.
 
@@ -203,6 +220,9 @@ class TurnActivity:
     # Who pressed Stop on this turn, as the platform names them, so an
     # interrupted turn says "Stopped by <name>." rather than "Turn interrupted.".
     stopped_by: str | None = None
+    # The message this turn answers, where the turn is drawn away from it
+    # (`!work-threads`), so the message it is drawn in can point back.
+    asked: AskedQuestion | None = None
 
 
 @dataclass(frozen=True)
@@ -1818,13 +1838,14 @@ class PlatformAdapter(ABC):
         agent_name: str,
         text: str,
         initiator_external_id: str | None,
+        asked: AskedQuestion | None = None,
     ) -> str:
         """Post the agent's work message at the channel root and return its ref.
 
         Only called where `hosts_work_threads` said yes. `text` is what a
         notification or screen reader is given for it; `initiator_external_id`
-        is who the work is for. Raises `RichContentFailed` when nothing was
-        posted.
+        is who the work is for, and `asked` the message the work answers.
+        Raises `RichContentFailed` when nothing was posted.
         """
         raise NotImplementedError
 
@@ -1868,7 +1889,12 @@ class PlatformAdapter(ABC):
         """End what `open_session` started, naming how the turn ended."""
 
     async def settle_work_message(
-        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        summary: str,
+        asked: AskedQuestion | None = None,
     ) -> None:
         """Rewrite a work message, in place, as the one line its turn ended on.
         Best effort: a refusal is the adapter's to log."""

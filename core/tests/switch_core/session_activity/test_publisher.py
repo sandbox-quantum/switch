@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
+    AskedQuestion,
     RequestCard,
     RichContentFailed,
     RichContentThrottled,
@@ -1383,6 +1384,8 @@ class WorkThreadPlatform(RecordingPlatform):
     """A platform with work threads, recording the work messages it is asked for."""
 
     hosts: bool = True
+    # The question each work-message call was told the turn answers.
+    asked: list[AskedQuestion | None] = field(default_factory=list)
 
     async def hosts_work_threads(self, channel_id: str) -> bool:
         return self.hosts
@@ -1393,14 +1396,22 @@ class WorkThreadPlatform(RecordingPlatform):
         agent_name: str,
         text: str,
         initiator_external_id: str | None,
+        asked: AskedQuestion | None = None,
     ) -> str:
         ref = f"work-{self._ref()}"
+        self.asked.append(asked)
         self.drawn.append(Drawn("open_work_message", channel_id, ref, None, text))
         return ref
 
     async def settle_work_message(
-        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        summary: str,
+        asked: AskedQuestion | None = None,
     ) -> None:
+        self.asked.append(asked)
         self.drawn.append(
             Drawn("settle_work_message", channel_id, message_ref, None, summary)
         )
@@ -1659,9 +1670,9 @@ async def test_the_asker_is_handed_to_the_stream_and_the_work_session(
     initiators: list[str | None] = []
     opened = work_platform.open_work_message
 
-    async def open_work_message(channel_id, agent_name, text, initiator):
+    async def open_work_message(channel_id, agent_name, text, initiator, asked=None):
         initiators.append(initiator)
-        return await opened(channel_id, agent_name, text, initiator)
+        return await opened(channel_id, agent_name, text, initiator, asked)
 
     work_platform.open_work_message = open_work_message  # type: ignore[method-assign]
     await _turn(service, bridged.room_id, "running", 1)
@@ -1906,6 +1917,7 @@ async def test_a_restart_finishes_a_work_thread_whose_ending_had_not_run(
 @dataclass
 class InlinePlatform(WorkThreadPlatform):
     native_stop: bool | None = None
+    titles: list[str] = field(default_factory=list)
 
     def native_stop_available(self) -> bool | None:
         return self.native_stop
@@ -1918,6 +1930,7 @@ class InlinePlatform(WorkThreadPlatform):
         initiator_external_id: str | None,
         title: str,
     ) -> None:
+        self.titles.append(title)
         self.drawn.append(
             Drawn("open_session", channel_id, message_ref, None, initiator_external_id)
         )
@@ -2092,3 +2105,211 @@ async def test_a_stopper_for_another_turn_is_not_kept(
         bridged.channel_id, opened.ref, "turn-0", "Simon Flack"
     )
     assert (await _turn_post(session_factory)).stopped_by is None
+
+
+# ── Pointing back at the question ────────────────────────────────────────────
+
+
+async def _asking_message(
+    session_factory,
+    bridged: BridgedRoom,
+    body: str,
+    *,
+    event_id: str = ASKED,
+    sender: str = "@person:example.test",
+    sent_at: datetime | None = None,
+    mapped_to: str | None = None,
+    thread_root: str | None = None,
+) -> None:
+    """A person's message, as Switch stored it: by default the one the turn
+    answers."""
+    async with session_factory() as db, db.begin():
+        seq = (
+            await db.scalar(
+                select(func.coalesce(func.max(Message.seq), 0)).where(
+                    Message.room_id == bridged.room_id
+                )
+            )
+        ) + 1
+        db.add(
+            Message(
+                seq=seq,
+                room_id=bridged.room_id,
+                transport_event_id=event_id,
+                sender_id=sender,
+                event_type="m.room.message",
+                msgtype="m.text",
+                body=body,
+                content={"msgtype": "m.text", "body": body},
+                thread_root_event_id=thread_root,
+                **({"sent_at": sent_at} if sent_at is not None else {}),
+            )
+        )
+        if mapped_to is not None:
+            db.add(
+                BridgeMessageMap(
+                    bridge_id=bridged.bridge_id,
+                    external_channel_id=bridged.channel_id,
+                    transport_event_id=event_id,
+                    external_post_id=mapped_to,
+                )
+            )
+
+
+@pytest.mark.parametrize(
+    ("body", "snippet"),
+    [
+        ("@agent how many PRs are open?", "how many PRs are open?"),
+        ("@agent  @other   what   now", "what now"),
+        ("what now?\n@agent", "what now?"),
+        ("what now? @agent @other", "what now?"),
+        ("ask @bob about it", "ask @bob about it"),
+        ("@agent", ""),
+        ("", ""),
+        (
+            "@agent " + "word " * 30,
+            ("word " * 15).strip() + "…",
+        ),
+    ],
+)
+def test_a_question_is_named_by_its_start_without_its_mentions(body, snippet):
+    assert publisher_module.question_snippet(body) == snippet
+    assert len(publisher_module.question_snippet(body)) <= 80
+
+
+async def test_a_work_thread_is_told_the_question_it_answers(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    await _asking_message(session_factory, bridged, "@agent how many PRs are open?")
+    platform = work_platform
+    await _turn(service, bridged.room_id, "running", 1)
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await _tool_drawn(platform)
+    asked = AskedQuestion(message_ref=ASKED_POST, text="how many PRs are open?")
+    assert platform.asked == [asked], "the work message is told what it answers"
+    assert all(drawn.content.asked == asked for drawn in _turns(platform))
+
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
+    assert platform.asked == [asked, asked], "and so is its ending"
+
+
+async def test_an_inline_session_is_titled_by_its_question(
+    service, inline_publisher, inline_platform, bridged, session_factory
+):
+    await _asking_message(session_factory, bridged, "@agent how many PRs are open?")
+    platform = inline_platform
+    await _turn(service, bridged.room_id, "running", 1)
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    assert platform.titles == ["how many PRs are open?"]
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("close_session")))
+    assert platform.titles == ["how many PRs are open?"], "never retitled"
+
+
+async def test_a_turn_whose_message_is_not_stored_still_points_at_it(
+    service, work_publisher, work_platform, bridged
+):
+    """The link needs only where it was asked: with no text to name it by,
+    the platform names it generically."""
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [AskedQuestion(message_ref=ASKED_POST, text="")]
+
+
+async def test_a_bare_mention_points_at_the_question_its_sender_posted_before_it(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    """Asked in two messages, the question and then a nudge naming the agent:
+    the question is what the turn answers."""
+    await _asking_message(
+        session_factory,
+        bridged,
+        "how many commits are on this branch?",
+        event_id="sw_question",
+        mapped_to="1699999990.0001",
+    )
+    await _asking_message(session_factory, bridged, "@agent")
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [
+        AskedQuestion(
+            message_ref="1699999990.0001", text="how many commits are on this branch?"
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sender", "minutes_before"),
+    [("@someone-else:example.test", 1), ("@person:example.test", 10)],
+)
+async def test_a_bare_mention_does_not_borrow_another_question(
+    service,
+    work_publisher,
+    work_platform,
+    bridged,
+    session_factory,
+    sender,
+    minutes_before,
+):
+    """Not someone else's message, and not one from long before."""
+    await _asking_message(
+        session_factory,
+        bridged,
+        "an older question",
+        event_id="sw_question",
+        sender=sender,
+        sent_at=datetime.now(UTC) - timedelta(minutes=minutes_before),
+        mapped_to="1699999990.0001",
+    )
+    await _asking_message(session_factory, bridged, "@agent")
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [AskedQuestion(message_ref=ASKED_POST, text="")]
+
+
+@pytest.mark.parametrize("question_is_the_root", [False, True])
+async def test_a_bare_mention_in_a_thread_looks_only_in_that_thread(
+    service,
+    work_publisher,
+    work_platform,
+    bridged,
+    session_factory,
+    question_is_the_root,
+):
+    """Not the sender's latest message at the root, posted in between: the
+    question in the thread the mention was in, or the message that began it."""
+    await _asking_message(
+        session_factory,
+        bridged,
+        "the question",
+        event_id="sw_root",
+        mapped_to="1699999980.0001",
+    )
+    if not question_is_the_root:
+        await _asking_message(
+            session_factory,
+            bridged,
+            "the question in the thread",
+            event_id="sw_reply",
+            mapped_to="1699999985.0001",
+            thread_root="sw_root",
+        )
+    await _asking_message(
+        session_factory,
+        bridged,
+        "an unrelated message at the root",
+        event_id="sw_unrelated",
+        mapped_to="1699999990.0001",
+    )
+    await _asking_message(session_factory, bridged, "@agent", thread_root="sw_root")
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [
+        AskedQuestion("1699999980.0001", "the question")
+        if question_is_the_root
+        else AskedQuestion("1699999985.0001", "the question in the thread")
+    ]
