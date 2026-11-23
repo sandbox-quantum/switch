@@ -32,10 +32,40 @@ UPSTREAM = json.loads(
     (Path(__file__).parent / "fixtures/upstream-3b503b563-routes.json").read_text()
 )
 GATES = {require_hosted_v2, require_hosted_v2_here}
-# The new routes there are today: 17 on the gateway, 3 notice routes for
-# controllers. A guard on the walk itself, so a change that hid them all from
-# it can't pass for "nothing new".
-NEW_ROUTES_AT_LEAST = 20
+# Every route v2 adds, exactly: a guard on the walk itself, so a change that hid
+# them from it can't pass for "nothing new", and a route added or dropped
+# without meaning to fails here too.
+NEW_ROUTES = {
+    (
+        "agent_bridge",
+        "POST",
+        "/v1/management/controllers/{controller_id}/agents/{agent_id}/reset-refused",
+    ),
+    (
+        "agent_bridge",
+        "POST",
+        "/v1/management/controllers/{controller_id}/agents/{agent_id}/rest-notice",
+    ),
+    (
+        "agent_bridge",
+        "POST",
+        "/v1/management/controllers/{controller_id}/agents/{agent_id}/restart-notice",
+    ),
+    ("gateway", "GET", "/hosted-controller/actions"),
+    ("gateway", "POST", "/hosted-controller/actions/{action_id}/steps"),
+    ("gateway", "POST", "/hosted-controller/cluster"),
+    ("gateway", "POST", "/hosted-provisioner/actions/{action_id}/result"),
+    ("gateway", "POST", "/hosted-provisioner/claim"),
+    ("gateway", "GET", "/shared-cloud/audit-events"),
+    ("gateway", "POST", "/shared-cloud/boxes/{box_keyed_id}/restart"),
+    ("gateway", "POST", "/shared-cloud/machines/{machine_keyed_id}/drain"),
+    ("gateway", "GET", "/shared-cloud/operators"),
+    ("gateway", "GET", "/shared-cloud/overview"),
+    ("gateway", "POST", "/shared-cloud/reveal"),
+    ("gateway", "POST", "/shared-cloud/users/{user_keyed_id}/pause"),
+    ("gateway", "POST", "/shared-cloud/users/{user_keyed_id}/resume"),
+    ("gateway", "PUT", "/tenants/{tenant_id}/hosted-people/{user_id}"),
+}
 
 
 def _walk(routes: list[Any], prefix: str = "") -> Iterator[tuple[str, str, Any]]:
@@ -97,7 +127,7 @@ def _new_routes() -> list[tuple[str, str, str, Any]]:
 
 def test_every_route_upstream_lacks_carries_the_switchs_gate() -> None:
     new = _new_routes()
-    assert len(new) >= NEW_ROUTES_AT_LEAST
+    assert {(name, method, path) for name, method, path, _ in new} == NEW_ROUTES
     ungated = [
         (name, method, path)
         for name, method, path, route in new
