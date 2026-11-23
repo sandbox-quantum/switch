@@ -486,7 +486,12 @@ async def send_message(
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, object]:
-    logger.debug("Recieved message from agent %s: %s", agent.name, req.content)
+    logger.debug(
+        "Received message from agent %s for room %s (%d characters)",
+        agent.id,
+        req.room_id,
+        len(req.content),
+    )
     try:
         sent = await protocol.send_message(agent.id, req.room_id, req.content)
     except BudgetExceeded as e:

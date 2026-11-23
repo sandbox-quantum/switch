@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfReader, PdfWriter
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core import file_text as file_text_module
 from switch_core.file_text import read_file_text
@@ -122,10 +123,13 @@ async def test_text_named_as_a_document_is_checked_through_the_worker() -> None:
     assert file_text.text == secret.decode()
 
 
-async def test_an_image_alone_carries_no_note_and_is_not_checked() -> None:
+async def test_an_image_alone_carries_no_note_and_is_not_checked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
@@ -136,11 +140,13 @@ async def test_an_image_alone_carries_no_note_and_is_not_checked() -> None:
 
 
 async def test_an_image_still_blocks_when_unchecked_files_are_not_relayed(
+    session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(attachments, "RELAY_UNCHECKED_FILES", False)
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
@@ -159,10 +165,13 @@ def test_long_text_is_cut_to_the_limit() -> None:
     assert file_text.checked_part == "the first 20,000 characters"
 
 
-async def test_a_blocked_file_blocks_and_names_the_file() -> None:
+async def test_a_blocked_file_blocks_and_names_the_file(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[(b"fine", "a.txt", "text/plain"), (b"FORBIDDEN", "b.txt", "text/plain")],
@@ -173,9 +182,12 @@ async def test_a_blocked_file_blocks_and_names_the_file() -> None:
     assert sorted(content for _, content in client.checked) == ["FORBIDDEN", "fine"]
 
 
-async def test_a_redacted_file_blocks_because_a_file_cannot_be_redacted() -> None:
+async def test_a_redacted_file_blocks_because_a_file_cannot_be_redacted(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[(b"my SECRET", "notes.md", "text/markdown")],
@@ -186,10 +198,13 @@ async def test_a_redacted_file_blocks_because_a_file_cannot_be_redacted() -> Non
     assert "cannot be redacted" in verdict.block_reasons[0]
 
 
-async def test_unreadable_flagged_and_long_files_each_carry_a_note() -> None:
+async def test_unreadable_flagged_and_long_files_each_carry_a_note(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="assistant",
         files=[
@@ -216,12 +231,13 @@ async def test_unreadable_flagged_and_long_files_each_carry_a_note() -> None:
     assert len(client.checked) == 2
 
 
-async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checked() -> (
-    None
-):
+async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[(b" " * TRUST_FILE_TEXT_LIMIT + b"FORBIDDEN", "pad.txt", "text/plain")],
@@ -236,11 +252,13 @@ async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checke
 
 
 async def test_unchecked_files_block_when_the_policy_says_so(
+    session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(attachments, "RELAY_UNCHECKED_FILES", False)
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
@@ -461,11 +479,14 @@ def test_a_header_not_stored_or_deflated_is_named_as_not_checked() -> None:
     )
 
 
-async def test_a_renamed_header_is_found_through_the_relationships() -> None:
+async def test_a_renamed_header_is_found_through_the_relationships(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # Word finds a header by the body's relationships, not by its file name.
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[
@@ -495,7 +516,9 @@ def test_a_body_the_package_names_elsewhere_is_the_one_read() -> None:
     assert "a decoy" not in file_text.text
 
 
-async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note() -> None:
+async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     data = _docx(
         "the body",
         links=(
@@ -512,6 +535,7 @@ async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note() -> No
     )
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[(data, "memo.docx", _DOCX_TYPE)],
@@ -595,13 +619,16 @@ def test_a_pdf_page_inherits_its_fonts_from_the_page_tree() -> None:
 
 
 async def test_a_document_that_takes_too_long_to_read_is_not_checked(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(file_text_module, "_WORKER_TIMEOUT_SECONDS", 0)
     client = _ContentTrustClient()
     with caplog.at_level(logging.WARNING):
         verdict = await check_attachments(
             client,  # type: ignore[arg-type]
+            session_factory,
             tenant_id="tenant-1",
             role="user",
             files=[(_pdf("FORBIDDEN"), "slow.pdf", "application/pdf")],
@@ -636,10 +663,13 @@ async def test_a_document_that_needs_too_much_memory_is_not_checked(
     assert file_text.unreadable_reason == "it could not be read within Switch's limits"
 
 
-async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks() -> None:
+async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[
@@ -654,9 +684,12 @@ async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks() -> None:
     assert "report.pdf was blocked" in reasons
 
 
-async def test_a_scanned_pdf_is_relayed_with_a_not_checked_note() -> None:
+async def test_a_scanned_pdf_is_relayed_with_a_not_checked_note(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         files=[(_pdf(None), "scan.pdf", "application/pdf")],

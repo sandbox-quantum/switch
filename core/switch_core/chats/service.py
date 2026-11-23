@@ -63,6 +63,7 @@ from switch_core.chats.views import (
     ChatMention,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
     AgentSessionActivityItem,
@@ -106,6 +107,7 @@ from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
 from switch_core.observability.metrics import metrics
 from switch_core.provisioning import Provisioning
+from switch_core.room_read_only import read_only_state, refusal_text
 from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import ACTIVITY_RETENTION
@@ -303,6 +305,13 @@ class ChatService:
         for watchers in list(self._membership_watchers.values()):
             for callback in list(watchers):
                 callback(None)
+
+    def memberships_changed(
+        self, tenant_id: str, user_ids: list[str], room_ids: list[str]
+    ) -> None:
+        """`_memberships_changed`, for a membership changed outside this
+        service (an account taken out of every room, `room_moderation.py`)."""
+        self._memberships_changed(tenant_id, user_ids, room_ids)
 
     def _memberships_changed(
         self, tenant_id: str, user_ids: list[str], room_ids: list[str]
@@ -2070,6 +2079,8 @@ class ChatService:
                 self._require_same(operation, "send", payload_hash)
                 return room, await self._posted(session, room, operation)
 
+            if room.frozen_at is not None:
+                raise ChatError(409, "ROOM_FROZEN", refusal_text(room.name, "frozen"))
             unarchive = room.archived_at is not None
             if unarchive and not await self.can_manage(session, tenant_id, user, room):
                 raise ChatError(
@@ -2142,6 +2153,19 @@ class ChatService:
             )
             if named_people is not None:
                 contents[0][MENTIONS_KEY] = named_people
+            if unarchive:
+                # Before the rows: an archived room takes no posts
+                # (`room_read_only.py`), and writing in it is what brings it back.
+                await self._room_store.set_archived(session, room.id, False)
+                await record_audit_event(
+                    session,
+                    tenant_id=tenant_id,
+                    actor_user_id=user.id,
+                    action=AuditAction.ROOM_UNARCHIVED,
+                    target_type="room",
+                    target_id=room.id,
+                    details={"name": room.name, "via": "message"},
+                )
             posted: list[Message] = []
             routed: list[Routed] = []
             if command is not None:
@@ -2200,8 +2224,6 @@ class ChatService:
                 )
                 .values(result={"messageIds": [m.transport_event_id for m in posted]})
             )
-            if unarchive:
-                await self._room_store.set_archived(session, room.id, False)
             await session.commit()
         if unarchive:
             self._room_service.room_changed(tenant_id, room.id)
@@ -2281,6 +2303,11 @@ class ChatService:
                 self._require_same(operation, "control", payload_hash)
                 return str((operation.result or {})["commandId"])
 
+            state = read_only_state(room)
+            if state is not None:
+                raise ChatError(
+                    409, f"ROOM_{state.upper()}", refusal_text(room.name, state)
+                )
             if agent_id not in await self._room_store.get_agent_ids(session, room.id):
                 raise ChatError(
                     422, "AGENT_NOT_IN_CHAT", "That agent is not in this chat."
@@ -2491,6 +2518,7 @@ class ChatService:
             text_check, files_check = await asyncio.gather(
                 check_message(
                     self._trust_client,
+                    self.session_factory,
                     tenant_id=tenant_id,
                     role="user",
                     content=body,
@@ -2498,6 +2526,7 @@ class ChatService:
                 ),
                 check_attachments(
                     self._trust_client,
+                    self.session_factory,
                     tenant_id=tenant_id,
                     role="user",
                     files=files,
@@ -2507,6 +2536,7 @@ class ChatService:
         elif body.strip():
             text_check = await check_message(
                 self._trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 content=body,
@@ -2515,6 +2545,7 @@ class ChatService:
         elif files:
             files_check = await check_attachments(
                 self._trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 files=files,

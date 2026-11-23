@@ -438,6 +438,16 @@ class SharedConnections:
                 await self._store.delete_agent(
                     session, tenant_id=tenant_id, agent_id=agent_id
                 )
+            # The same for a suspended agent (`accounts/suspension.py`).
+            suspended = (
+                []
+                if archived or not found
+                else await self._store.suspended_among(session, tenant_id, found)
+            )
+            for agent_id in suspended:
+                await self._store.delete_agent(
+                    session, tenant_id=tenant_id, agent_id=agent_id
+                )
             await session.commit()
         for agent_id in archived:
             logger.warning(
@@ -446,6 +456,14 @@ class SharedConnections:
                 tenant_id,
             )
             self._endings[agent_id] = "workspace_archived"
+            found.pop(agent_id)
+        for agent_id in suspended:
+            logger.warning(
+                "[CONN] suspended agent=%s held a connection in tenant %s; ended",
+                agent_id,
+                tenant_id,
+            )
+            self._endings[agent_id] = "suspended"
             found.pop(agent_id)
         if pruned:
             logger.info(
@@ -463,6 +481,9 @@ class SharedConnections:
                 self._apply(agent_id, tenant_id, found.get(agent_id, _EMPTY))
         for agent_id in archived:
             self._publish_changed(tenant_id, agent_id, [], ending="workspace_archived")
+        for agent_id in suspended:
+            self._registry.ended_elsewhere(agent_id)
+            self._publish_changed(tenant_id, agent_id, [], ending="suspended")
         self._deliver(relayed)
 
     def _deliver(self, relayed: list[tuple[str, dict[str, Any]]]) -> None:

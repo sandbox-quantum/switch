@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -88,7 +90,7 @@ async def _no_text_answer(_msg: object) -> None:
     return None
 
 
-def _fake_bridge() -> SimpleNamespace:
+def _fake_bridge(session_factory: async_sessionmaker[AsyncSession]) -> SimpleNamespace:
     human_actor = _FakeHumanActor()
     recorded: list[dict[str, str]] = []
 
@@ -115,6 +117,7 @@ def _fake_bridge() -> SimpleNamespace:
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _trust_client=NullTrustClient(),
+        _session_factory=session_factory,
         _room_tenant=AsyncMock(return_value="tenant-1"),
         human_actor=human_actor,
         recorded=recorded,
@@ -146,8 +149,10 @@ def _attachment(filename: str, mimetype: str) -> Attachment:
     return Attachment(filename=filename, mimetype=mimetype, data=b"bytes")
 
 
-async def test_three_attachments_are_stamped_as_one_group() -> None:
-    bridge = _fake_bridge()
+async def test_three_attachments_are_stamped_as_one_group(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _fake_bridge(session_factory)
 
     await CollaborationCore._handle_inbound_message(
         bridge,
@@ -185,11 +190,13 @@ async def test_three_attachments_are_stamped_as_one_group() -> None:
     assert bridge.human_actor.messages == []
 
 
-async def test_a_post_delivered_again_writes_into_the_same_group() -> None:
+async def test_a_post_delivered_again_writes_into_the_same_group(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # A delivery that stopped after the first file is sent again by the
     # platform; the files it still writes must complete the first group, not
     # start one of their own.
-    bridge = _fake_bridge()
+    bridge = _fake_bridge(session_factory)
     post = _msg(
         content="two files",
         attachments=[
@@ -206,10 +213,12 @@ async def test_a_post_delivered_again_writes_into_the_same_group() -> None:
     assert len({m["group"]["id"] for m in media}) == 1
 
 
-async def test_single_attachment_carries_no_group_marker() -> None:
+async def test_single_attachment_carries_no_group_marker(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # A group of one needs no marker — the receiver treats an unmarked event as
     # a complete message and never buffers it.
-    bridge = _fake_bridge()
+    bridge = _fake_bridge(session_factory)
 
     await CollaborationCore._handle_inbound_message(
         bridge, _msg(attachments=[_attachment("cat.png", "image/png")])
@@ -220,8 +229,10 @@ async def test_single_attachment_carries_no_group_marker() -> None:
     assert bridge.human_actor.media[0]["caption"] == "here you go"
 
 
-async def test_attachment_failures_are_disclosed_alongside_text() -> None:
-    bridge = _fake_bridge()
+async def test_attachment_failures_are_disclosed_alongside_text(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _fake_bridge(session_factory)
 
     await CollaborationCore._handle_inbound_message(
         bridge,
@@ -240,10 +251,12 @@ async def test_attachment_failures_are_disclosed_alongside_text() -> None:
     assert "attachment not relayed" in body
 
 
-async def test_attachment_failures_are_disclosed_when_text_is_empty() -> None:
+async def test_attachment_failures_are_disclosed_when_text_is_empty(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # An attachment-only post whose single file failed must still say something
     # in the room — never a silent drop.
-    bridge = _fake_bridge()
+    bridge = _fake_bridge(session_factory)
 
     await CollaborationCore._handle_inbound_message(
         bridge,
@@ -263,8 +276,10 @@ async def test_attachment_failures_are_disclosed_when_text_is_empty() -> None:
     ]
 
 
-async def test_attachment_failures_ride_on_the_caption_of_relayed_media() -> None:
-    bridge = _fake_bridge()
+async def test_attachment_failures_ride_on_the_caption_of_relayed_media(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _fake_bridge(session_factory)
 
     await CollaborationCore._handle_inbound_message(
         bridge,
@@ -283,10 +298,12 @@ async def test_attachment_failures_ride_on_the_caption_of_relayed_media() -> Non
     assert "huge.zip" in caption
 
 
-async def test_a_post_from_an_app_is_marked_as_one() -> None:
+async def test_a_post_from_an_app_is_marked_as_one(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # Following the conversation never delivers an app's post; this marker is
     # how it can tell.
-    bridge = _fake_bridge()
+    bridge = _fake_bridge(session_factory)
 
     await CollaborationCore._handle_inbound_message(
         bridge, _msg(content="CI failed on main", sender_is_app=True)
@@ -297,18 +314,22 @@ async def test_a_post_from_an_app_is_marked_as_one() -> None:
     }
 
 
-async def test_a_post_from_a_person_carries_no_app_marker() -> None:
-    bridge = _fake_bridge()
+async def test_a_post_from_a_person_carries_no_app_marker(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _fake_bridge(session_factory)
 
     await CollaborationCore._handle_inbound_message(bridge, _msg(content="hello"))
 
     assert bridge.human_actor.messages[0]["extra_content"] is None
 
 
-async def test_files_an_app_posts_are_marked_too() -> None:
+async def test_files_an_app_posts_are_marked_too(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # An alerting app that attaches a screenshot is still an app: every file of
     # its post carries the marker, not only a text message would.
-    bridge = _fake_bridge()
+    bridge = _fake_bridge(session_factory)
 
     await CollaborationCore._handle_inbound_message(
         bridge,
@@ -328,8 +349,10 @@ async def test_files_an_app_posts_are_marked_too() -> None:
     ]
 
 
-async def test_files_a_person_posts_carry_no_app_marker() -> None:
-    bridge = _fake_bridge()
+async def test_files_a_person_posts_carry_no_app_marker(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _fake_bridge(session_factory)
 
     await CollaborationCore._handle_inbound_message(
         bridge, _msg(attachments=[_attachment("cat.png", "image/png")])

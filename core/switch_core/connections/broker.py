@@ -104,6 +104,8 @@ from switch_core.db.stores.workspace_service_store import (
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import SERVICE_TOKEN_REQUESTS
 from switch_core.observability.metrics import metrics
+from switch_core.security_events import SecuritySignal, log_security_event
+from switch_core.tenant_context import current_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -868,6 +870,10 @@ class ServiceBroker:
             raise ServiceError(
                 403, FORBIDDEN, "This agent is not in this workspace.", retryable=False
             )
+        if agent.suspended_at is not None:
+            raise ServiceError(
+                403, FORBIDDEN, "This agent is suspended.", retryable=False
+            )
         if agent.owner_id is None:
             raise ServiceError(
                 403, FORBIDDEN, "This agent has no owner to act for.", retryable=False
@@ -1025,6 +1031,20 @@ class ServiceBroker:
         try:
             token = await self._issue(session, agent_id, principal, service)
             outcome = "issued"
+            log_security_event(
+                SecuritySignal.SERVICE_TOKEN_ISSUED,
+                tenant_id=current_tenant_id(),
+                actor_user_id=None,
+                target_type="agent",
+                target_id=agent_id,
+                agent_id=agent_id,
+                room_id=None,
+                details={
+                    "service": service,
+                    "principal": principal.kind,
+                    "controller_id": principal.controller_id,
+                },
+            )
             return token
         except ServiceError as error:
             outcome = error.code

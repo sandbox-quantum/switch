@@ -27,9 +27,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+from starlette.types import ASGIApp
 from uvicorn.main import STARTUP_FAILURE
 
 from switch_core.accounts.organization_purge import OrganizationPurge
+from switch_core.accounts.suspension import SuspensionEffects
 from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -285,6 +287,29 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 # regardless. Anything with a deadline of its own must fit inside it — see
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
 _FORCED_EXIT_GRACE_SECONDS = 3.0
+
+
+def uvicorn_config(app: ASGIApp, config: SwitchConfig) -> uvicorn.Config:
+    """How the server listens. A request's client address is taken from
+    `X-Forwarded-For` only when it comes from `FORWARDED_ALLOW_IPS`, the
+    ingress in front of this server; the access log, sign-in events and the
+    refusal breaker all read the address this resolves."""
+    trusted = [entry.strip() for entry in config.forwarded_allow_ips.split(",")]
+    if "*" in trusted:
+        logger.warning(
+            "FORWARDED_ALLOW_IPS is '*': every caller's X-Forwarded-For is "
+            "believed, so client addresses in the access log and security "
+            "events can be forged. Set it to the ingress's address range."
+        )
+    return uvicorn.Config(
+        app,
+        host=config.server_host,
+        port=config.server_port,
+        log_level="info",
+        log_config=None,
+        proxy_headers=True,
+        forwarded_allow_ips=config.forwarded_allow_ips,
+    )
 
 
 class _Server(uvicorn.Server):
@@ -1560,6 +1585,15 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # What suspending an agent or a person, or lifting it, sets going once it
+    # commits (`gateway/suspension.py`).
+    gateway_app.state.suspension_effects = SuspensionEffects(
+        session_factory=session_factory,
+        connections=protocol.connections,
+        api_key_cache=protocol.api_key_cache,
+        broker=service_broker,
+        management=management.service if management is not None else None,
+    )
     # A bus skips signals carrying its own process id, as acted on locally
     # already; the purge acts on nothing here, so it signals under its own id
     # for this process to hear too, as the CLI does.
@@ -1869,13 +1903,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # deployment with an install date.
     await telemetry.report_installed()
 
-    server_config = uvicorn.Config(
-        agent_bridge_app,
-        host=config.server_host,
-        port=config.server_port,
-        log_level="info",
-        log_config=None,
-    )
+    server_config = uvicorn_config(agent_bridge_app, config)
     server = _Server(server_config)
 
     loop = asyncio.get_event_loop()

@@ -26,6 +26,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 
 from switch_core.authz import require_group_filing
 from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.db.audit import AuditAction, record_audit_event, request_actor
 from switch_core.db.id_lists import any_of
 from switch_core.db.models import (
     Agent,
@@ -1018,6 +1019,10 @@ class RoomStore:
         # the cursor it has.
         await DeliveryCursorStore().seed(session, client_id, room_id)
         await session.flush()
+        if recorded is not None:
+            await self._record_membership(
+                session, client_id, room_id, AuditAction.ROOM_MEMBER_ADDED
+            )
         return recorded is not None
 
     async def remove_client(
@@ -1040,7 +1045,57 @@ class RoomStore:
         await session.flush()
         if removed is not None:
             await self.prune_admins(session, room_id)
+            await self._record_membership(
+                session, client_id, room_id, AuditAction.ROOM_MEMBER_REMOVED
+            )
         return removed is not None
+
+    async def _record_membership(
+        self,
+        session: AsyncSession,
+        client_id: str,
+        room_id: str,
+        action: AuditAction,
+    ) -> None:
+        """The audit event for a membership this call wrote, in its
+        transaction. Agents and people only: a bridge's or Switch's own
+        client joining a room is plumbing. Attributed to whoever the request
+        acts for, since membership has writers at every level and only the
+        request knows who asked."""
+        client = await session.get(Client, client_id)
+        if client is None:
+            raise ValueError(f"Client {client_id} not found")
+        details: dict[str, str | None] = {
+            "client_type": client.type,
+            "client_id": client_id,
+        }
+        if client.type == "agent":
+            agent = await session.scalar(
+                select(Agent).where(Agent.client_id == client_id)
+            )
+            if agent is not None:
+                details["agent_id"] = agent.id
+                details["agent_name"] = agent.name
+        elif client.type == MEMBER_CLIENT_TYPE:
+            details["user_id"] = client.user_id
+        elif client.type == "user":
+            details["external_user_id"] = await session.scalar(
+                select(ExternalUser.id).where(ExternalUser.client_id == client_id)
+            )
+        else:
+            return
+        actor_user_id, acting_agent_id = request_actor()
+        if acting_agent_id is not None:
+            details["acting_agent_id"] = acting_agent_id
+        await record_audit_event(
+            session,
+            tenant_id=client.tenant_id,
+            actor_user_id=actor_user_id,
+            action=action,
+            target_type="room",
+            target_id=room_id,
+            details=details,
+        )
 
     async def get_for_client(self, session: AsyncSession, client_id: str) -> list[Room]:
         """The rooms a client is a member of.
@@ -1209,15 +1264,6 @@ class RoomStore:
         room.external_channel_id = external_channel_id
         await session.flush()
 
-    async def update_protection_config(
-        self, session: AsyncSession, room_id: str, config: dict[str, object]
-    ) -> None:
-        room = await session.get(Room, room_id)
-        if room is None:
-            raise ValueError(f"Room not found: {room_id}")
-        room.protection_config = config  # type: ignore[assignment]
-        await session.flush()
-
     async def update_observe_config(
         self, session: AsyncSession, room_id: str, config: dict[str, object]
     ) -> None:
@@ -1257,6 +1303,26 @@ class RoomStore:
             .values(archived_at=datetime.now(UTC) if archived else None)
             .execution_options(synchronize_session=False)
         )
+
+    async def set_frozen(
+        self,
+        session: AsyncSession,
+        room: Room,
+        *,
+        frozen_by: str | None,
+        reason: str | None,
+    ) -> None:
+        """Freeze `room`, stamping when, by whom and why."""
+        room.frozen_at = datetime.now(UTC)
+        room.frozen_by = frozen_by
+        room.frozen_reason = reason
+        await session.flush()
+
+    async def clear_frozen(self, session: AsyncSession, room: Room) -> None:
+        room.frozen_at = None
+        room.frozen_by = None
+        room.frozen_reason = None
+        await session.flush()
 
     async def update_fields(
         self,
