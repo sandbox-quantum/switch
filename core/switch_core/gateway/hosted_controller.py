@@ -89,6 +89,7 @@ from switch_core.visibility.box_provision import (
     expire_provisions,
     missing_at_revision,
     open_provision_machines,
+    owner_written,
     record_box_missing,
     removal_pending,
     sweep_pool,
@@ -637,6 +638,9 @@ async def pool(
     }
 
 
+BOX_NOT_BOUND = "The box is still being handed to its person; try again shortly."
+
+
 async def _locked_machine(session: AsyncSession, machine_id: str) -> CloudMachine:
     machine = await CloudMachineStore().locked(session, machine_id)
     if machine is None:
@@ -665,6 +669,11 @@ async def prepare(
     if not v2 and machine.backend == "box":
         # The v1/v2 switch: with v2 off, no v2 box boots or enrols.
         raise HTTPException(409, MACHINES_DISABLED)
+    if v2 and machine.backend == "box" and not await owner_written(session, machine.id):
+        # A warm pool box given to its person whose owner isn't written yet
+        # (it could still go to the reaper): no code, so nothing can enrol.
+        await session.commit()
+        raise HTTPException(409, BOX_NOT_BOUND)
     now = datetime.now(UTC)
     controllers = []
     # Why each served workspace got no controller, when it was a pause or turn-off block.

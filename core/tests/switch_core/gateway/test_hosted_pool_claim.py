@@ -47,7 +47,11 @@ from tests.switch_core.gateway.test_cloud_controller_machines import (
     _metric_points,
     hosted_metrics,  # noqa: F401  (fixture)
 )
-from tests.switch_core.gateway.test_hosted_controller import list_machines, observe
+from tests.switch_core.gateway.test_hosted_controller import (
+    list_machines,
+    observe,
+    prepare,
+)
 from tests.switch_core.gateway.test_hosted_provisioner import (  # noqa: F401
     KEY,
     provisioner_app,
@@ -679,3 +683,40 @@ async def test_new_boxes_are_counted_by_path_and_retired_ones_by_reason(
     _pooled(app, 0)
     await sweep_pool(app.factory, app.config, datetime.now(UTC))  # the refill
     assert _points(hosted_metrics, HOSTED_POOL_RETIRED.name, "reason") == {"size": 1}
+
+
+async def test_no_code_is_given_to_a_box_until_its_owner_is_written(
+    provisioner_app,  # noqa: F811
+) -> None:
+    """Before `owner_writing` the box could still go to the reaper, so
+    `prepare` gives it no enrolment code and nothing can enrol on it. From
+    `owner_writing` on it's the person's: the code is there, without waiting
+    for `done` (the box scaler asks once the box map entry, the bind's last
+    step, is written, and backs off for minutes on a refusal)."""
+    app = provisioner_app
+    _person_, box_id, handed = await _claimed_bind(app)
+    early = await prepare(app.client, box_id)
+    assert early.status_code == 409, early.text
+    await _owner_writing(app, handed)
+    owned = await prepare(app.client, box_id)
+    assert owned.status_code == 200, owned.text
+    [entry] = owned.json()["controllers"]
+    assert entry["enrollment_code"]
+
+
+async def test_a_box_whose_bind_failed_before_its_owner_gets_no_code(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    _person_, box_id, handed = await _claimed_bind(app)
+    await _result(app, handed, "failed", "bind_machine_mismatch")
+    refused = await prepare(app.client, box_id)
+    assert refused.status_code == 409, refused.text
+
+
+async def test_a_box_made_from_scratch_is_prepared_as_before(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    answer = await prepare(app.client, app.machine_id)  # no bind: never pooled
+    assert answer.status_code == 200, answer.text

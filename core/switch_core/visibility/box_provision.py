@@ -1265,6 +1265,31 @@ async def fail_bind(
     return reached
 
 
+async def owner_written(session: AsyncSession, machine_id: str) -> bool:
+    """Whether a warm pool machine's box has its person's owner written: a
+    bind of it recorded `owner_writing` (or is done). True for a machine with
+    no bind at all (made from scratch, or from before the pool). Until then
+    `prepare` gives the box no enrolment code, so nothing can enrol on a box
+    that could still go to the reaper. From `owner_writing` on the box is the
+    person's, and the box scaler (which asks once the box map entry, the
+    bind's last step, is written) gets its code without waiting for `done`."""
+    binds = await session.scalars(
+        select(ServerAuditEvent).where(
+            ServerAuditEvent.action == ACTION,
+            ServerAuditEvent.details["phase"].astext == "requested",
+            ServerAuditEvent.details["kind"].astext == "bind",
+            ServerAuditEvent.details["machine_id"].astext == machine_id,
+        )
+    )
+    found = False
+    for request in binds.all():
+        found = True
+        linked = await _linked(session, request.id)
+        if reached_owner(linked) or _result_of(linked) == "done":
+            return True
+    return not found
+
+
 async def expire_binds(
     session: AsyncSession, now: datetime, owned: list[str] | None = None
 ) -> int:
