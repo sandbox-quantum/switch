@@ -39,9 +39,6 @@ name and body). Nothing else is sent with it:
     "switch_trust.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
     "switch_trust.env": "prod",
     "switch_trust.internal": "false",
-    "flint.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
-    "flint_env": "prod",
-    "flint_internal": "false",
     "os.type": "darwin",
     "os.version": "23.6.0"
   },
@@ -85,7 +82,6 @@ machine, in what repository, or what the prompt said.
 | `os.type` | OS family | `darwin`, `windows`, `linux`, `other` |
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
 | `switch_trust.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
-| `flint.client_id`, `flint_env`, `flint_internal` | the same three values as `switch_trust.client_id`, `switch_trust.env` and `switch_trust.internal`, sent again under the names they replaced, which the relay still files events by. Nothing more is disclosed by them | as above |
 | `flint.insert_id` | a random UUID made for this one event, so that two events alike in every field and sent in the same millisecond are not taken for one. A new one every event; kept nowhere | `9d0c5e7a-41b2-4f3e-8a6d-2b7c1e94f0a3` |
 | `flint.session_id` | which visit to the app the event belongs to: the time, in milliseconds, of the first thing someone did in it. A visit ends after 30 minutes with nothing done, and is kept only in memory. `-1` on the events that are not someone using the app — `session_discovered`, `session_reopened`, `subagent_adopted`, `agent_pruned`, `update_checked`, `update_install_started`, `renderer_crashed`, a `telemetry_consent_changed` from the first-run notice, and a `session_ended` for a session that went because the app removed its agent by itself — which neither start nor prolong a visit | `1789571950042`, `-1` |
 | `event.name` | the event, prefixed with the product | `switch_console.session_started` |
@@ -171,7 +167,7 @@ machine from another.
 | `server_removed` | `server_kind`: `external` |
 | `server_sign_in` | `auth_method`: `password` / `oidc` / `signup` · `server_kind` · `outcome` · `failure_reason`: `none` / `invalid_credentials` / `cancelled` / `failed` / `unreachable` / `email_taken` / `invalid` / `disabled` / `rate_limited` |
 | `server_sign_out` | `server_kind`: `local` |
-| `managed_server_action` | `action`: `start` / `stop` / `reset` · `target`: `local` / `remote` · `outcome` · `failure_reason`: `none` / `docker_not_installed` / `docker_daemon_down` / `version_downgrade` / `matrix_migration_failed` / `start_refused` (the stack already on the host cannot be started from here, such as another account's) / `health_timeout` (it started but did not become healthy in time) / `core_exited` (the server process exited while starting) / `running_as_root` / `operation_in_progress` (another start, stop or reset was running) / `error` · `docker_available`: `available` / `unavailable` / `unknown` |
+| `managed_server_action` | `action`: `start` / `stop` / `reset` · `target`: `local` / `remote` · `trigger`: `user` (someone asked for it) / `automatic` (the app did it by itself: starting a server that was running when it last quit, or bringing one up to date at launch) · `outcome` · `failure_reason`: `none` / `docker_not_installed` / `docker_daemon_down` / `version_downgrade` / `matrix_migration_failed` / `start_refused` (the stack already on the host cannot be started from here, such as another account's) / `health_timeout` (it started but did not become healthy in time) / `core_exited` (the server process exited while starting) / `running_as_root` / `operation_in_progress` (another start, stop or reset was running) / `error` · `docker_available`: `available` / `unavailable` / `unknown` |
 
 No server name, URL, hostname or username appears in any of these. A failed
 sign-in records `invalid_credentials` — not the username tried, not the server.

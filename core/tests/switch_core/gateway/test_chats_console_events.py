@@ -85,6 +85,29 @@ async def test_leaving_and_being_removed_are_told_apart(chats: _Harness) -> None
         (event["member_kind"], event["left"])
         for event in chats.telemetry_sink.events("console_member_removed")
     ] == [("person", False), ("person", True)]
+    # Removals count toward the room-wide flow as adds do.
+    assert chats.telemetry_sink.events("room_users_removed") == [
+        {"user_count": 1, "removed_by_kind": "user"},
+        {"user_count": 1, "removed_by_kind": "user"},
+    ]
+
+
+async def test_people_named_with_a_room_made_elsewhere_are_not_console_adds(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    unresolved = await chats.service.join_people(
+        "00000000-0000-0000-0000-000000000000",
+        room_id,
+        user_names=["bob"],
+        user_ids=[],
+    )
+
+    assert unresolved == []
+    assert chats.telemetry_sink.events("room_users_added") == [{"user_count": 1}]
+    assert chats.telemetry_sink.events("console_member_added") == []
 
 
 async def test_a_second_agent_makes_a_group_and_both_ways_are_reported(

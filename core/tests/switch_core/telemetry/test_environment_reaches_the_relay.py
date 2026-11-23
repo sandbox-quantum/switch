@@ -75,7 +75,7 @@ async def _send_one(
     )
 
     service, _, http = await telemetry_setup.build_telemetry(
-        config, session_factory, "1.0.0"
+        config, session_factory, "1.0.0", keeps_deployment_state=True
     )
     service.emit("deployment_started", tenant_count=1)
     await service.aclose()
@@ -100,10 +100,6 @@ async def test_the_configured_environment_is_sent_as_switch_trust_env(
 
     assert resource["switch_trust.env"] == {"stringValue": environment}
     assert resource["switch_trust.internal"] == {"stringValue": "false"}
-    # Under the relay's earlier names too, for a relay that reads only those.
-    assert resource["flint_env"] == {"stringValue": environment}
-    assert resource["flint_internal"] == {"stringValue": "false"}
-    assert resource["flint.client_id"] == resource["switch_trust.client_id"]
 
 
 async def test_operator_chosen_names_never_reach_the_relay(

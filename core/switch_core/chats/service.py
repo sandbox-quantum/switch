@@ -1143,11 +1143,27 @@ class ChatService:
             target = await self._require_tenant_member(
                 session, tenant_id, target_user_id
             )
-        return await self.join_member(tenant_id, room.id, target)
+        joined, newly = await self._join_person(tenant_id, room.id, target)
+        if newly:
+            emit_safely(
+                self._telemetry,
+                "console_member_added",
+                self._member_properties(joined, "person"),
+            )
+        return joined
 
     async def join_member(self, tenant_id: str, room_id: str, target: User) -> Room:
         """Put a tenant member's member client in the room, with no check on
         who asks: the caller has already authorised the join."""
+        room, _ = await self._join_person(tenant_id, room_id, target)
+        return room
+
+    async def _join_person(
+        self, tenant_id: str, room_id: str, target: User
+    ) -> tuple[Room, bool]:
+        """`join_member`, and whether the person was not in the room before.
+        Only an add from Console is a `console_member_added`; people named when
+        a room is made elsewhere are only a `room_users_added`."""
         target_user_id = target.id
         client = await self.member_actor(tenant_id, target)
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -1165,16 +1181,11 @@ class ChatService:
         joined()
         if not already_in:
             emit_safely(self._telemetry, "room_users_added", {"user_count": 1})
-            emit_safely(
-                self._telemetry,
-                "console_member_added",
-                self._member_properties(room, "person"),
-            )
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             member_ids = [member.id for member, _ in await self.members(session, room)]
         self._memberships_changed(tenant_id, member_ids, [room.id])
-        return room
+        return room, not already_in
 
     async def join_people(
         self,
@@ -1262,6 +1273,11 @@ class ChatService:
                 **self._member_properties(room, "person"),
                 "left": actor.id == target_user_id,
             },
+        )
+        emit_safely(
+            self._telemetry,
+            "room_users_removed",
+            {"user_count": 1, "removed_by_kind": "user"},
         )
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:

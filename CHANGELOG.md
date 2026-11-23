@@ -192,11 +192,6 @@ version of their own to them without also giving them a release of their own.
   most `DB_MIGRATION_LOCK_TIMEOUT`, so upgrade at a quiet time.
 
 #### Fixed
-- **Usage telemetry is filed under the right environment again.** The server
-  now also sends its client id, environment and staff flag under the relay's
-  earlier names (`flint.client_id`, `flint_env`, `flint_internal`). A relay
-  that reads only those filed every event from a newer server under
-  production, a development or internal deployment's included.
 - **What Switch says under an agent's name no longer counts as the agent
   talking.** An agent's join greeting, a Switch Console chat's opening line,
   notices of something done on its behalf and its answers to room commands
@@ -209,6 +204,18 @@ version of their own to them without also giving them a release of their own.
   `known_agent_type` was `other` for every runtime but Claude Code, Codex and
   OpenCode; Antigravity, Cursor, DeepSeek Harness, Pi, Copilot, Kiro, Mistral
   Vibe, Goose, Qwen, Droid, Cline and Junie are now reported by name.
+- **`console_member_added` counts only people added from Switch Console.**
+  People named when a room is made from the dashboard, a template or an
+  agent's tool were counted as Console adds too; they are still a
+  `room_users_added`.
+- **Taking someone out of a Switch Console chat is a `room_users_removed`**,
+  as adding them was already a `room_users_added`.
+- **The room-moderation command no longer touches the server's reporting
+  start.** It set up telemetry as the server does at boot, so run without
+  telemetry switched on it cleared when reporting began, and the server's
+  next period counts came out partial or not at all.
+- **`invitation_accepted` is sent once the join commits**, not before a
+  directory that can still refuse it.
 - **A command typed in a Switch Console chat is no longer a message.** A
   `!reset` or other command sent from Console was reported as `message_sent`
   and metered as a message toward the workspace's message usage; one typed on
@@ -4868,16 +4875,16 @@ version of their own to them without also giving them a release of their own.
 
 #### Fixed
 
-- **Usage data is filed under the right build again.** Since 0.41.0 every
-  event reached the analytics relay without the field it files events by, so
-  canary and development builds were counted with stable ones. The routing
-  fields are now sent under their earlier names as well, until the relay reads
-  the new ones.
 - **Connecting a messaging app through its own install is counted.**
   `bridge_connected` gains `method` (`credentials` or `app_install`): an
   install that started and failed is reported, and one that finished is
   reported when its connection shows up. Before, only pasted-in tokens were
   counted, though disconnecting either kind was.
+- **A local or remote server Switch Console starts by itself is told apart.**
+  `managed_server_action` gains `trigger`: `user` when someone asked, and
+  `automatic` for a server started at launch because it was running when the
+  app last quit, or brought up to date then. Before, those counted as starts
+  someone asked for.
 - **Failures on the way to the server are counted.** Connecting a messaging
   app while the server's host is known to be down reports `unreachable`; an
   account link the server refuses by throwing, a single sign-on whose

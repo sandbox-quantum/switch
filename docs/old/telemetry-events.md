@@ -106,13 +106,6 @@ even `prod`:
 the reporting process runs, not anything inside the deployment, so it is not
 an identifier in the sense of the rule above.
 
-The server also sends the client id, the environment and the staff flag under
-the relay's earlier names, `flint.client_id`, `flint_env` and
-`flint_internal`, with the same values. A relay that reads only those sees an
-event from a newer server as naming no environment, and files it under
-production whatever it is; one that reads both keeps the earlier name. They
-go once every relay in service reads the `switch_trust.*` names.
-
 ### Internal usage
 
 Staff use the product too, and their usage is real but is not adoption. Three

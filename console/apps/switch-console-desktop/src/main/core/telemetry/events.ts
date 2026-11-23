@@ -743,6 +743,12 @@ export type TelemetryEventMap = {
   managed_server_action: {
     action: TelemetryManagedServerAction;
     target: 'local' | 'remote';
+    /**
+     * `user`: someone asked for it. `automatic`: Switch Console did it by
+     * itself, starting a server that was running when it last quit, or
+     * bringing one up to date at launch.
+     */
+    trigger: 'user' | 'automatic';
     outcome: TelemetryOutcome;
     failure_reason: TelemetryManagedServerFailure;
     docker_available: TelemetryDockerAvailability;
@@ -982,7 +988,14 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   host_setup_step: ['step_kind', 'agent_type', 'action', 'outcome'],
   host_onboarded: ['outcome', 'picked_from_ssh_config'],
   host_removed: ['outcome'],
-  managed_server_action: ['action', 'target', 'outcome', 'failure_reason', 'docker_available'],
+  managed_server_action: [
+    'action',
+    'target',
+    'trigger',
+    'outcome',
+    'failure_reason',
+    'docker_available',
+  ],
   view_opened: ['view_id'],
   command_executed: ['command_id', 'invoked_by'],
   deeplink_opened: ['resolved', 'cold_start'],

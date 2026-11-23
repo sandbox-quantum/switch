@@ -192,12 +192,6 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
             'switch_trust.client_id': context.clientId,
             'switch_trust.env': context.telemetryEnv,
             'switch_trust.internal': context.internal,
-            // The same three under the names they replaced, which the relay
-            // still routes by until it reads the switch_trust names: without
-            // them every event is filed under prod, whatever build sent it.
-            'flint.client_id': context.clientId,
-            flint_env: context.telemetryEnv,
-            flint_internal: context.internal,
             'os.type': context.osType,
             'os.version': context.osVersion,
           }),

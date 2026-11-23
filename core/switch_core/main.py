@@ -939,7 +939,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # ── Product telemetry ────────────────────────────────────────────────────
     # Before the services that report through it, switched on or not.
     telemetry, installed_at, telemetry_http = await build_telemetry(
-        config, session_factory, switch_core_version()
+        config, session_factory, switch_core_version(), keeps_deployment_state=True
     )
     message_telemetry = MessageTelemetry(
         telemetry=telemetry, session_factory=session_factory
