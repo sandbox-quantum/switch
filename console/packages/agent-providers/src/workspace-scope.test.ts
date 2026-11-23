@@ -73,12 +73,11 @@ describe('pathScope', () => {
     expect(
       scopeIn(home, 'Library/Application Support/Switch/agent-controller/watchers/a/config.json')
     ).toBe('protected');
-    expect(
-      scopeIn(
-        home,
-        'Library/Application Support/Switchdash/agent-controller/s/watchers/a/config.json'
-      )
-    ).toBe('protected');
+    expect(scopeIn(home, 'Library/Application Support/switchdash/switchdash.db')).toBe('protected');
+    expect(scopeIn(home, 'Library/Application Support/switchdash-canary/switchdash.db')).toBe(
+      'protected'
+    );
+    expect(scopeIn(home, 'Library/Application Support/SomeOtherApp/state.db')).toBe('workspace');
     expect(scopeIn(home, 'projects/app/src/a.ts')).toBe('workspace');
   });
 
@@ -96,6 +95,14 @@ describe('pathScope', () => {
       env: { HOME: home, LOCALAPPDATA: local },
     });
     expect(scope.scope).toBe('protected');
+    const roaming = join(home, 'AppData', 'Roaming');
+    for (const profile of ['switchdash', 'switchdash-canary']) {
+      const console = pathScope(join(roaming, profile, 'switchdash.db'), {
+        cwd: home,
+        env: { HOME: home, APPDATA: roaming },
+      });
+      expect(console.scope).toBe('protected');
+    }
   });
 
   it('names the real path it decided on', () => {

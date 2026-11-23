@@ -124,6 +124,7 @@ export {
   isDeviceConsentNeededMessage,
   isDevicePolicyChangedMessage,
   policyAllowsBypass,
+  allowedDirectories,
   policyAllowsDirectory,
   readDevicePolicy,
   withinDirectory,

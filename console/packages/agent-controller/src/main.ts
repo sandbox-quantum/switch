@@ -200,6 +200,8 @@ Commands:
       their units instead, and need neither.
   disallow <agent-id> | --every-agent [--bypass] [--directory <dir>] [--data-dir <dir>]
       Take back what allow gave; with neither flag, everything it gave the agent.
+      A session in the middle of a turn finishes that turn as it started;
+      its next turn runs under what is allowed now.
   policy [--data-dir <dir>]
       Show what this machine allows its agents.
   sealing-key [--data-dir <dir>]

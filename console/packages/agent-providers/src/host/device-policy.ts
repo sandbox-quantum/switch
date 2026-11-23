@@ -143,9 +143,12 @@ export function policyAllowsDirectory(
   agentId: string,
   directory: string
 ): boolean {
-  return grantsOf(policy, agentId).some((grant) =>
-    (grant.directories ?? []).some((allowed) => withinDirectory(allowed, directory))
-  );
+  return allowedDirectories(policy, agentId).some((allowed) => withinDirectory(allowed, directory));
+}
+
+/** Every directory the device allowed the agent to work in, its own grants and every agent's. */
+export function allowedDirectories(policy: DevicePolicy, agentId: string): string[] {
+  return grantsOf(policy, agentId).flatMap((grant) => grant.directories ?? []);
 }
 
 /** `policy` with `grant` added for the agent. A directory must be absolute. */

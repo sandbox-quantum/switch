@@ -534,6 +534,20 @@ function attachmentToSend(
   try {
     const stats = fs.fstatSync(fd);
     if (!stats.isFile()) throw new Error(`${real} is not a regular file`);
+    // O_NOFOLLOW covers only the last name in the path. A directory above it
+    // swapped for a link between the check and the open would hand over a
+    // file elsewhere, so the path must still lead inside a root, and to the
+    // very file that was opened.
+    const now = fs.realpathSync(real);
+    const named = fs.statSync(now);
+    if (
+      !roots.some((root) => isWithin(root, now)) ||
+      named.dev !== stats.dev ||
+      named.ino !== stats.ino
+    )
+      return {
+        refused: `Refused to send ${filePath}: it changed while it was being opened. Send it again.`,
+      };
     if (stats.nlink > 1 && !downloadsIn(ctx.mediaDir).has(fileKey(stats)))
       return {
         refused:

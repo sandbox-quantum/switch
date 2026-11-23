@@ -8022,10 +8022,13 @@ tags; see RELEASING.md.
   `dontAsk` in its advanced configuration, which is then left out) runs with
   approvals and its status says why, and one asking for a directory outside
   the workspaces folder fails as `definition_invalid` with the command that
-  would allow it. A change is applied within seconds. Agents run as Linux
-  users of their own (`--separate-users`) are contained by their units and are
-  not affected. Existing bypass agents and agents with their own directory on
-  other controllers need allowing once after updating.
+  would allow it. A change is applied within seconds, though a session in the
+  middle of a turn finishes that turn as it started. A directory is checked
+  with links followed, so a link inside the workspaces folder to somewhere
+  else needs that place allowed. Agents run as Linux users of their own
+  (`--separate-users`) are contained by their units and are not affected.
+  Existing bypass agents and agents with their own directory on other
+  controllers need allowing once after updating.
 - **The macOS keychain store quotes its data directory.** A `--data-dir`
   holding a quote, backslash or newline no longer breaks, or adds a second
   command to, the `security -i` line that stores a secret. Entries for any

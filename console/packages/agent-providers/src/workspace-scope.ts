@@ -58,17 +58,30 @@ function expandHome(path: string, home: string | null): string {
   return path;
 }
 
-/** The home directory's dot entry `real` is in, and Switch's application data folders. */
+/**
+ * The home directory's dot entry `real` is in, and the application data
+ * folder of Switch's own that it is in: any entry whose name starts with
+ * "switch", whatever its case, in macOS's Application Support or Windows'
+ * roaming and local app data. That covers the agent controller (`Switch`) and
+ * every Switch Console profile (`switchdash`, `switchdash-canary`,
+ * `switchdash-dev`). The name is read off `real`, so it is the case the
+ * folder has on disk.
+ */
 function protectedRoots(real: string, home: string | null, env: Record<string, string>): string[] {
   const roots: string[] = [];
+  const bases: string[] = [];
   if (home !== null && isWithin(home, real) && real !== home) {
     const first = relative(home, real).split(sep)[0]!;
     if (first.startsWith('.')) roots.push(join(home, first));
-    const support = join(home, 'Library', 'Application Support');
-    roots.push(join(support, 'Switch'), join(support, 'Switchdash'));
+    bases.push(join(home, 'Library', 'Application Support'));
   }
-  if (env.LOCALAPPDATA) roots.push(join(env.LOCALAPPDATA, 'Switch'));
-  if (env.APPDATA) roots.push(join(env.APPDATA, 'Switchdash'));
+  if (env.LOCALAPPDATA) bases.push(env.LOCALAPPDATA);
+  if (env.APPDATA) bases.push(env.APPDATA);
+  for (const base of bases) {
+    if (!isWithin(base, real) || real === base) continue;
+    const first = relative(base, real).split(sep)[0]!;
+    if (first.toLowerCase().startsWith('switch')) roots.push(join(base, first));
+  }
   return roots;
 }
 

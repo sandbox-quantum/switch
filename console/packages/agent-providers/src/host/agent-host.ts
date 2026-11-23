@@ -969,9 +969,21 @@ export async function runAgentHost(
         void pending.catch((error: Error) => fail(error));
       })
     );
+    /**
+     * The watcher's template as it last read it from disk, and whether
+     * `config.json` has been replaced since. Applying the definition reads the
+     * file again only when it was: the grants check runs it on a timer, and on
+     * Windows a read in flight refuses the rename that replaces the file.
+     */
+    let latestTemplate = template;
+    let templateReplaced = true;
     /** The watcher's template as it stands now, which admitting a room reads too. */
-    const currentTemplate = async (): Promise<SharedHostConfig> =>
-      sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
+    const currentTemplate = async (): Promise<SharedHostConfig> => {
+      latestTemplate = sharedConfigSchema.parse(
+        JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      );
+      return latestTemplate;
+    };
     /**
      * Stops a session of an earlier identity of the agent (`otherIdentity`)
      * and takes it out of its room, so the room's next message, or a reset,
@@ -1288,7 +1300,10 @@ export async function runAgentHost(
       const placed = placements.sessionIn(event.roomId);
       if (placed) {
         const owner = await sessionConfig(placed);
-        const current = await currentTemplate();
+        // The template as last read: every message passes here, and only a
+        // replaced config.json (`onConfigReplaced`) changes the identity
+        // compared. Reading the file each time races that replace on Windows.
+        const current = latestTemplate;
         if (owner && otherIdentity(owner, current)) await retire(owner, current);
         else if (owner && !(await stopped(placed))) {
           await deliver(owner, event, waiting);
@@ -1672,7 +1687,9 @@ export async function runAgentHost(
     const redefinitionDue = new Set<string>();
     let redefining = false;
     const applyDefinition = async () => {
-      const current = await currentTemplate();
+      const replaced = templateReplaced;
+      templateReplaced = false;
+      const current = replaced ? await currentTemplate() : latestTemplate;
       redefinitionDue.clear();
       const ours = new Set(
         assignments.sessions().map((config) => sharedSessionRoot(config.session.sessionId))
@@ -1747,7 +1764,10 @@ export async function runAgentHost(
       void pending.catch((error: Error) => fail(error));
     };
     unbind.push(
-      onConfigReplaced(root, stop.signal, redefine),
+      onConfigReplaced(root, stop.signal, () => {
+        templateReplaced = true;
+        redefine();
+      }),
       links.onBusy((busyRoot) => {
         if (redefinitionDue.has(busyRoot) && links.busy(busyRoot)?.busy === false) redefine();
       }),
@@ -1767,7 +1787,7 @@ export async function runAgentHost(
       if (checkingGrants || !anyLive()) return;
       checkingGrants = true;
       void (async () => {
-        const shape = await currentServicesShape(await currentTemplate());
+        const shape = await currentServicesShape(latestTemplate);
         if (shape === null) return;
         servicesNow = shape;
         redefine();

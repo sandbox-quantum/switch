@@ -1,12 +1,13 @@
+import { realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
+  allowedDirectories,
   DEVICE_POLICY_FILE,
   type DeviceConsentNeed,
   type DevicePolicy,
   emptyDevicePolicy,
   policyAllowsBypass,
-  policyAllowsDirectory,
   readDevicePolicy,
   withinDirectory,
 } from '@switch-console/agent-providers';
@@ -24,6 +25,7 @@ export class DevicePolicySource {
   private policy: DevicePolicy = emptyDevicePolicy();
   private stamp: string | null = null;
   private failure: string | null = null;
+  private refreshing: Promise<void> = Promise.resolve();
   private readonly listeners = new Set<() => void>();
 
   constructor(
@@ -40,8 +42,20 @@ export class DevicePolicySource {
     return () => this.listeners.delete(listener);
   }
 
-  /** Reads the file again if it changed, and tells listeners when what it allows did. */
-  async refresh(): Promise<void> {
+  /**
+   * Reads the file again if it changed, and tells listeners when what it
+   * allows did. One read at a time: the status poll and Console's
+   * policy-changed message both ask, and two reads finishing out of order
+   * would leave the older policy in force under the newer file's stamp, a
+   * revocation lost until the file next changed.
+   */
+  refresh(): Promise<void> {
+    const next = this.refreshing.then(() => this.refreshOnce());
+    this.refreshing = next.catch(() => {});
+    return next;
+  }
+
+  private async refreshOnce(): Promise<void> {
     const path = join(this.dataDir, DEVICE_POLICY_FILE);
     const stamp = await stat(path).then(
       (info) => `${info.mtimeMs}:${info.size}:${info.ino}`,
@@ -93,10 +107,37 @@ function namedDirectory(definition: Pick<AgentDefinition, 'directory'>): string 
 }
 
 /**
+ * `path` with every symbolic link followed through the deepest part of it
+ * that exists, the rest appended; null when that cannot be read.
+ */
+function realDirectory(path: string): string | null {
+  const missing: string[] = [];
+  let current = path;
+  for (;;) {
+    try {
+      return join(realpathSync.native(current), ...missing);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') return null;
+      const parent = dirname(current);
+      if (parent === current) return null;
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
  * A directory outside the workspaces folder that the device has not allowed
  * the agent, or null. The data directory's own `workspaces` folder counts as
  * the workspaces folder: agents defined before the default moved were given
  * directories there by the server.
+ *
+ * Checked as named and again with links followed: a link inside the
+ * workspaces folder (one a cloned repository carries, or the agent made) to a
+ * directory outside it would otherwise move the agent there without the
+ * device's leave. Refused that way, it names where the link leads, which is
+ * what the device would have to allow.
  */
 export function unallowedDirectory(
   entry: AgentAssignment,
@@ -105,10 +146,17 @@ export function unallowedDirectory(
   if (context.policy === null) return null;
   const directory = namedDirectory(entry.definition);
   if (directory === null) return null;
-  if (withinDirectory(context.workspaces, directory)) return null;
-  if (withinDirectory(join(context.dataDir, 'workspaces'), directory)) return null;
-  if (policyAllowsDirectory(context.policy, entry.agent_id, directory)) return null;
-  return directory;
+  const roots = [
+    context.workspaces,
+    join(context.dataDir, 'workspaces'),
+    ...allowedDirectories(context.policy, entry.agent_id),
+  ];
+  if (!roots.some((root) => withinDirectory(root, directory))) return directory;
+  const real = realDirectory(directory);
+  if (real === null) return directory;
+  const realRoots = roots.map(realDirectory).filter((root): root is string => root !== null);
+  if (!realRoots.some((root) => withinDirectory(root, real))) return real;
+  return null;
 }
 
 /**
