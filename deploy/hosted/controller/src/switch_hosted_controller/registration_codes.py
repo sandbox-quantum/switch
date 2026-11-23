@@ -1,8 +1,8 @@
 """A box's registration code, written just before it first starts.
 
 A box registers with Core once, using a one-time code it reads from its Secret `switch-enrol` (key `code`) when it
-boots. Codes last 30 minutes on purpose, so one written when the user was set up has usually expired by the box's
-first start. Instead, just before a box goes 0 -> 1 this asks Core for the machine's code (`prepare`, with the hosted
+boots. A box's code lasts 15 minutes (Core's `MACHINE_ENROLLMENT_CODE_LIFETIME`; 30 with hosted agents v2 off), so
+one written when the user was set up has usually expired by the box's first start. Instead, just before a box goes 0 -> 1 this asks Core for the machine's code (`prepare`, with the hosted
 controller token the scaler already holds) and writes it into the Secret, then the scaler starts the box.
 
 - Only for machines in the scaler's own box map, and only for a box being started or waiting to register.
@@ -12,7 +12,8 @@ controller token the scaler already holds) and writes it into the Secret, then t
   fresh code: the box reads the code only at boot.
 - The code is held in a local variable for one call, written into the Secret, and dropped. It is never logged,
   returned or reported; log lines carry machine ids, namespaces and times only.
-- Asks Core at most once per box every 5 minutes; Core itself mints at most once per box per 30 minutes.
+- Asks Core at most once per box every 5 minutes; Core mints a new one only once the box's last code
+  has expired (so at most once per box per code lifetime).
 Nothing here ever stops a start: every failure is logged by type and the box starts as it would have.
 """
 
@@ -107,7 +108,7 @@ class RegistrationCodes:
             return False
         self._cleared.discard(machine_id)
         logger.info(
-            "Machine %s: registration code written for %s, expires within 30 min.",
+            "Machine %s: registration code written for %s, expires within its code lifetime.",
             machine_id,
             namespace,
         )
