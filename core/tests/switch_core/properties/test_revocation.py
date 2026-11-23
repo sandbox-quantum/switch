@@ -23,6 +23,7 @@ from tests.switch_core.properties.revocation_machine import (
     machine_on,
 )
 from tests.switch_core.properties.revocation_resources import (
+    ConnectorGrant,
     ControllerAccess,
     RoomAccess,
     RoomMembership,
@@ -256,6 +257,15 @@ def test_a_reread_that_straddled_a_removal_does_not_keep_the_room(
         machine.check(2)
     finally:
         machine.teardown()
+
+
+@pytest.mark.property("revocation.takes-effect-everywhere")
+def test_a_revoked_connector_grant_issues_nothing_anywhere(
+    postgres_schema: str, clock: Clock
+) -> None:
+    COVERAGE.clear()
+    run_state_machine_as_test(machine_on(postgres_schema, ConnectorGrant, clock))
+    _reached(SHOULD_REACH)
 
 
 class _drawing:

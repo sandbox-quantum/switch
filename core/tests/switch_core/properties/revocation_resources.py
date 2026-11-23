@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
+from datetime import timedelta
 from typing import Any, ClassVar, Literal
 
 from sqlalchemy import text, update
@@ -19,12 +21,24 @@ from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.room_access_cache import RoomAccessCache
-from switch_core.db.models import TENANT_ZERO_ID, AgentController, ApiKey, User
+from switch_core.connections.adapters import ConnectionSecret
+from switch_core.connections.broker import Principal, ServiceBroker, ServiceError
+from switch_core.connections.loader import CATALOG
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    Agent,
+    AgentController,
+    ApiKey,
+    TenantMember,
+    User,
+)
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import Membership, RoomStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.usage_store import UsageStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.transport import TransportHandlers
 from switch_core.transport.cursors import FromHead
@@ -34,7 +48,10 @@ from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.transport.postgres import DELIVERY_PAGE, PostgresTransport
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from tests.conftest import TEST_KEYRING
 from tests.routing import add_member, make_agent, make_room, router_on
+from tests.switch_core.connections.fake_vendor import FakeVendor
+from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.properties.revocation_machine import (
     TTL,
     Process,
@@ -78,7 +95,7 @@ class ControllerAccess(_Nothing):
     (`ManagementAuthenticator.current`), through `ControllerAuthCache`.
     Revoked by setting `revoked_at`, which `controller.auth_changed` names."""
 
-    kind: ClassVar[Literal["held", "reread"]] = "held"
+    kind: ClassVar[Literal["held", "reread", "direct"]] = "held"
 
     def __init__(self) -> None:
         self.principal: ControllerPrincipal | None = None
@@ -182,7 +199,7 @@ class RoomAccess(_Nothing):
     (`AgentCore.require_room_member`), through `RoomAccessCache`. Revoked by
     deleting its `room_agents` row, which `room_agent.changed` names."""
 
-    kind: ClassVar[Literal["held", "reread"]] = "held"
+    kind: ClassVar[Literal["held", "reread", "direct"]] = "held"
 
     async def seed(self, session_factory: SessionFactory) -> None:
         room = await make_room(session_factory, "room")
@@ -258,7 +275,7 @@ class RoomMembership:
     `membership.changed` names; the copy re-reads its rows on the signal,
     on resync and on the periodic re-check (`MembershipSignals`)."""
 
-    kind: ClassVar[Literal["held", "reread"]] = "reread"
+    kind: ClassVar[Literal["held", "reread", "direct"]] = "reread"
 
     async def seed(self, session_factory: SessionFactory) -> None:
         room = await make_room(session_factory, "room")
@@ -363,3 +380,108 @@ class RoomMembership:
     async def slow(self, process: Process) -> bool | None:
         await process.parts["transport"]._reconcile_membership()
         return None
+
+
+# ── A connector grant, as the broker issues on it ─────────────────────────────
+
+SERVICE = "github"
+
+
+class ConnectorGrant(_Nothing):
+    """An owner's grant of a connected account to their agent, as the broker
+    checks it on every token it issues (`ServiceBroker.issue`). Revoked by
+    removing the grant (`ServiceBroker.revoke_grant`). The broker keeps no
+    grant in memory, so every process must agree with the database at once;
+    a cache added there later would have to follow the signal bus."""
+
+    kind: ClassVar[Literal["held", "reread", "direct"]] = "direct"
+
+    async def seed(self, session_factory: SessionFactory) -> None:
+        async with session_factory() as session:
+            owner = User(name="owner", email="owner@example.invalid", role="user")
+            session.add(owner)
+            await session.flush()
+            session.add(
+                TenantMember(tenant_id=TENANT_ZERO_ID, user_id=owner.id, role="member")
+            )
+            agent = await add_agent(session, name="agent", owner_id=owner.id)
+            await session.commit()
+        self.owner_id, self.agent_id = owner.id, agent.id
+        broker = self._broker(session_factory)
+        async with session_factory() as session:
+            await broker.connect(
+                session,
+                user_id=owner.id,
+                service=SERVICE,
+                consent="write",
+                granted_scopes=[],
+                account_id="owner-1",
+                external_identity="owner-1",
+                secret=ConnectionSecret(
+                    {
+                        "access_token": "gho_owner",
+                        "expires_at": time.time() + 8 * 3600,
+                        "refresh_token": "ghr_owner",
+                        "refresh_expires_at": time.time() + 180 * 86400,
+                    }
+                ),
+                oauth_client_id=None,
+            )
+        await self.grant(session_factory)
+
+    def _broker(self, session_factory: SessionFactory) -> ServiceBroker:
+        return ServiceBroker(
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            catalog=CATALOG,
+            adapters={SERVICE: FakeVendor()},
+            organization_apps=None,
+            disabled={},
+            store=ServiceConnectionStore(),
+            token_retention=timedelta(days=30),
+            workspace_services=WorkspaceServiceStore(),
+            workspace_gate=False,
+            public_url=None,
+        )
+
+    def attach(self, process: Process, session_factory: SessionFactory) -> None:
+        process.parts["broker"] = self._broker(session_factory)
+        process.parts["session_factory"] = session_factory
+
+    async def grant(self, session_factory: SessionFactory) -> None:
+        async with session_factory() as session:
+            agent = await session.get(Agent, self.agent_id)
+            assert agent is not None
+            await self._broker(session_factory).set_grant(
+                session,
+                agent=agent,
+                actor_id=self.owner_id,
+                service=SERVICE,
+                access="write",
+                tool_mode=None,
+                tools=None,
+                resources={"installation_id": 7, "repository_ids": [70]},
+            )
+
+    async def revoke(self, session_factory: SessionFactory) -> None:
+        async with session_factory() as session:
+            grant = await ServiceConnectionStore().get_grant(
+                session, self.agent_id, SERVICE
+            )
+            if grant is not None:
+                await self._broker(session_factory).revoke_grant(
+                    session, grant, self.owner_id
+                )
+
+    async def allowed(self, process: Process) -> bool:
+        async with process.parts["session_factory"]() as session:
+            try:
+                await process.parts["broker"].issue(
+                    session, self.agent_id, Principal.agent_key(), SERVICE
+                )
+            except ServiceError:
+                return False
+        return True
+
+    async def slow(self, process: Process) -> bool | None:
+        return await self.allowed(process)

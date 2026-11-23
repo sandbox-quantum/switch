@@ -22,6 +22,8 @@ not depends on the resource's kind:
 - `reread`, a copy that re-reads the database: it agrees once it has
   resynced on a new connection or run the periodic re-check since the
   change.
+- `direct`, read from the database on every check: it agrees at once,
+  heard or not.
 
 What a resource is, how it is granted, revoked and checked, is a `Resource`
 (`revocation_resources.py`). One machine serves every resource; a test picks
@@ -127,7 +129,7 @@ class Process:
 class Resource(Protocol):
     """Something revoked, as one process and every other see it."""
 
-    kind: ClassVar[Literal["held", "reread"]]
+    kind: ClassVar[Literal["held", "reread", "direct"]]
 
     async def seed(self, session_factory: SessionFactory) -> None:
         """The rows the resource needs, granted."""
@@ -371,6 +373,9 @@ class Revocations(RuleBasedStateMachine):
         if allowed == self.granted:
             return
         doing = "acts on a revoked" if allowed else "refuses a granted"
+        assert self.resource.kind != "direct", (
+            f"process {number} {doing} resource it reads on every check"
+        )
         assert number not in self.heard, (
             f"process {number} heard the change and still {doing} resource"
         )

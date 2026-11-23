@@ -23,8 +23,8 @@ properties:
       (`connections/broker.py`). Security-relevant: a revoked controller or a
       removed member must not keep access through a cache. The code-level
       machine (`revocation_machine.py`) runs two processes on one database,
-      severs their listening connections for real, and covers the controller
-      token cache, the room access cache and room membership so far; the
-      broker is still to come. A cache must refuse within the TTL once it
-      missed a revocation; a copy that re-reads (room membership) must agree
-      once it has resynced or re-checked.
+      severs their listening connections for real, and covers all four. A
+      cache must refuse within the TTL once it missed a revocation; a copy
+      that re-reads (room membership) must agree once it has resynced or
+      re-checked; the broker, which keeps no grant in memory, must agree at
+      once.
