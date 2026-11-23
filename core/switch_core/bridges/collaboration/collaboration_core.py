@@ -343,9 +343,13 @@ class CollaborationCore:
 
         self._channel_to_room: dict[str, tuple[str, str]] = {}
         self._room_to_channel: dict[tuple[str, str], str] = {}
-        # How many times each room's mapping was added or removed. A reload
-        # that read the rows before one of those leaves that room alone.
-        self._mapping_changes: dict[tuple[str, str], int] = {}
+        # Every reload of the rooms' rows takes a stamp as it begins, and so
+        # does every mapping made or removed here. A room's mapping was
+        # settled by the newest of those that has acted on it
+        # (`_mapping_stamped`); an older reload that finishes later leaves it
+        # alone, whatever order they finish in.
+        self._mapping_stamps = 0
+        self._mapping_stamped: dict[tuple[str, str], int] = {}
         # Switch room id -> its tenant. Filled by `add_room_mapping`, which is
         # the one way a room enters the channel maps at all, so a room that
         # has a channel mapping always has a tenant here — including rooms
@@ -2859,11 +2863,10 @@ class CollaborationCore:
 
     async def reload_channel_map(self) -> None:
         """Map this bridge's rooms as their rows say now, after another
-        process bridged, unbridged or moved one. A room mapped or unmapped
-        here while the rows were being read is newer than the read, and is
-        left as it is."""
-        before = dict(self._room_to_channel)
-        changes_before = dict(self._mapping_changes)
+        process bridged, unbridged or moved one. A room settled by a newer
+        reload, or mapped or unmapped here since this one began, is left as
+        it is."""
+        stamp = self._next_mapping_stamp()
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -2873,29 +2876,40 @@ class CollaborationCore:
             for room in rooms
             if room.external_channel_id
         }
-
-        def unchanged(key: tuple[str, str]) -> bool:
-            return self._mapping_changes.get(key) == changes_before.get(key)
-
-        for key, channel_id in before.items():
-            if key not in stored and unchanged(key):
-                logger.info(
-                    "Room %s is no longer bridged to channel %s; unmapping it",
-                    key[0],
-                    channel_id,
-                )
-                self.remove_room_mapping(*key)
-        for key, room in stored.items():
-            if self._room_to_channel.get(key) != room.external_channel_id and unchanged(
-                key
-            ):
+        for key in sorted(set(self._room_to_channel) | set(stored)):
+            if not self._mapping_newer(key, stamp):
+                continue
+            room = stored.get(key)
+            channel_id = self._room_to_channel.get(key)
+            if room is None:
+                if channel_id is not None:
+                    logger.info(
+                        "Room %s is no longer bridged to channel %s; unmapping it",
+                        key[0],
+                        channel_id,
+                    )
+                    self._unmap(*key)
+            elif channel_id != room.external_channel_id:
                 assert room.external_channel_id is not None
-                self.add_room_mapping(
+                self._map(
                     room.id,
                     room.transport_room_id,
                     room.external_channel_id,
                     room.tenant_id,
                 )
+
+    def _next_mapping_stamp(self) -> int:
+        self._mapping_stamps += 1
+        return self._mapping_stamps
+
+    def _mapping_newer(self, key: tuple[str, str], stamp: int) -> bool:
+        """Whether a reload or change stamped `stamp` is newer than what
+        settled the room's mapping, recording it as what settles it now if
+        so."""
+        if stamp < self._mapping_stamped.get(key, 0):
+            return False
+        self._mapping_stamped[key] = stamp
+        return True
 
     def _find_channel(
         self, room_id: str | None = None, transport_room_id: str | None = None
@@ -3676,15 +3690,27 @@ class CollaborationCore:
         more to the point, without a read that would run under whatever tenant
         happened to be bound at the time.
         """
+        self._mapping_newer((room_id, transport_room_id), self._next_mapping_stamp())
+        self._map(room_id, transport_room_id, external_channel_id, tenant_id)
+
+    def _map(
+        self,
+        room_id: str,
+        transport_room_id: str,
+        external_channel_id: str,
+        tenant_id: str,
+    ) -> None:
         key = (room_id, transport_room_id)
-        self._mapping_changes[key] = self._mapping_changes.get(key, 0) + 1
         self._channel_to_room[external_channel_id] = key
         self._room_to_channel[key] = external_channel_id
         self._room_tenants[room_id] = tenant_id
 
     def remove_room_mapping(self, room_id: str, transport_room_id: str) -> None:
+        self._mapping_newer((room_id, transport_room_id), self._next_mapping_stamp())
+        self._unmap(room_id, transport_room_id)
+
+    def _unmap(self, room_id: str, transport_room_id: str) -> None:
         key = (room_id, transport_room_id)
-        self._mapping_changes[key] = self._mapping_changes.get(key, 0) + 1
         channel_id = self._room_to_channel.pop(key, None)
         if channel_id is not None:
             self._channel_to_room.pop(channel_id, None)

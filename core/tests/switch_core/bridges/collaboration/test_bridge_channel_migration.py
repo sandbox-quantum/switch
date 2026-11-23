@@ -65,7 +65,8 @@ def _make_bridge(rooms: dict[str, SimpleNamespace]) -> CollaborationCore:
     bridge._channel_locks = {}
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
-    bridge._mapping_changes = {}
+    bridge._mapping_stamps = 0
+    bridge._mapping_stamped = {}
     bridge._adapter = _Adapter()  # type: ignore[assignment]
     bridge._room_store = _RoomStore(rooms)  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
