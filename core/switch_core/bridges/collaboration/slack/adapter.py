@@ -2207,6 +2207,8 @@ class SlackAdapter(PlatformAdapter):
         work_ref: str,
         stream_refs: Sequence[str],
         session_ref: str | None = None,
+        *,
+        end_session: bool = True,
     ) -> bool:
         """Delete a turn's streams, then its work message, once the plan is
         under the answer.
@@ -2223,9 +2225,10 @@ class SlackAdapter(PlatformAdapter):
         if client is None or not ts:
             return False
         _, session_ts = self._parse_message_ref(session_ref or work_ref)
-        await self._set_session_status(
-            {"channel_id": channel, "thread_ts": session_ts, "status": "active"}
-        )
+        if end_session:
+            await self._set_session_status(
+                {"channel_id": channel, "thread_ts": session_ts, "status": "active"}
+            )
         for ref in [*stream_refs, work_ref]:
             _, message_ts = self._parse_message_ref(ref)
             if not message_ts:
@@ -2248,20 +2251,25 @@ class SlackAdapter(PlatformAdapter):
         self._work_notes.pop(work_ref, None)
         return True
 
-    def _permalink(self, message_ref: str) -> str | None:
+    def _permalink(self, message_ref: str, thread_ref: str | None = None) -> str | None:
         """A link to a message of this workspace, made rather than asked for.
 
         Slack's own links have this shape, `chat.getPermalink` would cost a
         call per turn, and the workspace's address is already known from
-        `auth.test`. For a message at a channel's root, which is the only
-        kind a work thread points back to. None without the address.
+        `auth.test`. A reply's link names its thread as Slack's do, without
+        which it opens the channel rather than the reply. None without the
+        address.
         """
         channel_id, ts = self._parse_message_ref(message_ref)
         if not self._team_url or not channel_id or not ts:
             return None
-        return (
+        link = (
             f"{self._team_url.rstrip('/')}/archives/{channel_id}/p{ts.replace('.', '')}"
         )
+        _, thread_ts = self._parse_message_ref(thread_ref) if thread_ref else ("", "")
+        if thread_ts and thread_ts != ts:
+            link += f"?thread_ts={thread_ts}&cid={channel_id}"
+        return link
 
     def _asked_block(self, asked: AskedQuestion | None) -> dict[str, Any] | None:
         """A line of small text pointing back at the message a turn answers.
@@ -2272,7 +2280,7 @@ class SlackAdapter(PlatformAdapter):
         """
         if asked is None:
             return None
-        url = self._permalink(asked.message_ref)
+        url = self._permalink(asked.message_ref, asked.thread_ref)
         if asked.text:
             label = escape_mrkdwn(f"“{asked.text}”").replace("|", "¦")
         elif url:

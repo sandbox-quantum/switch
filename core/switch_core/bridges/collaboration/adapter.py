@@ -162,6 +162,9 @@ class AskedQuestion:
 
     message_ref: str
     text: str
+    # The thread the message is a reply in, if it is one: a link to a reply
+    # has to name its thread to open on it.
+    thread_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1866,10 +1869,13 @@ class PlatformAdapter(ABC):
         work_ref: str,
         stream_refs: Sequence[str],
         session_ref: str | None = None,
+        *,
+        end_session: bool = True,
     ) -> bool:
         """Delete a work thread's streams and then its work message. True when
         all of them are gone; False at the first refusal. The turn's session
-        is on `session_ref` where that is not the work message itself."""
+        is on `session_ref` where that is not the work message itself, and is
+        left as it is where `end_session` is false: another turn still has it."""
         raise NotImplementedError
 
     async def open_session(

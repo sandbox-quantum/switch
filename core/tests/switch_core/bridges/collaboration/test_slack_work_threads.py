@@ -849,3 +849,29 @@ async def test_removing_an_inline_reply_ends_the_session_on_its_thread() -> None
     [session] = _sessions(client)
     assert session["thread_ts"] == "3.0"
     assert [d["ts"] for d in client.deleted] == ["4.0"]
+
+
+async def test_a_question_asked_in_a_thread_is_linked_with_its_thread() -> None:
+    client = FakeWebClient()
+    adapter = _pointing(client)
+    asked = AskedQuestion(
+        message_ref=f"{CHANNEL}:1700000000.200000",
+        text="how many PRs?",
+        thread_ref=f"{CHANNEL}:1700000000.100000",
+    )
+    await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER, asked=asked)
+    link = (
+        "https://acme.slack.com/archives/C1/p1700000000200000"
+        "?thread_ts=1700000000.100000&cid=C1"
+    )
+    assert client.posted[0]["blocks"][0] == _pointer(f"↩ <{link}|“how many PRs?”>")
+
+
+async def test_removing_while_another_turn_has_the_session_leaves_it_working() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    assert await adapter.remove_work_thread(
+        CHANNEL, f"{CHANNEL}:5.0", [], session_ref=f"{CHANNEL}:1.0", end_session=False
+    )
+    assert _sessions(client) == []
+    assert [d["ts"] for d in client.deleted] == ["5.0"]

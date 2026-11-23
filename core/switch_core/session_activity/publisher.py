@@ -1255,8 +1255,16 @@ class AgentSessionActivityPublisher:
                 or target.thread_ref
             )
             asked = (
-                await self._asked_question(db, key, view, target.channel_id, asked_on)
+                await self._asked_question(
+                    db,
+                    key,
+                    view,
+                    target.channel_id,
+                    asked_on,
+                    target.thread_ref if _known_thread_turn(view.row) else None,
+                )
                 if target.work_mode is not None
+                and await self._adapter.hosts_work_threads(target.channel_id)
                 else None
             )
             steered_refs = {
@@ -1434,6 +1442,7 @@ class AgentSessionActivityPublisher:
         view: TurnView,
         channel_id: str,
         asked_on: str | None,
+        thread_ref: str | None = None,
     ) -> AskedQuestion | None:
         """The message a turn answers, as a work thread points back at it.
 
@@ -1488,7 +1497,13 @@ class AgentSessionActivityPublisher:
                     await self._platform_ref(db, channel_id, before.transport_event_id)
                     or asked_on
                 )
-        asked = AskedQuestion(message_ref=ref, text=text)
+        # A question asked in a thread is a reply there, unless the nudge
+        # pointed at the thread's first message.
+        asked = AskedQuestion(
+            message_ref=ref,
+            text=text,
+            thread_ref=thread_ref if thread_ref != ref else None,
+        )
         self._asked[key] = asked
         if len(self._asked) > _MAX_ASKED:
             self._asked.popitem(last=False)
@@ -1599,11 +1614,18 @@ class AgentSessionActivityPublisher:
         if _inline(post):
             # The status message is the record, kept as it was last drawn,
             # unless the turn only talked.
+            # A thread's session is shared by every turn drawn in it: left
+            # working while another of them still is.
+            shared = await self._shares_session_with_a_running_turn(post)
             if nothing_to_show:
                 removed = await self._adapter.remove_work_thread(
-                    target.channel_id, work_ref, [], session_ref=_session_ref(post)
+                    target.channel_id,
+                    work_ref,
+                    [],
+                    session_ref=_session_ref(post),
+                    end_session=not shared,
                 )
-            if not removed:
+            if not removed and not shared:
                 await self._adapter.close_session(
                     target.channel_id,
                     target.agent_name,
@@ -1665,6 +1687,10 @@ class AgentSessionActivityPublisher:
                 )
         await self._work_finished(post, folded or (work_ref if removed else None))
         self._work_messages.pop(key, None)
+
+    async def _shares_session_with_a_running_turn(self, post: TurnStatusPost) -> bool:
+        async with tenant_session(self._sessions, self._tenant_id) as db:
+            return await self._turn_posts.others_unfinished_in_thread(db, post)
 
     async def _work_finished(self, post: TurnStatusPost, folded: str | None) -> None:
         """Record that a turn's work message has had its ending."""
