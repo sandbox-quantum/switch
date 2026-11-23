@@ -12,8 +12,10 @@ goes through the client's portal onto that loop.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
-import time
+import itertools
+import threading
 from collections.abc import AsyncGenerator, Iterator
 from typing import Any
 
@@ -72,11 +74,21 @@ class _AuthenticatedAs:
     def __init__(self, app: ASGIApp, agent: Agent) -> None:
         self.app = app
         self.agent = agent
+        # The `_socket` tags of the sockets the app has finished serving.
+        self.served: set[bytes] = set()
+        self.served_changed = threading.Condition()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         scope["agent"] = self.agent
-        with tenant_scope(self.agent.tenant_id):
-            await self.app(scope, receive, send)
+        try:
+            with tenant_scope(self.agent.tenant_id):
+                await self.app(scope, receive, send)
+        finally:
+            tag = dict(scope.get("headers", [])).get(_SOCKET_TAG)
+            if tag is not None:
+                with self.served_changed:
+                    self.served.add(tag)
+                    self.served_changed.notify_all()
 
 
 @pytest.fixture
@@ -121,6 +133,37 @@ def _url(**params: Any) -> str:
     )
 
 
+_SOCKET_TAG = b"x-test-socket"
+_socket_tags = itertools.count()
+
+
+@contextlib.contextmanager
+def _socket(client: TestClient, url: str) -> Iterator[Any]:
+    """`client.websocket_connect`, left only once the server has finished
+    serving the socket.
+
+    Leaving `websocket_connect` sends the close and at once cancels the app's
+    task. The handler's cleanup awaits the stream's own (a read from the
+    buffer), and cancelled in the middle of it on a busy machine, the test
+    fails with a CancelledError after every assertion passed. Each socket
+    carries a tag, so a test with two open waits only for the one it closes.
+    """
+    app = client.app
+    assert isinstance(app, _AuthenticatedAs)
+    tag = str(next(_socket_tags)).encode()
+    with client.websocket_connect(
+        url, headers={_SOCKET_TAG.decode(): tag.decode()}
+    ) as ws:
+        try:
+            yield ws
+        finally:
+            ws.close(1000)
+            with app.served_changed:
+                assert app.served_changed.wait_for(
+                    lambda: tag in app.served, timeout=10
+                ), "the server never finished with the socket"
+
+
 def _next(ws: Any, event: str) -> dict[str, Any]:
     """The next message with this event name, skipping pings."""
     for _ in range(50):
@@ -133,7 +176,7 @@ def _next(ws: Any, event: str) -> dict[str, Any]:
 def test_it_opens_like_the_event_stream(
     client: TestClient, protocol: _Protocol
 ) -> None:
-    with client.websocket_connect(_url(scope="all")) as ws:
+    with _socket(client, _url(scope="all")) as ws:
         # The 50 ms heartbeat can beat the stream's first read on a busy
         # machine, so a ping may come first; nothing else may.
         state = ws.receive_json()
@@ -151,7 +194,7 @@ def test_it_opens_like_the_event_stream(
 def test_events_arrive_with_their_sequence_number(
     client: TestClient, protocol: _Protocol
 ) -> None:
-    with client.websocket_connect(_url(rooms=ROOM)) as ws:
+    with _socket(client, _url(rooms=ROOM)) as ws:
         ws.receive_json()
         seq = client.portal.call(  # type: ignore[union-attr]
             functools.partial(
@@ -188,7 +231,7 @@ def test_events_arrive_with_their_sequence_number(
 def test_the_server_pings_and_a_pong_counts_as_a_beat(
     client: TestClient, protocol: _Protocol
 ) -> None:
-    with client.websocket_connect(_url()) as ws:
+    with _socket(client, _url()) as ws:
         ws.receive_json()
         conn = protocol.connections.get("c1")
         assert conn is not None
@@ -204,7 +247,7 @@ def test_the_server_pings_and_a_pong_counts_as_a_beat(
 def test_a_refusal_is_sent_then_the_socket_closes_with_its_status(
     client: TestClient,
 ) -> None:
-    with client.websocket_connect(_url(scope="everywhere")) as ws:
+    with _socket(client, _url(scope="everywhere")) as ws:
         refused = ws.receive_json()
 
         assert refused["event"] == "refused"
@@ -217,7 +260,7 @@ def test_a_refusal_is_sent_then_the_socket_closes_with_its_status(
 def test_an_over_long_connection_id_is_refused(
     client: TestClient, protocol: _Protocol
 ) -> None:
-    with client.websocket_connect(_url(connection_id="c" * 7900)) as ws:
+    with _socket(client, _url(connection_id="c" * 7900)) as ws:
         refused = ws.receive_json()
 
         assert refused["event"] == "refused"
@@ -231,17 +274,11 @@ def test_an_over_long_connection_id_is_refused(
 def test_closing_the_socket_detaches_the_stream(
     client: TestClient, protocol: _Protocol
 ) -> None:
-    with client.websocket_connect(_url()) as ws:
+    with _socket(client, _url()) as ws:
         ws.receive_json()
 
     conn = protocol.connections.get("c1")
     assert conn is not None
-    # The stream detaches in its own cleanup, which the socket cancels rather
-    # than awaits; closed straight after opening, that cleanup may still be
-    # unwinding a read from the buffer when the socket is already gone.
-    deadline = time.monotonic() + 2
-    while conn.stream_attached and time.monotonic() < deadline:
-        time.sleep(0.01)
     assert not conn.stream_attached
 
 
@@ -250,9 +287,9 @@ def test_a_socket_whose_connection_is_taken_over_is_told_so(
 ) -> None:
     """Final for the client that lost it: reconnecting would take the
     connection straight back off the winner."""
-    with client.websocket_connect(_url()) as loser:
+    with _socket(client, _url()) as loser:
         loser.receive_json()
-        with client.websocket_connect(_url()) as winner:
+        with _socket(client, _url()) as winner:
             winner.receive_json()
 
             evicted = _next(loser, "evicted")
@@ -273,7 +310,7 @@ def test_a_socket_the_server_closed_under_it_ends_cleanly(
         await send_json(self, data, mode)  # type: ignore[arg-type]
 
     monkeypatch.setattr(WebSocket, "send_json", closed_on_ping)
-    with client.websocket_connect(_url()) as ws:
+    with _socket(client, _url()) as ws:
         ws.receive_json()
         with pytest.raises(WebSocketDisconnect):
             ws.receive_json()
@@ -291,7 +328,7 @@ def test_a_stream_that_fails_closes_the_socket_as_an_error(
         yield
 
     monkeypatch.setattr(handlers, "event_frames", failing)
-    with client.websocket_connect(_url()) as ws:
+    with _socket(client, _url()) as ws:
         with pytest.raises(WebSocketDisconnect) as closed:
             _next(ws, "connection_state")
 
