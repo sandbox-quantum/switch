@@ -250,7 +250,6 @@ def test_a_reread_that_straddled_a_removal_does_not_keep_the_room(
         machine.begin_slow_check(_drawing(1))
         machine.revoke()
         machine.finish_slow_check(_drawing(1))
-        machine.recheck()
         machine.check(1)
         machine.grant()
         machine.check(1)
