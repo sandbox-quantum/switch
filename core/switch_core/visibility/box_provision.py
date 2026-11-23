@@ -43,7 +43,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
-from switch_core.db.models import CloudMachine, ServerAuditEvent, require_tenant_id
+from switch_core.db.models import (
+    CloudMachine,
+    HostedPoolBox,
+    ServerAuditEvent,
+    require_tenant_id,
+)
 from switch_core.db.stores.hosted_machine_store import (
     PoolPick,
     _advisory_lock,
@@ -1077,6 +1082,76 @@ async def claim_pool_box(
         },
     )
     return box.id
+
+
+async def retire_stale_pool_boxes(
+    session_factory: async_sessionmaker[AsyncSession],
+    config: SwitchConfig,
+    now: datetime,
+) -> dict[str, int]:
+    """Retire the pool boxes no claim should take, each reapable: a waiting box
+    made at another template revision than the box operator's current one
+    (`image`), or up longer than a day (`age`), and any beyond
+    `hosted_pool_size` (`size`; requested ones first, then the newest
+    waiting), so a size of 0 retires them all. Returns how many for each
+    reason. Under the claims lock, so a claim never takes a box being
+    retired."""
+    from switch_core.db.stores import hosted_pool_store
+
+    size = max(0, getattr(config, "hosted_pool_size", 0))
+    retired: dict[str, int] = {"image": 0, "age": 0, "size": 0}
+    with no_tenant():
+        async with session_factory() as session:
+            await lock_claims(session)
+            operator = await hosted_pool_store.operator(session)
+            current = None if operator is None else operator.template_revision
+            live = await hosted_pool_store.live(session)
+            kept: list[HostedPoolBox] = []
+            for box in live:
+                if box.state != "waiting":
+                    if box.state == "requested":
+                        kept.append(box)
+                    continue
+                reason: hosted_pool_store.RetireReason | None = None
+                if current is not None and box.template_revision != current:
+                    reason = "image"
+                elif (
+                    box.ready_at is None
+                    or now - box.ready_at > hosted_pool_store.FRESH_FOR
+                ):
+                    reason = "age"
+                if reason is None:
+                    kept.append(box)
+                elif await hosted_pool_store.retire(session, box.id, reason, now):
+                    retired[reason] += 1
+            # Over the size: requested first, then the newest waiting.
+            extra = len(kept) - size
+            if extra > 0:
+                ordered = sorted(
+                    kept,
+                    key=lambda b: (
+                        b.state != "requested",
+                        -(b.ready_at or b.requested_at).timestamp(),
+                    ),
+                )
+                for box in ordered[:extra]:
+                    if await hosted_pool_store.retire(session, box.id, "size", now):
+                        retired["size"] += 1
+            await session.commit()
+    return retired
+
+
+async def sweep_pool(
+    session_factory: async_sessionmaker[AsyncSession],
+    config: SwitchConfig,
+    now: datetime,
+) -> list[str]:
+    """The sweep's pool pass: retire what no claim should take, then refill to
+    the size. Returns the new pool box ids."""
+    if not box_provisioning_on(config):
+        return []
+    await retire_stale_pool_boxes(session_factory, config, now)
+    return await refill_pool(session_factory, config, now)
 
 
 async def refill_after_claim(

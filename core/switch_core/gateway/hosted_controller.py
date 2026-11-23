@@ -91,6 +91,7 @@ from switch_core.visibility.box_provision import (
     open_provision_machines,
     record_box_missing,
     removal_pending,
+    sweep_pool,
 )
 from switch_core.visibility.cluster_report import (
     NODE_NAME,
@@ -552,6 +553,8 @@ async def sweep_hosted_machines(
         await _ask_for_waiting_boxes(
             factory, candidates, being_made, config, settings, now
         )
+        # The warm pool: retire what no claim should take, then refill.
+        await sweep_pool(factory, config, now)
     return candidates
 
 

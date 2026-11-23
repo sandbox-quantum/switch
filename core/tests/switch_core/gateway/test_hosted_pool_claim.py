@@ -36,6 +36,7 @@ from switch_core.visibility.box_provision import (
     record_provision_result,
     record_provision_step,
     removal_pending,
+    sweep_pool,
 )
 from switch_core.visibility.keyed_id import KeyedIdKind
 from tests.switch_core.gateway.test_hosted_provisioner import (  # noqa: F401
@@ -480,3 +481,74 @@ async def test_the_sweep_fails_a_bind_past_its_30_seconds(
         )
         await session.commit()
     assert await _reapable(app) == [box_id]
+
+
+# ── the sweep: retire, then refill ──
+
+
+async def _states(app) -> dict[str, tuple[str, str | None]]:
+    async with app.factory() as session:
+        rows = await session.scalars(select(HostedPoolBox))
+        return {row.id: (row.state, row.retire_reason) for row in rows}
+
+
+@pytest.mark.parametrize("stale", ["image", "age"])
+async def test_the_sweep_retires_a_stale_box_and_asks_for_a_fresh_one(
+    provisioner_app,  # noqa: F811
+    stale: str,
+) -> None:
+    app = provisioner_app
+    _pooled(app)
+    await _operator(app.factory)
+    box_id = await _waiting_box(
+        app.factory,
+        revision="r6" if stale == "image" else REVISION,
+        ready_at=(datetime.now(UTC) - timedelta(hours=25) if stale == "age" else None),
+    )
+    made = await sweep_pool(app.factory, app.config, datetime.now(UTC))
+    states = await _states(app)
+    assert states[box_id] == ("retiring", stale)
+    assert [states[new] for new in made] == [("requested", None)]
+    assert await _reapable(app) == [box_id]
+
+
+async def test_a_smaller_pool_retires_the_newest_and_zero_retires_them_all(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    _pooled(app)
+    await _operator(app.factory)
+    older = await _waiting_box(
+        app.factory, ready_at=datetime.now(UTC) - timedelta(minutes=5)
+    )
+    newer = await _waiting_box(app.factory)
+    assert await sweep_pool(app.factory, app.config, datetime.now(UTC)) == []
+    states = await _states(app)
+    assert states[older] == ("waiting", None)
+    assert states[newer] == ("retiring", "size")
+
+    _pooled(app, 0)
+    async with app.factory() as session:
+        (requested,) = await hosted_pool_store.request_boxes(
+            session, 1, datetime.now(UTC)
+        )
+        await session.commit()
+    assert await sweep_pool(app.factory, app.config, datetime.now(UTC)) == []
+    states = await _states(app)
+    assert states[older] == ("retiring", "size")
+    assert states[requested] == ("retiring", "size")
+
+
+async def test_the_full_sweep_runs_the_pool_pass(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    _pooled(app)
+    await _operator(app.factory)
+    async with app.factory() as session:
+        await sweep_hosted_machines(
+            session, app.factory, app.config, app.settings, datetime.now(UTC)
+        )
+        await session.commit()
+    async with app.factory() as session:
+        assert (await hosted_pool_store.counts(session))["requested"] == 1
