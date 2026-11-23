@@ -205,7 +205,7 @@ made is not known.
 | Event | Fields, with example values |
 |---|---|
 | `chat_created` | `server_kind` · `kind`: `direct` / `group` (as the server made it) / `unknown` (the create failed) · `agent_count`: `1` · `person_count`: `0` · `on_messaging_app`: `false` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `refused` (the server turned the request down) / `rate_limited` (the server asked the app to slow down) / `request_reused` (the request's id was already used for a different request) / `network` (no answer, or the request timed out) / `server_error` / `error` |
-| `chat_message_sent` | `server_kind` · `has_attachment`: `true` · `in_thread`: `false` · `mentions`: `none` / `agent` / `person` / `both` · `outcome` · `failure_reason` |
+| `chat_message_sent` | `server_kind` · `has_attachment`: `true` · `in_thread`: `false` · `mentions`: `none` / `agent` / `person` / `both` · `to_buddy`: `true` (**a boolean — the agent is never sent**) · `outcome` · `failure_reason` |
 | `chat_member_changed` | `server_kind` · `change`: `added` / `removed` · `member_kind`: `person` / `agent` · `outcome` · `failure_reason` |
 | `chat_control_sent` | `server_kind` · `command`: `interrupt` / `reset` / `compact` / `retry` · `outcome` · `failure_reason` |
 | `chat_approval_answered` | `server_kind` · `outcome` · `failure_reason` |
@@ -213,6 +213,16 @@ made is not known.
 A message sent tells us *"someone sent a message in a thread, with a file, that
 named an agent"*. It does not tell us the text, the file, the chat, or which
 agent or person was named. `mentions` is the kind of who was named, never who.
+`to_buddy` says the chat's one agent is the person's own switch-buddy, whoever
+else is in it: a message from its chat, from the box on Home, or from one of
+the cards it shows in the first run. It is how a message to switch-buddy is
+counted, as the last step of the first run's funnel after `agent_created` with
+`entry_point` `switch_buddy`: both come from this install, so Amplitude can put
+them in one funnel, which it cannot do with the Switch server's own
+`message_sent` (the server is a different Amplitude user). Count only
+`outcome` `success`: a send that failed and was retried is reported for each
+attempt. How many messages someone sent their buddy is Amplitude's to count
+from these events.
 A refusal is reported as `refused`, not with the server's code or message.
 Reopening a chat that already exists is not reported as a new one, and a retry
 of something already reported as done is not counted twice.

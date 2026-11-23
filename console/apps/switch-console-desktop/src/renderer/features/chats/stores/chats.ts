@@ -1,7 +1,9 @@
 import { reaction } from 'mobx';
+import { cachedOwnAgents, isBuddyChat } from '@renderer/features/switch-buddy/buddy-chat';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
+import { queryClient } from '@renderer/lib/query-client';
 import { log } from '@renderer/utils/logger';
 import { agentActivities } from './activities';
 import { agentChatsFlag } from './agent-chats-flag';
@@ -27,7 +29,20 @@ export const chatsStore = new ChatsStore(
       threadMessages: (roomId, rootId, beforeSeq, limit) =>
         rpc.chats.threadMessages({ serverId, roomId, rootId, beforeSeq, limit }),
       upload: (roomId, file) => rpc.chats.upload({ serverId, roomId, ...file }),
-      send: (roomId, input) => rpc.chats.send({ serverId, roomId, ...input }),
+      send: (roomId, input) =>
+        rpc.chats.send({
+          serverId,
+          roomId,
+          ...input,
+          toBuddy: isBuddyChat(
+            chatsStore.chat(roomId),
+            cachedOwnAgents(
+              queryClient,
+              serverId,
+              switchServersStore.statusFor(serverId)?.user?.id ?? null
+            )
+          ),
+        }),
       newId: () => crypto.randomUUID(),
     }),
     archive: (serverId, roomId) => rpc.chats.archive(serverId, roomId),

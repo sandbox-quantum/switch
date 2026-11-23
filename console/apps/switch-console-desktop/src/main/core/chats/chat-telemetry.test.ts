@@ -25,7 +25,8 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({ serverKindOf: () => 'cloud' }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
 
-const { chatFailureReason, chatMentions, reportingChatCall } = await import('./chat-telemetry');
+const { chatFailureReason, chatMentions, chatMessageShape, reportingChatCall } =
+  await import('./chat-telemetry');
 const { ChatApiError } = await import('./gateway');
 
 const server = { id: 'server' } as SwitchServer;
@@ -64,6 +65,43 @@ describe('chatMentions', () => {
         mentionSpans: [{ kind: 'user', id: 'u1', offset: 0, length: 3 }],
       })
     ).toBe('both');
+  });
+});
+
+describe('chatMessageShape', () => {
+  const base = {
+    uploadIds: [],
+    threadRootId: null,
+    mentionAgentIds: [],
+    mentionUserIds: [],
+    mentionSpans: [],
+    toBuddy: false,
+  };
+
+  it('says whether the chat is with the person’s own buddy, and nothing of the message', () => {
+    expect(chatMessageShape({ ...base, toBuddy: true })).toEqual({
+      has_attachment: false,
+      in_thread: false,
+      mentions: 'none',
+      to_buddy: true,
+    });
+    expect(chatMessageShape({ ...base, uploadIds: ['u1'], threadRootId: 'm1' })).toEqual({
+      has_attachment: true,
+      in_thread: true,
+      mentions: 'none',
+      to_buddy: false,
+    });
+  });
+
+  it('takes only a real true as a buddy chat, since the input crosses IPC unvalidated', () => {
+    const unvalidated = (toBuddy: unknown) =>
+      chatMessageShape({ ...base, toBuddy } as unknown as Parameters<typeof chatMessageShape>[0]);
+    expect(unvalidated('true').to_buddy).toBe(false);
+    expect(unvalidated(1).to_buddy).toBe(false);
+    expect(unvalidated(undefined).to_buddy).toBe(false);
+    expect(
+      chatMessageShape({ threadRootId: null } as unknown as Parameters<typeof chatMessageShape>[0])
+    ).toEqual({ has_attachment: false, in_thread: false, mentions: 'none', to_buddy: false });
   });
 });
 

@@ -745,14 +745,16 @@ export type TelemetryEventMap = {
   };
   /**
    * A message was sent in a chat. Nothing of the message: whether it carried
-   * files, whether it was a thread reply, and whether it named an agent or a
-   * person — never which.
+   * files, whether it was a thread reply, whether it named an agent or a
+   * person — never which — and whether the chat is with the person's own
+   * switch-buddy (`to_buddy`), the last step of the first run's funnel.
    */
   chat_message_sent: {
     server_kind: TelemetryServerKind;
     has_attachment: boolean;
     in_thread: boolean;
     mentions: TelemetryChatMentions;
+    to_buddy: boolean;
     outcome: TelemetryOutcome;
     failure_reason: TelemetryChatFailure;
   };
@@ -950,6 +952,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'has_attachment',
     'in_thread',
     'mentions',
+    'to_buddy',
     'outcome',
     'failure_reason',
   ],

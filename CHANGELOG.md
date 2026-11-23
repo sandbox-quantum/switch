@@ -4772,6 +4772,19 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+
+- **A message to switch-buddy can be counted again.** `chat_message_sent`
+  carries `to_buddy`: whether the chat's one agent is the person's own
+  switch-buddy, from its chat, the box on Home or the first run's cards. It is
+  the last step of the first run's funnel, after `agent_created` with
+  `entry_point` `switch_buddy`. 0.41.0 dropped `buddy_message_sent` saying the
+  Switch server's `message_sent` would count these, but a server event belongs
+  to a different Amplitude user than the install, so no funnel could join the
+  two, and it cannot tell a message to the buddy from any other. Filter on
+  `outcome` `success`; how many messages someone sent their buddy is
+  Amplitude's to count from these events.
+
 #### Fixed
 
 - **Creating an agent no longer flashes "An agent called … already exists

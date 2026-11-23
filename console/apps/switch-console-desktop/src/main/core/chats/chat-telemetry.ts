@@ -60,6 +60,31 @@ export function chatMentions(
 }
 
 /**
+ * What `chat_message_sent` says of a message, from what the composer sent:
+ * whether it carried files, was a thread reply, whom it named, and whether
+ * the chat is with the person's own switch-buddy. Nothing of the message.
+ */
+export function chatMessageShape(
+  input: Pick<
+    ChatSendInput,
+    'uploadIds' | 'threadRootId' | 'mentionAgentIds' | 'mentionUserIds' | 'mentionSpans' | 'toBuddy'
+  >
+): {
+  has_attachment: boolean;
+  in_thread: boolean;
+  mentions: TelemetryChatMentions;
+  to_buddy: boolean;
+} {
+  return {
+    has_attachment: (input.uploadIds?.length ?? 0) > 0,
+    in_thread: input.threadRootId != null,
+    mentions: chatMentions(input),
+    // Strictly true: the input crosses IPC unvalidated.
+    to_buddy: input.toBuddy === true,
+  };
+}
+
+/**
  * Requests already reported as done, by server and request id, so a retry the
  * server answers from its first attempt is not counted twice. Bounded: the
  * oldest is forgotten first.
