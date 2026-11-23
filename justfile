@@ -290,15 +290,3 @@ standalone-reset:
     read -r -p "⚠️  This deletes ALL standalone data volumes (rooms, messages, agents, users). Continue? [y/N] " ans
     [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
     docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down -v
-
-# ── Documentation ──────────────────────────────────────────────────────────────
-# Clones the docs repository unless --source names a checkout of it:
-#     just sync-docs --source ../docs
-# Everything under docs/official is rewritten, so edit the source pages instead.
-# Convert the published Switch pages into docs/official as Markdown
-sync-docs *args:
-    python3 scripts/sync_docs.py {{ args }}
-
-# Fail when docs/official differs from the published docs (writes nothing)
-check-docs *args:
-    python3 scripts/sync_docs.py --check {{ args }}

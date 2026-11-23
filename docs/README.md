@@ -2,28 +2,14 @@
 
 Two sets of documents, with different owners and different audiences.
 
-## `official/`
+## The published documentation
 
-The reader-facing Switch documentation, published at
-[docs.switchagents.ai](https://docs.switchagents.ai). It is written in
-[`sandbox-quantum/docs`](https://github.com/sandbox-quantum/docs) as Mintlify MDX
-and converted to Markdown here as an offline copy.
-
-Agents should read the published site, which is always current:
+The reader-facing Switch documentation is published at
+[docs.switchagents.ai](https://docs.switchagents.ai) and written in
+[`sandbox-quantum/docs`](https://github.com/sandbox-quantum/docs). There is no
+copy of it here. Agents should read the site:
 [`llms.txt`](https://docs.switchagents.ai/llms.txt) lists every page, and
-`https://docs.switchagents.ai/mcp` serves them over MCP. Use this copy only
-without network access.
-
-The [Docs sync](../.github/workflows/docs-sync.yml) workflow runs daily: its
-`check` job fails when this copy differs from the published docs, and its `sync`
-job opens (or updates) a pull request with the regenerated pages. Run
-`just check-docs` to compare locally.
-
-**Generated — do not edit.** Change the source pages in the docs repository, then
-run `just sync-docs`. Every file under `official/` is rewritten on each run, so
-an edit made here is lost without warning. Start at
-[`official/TOC.md`](official/TOC.md), which lists the pages in the order the
-site presents them.
+`https://docs.switchagents.ai/mcp` serves them over MCP.
 
 ## `old/`
 
@@ -31,7 +17,7 @@ Design and operator material written for this repository: the architecture
 overview, the agent protocol, per-bridge setup guides, gateway OIDC sign-in
 setup, the multi-tenancy design and its phased plan, and running Switch
 locally for development. None of it is published,
-and none of it is covered by the pages under `official/` — where the two
+and none of it is covered by the published docs — where the two
 describe the same thing, this is the deeper account and the published page is
 the one users act on.
 
