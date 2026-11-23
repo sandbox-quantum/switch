@@ -417,21 +417,20 @@ async def test_an_admin_may_not_take_someone_elses_package_for_themselves(
         assert "to yourself" in str(refused.value)
 
 
-async def test_a_server_connectors_agent_is_refused(
+async def test_an_agent_a_server_connector_registered_can_change_owner(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """Nothing registers it again any more, so the connector's id left in its
+    metadata ties it to nobody."""
     async with session_factory() as session:
         owner, member, _ = await _people(session)
         agent = await _agent(session, TENANT_ZERO_ID, owner, "connector-agent")
         agent.metadata_ = {"server_connector_id": "connector-1"}
         await session.commit()
 
-        with pytest.raises(TransferRefused) as refused:
-            await _transfer(
-                session, "agent", agent.id, member, Principal(owner.id, False)
-            )
-        assert refused.value.status == 409
-        assert "run by Switch itself" in str(refused.value)
+        facts = await agent_transfer_facts(session, TENANT_ZERO_ID, [agent.id])
+
+        assert agent_transfer_refusal(facts[agent.id], to_owner=True) is None
 
 
 async def test_an_agents_connection_rows_go_with_its_old_key(
@@ -641,7 +640,6 @@ _TIED_BY_NOTHING_ELSE = AgentTransferFacts(
     may_manage_agents=False,
     in_family=False,
     has_oauth_client=False,
-    run_by_server_connector=False,
 )
 
 
@@ -657,7 +655,6 @@ class TestAgentTransferRefusal:
             ("may_manage_agents", True, "manage its owner's agents"),
             ("in_family", True, "family of sub-agents"),
             ("has_oauth_client", True, "OAuth client of its own"),
-            ("run_by_server_connector", True, "run by Switch itself"),
         ],
     )
     def test_each_tie_to_its_owner_refuses_on_its_own(
@@ -687,12 +684,10 @@ async def test_the_transfer_facts_of_many_agents_are_read_together(
         manager = await _agent(session, TENANT_ZERO_ID, owner, "manager")
         parent = await _agent(session, TENANT_ZERO_ID, owner, "parent")
         child = await _agent(session, TENANT_ZERO_ID, owner, "parent-child")
-        connector = await _agent(session, TENANT_ZERO_ID, owner, "connector")
         oauth = await _agent(session, TENANT_ZERO_ID, owner, "oauth")
         manager.can_manage_agents = True
         oauth.oauth_client_id = "client-1"
         child.parent_agent_id = parent.id
-        connector.metadata_ = {"server_connector_id": "github"}
         session.add(
             AgentDefinition(
                 agent_id=managed.id,
@@ -704,7 +699,7 @@ async def test_the_transfer_facts_of_many_agents_are_read_together(
         )
         await session.flush()
         await _grant_github(session, owner, granted)
-        agents = [plain, granted, managed, manager, parent, child, connector, oauth]
+        agents = [plain, granted, managed, manager, parent, child, oauth]
 
         facts = await agent_transfer_facts(
             session, TENANT_ZERO_ID, [agent.id for agent in agents]
@@ -717,6 +712,5 @@ async def test_the_transfer_facts_of_many_agents_are_read_together(
             manager.id: replace(_TIED_BY_NOTHING_ELSE, may_manage_agents=True),
             parent.id: replace(_TIED_BY_NOTHING_ELSE, in_family=True),
             child.id: replace(_TIED_BY_NOTHING_ELSE, in_family=True),
-            connector.id: replace(_TIED_BY_NOTHING_ELSE, run_by_server_connector=True),
             oauth.id: replace(_TIED_BY_NOTHING_ELSE, has_oauth_client=True),
         }
