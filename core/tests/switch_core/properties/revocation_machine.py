@@ -156,8 +156,10 @@ class Resource(Protocol):
         request takes, cache and all."""
 
     async def slow(self, process: Process) -> bool | None:
-        """What a slow step runs: a check, whose answer is judged, or a
-        re-read, which answers nothing."""
+        """What a slow step runs: a check or a re-read. An answer given from
+        memory, without reading, is judged like any check. One given after a
+        held read is not: it is what the database said when the read began,
+        and the checks after it judge what the read left behind."""
 
 
 async def until(done: Callable[[], bool], what: str) -> None:
@@ -215,11 +217,18 @@ class Revocations(RuleBasedStateMachine):
         self.revoked_at: float | None = None
         self.heard: set[int] = set()
         self.caught_up: set[int] = set()
+        # Processes that were listening at the last change but held in a slow
+        # re-read: they hear it once the held re-read lets their work run.
+        self.hearing: set[int] = set()
         self.barriers = 0
         self.slow: dict[int, asyncio.Task[bool | None]] = {}
         for number in PROCESSES:
             self.processes[number] = self._process(number)
         self.run(self._start())
+        # Every process has listened, resynced and settled: each agrees with
+        # the database from the start.
+        self.heard = {n for n, p in self.processes.items() if p.listening}
+        self.caught_up = set(self.processes)
 
     def _process(self, number: int) -> Process:
         holder: dict[str, Process] = {}
@@ -337,6 +346,9 @@ class Revocations(RuleBasedStateMachine):
         # the first, and a write that changed no row may send no signal.
         if granted != self.granted:
             self.heard, self.caught_up = listening, set()
+            self.hearing = {
+                n for n, p in self.processes.items() if p.listening and self._blocked(n)
+            }
             if not granted:
                 self.revoked_at = self.clock.now
         self.granted = granted
@@ -414,6 +426,7 @@ class Revocations(RuleBasedStateMachine):
         assert terminated == 1, f"found {terminated} listeners to sever"
         await until(lambda: not process.listening, "the severed bus to notice")
         self.heard.discard(process.number)
+        self.hearing.discard(process.number)
         note("a listening connection is severed")
 
     def _reconnectable(self) -> list[int]:
@@ -497,8 +510,12 @@ class Revocations(RuleBasedStateMachine):
         process.gate.set()
         self.run(asyncio.wait_for(task, WAIT_SECONDS))
         process.gate = process.gated = None
-        # What the held read kept waiting runs now.
+        # What the held read kept waiting runs now, the change's signal work
+        # among it if the process was listening when it was made.
         self.run(self.resource.settled(process))
+        if number in self.hearing and process.listening:
+            self.hearing.discard(number)
+            self.heard.add(number)
         note("a read straddled other steps")
 
 
