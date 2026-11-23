@@ -207,16 +207,40 @@ async def test_disabled_signup_is_refused(signup_app):
         assert await session.scalar(select(func.count()).select_from(User)) == 0
 
 
-async def test_with_hosted_agents_v2_a_signup_makes_no_box(signup_app) -> None:
-    """With v2's box provisioning on, a box is made, or taken from the warm
-    pool, at the person's first start, never at sign-up: the answer still
-    says nothing is wrong."""
+async def test_with_a_warm_pool_a_signup_makes_no_box(signup_app) -> None:
+    """With v2's box provisioning on and a warm pool, a box is taken from
+    the pool, or made, at the person's first start, never at sign-up: the
+    answer still says nothing is wrong."""
     app = signup_app
     app.config.hosted_box_provisioning = True
+    app.config.hosted_pool_size = 1
     response = await _signup(app, email="new.person@example.com")
     assert response.status_code == 201, response.text
     assert response.json()["machine"] == {"status": "starting", "reason": None}
     assert await _machines(app) == []
+
+
+async def test_with_no_warm_pool_a_v2_signup_still_warms_a_machine(
+    signup_app, monkeypatch
+) -> None:
+    """With v2 on and no pool, a sign-up asks for the person's machine as it
+    did before the pool."""
+    from switch_core.gateway import auth_routes
+    from switch_core.gateway.schemas import SignupMachine
+
+    asked: list[str] = []
+
+    async def prewarm(session, factory, user_id, config, settings):  # type: ignore[no-untyped-def]
+        asked.append(user_id)
+        return SignupMachine(status="starting", reason=None)
+
+    monkeypatch.setattr(auth_routes, "_prewarm", prewarm)
+    app = signup_app
+    app.config.hosted_box_provisioning = True
+    app.config.hosted_pool_size = 0
+    response = await _signup(app, email="another.person@example.com")
+    assert response.status_code == 201, response.text
+    assert len(asked) == 1
 
 
 async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(

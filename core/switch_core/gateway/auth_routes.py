@@ -378,11 +378,12 @@ async def signup(
             signed_in_now(),
         )
         signed_in = _session_response(user)
-        if box_provisioning_on(config):
-            # Hosted agents v2: no box at sign-up. One is made, or taken from
-            # the warm pool, at the person's first start, so the pool's boxes
-            # go to people who use them. The answer says nothing is wrong, as
-            # before (Console shows nothing for `starting`).
+        if box_provisioning_on(config) and getattr(config, "hosted_pool_size", 0) > 0:
+            # Hosted agents v2 with a warm pool: no box at sign-up. One is
+            # taken from the pool, or made, at the person's first start, so
+            # the pool's boxes go to people who use them. The answer says
+            # nothing is wrong, as before (Console shows nothing for
+            # `starting`). With no pool, a sign-up asks for the box as before.
             machine = SignupMachine(status="starting", reason=None)
         else:
             machine = await _prewarm(
