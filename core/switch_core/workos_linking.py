@@ -15,7 +15,8 @@ the WorkOS directory (`workos_directory.py`).
   With `--from-issuer`, an account that signs in under that issuer (the
   server's sign-in before a move, such as a WorkOS Connect application before
   AuthKit) is linked to the same WorkOS user where the environment has it,
-  its identity there copied, not moved. Any other account is linked only when
+  its identity there copied, not moved; an issuer no account signs in under
+  is refused (`check_from_issuer`). Any other account is linked only when
   exactly one WorkOS user has its address, verified, and that user is linked
   to no other account. Every account is reported, and without `--apply`
   nothing is written.
@@ -156,6 +157,45 @@ class AccountLink:
 # WorkOS's read limit is per environment, shared with every other product in
 # it: a run of thousands of accounts must not take it all.
 _PACE_SECONDS = 0.02
+
+
+async def check_from_issuer(
+    session_factory: async_sessionmaker[AsyncSession], issuer: str, from_issuer: str
+) -> None:
+    """Refuse a `--from-issuer` that names no sign-in this server has had.
+    It has to match, character for character, the issuer the earlier
+    sign-in's identities are kept under: the identities from before issuers
+    were tracked are labelled with it for good (`label_legacy_identities`),
+    and one spelt differently (a trailing slash, say) would match neither
+    that sign-in nor the legacy rule if the move were undone."""
+    if from_issuer == issuer:
+        raise LinkingError(
+            f"--from-issuer is the issuer this server signs in under "
+            f"already ({issuer}); name the one it signed in under before."
+        )
+    with no_tenant():
+        async with session_factory() as session:
+            in_use = sorted(
+                iss
+                for iss in await session.scalars(
+                    select(OidcIdentity.iss)
+                    .where(OidcIdentity.iss.is_not(None))
+                    .distinct()
+                )
+                if iss is not None
+            )
+    if from_issuer in in_use:
+        return
+    known = (
+        "those in use are " + ", ".join(repr(each) for each in in_use)
+        if in_use
+        else "no account has an identity with an issuer yet"
+    )
+    raise LinkingError(
+        f"--from-issuer {from_issuer!r} is not an issuer any account signs in "
+        "under, so nothing was linked or labelled. Name the earlier sign-in's "
+        f"issuer exactly as its identities are kept: {known}."
+    )
 
 
 async def label_legacy_identities(
@@ -403,11 +443,8 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                     )
                     return 0
                 from_issuer: str | None = arguments.from_issuer
-                if from_issuer == issuer:
-                    raise LinkingError(
-                        f"--from-issuer is the issuer this server signs in under "
-                        f"already ({issuer}); name the one it signed in under before."
-                    )
+                if from_issuer is not None:
+                    await check_from_issuer(session_factory, issuer, from_issuer)
                 if from_issuer is not None and from_issuer != WORKOS_IDENTITY_ISSUER:
                     legacy = await label_legacy_identities(
                         session_factory, from_issuer, apply=arguments.apply

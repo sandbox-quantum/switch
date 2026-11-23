@@ -20,6 +20,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.workos_linking import (
     LinkingError,
+    check_from_issuer,
     label_legacy_identities,
     link_accounts,
     link_organization,
@@ -404,6 +405,38 @@ class TestMovingFromOneSignInToAnother:
         assert await _identities(owner, ada.id) == [(None, f"user_{ada.id}")]
         assert await label_legacy_identities(owner, connect, apply=True) >= 1
         assert await _identities(owner, ada.id) == [(connect, f"user_{ada.id}")]
+
+    async def test_an_issuer_no_account_signs_in_under_is_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A misspelt issuer (here a trailing slash) would label the legacy
+        identities with a name the old sign-in never matches again."""
+        owner = rls_harness.owner
+        connect = f"https://{_id('authkit')}.example.test"
+        ada = await _person(owner)
+        legacy = await _person(owner)
+        async with owner() as session:
+            session.add(OidcIdentity(user_id=ada.id, iss=connect, sub="user_ADA"))
+            session.add(OidcIdentity(user_id=legacy.id, iss=None, sub="user_OLD"))
+            await session.commit()
+
+        with pytest.raises(LinkingError) as refused:
+            await check_from_issuer(
+                rls_harness.restricted, WORKOS_IDENTITY_ISSUER, connect + "/"
+            )
+        assert f"--from-issuer '{connect}/' is not an issuer" in str(refused.value)
+        assert repr(connect) in str(refused.value)
+        assert await _identities(owner, legacy.id) == [(None, "user_OLD")]
+
+        await check_from_issuer(rls_harness.restricted, WORKOS_IDENTITY_ISSUER, connect)
+
+    async def test_the_issuer_signed_in_under_now_is_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        with pytest.raises(LinkingError, match="signs in under already"):
+            await check_from_issuer(
+                rls_harness.restricted, WORKOS_IDENTITY_ISSUER, WORKOS_IDENTITY_ISSUER
+            )
 
 
 class TestReplacingAnOrganizationsLink:

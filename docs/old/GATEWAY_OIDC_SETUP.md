@@ -338,6 +338,8 @@ accounts before the switch, or their next sign-in is refused:
    It links each account signing in through Connect to the same WorkOS user,
    copying the identity, so the Connect sign-in keeps working until the
    switch. It reports every account and writes nothing without `--apply`.
+   It refuses an issuer no account signs in under, and names the ones that
+   are, so a misspelt one changes nothing.
 2. Read the report, then run it again with `--apply`.
 3. Deploy with `GATEWAY_SIGN_IN_PROVIDER=workos`. Existing sessions keep
    working until they expire; only sign-ins from then on stand on an AuthKit

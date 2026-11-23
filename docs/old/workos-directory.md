@@ -63,6 +63,9 @@ Two flags are for moving a server:
   not moved, so the old sign-in keeps working until the move is deployed.
   Run it with the settings the server signs in with after the move. An
   account with no identity under that issuer is linked by address as usual.
+  The issuer must be spelt exactly as the old sign-in's identities are kept
+  (a trailing slash counts): one no account signs in under is refused, with
+  the issuers that are in use.
 - `organization ... --replace` re-links an organization that already follows
   one WorkOS organization to another, for a server moving to another WorkOS
   environment, whose organizations have other ids there. Each switch-core
