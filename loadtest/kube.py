@@ -163,6 +163,29 @@ class Kube:
             raise RuntimeError(f"{script.name} printed nothing")
         return json.loads(lines[-1])
 
+    def accounts(self, *args: str, stdin: str | None = None) -> str:
+        """Run the server's `switch-accounts` command once in a ready
+        switch-core pod and return what it printed. A password goes on
+        `stdin`, the way the command reads it, never in `args`."""
+        pods = [p for p in self.core_pods() if p["ready"]]
+        if not pods:
+            raise RuntimeError(f"no ready switch-core pod in {self.namespace}")
+        out = subprocess.run(
+            [
+                *self.base, "exec", "-i", pods[0]["name"], "-c", CORE_CONTAINER,
+                "--", "switch-accounts", *args,
+            ],
+            input=(stdin or "").encode(),
+            capture_output=True,
+            timeout=120,
+        )  # fmt: skip
+        if out.returncode != 0:
+            raise RuntimeError(
+                f"switch-accounts {args[0] if args else ''}: "
+                f"{out.stderr.decode(errors='replace').strip()[-300:]}"
+            )
+        return out.stdout.decode()
+
     def public_urls(self) -> tuple[str | None, str | None]:
         """The gateway and API URLs this release was deployed with
         (FRONTEND_BASE_URL and GATEWAY_PUBLIC_URL, from the release's values)."""

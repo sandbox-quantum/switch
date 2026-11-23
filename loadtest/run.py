@@ -44,6 +44,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import people  # noqa: E402
 from agents import Agent, Stats, play  # noqa: E402
 from consoles import MODES, Console, tracked_agents  # noqa: E402
 from controllers import FakeController, ManagedAgent  # noqa: E402
@@ -781,7 +782,8 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     room_ids = []
     taken_over = False
     try:
-        await admin.login(*admin_login(kube))
+        login = admin_login(kube)
+        await admin.login(*login)
         if a.workspace:
             # Kept agents live in a workspace that exists: a reusing run never
             # makes one, so several started at once cannot make one each.
@@ -942,16 +944,20 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
 
         opened = 0
         if a.consoles and not a.seed_only:
-            if admin.cookie is None:
-                raise RuntimeError("the Console windows need the admin's session")
             tracked = tracked_agents(
                 [s.id for s in seeded], a.consoles, a.console_agents
             )
+            # One person per window, so the gateway's per-person limits see
+            # them as the separate people they stand for (people.py).
+            cookies = await people.sign_in(
+                kube, admin, a.gateway_url, await admin.workspace_id(),
+                a.consoles, login[1], ids,
+            )  # fmt: skip
             consoles = [
                 Console(
                     i,
                     a.gateway_url,
-                    admin.cookie,
+                    cookies[i],
                     tracked[i],
                     a.console_mode,
                     a.console_interval,
