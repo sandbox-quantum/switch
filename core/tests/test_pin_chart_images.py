@@ -127,7 +127,11 @@ def test_pins_every_first_party_image_in_the_real_values_file() -> None:
         model_server["strands"]["image"]
         == f"switch-decision-strands:1.2.3@{DIGESTS['switch-decision-strands']}"
     )
-    assert model_server["llamacpp"]["image"] == "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    original = yaml.safe_load(VALUES.read_text())["decision"]["modelServer"]
+    assert model_server["llamacpp"]["image"] == original["llamacpp"]["image"]
+    assert model_server["llamacpp"]["image"].startswith(
+        "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:"
+    )
 
 
 def test_changes_only_the_pinned_lines() -> None:
