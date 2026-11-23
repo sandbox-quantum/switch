@@ -16,6 +16,7 @@ vi.hoisted(() => {
 const state = vi.hoisted(() => ({
   status: null as unknown,
   unreachable: false,
+  kind: 'no-answer' as 'no-answer' | 'not-switch',
   reason:
     "Can't reach localhost:41001: nothing is answering at that address and port (ECONNREFUSED).",
   localStart: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
     refreshing: new Set(),
     isUnreachable: () => state.unreachable,
     unreachableReason: () => (state.unreachable ? state.reason : null),
+    unreachableKind: () => (state.unreachable ? state.kind : null),
     isHostBlocked: () => false,
     refreshStatus: () => Promise.resolve(),
     ensureAuthConfig: () => Promise.resolve(),
@@ -181,23 +183,39 @@ it('names the address an unmanaged server cannot be reached at, and why', async 
   }
 });
 
-it('names the address once when a redirect is why the server cannot be used', async () => {
+async function renderNotSwitch(reason: string) {
   state.unreachable = true;
-  state.reason =
-    "localhost:41001 doesn't answer as a Switch server: it redirects to elsewhere.example.org. Check the address.";
+  state.kind = 'not-switch';
+  state.reason = reason;
   LOCAL.managed = false;
   try {
     await render();
-    const text = document.body.textContent ?? '';
-    expect(text).toContain(
-      "Doesn't answer as a Switch server: it redirects to elsewhere.example.org. Check the address."
-    );
-    expect(text.split('localhost:41001').length - 1).toBe(
-      (text.match(/Can't reach localhost:41001/g) ?? []).length
-    );
+    return document.body.textContent ?? '';
   } finally {
     LOCAL.managed = true;
+    state.kind = 'no-answer';
     state.reason =
       "Can't reach localhost:41001: nothing is answering at that address and port (ECONNREFUSED).";
   }
+}
+
+it('heads a redirect as not a Switch server, naming the address once', async () => {
+  const text = await renderNotSwitch(
+    "localhost:41001 doesn't answer as a Switch server: it redirects to elsewhere.example.org. Check the address."
+  );
+  expect(text).toContain("localhost:41001 isn't answering as a Switch server");
+  expect(text).toContain(
+    "Doesn't answer as a Switch server: it redirects to elsewhere.example.org. Check the address."
+  );
+  expect(text).not.toContain("Can't reach");
+  expect(text.split('localhost:41001').length - 1).toBe(1);
+});
+
+it('heads a web page in place of the API as not a Switch server', async () => {
+  const text = await renderNotSwitch(
+    'Server does not answer at http://localhost:41001/gateway: a web page came back (HTTP 200).'
+  );
+  expect(text).toContain("localhost:41001 isn't answering as a Switch server");
+  expect(text).toContain('a web page came back (HTTP 200)');
+  expect(text).not.toContain("Can't reach");
 });

@@ -7,6 +7,10 @@ vi.mock('@renderer/features/switch-servers/server-availability', () => ({
 vi.mock('@renderer/features/remote-hosts/host-reachability-store', () => ({
   hostReachabilityStore: { isBlocked: () => false },
 }));
+const kind = vi.hoisted(() => ({ value: 'no-answer' as 'no-answer' | 'not-switch' }));
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { unreachableKind: () => kind.value },
+}));
 vi.mock('@renderer/features/switch-servers/local-server-store', () => ({ localServerStore: {} }));
 vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({ remoteServerStore: {} }));
 
@@ -29,6 +33,17 @@ describe('the label of a server that cannot be reached', () => {
     expect(serverStatusLabel(server({ url: 'https://switch.example.com' }))).toBe(
       "Can't reach switch.example.com"
     );
+  });
+
+  it('says an address that something other than switch-core answers is not a Switch server', () => {
+    kind.value = 'not-switch';
+    try {
+      expect(serverStatusLabel(server({ url: 'http://switch.example.com' }))).toBe(
+        'Not a Switch server'
+      );
+    } finally {
+      kind.value = 'no-answer';
+    }
   });
 
   it('keeps the usual label for a managed local server', () => {

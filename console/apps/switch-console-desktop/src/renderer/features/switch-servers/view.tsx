@@ -241,6 +241,11 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
   const managed = server.managed;
   const host = urlHost(server.url);
   const reason = withoutAddress(store.unreachableReason(serverId), host);
+  const heading = managed
+    ? `${server.name} isn't answering`
+    : store.unreachableKind(serverId) === 'not-switch'
+      ? `${host} isn't answering as a Switch server`
+      : `Can't reach ${host}`;
 
   // Keep probing while this is on screen. Waiting for the user to press
   // something would leave a server that recovered looking down. This only
@@ -260,9 +265,7 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
       <div className="flex min-w-0 flex-col gap-1 text-sm">
         <div className="flex items-center gap-2">
           <PlugZap className="size-4 shrink-0 text-amber-500" />
-          <span className="text-foreground">
-            {managed ? `${server.name} isn't answering` : `Can't reach ${host}`}
-          </span>
+          <span className="text-foreground">{heading}</span>
           <span className="text-foreground-muted">
             {retrying
               ? 'Reconnecting…'

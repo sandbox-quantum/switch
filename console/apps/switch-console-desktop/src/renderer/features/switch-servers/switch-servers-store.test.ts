@@ -694,6 +694,25 @@ describe('why a server cannot be reached', () => {
     expect(store.unreachableReason('srv-a')).toMatch(/doesn't resolve/);
   });
 
+  it('tells a redirect apart from no answer at all', async () => {
+    const store = newStore([server('srv-a')]);
+    getConnectionStatus.mockRejectedValueOnce(unreachable());
+    await store.refreshStatus('srv-a');
+    expect(store.unreachableKind('srv-a')).toBe('no-answer');
+
+    getConnectionStatus.mockRejectedValueOnce(
+      new RpcError({
+        __switchConsoleRpcError: true,
+        code: 'RedirectedAddressError',
+        message:
+          'srv-a.example.com only answers over https. Enter the address as https://srv-a.example.com.',
+        data: {},
+      })
+    );
+    await store.refreshStatus('srv-a');
+    expect(store.unreachableKind('srv-a')).toBe('not-switch');
+  });
+
   it('forgets the reason once the server answers', async () => {
     const store = newStore([server('srv-a')]);
     getAuthConfig.mockRejectedValueOnce(unreachable());

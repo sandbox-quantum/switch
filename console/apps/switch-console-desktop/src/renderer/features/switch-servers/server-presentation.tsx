@@ -10,6 +10,7 @@ import { ToneDot } from './managed-server-dot';
 import { managedServerState } from './managed-server-state';
 import { remoteServerStore } from './remote-server-store';
 import { serverAvailability } from './server-availability';
+import { switchServersStore } from './switch-servers-store';
 
 /**
  * How a server presents itself wherever it is listed — the switcher button, the
@@ -59,7 +60,11 @@ export function serverStatusLabel(server: SwitchServer): string {
   // Naming the address is what tells a typo apart from a sign-in problem. A
   // server this app runs is reached at a local port nobody typed, so it keeps
   // the usual label.
-  if (state === 'unreachable' && !server.managed) return `Can't reach ${urlHost(server.url)}`;
+  if (state === 'unreachable' && !server.managed) {
+    if (switchServersStore.unreachableKind(server.id) === 'not-switch')
+      return 'Not a Switch server';
+    return `Can't reach ${urlHost(server.url)}`;
+  }
   return STATE_LABEL[state];
 }
 

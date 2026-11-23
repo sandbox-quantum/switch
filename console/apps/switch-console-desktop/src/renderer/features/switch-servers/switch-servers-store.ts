@@ -18,6 +18,7 @@ import type {
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
 import { gatewaySessionEndedChannel } from '@shared/events/switchServerEvents';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 /**
  * How long the first read of the server list may take before the window says so
@@ -25,6 +26,22 @@ import { gatewaySessionEndedChannel } from '@shared/events/switchServerEvents';
  * already a handler that is not coming back.
  */
 const LIST_READ_DEADLINE_MS = 10_000;
+
+/**
+ * Why a server reads as unreachable: nothing answered its address, or
+ * something other than switch-core did (a redirect or a web page). Either way
+ * the address is what to fix, so neither reads as signed out.
+ */
+export type UnreachableKind = 'no-answer' | 'not-switch';
+
+type ReadFailure = { text: string; kind: UnreachableKind };
+
+const NOT_SWITCH_CODES = new Set(['RedirectedAddressError', 'NoManagementApiError']);
+
+function readFailure(cause: unknown, fallback: string): ReadFailure {
+  const notSwitch = cause instanceof RpcError && NOT_SWITCH_CODES.has(cause.code);
+  return { text: failureText(cause, fallback), kind: notSwitch ? 'not-switch' : 'no-answer' };
+}
 
 /**
  * Renderer store for the Switch-server integration. Holds the registered
@@ -70,10 +87,10 @@ export class SwitchServersStore {
   readonly authConfigUnreachable = new Set<string>();
   /** Why the last failed status read failed, by server id, for as long as
    * {@link statusUnreachable} holds that server. */
-  private readonly statusFailures = new Map<string, string>();
+  private readonly statusFailures = new Map<string, ReadFailure>();
   /** Why the last failed auth-config read failed, by server id, for as long as
    * {@link authConfigUnreachable} holds that server. */
-  private readonly authConfigFailures = new Map<string, string>();
+  private readonly authConfigFailures = new Map<string, ReadFailure>();
 
   loadingServers = false;
   /** Whether the list has been read at least once. Until it has, an empty
@@ -209,7 +226,7 @@ export class SwitchServersStore {
   /** Why the last sign-in-options read failed, while {@link authConfigCheckFailed} holds. */
   authConfigFailure(serverId: string): string | null {
     if (!this.authConfigUnreachable.has(serverId)) return null;
-    return this.authConfigFailures.get(serverId) ?? null;
+    return this.authConfigFailures.get(serverId)?.text ?? null;
   }
 
   /**
@@ -217,6 +234,15 @@ export class SwitchServersStore {
    * {@link isUnreachable} went by. Null when it is not unreachable.
    */
   unreachableReason(serverId: string): string | null {
+    return this.unreachableFailure(serverId)?.text ?? null;
+  }
+
+  /** What kind of failure {@link unreachableReason} describes. */
+  unreachableKind(serverId: string): UnreachableKind | null {
+    return this.unreachableFailure(serverId)?.kind ?? null;
+  }
+
+  private unreachableFailure(serverId: string): ReadFailure | null {
     if (!this.isUnreachable(serverId)) return null;
     if (this.statuses.has(serverId)) return this.statusFailures.get(serverId) ?? null;
     return this.authConfigFailures.get(serverId) ?? null;
@@ -429,7 +455,7 @@ export class SwitchServersStore {
       runInAction(() => {
         this.statuses.set(serverId, { serverId, connected: false, user: null });
         this.statusUnreachable.add(serverId);
-        this.statusFailures.set(serverId, failureText(cause, 'Could not read the server status.'));
+        this.statusFailures.set(serverId, readFailure(cause, 'Could not read the server status.'));
       });
     } finally {
       // An overtaken check leaves the flag to the one still running.
@@ -506,7 +532,7 @@ export class SwitchServersStore {
         this.authConfigUnreachable.add(serverId);
         this.authConfigFailures.set(
           serverId,
-          failureText(cause, 'Could not check sign-in options.')
+          readFailure(cause, 'Could not check sign-in options.')
         );
       });
     } finally {

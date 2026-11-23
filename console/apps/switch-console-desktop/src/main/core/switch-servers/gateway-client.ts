@@ -974,10 +974,6 @@ export async function probeGateway(server: SwitchServer): Promise<void> {
     await res.body?.cancel();
   } catch (cause) {
     if (cause instanceof GatewayError && cause.kind !== 'network') return;
-    // A web page or a redirect in place of the API is an answer too: the server
-    // is there, and the sign-in page says what is wrong with the address from
-    // its own read.
-    if (cause instanceof NoManagementApiError || cause instanceof RedirectedAddressError) return;
     throw cause;
   }
 }
