@@ -1746,6 +1746,11 @@ class SlackAdapter(PlatformAdapter):
             return False
         if content.turn.status in TURN_ENDED:
             return False
+        if content.has_session and not content.work_thread:
+            # Inline: one message edited in place, with the session the turn
+            # opened for its asker. A stream would bring a session of Slack's
+            # own, and its Stop, beside it.
+            return False
         missing = (
             "no thread to open it in"
             if thread_root_id is None
@@ -2069,6 +2074,25 @@ class SlackAdapter(PlatformAdapter):
             {"channel_id": channel_id, "thread_ts": ts, "status": "active"}
         )
 
+    async def restore_session(
+        self, channel_id: str, message_ref: str, *, working: bool
+    ) -> None:
+        """Take a session off "Stopping…" after a Stop that was not acted on.
+
+        Slack shows that until the app moves the session on, and only a turn
+        ending would; a refused press ends nothing.
+        """
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            return
+        await self._set_session_status(
+            {
+                "channel_id": channel_id,
+                "thread_ts": ts,
+                "status": "processing" if working else "active",
+            }
+        )
+
     async def _note_work_step(
         self, content: RichContent, thread_root_id: str | None
     ) -> None:
@@ -2178,7 +2202,11 @@ class SlackAdapter(PlatformAdapter):
         return True
 
     async def remove_work_thread(
-        self, channel_id: str, work_ref: str, stream_refs: Sequence[str]
+        self,
+        channel_id: str,
+        work_ref: str,
+        stream_refs: Sequence[str],
+        session_ref: str | None = None,
     ) -> bool:
         """Delete a turn's streams, then its work message, once the plan is
         under the answer.
@@ -2194,8 +2222,9 @@ class SlackAdapter(PlatformAdapter):
         channel, ts = self._parse_message_ref(work_ref)
         if client is None or not ts:
             return False
+        _, session_ts = self._parse_message_ref(session_ref or work_ref)
         await self._set_session_status(
-            {"channel_id": channel, "thread_ts": ts, "status": "active"}
+            {"channel_id": channel, "thread_ts": session_ts, "status": "active"}
         )
         for ref in [*stream_refs, work_ref]:
             _, message_ts = self._parse_message_ref(ref)

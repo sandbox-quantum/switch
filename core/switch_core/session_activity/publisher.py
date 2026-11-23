@@ -226,6 +226,9 @@ class StopTarget:
     # The turn the message shows. What Slack's own Stop on a session names,
     # which carries no turn of its own.
     turn_id: str | None = None
+    # The thread the turn is drawn in on the platform, where an answer to the
+    # press belongs; None at the channel root.
+    thread_ref: str | None = None
 
 
 @dataclass
@@ -1342,12 +1345,19 @@ class AgentSessionActivityPublisher:
             if mode == "thread":
                 drawn_in = await self._work_thread(key, view, target, answering, asked)
             elif mode == "inline":
-                # One message of the agent's at the channel root, posted as the
-                # turn starts (not while it is queued) and edited from then on.
+                # One message of the agent's, posted as the turn starts (not
+                # while it is queued) and edited from then on: at the channel
+                # root for a question asked there, in the thread for one asked
+                # in a thread. Either way it points back at the question: in
+                # a thread, every turn shares the thread's one session, and
+                # the line says which question each status message answers.
+                at_root = _known_root_turn(view.row)
                 drawn_in = (
                     None
                     if view.turn.status == "queued"
                     else replace(target, thread_ref=None)
+                    if at_root
+                    else target
                 )
                 content = replace(content, items=work_items(content.items))
             if drawn_in is None:
@@ -1373,7 +1383,7 @@ class AgentSessionActivityPublisher:
                     await self._adapter.open_session(
                         target.channel_id,
                         target.agent_name,
-                        post.external_post_id,
+                        _session_ref(post),
                         answering,
                         asked.text
                         if asked is not None and asked.text
@@ -1490,14 +1500,21 @@ class AgentSessionActivityPublisher:
         """How a turn here is drawn, if not in the asker's thread as usual.
 
         The room's `!work-threads` setting, where the question was asked at the
-        channel root (a question asked in a thread keeps its work there: it
-        cannot be nested any deeper) and the platform does this in this
-        channel. `turn_row` None asks only about the room and the platform.
+        channel root and the platform does this in this channel. A question
+        asked in a thread keeps its work in that thread, since it cannot be
+        nested any deeper, but is drawn inline there whichever the setting:
+        one status message of the agent's, edited in place, with the agent
+        session on the thread. `turn_row` None asks only about the room and
+        the platform.
         """
         if target.work_mode is None:
             return None
         if turn_row is not None and not _known_root_turn(turn_row):
-            return None
+            if not _known_thread_turn(turn_row) or target.thread_ref is None:
+                return None
+            if not await self._adapter.hosts_work_threads(target.channel_id):
+                return None
+            return "inline"
         if not await self._adapter.hosts_work_threads(target.channel_id):
             return None
         return target.work_mode
@@ -1584,13 +1601,13 @@ class AgentSessionActivityPublisher:
             # unless the turn only talked.
             if nothing_to_show:
                 removed = await self._adapter.remove_work_thread(
-                    target.channel_id, work_ref, []
+                    target.channel_id, work_ref, [], session_ref=_session_ref(post)
                 )
             if not removed:
                 await self._adapter.close_session(
                     target.channel_id,
                     target.agent_name,
-                    work_ref,
+                    _session_ref(post),
                     turn_state(
                         worked,
                         view.turn,
@@ -2370,7 +2387,7 @@ class AgentSessionActivityPublisher:
             found = await self._turn_at(db, channel_id, ref)
             if found is None:
                 return None
-            view, _ = found
+            view, _, _ = found
             now: datetime = (await db.execute(select(func.now()))).scalar_one()
         return ActivitySnapshot(
             items=view.items,
@@ -2387,7 +2404,11 @@ class AgentSessionActivityPublisher:
         interrupted: the name is drawn for an interrupted turn and no other.
         """
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
-            post = await self._turn_posts.at(db, self._bridge_id, channel_id, ref)
+            post = await self._turn_posts.at(
+                db, self._bridge_id, channel_id, ref
+            ) or await self._turn_posts.latest_in_thread(
+                db, self._bridge_id, channel_id, ref
+            )
             if post is None or post.turn_id != turn_id:
                 return
             post.stopped_by = name
@@ -2395,12 +2416,16 @@ class AgentSessionActivityPublisher:
         self._enqueue(key, _SOON)
 
     async def stop_target(self, channel_id: str, ref: str) -> StopTarget | None:
-        """What a Stop control on the message at `ref` would stop, or None."""
+        """What a Stop control on the message at `ref` would stop, or None.
+
+        `ref` is a message of ours, or, for Slack's own Stop on a session in a
+        thread, the thread: the turn then is the one last drawn there.
+        """
         async with tenant_session(self._sessions, self._tenant_id) as db:
-            found = await self._turn_at(db, channel_id, ref)
+            found = await self._turn_at(db, channel_id, ref, in_thread=True)
             if found is None:
                 return None
-            view, running = found
+            view, running, post = found
         assert view.row.room_id is not None
         return StopTarget(
             agent_id=view.row.agent_id,
@@ -2409,13 +2434,22 @@ class AgentSessionActivityPublisher:
             thread_id=view.row.thread_id,
             running_turn_id=running,
             turn_id=view.turn.turn_id,
+            thread_ref=post.thread_ref,
         )
 
     async def _turn_at(
-        self, db: AsyncSession, channel_id: str, ref: str
-    ) -> tuple[TurnView, str | None] | None:
-        """The turn behind a message, re-checked the way drawing it was checked."""
+        self, db: AsyncSession, channel_id: str, ref: str, *, in_thread: bool = False
+    ) -> tuple[TurnView, str | None, TurnStatusPost] | None:
+        """The turn behind a message, re-checked the way drawing it was checked.
+
+        `in_thread`: where no message of ours is at `ref`, the turn last drawn
+        in the thread it begins.
+        """
         post = await self._turn_posts.at(db, self._bridge_id, channel_id, ref)
+        if post is None and in_thread:
+            post = await self._turn_posts.latest_in_thread(
+                db, self._bridge_id, channel_id, ref
+            )
         if post is None:
             return None
         view = turn_view(
@@ -2433,7 +2467,7 @@ class AgentSessionActivityPublisher:
             or not found[1]
         ):
             return None
-        return view, await self._running_turn(db, post.agent_id, post.session_id)
+        return view, await self._running_turn(db, post.agent_id, post.session_id), post
 
 
 def _until_the_clock_moves(elapsed: float | None) -> float:
@@ -2447,11 +2481,29 @@ def _until_the_clock_moves(elapsed: float | None) -> float:
 
 
 def _inline(post: TurnStatusPost) -> bool:
-    """Whether a turn is drawn inline (`!work-threads inline`): its own message
-    is its work message, at the channel root."""
+    """Whether a turn is drawn inline (`!work-threads inline`, or any question
+    asked in a thread of a room with work threads): its own message is its
+    work message, at the channel root or in the asker's thread."""
     return (
         post.work_message_ref is not None
         and post.work_message_ref == post.external_post_id
+    )
+
+
+def _session_ref(post: TurnStatusPost) -> str:
+    """Where an inline turn's agent session is: on its status message at the
+    channel root, and on the thread for one drawn in a thread, since a
+    platform session belongs to a thread, not to a reply in one."""
+    return post.thread_ref or post.external_post_id
+
+
+def _known_thread_turn(turn_row: AgentSessionActivityItem | None) -> bool:
+    """Whether the turn is recorded and was asked in a thread."""
+    return (
+        turn_row is not None
+        and turn_row.message_id is not None
+        and turn_row.thread_id is not None
+        and turn_row.thread_id != turn_row.message_id
     )
 
 

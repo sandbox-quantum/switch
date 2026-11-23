@@ -194,6 +194,28 @@ class TurnStatusPostStore:
         )
         return result.scalar_one_or_none()
 
+    async def latest_in_thread(
+        self, session: AsyncSession, bridge_id: str, channel_id: str, thread_ref: str
+    ) -> TurnStatusPost | None:
+        """The turn most recently drawn in a thread.
+
+        What Slack's own Stop on a session in a thread names: a session there
+        belongs to the thread, not to any one message of ours in it, so the
+        press names the thread's first message. Turns in a thread follow one
+        another, so the one touched last is the one still going, if any is.
+        """
+        result = await session.execute(
+            select(TurnStatusPost)
+            .where(
+                TurnStatusPost.bridge_id == bridge_id,
+                TurnStatusPost.external_channel_id == channel_id,
+                TurnStatusPost.thread_ref == thread_ref,
+            )
+            .order_by(TurnStatusPost.updated_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def marked(
         self, session: AsyncSession, bridge_id: str
     ) -> list[TurnStatusPost]:

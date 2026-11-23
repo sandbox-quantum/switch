@@ -1386,6 +1386,8 @@ class WorkThreadPlatform(RecordingPlatform):
     hosts: bool = True
     # The question each work-message call was told the turn answers.
     asked: list[AskedQuestion | None] = field(default_factory=list)
+    # Where each removal was told the turn's session is.
+    session_refs: list[str | None] = field(default_factory=list)
 
     async def hosts_work_threads(self, channel_id: str) -> bool:
         return self.hosts
@@ -1430,8 +1432,13 @@ class WorkThreadPlatform(RecordingPlatform):
         return not self.attach_refused
 
     async def remove_work_thread(
-        self, channel_id: str, work_ref: str, stream_refs: Any
+        self,
+        channel_id: str,
+        work_ref: str,
+        stream_refs: Any,
+        session_ref: str | None = None,
     ) -> bool:
+        self.session_refs.append(session_ref)
         self.drawn.append(
             Drawn("remove_work_thread", channel_id, work_ref, None, list(stream_refs))
         )
@@ -2045,9 +2052,15 @@ async def test_an_inline_turn_asked_in_a_thread_keeps_its_work_there(
         revision=1,
         message_id="sw_reply",
     )
-    await inline_platform.wait_until(lambda: len(_turns(inline_platform)) >= 1)
-    assert _turns(inline_platform)[0].thread_ref == ASKED_POST
-    assert inline_platform.of("open_session") == []
+    await inline_platform.wait_until(lambda: bool(inline_platform.of("open_session")))
+    [first] = _turns(inline_platform)[:1]
+    assert first.thread_ref == ASKED_POST, "a reply in the asker's thread"
+    assert first.content.has_session and not first.content.work_thread
+    assert first.content.asked is not None, (
+        "it names its question: the thread's turns share one session"
+    )
+    [session] = inline_platform.of("open_session")
+    assert session.ref == ASKED_POST, "the session belongs to the thread"
 
 
 async def test_slacks_stop_on_a_work_message_finds_the_turn_it_shows(
@@ -2313,3 +2326,65 @@ async def test_a_bare_mention_in_a_thread_looks_only_in_that_thread(
         if question_is_the_root
         else AskedQuestion("1699999985.0001", "the question in the thread")
     ]
+
+
+# ── Inline in a thread ───────────────────────────────────────────────────────
+
+
+async def _thread_turn(service, room_id, status, revision):
+    """A turn asked by a reply in the thread `ASKED` began."""
+    await _step(
+        service,
+        room_id,
+        item_id="turn",
+        kind="turn",
+        status=status,
+        revision=revision,
+        message_id="sw_reply",
+    )
+
+
+async def test_slacks_stop_on_a_thread_finds_the_turn_drawn_there(
+    service, inline_publisher, inline_platform, bridged
+):
+    """Slack's session in a thread belongs to the thread, so its Stop names
+    the thread's first message, which is no message of ours."""
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await inline_platform.wait_until(lambda: bool(inline_platform.of("open_session")))
+    target = await inline_publisher.stop_target(bridged.channel_id, ASKED_POST)
+    assert target is not None
+    assert (target.turn_id, target.running_turn_id) == ("turn-1", "turn-1")
+    assert target.thread_ref == ASKED_POST, "answers to the press go to the thread"
+    assert await inline_publisher.stop_target(bridged.channel_id, "elsewhere") is None
+
+
+async def test_an_inline_turn_in_a_thread_that_only_talked_ends_the_threads_session(
+    service, inline_publisher, inline_platform, bridged
+):
+    platform = inline_platform
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    [first] = _turns(platform)
+    await _thread_turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
+    [removed] = platform.of("remove_work_thread")
+    assert removed.ref == first.ref, "the status message goes"
+    assert platform.session_refs == [ASKED_POST], "and the thread's session ends"
+
+
+async def test_a_finished_inline_turn_in_a_thread_closes_the_threads_session(
+    service, inline_publisher, inline_platform, bridged
+):
+    platform = inline_platform
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _thread_turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("close_session")))
+    [closed] = platform.of("close_session")
+    assert closed.ref == ASKED_POST
+    assert platform.of("remove_work_thread") == []
+    assert all(drawn.content.asked is not None for drawn in _turns(platform)), (
+        "every redraw keeps naming its question"
+    )

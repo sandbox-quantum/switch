@@ -1861,10 +1861,15 @@ class PlatformAdapter(ABC):
         raise NotImplementedError
 
     async def remove_work_thread(
-        self, channel_id: str, work_ref: str, stream_refs: Sequence[str]
+        self,
+        channel_id: str,
+        work_ref: str,
+        stream_refs: Sequence[str],
+        session_ref: str | None = None,
     ) -> bool:
         """Delete a work thread's streams and then its work message. True when
-        all of them are gone; False at the first refusal."""
+        all of them are gone; False at the first refusal. The turn's session
+        is on `session_ref` where that is not the work message itself."""
         raise NotImplementedError
 
     async def open_session(
@@ -1887,6 +1892,15 @@ class PlatformAdapter(ABC):
         self, channel_id: str, agent_name: str, message_ref: str, summary: str
     ) -> None:
         """End what `open_session` started, naming how the turn ended."""
+
+    async def restore_session(
+        self, channel_id: str, message_ref: str, *, working: bool
+    ) -> None:
+        """Undo the platform's own Stop on a session, pressed and not acted on.
+
+        The platform shows the session stopping until told otherwise: back to
+        working while a turn still runs there, or done when none does.
+        Nothing by default."""
 
     async def settle_work_message(
         self,

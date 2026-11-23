@@ -46,9 +46,15 @@ class Publisher:
 class Platform:
     def __init__(self) -> None:
         self.told: list[str] = []
+        self.told_in: list[str | None] = []
+        self.restored: list[tuple[str, bool]] = []
 
     async def tell_actor(self, channel_id, actor_ref, actor_name, thread_ref, text):
         self.told.append(text)
+        self.told_in.append(thread_ref)
+
+    async def restore_session(self, channel_id, message_ref, *, working):
+        self.restored.append((message_ref, working))
 
 
 def _watching(registry: AgentConnectionRegistry):
@@ -203,7 +209,9 @@ def _session_stop(message_ref: str = STATUS_POST) -> InboundInteraction:
     )
 
 
-def _shown(room: str, shows: str, running: str | None) -> StopTarget:
+def _shown(
+    room: str, shows: str, running: str | None, thread_ref: str | None = None
+) -> StopTarget:
     return StopTarget(
         agent_id=AGENT,
         session_id=SESSION,
@@ -211,6 +219,7 @@ def _shown(room: str, shows: str, running: str | None) -> StopTarget:
         thread_id="sw_asked",
         running_turn_id=running,
         turn_id=shows,
+        thread_ref=thread_ref,
     )
 
 
@@ -254,3 +263,41 @@ async def test_a_refused_stop_remembers_nobody(service, people, room):
     )
     await bridge._handle_inbound_interaction(_press("turn-1"))
     assert bridge._activity_publisher.stoppers == []  # type: ignore[union-attr]
+
+
+async def test_slacks_own_stop_not_acted_on_puts_the_session_back_to_working(
+    service, people, room
+):
+    """Slack shows "Stopping…" until told otherwise: a press refused while a
+    turn still runs puts the session back to working, and says why in the
+    thread the turn is drawn in."""
+    registry = AgentConnectionRegistry()
+    _watching(registry)
+    bridge, platform = _bridge(
+        service, registry, _shown(room, "turn-1", "turn-2", "C1:1.0"), people.owner
+    )
+    await bridge._handle_inbound_interaction(_session_stop())
+    assert platform.restored == [(STATUS_POST, True)]
+    assert platform.told_in == ["C1:1.0"]
+
+
+async def test_slacks_own_stop_with_nothing_behind_it_puts_the_session_to_rest(
+    service, people, room
+):
+    """A thread whose turn is gone: the session is set done, and the answer
+    goes to that thread rather than the channel."""
+    registry = AgentConnectionRegistry()
+    bridge, platform = _bridge(service, registry, None, people.owner)
+    await bridge._handle_inbound_interaction(_session_stop("C1:2.0"))
+    assert "no longer connected" in platform.told[0]
+    assert platform.told_in == ["C1:2.0"]
+    assert platform.restored == [("C1:2.0", False)]
+
+
+async def test_switchs_own_stop_never_touches_the_session(service, people, room):
+    registry = AgentConnectionRegistry()
+    bridge, platform = _bridge(service, registry, _target(room, None), people.owner)
+    await bridge._handle_inbound_interaction(_press())
+    assert "TURN_NOT_RUNNING" in platform.told[0]
+    assert platform.restored == []
+    assert platform.told_in == [None]

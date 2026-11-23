@@ -806,3 +806,46 @@ async def test_a_question_that_was_only_a_mention_is_still_linked() -> None:
     )
     [session] = _sessions(client)
     assert session["title"] == "Agent", "no question: the agent's name"
+
+
+# ── Inline in a thread ───────────────────────────────────────────────────────
+
+
+async def test_an_inline_turn_in_a_thread_is_an_ordinary_reply_not_a_stream() -> None:
+    """A stream would bring a session of Slack's own, and its Stop, beside
+    the one the turn opened for its asker."""
+    client = FakeWebClient()
+    await _adapter(client).post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), recipient_external_id=ASKER, has_session=True),
+        f"{CHANNEL}:3.0",
+    )
+    assert client.started == []
+    [posted] = client.posted
+    assert posted["thread_ts"] == "3.0"
+    assert any(block["type"] == "plan" for block in posted["blocks"])
+
+
+@pytest.mark.parametrize(
+    ("working", "status"), [(True, "processing"), (False, "active")]
+)
+async def test_a_stop_not_acted_on_takes_the_session_off_stopping(
+    working: bool, status: str
+) -> None:
+    client = FakeWebClient()
+    await _adapter(client).restore_session(CHANNEL, f"{CHANNEL}:3.0", working=working)
+    assert _sessions(client) == [
+        {"channel_id": CHANNEL, "thread_ts": "3.0", "status": status}
+    ]
+
+
+async def test_removing_an_inline_reply_ends_the_session_on_its_thread() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    assert await adapter.remove_work_thread(
+        CHANNEL, f"{CHANNEL}:4.0", [], session_ref=f"{CHANNEL}:3.0"
+    )
+    [session] = _sessions(client)
+    assert session["thread_ts"] == "3.0"
+    assert [d["ts"] for d in client.deleted] == ["4.0"]
