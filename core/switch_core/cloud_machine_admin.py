@@ -4,7 +4,8 @@
 start it again: Start and Retry in Switch Console are refused, a message to
 one of its agents does not wake it, and Switch no longer retains or deletes
 its disk. `release` lifts the hold, leaving the machine stopped for its owner
-to start. Both are recorded in the server audit log. Run it where switch-core
+to start, or, while a move to a box (`switch-hosted-migration`) holds it, held
+for the move again. Both are recorded in the server audit log. Run it where switch-core
 runs, with the same configuration.
 """
 
@@ -27,6 +28,7 @@ from switch_core.db.models import CloudMachine, User
 from switch_core.db.stores.hosted_machine_store import (
     CloudMachineConflict,
     CloudMachineStore,
+    move_holds,
 )
 from switch_core.observability.hosted import record_machine_event
 from switch_core.tenant_context import no_tenant
@@ -121,7 +123,8 @@ async def stop_machine(
 async def release_machine(
     factory: async_sessionmaker[AsyncSession], machine_id: str
 ) -> dict:
-    """Lift the hold: the machine stays stopped for its owner to start."""
+    """Lift the hold: the machine stays stopped for its owner to start, or for
+    the move to a box, when one holds it at its current step."""
     machine_id = _machine_id(machine_id)
     store = CloudMachineStore()
     with no_tenant():
@@ -130,7 +133,11 @@ async def release_machine(
             if machine is None:
                 raise CloudMachineAdminError(f"No cloud machine {machine_id}.")
             try:
-                store.admin_release(machine, datetime.now(UTC))
+                store.admin_release(
+                    machine,
+                    datetime.now(UTC),
+                    move_holds=await move_holds(session, machine.owner_id),
+                )
             except CloudMachineConflict as error:
                 raise CloudMachineAdminError(str(error)) from None
             await record_server_audit_event(

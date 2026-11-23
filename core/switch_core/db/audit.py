@@ -286,6 +286,13 @@ class ServerAuditAction(StrEnum):
     # revoked, so a new box enrols afresh: Core's one re-ask, or the owner's
     # Retry. Written and committed before the revokes, so none is unrecorded.
     HOSTED_BOX_CONTROLLERS_REVOKED = "hosted.box_controllers_revoked"
+    # The move of a person's v1 machine to a v2 box, one entry per step, with
+    # the operator who ran it as the actor.
+    HOSTED_MIGRATION_STARTED = "hosted.migration_started"
+    HOSTED_MIGRATION_STEP = "hosted.migration_step"
+    HOSTED_MIGRATION_DONE = "hosted.migration_done"
+    HOSTED_MIGRATION_ROLLED_BACK = "hosted.migration_rolled_back"
+    HOSTED_MIGRATION_CLEANED = "hosted.migration_cleaned"
     # Operator alerts: one row per raise and per clear, with no actor.
     # `alert.` is one of the operators' log's prefixes; it leaves them out
     # unless asked for.

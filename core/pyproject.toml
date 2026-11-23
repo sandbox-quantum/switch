@@ -66,6 +66,7 @@ switch-connector-apps = "switch_core.connector_apps_admin:main"
 switch-promote-org-admin = "switch_core.promote_org_admin:main"
 switch-room-moderation = "switch_core.room_moderation_admin:main"
 switch-suspend = "switch_core.suspension_admin:main"
+switch-hosted-migration = "switch_core.hosted_migration_cli:main"
 
 [build-system]
 requires = ["hatchling"]

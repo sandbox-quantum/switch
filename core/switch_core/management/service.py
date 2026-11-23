@@ -63,6 +63,7 @@ from switch_core.db.models import (
     AgentControllerOperation,
     ApiKey,
     CloudMachine,
+    HostedMigration,
     MachineWorkspace,
     ServiceTokenIssuance,
     require_tenant_id,
@@ -210,6 +211,55 @@ class _Placement:
     controller_id: str | None
     desired_state: str
     definition: dict[str, Any]
+
+
+async def revoke_controller_rows(
+    session: AsyncSession,
+    tenant_id: str,
+    controller_id: str,
+    *,
+    now: datetime,
+    controllers: AgentControllerStore,
+    api_keys: ApiKeyStore,
+    operations: AgentControllerOperationStore,
+    revoked_by: Literal["pause", "turn_off"] | None = None,
+) -> None:
+    """`ManagementService._revoke`'s rows, for a caller without the service
+    (the hosted migration's command): mark revoked, delete the credential,
+    audit the revoke, cancel open operations and drop sealed logins. Already
+    revoked is fine. The caller commits; nothing is announced."""
+    controller = await controllers.get(session, tenant_id, controller_id)
+    if controller is None:
+        return
+    if controller.revoked_at is not None:
+        if revoked_by is None and controller.revoked_by is not None:
+            await controllers.clear_revoked_by(session, tenant_id, controller_id)
+        return
+    actor_user_id, acting_agent_id = request_actor()
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
+        action=AuditAction.CONTROLLER_REVOKED,
+        target_type="controller",
+        target_id=controller_id,
+        details={
+            "name": controller.name,
+            "kind": controller.kind,
+            "owner_id": controller.owner_id,
+            "acting_agent_id": acting_agent_id,
+        },
+    )
+    key_id = controller.api_key_id
+    await controllers.mark_revoked(
+        session, tenant_id, controller_id, now, revoked_by=revoked_by
+    )
+    if key_id is not None:
+        await api_keys.delete(session, key_id)
+    await operations.cancel_open(
+        session, tenant_id, controller_id=controller_id, agent_id=None
+    )
+    await controllers.delete_sealed_logins(session, tenant_id, controller_id, None)
 
 
 class ManagementService:
@@ -651,11 +701,18 @@ class ManagementService:
             if process_hosted_v2() and machine is not None and machine.backend == "box":
                 workspace.enrollment_code_encrypted = None
                 workspace.enrollment_code_revision = None
+            # A box enrolling while an operator moves the machine from v1 takes
+            # none of the agents yet: they stay on the v1 controller until the
+            # copy is verified (the migration's hold; never set otherwise).
+            held = (
+                replaced is not None and replaced == workspace.moving_from_controller_id
+            )
             if replaced is not None and replaced != controller.id:
                 await self._revoke(session, tenant_id, replaced)
-                moved = await self._move_placed(
-                    session, tenant_id, replaced, controller.id
-                )
+                if not held:
+                    moved = await self._move_placed(
+                        session, tenant_id, replaced, controller.id
+                    )
                 revisions = await self._bump_and_collect(
                     session, tenant_id, {replaced, controller.id}
                 )
@@ -1528,41 +1585,15 @@ class ManagementService:
         controller. Every other caller leaves it None,
         which also clears the mark on a row a pause already revoked, so a path
         added later is safe without knowing about it."""
-        controller = await self.controllers.get(session, tenant_id, controller_id)
-        if controller is None:
-            return
-        if controller.revoked_at is not None:
-            if revoked_by is None and controller.revoked_by is not None:
-                await self.controllers.clear_revoked_by(
-                    session, tenant_id, controller_id
-                )
-            return
-        actor_user_id, acting_agent_id = request_actor()
-        await record_audit_event(
+        await revoke_controller_rows(
             session,
-            tenant_id=tenant_id,
-            actor_user_id=actor_user_id,
-            action=AuditAction.CONTROLLER_REVOKED,
-            target_type="controller",
-            target_id=controller_id,
-            details={
-                "name": controller.name,
-                "kind": controller.kind,
-                "owner_id": controller.owner_id,
-                "acting_agent_id": acting_agent_id,
-            },
-        )
-        key_id = controller.api_key_id
-        await self.controllers.mark_revoked(
-            session, tenant_id, controller_id, self.now(), revoked_by=revoked_by
-        )
-        if key_id is not None:
-            await self.api_keys.delete(session, key_id)
-        await self.operations.cancel_open(
-            session, tenant_id, controller_id=controller_id, agent_id=None
-        )
-        await self.controllers.delete_sealed_logins(
-            session, tenant_id, controller_id, None
+            tenant_id,
+            controller_id,
+            now=self.now(),
+            controllers=self.controllers,
+            api_keys=self.api_keys,
+            operations=self.operations,
+            revoked_by=revoked_by,
         )
 
     async def _move_placed(
@@ -1633,6 +1664,7 @@ class ManagementService:
         controller = await self._sealing_target(
             session, tenant_id, owner_id, controller_id, provider
         )
+        await _refuse_while_migrating(session, tenant_id, controller_id)
         public_key = controller.public_key
         if public_key is None:
             raise ManagementError(
@@ -2712,6 +2744,37 @@ async def _refuse_for_box(
     _refuse_box_while_v2_off(backend)
     if backend == "box":
         await _refuse_if_blocked(session, owner_id, tenant_id)
+
+
+async def _refuse_while_migrating(
+    session: AsyncSession, tenant_id: str, controller_id: str
+) -> None:
+    """No login is given to a machine an operator is moving from v1 to a v2
+    box, until the move is done: 409 `migration_in_progress` (the migration
+    design). With hosted agents v2 off there is no move, as before v2."""
+    if not process_hosted_v2():
+        return
+    machine_id = await session.scalar(
+        select(MachineWorkspace.machine_id).where(
+            MachineWorkspace.tenant_id == tenant_id,
+            (MachineWorkspace.controller_id == controller_id)
+            | (MachineWorkspace.moving_from_controller_id == controller_id),
+        )
+    )
+    if machine_id is None:
+        return
+    moving = await session.scalar(
+        select(HostedMigration.step).where(
+            HostedMigration.machine_id == machine_id,
+            HostedMigration.step.not_in(("done", "rolled_back", "cleaned")),
+        )
+    )
+    if moving is not None:
+        raise ManagementError(
+            409,
+            reason_codes.HOSTED_MIGRATING,
+            "migration_in_progress",
+        )
 
 
 async def _refuse_if_blocked(
