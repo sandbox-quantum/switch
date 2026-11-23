@@ -10,5 +10,27 @@ properties:
     levels: [code, system]
     owner: platform
     status: proposed
+    gaps:
+      system: waits on the two-replica lane
     notes: >
-      `process_lease.py`, `bridges/agent/protocol/connection_rows.py`.
+      `process_lease.py`, with `bridges/agent/protocol/connection_rows.py` for
+      agents' own connections and `management/connection_ledger.py` with
+      `placement.controller_state` for controllers'. Checked at the code level
+      by `lease_presence_machine.py`. Two processes share Postgres, each with
+      its own registry, presence, ledger, lease and signal bus. An agent's
+      connection and a controller's are opened and closed through either,
+      while the leases are renewed, lapse (their last renewal moved back past
+      `LEASE_TTL`, so nothing sleeps) and are stopped. A read of the database
+      (the rows' `held`, the controller's state) must say online exactly while
+      the connection is open and its holder holds its lease. The other
+      process's copy may lag only until it has caught up with what changed: a
+      connection opened or closed, once it hears the signal; a lease that
+      lapsed or was stopped, once it checks the leases (`WATCH_SECONDS`);
+      anything, once it reads every connection again. "Within the lease's
+      lifetime" is that bound: `LEASE_TTL` after the last renewal, plus one
+      lease watch. The holder's own view is not judged, since a socket it
+      holds is live to it whatever its lease says. A holder whose lease
+      lapsed and is then renewed reads offline elsewhere until the next
+      re-check (`RECHECK_SECONDS`), since the lease watch only drops copies. A
+      lapse is a process that stopped renewing for a whole `LEASE_TTL`, so
+      that is a delay after an outage, not a wrong answer.
