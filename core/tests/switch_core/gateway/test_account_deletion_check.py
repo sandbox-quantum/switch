@@ -14,13 +14,16 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.deletion import AccountDeletion, AccountDeletionRefused
 from switch_core.connections.broker import get_service_broker
 from switch_core.db.models import TENANT_ZERO_ID, CloudMachine, OrganizationMember, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.identity_session_store import IdentitySessionStore
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
@@ -29,12 +32,14 @@ from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.auth_routes import router
 from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.gateway.invite_mail import InviteMailer
+from switch_core.workos_authkit import AuthKitUnavailable
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.accounts.test_account_deletion import (
     ADMIN_EMAIL,
     _deletion,
     _SignInFlows,
 )
+from tests.switch_core.gateway.test_identity_session_check import _AuthKitSignOut
 from tests.switch_core.gateway.test_organization_admin_notices import (
     SentAfter,
     WatchedMailer,
@@ -298,3 +303,148 @@ async def test_the_only_operator_is_refused(
     assert response.status_code == 200, response.text
     refusal = response.json()["refusal"]
     assert refusal is not None and "only platform operator" in refusal
+
+
+# ── Deleting an account that signs in through WorkOS AuthKit ────────────────
+
+
+async def _authkit_sign_in(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str, session_id: str
+) -> str:
+    async with session_factory() as session:
+        row_id = await IdentitySessionStore().record(
+            session,
+            user_id=user_id,
+            provider="workos",
+            provider_user_id="user_LEAVING",
+            session_id=session_id,
+            followed=True,
+            now=datetime.now(UTC),
+        )
+        await session.commit()
+    return row_id
+
+
+def _authkit_client(
+    app: Any, user_id: str, email: str, identity_session: str
+) -> httpx.AsyncClient:
+    token = create_jwt(
+        user_id,
+        email,
+        "user",
+        TEST_KEYRING,
+        TENANT_ZERO_ID,
+        session_version=0,
+        session_id=secrets.token_urlsafe(16),
+        identity_session=identity_session,
+        auth_time=datetime.now(UTC),
+    )
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"switch_auth": token},
+    )
+
+
+async def _live(session_factory: async_sessionmaker[AsyncSession], row_id: str) -> bool:
+    async with session_factory() as session:
+        row = await IdentitySessionStore().get(session, row_id)
+    return row is not None and row.ended_at is None
+
+
+async def test_a_refused_deletion_ends_no_sign_in(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _make_member(
+        session_factory, name="colleague", tenant_id=TENANT_ZERO_ID, role="member"
+    )
+    only_admin = await _make_member(
+        session_factory, name="only-admin", tenant_id=TENANT_ZERO_ID, role="admin"
+    )
+    here = await _authkit_sign_in(session_factory, only_admin, "s-del-here")
+    laptop = await _authkit_sign_in(session_factory, only_admin, "s-del-laptop")
+    workos = _AuthKitSignOut({"s-del-here", "s-del-laptop"})
+    app = _app(session_factory)
+    app.state.identity_sessions = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    async with _authkit_client(
+        app, only_admin, "only-admin@example.invalid", here
+    ) as client:
+        deleted = await client.request(
+            "DELETE", "/auth/me", json={"email": "only-admin@example.invalid"}
+        )
+    assert deleted.status_code == 409, deleted.text
+    assert workos.asked == [] and workos.revoked == []
+    assert await _live(session_factory, here)
+    assert await _live(session_factory, laptop)
+
+
+async def test_a_deletion_refused_late_keeps_this_browser_signed_in(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last-admin check the deletion repeats under its lock can refuse
+    after the other devices were signed out; this browser's sign-in is only
+    ended once the deletion has gone through."""
+    _, member = await _people(session_factory)
+    here = await _authkit_sign_in(session_factory, member, "s-late-here")
+    laptop = await _authkit_sign_in(session_factory, member, "s-late-laptop")
+    workos = _AuthKitSignOut({"s-late-here", "s-late-laptop"})
+    app = _app(session_factory)
+    app.state.identity_sessions = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+
+    async def refused_under_lock(*_args: Any, **_kwargs: Any) -> Any:
+        raise AccountDeletionRefused("You're the only organization admin of Acme.")
+
+    monkeypatch.setattr(AccountDeletion, "delete", refused_under_lock)
+    async with _authkit_client(app, member, "leaving@example.invalid", here) as client:
+        deleted = await client.request(
+            "DELETE", "/auth/me", json={"email": "leaving@example.invalid"}
+        )
+        me = await client.get("/auth/me")
+    assert deleted.status_code == 409, deleted.text
+    assert workos.revoked == ["s-late-laptop"]
+    assert await _live(session_factory, here)
+    assert not await _live(session_factory, laptop)
+    assert me.status_code == 200
+
+
+async def test_a_deletion_whose_sign_ins_workos_cannot_list_is_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, member = await _people(session_factory)
+    here = await _authkit_sign_in(session_factory, member, "s-list-here")
+    laptop = await _authkit_sign_in(session_factory, member, "s-list-laptop")
+    workos = _AuthKitSignOut({"s-list-here", "s-list-laptop"})
+    workos.fail = AuthKitUnavailable("WorkOS answered 503.")
+    app = _app(session_factory)
+    app.state.identity_sessions = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    async with _authkit_client(app, member, "leaving@example.invalid", here) as client:
+        deleted = await client.request(
+            "DELETE", "/auth/me", json={"email": "leaving@example.invalid"}
+        )
+    assert deleted.status_code == 502, deleted.text
+    assert "1 of the account's sign-ins" in deleted.json()["detail"]
+    assert await _live(session_factory, laptop)
+    async with session_factory() as session:
+        assert await session.get(User, member) is not None
+
+
+async def test_a_deletion_sends_this_browser_to_end_its_own_sign_in(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, member = await _people(session_factory)
+    here = await _authkit_sign_in(session_factory, member, "s-gone-here")
+    await _authkit_sign_in(session_factory, member, "s-gone-laptop")
+    await _authkit_sign_in(session_factory, member, "s-ran-out")
+    workos = _AuthKitSignOut({"s-gone-here", "s-gone-laptop"})
+    app = _app(session_factory)
+    app.state.identity_sessions = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    async with _authkit_client(app, member, "leaving@example.invalid", here) as client:
+        deleted = await client.request(
+            "DELETE", "/auth/me", json={"email": "leaving@example.invalid"}
+        )
+    assert deleted.status_code == 200, deleted.text
+    assert workos.revoked == ["s-gone-laptop"]
+    assert "session_id=s-gone-here" in deleted.json()["end_session_url"]
+    async with session_factory() as session:
+        assert await session.get(User, member) is None

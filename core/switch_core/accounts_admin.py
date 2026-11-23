@@ -647,6 +647,12 @@ async def delete_account(
     if reason is not None:
         await _record_refusal(session_factory, user_id, reason)
         raise CommandRefused(reason)
+    # Ended once the plan's refusals are checked, and before anything is
+    # deleted, so a sign-in WorkOS will not end (its listing included) stops
+    # the deletion rather than leaving a device to sign straight back in to a
+    # new account. The last-admin check `deletion.delete` makes again under
+    # its lock can still refuse after this in a race, with the sign-ins
+    # already ended: accepted, for the same reason.
     failed = await identity_sessions.end_all(user_id, keep=None)
     if failed:
         reason = (

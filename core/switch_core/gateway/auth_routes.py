@@ -533,11 +533,21 @@ async def end_my_sessions(
 async def _end_identity_sessions_before_deleting(
     identity_sessions: IdentitySessions, user_id: str, keep: str | None
 ) -> None:
-    """End every identity-provider session of an account about to be deleted,
-    once its deletion is no longer refused: the rows go with the account, and
-    a device left on a live AuthKit session would be signed straight back in
-    and given a new account. A session that could not be ended refuses the
-    deletion, to be tried again."""
+    """End every identity-provider session of an account about to be deleted
+    but `keep`, this browser's, after the deletion's own refusals have been
+    checked: the rows go with the account, and a device left on a live
+    AuthKit session would be signed straight back in and given a new
+    account. A session that could not be ended, its listing at WorkOS
+    included, refuses the deletion, to be tried again.
+
+    One refusal can still come after this: the deletion checks again, under
+    its lock, that the person is not an organization's last admin
+    (`AccountDeletion.delete`), and a concurrent change can make them one.
+    Their other devices are then signed out though the account stays. That
+    race is accepted rather than revoking only once the account is gone,
+    which would let a revoke that fails leave a device signed in to a new
+    account. This browser's own sign-in is left until the deletion has gone
+    through, so a person refused stays signed in here."""
     failed = await identity_sessions.end_all(user_id, keep=keep)
     if failed:
         raise HTTPException(
@@ -842,12 +852,19 @@ async def delete_my_account(
     # nor while WorkOS is asked to end the account's sign-ins.
     await session.commit()
     here = session_identity(request)
-    await _end_identity_sessions_before_deleting(identity_sessions, user.id, here)
-    end_session_url = (
+    this_browser = (
         None
         if here is None
-        else await identity_sessions.end_here(user.id, here, _sign_out_return(config))
+        else next(
+            (
+                row
+                for row in await identity_sessions.live_sessions(user.id)
+                if row.id == here
+            ),
+            None,
+        )
     )
+    await _end_identity_sessions_before_deleting(identity_sessions, user.id, here)
     try:
         changes = await deletion.delete(session, user, workspaces, actor_id=user.id)
     except AccountDeletionRefused as refused:
@@ -857,6 +874,12 @@ async def delete_my_account(
         raise
     background.add_task(notices.send_all, changes)
     response.delete_cookie("switch_auth", path="/")
+    # Its row went with the account; the browser ends the AuthKit session.
+    end_session_url = (
+        None
+        if this_browser is None
+        else identity_sessions.logout_url(this_browser, _sign_out_return(config))
+    )
     return SignOutResponse(ok=True, end_session_url=end_session_url)
 
 
