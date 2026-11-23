@@ -1,0 +1,143 @@
+# PROPOSED, not applied. The cluster report's extra reads, to review before applying.
+# Names: the hosted controller runs in its own namespace `switch-hosted` as the chart's
+# one account `switch-hosted-controller`, which runs the box scaler and so the cluster report. The egress proxy is
+# in `egress-proxy` on the test cluster. Still to fill: __OPERATOR_DEPLOYMENT__ (the operator's Deployment, named by
+# its Helm release) and __DATADOG_NS__ (only when Datadog is on; leave that Role and its binding out otherwise).
+#
+# The hosted controller's account gets, for the cluster report:
+#   ClusterRole switch-cluster-report-nodes         get and list on nodes (names, zones, taints, allocatable memory:
+#                                                   what the scheduler shows), and get on nodes in metrics.k8s.io
+#                                                   (each node's memory total). Nothing on pods.metrics.k8s.io, and
+#                                                   no cluster-wide pod read: booked memory uses the box pods the
+#                                                   scaler already lists in each box namespace.
+#   Role switch-cluster-report-services, one per    get on the listed Deployments, by resourceNames. No list (RBAC
+#   namespace holding a listed service              can't narrow list by name), no watch, no writes, no other kinds.
+#
+# Node names change as machines come and go, so resourceNames can't pin the node rules. They read node metadata and
+# totals that the cluster's own scheduler already shows.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-cluster-report-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: switch-cluster-report-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: switch-cluster-report-nodes
+subjects:
+  - kind: ServiceAccount
+    name: switch-hosted-controller
+    namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-cluster-report-services
+  namespace: kube-system
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["coredns", "ebs-csi-controller", "cluster-autoscaler", "metrics-server"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-cluster-report-services
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-cluster-report-services
+subjects:
+  - kind: ServiceAccount
+    name: switch-hosted-controller
+    namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-cluster-report-services
+  namespace: egress-proxy
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["squid"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-cluster-report-services
+  namespace: egress-proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-cluster-report-services
+subjects:
+  - kind: ServiceAccount
+    name: switch-hosted-controller
+    namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-cluster-report-services
+  namespace: switch-hosted
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["__OPERATOR_DEPLOYMENT__"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-cluster-report-services
+  namespace: switch-hosted
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-cluster-report-services
+subjects:
+  - kind: ServiceAccount
+    name: switch-hosted-controller
+    namespace: switch-hosted
+---
+# Only when Datadog is on.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-cluster-report-services
+  namespace: __DATADOG_NS__
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["kube-state-metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-cluster-report-services
+  namespace: __DATADOG_NS__
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-cluster-report-services
+subjects:
+  - kind: ServiceAccount
+    name: switch-hosted-controller
+    namespace: switch-hosted

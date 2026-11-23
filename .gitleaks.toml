@@ -101,3 +101,25 @@ regexes = [
   '''^\s*privateKey: 'mK9YFSnL\+gcY/ye\+4HkkiK7eVYX/u\+CQzDECYtOqRUM=',\s*$''',
   '''^\s*ephemeral_key: 'qh92VjE6EvWweftDb6jNmtIsKJKOO5NzXaXl1kXzlFE=',\s*$''',
 ]
+
+[[allowlists]]
+description = "Test fixture in test_box_operator.py"
+# A made-up keyed id ("k1-" plus hex): an id format, not a credential.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^deploy/hosted/controller/tests/test_box_operator\.py$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*\("user_keyed_id", "k1-0123456789ABCDEF"\),\s*$''',
+]
+
+[[allowlists]]
+description = "Test fixture in k8s-fields.json"
+# A plain source label in the box operator's Kubernetes field fixture.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^deploy/hosted/controller/tests/fixtures/k8s-fields\.json$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*"source": "cluster OpenAPI v3, v1\.37\.0-eks-b9510e3",\s*$''',
+]
