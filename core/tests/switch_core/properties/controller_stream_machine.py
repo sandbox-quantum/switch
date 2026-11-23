@@ -9,6 +9,14 @@ The machine is a controller: it asks its agents, reads frames, confirms what it
 has processed, and drops its socket or its whole connection and opens again
 from its confirmed position, while the stream's own passes fail now and then.
 
+It also changes what the stream carries while it is open
+(`controller.stream-complete`). An agent moved to another controller is
+detached, and gets nothing more; one moved back is attached at its head, so
+nothing it had, nor anything said while it was away, is sent again.
+Retention deletes an agent's events, and a reader below what it deleted, on
+the open stream or attaching on a new one, is told an `agent.gap` naming the
+room and resumes just past the deletion.
+
 A step that reads takes exactly the events it knows are outstanding, so a
 stream that fails to deliver one is a step that times out, not one that passes.
 """
@@ -36,7 +44,7 @@ from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import empty_the_database
-from tests.db_buffer import say
+from tests.db_buffer import age_events, say
 from tests.switch_core.management.harness import (
     EnrolledController,
     Harness,
@@ -44,11 +52,14 @@ from tests.switch_core.management.harness import (
     add_room,
     beat,
     build_harness,
+    cookies_for,
     enroll_console,
     open_connection,
     open_stream,
     parse_frame,
     place_agent,
+    provider,
+    report_status,
 )
 
 AGENTS = ("one", "two")
@@ -63,6 +74,13 @@ SHOULD_REACH = (
     "read a backlog",
     "retried a failed pass",
     "confirmed a position",
+)
+# What `controller.stream-complete` adds.
+CHANGES_SHOULD_REACH = (
+    "detached an agent mid-stream",
+    "attached an agent mid-stream",
+    "told a gap mid-stream",
+    "told a gap on attaching",
 )
 
 
@@ -113,11 +131,23 @@ class ControllerStreams(RuleBasedStateMachine):
         self.agents: dict[str, str] = {}
         self.run(self._seed())
         # Per agent: how many events have been asked, the position the
-        # controller has processed to, and the position it last confirmed.
+        # controller has processed to, and the position it last confirmed
+        # (None for one it holds no position for: never attached, or detached
+        # since).
         self.head = {agent: 0 for agent in AGENTS}
         self.position = {agent: 0 for agent in AGENTS}
-        self.confirmed = {agent: 0 for agent in AGENTS}
+        self.confirmed: dict[str, int | None] = {agent: 0 for agent in AGENTS}
+        # Whether the agent is placed on this controller, whether the open
+        # stream has it attached, the number retention has deleted its events
+        # through, and, after an attach that found its cursor deleted, the
+        # cursor the gap that follows must name.
+        self.bound = {agent: True for agent in AGENTS}
+        self.attached = {agent: False for agent in AGENTS}
+        self.expired = {agent: 0 for agent in AGENTS}
+        self.gap_owed: dict[str, int | None] = {agent: None for agent in AGENTS}
         self.opened: dict[str, Any] | None = None
+        # Every event the machine has read.
+        self.taken = 0
         self.failing = 0
         self.asked = 0
         buffer = self.harness.protocol.event_buffer
@@ -136,7 +166,13 @@ class ControllerStreams(RuleBasedStateMachine):
 
     async def _seed(self) -> None:
         owner = await add_member(self.session_factory, "ada")
+        self.owner = owner
         self.controller = await enroll_console(self.harness, self.http, owner)
+        # Where an agent moved away is placed.
+        self.elsewhere = await enroll_console(self.harness, self.http, owner, "two")
+        await report_status(
+            self.http, self.elsewhere, 1, providers=[provider("claude")]
+        )
         for name in AGENTS:
             self.agents[name] = await place_agent(self.http, self.controller, name=name)
         self.room_id = await add_room(self.session_factory, *self.agents.values())
@@ -166,76 +202,137 @@ class ControllerStreams(RuleBasedStateMachine):
 
     # ── Reading ──────────────────────────────────────────────────────────────
 
-    def _outstanding(self) -> int:
-        return sum(self.head[a] - self.position[a] for a in AGENTS)
+    def _owed(self, agent: str) -> int:
+        """The events the open stream still owes the agent: those after where
+        it is, or after what retention deleted, whichever is later."""
+        if not self.attached[agent]:
+            return 0
+        return self.head[agent] - max(self.position[agent], self.expired[agent])
 
-    async def _read(self, events: int) -> None:
-        """Read until `events` events have arrived, taking each one as the next
-        in its agent's order."""
-        by_id = {agent_id: name for name, agent_id in self.agents.items()}
-        taken = 0
+    def _outstanding(self) -> int:
+        return sum(self._owed(agent) for agent in AGENTS)
+
+    def _take(self, name: str, data: dict[str, Any]) -> int:
+        """Judge one frame against the model and apply it. Returns how many
+        events it carried."""
+        by_id = {agent_id: n for n, agent_id in self.agents.items()}
+        agent = by_id.get(data.get("agent_id", ""), "")
+        if name == "agent.attached":
+            assert self.bound[agent], (
+                f"{agent} was attached, but it is placed elsewhere"
+            )
+            assert not self.attached[agent], f"{agent} was attached twice"
+            held = self.confirmed[agent]
+            cursor = self.head[agent] if held is None else held
+            if cursor < self.expired[agent]:
+                # Retention deleted what follows the cursor: attached past the
+                # deletion, with a gap to follow.
+                assert data["from_seq"] == self.expired[agent], (
+                    f"{agent} was attached from {data['from_seq']} below what "
+                    f"retention deleted, through {self.expired[agent]}"
+                )
+                self.gap_owed[agent] = cursor
+            else:
+                assert data["from_seq"] == cursor, (
+                    f"{agent} was attached from {data['from_seq']}, where "
+                    f"{cursor} was {'its head' if held is None else 'confirmed'}"
+                )
+            self.attached[agent] = True
+            self.position[agent] = data["from_seq"]
+            self.confirmed[agent] = data["from_seq"]
+            return 0
+        if name == "agent.detached":
+            assert self.attached[agent], f"{agent} was detached, but not attached"
+            assert not self.bound[agent], f"{agent} was detached while placed here"
+            assert self.gap_owed[agent] is None, f"{agent} was detached before its gap"
+            self.attached[agent] = False
+            self.confirmed[agent] = None
+            return 0
+        if name == "agent.gap":
+            assert self.attached[agent], f"{agent} was told a gap, but not attached"
+            assert data["rooms"] == [self.room_id] and data["all_rooms"] is False, (
+                f"{agent}'s gap names {data['rooms']}, not the room it lost events in"
+            )
+            owed = self.gap_owed[agent]
+            if owed is not None:
+                assert (data["from_sequence"], data["resumed_at"]) == (
+                    owed,
+                    self.position[agent],
+                ), f"{agent}'s gap on attaching is {data}"
+                self.gap_owed[agent] = None
+                COVERAGE["told a gap on attaching"] += 1
+                return 0
+            assert self.position[agent] < self.expired[agent], (
+                f"{agent} was told a gap at {self.position[agent]}, past what "
+                f"retention deleted, through {self.expired[agent]}"
+            )
+            assert (data["from_sequence"], data["resumed_at"]) == (
+                self.position[agent],
+                self.expired[agent],
+            ), f"{agent}'s gap is {data}"
+            self.position[agent] = data["resumed_at"]
+            COVERAGE["told a gap mid-stream"] += 1
+            return 0
+        if name == "agent.event":
+            assert self.attached[agent], f"{agent} was sent an event, but not attached"
+            assert self.gap_owed[agent] is None, (
+                f"{agent} was sent an event before the gap its attach owed"
+            )
+            assert data["seq"] == self.position[agent] + 1, (
+                f"{agent} was sent event {data['seq']} after {self.position[agent]}"
+            )
+            assert data["seq"] > self.expired[agent], (
+                f"{agent} was sent event {data['seq']}, which retention deleted"
+            )
+            self.position[agent] = data["seq"]
+            return 1
+        return 0
+
+    async def _pump(self, done: Any, what: str) -> None:
+        """Take frames until `done()`, judging each."""
 
         async def pump() -> None:
-            nonlocal taken
-            while taken < events:
+            while not done():
                 raw = await anext(self.stream)
                 if raw is IDLE:
                     continue
-                name, data = parse_frame(raw)
-                if name == "agent.gap":
-                    raise AssertionError(f"the stream reported a gap: {data}")
-                if name != "agent.event":
-                    continue
-                agent = by_id[data["agent_id"]]
-                assert data["seq"] == self.position[agent] + 1, (
-                    f"{agent} was sent event {data['seq']} after {self.position[agent]}"
-                )
-                self.position[agent] = data["seq"]
-                taken += 1
+                self.taken += self._take(*parse_frame(raw))
 
         try:
             await asyncio.wait_for(pump(), timeout=READ_SECONDS)
         except TimeoutError:
             raise AssertionError(
-                f"{taken} of {events} events arrived in {READ_SECONDS}s; the "
-                f"controller is at {self.position} of {self.head}"
+                f"waited {READ_SECONDS}s for {what}; the controller is at "
+                f"{self.position} of {self.head}, attached {self.attached}"
             ) from None
+
+    async def _read(self, events: int) -> None:
+        """Read until `events` more events have arrived."""
+        target = self.taken + events
+        await self._pump(lambda: self.taken >= target, f"{events} events")
 
     async def _opening(self) -> None:
         """The frames a stream opens with: its own state, then each agent
-        attached where the controller last confirmed it."""
-        by_id = {agent_id: name for name, agent_id in self.agents.items()}
-        attached: dict[str, int] = {}
-
-        async def pump() -> None:
-            while len(attached) < len(AGENTS):
-                raw = await anext(self.stream)
-                if raw is IDLE:
-                    continue
-                name, data = parse_frame(raw)
-                if name == "agent.gap":
-                    raise AssertionError(f"the stream reported a gap: {data}")
-                if name == "agent.attached":
-                    attached[by_id[data["agent_id"]]] = data["from_seq"]
-
-        try:
-            await asyncio.wait_for(pump(), timeout=READ_SECONDS)
-        except TimeoutError:
-            raise AssertionError(
-                f"the stream attached {sorted(attached)} of {list(AGENTS)} "
-                f"in {READ_SECONDS}s"
-            ) from None
-        for agent, from_seq in attached.items():
-            assert from_seq == self.confirmed[agent], (
-                f"{agent} was attached from {from_seq}, "
-                f"where {self.confirmed[agent]} was confirmed"
-            )
-            self.position[agent] = from_seq
+        placed here attached where the controller last confirmed it, and the
+        gap of each whose confirmed position retention passed."""
+        for agent in AGENTS:
+            self.attached[agent] = False
+            self.gap_owed[agent] = None
+        await self._pump(
+            lambda: all(
+                self.attached[a] and self.gap_owed[a] is None
+                for a in AGENTS
+                if self.bound[a]
+            ),
+            "the stream to attach every agent placed here",
+        )
 
     async def _close(self) -> None:
         if self.stream is not None:
             await self.stream.aclose()
             self.stream = None
+        for agent in AGENTS:
+            self.attached[agent] = False
 
     # ── Steps ────────────────────────────────────────────────────────────────
 
@@ -276,7 +373,7 @@ class ControllerStreams(RuleBasedStateMachine):
             self.opened = await open_connection(self.http, self.controller)
             self.stream = await open_stream(self.harness, self.controller, self.opened)
             for agent in AGENTS:
-                self.confirmed[agent] = self.head[agent]
+                self.confirmed[agent] = None
             await self._opening()
 
         self.run(go())
@@ -298,7 +395,13 @@ class ControllerStreams(RuleBasedStateMachine):
             COVERAGE["read a backlog"] += 1
         if backlog:
             self.run(self._read(backlog))
-        assert self.position == self.head
+        for agent in AGENTS:
+            if self.attached[agent]:
+                # Or below what retention deleted with nothing after it, whose
+                # gap comes with the next event or attach.
+                assert (
+                    max(self.position[agent], self.expired[agent]) == self.head[agent]
+                )
 
     @precondition(lambda self: self.opened is not None)
     @rule()
@@ -312,12 +415,16 @@ class ControllerStreams(RuleBasedStateMachine):
                 self.controller,
                 connection_id=self.opened["connection_id"],
                 generation=self.opened["generation"],
-                cursors={self.agents[a]: self.position[a] for a in AGENTS},
+                cursors={
+                    self.agents[a]: self.position[a] for a in AGENTS if self.attached[a]
+                },
             )
             assert answer.status_code == 200, answer.text
 
         self.run(go())
-        self.confirmed = dict(self.position)
+        for agent in AGENTS:
+            if self.attached[agent]:
+                self.confirmed[agent] = self.position[agent]
         COVERAGE["confirmed a position"] += 1
 
     @precondition(lambda self: self.opened is not None)
@@ -346,13 +453,64 @@ class ControllerStreams(RuleBasedStateMachine):
             self.opened = await open_connection(
                 self.http,
                 self.controller,
-                {self.agents[a]: self.confirmed[a] for a in AGENTS},
+                {
+                    self.agents[a]: held
+                    for a in AGENTS
+                    if (held := self.confirmed[a]) is not None
+                },
             )
             self.stream = await open_stream(self.harness, self.controller, self.opened)
             await self._opening()
 
         self.run(go())
         COVERAGE["reopened the connection"] += 1
+
+    @rule(agent=st.sampled_from(AGENTS))
+    def move(self, agent: str) -> None:
+        """The owner moves the agent to the other controller, or back. The
+        open stream detaches it, or attaches it at its head."""
+        target = self.elsewhere if self.bound[agent] else self.controller
+
+        async def go() -> None:
+            moved = await self.http.patch(
+                f"/gateway/management/agents/{self.agents[agent]}",
+                json={"controller_id": target.controller_id},
+                cookies=cookies_for(self.owner),
+            )
+            assert moved.status_code == 200, moved.text
+            self.bound[agent] = not self.bound[agent]
+            if self.stream is None:
+                if not self.bound[agent]:
+                    self.confirmed[agent] = None
+                return
+            if self.bound[agent]:
+                self.confirmed[agent] = None
+                await self._pump(
+                    lambda: self.attached[agent], f"{agent} to be attached"
+                )
+                COVERAGE["attached an agent mid-stream"] += 1
+            else:
+                await self._pump(
+                    lambda: not self.attached[agent], f"{agent} to be detached"
+                )
+                COVERAGE["detached an agent mid-stream"] += 1
+
+        self.run(go())
+
+    @precondition(lambda self: any(self.head[a] > self.expired[a] for a in AGENTS))
+    @rule(data=st.data())
+    def expire(self, data: st.DataObject) -> None:
+        """Retention deletes every event of one agent so far."""
+        agent = data.draw(
+            st.sampled_from([a for a in AGENTS if self.head[a] > self.expired[a]])
+        )
+
+        async def go() -> None:
+            await age_events(self.session_factory, self.agents[agent], seconds=2 * 3600)
+            await self.harness.protocol.event_buffer.expire(TENANT_ZERO_ID)
+
+        self.run(go())
+        self.expired[agent] = self.head[agent]
 
     @precondition(lambda self: self.opened is not None)
     @rule(times=st.integers(min_value=1, max_value=2))
@@ -369,7 +527,8 @@ class ControllerStreams(RuleBasedStateMachine):
             assert self.position[agent] <= self.head[agent], (
                 f"{agent} was sent event {self.position[agent]} of {self.head[agent]}"
             )
-            assert self.confirmed[agent] <= self.head[agent]
+            held = self.confirmed[agent]
+            assert held is None or held <= self.head[agent]
 
 
 def machine_on(url: str) -> type[ControllerStreams]:

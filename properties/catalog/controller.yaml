@@ -9,14 +9,14 @@ properties:
     formality: semi-formal
     levels: [code]
     owner: platform
-    status: proposed
-    gaps:
-      code: the controller-stream machine does not yet attach or detach agents mid-stream or let retention pass a cursor
+    status: checked
     notes: >
       What `session.addressed-reaches-controller` does not cover: that property
       holds the stream's delivery for the agents it opened with. These are two
       more steps of the same machine (`controller_stream_machine.py`), not a
-      checker of their own.
+      checker of their own: moving an agent to another controller and back
+      while the stream is open, and retention deleting an agent's events under
+      the open stream or under a confirmed position.
   - id: controller.takeover-fenced
     title: A controller connection that was taken over is fenced
     statement: >
