@@ -140,6 +140,9 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A change made in one process reaches the others within a bound.** A
+  re-read a signal queues now gives up after 15 seconds and is tried again,
+  so one stuck on the database no longer holds up every change behind it.
 - **A slow re-read of a workspace's clients no longer undoes a newer change.**
   A re-check or resync that read the clients before a rename or deletion, and
   finished after it, could put an agent's old name back, or start again a
