@@ -36,6 +36,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.admission import GatewayAdmission
 from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
@@ -246,6 +247,18 @@ def create_gateway_app(
     origins = allowed_origins(config)
     log_origin_setup(config, origins)
     app.add_middleware(OriginCheckMiddleware, allowed=origins)
+    # Last, so outermost: a request turned away does no other work.
+    app.add_middleware(
+        GatewayAdmission,
+        limit=config.gateway_requests_at_once,
+        per_caller=config.gateway_requests_per_caller,
+        read_timeout=config.gateway_read_statement_timeout,
+        keyring=config.keyring,
+        # The only bearer token a gateway route takes (`hosted_controller.py`).
+        controller_token=app.state.hosted_controller_settings.token.get_secret_value()
+        if app.state.hosted_controller_settings
+        else None,
+    )
 
     app.add_exception_handler(RequestValidationError, validation_error_response)
     app.add_exception_handler(SessionError, session_error_response)

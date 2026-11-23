@@ -46,7 +46,7 @@ import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider
 import { CreateRoomOptions, RoomChannelField } from './create-room-options';
 import { accountName } from './link-accounts-prose';
 import { MessagingAppSelector, SWITCH_CONSOLE } from './messaging-app-selector';
-import { optionsForBridge } from './room-channel-choices';
+import { channelChoiceCards, optionsForBridge } from './room-channel-choices';
 import {
   CreateRequestIds,
   canCreate,
@@ -161,14 +161,34 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const nowhere = !consoleOffered && selectedBridge === null && !bridgesQuery.isLoading;
   // A channel, and above all a typed id, belongs to the app it was chosen for:
   // when the app the room would go to changes, however it changed, the choice
-  // starts again from a new public channel. Picking the app already shown keeps it.
+  // starts again from the default. Picking the app already shown keeps it.
   const resolvedBridgeId = selectedBridge?.id ?? null;
   const channelBridgeId = useRef(resolvedBridgeId);
+  // Whether the person picked a channel on this app themselves.
+  const [channelChosen, setChannelChosen] = useState(false);
   useEffect(() => {
     if (channelBridgeId.current === resolvedBridgeId) return;
     channelBridgeId.current = resolvedBridgeId;
     setOptions((now) => ({ ...now, channel: DEFAULT_ROOM_OPTIONS.channel }));
+    setChannelChosen(false);
   }, [resolvedBridgeId]);
+  // Whether the person has a confirmed account linked on the chosen app; null
+  // while unknown or with no app.
+  const linkedHere =
+    selectedBridge === null || identities === null
+      ? null
+      : identities.some((each) => each.bridgeId === selectedBridge.id && each.verified);
+  // A new room is private, but a private channel needs its creator's linked
+  // account. Without one, and with no channel picked, a new public channel is
+  // offered instead, saying how to make it private; picking private still asks
+  // for it, and the server says why it needs the account.
+  const chosenOptions: RoomCreateOptions =
+    !channelChosen &&
+    linkedHere === false &&
+    options.channel.kind === 'new' &&
+    options.channel.private
+      ? { ...options, channel: { kind: 'new', private: false } }
+      : options;
 
   const peopleQuery = useQuery({
     ...bridgePeopleQuery(resolvedBridgeId ?? ''),
@@ -201,7 +221,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   // private one says plainly when they have none, as it would be refused; a
   // public one is made without them then, and on an app where joining a
   // public channel means more (Teams), so it shows nobody.
-  const offeredChannel = optionsForBridge(options, selectedBridge).channel;
+  const offeredChannel = optionsForBridge(chosenOptions, selectedBridge).channel;
   const makesPrivateChannel =
     selectedBridge !== null && offeredChannel.kind === 'new' && offeredChannel.private;
   const myAccount = selectedBridge
@@ -255,7 +275,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   };
   // A choice the chosen app does not offer (a private channel on Telegram, say)
   // falls back to a new public channel rather than being sent and refused.
-  const bridgeOptions = optionsForBridge(options, selectedBridge);
+  const bridgeOptions = optionsForBridge(chosenOptions, selectedBridge);
   const roomOptions = administers ? bridgeOptions : { ...bridgeOptions, groupId: null };
   const agentIds = shownPicked.filter((each) => each.kind === 'agent').map((each) => each.id);
   const pickedPeople = shownPicked.filter((each) => each.kind === 'person').map((each) => each.id);
@@ -400,6 +420,35 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     }
   }
 
+  if (nowhere) {
+    return (
+      <>
+        <DialogHeader>
+          <DialogTitle>New room</DialogTitle>
+        </DialogHeader>
+        <DialogContentArea className="pt-0">
+          <div className="flex w-full flex-col gap-2 text-sm">
+            <p>This server can’t create rooms yet.</p>
+            <p className="text-foreground-muted">
+              Group chats need a newer Switch server, or connect a messaging app that can create
+              channels. You can still start a 1-1 chat from an agent’s page.
+            </p>
+            {bridgesQuery.isError && (
+              <p className="text-xs text-destructive">
+                {failureText(bridgesQuery.error, 'Could not load messaging apps.')}
+              </p>
+            )}
+          </div>
+        </DialogContentArea>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </>
+    );
+  }
+
   return (
     <>
       <DialogHeader>
@@ -490,19 +539,28 @@ export const CreateRoomModal = observer(function CreateRoomModal({
 
           {/* Where a bridged room lives is decided now: Console cannot move it later. */}
           {selectedBridge && (
-            <RoomChannelField
-              bridge={selectedBridge}
-              linkedHere={
-                identities === null
-                  ? null
-                  : identities.some((each) => each.bridgeId === selectedBridge.id && each.verified)
-              }
-              value={roomOptions}
-              onChange={(next) => {
-                setOptions(next);
-                setError(null);
-              }}
-            />
+            <>
+              <RoomChannelField
+                bridge={selectedBridge}
+                linkedHere={linkedHere}
+                value={roomOptions}
+                onChange={(next) => {
+                  setOptions(next);
+                  setChannelChosen(true);
+                  setError(null);
+                }}
+              />
+              {linkedHere === false &&
+                offeredChannel.kind === 'new' &&
+                !offeredChannel.private &&
+                channelChoiceCards(selectedBridge, linkedHere).some(
+                  (card) => card.value === 'private'
+                ) && (
+                  <p data-testid="link-to-make-private" className="text-xs text-foreground-muted">
+                    Link your account to make it private, in Settings → Messaging apps.
+                  </p>
+                )}
+            </>
           )}
 
           {/* The room's own settings, wherever it lives. */}
@@ -543,12 +601,6 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             </>
           )}
 
-          {nowhere && (
-            <p className="text-xs text-destructive">
-              This server does not offer Switch Console rooms yet, and none of its messaging apps
-              can create a channel, so there is nowhere to create a room.
-            </p>
-          )}
           {startingAgentState === 'failed' && (
             <p className="text-xs text-destructive">
               {startingAgentName} can&apos;t be added to the new room:{' '}

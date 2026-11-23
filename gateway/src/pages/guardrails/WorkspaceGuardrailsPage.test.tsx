@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAuth } from "../../data/AuthContext";
 import { answer, signedInAs } from "../../test/signedIn";
+import { TRUST_COVERAGE } from "./GuardrailPolicyCard";
 import WorkspaceGuardrailsPage from "./WorkspaceGuardrailsPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -45,11 +46,15 @@ describe("WorkspaceGuardrailsPage", () => {
     show();
 
     expect(await screen.findByText("c117f173-policy")).toBeTruthy();
-    // Its organization's policy, by the name Switch Trust gave it.
-    expect(screen.getByText("Baseline Monitoring (Alert)")).toBeTruthy();
+    // Its organization's policy, headed by the name Switch Trust gave it.
+    expect(screen.getByRole("heading", { name: "Baseline Monitoring (Alert)" })).toBeTruthy();
+    expect(screen.queryByText("Switch Trust policy")).toBeNull();
     expect(screen.getByText("Switch Trust checks every message in Acme.")).toBeTruthy();
+    // What it never reads is said beside the policy, so no one assumes every file is checked.
+    expect(screen.getByText(TRUST_COVERAGE)).toBeTruthy();
+    expect(TRUST_COVERAGE).toMatch(/Images, audio, video, archives.*delivered unchecked/);
     expect(screen.getByRole("link", { name: /View on Switch Trust/ }).getAttribute("href")).toBe(POLICY.policy_url);
-    expect(screen.queryByRole("link", { name: "Edit in organization settings" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "organization settings" })).toBeNull();
   });
 
   it("offers the organization's admin the way to edit it", async () => {
@@ -57,8 +62,9 @@ describe("WorkspaceGuardrailsPage", () => {
     answer({ "GET /workspace/guardrails": [200, POLICY] });
     show();
 
-    const edit = await screen.findByRole("link", { name: "Edit in organization settings" });
+    const edit = await screen.findByRole("link", { name: "organization settings" });
     expect(edit.getAttribute("href")).toBe("/settings/org/guardrails");
+    expect(edit.parentElement?.textContent).toBe("Switch Trust checks every message in Acme. Edit in organization settings.");
   });
 
   it("says when nothing checks the workspace's messages", async () => {
@@ -66,8 +72,18 @@ describe("WorkspaceGuardrailsPage", () => {
     answer({ "GET /workspace/guardrails": [200, { checking: false, policy_id: null, policy_name: null, policy_url: null }] });
     show();
 
-    expect(await screen.findByText("No guardrails configured")).toBeTruthy();
+    expect(
+      await screen.findByText("No guardrails configured. Guardrails are configured at the organization level."),
+    ).toBeTruthy();
     expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("heads an unnamed policy as a Switch Trust policy", async () => {
+    as("member");
+    answer({ "GET /workspace/guardrails": [200, { ...POLICY, policy_name: null }] });
+    show();
+
+    expect(await screen.findByRole("heading", { name: "Switch Trust policy" })).toBeTruthy();
   });
 
   it("leaves out the link for a policy Switch can't link to", async () => {
@@ -88,11 +104,12 @@ describe("WorkspaceGuardrailsPage", () => {
 
     const copy = await screen.findByRole("button", { name: "Copy the policy ID" });
     fireEvent.click(copy);
-    expect(await within(screen.getByRole("status")).findByText("Copied the policy ID.")).toBeTruthy();
+    expect(await screen.findByText("Copied the policy ID.")).toBeTruthy();
+    expect(within(screen.getByRole("status")).queryByText("Copied the policy ID.")).toBeNull();
     expect(writeText).toHaveBeenCalledWith("c117f173-policy");
     fireEvent.click(copy);
     expect(
-      await screen.findByText("Your browser blocked the clipboard. Select the ID and copy it."),
+      await within(screen.getByRole("status")).findByText("Your browser blocked the clipboard. Select the ID and copy it."),
     ).toBeTruthy();
   });
 

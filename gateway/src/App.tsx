@@ -35,7 +35,7 @@ function FromSignIn() {
 }
 
 export function AppRoutes() {
-  const { session, loading, loadError, capabilities } = useAuth();
+  const { session, loading, loadError } = useAuth();
 
   if (loading) return <AuthLoading />;
 
@@ -90,11 +90,10 @@ export function AppRoutes() {
     );
   }
 
-  const layout = capabilities.features.gateway_v2 ? "v2" : "current";
   return (
     <Routes>
-      <Route element={<PageShell layout={layout} />}>
-        {renderRoutes(layout)}
+      <Route element={<PageShell />}>
+        {renderRoutes()}
         <Route path="*" element={<NotFoundPage />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />

@@ -1141,7 +1141,7 @@ async def test_an_invited_member_keeps_a_chat_that_loses_its_last_agent(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.bob)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert room_id not in await _listed(chats, chats.bob)
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
@@ -1162,7 +1162,7 @@ async def test_unlisted_room_still_delivers_messages_to_invited_member(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert (await chats.invite(chats.alice, room_id, chats.alice)).status_code == 200
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
@@ -1189,7 +1189,7 @@ async def test_unlisted_then_revoked_room_emits_access_removal(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert (await chats.invite(chats.alice, room_id, chats.alice)).status_code == 200
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
@@ -1222,8 +1222,10 @@ async def test_unlisted_then_revoked_room_emits_access_removal(
 async def test_an_unlisted_chat_is_announced_again_when_an_agent_returns(
     chats: _Harness,
 ) -> None:
+    # A bridge that is not running here: nothing to add the agent to.
+    chats.room_service._collab_lifecycle = SimpleNamespace(get=lambda _id: None)  # type: ignore[assignment]
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -1246,8 +1248,10 @@ async def test_an_unlisted_chat_is_announced_again_when_an_agent_returns(
 async def test_the_periodic_recheck_announces_a_chat_that_regains_an_agent(
     chats: _Harness,
 ) -> None:
+    # A bridge that is not running here: nothing to add the agent to.
+    chats.room_service._collab_lifecycle = SimpleNamespace(get=lambda _id: None)  # type: ignore[assignment]
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _room(chats, [agent], owner=chats.alice)
+    room_id = await _room(chats, [agent], owner=chats.alice, bridge="slack")
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
     async with chats.factory() as session:
         await session.execute(
@@ -1572,7 +1576,7 @@ async def test_an_agent_owner_is_not_joined_to_bridged_rooms_holding_their_agent
     assert await _reads(chats, chats.alice, channel) == 403
     assert await _reads(chats, chats.alice, dm) == 403
     assert await _listed(chats, chats.alice) == {}
-    await chats.room_service.room_agents_changed(TENANT, channel)
+    await chats.room_service.room_agents_changed(TENANT, [channel])
     assert await _listed(chats, chats.alice) == {}
     assert await _grants(chats) == 0
 
@@ -1609,20 +1613,6 @@ async def test_an_owner_grant_on_a_bridged_room_is_taken_back(
     assert await _grants(chats) == 0
 
 
-async def test_with_agent_chats_off_owner_grants_are_taken_back(
-    chats: _Harness,
-) -> None:
-    agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _left_chat(chats, chats.alice)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
-    assert await _grants(chats) == 1
-
-    chats.service.agent_chats_enabled = False
-    assert await _listed(chats, chats.alice) == {}
-    assert not await _in_room(chats, chats.alice, room_id)
-    assert await _grants(chats) == 0
-
-
 async def test_an_agent_owner_is_not_joined_to_someone_elses_chat(
     chats: _Harness,
 ) -> None:
@@ -1640,19 +1630,6 @@ async def test_an_agent_owner_is_not_joined_to_someone_elses_chat(
         headers=chats.as_user(chats.alice),
     )
     assert left.status_code == 204
-
-
-async def test_with_agent_chats_off_owning_an_agent_joins_nothing(
-    chats: _Harness,
-) -> None:
-    chats.service.agent_chats_enabled = False
-    agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await _left_chat(chats, chats.alice)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
-
-    assert await _listed(chats, chats.alice) == {}
-    assert await _reads(chats, chats.alice, room_id) == 403
-    assert await _grants(chats) == 0
 
 
 async def test_an_agent_owner_rejoins_a_chat_they_started_when_their_agent_arrives(
@@ -1853,7 +1830,7 @@ async def test_a_deleted_agent_takes_its_owners_access_with_it(
     async with chats.factory() as session:
         await AgentStore().delete(session, agent.id)
         await session.commit()
-    await chats.room_service.room_agents_changed(TENANT, room_id)
+    await chats.room_service.room_agents_changed(TENANT, [room_id])
 
     assert await _reads(chats, chats.alice, room_id) == 403
 

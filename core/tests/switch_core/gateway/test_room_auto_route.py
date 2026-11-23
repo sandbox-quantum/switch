@@ -221,6 +221,8 @@ class TestTheRoomDetail:
             "reason": None,
             "fallback_agent": None,
             "fallback_agent_name": None,
+            "assigned_agent": None,
+            "assigned_agent_name": None,
         }
 
     async def test_absent_with_the_flag_off(
@@ -265,7 +267,7 @@ class TestTheRoomDetail:
 
         assert detail["auto_route"]["available"] is False
         assert detail["auto_route"]["reason"] == NO_BACKEND_REASON
-        assert "Switch Console → Settings → Decision routing" in NO_BACKEND_REASON
+        assert "Switch Console → Settings → Message routing" in NO_BACKEND_REASON
 
     async def test_unavailable_when_the_workspace_chose_none(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -287,7 +289,7 @@ class TestTheRoomDetail:
 
         assert detail["auto_route"]["available"] is False
         assert detail["auto_route"]["reason"] == WORKSPACE_OFF_REASON
-        assert "Switch Console → Settings → Decision routing" in WORKSPACE_OFF_REASON
+        assert "Switch Console → Settings → Message routing" in WORKSPACE_OFF_REASON
 
 
 class TestTheToggle:
@@ -310,6 +312,8 @@ class TestTheToggle:
             "reason": None,
             "fallback_agent": triage.id,
             "fallback_agent_name": "triage",
+            "assigned_agent": None,
+            "assigned_agent_name": None,
         }
         assert put.json() == expected
         assert detail["auto_route"] == expected
@@ -385,6 +389,24 @@ class TestTheToggle:
         assert assigned.status_code == 422
         assert "assigned agent" in assigned.json()["detail"]
         assert stranger.status_code == 422
+
+    async def test_on_is_refused_while_an_agent_is_assigned(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        room, _, helper = await _room(session_factory, owner)
+        async with session_factory() as session:
+            await RoomStore().set_main_agent(session, room.id, helper.id)
+            await session.commit()
+        async with _as(_app(session_factory), owner) as client:
+            put = await client.put(f"/rooms/{room.id}/auto-route", json={"on": True})
+            detail = (await client.get(f"/rooms/{room.id}")).json()
+
+        assert put.status_code == 409
+        assert "!unassign-agent" in put.json()["detail"]
+        assert detail["auto_route"]["on"] is False
+        assert detail["auto_route"]["assigned_agent"] == helper.id
+        assert detail["auto_route"]["assigned_agent_name"] == "other"
 
     async def test_someone_who_does_not_own_the_room_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]

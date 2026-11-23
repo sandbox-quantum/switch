@@ -14,13 +14,13 @@ export const WORKSPACE_ROLES: readonly WorkspaceRoleOption[] = [
     role: "admin",
     label: "Workspace admin",
     description:
-      "Runs the whole workspace: invites and removes users, and manages every agent, room and template, its messaging apps and its budgets.",
+      "One workspace — invite and remove users, turn connectors on and off, connect messaging apps, manage rooms, agents, devices and templates.",
   },
   {
     role: "member",
     label: "Member",
     description:
-      "Works with their own: creates and manages their own agents and rooms, takes part in rooms they're added to, and runs the workspace's templates.",
+      "Their own resources — create and manage their own agents and rooms, connect their own accounts and grant them to their agents, add their own devices, run shared templates.",
   },
 ];
 

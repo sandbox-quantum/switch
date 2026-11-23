@@ -20,11 +20,11 @@ describe("the way back to the workspace", () => {
       [Push, "c", "/settings/org/general"],
       [Push, "d", "/settings/org/users"],
     );
-    expect(lastWorkspacePage(trail, "v2")).toEqual({ href: "/agents", delta: -2 });
+    expect(lastWorkspacePage(trail)).toEqual({ href: "/agents", delta: -2 });
   });
 
   it("has none when the area was opened directly", () => {
-    expect(lastWorkspacePage(walk([Pop, "a", "/settings/org/general"]), "v2")).toBeNull();
+    expect(lastWorkspacePage(walk([Pop, "a", "/settings/org/general"]))).toBeNull();
   });
 
   it("counts a redirect inside the area as the same step", () => {
@@ -33,7 +33,7 @@ describe("the way back to the workspace", () => {
       [Push, "b", "/settings/org"],
       [Replace, "c", "/settings/org/general"],
     );
-    expect(lastWorkspacePage(trail, "v2")).toEqual({ href: "/rooms", delta: -1 });
+    expect(lastWorkspacePage(trail)).toEqual({ href: "/rooms", delta: -1 });
   });
 
   it("follows the browser's own back button, and drops what a new page replaces", () => {
@@ -45,12 +45,12 @@ describe("the way back to the workspace", () => {
       [Push, "d", "/settings/org/users"],
     );
     expect(trail.entries.map((e) => e.key)).toEqual(["a", "d"]);
-    expect(lastWorkspacePage(trail, "v2")).toEqual({ href: "/rooms", delta: -1 });
+    expect(lastWorkspacePage(trail)).toEqual({ href: "/rooms", delta: -1 });
   });
 
   it("starts again at an entry from before the app loaded", () => {
     const trail = walk([Pop, "a", "/rooms"], [Push, "b", "/settings/org/general"], [Pop, "z", "/settings/org/users"]);
-    expect(lastWorkspacePage(trail, "v2")).toBeNull();
+    expect(lastWorkspacePage(trail)).toBeNull();
   });
 
   it("changes nothing when the same location is followed again", () => {

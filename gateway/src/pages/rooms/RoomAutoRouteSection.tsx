@@ -34,12 +34,15 @@ export default function RoomAutoRouteSection({
   autoRoute: RoomAutoRoute;
   canWrite: boolean;
 }) {
-  const { data: allAgents } = useAgents();
+  const { data: allAgents, error: agentsError } = useAgents();
   const [state, setState] = useState(autoRoute);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => setState(autoRoute), [autoRoute]);
+  const assigned = state.assigned_agent
+    ? (state.assigned_agent_name ?? state.assigned_agent)
+    : null;
 
   const triageChoices = useMemo(() => {
     const choices = (allAgents ?? [])
@@ -78,14 +81,31 @@ export default function RoomAutoRouteSection({
         <code>!auto-route</code> in the room.
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
+      {agentsError && (
+        <Alert severity="error">
+          Couldn't load the agents, so the room's agents aren't offered as its triage agent: {agentsError}
+        </Alert>
+      )}
       {!state.available && state.reason && <Alert severity="info">{state.reason}</Alert>}
+      {assigned && (
+        <Alert severity="info">
+          {state.on
+            ? `Auto-route is on but not acting: every message goes to ${assigned}, assigned with `
+            : `Every message goes to ${assigned}, assigned with `}
+          <code>!assign-agent</code>. Run <code>!unassign-agent</code> in the room
+          {state.on ? " for auto-route to decide, or turn it off here." : " before turning auto-route on."}
+        </Alert>
+      )}
       <FormControlLabel
         control={
           <Switch
             checked={state.on}
             onChange={(e) => save({ on: e.target.checked })}
-            // Turning it off stays possible where it cannot work.
-            disabled={!canWrite || saving || (!state.available && !state.on)}
+            // Turning it off stays possible where it cannot work, or while an
+            // assigned agent gets every message.
+            disabled={
+              !canWrite || saving || (!state.on && (!state.available || assigned !== null))
+            }
           />
         }
         label={state.on ? "On" : "Off"}

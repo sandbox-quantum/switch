@@ -8,7 +8,6 @@ import {
   useManagedAgents,
   withoutManaged,
 } from '@renderer/features/managed-agents/use-managed-agents';
-import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
 import { buddyOffered, isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { askBuddy, openBuddyChat } from '@renderer/features/switch-buddy/open-buddy';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -31,6 +30,7 @@ import { loadSwitchCloudOrigin, managedCloudServerId } from '../switch-cloud-ori
 import { switchRoomsStore } from '../switch-rooms-store';
 import { useListedRoomsInWorkspace } from '../use-listed-rooms';
 import { administersWorkspaceInScope } from '../workspace-admin';
+import { HomeBuddy } from './home-buddy';
 import { HOME_CHIP_TEXT, type HomeChipId, homeChips } from './home-chips';
 
 const card = 'rounded-lg border border-border bg-card p-4';
@@ -111,7 +111,7 @@ export function ConnectAiPanel({
     showModal('buddySetupModal', {
       serverId,
       workspaceId,
-      onSuccess: (agent) => void openBuddyChat(serverId, agent),
+      onSuccess: (agent) => void openBuddyChat(serverId, agent, 'slide-in'),
     });
   };
 
@@ -255,25 +255,30 @@ export function AskBuddyPanel({
       <Heading />
       <div className="relative w-full">
         {/* Peeks out from behind the box, tilted. */}
-        <BuddyAvatar
-          size={78}
-          shape="tile"
-          className="absolute -top-[57px] -left-[54px] -rotate-[8deg]"
-        />
+        <HomeBuddy className="absolute -top-[57px] -left-[54px] -rotate-[8deg]" />
         <form
-          className="relative flex w-full items-center gap-2 rounded-2xl border border-border bg-background px-5 py-3 shadow-sm focus-within:border-foreground-muted"
+          className="relative flex w-full items-end gap-2 rounded-2xl border border-border bg-background px-5 py-3 shadow-[0_1px_1px_rgb(0_0_0/0.04),0_2px_4px_rgb(0_0_0/0.04),0_4px_10px_-2px_rgb(0_0_0/0.06)] focus-within:border-foreground-muted"
           onSubmit={(event) => {
             event.preventDefault();
             void ask(draft, null);
           }}
         >
-          <input
+          {/* Grows with what is typed, up to ten lines, then scrolls. */}
+          <textarea
             aria-label="Ask switch-buddy anything"
             placeholder="Ask switch-buddy anything"
+            rows={1}
             value={draft}
             disabled={sending}
             onChange={(event) => setDraft(event.target.value)}
-            className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-foreground-muted"
+            onKeyDown={(event) => {
+              // Enter sends and Shift+Enter starts a new line; an IME
+              // composing a character keeps its own Enter.
+              if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              void ask(draft, null);
+            }}
+            className="[field-sizing:content] max-h-[calc(10lh+0.5rem)] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-1 text-sm leading-5 text-foreground outline-none placeholder:text-foreground-muted"
           />
           <Button
             type="submit"

@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceService, WorkspaceServices } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import WorkspaceConnectorsPage, { UNAVAILABLE, metaText } from "./WorkspaceConnectorsPage";
+import WorkspaceConnectorsPage, { UNAVAILABLE, blockedText, metaText } from "./WorkspaceConnectorsPage";
 
 // Read through Vite rather than node:fs, which the gateway has no types for.
 const brokerSource = Object.values(
@@ -94,6 +94,7 @@ describe("WorkspaceConnectorsPage", () => {
   beforeEach(() => {
     vi.mocked(useAuth).mockReturnValue({
       session: { tenant: { name: "Acme" } },
+      capabilities: { administersWorkspace: false },
     } as unknown as ReturnType<typeof useAuth>);
   });
 
@@ -122,6 +123,7 @@ describe("WorkspaceConnectorsPage", () => {
       ),
     );
     expect(mutations).toEqual([{ method: "PUT", path: "/workspace/services/github", body: { enabled: true } }]);
+    expect(screen.getByText("GitHub is available in Acme.")).toBeTruthy();
   });
 
   it("asks before turning off a connector people and agents use, naming both", async () => {
@@ -138,6 +140,9 @@ describe("WorkspaceConnectorsPage", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Turn off" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(mutations).toEqual([{ method: "PUT", path: "/workspace/services/github", body: { enabled: false } }]);
+    expect(
+      await screen.findByText("GitHub is off for Acme. Nobody can connect it here until it is switched back on."),
+    ).toBeTruthy();
   });
 
   it("shows the warning a switch-off comes back with", async () => {
@@ -149,6 +154,7 @@ describe("WorkspaceConnectorsPage", () => {
 
     fireEvent.click(screen.getByRole("switch", { name: "GitHub available in Acme" }));
     expect(await screen.findByText("Some access stays valid until it expires.")).toBeTruthy();
+    expect(screen.queryByText(/is off for Acme/)).toBeNull();
   });
 
   it("shows a refusal and reads the page again", async () => {
@@ -169,7 +175,7 @@ describe("WorkspaceConnectorsPage", () => {
     expect(screen.getByText("Off for Acme Corp")).toBeTruthy();
   });
 
-  it("gives a member the state in words under a read-only banner, without who it reaches", async () => {
+  it("gives a member the state in words, without who it reaches", async () => {
     asMember([
       { ...GITHUB, enabled: true, decided_by: "workspace", updated_by_name: "Ines", connected_members: 3 },
       DATADOG,
@@ -178,7 +184,7 @@ describe("WorkspaceConnectorsPage", () => {
     renderPage();
     await loaded();
 
-    expect(screen.getByText("Only this workspace's admins can change which connectors it uses.")).toBeTruthy();
+    expect(screen.getByText(/^Which connectors Acme can use\. Only its admins can change this\./)).toBeTruthy();
     expect(screen.queryByRole("switch")).toBeNull();
     expect(screen.getByText("Enabled")).toBeTruthy();
     expect(screen.getByText("Disabled")).toBeTruthy();
@@ -287,6 +293,26 @@ describe("WorkspaceConnectorsPage", () => {
     expect(screen.queryByRole("switch")).toBeNull();
   });
 
+  it("says why nobody can use a connector whose app isn't set up, in place of a switch that would decide nothing", async () => {
+    asAdmin([
+      {
+        ...GITHUB,
+        decided_by: "workspace",
+        unavailable_code: "app_not_set_up",
+        unavailable_reason: "GitHub's app isn't set up on this server.",
+      },
+    ]);
+    serve();
+    renderPage();
+    await loaded();
+
+    expect(screen.getByText("Switch's app isn't set up")).toBeTruthy();
+    expect(screen.queryByText(/^Off for/)).toBeNull();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Use / })).toBeNull();
+    expect(screen.getByText("Set here")).toBeTruthy();
+  });
+
   it("opens the connector's page from its card", async () => {
     asAdmin([GITHUB]);
     serve();
@@ -297,12 +323,21 @@ describe("WorkspaceConnectorsPage", () => {
     expect(await screen.findByText("Connector profile")).toBeTruthy();
   });
 
-  it("says what nobody set leaves it as", async () => {
+  it("points at Connectors for giving agents access, and says what nobody set leaves it as", async () => {
     asAdmin([GITHUB]);
     serve();
+    listing = { ...listing, on_by_default: true };
     renderPage();
     await loaded();
-    expect(screen.getByText(/Connectors nobody has set, here or in Acme Corp, are off\./)).toBeTruthy();
+
+    expect(screen.getByText(/^Choose which connectors Acme can use\./)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Connectors" }).getAttribute("href")).toBe("/connectors");
+    await act(async () => {
+      fireEvent.mouseOver(screen.getByRole("button", { name: "More information" }));
+    });
+    expect((await screen.findByRole("tooltip")).textContent).toBe(
+      "Connectors nobody has set, here or in Acme Corp, are on. Whether one exists for Acme Corp at all is set in Organization settings › Connectors.",
+    );
   });
 });
 
@@ -328,18 +363,25 @@ describe("metaText", () => {
   });
 
   it("still says it can't be used for a reason it doesn't know and the server doesn't word", () => {
-    expect(meta({ unavailable_code: "something_newer", unavailable_reason: null })).toBe(
-      "Off by default · Unavailable",
+    expect(blockedText({ ...GITHUB, unavailable_code: "something_newer", unavailable_reason: null }, "Acme Corp")).toBe(
+      "Unavailable",
     );
   });
 
-  it("says what stops anyone using it in place of the app", () => {
-    expect(meta({ unavailable_code: "app_not_set_up", unavailable_reason: "long" })).toBe(
-      "Off by default · Switch's app isn't set up",
-    );
-    expect(meta({ unavailable_code: "something_new", unavailable_reason: "The server's own words." })).toBe(
-      "Off by default · The server's own words.",
-    );
+  it("says what stops anyone using it in place of the switch, and not again in the line", () => {
+    const unset = { ...GITHUB, unavailable_code: "app_not_set_up", unavailable_reason: "long" };
+    expect(blockedText(unset, "Acme Corp")).toBe("Switch's app isn't set up");
+    expect(meta(unset)).toBe("Off by default");
+    const newer = { ...GITHUB, unavailable_code: "something_new", unavailable_reason: "The server's own words." };
+    expect(blockedText(newer, "Acme Corp")).toBe("The server's own words.");
+  });
+
+  it("keeps the reason in the line where something else is said in place of the switch, or the switch stays", () => {
+    expect(meta({ unavailable_code: "not_fully_set_up" })).toBe("Off by default · Its app isn't fully set up");
+    expect(blockedText({ ...GITHUB, unavailable_code: "not_fully_set_up" }, "Acme Corp")).toBeNull();
+    const locked = { decided_by: "organization_locked" as const, organization_locked: true, unavailable_code: "app_not_set_up" };
+    expect(blockedText({ ...GITHUB, ...locked }, "Acme Corp")).toBe("Off for Acme Corp");
+    expect(meta(locked)).toBe("Set by Acme Corp · Switch's app isn't set up");
   });
 
   it("counts who it reaches for an admin, once anyone is reached", () => {

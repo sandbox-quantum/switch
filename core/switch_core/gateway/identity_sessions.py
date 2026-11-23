@@ -27,10 +27,12 @@ import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
 
+import httpx
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
+from switch_core.config import SwitchConfig
 from switch_core.db.stores.identity_session_store import (
     IdentitySessionRow,
     IdentitySessionStore,
@@ -52,6 +54,19 @@ _SPREAD_SECONDS = 60
 _CONCURRENT_CHECKS = 4
 
 SIGN_IN_ENDED = "Your sign-in has ended. Sign in again."
+
+
+def authkit_for(config: SwitchConfig, http: httpx.AsyncClient) -> AuthKit | None:
+    """The WorkOS AuthKit client people sign in through, or None when the
+    gateway does not sign in through AuthKit."""
+    if not config.gateway_workos_sign_in:
+        return None
+    # Checked present with the provider (`_validate_gateway_sign_in_provider`).
+    assert config.workos_api_key is not None
+    assert config.workos_client_id is not None
+    return AuthKit(
+        http, config.workos_api_key, config.workos_api_url, config.workos_client_id
+    )
 
 
 def _spread(row_id: str) -> timedelta:
@@ -243,13 +258,13 @@ class IdentitySessions:
 
 
 def identity_sessions_of(connection: HTTPConnection) -> IdentitySessions:
-    """The app's `IdentitySessions`, for a request or socket whose cookie names
-    an identity session. A server that mints such cookies always has one, so
-    its absence is a wiring mistake, not a session to let through."""
+    """The app's `IdentitySessions` (`main.py` sets it), for a session to be
+    checked against or a sign-out to end. A server always has one, so its
+    absence is a wiring mistake, not a session to let through."""
     found = getattr(connection.app.state, "identity_sessions", None)
     if not isinstance(found, IdentitySessions):
         raise RuntimeError(
-            "A session names an identity session, but this app has no "
-            "IdentitySessions to check it with"
+            "This app has no IdentitySessions (app.state.identity_sessions) to "
+            "check or end identity-provider sessions with"
         )
     return found

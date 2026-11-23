@@ -26,11 +26,12 @@ export async function connectedChats(
   bridge: BridgeDetail,
 ): Promise<InstalledApp[]> {
   if (!mayHoldChats(bridge)) return [];
-  const installs = await fetchInstalledApps();
-  if (installs === null) {
-    throw new Error(
-      "Could not read which chats are still connected, so nothing was deleted.",
-    );
+  let installs: InstalledApp[];
+  try {
+    installs = await fetchInstalledApps();
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Could not read which chats are still connected, so nothing was deleted: ${reason}`);
   }
   return installs.filter(
     (i) => i.bridge_id === bridge.bridge_id && i.status === "active",

@@ -27,7 +27,7 @@ class _Bridges:
     def __init__(self, bridges: list[Any]) -> None:
         self._bridges = bridges
 
-    async def get_all(self, session: object) -> list[Any]:
+    async def get_listed(self, session: object) -> list[Any]:
         return self._bridges
 
 

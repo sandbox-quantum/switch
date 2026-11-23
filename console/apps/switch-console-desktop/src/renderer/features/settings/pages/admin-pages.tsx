@@ -146,8 +146,8 @@ export function DecisionRoutingSettingsPage() {
             <div className="space-y-6 pb-10">
               <PageHeader
                 sticky
-                title="Decision routing"
-                description={`In an auto-route room, Switch asks a decision service which agent should answer a message that tags nobody. Choose the one ${workspace.name}’s rooms use.`}
+                title="Message routing"
+                description="Controls which routing service determines the responding agent when a message is posted without tagging one directly."
               >
                 <AdminNotice>
                   {asRole(server, workspace)}, you are able to choose the decision service for every

@@ -93,6 +93,7 @@ resources:
     name: "{org} - OKRs {quarter}"
     description: "OKR tracking for {org} in {quarter}. Progress updates, at-risk flagging, and dependency coordination."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [okr_analyst, dependency_mapper]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

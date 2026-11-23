@@ -362,7 +362,7 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
           )}
           <div className="flex flex-col gap-2">
             <p className="text-xs text-foreground-muted">
-              Didn’t get it? Post this code from that account instead:
+              Didn’t get it, or tapping does nothing? Post this code from that account instead:
             </p>
             {codeBox}
             {instructions}

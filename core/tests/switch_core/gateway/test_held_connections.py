@@ -725,16 +725,6 @@ class TestPasswordRoutes:
         bcrypt_calls: list[tuple[str, bool, int]],
     ) -> None:
         user = await _admin(session_factory)
-        async with session_factory() as session:
-            operator = User(name="op", email="op@example.com", role="admin")
-            session.add(operator)
-            await session.flush()
-            session.add(
-                TenantMember(
-                    tenant_id=TENANT_ZERO_ID, user_id=operator.id, role="member"
-                )
-            )
-            await session.commit()
         calls = _Calls(pool_checkouts)
         collab = _CollabLifecycle(calls)
         app = _app(
@@ -759,27 +749,15 @@ class TestPasswordRoutes:
                 "/auth/signup",
                 json={"email": "new@example.com", "password": "a password!"},
             )
-        async with _client(app, operator) as client:
-            created = await client.post(
-                "/users",
-                json={
-                    "name": "made",
-                    "email": "made@example.com",
-                    "password": "a password!",
-                    "role": "user",
-                },
-            )
 
         assert login.status_code == 200, login.text
         assert wrong.status_code == 401, wrong.text
         assert changed.status_code == 200, changed.text
         assert signed_up.status_code == 201, signed_up.text
-        assert created.status_code == 200, created.text
         assert bcrypt_calls == [
             ("verify", False, 0),
             ("verify", False, 0),
             ("verify", False, 0),
-            ("hash", False, 0),
             ("hash", False, 0),
             ("hash", False, 0),
         ]

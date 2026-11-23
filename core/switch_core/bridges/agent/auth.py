@@ -146,11 +146,17 @@ class OIDCTokenValidator:
 
 @dataclass(frozen=True)
 class ControllerPrincipal:
-    """An authenticated agent controller, as ``scope["controller"]`` carries it."""
+    """An authenticated agent controller, as ``scope["controller"]`` carries it.
+
+    ``key_id`` is the credential (``api_keys`` row) its access token was
+    exchanged for, checked against the controller's current one on every
+    request and socket call; None for a token from before tokens named it.
+    Held in the controller auth cache, it is the controller's own credential."""
 
     controller_id: str
     owner_id: str
     tenant_id: str
+    key_id: str | None
 
 
 class ControllerAuthError(Exception):

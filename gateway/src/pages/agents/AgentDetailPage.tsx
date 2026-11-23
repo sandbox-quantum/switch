@@ -31,6 +31,7 @@ import {
   sentenceCase,
 } from "../../theme/format";
 import { useAuth } from "../../data/AuthContext";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 import AddressingPolicySection from "./AddressingPolicySection";
 import RenameAgentDialog from "./RenameAgentDialog";
 import AgentManagementSection from "./AgentManagementSection";
@@ -76,7 +77,7 @@ export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
   const { capabilities } = useAuth();
-  const { data: agent, loading, error, refetch } = useAgent(agentId);
+  const { data: agent, loading, error, errorStatus, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
     severity: "success" | "warning";
@@ -99,13 +100,19 @@ export default function AgentDetailPage() {
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {error ?? "Agent not found"}
+          {mayBeInAnotherWorkspace(errorStatus) !== null && (
+            <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+              {mayBeInAnotherWorkspace(errorStatus)}
+            </Box>
+          )}
         </Alert>
       </Box>
     );
   }
 
-  // Every control follows the server's answer for this agent. Who may address
-  // it is open to whoever may manage it (its owner or an admin); agent
+  // Every control follows the server's answer for this agent. Whoever may
+  // manage it (its owner or an admin) may narrow who may address it, and only
+  // its owner may widen that; agent
   // management and service access stay with the owner alone, because the
   // agent then acts on the owner's own machines and credentials. Service
   // access shows only to its owner: the server answers anyone else's request
@@ -118,7 +125,9 @@ export default function AgentDetailPage() {
         <IconButton onClick={() => navigate("/agents")} size="small" aria-label="Back to agents">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5">{agent.name}</Typography>
+        <Typography variant="h5" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
+          {agent.name}
+        </Typography>
         {agent.can_rename && (
           <Tooltip title="Rename agent">
             <IconButton
@@ -190,6 +199,7 @@ export default function AgentDetailPage() {
         <AddressingPolicySection
           agent={agent}
           canEdit={canManage}
+          canWiden={agent.can_widen_addressing}
           onUpdated={refetch}
         />
         <MidTurnDeliverySection
@@ -294,7 +304,8 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
         label="Availability"
         value={agent.connection_model ? sentenceCase(agent.connection_model) : null}
       />
-      <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />
+      {/* How it is set up is its owner's and admins' to see; anyone else is sent none. */}
+      {agent.can_manage && <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />}
       <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
     </Stack>
   );
@@ -328,7 +339,7 @@ function OptionsSection({
   canEdit: boolean;
   onUpdated: () => void;
 }) {
-  const { data: knownTypes } = useKnownAgentTypes();
+  const { data: knownTypes, loading: typesLoading, error: typesError } = useKnownAgentTypes();
   const spec = knownTypes?.find((t) => t.key === agent.known_agent_type);
 
   const initial = useMemo(() => {
@@ -373,7 +384,19 @@ function OptionsSection({
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Options
       </Typography>
-      {!spec ? (
+      {!agent.can_manage ? (
+        // The server sends its options, which hold where it runs on its
+        // owner's machine, to its owner and admins alone.
+        <Typography variant="body2" color="text.secondary">
+          Only the agent's owner and admins can see its options.
+        </Typography>
+      ) : typesLoading ? (
+        <CircularProgress size={20} />
+      ) : typesError !== null ? (
+        <Alert severity="error">
+          Couldn't load the agent types, so this agent's options can't be shown: {typesError}
+        </Alert>
+      ) : !spec ? (
         <Alert severity="warning">
           Unknown agent type "{agent.known_agent_type}" — Switch no longer
           describes its options.

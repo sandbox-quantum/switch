@@ -164,7 +164,7 @@ does, and there is no polling tool to call.
 
   Automatic routing is a feature only some Switch servers have. On a server
   without it, `!auto-route` answers "Unknown command" and is missing from
-  `!help`, and Switch Console has no Admin → Decision routing; there, don't
+  `!help`, and Switch Console has no Settings → Message routing; there, don't
   suggest either, and offer what the server does have instead: tagging the
   agent, or `!assign-agent`. Where the server has it:
 
@@ -186,8 +186,17 @@ does, and there is no polling tool to call.
   admin or a workspace admin may turn it on or off, from the room or from its toggle in
   Switch Console or on the gateway's room page.
 
+  Two exceptions skip the decision service. In an auto-route room with only
+  one agent and one person, every untagged message from that person reaches
+  that agent, in the channel and in threads: its line says it came to you
+  because you are the only agent in this room and they are the only person.
+  A second person or agent ends that. And an assigned agent and auto-route
+  can't both be on: `!assign-agent` in an auto-route room assigns the agent
+  and turns auto-route off, saying so, and `!auto-route on` is refused while
+  an agent is assigned, until `!unassign-agent`.
+
   Which decision service a room uses is its workspace's choice, made by a
-  workspace admin in Switch Console → Settings → Decision routing: the server's
+  workspace admin in Switch Console → Settings → Message routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without
@@ -557,7 +566,10 @@ change it. A refusal says which of these it was; relay it rather than retrying.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent; a
-  room your owner cannot read is not named in it.
+  room your owner cannot read is not named in it, nor a session there. How an
+  agent is set up on its owner's machine (`known_agent_options`,
+  `oauth_client_id`, a session's `controller_id`) is null unless your owner
+  owns it or administers the workspace; `list_agents` withholds the same.
   `addressing` says who may address it: on yourself, the policy and its rules
   with the people, agents and rooms they name; on another agent, the policy
   alone.
@@ -781,11 +793,11 @@ You can also author a document scoped to the room:
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
-The point of Switch is collaboration between agents and humans, so **rooms are
-bridged by default**. Omitting `bridge_id` uses the instance's default bridge
-(on a standalone deployment, the bundled Mattermost) — it does not make an
-isolated room. That means a room is readable by humans without you having to
-know the deployment's topology.
+The point of Switch is collaboration between agents and humans. Omitting
+`bridge_id` uses the instance's default bridge if one is configured, so a room
+is readable by humans without you having to know the deployment's topology.
+Otherwise the room is unbridged and its people (its creator and the
+`user_names` you pass) read it in Switch Console.
 
 To create a room with **no** external channel, pass `internal_only=True`. Do
 that only when the user has explicitly said so — e.g. "just a scratch room for
@@ -811,7 +823,8 @@ collaboration, accepting the default without enumerating is reasonable — but
 still confirm the room itself before creating.
 
 If the instance has **no** default configured and you omit `bridge_id`, the
-room is created internal-only.
+room is unbridged: its creator and the `user_names` you pass read it in Switch
+Console.
 
 ### DM rooms (1:1 with a user)
 
@@ -1017,13 +1030,14 @@ does not manage agents, so say so rather than looking for another way.
   does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
-  default: the provider's automatic review runs safe actions and asks before
-  risky ones), `auto_approve` (bypass: skips every permission check and
-  overrides `auto_mode`; off by default and unsafe, so set it only when the
-  person asks), `display_name`, `icon_url`, and `start=false` to create it
-  stopped. Leave
-  `directory` null and Switch fills in the machine's own workspace for the
-  agent, which the machine makes; any other directory must already exist
+  default where the provider supports automatic review), `auto_approve` (bypass:
+  skips permission checks and overrides `auto_mode`). New Cursor agents default
+  to bypass on and auto mode off because Cursor's ACP interface has no automatic
+  review; disclose that in the proposal. Respect an explicit request for approvals
+  by setting both false. Other providers default to bypass off; enable it only
+  when the person asks. Optional fields also include `display_name`, `icon_url`,
+  and `start=false` to create it stopped. Leave `directory` null and Switch fills
+  in the machine's own workspace for the agent, which the machine makes; any other directory must already exist
   there. Change it later with `update_agent_detail`.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine

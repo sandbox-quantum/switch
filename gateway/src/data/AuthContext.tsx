@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
   type CurrentTenant,
-  SESSION_REFUSED_EVENT,
   type Session,
   type SessionUser,
   type SignedOut,
@@ -16,7 +15,8 @@ import {
   switchTenant,
 } from "./api";
 import { type Capabilities, capabilitiesOf } from "./capabilities";
-import { ALL_OFF, type FeatureFlags, GATEWAY_V2 } from "./featureFlags";
+import { ALL_OFF, type FeatureFlags } from "./featureFlags";
+import { onSessionSignal, setShownWorkspace } from "./gatewayFetch";
 import { landingAfterSwitch } from "./settingsLanding";
 import {
   clearPendingInvite,
@@ -51,6 +51,10 @@ interface AuthState {
   // Set when the page was opened from a link naming a workspace it could not
   // switch to, so it says which workspace it shows instead.
   linkNotice: string | null;
+  // Set when the server refused a write because the session has since moved
+  // to another workspace, in another tab: what the server said, until the
+  // page is reloaded.
+  workspaceMismatch: string | null;
   dismissLinkNotice: () => void;
   // Reads the session again, after any read already under way, which may
   // have started before what the caller just changed. Never rejects: a read
@@ -95,6 +99,15 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : "Could not load your session";
 }
 
+/** The least time between two reads of the session prompted by the server
+ * refusing something, so a page that keeps asking for what it may not have
+ * does not keep reading it. */
+const REFUSAL_REREAD_MS = 5000;
+
+function sameLoad(a: Loaded, b: Loaded): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -103,11 +116,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [staleError, setStaleError] = useState<string | null>(null);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
+  const [workspaceMismatch, setWorkspaceMismatch] = useState<string | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   // Read on arrival only: the address drops it straight away.
   const [linked] = useState(() => linkedWorkspace(location.search));
   const arrived = useRef(location);
+  const here = useRef(location);
+  useEffect(() => {
+    here.current = location;
+  }, [location]);
 
   const refresh = useCallback(async () => {
     try {
@@ -191,7 +209,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const held = useRef<Session | null>(null);
   useEffect(() => {
     held.current = loaded.session;
+    setShownWorkspace(loaded.session?.tenant?.id ?? null);
   }, [loaded.session]);
+  // Set while signing out on purpose, so the session ending is not taken for
+  // one that ended under the page.
+  const signingOut = useRef(false);
   const reading = useRef<Promise<void> | null>(null);
   const restoredWhileReading = useRef(false);
   const revalidate = useCallback((restored: boolean): Promise<void> => {
@@ -207,15 +229,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
       const before = held.current;
+      if (signingOut.current) return;
       if (
         current.session?.user.id !== before?.user.id ||
         current.session?.tenant?.id !== before?.tenant?.id
       ) {
+        // A session that ended under the page comes back here once signed
+        // in again, as a link naming the workspace it showed.
+        if (current.session === null && before?.tenant) {
+          const { pathname, search, hash } = here.current;
+          keepLinkForSignIn({ path: `${pathname}${search}${hash}`, workspace: before.tenant.id });
+        }
         window.location.reload();
         return;
       }
       setStaleError(null);
-      setLoaded(current);
+      setLoaded((shown) => (sameLoad(shown, current) ? shown : current));
     })().finally(() => {
       reading.current = null;
       restoredWhileReading.current = false;
@@ -229,22 +258,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") void revalidate(false);
     };
-    // A request refused for its session (see `SESSION_REFUSED_EVENT`): read
-    // it again, and a session that has ended reloads the page signed out.
-    const onSessionRefused = () => void revalidate(false);
     window.addEventListener("pageshow", onPageShow);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener(SESSION_REFUSED_EVENT, onSessionRefused);
     return () => {
       window.removeEventListener("pageshow", onPageShow);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener(SESSION_REFUSED_EVENT, onSessionRefused);
     };
   }, [revalidate]);
   const recheck = useCallback(async () => {
     while (reading.current !== null) await reading.current;
     await revalidate(false);
   }, [revalidate]);
+
+  // What the server's answers say about the session, heard from every
+  // request the page sends (`gatewayFetch`). A 401 means it has ended, so
+  // reading it again finds it gone and the page goes to sign-in. A 403 may
+  // mean the person's role changed, so it is read again and the route guards
+  // and rail follow. A write refused because another tab moved the session to
+  // another workspace is said until the page is reloaded.
+  const lastRefusalRead = useRef(0);
+  useEffect(
+    () =>
+      onSessionSignal((signal) => {
+        if (held.current === null || signingOut.current) return;
+        if (signal.kind === "workspace_mismatch") {
+          setWorkspaceMismatch(signal.message);
+          return;
+        }
+        if (signal.kind === "refused") {
+          if (Date.now() - lastRefusalRead.current < REFUSAL_REREAD_MS) return;
+          lastRefusalRead.current = Date.now();
+        }
+        void revalidate(false);
+      }),
+    [revalidate],
+  );
 
   const login = useCallback(
     async (email: string, password: string) => {
@@ -271,8 +319,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // be asked rather than handing off to an identity provider whose own
   // session would sign the person straight back in.
   const finishSignOut = useCallback((signedOut: SignedOut) => {
+    signingOut.current = true;
     clearPendingInvite();
     forgetLinkForSignIn();
+    held.current = null;
     if (signedOut.notice !== null) keepSignOutNotice(signedOut.notice);
     if (signedOut.endSessionUrl !== null) {
       window.location.assign(signedOut.endSessionUrl);
@@ -280,26 +330,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     markSignedOut();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
+    signingOut.current = false;
   }, []);
-
-  const logout = useCallback(async () => {
-    finishSignOut(await apiLogout());
-  }, [finishSignOut]);
-
-  const logoutEverywhere = useCallback(async () => {
-    finishSignOut(await signOutEverywhere());
-  }, [finishSignOut]);
+  const signOutWith = useCallback(
+    async (signOut: () => Promise<SignedOut>) => {
+      signingOut.current = true;
+      let signedOut: SignedOut;
+      try {
+        signedOut = await signOut();
+      } catch (err) {
+        signingOut.current = false;
+        throw err;
+      }
+      finishSignOut(signedOut);
+    },
+    [finishSignOut],
+  );
+  const logout = useCallback(() => signOutWith(apiLogout), [signOutWith]);
+  const logoutEverywhere = useCallback(() => signOutWith(signOutEverywhere), [signOutWith]);
 
   // A full reload rather than a state update: every page holds data fetched
   // for the workspace it was opened in, and none of it is valid in the next.
-  const newLayout = loaded.flags[GATEWAY_V2];
-  const switchTo = useCallback(
-    async (tenantId: string) => {
-      await switchTenant(tenantId);
-      window.location.assign(landingAfterSwitch(window.location.pathname, newLayout));
-    },
-    [newLayout],
-  );
+  const switchTo = useCallback(async (tenantId: string) => {
+    await switchTenant(tenantId);
+    window.location.assign(landingAfterSwitch(window.location.pathname));
+  }, []);
 
   const capabilities = capabilitiesOf(loaded.session, loaded.tenant, loaded.flags);
   const value: AuthState = {
@@ -313,6 +368,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     staleError,
     linkNotice,
     dismissLinkNotice,
+    workspaceMismatch,
     recheck,
     refresh,
     login,

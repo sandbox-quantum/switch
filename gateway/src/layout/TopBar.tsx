@@ -2,7 +2,7 @@ import ChevronLeftOutlined from "@mui/icons-material/ChevronLeftOutlined";
 import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 import HelpOutlineOutlined from "@mui/icons-material/HelpOutlineOutlined";
 import MenuBookOutlined from "@mui/icons-material/MenuBookOutlined";
-import { Alert, Box, Button, Snackbar, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, IconButton, Snackbar, Stack, Tooltip, Typography } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { Link as RouterLink, useLocation, useNavigate } from "react-router";
@@ -14,31 +14,22 @@ import {
   organizationName,
 } from "../data/workspaceSwitcher";
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
-import { type Layout, outsideWorkspace } from "../routes/routeTable";
+import { areaOf, outsideWorkspace, underAreaOutsideWorkspace } from "../routes/routeTable";
 import { DevRoleSlot } from "./DevRoleSlot";
 import { useWayBackToWorkspace } from "./wayBack";
 import WorkspaceMenu from "./WorkspaceMenu";
 
 const SECTION_LABELS: [prefix: string, label: string][] = [
+  ["/overview", "Home"],
   ["/ecosystem", "Ecosystem"],
-  ["/rooms", "Rooms"],
-  ["/resources", "Resources"],
   ["/agents", "Agents"],
-  ["/collaborations", "Messaging apps"],
-  ["/registration-keys", "API keys"],
-  ["/machines", "Devices"],
-  ["/connectors", "Connectors"],
-  ["/users", "Users"],
-  ["/workspace", "Workspace"],
-  ["/organization", "Organization"],
-  ["/operator/workspaces", "All workspaces"],
-  ["/usage", "Usage & budget"],
-  // The new layout's own (`gateway_v2`).
-  ["/overview", "Overview"],
+  ["/rooms", "Rooms"],
   ["/templates", "Templates"],
+  ["/connectors", "Connectors"],
+  ["/resources", "Resources"],
+  ["/usage", "Usage & budget"],
   ["/settings/org", "Organization settings"],
   ["/settings", "Settings"],
-  ["/platform", "Platform"],
 ];
 
 const DOCS_URL = "https://docs.switchagents.ai/switch-rooms/getting-started";
@@ -66,39 +57,20 @@ function PageLabel({ label }: { label: string | undefined }) {
   );
 }
 
-/** Today's breadcrumb: Switch, the workspace, the page. */
-function CurrentCrumbs({ section }: { section: string | undefined }) {
-  const { session } = useAuth();
-  const crumbs = [session?.tenant?.name, section].filter(
-    (crumb): crumb is string => Boolean(crumb),
-  );
-  return (
-    <Typography sx={{ ...CRUMB_TEXT, px: 2 }}>
-      Switch
-      {crumbs.map((crumb, i) => (
-        <Box component="span" key={i}>
-          <Separator />
-          <Box component="span" sx={{ fontWeight: i === crumbs.length - 1 ? 700 : 500 }}>
-            {crumb}
-          </Box>
-        </Box>
-      ))}
-    </Typography>
-  );
-}
-
-/** The new layout's breadcrumb: "Organization / Workspace", which opens the
- * workspace switcher, then the page. In an area outside the workspace,
- * organization settings or Platform, the way back to it instead: back to the
- * page it was entered from, or home when it was opened directly. */
+/** The breadcrumb: "Organization / Workspace", which opens the
+ * workspace switcher, then the page. In organization settings, an area
+ * outside the workspace, the way back to it instead: back to the page it was
+ * entered from, or, when it was opened directly, to workspace settings. */
 function WorkspaceCrumbs({
   section,
   outside,
   wayBack,
+  fallback,
 }: {
   section: string | undefined;
   outside: boolean;
   wayBack: { href: string; delta: number } | null;
+  fallback: string;
 }) {
   const { session, switchTo } = useAuth();
   const navigate = useNavigate();
@@ -146,7 +118,7 @@ function WorkspaceCrumbs({
     crumbs = (
       <Button
         component={RouterLink}
-        to={wayBack?.href ?? "/"}
+        to={wayBack?.href ?? fallback}
         onClick={(e: MouseEvent<HTMLElement>) => {
           if (wayBack === null || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
             return;
@@ -173,13 +145,13 @@ function WorkspaceCrumbs({
       >
         {organization !== null && (
           <>
-            <Box component="span" sx={{ color: "text.secondary" }}>
-              {organization}
-            </Box>
+            {organization}
             <Separator />
           </>
         )}
-        {tenant?.name}
+        <Box component="span" sx={{ fontWeight: 700 }}>
+          {tenant?.name}
+        </Box>
       </Button>
     );
   }
@@ -225,25 +197,29 @@ function WorkspaceCrumbs({
   );
 }
 
-function LinkButton({ href, icon, children }: { href: string; icon: ReactNode; children: string }) {
+function LinkButton({ href, icon, label }: { href: string; icon: ReactNode; label: string }) {
   return (
-    <Button
-      color="inherit"
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      startIcon={icon}
-      sx={{ fontWeight: 500 }}
-    >
-      {children}
-    </Button>
+    <Tooltip title={label}>
+      <IconButton color="inherit" href={href} target="_blank" rel="noreferrer" aria-label={label}>
+        {icon}
+      </IconButton>
+    </Tooltip>
   );
 }
 
-export default function TopBar({ layout }: { layout: Layout }) {
+export default function TopBar() {
   const { pathname } = useLocation();
-  const section = SECTION_LABELS.find(([prefix]) => pathname.startsWith(prefix))?.[1];
-  const wayBack = useWayBackToWorkspace(layout);
+  const { capabilities } = useAuth();
+  const outside = outsideWorkspace(pathname, capabilities);
+  // A refused page or a missing one under an area outside the workspace is
+  // shown in the workspace's chrome, where the area's name would read as if
+  // it had been entered.
+  const section =
+    !outside && underAreaOutsideWorkspace(pathname)
+      ? undefined
+      : SECTION_LABELS.find(([prefix]) => pathname.startsWith(prefix))?.[1];
+  const fallback = areaOf(pathname) === "organization" ? "/settings" : "/";
+  const wayBack = useWayBackToWorkspace();
 
   return (
     <Stack
@@ -256,26 +232,16 @@ export default function TopBar({ layout }: { layout: Layout }) {
         pr: 1,
       }}
     >
-      {layout === "v2" ? (
-        <WorkspaceCrumbs
-          section={section}
-          outside={outsideWorkspace(pathname, layout)}
-          wayBack={wayBack}
-        />
-      ) : (
-        <CurrentCrumbs section={section} />
-      )}
+      <WorkspaceCrumbs section={section} outside={outside} wayBack={wayBack} fallback={fallback} />
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
         <DevRoleSlot />
-        {layout === "v2" && (
-          <LinkButton href={HELP_URL} icon={<HelpOutlineOutlined sx={{ fontSize: 18 }} />}>
-            Help
-          </LinkButton>
-        )}
-        <LinkButton href={DOCS_URL} icon={<MenuBookOutlined sx={{ fontSize: 18 }} />}>
-          Docs
-        </LinkButton>
+        <LinkButton href={HELP_URL} icon={<HelpOutlineOutlined sx={{ fontSize: 20 }} />} label="Help" />
+        <LinkButton
+          href={DOCS_URL}
+          icon={<MenuBookOutlined sx={{ fontSize: 20 }} />}
+          label="Documentation"
+        />
       </Stack>
     </Stack>
   );

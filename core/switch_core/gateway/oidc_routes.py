@@ -34,6 +34,7 @@ from switch_core.db.stores.user_store import (
     SignupRefusedError,
     UserStore,
 )
+from switch_core.gateway.admission import writes_on_get
 from switch_core.gateway.auth import (
     initial_tenant_claim,
     set_session_cookie,
@@ -761,7 +762,9 @@ async def _record_identity_session(
     return row_id
 
 
-@router.get("/auth/oidc/callback", name="oidc_callback")
+@router.get(
+    "/auth/oidc/callback", name="oidc_callback", dependencies=[Depends(writes_on_get)]
+)
 async def oidc_callback(
     request: Request,
     config: Annotated[SwitchConfig, Depends(get_config)],

@@ -4,6 +4,7 @@ stand-in for the WorkOS API."""
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -65,6 +66,7 @@ class _WorkOS:
                 json={
                     "data": [
                         {
+                            "id": f"om_{organization_id}",
                             "organization_id": organization_id,
                             "role": {"slug": role},
                             "status": "active",
@@ -658,3 +660,75 @@ class TestReadingAUserById:
     async def test_workos_failing_stops_the_run(self, status: int) -> None:
         with pytest.raises(DirectoryUnavailable):
             await _directory(lambda request: httpx.Response(status)).user("user_A")
+
+
+def _unrecognized(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.name == "switch_core.workos_directory" and r.levelno == logging.WARNING
+    ]
+
+
+class TestUnrecognizedRoles:
+    async def test_are_members_at_sign_in_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        workos = _WorkOS(
+            organizations={},
+            memberships=[
+                ("org_a", "viewer"),
+                ("org_b", "auditor"),
+                ("org_c", "contractor"),
+            ],
+        )
+
+        memberships = await _directory(workos).memberships_at_sign_in("user_EXAMPLE")
+
+        assert [m.role for m in memberships] == ["member", "member", "member"]
+        records = _unrecognized(caplog)
+        assert len(records) == 2
+        assert "om_org_b" in records[0].getMessage()
+        assert "'auditor'" in records[0].getMessage()
+        assert "om_org_c" in records[1].getMessage()
+        assert "'contractor'" in records[1].getMessage()
+
+    async def test_expected_roles_are_not_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        workos = _WorkOS(
+            organizations={},
+            memberships=[
+                ("org_a", "org_admin"),
+                ("org_b", "admin"),
+                ("org_c", "editor"),
+                ("org_d", "viewer"),
+            ],
+        )
+
+        await _directory(workos).memberships_at_sign_in("user_EXAMPLE")
+
+        assert _unrecognized(caplog) == []
+
+    async def test_are_members_through_membership_role_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "om_A",
+                            "organization_id": "org_a",
+                            "role": {"slug": "auditor"},
+                        }
+                    ]
+                },
+            )
+
+        assert await _directory(handler).membership_role("user_A", "org_a") == "member"
+        [record] = _unrecognized(caplog)
+        assert "om_A" in record.getMessage()
+        assert "org_a" in record.getMessage()
+        assert "'auditor'" in record.getMessage()

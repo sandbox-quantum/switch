@@ -277,9 +277,13 @@ this is the list it belongs on.
 ## Decision routing
 
 Auto-route (`docs/old/decision-routing.md`) has a group of its own,
-`switch.decision.*`. Each decision asked of a backend is counted by `backend`
-and `outcome`, failures by `reason`, and what the backend said went wrong
-behind it by `kind` (`backend_errors`). Its latency is timed around the whole
+`switch.decision.*`. Each decision asked of a backend is counted by `backend`,
+`model` and `outcome`, failures by `reason`, and what the backend said went
+wrong behind it by `kind` (`backend_errors`). `model` is the model that
+answered, as the server's decision service names it; a decision with no answer
+is `unknown`, a workspace's own endpoint `workspace_endpoint` (the name it
+sends is its owner's, so it is not kept), and a name that isn't plain, or past
+the first eight a process sees, `other`. Its latency is timed around the whole
 request (`duration`) beside the model time the backend reports
 (`model_time`), so the gap — network and the backend's queue — can be read.
 Confidence is a histogram for setting the threshold. Every undecided message's
@@ -301,6 +305,21 @@ stale number.
 
 Each message's decision record — one log line, with its fields as `decision.*`
 — is described in `docs/old/decision-routing.md`.
+
+## The WorkOS directory mirror
+
+With `ORGANIZATION_DIRECTORY=workos`, the process holding the mirror
+(`workos_mirror.py`) reports `switch.workos.cursor_age`,
+`switch.workos.recheck.oldest_age` and `switch.workos.full_check.age`, each in
+seconds and with no attributes. They are ages rather than timestamps because a
+Datadog monitor can't subtract a timestamp from now, and they are computed when
+the metrics are collected, so a pass stuck waiting on WorkOS keeps the cursor
+age growing instead of freezing it. No other process reports them, so their
+absence means nobody runs the mirror; read them with max, which also covers
+the moment the hold changes hands. It also counts
+`switch.workos.organization_deleted`, a WorkOS organization deleted while a
+Switch organization follows it. What each means is in
+`docs/old/workos-directory.md`.
 
 ## Health: two routes, on purpose
 
@@ -375,7 +394,7 @@ naming nothing.
 
 **Kubernetes state.** Pod phase, restart counts, evictions, pending pods that
 never scheduled, node pressure, PersistentVolume usage. The last matters more
-than it sounds: Postgres and Mattermost hold this deployment's data on
+than it sounds: Postgres holds this deployment's data on
 volumes, and nothing currently reports how full they are.
 
 **The database from the database's side.** Switch reports its own connection

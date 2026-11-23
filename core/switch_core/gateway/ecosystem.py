@@ -11,7 +11,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.feature_flags import ECOSYSTEM_SHOW_OWNERS
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_agent_store,
     get_bridge_store,
@@ -36,12 +36,18 @@ async def get_ecosystem_graph(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> EcosystemGraphResponse:
     """Switch-centric ecosystem graph: the Switch at the centre, with agent
     types branching out (and individual agents under each type) and one branch
     per connected collaboration app.
+
+    Whoever administers the workspace is shown every agent in it; a member
+    only their own, as their Agents list and Home count them, and only the
+    agent types they have one of. Messaging apps are the workspace's, and
+    shown to everyone.
 
     The payload is a generic node/edge graph so it can be extended with more
     entity kinds later without changing its shape."""
@@ -56,7 +62,11 @@ async def get_ecosystem_graph(
 
     # Agents grouped by connector_type -> one agent-type node per type, with
     # each agent hanging off its type.
-    agents = await agent_store.get_all(session)
+    agents = [
+        agent
+        for agent in await agent_store.get_all(session)
+        if is_admin or agent.owner_id == user.id
+    ]
 
     owner_names: dict[str, str] = {}
     if show_owners:
@@ -99,7 +109,7 @@ async def get_ecosystem_graph(
             edges.append(EcosystemEdge(source=type_node_id, target=agent_node_id))
 
     # One branch per connected collaboration app.
-    bridges = await bridge_store.get_all(session)
+    bridges = await bridge_store.get_listed(session)
     for bridge in bridges:
         bridge_node_id = f"bridge:{bridge.id}"
         nodes.append(

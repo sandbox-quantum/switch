@@ -730,7 +730,7 @@ export class HostDependencyManager {
 
     await this.ctx.refreshShellEnv?.();
 
-    const installResult = await this.runInstallCommand(command);
+    const installResult = await this.runCommandLogged('install', id, command);
     if (!installResult.success) {
       return err(installResult.error);
     }
@@ -801,7 +801,7 @@ export class HostDependencyManager {
     const plan = this.resolveUpdatePlan(effectiveMethod, descriptor, 'update');
 
     if (plan.kind === 'package-manager') {
-      const runResult = await this.runInstallCommand(plan.command);
+      const runResult = await this.runCommandLogged('update', id, plan.command);
       if (!runResult.success) return err(runResult.error);
     } else if (plan.kind === 'cli') {
       const resolvedPath = await this.resolveFirstPath(descriptor);
@@ -815,7 +815,7 @@ export class HostDependencyManager {
         args = plan.args;
       }
 
-      const runResult = await this.runInstallCommand({ command, args });
+      const runResult = await this.runCommandLogged('update', id, { command, args });
       if (!runResult.success) return err(runResult.error);
     } else {
       return err({ type: 'no-update-strategy', id });
@@ -1024,7 +1024,7 @@ export class HostDependencyManager {
         if (!verify.success) return verify;
       }
 
-      const runResult = await this.runInstallCommand(plan.command);
+      const runResult = await this.runCommandLogged('uninstall', id, plan.command);
       if (!runResult.success) return err(runResult.error);
     } else if (plan.kind === 'cli') {
       const resolvedPath = await this.resolveFirstPath(descriptor);
@@ -1038,7 +1038,7 @@ export class HostDependencyManager {
         args = plan.args;
       }
 
-      const runResult = await this.runInstallCommand({ command, args });
+      const runResult = await this.runCommandLogged('uninstall', id, { command, args });
       if (!runResult.success) return err(runResult.error);
     } else {
       return err({ type: 'no-uninstall-command', id });
@@ -1062,6 +1062,28 @@ export class HostDependencyManager {
     const descriptor = this._getDependencyDescriptor(id);
     if (!descriptor) return [];
     return resolveInstallOptions(descriptor, this.platform);
+  }
+
+  /**
+   * Runs an install, update or uninstall command and, when it fails, logs everything it
+   * printed and its exit code: the UI can show only a line of it, and the log is where
+   * the rest of a failure can be read.
+   */
+  private async runCommandLogged(
+    action: 'install' | 'update' | 'uninstall',
+    id: DependencyId,
+    command: InstallCommandSpec
+  ): Promise<Result<void, InstallCommandError>> {
+    const result = await this.runInstallCommand(command);
+    if (!result.success) {
+      const error = result.error;
+      this.logger.warn(`[HostDependencyManager] Failed to ${action} ${id}: ${error.message}`, {
+        type: error.type,
+        exitCode: 'exitCode' in error ? (error.exitCode ?? null) : null,
+        output: 'output' in error ? error.output : '',
+      });
+    }
+    return result;
   }
 
   private async resolveFirstPath(descriptor: DependencyDescriptor): Promise<string | null> {

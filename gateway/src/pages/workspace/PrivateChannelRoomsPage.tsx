@@ -24,7 +24,6 @@ import { Link as RouterLink, useNavigate } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import {
   type AskPlatformResult,
-  MAKE_PRIVATE_MAX,
   type MakeRoomsPrivateResult,
   type PrivateChannelRoom,
   type PrivateChannelRoomCaution,
@@ -193,7 +192,6 @@ export default function PrivateChannelRoomsPage() {
   const unrecorded = all.filter((r) => r.cautions.includes("channel_type_not_recorded")).length;
   const tickedUntyped = all.filter((r) => ticked.has(r.room_id) && r.channel_type === null).length;
   const count = ticked.size;
-  const tooMany = count > MAKE_PRIVATE_MAX;
 
   const toggle = (roomId: string) => {
     const next = new Set(ticked);
@@ -242,8 +240,8 @@ export default function PrivateChannelRoomsPage() {
 
   return (
     <Box sx={{ pb: 10 }}>
-      <Button startIcon={<ArrowBack />} onClick={() => navigate(-1)} sx={{ mb: 1 }}>
-        Back
+      <Button startIcon={<ArrowBack />} onClick={() => navigate("/settings/general")} sx={{ mb: 1 }}>
+        General
       </Button>
       <Typography variant="h5" mb={1}>
         Public rooms on private channels
@@ -377,13 +375,11 @@ export default function PrivateChannelRoomsPage() {
           }}
         >
           <Typography variant="body2" sx={{ flex: 1 }}>
-            {tooMany
-              ? `${plural(count, "room", "rooms")} ticked. Make at most ${MAKE_PRIVATE_MAX} Private at a time.`
-              : `${plural(count, "room", "rooms")} ticked.`}
+            {`${plural(count, "room", "rooms")} ticked.`}
           </Typography>
           <Button
             variant="contained"
-            disabled={count === 0 || tooMany}
+            disabled={count === 0}
             onClick={() => setConfirming(true)}
           >
             {`Make ${plural(count, "room", "rooms")} Private`}

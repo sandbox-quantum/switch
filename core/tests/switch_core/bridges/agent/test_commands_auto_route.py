@@ -299,7 +299,7 @@ class TestAutoRouteCommand:
         await _run(host, "on")
 
         assert posted[-1].startswith("Auto-route needs a decision service.")
-        assert "Switch Console → Settings → Decision routing" in posted[-1]
+        assert "Switch Console → Settings → Message routing" in posted[-1]
         assert "Nothing was changed" in posted[-1]
         assert not await _on(session_factory, room_id)
 
@@ -517,3 +517,53 @@ class TestTheTriageAgent:
 
         assert posted[-1].startswith("Usage: `!auto-route on`")
         assert "`!auto-route fallback @agent`" in posted[-1]
+
+
+class TestAssignedAgentOrAutoRoute:
+    """An assigned agent and auto-route can't both be on: turning auto-route
+    on is refused while an agent is assigned; a room that has both from
+    before is told auto-route is not acting."""
+
+    async def _assign(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        room_id: str,
+        agent: Agent,
+    ) -> None:
+        async with session_factory() as session:
+            await RoomStore().set_main_agent(session, room_id, agent.id)
+            await session.commit()
+
+    async def test_on_is_refused_while_an_agent_is_assigned(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        agents = await _agents(session_factory, room_id)
+        await self._assign(session_factory, room_id, agents["helper"])
+        host, posted = _host(session_factory, room_id)
+
+        await _run(host, "on")
+
+        assert "**helper**" in posted[-1]
+        assert "`!unassign-agent` first" in posted[-1]
+        assert "Nothing was changed" in posted[-1]
+        assert not await _on(session_factory, room_id)
+
+    async def test_off_still_works_and_a_room_with_both_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        agents = await _agents(session_factory, room_id)
+        async with session_factory() as session:
+            await RoomStore().set_auto_route_on(session, room_id, True)
+            await session.commit()
+        await self._assign(session_factory, room_id, agents["helper"])
+        host, posted = _host(session_factory, room_id)
+
+        await _run(host, "")
+        assert "on** in this room but not acting" in posted[-1]
+        assert "**helper**" in posted[-1]
+
+        await _run(host, "off")
+        assert "Automatic routing is **off**" in posted[-1]
+        assert not await _on(session_factory, room_id)

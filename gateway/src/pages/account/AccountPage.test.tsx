@@ -80,6 +80,22 @@ describe("Your account", () => {
     expect(screen.getByRole("button", { name: "Change password" })).toBeTruthy();
   });
 
+  it("lets a card's buttons wrap onto their own lines on a narrow window, each kept whole", async () => {
+    signedIn();
+    answer({ "GET /auth/me": me() });
+    render(<AccountPage />);
+    const signOutEverywhere = await screen.findByRole("button", { name: "Sign out of all devices" });
+    const row = signOutEverywhere.parentElement as HTMLElement;
+    expect(within(row).getByRole("button", { name: "Sign out" })).toBeTruthy();
+    expect(getComputedStyle(row).flexWrap).toBe("wrap");
+    expect(getComputedStyle(row).flexShrink).toBe("0");
+    expect(getComputedStyle(row).maxWidth).toBe("100%");
+    expect(getComputedStyle(signOutEverywhere).whiteSpace).toBe("nowrap");
+    // The text gives way to the buttons only down to about 320px; then they
+    // drop below it rather than squeezing it a word to a line.
+    expect(getComputedStyle(row.previousElementSibling as HTMLElement).flexBasis).toBe("320px");
+  });
+
   it("offers no password change to an account made through single sign-on", async () => {
     signedIn();
     answer({ "GET /auth/me": me({ has_password: false }) });

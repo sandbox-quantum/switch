@@ -1,6 +1,7 @@
 import { Alert, Button, Divider, Stack, TextField } from "@mui/material";
 import { useState } from "react";
 import { useAuth } from "../../data/AuthContext";
+import OrganizationsWithoutWorkspace from "../account/OrganizationsWithoutWorkspace";
 import { inviteTokenFrom, storePendingInvite } from "../../data/sessionState";
 import AuthLayout, { SignedInFooter } from "../auth/AuthLayout";
 import CreateWorkspaceForm from "./CreateWorkspaceForm";
@@ -36,6 +37,7 @@ export default function OnboardingPage() {
       footer={<SignedInFooter />}
     >
       <Stack spacing={3}>
+        <OrganizationsWithoutWorkspace />
         {canCreate && <CreateWorkspaceForm />}
         {canCreate && (
           <Divider sx={{ typography: "caption", color: "text.secondary" }}>or</Divider>

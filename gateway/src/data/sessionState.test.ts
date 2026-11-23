@@ -35,6 +35,7 @@ function session(overrides: Partial<Session> = {}): Session {
     can_create_workspace: true,
     can_add_workspace: false,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
     ...overrides,
   };
 }

@@ -1,19 +1,13 @@
 import { type FeatureFlagState, type FeatureFlags, featureFlagsFrom } from "./featureFlags";
+import { LONG_REQUEST_TIMEOUT_MS, gatewayFetch } from "./gatewayFetch";
+import { BULK_ROOMS_MAX, ROOM_USERS_MAX, inChunks } from "./inBatches";
 
 const BASE = "/gateway";
 
-async function fetchJson<T>(path: string, init?: RequestInit): Promise<T | null> {
-  try {
-    const res = await fetch(`${BASE}${path}`, { ...init, credentials: "include" });
-    if (!res.ok) {
-      console.error(`${res.status} ${res.statusText}: ${path}`);
-      return null;
-    }
-    return (await res.json()) as T;
-  } catch (err) {
-    console.error(`Fetch error: ${path}`, err);
-    return null;
-  }
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await gatewayFetch(`${BASE}${path}`, init);
+  if (!res.ok) throw await failure(res);
+  return (await res.json()) as T;
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -98,6 +92,8 @@ export interface AgentSummary {
   model_count: number;
   owner_id: string | null;
   owner_name: string | null;
+  // How it is set up on its owner's machine: null to anyone who may not
+  // manage it (`can_manage`), as `known_agent_options` is.
   oauth_client_id: string | null;
   created_at: string;
   parent_agent_id: string | null;
@@ -166,7 +162,8 @@ export interface AgentSessionDetail {
   lifecycle: string;
   state: string;
   last_seen_at: string;
-  // The agent controller running it, for a `controller` session; else null.
+  // The agent controller running it, for a `controller` session, named to
+  // whoever may manage the agent; else null.
   controller_id: string | null;
 }
 
@@ -197,6 +194,9 @@ export interface AgentDetail extends AgentSummary {
   // has needs only ownership.
   can_change_manage_agents: boolean;
   can_grant_services: boolean;
+  // Its owner's alone: letting more people or agents address it. Whoever has
+  // `can_manage` may still narrow who can.
+  can_widen_addressing: boolean;
 }
 
 // Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)
@@ -385,6 +385,13 @@ export interface RoomAutoRoute {
   fallback_agent: string | null;
   /** That agent's name, for display. Absent on servers that predate it. */
   fallback_agent_name?: string | null;
+  /**
+   * The room's assigned agent (`!assign-agent`), which gets every message
+   * first: auto-route can't be turned on while it is set. Absent on servers
+   * that predate it.
+   */
+  assigned_agent?: string | null;
+  assigned_agent_name?: string | null;
 }
 
 export interface SetRoomAutoRouteInput {
@@ -460,17 +467,12 @@ export function errorText(detail: unknown, fallback: string): string {
   return fallback;
 }
 
-/** Fired when Switch refuses a request for the session it came with, so the
- * dashboard reads its session again rather than showing the refusal page by
- * page: the session may have ended (signed out elsewhere, or its sign-in at
- * the identity provider ended). Not fired by reading the session itself,
- * which answers signed out with its own 401. */
-export const SESSION_REFUSED_EVENT = "switch:session-refused";
-
-function noteRefusedSession(path: string, status: number): void {
-  if (status === 401 && path !== "/auth/session" && path !== "/auth/login") {
-    window.dispatchEvent(new Event(SESSION_REFUSED_EVENT));
-  }
+/** The error a failed answer carries: its status, and the server's reason
+ * as text. */
+async function failure(res: Response): Promise<ApiError> {
+  const payload = await res.json().catch(() => null);
+  const detail = payload?.detail ?? null;
+  return new ApiError(res.status, detail, errorText(detail, `${res.status} ${res.statusText}`));
 }
 
 async function jsonRequest<T>(
@@ -478,22 +480,12 @@ async function jsonRequest<T>(
   method: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await gatewayFetch(`${BASE}${path}`, {
     method,
-    credentials: "include",
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) {
-    noteRefusedSession(path, res.status);
-    const payload = await res.json().catch(() => null);
-    const detail = payload?.detail ?? null;
-    throw new ApiError(
-      res.status,
-      detail,
-      errorText(detail, `${res.status} ${res.statusText}`),
-    );
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as T;
 }
 
@@ -501,17 +493,8 @@ async function jsonRequest<T>(
 // `jsonRequest` would fail calling `.json()` on it, so this skips that parse
 // on success and only reads a body back on failure, where FastAPI puts one.
 async function noContentRequest(path: string, method: string): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, { method, credentials: "include" });
-  if (!res.ok) {
-    noteRefusedSession(path, res.status);
-    const payload = await res.json().catch(() => null);
-    const detail = payload?.detail ?? null;
-    throw new ApiError(
-      res.status,
-      detail,
-      errorText(detail, `${res.status} ${res.statusText}`),
-    );
-  }
+  const res = await gatewayFetch(`${BASE}${path}`, { method });
+  if (!res.ok) throw await failure(res);
 }
 
 export async function fetchRooms(
@@ -573,16 +556,16 @@ export interface ExportYamlToggles {
 export async function createRoomFromYaml(
   yamlText: string,
 ): Promise<ProvisionResult> {
-  const res = await fetch(`${BASE}/rooms/from-yaml`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/x-yaml" },
-    body: yamlText,
-  });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  const res = await gatewayFetch(
+    `${BASE}/rooms/from-yaml`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-yaml" },
+      body: yamlText,
+    },
+    LONG_REQUEST_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as ProvisionResult;
 }
 
@@ -595,14 +578,11 @@ export async function exportRoomYaml(
     if (toggles[key] === false) params.set(key, "false");
   }
   const q = params.toString();
-  const res = await fetch(
+  const res = await gatewayFetch(
     `${BASE}/rooms/${roomId}/yaml${q ? `?${q}` : ""}`,
     { credentials: "include" },
   );
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
   return res.text();
 }
 
@@ -733,13 +713,22 @@ export async function setRoomAutoRoute(
   return jsonRequest<RoomAutoRoute>(`/rooms/${roomId}/auto-route`, "PUT", input);
 }
 
+// One request per `ROOM_USERS_MAX` people, one after another; the room as
+// the last one left it.
 export async function addRoomUsers(
   roomId: string,
   userNames: string[],
 ): Promise<RoomDetail> {
-  return jsonRequest<RoomDetail>(`/rooms/${roomId}/users`, "POST", {
-    user_names: userNames,
+  const [first = [], ...rest] = inChunks(userNames, ROOM_USERS_MAX);
+  let room = await jsonRequest<RoomDetail>(`/rooms/${roomId}/users`, "POST", {
+    user_names: first,
   });
+  for (const chunk of rest) {
+    room = await jsonRequest<RoomDetail>(`/rooms/${roomId}/users`, "POST", {
+      user_names: chunk,
+    });
+  }
+  return room;
 }
 
 /** Delete the room. Its platform channel is kept unless `retireChannel`
@@ -751,17 +740,32 @@ export async function deleteRoom(
   return jsonRequest(`/rooms/${roomId}?retire_channel=${retireChannel}`, "DELETE");
 }
 
+/** A room a bulk action left alone, and why, in the words the action on
+ * that one room would be refused with. */
+export interface BulkRoomRefusal {
+  room_id: string;
+  reason: string;
+}
+
 /** Archive or unarchive many rooms. The server skips, without failing, any
- * room the viewer may not change or that is gone, and says how many it did
- * change. */
+ * room the viewer may not change or that is gone, says how many it did
+ * change, and names each it skipped with the reason. */
+// One request per `BULK_ROOMS_MAX` rooms, one after another.
 export async function bulkArchiveRooms(
   roomIds: string[],
   archived: boolean,
-): Promise<{ updated: number }> {
-  return jsonRequest<{ updated: number }>("/rooms/bulk-archive", "POST", {
-    room_ids: roomIds,
-    archived,
-  });
+): Promise<{ updated: number; refused: BulkRoomRefusal[] }> {
+  const done = { updated: 0, refused: [] as BulkRoomRefusal[] };
+  for (const chunk of inChunks(roomIds, BULK_ROOMS_MAX)) {
+    const result = await jsonRequest<{ updated: number; refused: BulkRoomRefusal[] }>(
+      "/rooms/bulk-archive",
+      "POST",
+      { room_ids: chunk, archived },
+    );
+    done.updated += result.updated;
+    done.refused.push(...result.refused);
+  }
+  return done;
 }
 
 // ── Room groups ──────────────────────────────────────────────────────────────
@@ -809,26 +813,29 @@ export async function updateRoomGroup(
   return jsonRequest<RoomGroupDetail>(`/room-groups/${groupId}`, "PATCH", input);
 }
 
+// One request per `BULK_ROOMS_MAX` rooms, one after another.
 export async function assignRoomsToGroup(
   groupId: string,
   roomIds: string[],
 ): Promise<{ assigned: number }> {
-  return jsonRequest<{ assigned: number }>(
-    `/room-groups/${groupId}/rooms`,
-    "PUT",
-    { room_ids: roomIds },
-  );
+  let assigned = 0;
+  for (const chunk of inChunks(roomIds, BULK_ROOMS_MAX)) {
+    const result = await jsonRequest<{ assigned: number }>(
+      `/room-groups/${groupId}/rooms`,
+      "PUT",
+      { room_ids: chunk },
+    );
+    assigned += result.assigned;
+  }
+  return { assigned };
 }
 
 export async function deleteRoomGroup(groupId: string): Promise<void> {
-  const res = await fetch(`${BASE}/room-groups/${groupId}`, {
+  const res = await gatewayFetch(`${BASE}/room-groups/${groupId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 export async function setRoomGroup(
@@ -876,8 +883,12 @@ export async function fetchRoomAgentCandidates(
   roomId?: string,
 ): Promise<{ agent_ids: string[] | null }> {
   const query = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
-  const answer = await fetchJson<{ agent_ids: string[] }>(`/rooms/agent-candidates${query}`);
-  return { agent_ids: answer?.agent_ids ?? null };
+  try {
+    return await fetchJson<{ agent_ids: string[] }>(`/rooms/agent-candidates${query}`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return { agent_ids: null };
+    throw err;
+  }
 }
 
 /** Of `agents`, the ones a picker may offer given the candidates: all when unknown. */
@@ -971,17 +982,13 @@ export async function registerKnownAgent(
   description: string,
   options: Record<string, unknown> = {},
 ): Promise<RegisterResult> {
-  const res = await fetch(`${BASE}/agents/register`, {
+  const res = await gatewayFetch(`${BASE}/agents/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ agent_type: agentType, name, description, options }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as RegisterResult;
 }
 
@@ -989,17 +996,13 @@ export async function updateAgentOptions(
   agentId: string,
   options: Record<string, unknown>,
 ): Promise<AgentSummary> {
-  const res = await fetch(`${BASE}/agents/${agentId}/options`, {
+  const res = await gatewayFetch(`${BASE}/agents/${agentId}/options`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ options }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as AgentSummary;
 }
 
@@ -1007,17 +1010,13 @@ export async function registerOtherAgent(
   name: string,
   description: string,
 ): Promise<RegisterResult> {
-  const res = await fetch(`${BASE}/agents/register-other`, {
+  const res = await gatewayFetch(`${BASE}/agents/register-other`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ name, description }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as RegisterResult;
 }
 
@@ -1057,10 +1056,6 @@ export interface CreateApiKeyResult {
 /** Days until a new key stops working, or `"never"`. The server allows 1–365. */
 export type ApiKeyLifetime = number | "never";
 
-export async function fetchApiKeys(): Promise<ApiKeyDetail[] | null> {
-  return fetchJson<ApiKeyDetail[]>("/api-keys");
-}
-
 /** The caller's own keys. */
 export async function loadApiKeys(): Promise<ApiKeyDetail[]> {
   return jsonRequest<ApiKeyDetail[]>("/api-keys", "GET");
@@ -1075,27 +1070,21 @@ export async function createApiKey(
   label: string,
   expiresInDays: ApiKeyLifetime,
 ): Promise<CreateApiKeyResult> {
-  const res = await fetch(`${BASE}/api-keys`, {
+  const res = await gatewayFetch(`${BASE}/api-keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ label, expires_in_days: expiresInDays }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as CreateApiKeyResult;
 }
 
 export async function revealApiKey(keyId: string): Promise<string> {
-  const res = await fetch(`${BASE}/api-keys/${keyId}/reveal`, {
+  const res = await gatewayFetch(`${BASE}/api-keys/${keyId}/reveal`, {
     credentials: "include",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
   const data = (await res.json()) as { key: string };
   return data.key;
 }
@@ -1166,7 +1155,7 @@ export async function createBridge(
   // that doesn't support channel creation returns 400.
   channelCreationEnabled?: boolean,
 ): Promise<BridgeDetail> {
-  const res = await fetch(`${BASE}/collaborations`, {
+  const res = await gatewayFetch(`${BASE}/collaborations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -1177,11 +1166,7 @@ export async function createBridge(
       channel_creation_enabled: channelCreationEnabled,
     }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as BridgeDetail;
 }
 
@@ -1517,13 +1502,10 @@ export interface DownloadedFile {
 // panel can keep the admin on the page and report a failure in place, the
 // same way `exportRoomYaml` does for a text download.
 export async function fetchTeamsAppPackage(bridgeId: string): Promise<DownloadedFile> {
-  const res = await fetch(`${BASE}/collaborations/${bridgeId}/teams-package`, {
+  const res = await gatewayFetch(`${BASE}/collaborations/${bridgeId}/teams-package`, {
     credentials: "include",
   });
-  if (!res.ok) {
-    const payload = await res.json().catch(() => null);
-    throw new Error(errorText(payload?.detail, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
   const match = res.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/);
   return { blob: await res.blob(), filename: match?.[1] ?? "switch-teams-app.zip" };
 }
@@ -1574,21 +1556,19 @@ export type InstallablePlatforms = string[] & {
   claimable?: ClaimablePlatform[];
 };
 
-export async function fetchInstallablePlatforms(): Promise<InstallablePlatforms | null> {
+export async function fetchInstallablePlatforms(): Promise<InstallablePlatforms> {
   const res = await fetchJson<{
     platforms: string[];
     claimable?: ClaimablePlatform[];
   }>("/messaging-apps");
-  return res === null
-    ? null
-    : Object.assign([...res.platforms], { claimable: res.claimable ?? [] });
+  return Object.assign([...res.platforms], { claimable: res.claimable ?? [] });
 }
 
-export async function fetchInstalledApps(): Promise<InstalledApp[] | null> {
+export async function fetchInstalledApps(): Promise<InstalledApp[]> {
   const res = await fetchJson<{ installs: InstalledApp[] }>(
     "/messaging-apps/installs",
   );
-  return res === null ? null : res.installs;
+  return res.installs;
 }
 
 // Answers with a URL rather than redirecting, because the install has to begin
@@ -1635,12 +1615,6 @@ export interface UserInfo {
   created_at: string;
 }
 
-/** A user on the operator's list. */
-export interface ListedUser extends UserInfo {
-  // Deleting the account: never your own, nor another operator's.
-  can_delete: boolean;
-}
-
 export async function login(email: string, password: string): Promise<UserInfo> {
   return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
@@ -1673,18 +1647,13 @@ export async function logout(): Promise<SignedOut> {
 // sign-ins elsewhere could not be ended at WorkOS; this one is signed out all
 // the same, so it is answered, not thrown.
 export async function signOutEverywhere(): Promise<SignedOut> {
-  const path = "/auth/sessions/revoke";
-  const res = await fetch(`${BASE}${path}`, { method: "POST", credentials: "include" });
-  const answer = ((await res.json().catch(() => null)) ?? {}) as SignOutAnswer;
+  const res = await gatewayFetch(`${BASE}/auth/sessions/revoke`, { method: "POST" });
   if (res.status === 502) {
+    const answer = ((await res.json().catch(() => null)) ?? {}) as SignOutAnswer;
     return signedOut(answer, errorText(answer.detail ?? null, "Some sign-ins could not be ended."));
   }
-  if (!res.ok) {
-    noteRefusedSession(path, res.status);
-    const detail = answer.detail ?? null;
-    throw new ApiError(res.status, detail, errorText(detail, `${res.status} ${res.statusText}`));
-  }
-  return signedOut(answer, null);
+  if (!res.ok) throw await failure(res);
+  return signedOut((await res.json()) as SignOutAnswer, null);
 }
 
 /** The signed-in account, as Your account shows it. */
@@ -1794,6 +1763,14 @@ export interface Session {
   can_add_workspace: boolean;
   // Whether an invitation naming an e-mail is sent there by this server.
   invite_email_enabled: boolean;
+  // Whether the caller may set up the deployment's connector apps: the
+  // operator, and the admins of its only organization while it has one.
+  can_manage_connector_apps: boolean;
+  // Whether those apps are set up here in the dashboard, by the admins of
+  // the deployment's organization, which has exactly one; with several, the
+  // operator sets them up with the switch-connector-apps command. Absent
+  // from a server from before it said.
+  connector_apps_in_dashboard?: boolean;
 }
 
 /** The signed-in session, or null when nobody is signed in. Any other
@@ -1990,12 +1967,15 @@ export interface OrganizationMember {
   // The account agents added with the shared registration token are owned
   // by: not a person, and never made an admin.
   service_account: boolean;
-  /** What you may do with them, as the server decides it: never on your own
-   * row; making them Org Admin not where the members come from account
-   * settings Switch cannot change; removing them as an Org Admin only. */
+  /** What you may do with them, as the server decides it: making them Org
+   * Admin not where the members come from account settings Switch cannot
+   * change; removing them as an Org Admin only; neither for the
+   * organization's only Org Admin, which the `_blocked_reason` says. */
   can_change_role: boolean;
+  change_role_blocked_reason: string | null;
   can_grant_org_admin: boolean;
   can_remove: boolean;
+  remove_blocked_reason: string | null;
 }
 
 export interface OrganizationAuditEvent {
@@ -2029,15 +2009,6 @@ export interface CurrentOrganization {
   // operator while it has none.
   administers: boolean;
   can_manage_members: boolean;
-}
-
-export interface OperatorWorkspace {
-  id: string;
-  slug: string;
-  name: string;
-  organization_id: string | null;
-  organization_name: string | null;
-  archived_at: string | null;
 }
 
 export async function fetchCurrentOrganization(): Promise<CurrentOrganization> {
@@ -2332,9 +2303,21 @@ export async function fetchOrganizationAuditEvents(
   );
 }
 
-/** Every workspace on the server; the platform operator only. */
-export async function fetchOperatorWorkspaces(): Promise<OperatorWorkspace[]> {
-  return jsonRequest<OperatorWorkspace[]>("/operator/workspaces", "GET");
+/** An organization you're still a member of, though in none of its
+ * workspaces: someone removed from their last one is left in it. */
+export interface OrganizationWithoutWorkspace {
+  id: string;
+  name: string;
+}
+
+export async function fetchOrganizationsWithoutWorkspace(): Promise<
+  OrganizationWithoutWorkspace[]
+> {
+  return jsonRequest<OrganizationWithoutWorkspace[]>("/organizations/without-workspace", "GET");
+}
+
+export async function leaveOrganization(organizationId: string): Promise<void> {
+  await jsonRequest(`/organizations/${encodeURIComponent(organizationId)}/leave`, "POST");
 }
 
 export interface Invitation {
@@ -2454,7 +2437,7 @@ export interface AskPlatformResult {
   remaining: number;
 }
 
-/** The most rooms one apply changes. */
+/** The most rooms one apply changes; the server refuses more. */
 export const MAKE_PRIVATE_MAX = 200;
 
 /** How many rooms the review page would list. One query; no platform. */
@@ -2488,15 +2471,22 @@ export async function previewPrivateChannelRooms(
   return result.rooms;
 }
 
+// One request per `MAKE_PRIVATE_MAX` rooms, one after another.
 export async function makeRoomsPrivate(
   tenantId: string,
   roomIds: string[],
 ): Promise<MakeRoomsPrivateResult> {
-  return jsonRequest<MakeRoomsPrivateResult>(
-    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
-    "POST",
-    { room_ids: roomIds },
-  );
+  const done: MakeRoomsPrivateResult = { changed: [], skipped: [] };
+  for (const chunk of inChunks(roomIds, MAKE_PRIVATE_MAX)) {
+    const result = await jsonRequest<MakeRoomsPrivateResult>(
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
+      "POST",
+      { room_ids: chunk },
+    );
+    done.changed.push(...result.changed);
+    done.skipped.push(...result.skipped);
+  }
+  return done;
 }
 
 // ── Erasing a person ───────────────────────────────────────────────────────
@@ -2580,8 +2570,26 @@ export async function revokeInvitation(
   );
 }
 
-export async function acceptInvitation(token: string): Promise<TenantMembership> {
-  return jsonRequest<TenantMembership>("/invitations/accept", "POST", { token });
+/** `already_member`: they were in the workspace already at the invitation's
+ * role or above, so nothing changed and the invitation wasn't spent. */
+export interface InvitationAcceptResult extends TenantMembership {
+  already_member: boolean;
+}
+
+export async function acceptInvitation(token: string): Promise<InvitationAcceptResult> {
+  return jsonRequest<InvitationAcceptResult>("/invitations/accept", "POST", { token });
+}
+
+/** What an invitation is to, and nothing else. */
+export interface InvitationPreview {
+  workspace_name: string;
+  organization_name: string | null;
+  role: TenantRole;
+}
+
+/** Refused exactly as accepting it now would be; changes nothing. */
+export async function previewInvitation(token: string): Promise<InvitationPreview> {
+  return jsonRequest<InvitationPreview>("/invitations/preview", "POST", { token });
 }
 
 // Unauthenticated: tells the login page which methods to offer.
@@ -2636,35 +2644,6 @@ export async function changePassword(
     current_password: currentPassword,
     new_password: newPassword,
   });
-}
-
-export async function fetchUsers(): Promise<ListedUser[]> {
-  return jsonRequest<ListedUser[]>("/users", "GET");
-}
-
-// The roles `POST /users` accepts; `admin` makes a deployment operator.
-export type UserRole = "user" | "admin";
-
-export async function createUser(
-  name: string,
-  email: string,
-  password: string,
-  role: UserRole,
-): Promise<UserInfo> {
-  return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
-}
-
-// Deployment operator only. Ends every session the account holds, as the
-// person's own "Sign out of all devices" would; recorded in the audit log.
-export async function endUserSessions(userId: string): Promise<void> {
-  await jsonRequest(`/users/${encodeURIComponent(userId)}/sessions/revoke`, "POST");
-}
-
-// Deployment operator only. Deletes the whole account, as the person
-// deleting it themselves would; the server refuses its own administrator
-// account and the caller's own.
-export async function deleteUser(userId: string): Promise<void> {
-  await jsonRequest(`/users/${encodeURIComponent(userId)}`, "DELETE");
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────
@@ -2748,10 +2727,19 @@ export interface ReferenceDetail {
   // it, and handing it to someone else.
   can_edit: boolean;
   can_manage: boolean;
-  // Whether the viewer may open its page. A package's or a room's list names
-  // a private item to everyone who may read the package or room.
+  // Whether what is in it came with it, and so whether its page opens for
+  // the viewer. Always true here: only a package's list withholds anything
+  // (`PackageReference`).
   can_read: boolean;
 }
+
+/** A reference as a package lists it. Someone else's private item in a
+ * package, which its owner cannot share, comes with `can_read` false and
+ * what is in it null. */
+export type PackageReference = Omit<ReferenceDetail, "instructions" | "value"> & {
+  instructions: string | null;
+  value: Record<string, unknown> | null;
+};
 
 export interface ReferenceCreateInput {
   read_visibility: "public" | "private";
@@ -2805,6 +2793,11 @@ export interface DocumentSummary {
 export interface DocumentDetail extends DocumentSummary {
   content: string;
 }
+
+/** A document as a package lists it, withheld as `PackageReference` is. */
+export type PackageDocument = Omit<DocumentSummary, "instructions"> & {
+  instructions: string | null;
+};
 
 // Whether the viewer may remove a document from a room it is in: delete it if
 // it is room-scoped (its creator, the room's owner, a workspace admin), unlink
@@ -2966,14 +2959,11 @@ export async function detachReferenceFromRoom(
   roomId: string,
   referenceId: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/rooms/${roomId}/references/${referenceId}`, {
+  const res = await gatewayFetch(`${BASE}/rooms/${roomId}/references/${referenceId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 // ── Linked rooms ─────────────────────────────────────────────────────────────
@@ -3082,14 +3072,11 @@ export async function detachLinkedRoom(
   roomId: string,
   targetRoomId: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await gatewayFetch(
     `${BASE}/rooms/${roomId}/linked-rooms/${targetRoomId}`,
     { method: "DELETE", credentials: "include" },
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 export async function fetchDocuments(): Promise<DocumentSummary[] | null> {
@@ -3160,14 +3147,11 @@ export async function detachDocumentFromRoom(
   roomId: string,
   documentId: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/rooms/${roomId}/documents/${documentId}`, {
+  const res = await gatewayFetch(`${BASE}/rooms/${roomId}/documents/${documentId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 // ── Packages ─────────────────────────────────────────────────────────────────
@@ -3267,36 +3251,33 @@ export async function loadPackageRooms(id: string): Promise<ResourceRoom[]> {
 
 export async function fetchPackageReferences(
   id: string,
-): Promise<ReferenceDetail[] | null> {
-  return fetchJson<ReferenceDetail[]>(`/packages/${id}/references`);
+): Promise<PackageReference[] | null> {
+  return fetchJson<PackageReference[]>(`/packages/${id}/references`);
 }
 
 export async function fetchPackageDocuments(
   id: string,
-): Promise<DocumentSummary[] | null> {
-  return fetchJson<DocumentSummary[]>(`/packages/${id}/documents`);
+): Promise<PackageDocument[] | null> {
+  return fetchJson<PackageDocument[]>(`/packages/${id}/documents`);
 }
 
-export async function loadPackageReferences(id: string): Promise<ReferenceDetail[]> {
-  return jsonRequest<ReferenceDetail[]>(`/packages/${id}/references`, "GET");
+export async function loadPackageReferences(id: string): Promise<PackageReference[]> {
+  return jsonRequest<PackageReference[]>(`/packages/${id}/references`, "GET");
 }
 
-export async function loadPackageDocuments(id: string): Promise<DocumentSummary[]> {
-  return jsonRequest<DocumentSummary[]>(`/packages/${id}/documents`, "GET");
+export async function loadPackageDocuments(id: string): Promise<PackageDocument[]> {
+  return jsonRequest<PackageDocument[]>(`/packages/${id}/documents`, "GET");
 }
 
 export async function addReferenceToPackage(
   packageId: string,
   referenceId: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await gatewayFetch(
     `${BASE}/packages/${packageId}/references/${referenceId}`,
     { method: "POST", credentials: "include" },
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 export async function removeReferenceFromPackage(
@@ -3313,14 +3294,11 @@ export async function addDocumentToPackage(
   packageId: string,
   documentId: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await gatewayFetch(
     `${BASE}/packages/${packageId}/documents/${documentId}`,
     { method: "POST", credentials: "include" },
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 export async function removeDocumentFromPackage(
@@ -3353,17 +3331,25 @@ export async function detachPackageFromRoom(
   roomId: string,
   packageId: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/rooms/${roomId}/packages/${packageId}`, {
+  const res = await gatewayFetch(`${BASE}/rooms/${roomId}/packages/${packageId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 // ── Templates ────────────────────────────────────────────────────────────────
+
+/** What a template is for, from the server's fixed list. */
+export type TemplateUseCase =
+  | "engineering"
+  | "product"
+  | "support"
+  | "research"
+  | "ops"
+  | "personal"
+  | "sales"
+  | "marketing";
 
 export interface TemplateSummary {
   id: string;
@@ -3375,6 +3361,12 @@ export interface TemplateSummary {
   name: string;
   description: string;
   kind: string;
+  /** Null when nobody said. */
+  use_case: TemplateUseCase | null;
+  /** How many agents and rooms its document describes, conditional ones
+   * included; null for a document the server could not read. */
+  agent_count: number | null;
+  room_count: number | null;
   read_visibility: "public" | "private";
   write_visibility: "public" | "private";
   /** What the signed-in user may do with it, as the server judges it. */
@@ -3384,8 +3376,9 @@ export interface TemplateSummary {
    * Console sets up itself); null when nothing stands in the way. */
   run_blocked_reason: string | null;
   /** How many times it has been run in this workspace, since runs were
-   * first counted. */
+   * first counted, and when last (ISO 8601); null if never. */
   run_count: number;
+  last_run_at: string | null;
   version: number;
   size_bytes: number;
   created_at: string;
@@ -3401,6 +3394,7 @@ export interface TemplateCreateInput {
   description: string;
   kind: string;
   content: string;
+  use_case: TemplateUseCase | null;
   read_visibility?: "public" | "private";
   write_visibility?: "public" | "private";
 }
@@ -3410,6 +3404,8 @@ export interface TemplateUpdateInput {
   description?: string;
   kind?: string;
   content?: string;
+  /** Null clears it; left out, it stays as it is. */
+  use_case?: TemplateUseCase | null;
   read_visibility?: "public" | "private";
   write_visibility?: "public" | "private";
 }
@@ -3464,13 +3460,8 @@ export async function deleteTemplate(id: string): Promise<TemplateDeleteResult> 
 
 /** The stored document itself, exactly as uploaded — for download and copy. */
 export async function fetchTemplateContent(id: string): Promise<string> {
-  const res = await fetch(`${BASE}/templates/${id}/content`, {
-    credentials: "include",
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  const res = await gatewayFetch(`${BASE}/templates/${id}/content`);
+  if (!res.ok) throw await failure(res);
   // Decoded without BOM stripping: `text()` drops a leading byte order mark,
   // and the download promises the stored bytes.
   return new TextDecoder("utf-8", { ignoreBOM: true }).decode(
@@ -3641,14 +3632,11 @@ export async function updateBudget(
 }
 
 export async function deleteBudget(tenantId: string, budgetId: string): Promise<void> {
-  const res = await fetch(`${BASE}/tenants/${tenantId}/budgets/${budgetId}`, {
+  const res = await gatewayFetch(`${BASE}/tenants/${tenantId}/budgets/${budgetId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(errorText(detail?.detail, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 // ── Service connections and grants ───────────────────────────────────────────
@@ -4058,7 +4046,7 @@ export async function saveConnectorApp(
   service: string,
   input: SaveConnectorAppInput,
 ): Promise<SavedConnectorApp> {
-  const res = await fetch(`${BASE}${CONNECTOR_APPS_PATH[scope]}/${service}`, {
+  const res = await gatewayFetch(`${BASE}${CONNECTOR_APPS_PATH[scope]}/${service}`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },

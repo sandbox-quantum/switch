@@ -45,8 +45,7 @@ just e2e-fast -- -t mattermost      # arguments after -- go to vitest
 `just e2e-browser` does the same for the browser lane. It also builds the
 gateway UI from `gateway/` and serves it on :4173 with `vite preview`, whose
 proxy sends `/gateway` requests to the server as nginx does in a deployment.
-On first run Playwright installs its Chromium. `just e2e-browser-v2` runs the
-same lane with the dashboard's new layout turned on (`gateway_v2`).
+On first run Playwright installs its Chromium.
 
 Its log, JUnit report and the stack's per-run secrets go to `build/e2e/ephemeral/`.
 The repository's own `.env` is never read or written.
@@ -148,6 +147,7 @@ passed or not. A teardown that leaves something behind fails the scenario.
 | `mattermost-roundtrip` | A room on the Mattermost bridge: an addressed post from the human reaches the agent, and the agent's reply appears as its bot. | Mattermost |
 | `agent-identity` | The human links their chat account by posting the code the gateway issued, and a replaced code confirms nothing; renaming an agent from the gateway and with `!rename-agent` renames its Mattermost bot in place, and mentions follow the new name; `!delete-agent`, confirmed, deletes it. | Mattermost |
 | `room-group-paths` | The same subgroup name under two parents: a bare name both share is refused naming each path, the path picks one, and a second group of that name under one parent is refused whatever its case. | — |
+| `agent-rooms` | Two agents in a shared room, one also in its own: one request for both agents' rooms lists each once, in the order asked, with those rooms as its own detail lists them, and leaves out an id with no agent. | — |
 | `attachment-names` | A file whose name is not latin-1 is posted, listed by `read_context` and downloaded under its own name (`filename*` in `Content-Disposition`). | — |
 | `client-mistakes` | An outsider reading a room gets a 403, and a history timestamp that is not ISO 8601 a 400 naming the parameter; never a 500. | — |
 | `room-capture` | A room built from a document keeps the package it names, and the room captured back as a document builds a second room with the same package; both rooms delete. | — |
@@ -176,21 +176,18 @@ saved under `screenshots/` in the output directory.
 | `gateway-room-from-list` | A room made over the API is listed, and its page opens from the list. |
 | `gateway-create-room` | The new-room form makes a room with an agent and no bridge, and opens it; the server has it as asked. |
 | `gateway-sign-out` | Signing out returns to the login form, and the app stays there. |
-| `role-matrix-org-admin`, `role-matrix-workspace-admin`, `role-matrix-member`, `role-matrix-operator` | A real account in the role signs in and is shown what the role matrix says: the rail, each settings menu, every page and settings area opened by URL (the page, its "isn't built yet" slot, or the no-access page), and every redirect followed to where it lands. Pages that open one thing get one the account owns, and must show its name. |
+| `role-matrix-org-admin`, `role-matrix-workspace-admin`, `role-matrix-member`, `role-matrix-operator` | A real account in the role signs in and is shown what the role matrix says: the rail, each settings menu, every page and settings area opened by URL (the page, or the no-access page), and every redirect followed to where it lands. Pages that open one thing get one the account owns, and must show its name. |
 | `role-matrix-two-workspaces` | An admin of one workspace and a member of another in the same organization switches between them with the app's switcher, and each shows the view of the role held there. |
 | `role-matrix-two-organizations` | An organization admin who is a member in another organization: the switcher groups their workspaces by organization, the organization's reach makes them an admin of a workspace they are no member of, and the other organization's workspace shows them a member's view. |
 
 None runs against `prod`: a page may write on load, and the browser goes
 around the clients' read-only guard.
 
-The lane checks whichever layout of the dashboard the server serves:
-`gateway_v2` on is the new layout, off is today's. `just e2e-browser` runs it
-on today's and `just e2e-browser-v2` on the new one; CI runs both. Signing in
-lands on the layout's start page, the rooms list or Overview.
+Signing in lands on Home.
 
 ### The role matrix
 
-Who may open each page, role by role and layout by layout, is written down in
+Who may open each page, role by role, is written down in
 `gateway/src/routes/roleMatrix.ts`, from the gateway refactor's target matrix
 rather than from the code. Two tests hold the dashboard to it: the gateway's
 own `roleMatrix.test.ts` asks the route table with each role's capabilities on
@@ -203,13 +200,14 @@ on the UI.
   workspace admin and a member, each brought into its first workspace by an
   invitation link; and the platform operator, the harness's own gateway admin,
   entered into that workspace with no role in the organization. Each scenario
-  makes its own, and every name goes through the run's naming helper.
+  makes its own, signing every account but the operator's up (see "Throwaway
+  accounts"), and every name goes through the run's naming helper.
 - **The flags.** Every row assumes agent management, connectors and the
   organization's connector apps are on, so every page is there to open. The
   stack script turns them on for the browser lane, and the scenarios refuse to
   run without them.
-- **Only on `ephemeral`.** Accounts and organizations cannot be removed
-  afterwards. What the accounts own is removed; the operator's choice of
+- **Only on `ephemeral`.** Accounts and organizations are left behind.
+  What the accounts own is removed; the operator's choice of
   workspace for its next sign-in is put back, since the other scenarios sign
   in as the same account.
 - **Adding or building a page.** Add or update its row in `roleMatrix.ts` in
@@ -239,6 +237,24 @@ With `SWITCH_E2E_ENVIRONMENT=prod` the clients refuse every request but reads
 and logging in before it leaves the process, so a wrong base URL fails a test
 rather than writing to production.
 
+### Throwaway accounts
+
+A scenario that needs people besides the harness admin makes them the way
+people make theirs, over HTTP: it signs them up (`POST /gateway/auth/signup`),
+which puts them in the server's default workspace as plain members, and
+brings them into other workspaces with invitation links. Where a scenario
+deletes an account, the account deletes itself (`DELETE /gateway/auth/me`).
+The harness never uses the operator's account commands (`switch-accounts`,
+`switch-orgs`), which run where switch-core runs, so it works against stacks
+it cannot shell into.
+
+The server must allow sign-up: `GATEWAY_SIGNUP_ENABLED=true`, with password
+sign-in on, no gateway OIDC sign-in and `GATEWAY_SIGNUP_MODE=default_tenant`,
+and a `GATEWAY_SIGNUP_MAX_PER_HOUR` above what a run signs up, since the cap
+counts every account created. The ephemeral stack starts its server that way.
+Against a server that refuses sign-up, a scenario that needs an account fails
+saying so. Every such scenario runs only on `ephemeral`.
+
 ## Configuration
 
 Values come from the process environment, falling back to a **gitignored `.env`**
@@ -261,7 +277,6 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `SWITCH_E2E_SERVER_LOG` | no | The server's log, written with `LOG_FORMAT=json`. When set, a scenario fails if the server logged an error while it ran. The stack script sets it. |
 | `SWITCH_E2E_SECRETS_FILE` | no | File to append each credential the server issues during the run to (agent keys, gateway sessions), for CI's scan of the output. The stack script sets it. |
 | `SWITCH_GATEWAY_UI_URL` | browser and explore lanes | Where the gateway UI is served. Its `/gateway` requests must reach `SWITCH_API_URL`. `just e2e-browser` and `just e2e-explore` set it. |
-| `SWITCH_E2E_GATEWAY_LAYOUT` | no | Read by the stack script only: `v2` starts the browser lane's server with the dashboard's new layout (`gateway_v2`), `current` (the default) without it. The lane itself reads the layout from the server. |
 | `SWITCH_E2E_OUTPUT_DIR` | explore lane | Where the browser lane saves screenshots of failed pages, and the explore lane its trace (in `explore/`). The stack script sets it. |
 | `SWITCH_E2E_EXPLORE_TIME_LIMIT` | no | How long the explore lane explores, e.g. `90s`, `5m` (the default), `1h`. Read only by that lane. |
 | `SWITCH_E2E_DRIVER_MODEL` | agentic lane | Exact model id that plays the human, e.g. `claude-sonnet-5`. |
@@ -289,13 +304,12 @@ the agent it registers. There are two ways to provide one.
 The unattended way, and the one CI will use. `just e2e-provider` does
 everything `just e2e-fast` does, and also:
 
-1. turns on `agent_management` and sets `CONTROLLER_TOKEN_SECRET` for the stack;
-2. builds `console/packages` and starts the agent controller
+1. builds `console/packages` and starts the agent controller
    (`console/packages/agent-controller`) on the host. Its credential comes from
    `POST /gateway/management/controllers` and goes in on stdin, never to disk.
    The lane does not start until the controller has connected to Switch; if it
    exits or never connects, the run stops there and prints the controller log;
-3. runs the provider lane with `SWITCH_E2E_CONTROLLER_ID` set. Setup creates the
+2. runs the provider lane with `SWITCH_E2E_CONTROLLER_ID` set. Setup creates the
    agent on the controller as the admin (`POST /gateway/management/agents`,
    `auto_approve: false`), retrying only while the server answers that the
    controller is offline or has not reported the provider installed and signed
@@ -570,8 +584,9 @@ on every PR with no server.
     inconclusive. Reads go first, then writes, then deletes, so a write or
     delete that leaked cannot turn the probes after it into 404s. The prober
     is not the harness admin: a deployment admin may cross workspaces by
-    design. The room and the agent are removed afterwards, but workspaces
-    and users cannot be deleted, so this runs only on `ephemeral`.
+    design. The owner of the second workspace and the prober both sign up.
+    The room and the agent are removed afterwards, but the workspace and the
+    two accounts are left behind, so this runs only on `ephemeral`.
 
 ## In CI
 
@@ -582,10 +597,10 @@ hand.
 | When | Lane | Environment | Required check |
 | --- | --- | --- | --- |
 | Every PR, and every push to main (`pr-ci.yml`) | fast | ephemeral | yes |
-| PRs that touch the gateway, the server or the harness, and every push to main (`pr-ci.yml`) | browser, in both layouts | ephemeral | not yet |
+| PRs that touch the gateway, the server or the harness, and every push to main (`pr-ci.yml`) | browser | ephemeral | not yet |
 | After a merge to main (`e2e-scheduled.yml`) | provider | ephemeral | no |
 | Nightly (`e2e-scheduled.yml`) | provider | ephemeral | no |
-| A release tag, candidates included (`e2e-scheduled.yml`) | fast; provider; agentic; browser, in both layouts | ephemeral | no |
+| A release tag, candidates included (`e2e-scheduled.yml`) | fast; provider; agentic; browser | ephemeral | no |
 | By hand (`e2e.yml`, dispatch) | any, including browser and explore | ephemeral | no |
 
 - **Secrets.** An ephemeral fast run generates every secret it uses on the

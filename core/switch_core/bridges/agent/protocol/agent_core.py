@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 
 from switch_core import room_admins, room_policy
 from switch_core.addressing import (
@@ -55,6 +55,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     assemble_agent_detail,
     describe_addressing,
     list_agent_summaries,
+    shown_to,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.message_events import removed_by
@@ -130,6 +131,7 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_schedule_store import RoomScheduleStore
+from switch_core.db.stores.room_store import visible_to_agent
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
@@ -439,7 +441,7 @@ class AgentCore:
     install_service: MessagingInstallService | None = None
     # Told (tenant_id, room_id) for each room a deleted agent was in, after it
     # is gone, so whatever follows rooms' agents can catch up at once.
-    _room_agents_listener: Callable[[str, str], Awaitable[None]] | None = None
+    _room_agents_listener: Callable[[str, list[str]], Awaitable[None]] | None = None
     # Told (tenant_id, agent_id) after an agent's icon or display name changes,
     # so whatever shows them can refresh.
     _agent_profile_listener: Callable[[str, str], Awaitable[None]] | None = None
@@ -449,9 +451,6 @@ class AgentCore:
     # Raises the ChatError `_member_adder` would refuse that person with:
     # (tenant_id, user_id). Wired with it.
     _member_join_check: Callable[[str, str], Awaitable[None]] | None = None
-    # Whether people can be in internal rooms as Switch Console chats (the
-    # `group_chats` flag), told with `_member_adder`.
-    _group_chats_enabled: bool = False
 
     def __init__(
         self,
@@ -894,7 +893,7 @@ class AgentCore:
         self._agent_removal_listener = listener
 
     def set_room_agents_listener(
-        self, listener: Callable[[str, str], Awaitable[None]]
+        self, listener: Callable[[str, list[str]], Awaitable[None]]
     ) -> None:
         self._room_agents_listener = listener
 
@@ -902,12 +901,9 @@ class AgentCore:
         self,
         adder: Callable[[str, User, str, str], Awaitable[Room]],
         join_check: Callable[[str, str], Awaitable[None]],
-        *,
-        group_chats_enabled: bool,
     ) -> None:
         self._member_adder = adder
         self._member_join_check = join_check
-        self._group_chats_enabled = group_chats_enabled
 
     def set_agent_profile_listener(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -1518,8 +1514,7 @@ class AgentCore:
         # client told cannot open another.
         await self.connections.agent_deleted(resolved_id)
         if self._room_agents_listener is not None:
-            for room_id in room_ids:
-                await self._room_agents_listener(tenant_id, room_id)
+            await self._room_agents_listener(tenant_id, room_ids)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
         return AgentDeletionResult(bridge_failures=bridge_failures)
@@ -3185,7 +3180,7 @@ class AgentCore:
         only the fields an agent needs to make a choice — not the raw
         connection_config."""
         async with self.session_factory() as session:
-            bridges = await self.bridge_store.get_all(session)
+            bridges = await self.bridge_store.get_listed(session)
         return [
             {
                 "id": b.id,
@@ -3597,7 +3592,6 @@ class AgentCore:
 
         console_rooms = (
             ConsoleRooms(
-                enabled=self._group_chats_enabled,
                 add_member=self._member_adder,
                 require_can_join=self._member_join_check,
             )
@@ -3650,6 +3644,16 @@ class AgentCore:
                 details={"event": "agent_acting"},
             )
         return agent, agent.owner_id, owner_is_admin
+
+    async def _acting_principal(
+        self, session: AsyncSession, agent_id: str
+    ) -> Principal:
+        """Who the calling agent acts as: its owner, with the owner's standing
+        in this workspace (`_resolve_acting_identity`)."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        return Principal(owner_id, owner_is_admin)
 
     async def _require_room_action(
         self,
@@ -4596,10 +4600,16 @@ class AgentCore:
             include_archived=include_archived,
         )
 
-    async def _visible_room_ids(self, session: AsyncSession, agent_id: str) -> set[str]:
-        """Ids of `rooms_visible_to`, archived rooms included."""
-        rooms = await self.rooms_visible_to(session, agent_id, include_archived=True)
-        return {r.id for r in rooms}
+    async def _room_visibility(
+        self, session: AsyncSession, agent_id: str
+    ) -> ColumnElement[bool]:
+        """True for a `Room` row among `rooms_visible_to`, archived or not."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        return visible_to_agent(
+            owner_id, reader_is_admin=owner_is_admin, agent_id=agent_id
+        )
 
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.
@@ -4778,13 +4788,15 @@ class AgentCore:
                 owner_name=owner_name,
                 known_agent_type=known_agent_type,
             )
-        return [agent_facing_summary(s) for s in summaries]
+            viewer = await self._acting_principal(session, agent_id)
+        return [agent_facing_summary(shown_to(viewer, s)) for s in summaries]
 
     async def get_agent_detail(
         self, agent_id: str, target_agent_id: str
     ) -> AgentDetail:
         """Return full detail for `target_agent_id`, mirroring the gateway
-        GET /agents/{id}. Readable by any authenticated agent.
+        GET /agents/{id}, as its owner would be shown it (`shown_to`).
+        Readable by any authenticated agent.
 
         Raises ValueError if the target agent does not exist.
         """
@@ -4792,10 +4804,10 @@ class AgentCore:
             agent = await self.agent_store.get(session, target_agent_id)
             if agent is None:
                 raise ValueError(f"Agent not found: {target_agent_id}")
-            return await assemble_agent_detail(
+            detail = await assemble_agent_detail(
                 session,
                 agent=agent,
-                visible_room_ids=await self._visible_room_ids(session, agent_id),
+                visible=await self._room_visibility(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4803,6 +4815,7 @@ class AgentCore:
                 room_role_store=self.room_role_store,
                 connections=self.connections,
             )
+            return shown_to(await self._acting_principal(session, agent_id), detail)
 
     async def get_agent_addressing(
         self, agent_id: str, target_agent_id: str
@@ -4869,7 +4882,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,
-                visible_room_ids=await self._visible_room_ids(session, agent_id),
+                visible=await self._room_visibility(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -5223,12 +5236,15 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         return {"verdict": POST_INVOCATION_OK}
 
-    async def list_room_resources(self, room_id: str) -> dict[str, Any]:
+    async def list_room_resources(self, agent_id: str, room_id: str) -> dict[str, Any]:
         """Return the {reference_types, references, documents} payload for a
-        room. Used by ``connect_to_room`` and the ``list_references`` MCP tool.
-        Caller is responsible for verifying agent membership first."""
+        room, as the agent is given it, acting as its owner. Used by
+        ``connect_to_room`` and the ``list_references`` MCP tool. Caller is
+        responsible for verifying agent membership first."""
         async with self.session_factory() as session:
-            return await self.resource_service.list_room_resources(session, room_id)
+            return await self.resource_service.list_room_resources(
+                session, room_id, await self._acting_principal(session, agent_id)
+            )
 
     async def request_document_load(
         self,
@@ -5246,7 +5262,10 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
             entries = await self.resource_service.load_documents(
-                session, room_id, document_ids
+                session,
+                room_id,
+                document_ids,
+                await self._acting_principal(session, agent_id),
             )
         return [entry.model_dump(mode="json") for entry in entries]
 

@@ -44,7 +44,6 @@ import {
   shownSettingsTab,
 } from '../settings-tabs';
 import NotificationSettingsCard from './NotificationSettingsCard';
-import { OnboardingChecklistRow } from './OnboardingSettingsRow';
 import { ReplayOnboardingRow } from './ReplayOnboardingRow';
 import {
   AutoGenerateSessionNamesRow,
@@ -69,7 +68,6 @@ function PreferencesSettingsPage() {
       <AutoTrustWorktreesRow />
       <PreserveSessionNameCapitalizationRow />
       <NotificationSettingsCard />
-      <OnboardingChecklistRow />
       <ReplayOnboardingRow />
       <TelemetrySettingsCard />
     </div>

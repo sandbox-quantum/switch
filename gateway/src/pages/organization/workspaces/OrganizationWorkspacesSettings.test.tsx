@@ -37,6 +37,7 @@ vi.mock("../../../data/AuthContext", () => ({
       can_create_workspace: false,
       can_add_workspace: auth.canAddWorkspace,
       invite_email_enabled: false,
+      can_manage_connector_apps: false,
     },
     switchTo: auth.switchTo,
     recheck: auth.recheck,
@@ -86,8 +87,10 @@ function member(
     service_account: false,
     warning: null,
     can_change_role: true,
+    change_role_blocked_reason: null,
     can_grant_org_admin: false,
     can_remove: true,
+    remove_blocked_reason: null,
     workspaces: [],
     ...overrides,
   };
@@ -335,7 +338,7 @@ describe("OrganizationWorkspacesSettings", () => {
     expect(bobCheckbox.checked).toBe(false);
 
     fireEvent.click(bobCheckbox);
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save admins" }));
 
     await waitFor(() =>
       expect(
@@ -345,6 +348,32 @@ describe("OrganizationWorkspacesSettings", () => {
     const put = calls.find((c) => c.method === "PUT" && c.path === "/organizations/current/workspaces/w1/admins");
     expect(put?.body).toEqual({ user_ids: ["alice", "bob"] });
     expect(await screen.findByText("Acme now has 2 admins.")).toBeTruthy();
+  });
+
+  it("doesn't call a workspace empty that org admins reach, when nobody there can be picked", async () => {
+    answerFetch({
+      "GET /organizations/current": [200, org()],
+      "GET /organizations/current/workspaces": [200, [workspace({ id: "w2", name: "Second", users: 1, admins: [] })]],
+      "GET /organizations/current/members": [
+        200,
+        [
+          member({ user_id: "olga", name: "Olga", role: "org_admin", workspaces: [] }),
+          member({ user_id: "alice", name: "Alice", workspaces: [{ id: "w1", name: "Acme", role: "admin", archived: false }] }),
+        ],
+      ],
+    });
+
+    render(<OrganizationWorkspacesSettings />);
+    await screen.findByText("Second");
+
+    fireEvent.click(within(openMenu("Second")).getByText("Manage admins"));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByText(
+        "Second has no members of its own yet; org admins reach it through the organization. Invite people to it from Organization settings › Users, then come back to pick an admin.",
+      ),
+    ).toBeTruthy();
+    expect(within(dialog).queryByText(/Nobody is in Second/)).toBeNull();
   });
 
   it("refuses a duplicate workspace name before asking, and sends the trimmed name otherwise", async () => {

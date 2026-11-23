@@ -34,8 +34,10 @@ function member(
     warning: null,
     service_account: false,
     can_change_role: true,
+    change_role_blocked_reason: null,
     can_grant_org_admin: true,
     can_remove: true,
+    remove_blocked_reason: null,
     workspaces: [],
     ...overrides,
   };
@@ -90,6 +92,7 @@ function signedIn() {
       can_create_workspace: true,
       can_add_workspace: true,
       invite_email_enabled: false,
+      can_manage_connector_apps: false,
     },
     refresh: vi.fn(async () => {}),
   } as unknown as ReturnType<typeof useAuth>);
@@ -179,6 +182,50 @@ describe("OrganizationUsersSettings", () => {
     ]);
   });
 
+  it("tells the only org admin to make someone else one first, not to step down", async () => {
+    const reason = "This is the organization's only org admin. Make someone else an org admin first.";
+    const onlyMe = {
+      ...ME,
+      can_change_role: false,
+      change_role_blocked_reason: reason,
+      can_remove: false,
+      remove_blocked_reason: reason,
+    };
+    answerFetch({
+      "GET /organizations/current/members": [200, [onlyMe, BOB]],
+      "GET /organizations/current/workspaces": [200, WORKSPACES],
+    });
+    renderPage();
+    await screen.findByTestId("row-me");
+
+    expect(menuItems("Me")).toEqual([
+      { label: "Step down to Member", reason },
+      { label: "Add to a workspace", reason: null },
+      {
+        label: "Change role in a workspace",
+        reason: "An org admin administers every workspace already; their role in one is not changed here.",
+      },
+      {
+        label: "Leave a workspace",
+        reason: `An org admin stays in every workspace while they are one. ${reason}`,
+      },
+      { label: "Leave organization", reason },
+    ]);
+  });
+
+  it("greys Invite users with the reason while every workspace is archived", async () => {
+    answerFetch({
+      "GET /organizations/current/members": [200, [ME, BOB]],
+      "GET /organizations/current/workspaces": [200, [workspace("w3", "Old", true)]],
+    });
+    renderPage();
+    await screen.findByTestId("row-bob");
+
+    const invite = screen.getByRole("button", { name: "Invite users" }) as HTMLButtonElement;
+    expect(invite.disabled).toBe(true);
+    expect(invite.parentElement?.getAttribute("aria-label")).toBe("Every workspace in the organization is archived.");
+  });
+
   it("says why no one can be added to a workspace while the workspaces can't be read", async () => {
     answerFetch({
       "GET /organizations/current/members": [200, [ME, BOB]],
@@ -223,7 +270,9 @@ describe("OrganizationUsersSettings", () => {
         body: { user_id: "bob", role: "admin" },
       }),
     );
-    expect(await screen.findByText("Added Bob to Lab as Workspace admin.")).toBeTruthy();
+    const added = await screen.findByText("Added Bob to Lab as Workspace admin.");
+    // A plain success is the snackbar's, not a notice left on the page.
+    expect(added.closest(".MuiAlert-root")).toBeNull();
   });
 
   it("changes someone's role in one of their workspaces", async () => {
@@ -342,5 +391,86 @@ describe("OrganizationUsersSettings", () => {
       await screen.findByText(/you can manage this organization's users only while it has no admin/),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Invite users" })).toBeNull();
+  });
+
+  describe("where changes go to the organization's account settings", () => {
+    const TRUST = { ...ORGANIZATION, members_from_directory: true, directory_takes_changes: true };
+    const ADMIN_BOB = { ...BOB, role: "org_admin" as const };
+    const sent = (calls: ReturnType<typeof answerFetch>, method: string) =>
+      calls.filter((c) => c.method === method).length;
+
+    it("shows the roles as Switch Trust names them", async () => {
+      answerFetch({
+        "GET /organizations/current/members": [200, [ME, DRIFTER]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+      });
+      renderPage(TRUST);
+
+      expect(within(await screen.findByTestId("row-me")).getByText("Org Admin")).toBeTruthy();
+      expect(within(screen.getByTestId("row-drifter")).getByText("Viewer")).toBeTruthy();
+      expect(menuItems("Drifter").map((i) => i.label)).toContain("Make Org Admin");
+    });
+
+    it("says a promotion gives billing permissions in Switch Trust, and sends nothing on cancel", async () => {
+      const calls = answerFetch({
+        "GET /organizations/current/members": [200, [ME, DRIFTER]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+      });
+      renderPage(TRUST);
+      await screen.findByTestId("row-drifter");
+
+      fireEvent.click(within(openMenu("Drifter")).getByText("Make Org Admin"));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText(/Org Admin in Switch Trust, with billing permissions/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(sent(calls, "PATCH")).toBe(0);
+    });
+
+    it("says a demotion makes the person a Viewer in Switch Trust, and sends it once confirmed", async () => {
+      const calls = answerFetch({
+        "GET /organizations/current/members": [200, [ME, ADMIN_BOB]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+        "PATCH /organizations/current/members/bob": [200, { ...BOB, warning: null }],
+      });
+      renderPage(TRUST);
+      await screen.findByTestId("row-bob");
+
+      fireEvent.click(within(openMenu("Bob")).getByText("Make Viewer"));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText(/earlier Switch Trust role is not kept/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Make Viewer" }));
+
+      await waitFor(() =>
+        expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ role: "member" }),
+      );
+    });
+
+    it("says a removal also removes the person from Switch Trust", async () => {
+      answerFetch({
+        "GET /organizations/current/members": [200, [ME, DRIFTER]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+      });
+      renderPage(TRUST);
+      await screen.findByTestId("row-drifter");
+
+      fireEvent.click(within(openMenu("Drifter")).getByText("Remove from organization"));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText(/removed from the organization in Switch Trust/)).toBeTruthy();
+    });
+
+    it("says nothing of Switch Trust where changes stay in Switch", async () => {
+      answerFetch({
+        "GET /organizations/current/members": [200, [ME, DRIFTER]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+      });
+      renderPage({ ...TRUST, directory_takes_changes: false });
+      await screen.findByTestId("row-drifter");
+
+      fireEvent.click(within(openMenu("Drifter")).getByText("Remove from organization"));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).queryByText(/Switch Trust/)).toBeNull();
+    });
   });
 });

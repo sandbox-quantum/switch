@@ -3,7 +3,7 @@
 Every route except creating a chat requires the caller's membership of the
 room (`ChatService.require_member`); adding a member or adding or removing
 an agent requires managing it.
-With `agent_chats` on, owning an agent in a chat one started keeps one a
+Owning an agent in a chat one started keeps one a
 member of it (`sync_owned_rooms`), so the list, the event stream and the room
 routes bring that up to date first.
 Refusals are `ChatError`s, answered as `{"detail": {"code", "message"}}`.
@@ -843,6 +843,17 @@ class _ChatStream:
         `read` names the rooms to read new messages from; None reads all,
         and first brings the caller's agent-owner memberships up to date.
         """
+        if initial:
+            # Not held to the cap: a catch-up is the stream's start, and pages
+            # through every room that moved, so after a deploy reconnects every
+            # Console, held catch-ups would stall every other stream's wakes.
+            return await self._refresh(read, initial)
+        async with self.service.stream_reads:
+            return await self._refresh(read, initial)
+
+    async def _refresh(
+        self, read: set[str] | None, initial: bool
+    ) -> tuple[list[bytes], bool]:
         frames: list[bytes] = []
         service = self.service
         resummarize, self.resummarize = self.resummarize, False
@@ -1044,10 +1055,15 @@ async def chat_activity_events(
     stream if the caller's session no longer `session_current`.
     """
     queue: asyncio.Queue[object] = asyncio.Queue(maxsize=queue_max)
+    # Whether a re-read of the caller's rooms is already queued: however many
+    # changes to their chats arrive before it is taken, it is one re-read.
+    memberships_queued = False
 
     def resync() -> None:
+        nonlocal memberships_queued
         while not queue.empty():
             queue.get_nowait()
+        memberships_queued = False
         queue.put_nowait(_RESYNC)
 
     def put(item: object) -> None:
@@ -1063,8 +1079,11 @@ async def chat_activity_events(
         resync()
 
     def on_memberships(_room_ids: list[str] | None) -> None:
+        nonlocal memberships_queued
         # Whichever rooms changed, the readable set is read again.
-        put(_MEMBERSHIPS)
+        if not memberships_queued:
+            memberships_queued = True
+            put(_MEMBERSHIPS)
 
     service.watch_memberships(tenant_id, user.id, on_memberships)
     subscription: RoomSubscription | None = None
@@ -1087,6 +1106,8 @@ async def chat_activity_events(
             item: object = None
             with contextlib.suppress(TimeoutError):
                 item = await asyncio.wait_for(queue.get(), timeout=timeout)
+            if item is _MEMBERSHIPS:
+                memberships_queued = False
             now = time.monotonic()
             if now >= next_ping:
                 next_ping = now + ping_seconds
@@ -1097,7 +1118,8 @@ async def chat_activity_events(
                     return
                 next_recheck = now + recheck_seconds
             if recheck or item is _RESYNC or item is _MEMBERSHIPS:
-                current = await _readable_room_ids(service, tenant_id, user)
+                async with service.stream_reads:
+                    current = await _readable_room_ids(service, tenant_id, user)
                 if current is None:
                     return
                 subscription.set_rooms(current)

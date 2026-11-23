@@ -61,7 +61,7 @@ messaging app bridge down, server errors, a slow API, a stalled server,
 agents dropping off together, or auto-route decisions failing, backing up or
 expiring (see [Decision routing](#decision-routing)). Each says what users see and what to check, posts
 when it fires, again every hour while it stays firing (`renotify_interval: 60`),
-and once more when it recovers. A crashed bridge also gets an alert that names
+and once more when it recovers. The gateway's admission control (`gateway/admission.py`) has two: requests answered 503 because a pod ran out of its share of the pool, which people see as errors, and, at low urgency, one caller answered 429 again and again, which usually means a client that should batch its requests. A crashed bridge also gets an alert that names
 it (`switch.bridges.crashed`), and "the morning report didn't post" fires when
 the 09:00 report has been silent for 25 hours, so a quiet channel can be
 trusted.
@@ -141,11 +141,30 @@ for any other deployment leaves it alone.
 DD_API_KEY=... DD_APP_KEY=... NOTIFY=@slack-<workspace>-<channel> \
   SERVICE=<service> ENV=<env> ./apply.sh
 DRY_RUN=1 ...   # print what would change
+WORKOS_DIRECTORY=1 ...   # also the WorkOS directory monitors
 ```
+
+The monitors tagged `requires:workos-directory` are imported only with
+`WORKOS_DIRECTORY=1`. They read the WorkOS mirror's metrics, which only a server
+with `ORGANIZATION_DIRECTORY=workos` reports, and the first fires on no data;
+on any other server it would fire for ever. A test keeps every monitor on a
+`switch.workos.*` metric tagged.
 
 The application key needs monitor and dashboard write access. `dashboard.json`
 and `multi-pod-dashboard.json` are not touched by it; import those by hand with
-`POST /api/v1/dashboard` if a deployment doesn't have them yet.
+`POST /api/v1/dashboard` if a deployment doesn't have them yet. To bring an
+existing copy up to date, open it in Datadog, then the settings menu, Import
+dashboard JSON, and paste the file: that replaces the copy's widgets and
+variables in place and keeps its URL. Edit the file here, not the copy: a
+change made only in Datadog is lost at the next import.
+
+`dashboard.json` opens with **Releases**: every panel follows the **version**
+picker (`*` for every release), and the comparison panels draw **version**
+beside **baseline**. The release event panels read switch-core's usage events
+from logs (`TELEMETRY_ENABLED`), filtered by service alone, like the Signal
+board's log panels. Version 0.27.0 is left out of every query: it came from
+instances that no longer run. The **Prod** and **Dev** saved views set
+`service` to `switch-core` and `switch-core-dev`.
 
 `hosted-dashboard.json` is the hosted agents board for whoever is on call: the
 hosted alerts, then the main dashboard's hosted charts in reading order (a test
@@ -175,8 +194,9 @@ Metrics Summary, and add the tag each panel groups by to that metric's
 configured tag set (`route` for requests, `operation` for database queries and
 the agent buffer, `caller` for pool hold time but not wait time, `generation` for
 garbage-collection pauses, `bridge` and `platform` for bridge calls, `platform`
-and `delivery` for rate-limit hold-backs, `backend` for decision duration, model
-time and confidence, `outcome` for decision wait), or
+and `delivery` for rate-limit hold-backs, `model` for decision duration, model
+time and confidence, `outcome` for decision wait, and `version` for the
+release scorecard and comparisons), or
 `p95: … by {…}` returns nothing on a fresh account. Empty is the honest outcome either way; a panel is never silently
 switched to a different statistic.
 
@@ -237,15 +257,30 @@ one of the workspace's machines) picks which agent, if any, should answer it.
 The "Decision routing" section at the bottom of `dashboard.json` follows that
 from both ends:
 
-- **Per request to a backend:** decisions per second by outcome (`agent`,
-  `none`, `failed`), failures by reason, the errors a backend reported behind
-  it by kind, and duration beside model time by backend, so the gap between
-  them shows the network and the backend's queue rather than the model.
+- **Per request to a backend, by the model that answered:** decisions per
+  second by outcome (`agent`, `none`, `failed`), failures by reason, the errors
+  a backend reported behind it by kind, and duration beside model time, so the
+  gap between them shows the network and the backend's queue rather than the
+  model.
+- **Models side by side:** decisions per second for each model with the share
+  it answered `none`, and a scorecard over the whole time range (decisions,
+  none and failed shares, p95 duration and model time, p50 confidence). When
+  the server default moves to another model, one model's line ends where the
+  next one's starts, and the scorecard compares the two.
 - **Per message:** how each undecided message ended (`settled`, by outcome),
   how long the person waited (`wait`), how many are waiting now and how old the
   oldest is, and the "auto-route is unavailable" notices posted to rooms.
 - **The confidence distribution,** for setting a workspace's threshold: how
-  many answers land just under it.
+  many answers land just under it. A dashed line marks 0.80, the threshold a
+  decision delivers at on nonprod.
+- **The decision service's own view** (optional): decisions by model from
+  its `decide backend=... model=...` log lines, under `service:switch-decision`.
+  The lines carry the model in their text only, so the panel needs a log
+  pipeline for that service with a Grok parser that takes `model` out of the
+  message (for example
+  `decided decide backend=%{notSpace:backend} model=%{notSpace:model} %{data}`)
+  and a `@model` facet. It is empty until both exist, and while the decision
+  service ships no logs (`OTLP_LOGS_ENABLED`).
 - **The default decision service's health check** (`check:decision`). It exists
   only when the server has a default decision endpoint, and it never takes
   switch-core out of service: a down decision pod must not take core with it.
@@ -253,6 +288,20 @@ from both ends:
 `backend` is the kind of backend that was asked, never which endpoint,
 workspace or machine. Those are per tenant, and live in the decision record
 switch-core logs for each message.
+
+`model` is what answered: the model name in the decision service's answer
+(`gemini-decision-1`, `strands-decider-E4B`, `claude-haiku-5-5`, ...). The
+server default is one backend whichever model runs behind it, so `model` is
+what tells a change of model apart. A decision with no answer (a timeout, an
+error status) has no model to name and is `unknown`: switch-core configures no
+model itself, the decision service picks it, so failures and backend errors are
+mostly `unknown`. A workspace's own endpoint is always `workspace_endpoint`,
+since its owner chooses the name it sends and that name could identify the
+workspace. A name that isn't plain, or past the first eight one process has
+seen, is `other`, so the attribute stays bounded.
+
+The decision monitors don't group by `model`: a failure usually has no model,
+and a slow model already shows on the duration panel by model.
 
 **Pending is read with `max`, never `sum`.** `switch.decision.pending` and
 `switch.decision.pending.oldest_age` are sampled from the database, so every
@@ -291,6 +340,31 @@ latency short of what users feel. Decisions have an explicit target of under a
 second, and a person sees nothing at all until the decision is made, so a slow
 decision is felt directly. The long window and warning severity keep it a
 notice rather than a page.
+
+## The WorkOS directory
+
+On a server whose organizations come from WorkOS, the mirror applies changes
+made there (a removal, a demotion) to Switch. Four monitors watch it, and the
+"WorkOS directory" section at the bottom of `dashboard.json` draws their
+gauges with the limits:
+
+- **Membership changes are not reaching Switch** (P2): no pass has read the
+  events through for 5 minutes, or nothing has reported the cursor age for 15,
+  meaning no process runs the mirror. People removed in WorkOS keep their
+  access in Switch meanwhile.
+- **An organization is stuck in the recheck** (P2): an organization has been
+  rechecked in full on every pass for 15 minutes because checking it keeps
+  failing.
+- **The daily check hasn't finished** (P3): no full check of every linked
+  organization for 26 hours, the backstop for what WorkOS sends no event for.
+- **A WorkOS organization that Switch follows was deleted** (P3): the Switch
+  organization keeps everything and is no longer checked; remove it if the
+  customer is leaving (`docs/old/workos-directory.md`, "When a customer
+  leaves").
+
+Only the cursor-age monitor fires on no data: the other gauges come from
+the same process, so a missing mirror would otherwise post three alerts for one
+cause.
 
 ## What is deliberately not alerted on
 
