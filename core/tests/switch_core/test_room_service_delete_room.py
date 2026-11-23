@@ -119,7 +119,13 @@ def _build_service(
     svc._client_lifecycle = _FakeClientLifecycle(clients)  # type: ignore[assignment]
     svc._provisioning = _FakeProvisioning(events)  # type: ignore[assignment]
     svc._room_cache = _FakeRoomCache()  # type: ignore[assignment]
+    svc._record_room_change = _audit_unrecorded  # type: ignore[method-assign]
     return svc, room_store
+
+
+async def _audit_unrecorded(*_: Any) -> None:
+    """The fake session holds no rows; recording the deletion is tested
+    against Postgres (`test_room_audit_events.py`)."""
 
 
 class TestDeleteRoom:

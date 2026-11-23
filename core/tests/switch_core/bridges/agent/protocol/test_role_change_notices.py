@@ -108,6 +108,7 @@ _ROOM = SimpleNamespace(
     description="desc",
     transport_room_id="!mx:switch.local",
     archived_at=None,
+    frozen_at=None,
     bridge_id=None,
 )
 _ROLE = SimpleNamespace(id="role-m", name="manager", instructions="coordinate")

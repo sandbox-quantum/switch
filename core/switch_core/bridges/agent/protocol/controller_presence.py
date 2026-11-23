@@ -73,6 +73,14 @@ REVOKED = Closure(
     code="closed", message="the controller has been revoked", room_id=None
 )
 
+# Not a revocation: the controller keeps its credential, and is refused a new
+# connection only while its owner's suspension lasts (`management/auth.py`).
+OWNER_SUSPENDED = Closure(
+    code="account_suspended",
+    message="the account this controller belongs to is suspended",
+    room_id=None,
+)
+
 # Why a connection's socket went, as the ledger records it. A connection
 # closed with a closure records the closure's code (`heartbeat_lapsed`,
 # `taken_over`) instead.
@@ -420,6 +428,18 @@ class ControllerPresence:
             self._record_disconnected(conn, DISCONNECT_REVOKED)
             conn.stream_attached = False
             conn.wake.set()
+
+    def owner_suspended(self, controller_id: str) -> None:
+        """The controller's owner was suspended: the stream it holds here
+        ends, telling it why, after any nudge still owed to it. Unlike a
+        revocation nothing is remembered: it is refused a new connection by
+        its token's check for as long as the suspension lasts, and let in once
+        it is lifted."""
+        if self._auth_cache is not None:
+            self._auth_cache.invalidate_controller(controller_id)
+        conn = self._connections.get(controller_id)
+        if conn is not None:
+            self._close(conn, OWNER_SUSPENDED)
 
     # ------------------------------------------------------------------
     # Bindings, read by Core

@@ -91,6 +91,12 @@ export class FakeCore {
   reportWithinS = 60;
   heartbeatIntervalS = 0.05;
   revoked = false;
+  /**
+   * The controller's owner is suspended: refused with 403 `account_suspended`
+   * on everything but the assignment, as Switch refuses it, and let in again
+   * with the same credential once this is cleared.
+   */
+  ownerSuspended = false;
   assignment: Assignment = { revision: 0, agents: [] };
   /** Each agent's rooms, as `agent.attached` carries them. */
   readonly rooms = new Map<string, string[]>();
@@ -214,6 +220,7 @@ export class FakeCore {
     const bearer = socket.headers.Authorization?.replace(/^Bearer /, '') ?? '';
     if (this.revoked) return refuse(401, 'controller_revoked');
     if (!this.tokens.has(bearer)) return refuse(401, 'token_expired');
+    if (this.ownerSuspended) return refuse(403, 'account_suspended');
     const connection = this.connections.get(url.searchParams.get('connection_id') ?? '');
     if (!connection) return refuse(404, 'unknown_connection');
     if (connection.superseded) return refuse(409, 'taken_over');
@@ -270,6 +277,33 @@ export class FakeCore {
   revoke(): void {
     this.revoked = true;
     this.push('credential.revoked', {});
+  }
+
+  /**
+   * Suspends the controller's owner as Switch does: its assignment moves on
+   * with every agent stopped and it is nudged to pull it, then its stream is
+   * ended saying why.
+   */
+  suspendOwner(): void {
+    this.setAssignment({
+      revision: this.assignment.revision + 1,
+      agents: this.assignment.agents.map((entry) => ({ ...entry, desired_state: 'stopped' })),
+    });
+    this.ownerSuspended = true;
+    for (const stream of this.streams.keys()) {
+      stream.deliver('assignment.changed', { revision: this.assignment.revision });
+      stream.deliver('evicted', {
+        code: 'account_suspended',
+        reason: 'the account this controller belongs to is suspended',
+      });
+      stream.end(1000);
+    }
+  }
+
+  /** Lifts the owner's suspension; `assignment` is what the controller pulls next. */
+  liftOwnerSuspension(assignment: Assignment): void {
+    this.assignment = assignment;
+    this.ownerSuspended = false;
   }
 
   addOperation(operation: Operation): void {
@@ -363,6 +397,7 @@ export class FakeCore {
       if (this.revoked) return this.refuse(res, 401, 'controller_revoked');
       if ((body as { credential?: string }).credential !== this.credential)
         return this.refuse(res, 401, 'invalid_credential');
+      if (this.ownerSuspended) return this.refuse(res, 403, 'account_suspended');
       const token = `access-token-${++this.issued}`;
       this.tokens.add(token);
       return this.json(res, 200, {
@@ -374,6 +409,8 @@ export class FakeCore {
     const bearer = req.headers.authorization?.replace(/^Bearer /, '') ?? '';
     if (this.revoked) return this.refuse(res, 401, 'controller_revoked');
     if (!this.tokens.has(bearer)) return this.refuse(res, 401, 'token_expired', true);
+    if (this.ownerSuspended && !(method === 'GET' && url.pathname === `${base}/assignment`))
+      return this.refuse(res, 403, 'account_suspended');
 
     if (method === 'POST' && url.pathname === `${streamBase}/connection`) {
       const cursors = (body as { cursors: Record<string, AgentCursor> }).cursors;

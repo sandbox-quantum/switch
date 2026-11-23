@@ -305,7 +305,8 @@ What that server reports is its own catalogue (`docs/old/telemetry-events.md`),
 held to the same rule: counts, durations and closed values, never a room,
 agent, person or message. Auto-route is an example: each decision the server
 asks a decision service for reports only which kind of backend answered
-(`server_default`, `endpoint`, `haiku_anthropic` or `haiku_bedrock`), whether
+(`server_default`, `endpoint`, `haiku_anthropic`, `haiku_bedrock`,
+`self_hosted` or `gemini`), whether
 it picked an agent or nobody, its confidence in tenths and its latency
 (`decision_made`), or why it failed (`decision_failed`: `timeout`,
 `unreachable`, `error_status`, `bad_answer`, `key_unreadable`,
