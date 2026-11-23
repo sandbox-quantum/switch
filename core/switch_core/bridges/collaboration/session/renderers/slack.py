@@ -1208,8 +1208,12 @@ def render_activity_plan(
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
     stopped_by: str | None = None,
+    compact: bool = False,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
+
+    `compact`: a status message (`!work-threads`), whose header counts the
+    steps rather than naming the one running, so it stays one short line.
 
     What a stream draws, drawn as an ordinary message instead, for a thread a
     stream could not be opened in. The two have to agree — a reader should not
@@ -1243,6 +1247,7 @@ def render_activity_plan(
         elapsed_seconds=elapsed_seconds,
         omitted=len(shown) - len(kept),
         stopped_by=stopped_by,
+        compact=compact,
     )
     blocks: list[dict[str, Any]] = [
         {
@@ -1567,8 +1572,14 @@ def _activity_title(
     elapsed_seconds: float | None = None,
     omitted: int = 0,
     stopped_by: str | None = None,
+    compact: bool = False,
 ) -> str:
     """The one line a reader gets with the plan collapsed.
+
+    `compact` counts the steps of a running turn ("step 4") instead of naming
+    the one running, whose title for a shell step is the whole command and
+    wraps across lines. For a status message, which should stay one line;
+    the step is one click away, in the plan.
 
     This message replaced a pair — a status line that ticked, and a tool log
     that did not — so its header has to carry both jobs: where the turn got to
@@ -1589,7 +1600,10 @@ def _activity_title(
         stopped_by=stopped_by,
     )
     running = _running(items, turn)
-    if running:
+    if running and compact:
+        steps = sum(1 for item in items if item.kind == "tool-activity")
+        title += f" · step {steps}"
+    elif running:
         title += f" · {running[1]}"
     if omitted:
         line = "line" if omitted == 1 else "lines"

@@ -875,3 +875,31 @@ async def test_removing_while_another_turn_has_the_session_leaves_it_working() -
     )
     assert _sessions(client) == []
     assert [d["ts"] for d in client.deleted] == ["5.0"]
+
+
+async def test_an_inline_status_message_counts_steps_instead_of_naming_them() -> None:
+    """A shell step's title is its whole command, which wraps a status
+    message's header across lines; the step is inside the plan."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), recipient_external_id=ASKER, has_session=True),
+        None,
+    )
+    [plan] = [b for b in client.posted[0]["blocks"] if b["type"] == "plan"]
+    assert plan["title"].endswith(" · step 1")
+    assert "Ran pytest" not in plan["title"]
+
+
+async def test_a_turn_in_the_askers_thread_keeps_naming_its_step() -> None:
+    client = FakeWebClient()
+    await _adapter(client).post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), recipient_external_id=None),
+        None,
+    )
+    [plan] = [b for b in client.posted[0]["blocks"] if b["type"] == "plan"]
+    assert plan["title"].endswith("Running: Ran pytest")

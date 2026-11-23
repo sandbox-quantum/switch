@@ -2596,6 +2596,8 @@ class SlackAdapter(PlatformAdapter):
                     elapsed_seconds=content.elapsed_seconds,
                     interrupt_turn_id=content.interrupt_turn_id,
                     stopped_by=content.stopped_by,
+                    # Inline: a status message, kept to two short lines.
+                    compact=content.has_session and not content.work_thread,
                 )
                 if not content.status_only
                 else render_activity(
