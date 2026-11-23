@@ -1014,7 +1014,11 @@ async def create_room(
             addresses); their Switch name does not resolve. Your
             owner's usernames are in `get_my_context` (`messaging_apps`,
             `your_usernames`). Only meaningful for bridged rooms; to put your
-            owner in an internal-only room, use `include_owner`.
+            owner in an internal-only room, use `include_owner`. On a bridged
+            room your owner owns the room but is put in its channel only when
+            none of these people can be, or where the platform needs them
+            there (a private Teams channel, which they own); name them here
+            to have them in it anyway.
         channel_type: One of "channel_public", "channel_private", or "direct".
             Omitted, a new channel is private.
             Use "direct" to open a 1:1 DM room — exactly one entry in
@@ -1624,12 +1628,16 @@ async def list_bridges() -> list[dict[str, Any]]:
         "channel_private" can be asked for there. Where
         `private_channel_needs_linked_account` is true, the room's owner,
         your owner when you create it, must have linked and confirmed their
-        account on that platform: Switch puts them in the private channel
-        through it (on Teams, as its owner), and refuses the room when they
-        have not, since nobody could get into it otherwise. A new public
-        channel puts them in too when they have such an account (not on
-        Teams, where that would add them to the whole team), and is made
-        without them when they have none.
+        account on that platform when the room is for nobody else: Switch
+        puts them in the private channel through it, and refuses the room
+        when they have not, since nobody could get into it otherwise. When
+        you name people in `user_names`, they are who is put in, and your
+        owner is added only if none of them could be, so no linked account
+        is needed up front. Teams is the exception: a private channel there
+        is always made with your owner's linked account as its owner. A new
+        public channel puts your owner in on the same terms when they have
+        such an account (never on Teams, where that would add them to the
+        whole team).
     """
     protocol = get_protocol()
     return await protocol.list_bridges()
