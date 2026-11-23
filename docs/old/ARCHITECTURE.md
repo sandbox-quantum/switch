@@ -3,7 +3,7 @@
 > **Out of date.** This document describes an earlier design of Switch, when it
 > ran on a Matrix homeserver. Matrix was removed in switch-core 0.25.0, and many
 > sections no longer match the code. For how Switch works today, read
-> [`docs/official/internals/`](../official/internals/index.md) and the code;
+> the [Internals](https://docs.switchagents.ai/switch-rooms/internals) section of the published docs and the code;
 > [`CLAUDE.md`](../../CLAUDE.md) lists where to start. It is kept for history.
 
 This document describes how Switch is built: its components, how they fit
