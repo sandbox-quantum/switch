@@ -101,7 +101,8 @@ run:
 # For testing Switch Console against this checkout instead of whatever a shared
 # deployment runs. Needs `just up` first. Invitation e-mails go to the Mailpit
 # catcher, and their links point at :8000 so that pasting one into the Console
-# matches the stand-in. docs/old/LOCAL_DEVELOPMENT.md, "A local Switch Cloud".
+# matches the stand-in. `just gateway-dev` on :5173 can sign in to it too.
+# docs/old/LOCAL_DEVELOPMENT.md, "A local Switch Cloud".
 # Run switch-core as Switch Cloud, with invitation e-mail caught at :8025
 local-cloud:
     docker compose -f deploy/local/docker-compose.yml --project-directory . --profile mail up -d mailpit
@@ -109,6 +110,7 @@ local-cloud:
     GATEWAY_SMTP_USERNAME= GATEWAY_SMTP_PASSWORD= \
     GATEWAY_SMTP_FROM="Switch <invites@switch.local>" \
     FRONTEND_BASE_URL=http://localhost:8000 GATEWAY_COOKIE_SECURE=false \
+    GATEWAY_EXTRA_ORIGINS='["http://localhost:5173"]' \
     uv run --project core python -m switch_core.main
 
 # Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in

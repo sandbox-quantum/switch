@@ -90,11 +90,16 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     assert adapters["github"].can_issue is True
 
 
-def test_github_without_the_app_is_left_not_set_up() -> None:
+def test_github_without_the_app_takes_only_a_pasted_token() -> None:
     adapters = build_adapters(
         CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert "github" not in adapters
+    github = adapters["github"]
+    assert isinstance(github, GitHubAdapter)
+    assert github.app_set_up is False
+    # A pasted token is handed out as it is, so no signing key is needed.
+    assert github.can_issue is True
+    assert github.current_client_id({}) is None
 
 
 def test_a_key_service_needs_nothing_set_up_on_the_server(tmp_path: Path) -> None:

@@ -1,11 +1,21 @@
 import { z } from 'zod';
 
 export const gitHubConnectionSchema = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('not_connected'), install_url: z.string() }),
+  /**
+   * `install_url` is null where the server has no GitHub App set up, so only
+   * a pasted token connects GitHub there.
+   */
+  z.object({ status: z.literal('not_connected'), install_url: z.string().nullable() }),
   z.object({
     status: z.literal('connected'),
+    /**
+     * How it was connected: through the App's sign-in (`oauth`), or with a
+     * pasted personal access token (`token`), which reaches no installations.
+     * Absent from a server from before tokens.
+     */
+    method: z.string().optional(),
     login: z.string(),
-    install_url: z.string(),
+    install_url: z.string().nullable(),
     installations: z.array(
       z.object({
         id: z.number(),

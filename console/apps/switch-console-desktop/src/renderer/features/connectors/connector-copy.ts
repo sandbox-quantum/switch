@@ -9,8 +9,8 @@ const NAMED_AGENTS = 4;
 /**
  * What disconnecting says before it happens: how many of the person's agents
  * lose the service and which (the first four, then how many more), or, where
- * that cannot be known, that every one does; and, for a key, that Switch can
- * only forget it, not revoke it.
+ * that cannot be known, that every one does; and, for a key or anything
+ * pasted, that Switch can only forget it, not revoke it.
  */
 export function disconnectCopy(
   entry: Pick<ConnectionCatalogEntry, 'name' | 'auth_type' | 'method'>,
@@ -27,14 +27,18 @@ export function disconnectCopy(
           : `${grantedAgents.length} agents lose ${name}: ${namedAgents(grantedAgents)}. Disconnecting removes their access.`,
   ];
   if (entry.method === 'token' || entry.method === 'keys') {
-    lines.push(`Switch removes what you pasted for ${name}.`);
-  } else if (entry.auth_type === 'api_key') {
-    lines.push('Switch removes the key it keeps.');
-  } else {
-    lines.push(`Switch removes the sign-in it keeps for ${name}.`);
+    const until =
+      entry.method === 'token' ? 'it expires or you delete it there' : 'you delete it there';
+    lines.push(
+      `Switch forgets what you pasted for ${name} but can't revoke it, so it keeps working in ${name} until ${until}.`
+    );
+    return { title: `Disconnect ${name}?`, lines };
   }
   if (entry.auth_type === 'api_key') {
+    lines.push('Switch removes the key it keeps.');
     lines.push(`Switch can't revoke this key at ${name}; delete it there.`);
+  } else {
+    lines.push(`Switch removes the sign-in it keeps for ${name}.`);
   }
   return { title: `Disconnect ${name}?`, lines };
 }
