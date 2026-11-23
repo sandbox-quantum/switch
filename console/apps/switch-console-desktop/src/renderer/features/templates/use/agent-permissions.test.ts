@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { parseTemplateAgents } from '@main/core/agent-templates/template-document';
+import { newAgentPermissions } from '@shared/core/agents/agents';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
   chooseCase,
+  consoleRunPermissions,
   permissionsOnCreate,
   runsWithoutAsking,
   whoCanAddress,
@@ -141,11 +143,11 @@ describe('permissionsOnCreate', () => {
   it('reads a version 1 template’s cases as its run does: not at all', () => {
     const entry = v1(CASES);
     const values = { mode: 'yolo' };
-    const managed = permissionsOnCreate(entry, values, 'managed');
+    const managed = permissionsOnCreate(entry, values, 'managed', 'claude');
     expect(managed).toEqual({ bypass: false, reach: { kind: 'owner-agents' } });
     expect(managed.bypass).toBe(sent(entry, values).autoApprove);
     expect(managed.reach).toEqual({ kind: sent(entry, values).addressing });
-    expect(permissionsOnCreate(entry, values, 'console')).toEqual({
+    expect(permissionsOnCreate(entry, values, 'console', 'claude')).toEqual({
       bypass: false,
       reach: { kind: 'owner-agents' },
     });
@@ -153,11 +155,11 @@ describe('permissionsOnCreate', () => {
 
   it('chooses among a version 2 document’s cases, as the server does', () => {
     const entry = v2(CASES);
-    expect(permissionsOnCreate(entry, { mode: 'yolo' }, 'document')).toEqual({
+    expect(permissionsOnCreate(entry, { mode: 'yolo' }, 'document', 'claude')).toEqual({
       bypass: true,
       reach: { kind: 'anyone' },
     });
-    expect(permissionsOnCreate(entry, { mode: 'careful' }, 'document')).toEqual({
+    expect(permissionsOnCreate(entry, { mode: 'careful' }, 'document', 'claude')).toEqual({
       bypass: false,
       reach: { kind: 'owner' },
     });
@@ -166,15 +168,28 @@ describe('permissionsOnCreate', () => {
   it('matches what a managed run sends for plain fields and params', () => {
     const entry = v1(['auto_approve: "{yolo}"', 'addressing: anyone']);
     for (const yolo of [true, false]) {
-      const shown = permissionsOnCreate(entry, { yolo }, 'managed');
+      const shown = permissionsOnCreate(entry, { yolo }, 'managed', 'claude');
       expect(shown.bypass).toBe(yolo);
       expect(shown.bypass).toBe(sent(entry, { yolo }).autoApprove);
       expect(shown.reach).toEqual({ kind: sent(entry, { yolo }).addressing });
     }
-    // An agent this Console runs asks first whatever the template says, and keeps its addressing.
-    expect(permissionsOnCreate(entry, { yolo: true }, 'console')).toEqual({
+    // An agent this Console runs takes its provider's permissions, and keeps its addressing.
+    expect(permissionsOnCreate(entry, { yolo: true }, 'console', 'claude')).toEqual({
       bypass: false,
       reach: { kind: 'anyone' },
     });
+  });
+
+  it('shows a Console-run Cursor agent with the bypass it is created with', () => {
+    // Cursor has no automatic review, so the agent this Console creates runs every tool unasked.
+    const entry = v1(['auto_approve: false']);
+    const shown = permissionsOnCreate(entry, {}, 'console', 'cursor');
+    expect(shown.bypass).toBe(true);
+    expect(shown.bypass).toBe(consoleRunPermissions('cursor').autoApprove);
+    expect(consoleRunPermissions('cursor')).toEqual(newAgentPermissions('cursor'));
+  });
+
+  it('shows a Console-run agent with no provider yet as the default asks-first', () => {
+    expect(permissionsOnCreate(v1([]), {}, 'console', null).bypass).toBe(false);
   });
 });

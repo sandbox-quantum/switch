@@ -1,5 +1,7 @@
 import type { AgentTemplateAddressing } from '@main/core/agent-templates/agent-template-format';
 import type { ParsedAgentEntry } from '@main/core/agent-templates/template-document';
+import { NEW_AGENT_PERMISSIONS, newAgentPermissions } from '@shared/core/agents/agents';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { holds, type Values } from './use-template-model';
 
 /**
@@ -115,12 +117,15 @@ export type TemplateRun = 'document' | 'managed' | 'console';
 /**
  * What a new agent will be given, read the way the run that creates it reads
  * the template, so what the Use page shows and asks about before Create is
- * what gets created.
+ * what gets created. `provider` is the one the deployer picked for the slot,
+ * null while none is: an agent this Console runs takes its permissions from
+ * its provider, not from the template.
  */
 export function permissionsOnCreate(
   entry: Pick<ParsedAgentEntry, 'autoApprove' | 'addressing' | 'permissionsAsWritten'>,
   values: Values,
-  run: TemplateRun
+  run: TemplateRun,
+  provider: AgentProviderId | null
 ): { bypass: boolean | null; reach: AgentReach } {
   if (run === 'document')
     return {
@@ -128,8 +133,22 @@ export function permissionsOnCreate(
       reach: whoCanAddress(entry.permissionsAsWritten.addressing, values),
     };
   return {
-    // An agent this Console runs is created asking first, whatever the template says.
-    bypass: run === 'managed' ? consoleAutoApprove(entry, values) : false,
+    bypass:
+      run === 'managed'
+        ? consoleAutoApprove(entry, values)
+        : consoleRunPermissions(provider).autoApprove,
     reach: { kind: consoleAddressing(entry) },
   };
+}
+
+/**
+ * The permissions an agent this Console runs for a version 1 template is
+ * created with, whatever the template says: its provider's automatic review,
+ * or bypass for a provider without one (Cursor).
+ */
+export function consoleRunPermissions(provider: AgentProviderId | null): {
+  autoApprove: boolean;
+  autoMode: boolean;
+} {
+  return provider === null ? NEW_AGENT_PERMISSIONS : newAgentPermissions(provider);
 }

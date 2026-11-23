@@ -53,7 +53,6 @@ import { Button } from '@renderer/lib/ui/button';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
-import { newAgentPermissions } from '@shared/core/agents/agents';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
   type AgentProviderId,
@@ -65,7 +64,7 @@ import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { CONSOLE_ROOM, NEW } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
-import { permissionsOnCreate } from './use/agent-permissions';
+import { consoleRunPermissions, permissionsOnCreate } from './use/agent-permissions';
 import { CollapsibleInput } from './use/collapsible-input';
 import {
   type AgentSlot,
@@ -1440,7 +1439,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 ? setup.displayName.trim()
                 : null,
             iconUrl: null,
-            ...newAgentPermissions(providerId),
+            ...consoleRunPermissions(providerId),
             instructions: slot.entry.instructions,
             definitionAttributes: {},
             providerConfig: null,
@@ -1653,7 +1652,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const { bypass, reach } = permissionsOnCreate(
       slot.entry,
       values,
-      isV2 ? 'document' : management ? 'managed' : 'console'
+      isV2 ? 'document' : management ? 'managed' : 'console',
+      setup.provider
     );
     const permissions = {
       bypass,

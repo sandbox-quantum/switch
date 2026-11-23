@@ -5128,6 +5128,9 @@ version of their own to them without also giving them a release of their own.
   names the risks. What it shows is what the run creates. A version 1
   template's `auto_approve` or `addressing` written as a list of `if:` cases,
   which only version 2 reads, is shown as the default the agent actually gets.
+  An agent Console runs itself gets its provider's permissions whatever the
+  template says, so a Cursor agent, which has no automatic review, is shown,
+  and asked about, as running every command without asking.
 - **Files saved from a chat are marked as downloaded.** On macOS a saved
   attachment now carries the quarantine mark a browser gives a download, so
   Gatekeeper checks it the first time it is opened; on Windows it is marked
