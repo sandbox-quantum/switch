@@ -845,10 +845,10 @@ spec:
   - expression: |-
       request.resource.resource != 'secrets' || request.operation != 'UPDATE' || (
         object.?type.orValue('') == 'Opaque' && oldObject.?type.orValue('') == 'Opaque' &&
-        object.?data.orValue({}).all(k, k in (request.?name.orValue('') == 'switch-enrol' ? ['code'] : ['https_proxy', 'ctl_https_proxy'])) &&
+        object.?data.orValue({}).all(k, k in (request.?name.orValue('') == 'switch-enrol' ? ['code', 'registered'] : ['https_proxy', 'ctl_https_proxy'])) &&
         object.metadata.?labels.orValue({}) == oldObject.metadata.?labels.orValue({}) &&
         object.metadata.?annotations.orValue({}) == oldObject.metadata.?annotations.orValue({}))
-    message: switch-enrol holds only code; switch-proxy-login only https_proxy and
+    message: switch-enrol holds only code and registered; switch-proxy-login only https_proxy and
       ctl_https_proxy; nothing else changes
   variables:
   - expression: request.?namespace.orValue('').startsWith('agents-user-') && namespaceObject.metadata.?labels[?'app.kubernetes.io/managed-by'].orValue('')

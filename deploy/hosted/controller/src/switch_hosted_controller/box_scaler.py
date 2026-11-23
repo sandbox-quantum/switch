@@ -32,7 +32,7 @@ from uuid import UUID
 from .box_names import KNOWN_BOX_NAMESPACE_RE, is_box_keyed
 from .cluster_watch import ClusterWatch, RestartCounter, box_node
 from .evictions import EvictionWatch, status_document
-from .registration_codes import RegistrationCodes
+from .registration_codes import REGISTERED_KEY, REGISTERED_VALUE, RegistrationCodes
 
 logger = logging.getLogger(__name__)
 
@@ -664,14 +664,16 @@ class KubeApi:
         return base64.b64decode(value).decode() if value else None
 
     def set_enrol_code(self, namespace: str, code: str | None) -> None:
-        """Writes the box's registration code, or with None removes it."""
-        value = None if code is None else base64.b64encode(code.encode()).decode()
-        self._call(
-            "PATCH",
-            self._enrol_path(namespace),
-            {"data": {ENROL_KEY: value}},
-            timeout=ENROL_TIMEOUT_S,
-        )
+        """Writes the box's registration code and takes out the `registered` mark; or, with None, removes the code
+        and marks the box registered, so its starter lets it start again without one."""
+        if code is None:
+            data = {
+                ENROL_KEY: None,
+                REGISTERED_KEY: base64.b64encode(REGISTERED_VALUE.encode()).decode(),
+            }
+        else:
+            data = {ENROL_KEY: base64.b64encode(code.encode()).decode(), REGISTERED_KEY: None}
+        self._call("PATCH", self._enrol_path(namespace), {"data": data}, timeout=ENROL_TIMEOUT_S)
 
     def box_pods(self, namespace: str) -> list[dict[str, Any]]:
         """The box's one pod, read by its fixed name (`box-0`), so the

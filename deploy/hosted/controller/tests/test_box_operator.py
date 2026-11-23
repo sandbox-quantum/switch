@@ -1781,7 +1781,46 @@ def test_the_starter_waits_for_both_files_then_exits_once(tmp_path, order):  # t
     second.write_text("SECRET-CANARY-2")
     out, _ = proc.communicate(timeout=5)
     assert proc.returncode == 0
-    assert out == "switch-box: code and login present\n"
+    assert out == "switch-box: registration and login present\n"
+
+
+def test_the_starter_lets_a_registered_box_start_without_a_code(tmp_path):  # type: ignore[no-untyped-def]
+    """The starter's own script, run with sh: with the scaler's `registered` mark and the login, and no code, it exits
+    (a registered box starting again); with the mark alone it keeps waiting for the login."""
+    import subprocess
+    import time
+
+    from switch_hosted_controller.box_operator import STARTER_SCRIPT
+
+    enrol, login = tmp_path / "enrol", tmp_path / "login"
+    enrol.mkdir()
+    login.mkdir()
+    script = STARTER_SCRIPT.replace("/etc/switch/enrol", str(enrol)).replace(
+        "/etc/switch/login", str(login)
+    )
+    proc = subprocess.Popen(["sh", "-c", script], stdout=subprocess.PIPE, text=True)
+    (enrol / "registered").write_text("yes")
+    time.sleep(1.2)
+    assert proc.poll() is None  # the mark, but no login yet
+    (login / "https_proxy").write_text("SECRET-CANARY-2")
+    out, _ = proc.communicate(timeout=5)
+    assert proc.returncode == 0
+    assert out == "switch-box: registration and login present\n"
+
+
+def test_the_admission_policy_lets_switch_enrol_hold_the_code_and_the_mark_only():
+    """The scaler's writes to `switch-enrol` are refused by the cluster unless every key is one it allows: exactly
+    the code and the `registered` mark the starter reads."""
+    import re
+    from pathlib import Path
+
+    from switch_hosted_controller.registration_codes import REGISTERED_KEY
+
+    policies = (
+        Path(__file__).resolve().parents[2] / "k8s" / "30-admission-policies.yaml"
+    ).read_text()
+    (allowed,) = re.findall(r"== 'switch-enrol' \? (\[[^\]]*\])", policies)
+    assert allowed == f"['code', '{REGISTERED_KEY}']"
 
 
 @pytest.mark.parametrize("make", [action, box_action])

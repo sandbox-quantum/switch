@@ -6,8 +6,10 @@ one written when the user was set up has usually expired by the box's first star
 controller token the scaler already holds) and writes it into the Secret, then the scaler starts the box.
 
 - Only for machines in the scaler's own box map, and only for a box being started or waiting to register.
-- Core returns no code for a registered box, so later starts change nothing; once a box is registered its Secret is
-  emptied, so spent codes don't linger.
+- Core returns no code for a registered box, so later starts change nothing; once a box is registered its code is
+  removed from the Secret, so spent codes don't linger, and the Secret is marked `registered` in its place. The box's
+  starter (template t2) waits at every boot for a code or that mark, so a registered box starts again at once; the
+  box itself reads the code only on its first start, and ignores the mark.
 - A box that is running but never registered (its code went dead before it booted) is restarted once Core has a
   fresh code: the box reads the code only at boot.
 - The code is held in a local variable for one call, written into the Secret, and dropped. It is never logged,
@@ -26,6 +28,10 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
+# In `switch-enrol`: the scaler's mark that the box has registered, so its starter needn't wait for a code. Its value
+# is fixed and says nothing. Writing a code takes it out again.
+REGISTERED_KEY = "registered"
+REGISTERED_VALUE = "yes"
 ASK_INTERVAL_S = 300.0  # at most one `prepare` per box per 5 minutes
 # Core's box code lifetime (`MACHINE_ENROLLMENT_CODE_LIFETIME`, 15 minutes with hosted agents v2 on). Not used to
 # decide anything here; the scaler's waits are tested against it (`box_scaler.ROOM_LIMIT_S`), so a box that waited
@@ -42,7 +48,9 @@ class CodeCore(Protocol):
 
 class CodeKube(Protocol):
     def enrol_code(self, namespace: str) -> str | None: ...  # the code in the box's Secret, or None
-    def set_enrol_code(self, namespace: str, code: str | None) -> None: ...  # None empties it
+    def set_enrol_code(
+        self, namespace: str, code: str | None
+    ) -> None: ...  # None removes the code and marks the box registered
 
 
 class RegistrationCodes:
@@ -149,7 +157,8 @@ class RegistrationCodes:
         return self._write(machine_id, namespace, codes)
 
     def ready(self, machine_id: str, namespace: str) -> None:
-        """A box that is up: once Core says it's registered, empty its Secret (once per scaler run)."""
+        """A box that is up: once Core says it's registered, remove its code and mark it registered (once per
+        scaler run), so its starter lets it start again next time without a code."""
         if not self._ours(machine_id, namespace) or machine_id in self._cleared:
             return
         codes = self._ask(machine_id)
@@ -167,5 +176,5 @@ class RegistrationCodes:
             return
         self._cleared.add(machine_id)
         logger.info(
-            "Machine %s: registered; registration code emptied for %s.", machine_id, namespace
+            "Machine %s: registered; registration code removed for %s.", machine_id, namespace
         )

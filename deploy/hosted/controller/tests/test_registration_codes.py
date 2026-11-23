@@ -224,8 +224,15 @@ def test_the_secret_is_read_and_written_in_the_box_s_namespace_only():
     (get, write, empty) = api._call.calls  # type: ignore[attr-defined]
     path = f"/api/v1/namespaces/{NS}/secrets/switch-enrol"
     assert get == (("GET", path), {"timeout": 10.0})
-    assert write == (("PATCH", path, {"data": {"code": encoded}}), {"timeout": 10.0})
-    assert empty == (("PATCH", path, {"data": {"code": None}}), {"timeout": 10.0})
+    assert write == (
+        ("PATCH", path, {"data": {"code": encoded, "registered": None}}),
+        {"timeout": 10.0},
+    )  # a new code takes the registered mark out
+    mark = base64.b64encode(b"yes").decode()
+    assert empty == (
+        ("PATCH", path, {"data": {"code": None, "registered": mark}}),
+        {"timeout": 10.0},
+    )  # registered: the code goes, the mark comes
     assert _kube({"data": {}}).enrol_code(NS) is None
     for bad in ("kube-system", "agents-user-b/../x", ""):
         with pytest.raises(ValueError):
@@ -239,3 +246,70 @@ def test_core_is_asked_by_machine_id_only():
     assert api._call.calls == [((f"/machines/{M}/prepare", {}), {})]  # type: ignore[attr-defined]
     with pytest.raises(ValueError):
         api.prepare("../machines")
+
+
+def _apply(data: dict[str, str], patch: dict) -> None:
+    """A strategic-merge PATCH of a Secret's `data`, as the API server applies it: None takes a key out."""
+    for key, value in patch["data"].items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+
+
+def _starter_exits(tmp_path, data: dict[str, str], wait_s: float) -> bool:
+    """Runs the box's own starter script against the Secret's keys as the kubelet mounts them (one file per key,
+    decoded), with the proxy login there. True when it exits within `wait_s`."""
+    import subprocess
+    import time
+
+    from switch_hosted_controller.box_operator import STARTER_SCRIPT
+
+    enrol, login = tmp_path / "enrol", tmp_path / "login"
+    enrol.mkdir()
+    login.mkdir()
+    for key, value in data.items():
+        (enrol / key).write_bytes(base64.b64decode(value))
+    (login / "https_proxy").write_text("http://login@proxy:3128")
+    script = STARTER_SCRIPT.replace("/etc/switch/enrol", str(enrol)).replace(
+        "/etc/switch/login", str(login)
+    )
+    proc = subprocess.Popen(["sh", "-c", script], stdout=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return proc.returncode == 0
+        time.sleep(0.1)
+    proc.kill()
+    proc.wait()
+    return False
+
+
+def test_a_registered_box_starts_again_at_once(tmp_path):
+    """A t2 box that has registered, then stops (idle, an eviction, a drain) and starts again: the scaler removed
+    its code once it registered, and its starter still lets it start, on the `registered` mark."""
+    data: dict[str, str] = {}
+    api = _kube()
+    api.set_enrol_code(NS, CODE)  # the first start's code
+    api.set_enrol_code(NS, None)  # registered: the scaler removes it
+    for (_method, _path, patch), _ in api._call.calls:  # type: ignore[attr-defined]
+        _apply(data, patch)
+    assert set(data) == {"registered"}  # no code kept
+    assert _starter_exits(tmp_path, data, wait_s=5)
+
+
+def test_a_box_with_neither_a_code_nor_the_mark_still_waits(tmp_path):
+    """A pool box before its owner is written: an empty Secret, so its starter keeps waiting."""
+    assert not _starter_exits(tmp_path, {}, wait_s=1.5)
+
+
+def test_a_new_code_takes_the_mark_out(tmp_path):
+    """A box whose registration was lost gets a new code: the mark goes, so the Secret says what's true."""
+    data: dict[str, str] = {}
+    api = _kube()
+    api.set_enrol_code(NS, None)
+    api.set_enrol_code(NS, CODE)
+    for (_method, _path, patch), _ in api._call.calls:  # type: ignore[attr-defined]
+        _apply(data, patch)
+    assert set(data) == {"code"}
+    assert _starter_exits(tmp_path, data, wait_s=5)

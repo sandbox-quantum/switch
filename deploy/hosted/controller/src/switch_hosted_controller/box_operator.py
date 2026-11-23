@@ -35,6 +35,7 @@ from .box_names import (
     user_namespace,
 )
 from .egress_lists import LOGIN_SECRET, check_box_pod_spec
+from .registration_codes import REGISTERED_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -659,12 +660,17 @@ _HARDENED = {
 SAFE_TO_EVICT = "cluster-autoscaler.kubernetes.io/safe-to-evict"
 LOGIN_CHECK_KEY = "https_proxy"  # the one login key the starter checks for, presence only
 SECRET_MODE = 0o440  # Secret files are root-owned: readable by the pod's group, only in containers that mount them
-# The starter container: the main containers start only once the box's code and its proxy login are both there, so
-# a box can wait (a pool box until it's claimed) without starting, and the main containers start once, reading both.
-# It reads two files and prints a fixed line: never their content. Run from the box's own image (no new image).
+# The starter container: the main containers start only once the box can register (its code, or the scaler's
+# `registered` mark once it has) and its proxy login is there, so a box can wait (a pool box until it's claimed)
+# without starting, and the main containers start once. A registered box has no code (the scaler removes it), so
+# without the mark it would wait at every later start. It tests files and prints a fixed line: never their content.
+# Run from the box's own image (no new image).
 STARTER_SCRIPT = (
-    "until [ -s /etc/switch/enrol/code ] && [ -s /etc/switch/login/" + LOGIN_CHECK_KEY + " ]; "
-    "do sleep 0.5; done; echo 'switch-box: code and login present'"
+    "until { [ -s /etc/switch/enrol/code ] || [ -s /etc/switch/enrol/"
+    + REGISTERED_KEY
+    + " ]; } && "
+    "[ -s /etc/switch/login/" + LOGIN_CHECK_KEY + " ]; "
+    "do sleep 0.5; done; echo 'switch-box: registration and login present'"
 )
 
 
