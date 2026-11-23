@@ -66,7 +66,7 @@ vi.mock('./journal-snapshot', async (importOriginal) => ({
     return { turns: statuses.map((status, i) => ({ turnId: `turn-${i}`, status })) };
   },
 }));
-/** Whether F1's ceiling lets a new session start. */
+/** Whether the host's session valve lets a new session start. */
 const valve = vi.hoisted(() => ({ admit: true, asked: 0, settled: 0 }));
 vi.mock('./memory-pressure', async (importOriginal) => {
   const original = await importOriginal<typeof import('./memory-pressure')>();
@@ -3776,7 +3776,7 @@ describe('wait for room', () => {
         await eventually(() => posts(calls).length === 1);
         expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE]);
         expect(box.status()).toMatchObject({ waiting: 1, waitingForRoom: 1 });
-        // The F1 mock is never asked: the box valve decides.
+        // The host's session valve is never asked: the box valve decides.
         expect(valve.asked).toBe(0);
         free();
         await box.tick();

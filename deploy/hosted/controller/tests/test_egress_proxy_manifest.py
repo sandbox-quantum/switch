@@ -198,7 +198,7 @@ def test_squid_parses_the_config_with_no_box_only_with_the_base_file(
         assert "Unable to find configuration file" in parsed.stderr
 
 
-# ---- the reload wrapper (E3): logins at once, box files only after a clean parse ----
+# ---- the reload wrapper: logins at once, box files only after a clean parse ----
 
 import time  # noqa: E402
 

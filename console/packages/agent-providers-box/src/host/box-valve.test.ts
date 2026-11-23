@@ -24,7 +24,7 @@ const quiet = { info: () => {}, warn: () => {} };
 
 /**
  * Seen on a test box: with a login, every agent's host is its own
- * process, so each ran its own F1 valve over the same box memory. All of them
+ * process, so each ran its own session valve over the same box memory. All of them
  * saw the box over its line at once and parked together: four parks in
  * 0.33 s, from 83% down to 66%.
  *

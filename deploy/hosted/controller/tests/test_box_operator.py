@@ -694,7 +694,7 @@ def test_the_operator_builds_exactly_the_ticked_template():
         action(machine_id="7a3e8f4c-1d2b-4c5e-9f60-718293a4b5c6", user_keyed_id=USER),
         config,
     )
-    # One addition to the ticked template since: the controller's daily AI call cap (finding 21), checked here
+    # One addition to the ticked template since: the controller's daily AI call cap, checked here
     # and then taken out, so every other field still has to equal the reviewed render.
     controller = next(
         c
@@ -1167,7 +1167,7 @@ def test_every_default_the_real_api_server_added_still_counts_as_ours():
 
 @pytest.mark.parametrize("value", [None, 0, -1, True, 2.5, "500", 1_000_000_001])
 def test_the_daily_call_cap_is_required_and_finite(value):  # type: ignore[no-untyped-def]
-    """Every box gets a finite daily cap on AI calls through its gateway (finding 21): a config without one, or
+    """Every box gets a finite daily cap on AI calls through its gateway: a config without one, or
     with anything but a whole number from 1 to the gateway's bound, is refused whole."""
     raw = {**RAW_CONFIG, "daily_calls": value}
     if value is None:
@@ -1190,7 +1190,7 @@ def test_every_box_controller_gets_the_daily_call_cap():  # type: ignore[no-unty
 
 
 def _without_daily_calls(kube):  # type: ignore[no-untyped-def]
-    """The box as the template made it before the daily call cap (finding 21): the same, minus that one env entry."""
+    """The box as the template made it before the daily call cap: the same, minus that one env entry."""
     controller = kube.objects[("StatefulSet", NS, "box")]["spec"]["template"]["spec"]["containers"][
         0
     ]
@@ -1202,7 +1202,7 @@ def _without_daily_calls(kube):  # type: ignore[no-untyped-def]
 
 
 def test_a_box_made_before_the_daily_call_cap_is_still_reused(caplog):  # type: ignore[no-untyped-def]
-    """A box made by the template before finding 21's cap has no SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS. Core asking
+    """A box made by the template before the daily call cap has no SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS. Core asking
     for its machine's box again (a retry, a re-claim) re-uses it, as before the upgrade, rather than refusing it,
     writes nothing, and says it re-used an older shape."""
     kube = FakeKube()

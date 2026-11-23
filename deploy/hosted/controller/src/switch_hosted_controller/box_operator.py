@@ -979,7 +979,7 @@ def _earlier_templates(spec: dict) -> list[tuple[str | None, dict]]:
     before an upgrade is still this box's own and is re-used rather than refused. Only these exact shapes, listed
     one by one, never anything looser. A field added to the template needs an entry here
     (test_the_template_fields_have_their_earlier_shapes fails until it has one).
-    - "before the daily call cap" (finding 21): no SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS. Such a box runs without
+    - "before the daily call cap": no SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS. Such a box runs without
       the per-box cap until it is recreated (DEPLOY.md): the operator may create StatefulSets, not change them."""
     before_cap = copy.deepcopy(spec)
     for container in before_cap["template"]["spec"]["containers"]:

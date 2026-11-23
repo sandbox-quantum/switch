@@ -852,7 +852,7 @@ def test_set_login_sends_each_old_key_as_null_beside_the_two_urls():
     }
 
 
-# ---- the short check (E3): a change reaches squid's files within seconds ----
+# ---- the short check: a change reaches squid's files within seconds ----
 
 
 def _clocked_run(monkeypatch, loads, fail_passes=()):

@@ -1,4 +1,4 @@
-"""S2: a v2 box that is retained, or wanted deleted, is never started again by
+"""A v2 box that is retained, or wanted deleted, is never started again by
 a message to one of its agents or by an agent placed on it, whatever stop
 reason it was left with. Only its owner's claim or Retry brings it back.
 Pins `cloud_controllers.wake_controller_machine` (and the lifted-block path,

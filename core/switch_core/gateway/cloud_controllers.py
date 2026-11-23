@@ -268,9 +268,9 @@ def workspace_reported(
     last seen starting: its agents can run.
 
     A v2 box's controller nearly always reports before the scaler sees the
-    box running, and F1 makes the box ready on that report
+    box running, and the ready check makes the box ready on that report
     (`ready_if_both_signals`). So for a v2 box, a report made at the
-    machine's current revision counts too, under F1's own conditions: by
+    machine's current revision counts too, under the ready check's own conditions: by
     `controller`, the workspace's own controller (read with that workspace
     bound), still live and unrevoked, and only for this workspace."""
     report = controller_reports(machine).get(workspace_id)

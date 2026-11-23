@@ -1,5 +1,5 @@
 """`start` in the owner's machine summary: a v2 box still starting, as
-`{kind, since}`, else null; absent with v2 off. `since` is the start clock F2
+`{kind, since}`, else null; absent with v2 off. `since` is the start-timing clock
 already keeps (`note_start_click`), at the current revision. Against
 Postgres, with real agent management, apart from the pure cases."""
 

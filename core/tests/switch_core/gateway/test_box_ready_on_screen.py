@@ -1,4 +1,4 @@
-"""F1 on screen: a v2 box made ready by its controller's report and then the
+"""Ready on screen: a v2 box made ready by its controller's report and then the
 scaler's `running` is ready in the owner's summary at once, not only at the
 controller's next report. A report counts for its own workspace when it was
 made at the machine's current revision, by that workspace's own live,

@@ -1363,7 +1363,7 @@ export class GuardStatus {
 /**
  * The guard's limits from the environment, or null when it stays off: only a
  * box whose memory limit the pod spec sets (`SWITCH_BOX_MEMORY_LIMIT_BYTES`,
- * the F1 valve's switch) runs it, so laptops are unchanged.
+ * the session valve's switch) runs it, so laptops are unchanged.
  * `SWITCH_AGENT_MEMORY_SHARE` (a fraction, 0.1-0.9) changes the share.
  */
 export function guardLimitsFromEnv(

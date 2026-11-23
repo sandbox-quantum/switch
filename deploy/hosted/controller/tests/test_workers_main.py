@@ -679,7 +679,7 @@ def test_no_client_follows_a_redirect(tmp_path: Path) -> None:
     assert landed == []
 
 
-# ── The box map through the API (E1) ─────────────────────────────────────────
+# ── The box map through the API ─────────────────────────────────────────
 
 import base64  # noqa: E402
 import time  # noqa: E402
@@ -783,7 +783,7 @@ def test_the_mount_setting_is_no_longer_needed(
     assert workers._box_map == workers.kube.box_map
 
 
-# ── The fast passes between full rounds (E2) ─────────────────────────────────
+# ── The fast passes between full rounds ─────────────────────────────────
 
 
 class SlowKube(FakeKube):
@@ -1143,7 +1143,7 @@ def test_the_core_client_sends_box_missing_only_as_asked() -> None:
 
 
 def test_a_box_made_between_the_map_read_and_cores_list_is_not_missing() -> None:
-    """QA's race: the operator writes the map entry, then reports done. The round's map read misses M2, Core's
+    """The race: the operator writes the map entry, then reports done. The round's map read misses M2, Core's
     list (read after) already expects it, and the re-read has it: nothing is reported, and the map is updated."""
     reads: list[dict[str, str]] = [{M1: NS1}, {M1: NS1, M2: NS2}]
 

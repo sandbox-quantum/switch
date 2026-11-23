@@ -140,7 +140,7 @@ isn't part of this folder yet. Until there is one, the WARN line is only in the 
 
 Every login change reloads squid (`squid -k reconfigure`, a HUP), so there's a reload on each box start and stop.
 A reconfigure re-reads the config and restarts the login helpers, but it doesn't close open connections: other
-boxes' tunnels carry on. QA's slot check "a reload doesn't drop other boxes' connections" is the proof of that on a
+boxes' tunnels carry on. The slot check "a reload doesn't drop other boxes' connections" is the proof of that on a
 real cluster.
 
 Until the system nodes' kubelet sync is shortened, the mounted files still lag about a minute, so squid sees a change
