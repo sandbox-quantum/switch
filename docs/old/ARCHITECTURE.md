@@ -3,7 +3,7 @@
 > **Out of date.** This document describes an earlier design of Switch, when it
 > ran on a Matrix homeserver. Matrix was removed in switch-core 0.25.0, and many
 > sections no longer match the code. For how Switch works today, read
-> [`docs/official/internals/`](../official/internals/index.md) and the code;
+> the [Internals](https://docs.switchagents.ai/switch-rooms/internals) section of the published docs and the code;
 > [`CLAUDE.md`](../../CLAUDE.md) lists where to start. It is kept for history.
 
 This document describes how Switch is built: its components, how they fit
@@ -298,8 +298,8 @@ agent's name/icon, preserving threads and attachments.
   `BridgeCore.handle_protection_verdict`
   ([`bridges/collaboration/bridge_core.py`](../core/switch_core/bridges/collaboration/bridge_core.py))
   has no callers — note it sits in the *collaboration* bridge, not this one.
-  `Room.protection_config` is persisted and settable via
-  `PUT /gateway/rooms/{id}/protection`, but nothing reads it yet.
+  `Room.protection_config`, once persisted and settable via
+  `PUT /gateway/rooms/{id}/protection` but never read, has been removed.
 
 ### 4.4 In-room commands
 

@@ -27,9 +27,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+from starlette.types import ASGIApp
 from uvicorn.main import STARTUP_FAILURE
 
 from switch_core.accounts.organization_purge import OrganizationPurge
+from switch_core.accounts.suspension import SuspensionEffects
 from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -96,6 +98,7 @@ from switch_core.bridges.collaboration.webhooks import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.service import ChatService
 from switch_core.chats.signals import ChatSignals
+from switch_core.chats.stream_reads import chat_stream_slots_for
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
@@ -124,6 +127,7 @@ from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
     app_connect_args,
     create_engine_from_config,
+    create_lease_engine,
     create_session_factory,
     create_unpooled_engine,
 )
@@ -284,6 +288,29 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 # regardless. Anything with a deadline of its own must fit inside it — see
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
 _FORCED_EXIT_GRACE_SECONDS = 3.0
+
+
+def uvicorn_config(app: ASGIApp, config: SwitchConfig) -> uvicorn.Config:
+    """How the server listens. A request's client address is taken from
+    `X-Forwarded-For` only when it comes from `FORWARDED_ALLOW_IPS`, the
+    ingress in front of this server; the access log, sign-in events and the
+    refusal breaker all read the address this resolves."""
+    trusted = [entry.strip() for entry in config.forwarded_allow_ips.split(",")]
+    if "*" in trusted:
+        logger.warning(
+            "FORWARDED_ALLOW_IPS is '*': every caller's X-Forwarded-For is "
+            "believed, so client addresses in the access log and security "
+            "events can be forged. Set it to the ingress's address range."
+        )
+    return uvicorn.Config(
+        app,
+        host=config.server_host,
+        port=config.server_port,
+        log_level="info",
+        log_config=None,
+        proxy_headers=True,
+        forwarded_allow_ips=config.forwarded_allow_ips,
+    )
 
 
 class _Server(uvicorn.Server):
@@ -806,12 +833,18 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     # This process's row in `switch_core_processes`, claimed before anything
     # can record a connection against it and held until the process drains.
-    # What another process reads to know this one is alive.
+    # What another process reads to know this one is alive. Renewed on a
+    # connection of its own, outside the pool, so requests and streams that
+    # fill the pool cannot make it lapse and drop everything this process
+    # holds (`create_lease_engine`).
+    lease_engine = create_lease_engine(config)
+    instrument_queries(lease_engine)
     process_lease = ProcessLease(
         process_id=process_id,
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in config.keyring.keys],
+        renewal_session_factory=create_session_factory(lease_engine),
     )
     await process_lease.renew()
     logger.info("Claimed switch-core process lease %s", process_id)
@@ -1357,6 +1390,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         trust_client=trust_client,
         message_observer=message_telemetry,
         telemetry=telemetry,
+        stream_slots=chat_stream_slots_for(config.db_pool_size, config.db_max_overflow),
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
@@ -1553,6 +1587,15 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # What suspending an agent or a person, or lifting it, sets going once it
+    # commits (`gateway/suspension.py`).
+    gateway_app.state.suspension_effects = SuspensionEffects(
+        session_factory=session_factory,
+        connections=protocol.connections,
+        api_key_cache=protocol.api_key_cache,
+        broker=service_broker,
+        management=management.service if management is not None else None,
+    )
     # A bus skips signals carrying its own process id, as acted on locally
     # already; the purge acts on nothing here, so it signals under its own id
     # for this process to hear too, as the CLI does.
@@ -1862,13 +1905,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # deployment with an install date.
     await telemetry.report_installed()
 
-    server_config = uvicorn.Config(
-        agent_bridge_app,
-        host=config.server_host,
-        port=config.server_port,
-        log_level="info",
-        log_config=None,
-    )
+    server_config = uvicorn_config(agent_bridge_app, config)
     server = _Server(server_config)
 
     loop = asyncio.get_event_loop()

@@ -149,6 +149,7 @@ from switch_core.room_invites import (
     with_subagents,
 )
 from switch_core.room_policy import RoomAction, RoomCaller, RoomPermissionError
+from switch_core.room_read_only import RoomReadOnly
 from switch_core.room_schedules import (
     TEXT_LIMIT,
     ScheduleError,
@@ -166,6 +167,7 @@ from switch_core.room_wide_mention import (
     reject_reserved_mention_name,
     room_wide_mention_content,
 )
+from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.telemetry import TelemetryService, emit_after_commit, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -404,8 +406,16 @@ def _describe_room(room: Room) -> RoomDescriptor:
         transport_room_id=room.transport_room_id,
         matrix_room_id=room.transport_room_id,
         archived=room.archived_at is not None,
+        frozen=room.frozen_at is not None,
         bridge_id=room.bridge_id,
     )
+
+
+def _require_postable(room: RoomDescriptor) -> None:
+    if room.frozen:
+        raise RoomReadOnly(room.name, "frozen")
+    if room.archived:
+        raise RoomReadOnly(room.name, "archived")
 
 
 class AgentCore:
@@ -654,6 +664,7 @@ class AgentCore:
                     parent_agent_id=parent_agent_id,
                     tools=tool_specs,
                     models=model_specs,
+                    registration_path=registration_path,
                 )
                 logger.info("Re-registered agent: %s (%s)", name, agent_id)
             else:
@@ -679,6 +690,7 @@ class AgentCore:
                     tools=tool_specs,
                     models=model_specs,
                     addressing_policy=addressing_policy,
+                    registration_path=registration_path,
                 )
                 logger.info("Registered agent: %s (%s)", name, agent_id)
                 newly_registered = True
@@ -731,6 +743,7 @@ class AgentCore:
         tools: list[ToolSpec],
         models: list[ModelSpec],
         addressing_policy: AddressingPolicy | None,
+        registration_path: str,
     ) -> str:
         api_key_record = ApiKey(
             type="agent",
@@ -793,6 +806,21 @@ class AgentCore:
                 ),
             )
 
+        await record_audit_event(
+            session,
+            tenant_id=agent.tenant_id,
+            actor_user_id=owner_id,
+            action=AuditAction.AGENT_REGISTERED,
+            target_type="agent",
+            target_id=agent.id,
+            details={
+                "agent_name": name,
+                "agent_type": agent_type,
+                "connector_type": connector_type,
+                "registration_path": registration_path,
+                "parent_agent_id": parent_agent_id,
+            },
+        )
         await session.commit()
         self.client_lifecycle.start_client(client_record)
         self.client_lifecycle.announce(client_record.tenant_id, [client_record.id])
@@ -817,6 +845,7 @@ class AgentCore:
         parent_agent_id: str | None,
         tools: list[ToolSpec],
         models: list[ModelSpec],
+        registration_path: str,
     ) -> str:
         new_api_key_record = ApiKey(
             type="agent",
@@ -881,6 +910,20 @@ class AgentCore:
                 ),
             )
 
+        await record_audit_event(
+            session,
+            tenant_id=existing.tenant_id,
+            actor_user_id=owner_id,
+            action=AuditAction.AGENT_REREGISTERED,
+            target_type="agent",
+            target_id=existing.id,
+            details={
+                "agent_name": existing.name,
+                "agent_type": agent_type,
+                "connector_type": connector_type,
+                "registration_path": registration_path,
+            },
+        )
         await session.commit()
         self.api_key_cache.invalidate_agent(existing.id)
         if profile_changed:
@@ -1570,20 +1613,29 @@ class AgentCore:
         return tenant_session(self.session_factory, tenant_id)
 
     async def require_room_poster(self, agent_id: str, room_id: str) -> RoomDescriptor:
-        """`require_room_member`, and raise `BudgetExceeded` if the agent has
-        reached a budget covering it. One session for both, so a post still
-        costs one pool checkout."""
+        """`require_room_member`, and raise `RoomReadOnly` if the room is
+        frozen or archived and `BudgetExceeded` if the agent has reached a
+        budget covering it. One session for all of it, so a post still costs
+        one pool checkout.
+
+        The read-only check here is the early answer, before Switch Trust or
+        an upload runs; the router refuses the row itself as well
+        (`room_read_only.py`), so a descriptor held a moment too long cannot
+        let a post through."""
         tenant_id = require_tenant_id()
         access = self.room_access
         room = access.member(tenant_id, agent_id, room_id)
+        if room is not None:
+            _require_postable(room)
         if room is not None and access.unbudgeted(tenant_id, agent_id):
             return room
         async with self.session_factory() as session:
             if room is None:
                 room = await self._room_member_in(session, agent_id, room_id)
+                _require_postable(room)
             ticket = access.ticket()
             covered = await self.budget_guard.require_within(
-                session, tenant_id=tenant_id, agent_id=agent_id
+                session, tenant_id=tenant_id, agent_id=agent_id, room_id=room_id
             )
         if not covered:
             access.put_unbudgeted(tenant_id, agent_id, ticket)
@@ -1774,6 +1826,7 @@ class AgentCore:
         content."""
         check = await check_message(
             self.trust_client,
+            self.session_factory,
             tenant_id=require_tenant_id(),
             role="assistant",
             content=content,
@@ -1823,6 +1876,7 @@ class AgentCore:
         body_check, card_check = await asyncio.gather(
             check_message(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 content=content,
@@ -1830,6 +1884,7 @@ class AgentCore:
             ),
             check_message(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 content=trust_text(ui),
@@ -1897,7 +1952,7 @@ class AgentCore:
         checked), as its own notice threaded under the flagged reply's own
         event id — not the pre-send thread the agent happened to be posting
         in — rather than appended to the reply itself. Mirrors how
-        `CollaborationCore._post_trust_notice` threads an ALERTED/ERRORED
+        `CollaborationCore._post_sender_notice` threads an ALERTED/ERRORED
         human-authored message under the message that triggered it.
 
         Returns None once the notice is posted, or why it was not (logged as
@@ -2135,6 +2190,7 @@ class AgentCore:
         if await trust_is_active(self.trust_client, tenant_id):
             files_check_task = check_attachments(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 files=files,
@@ -2144,6 +2200,7 @@ class AgentCore:
                 caption_check, files_check = await asyncio.gather(
                     check_message(
                         self.trust_client,
+                        self.session_factory,
                         tenant_id=tenant_id,
                         role="assistant",
                         content=caption_text,
@@ -2190,6 +2247,16 @@ class AgentCore:
         try:
             for index, (data, filename, mimetype) in enumerate(files):
                 media_uri = await client.upload_media(data, mimetype, filename)
+                log_security_event(
+                    SecuritySignal.ATTACHMENT_UPLOADED,
+                    tenant_id=tenant_id,
+                    actor_user_id=None,
+                    target_type="room",
+                    target_id=room.id,
+                    agent_id=agent_id,
+                    room_id=room.id,
+                    details={"media_uri": media_uri, "size": len(data)},
+                )
                 msgtype = "m.image" if mimetype.startswith("image/") else "m.file"
                 event_id = await client.send_media(
                     room.transport_room_id,
@@ -3036,6 +3103,16 @@ class AgentCore:
             resp = await client.transport.download_media(media_uri)
         except TransportError as exc:
             raise ValueError(f"Failed to download media {media_uri}: {exc}") from exc
+        log_security_event(
+            SecuritySignal.ATTACHMENT_DOWNLOADED,
+            tenant_id=client.tenant_id,
+            actor_user_id=None,
+            target_type="room",
+            target_id=room_id,
+            agent_id=agent_id,
+            room_id=room_id,
+            details={"media_uri": media_uri, "size": len(resp.body)},
+        )
         return resp.body, resp.content_type or "", resp.filename
 
     # ── Events ───────────────────────────────────────────────────────────────
@@ -3232,7 +3309,6 @@ class AgentCore:
         bridge_id: str | None,
         internal_only: bool = False,
         admin_mode: bool = False,
-        security_config: dict[str, Any] | None = None,
         instructions: str | None = None,
         reference_ids: list[str] | None = None,
         package_ids: list[str] | None = None,
@@ -3337,7 +3413,6 @@ class AgentCore:
                 bridge_id=bridge_id,
                 internal_only=internal_only,
                 admin_mode=admin_mode,
-                protection_config=security_config,
                 instructions=instructions,
                 created_by=agent.owner_id,
                 created_by_kind="agent",

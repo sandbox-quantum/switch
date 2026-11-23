@@ -463,8 +463,9 @@ no further setup.
   `decision.networkPolicy.enabled: false`.
 
 To use a decision service run elsewhere instead, leave `decision.enabled` off
-and set `switchCore.decision.endpointUrl` (and `bedrockEnabled` if that service
-allows Bedrock). If that service requires a token, put it in a Secret and
+and set `switchCore.decision.endpointUrl`. Workspaces are offered the
+backends that service lists in its `/health`; `bedrockEnabled` matters only
+for a service too old to list them, to offer Haiku on Bedrock. If that service requires a token, put it in a Secret and
 name it in `switchCore.decision.apiKey.existingSecret` (key
 `existingSecretKey`, default `token`); switch-core sends it as
 `DECISION_API_KEY`. Setting both `decision.enabled` and an endpoint is refused

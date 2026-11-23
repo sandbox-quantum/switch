@@ -13,8 +13,24 @@ timeout). The choices:
   workspace's key. It runs in the server's decision service, which is told
   the backend and key per request, so it needs a server default.
 - `haiku_bedrock`: Claude Haiku on Amazon Bedrock, on the server's own AWS
-  credentials, also in the server's decision service: offered only when the
-  operator sets `DECISION_BEDROCK_ENABLED`.
+  credentials, also in the server's decision service.
+- `self_hosted`: the model the server's decision service runs itself, on its
+  own model server.
+- `gemini`: Gemini in the server's decision service, which falls back to
+  another model when Gemini is slow if its operator configured one.
+
+The last four run in the server's decision service, told the backend per
+request (`SERVICE_BACKENDS`), so they need a server default. Which of them a
+workspace is offered is the service's say, from the backends its `/health`
+lists (`decision/offers.py`); the gateway reads that when an admin opens or
+saves the page. Deciding a message never waits on `/health`: a saved choice
+the service has stopped running is a failed decision, counted and told to the
+room, not a silent switch to something else.
+
+A stored choice this release does not know (written by a newer release during
+a rolling deploy or after a rollback) turns auto-route off in the workspace,
+with a warning, rather than sending the workspace's rooms anywhere it did not
+choose.
 
 Auto-route is available in a workspace when the `decision_routing` flag is
 on and the workspace resolves to a backend other than none. The room detail,
@@ -23,8 +39,10 @@ the room toggle and `!auto-route` all ask `DecisionAvailability`.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, get_args
 
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 
@@ -34,7 +52,22 @@ if TYPE_CHECKING:
     from switch_core.config import SwitchConfig
     from switch_core.db.models import DecisionSettings
 
-Backend = Literal["none", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+logger = logging.getLogger(__name__)
+
+Backend = Literal[
+    "none", "endpoint", "haiku_anthropic", "haiku_bedrock", "self_hosted", "gemini"
+]
+BACKENDS: frozenset[str] = frozenset(get_args(Backend))
+# A choice that runs in the server's decision service, and the backend the
+# service is told in `X-Decision-Backend` (its name in the service's
+# `/health` `backends`).
+ServiceChoice = Literal["haiku_anthropic", "haiku_bedrock", "self_hosted", "gemini"]
+SERVICE_BACKENDS: Mapping[ServiceChoice, str] = {
+    "haiku_anthropic": "anthropic",
+    "haiku_bedrock": "bedrock",
+    "self_hosted": "systemone",
+    "gemini": "gemini_decision",
+}
 Source = Literal["workspace", "server_default"]
 
 FLAG_OFF_REASON = (
@@ -48,6 +81,11 @@ NO_BACKEND_REASON = (
     "Auto-route needs a decision service. A workspace admin can set one up in "
     f"{DECISION_ROUTING_PAGE}."
 )
+UNKNOWN_CHOICE_REASON = (
+    "This workspace's saved decision service is one this version of Switch "
+    "doesn't know, so auto-route is off here until it is updated or a "
+    f"workspace admin chooses again in {DECISION_ROUTING_PAGE}."
+)
 WORKSPACE_OFF_REASON = (
     "This workspace's admins turned auto-route off by choosing no decision "
     f"service. A workspace admin can choose one in {DECISION_ROUTING_PAGE}."
@@ -57,7 +95,11 @@ WORKSPACE_OFF_REASON = (
 @dataclass(frozen=True)
 class ServerDefault:
     """The decision service in the server's configuration: every workspace
-    that has chosen nothing uses it, and Haiku runs in it."""
+    that has chosen nothing uses it, and the service-run choices run in it.
+
+    `bedrock_enabled` (`DECISION_BEDROCK_ENABLED`) is read only when that
+    service does not list its backends in `/health` (one older than this
+    release): then it alone says whether Haiku on Bedrock is offered."""
 
     endpoint_url: str | None
     api_key: str | None
@@ -74,16 +116,6 @@ class ServerDefault:
     @property
     def configured(self) -> bool:
         return self.endpoint_url is not None
-
-    @property
-    def haiku_anthropic(self) -> bool:
-        """Whether a workspace may choose Haiku on the Anthropic API."""
-        return self.configured
-
-    @property
-    def haiku_bedrock(self) -> bool:
-        """Whether a workspace may choose Haiku on Bedrock."""
-        return self.configured and self.bedrock_enabled
 
 
 @dataclass(frozen=True)
@@ -128,15 +160,24 @@ def resolve(row: DecisionSettings | None, server: ServerDefault) -> ResolvedSett
             threshold=None,
             reason=None,
         )
-    backend: Backend = row.backend  # type: ignore[assignment]
     reason: str | None = None
+    if row.backend not in BACKENDS:
+        logger.warning(
+            "Workspace %s saved the decision backend %r, which this release does "
+            "not know (a newer release wrote it); auto-route is off there until "
+            "this release is replaced or an admin chooses again",
+            row.tenant_id,
+            row.backend[:40],
+        )
+        backend: Backend = "none"
+        reason = UNKNOWN_CHOICE_REASON
+    else:
+        backend = row.backend  # type: ignore[assignment]
     if backend == "none":
-        reason = WORKSPACE_OFF_REASON
-    elif backend in ("haiku_anthropic", "haiku_bedrock") and not server.configured:
+        reason = reason or WORKSPACE_OFF_REASON
+    elif backend in SERVICE_BACKENDS and not server.configured:
         # Saved while the server had a decision service, which has since
-        # gone: Haiku has nowhere to run.
-        backend, reason = "none", NO_BACKEND_REASON
-    elif backend == "haiku_bedrock" and not server.bedrock_enabled:
+        # gone: the choice has nowhere to run.
         backend, reason = "none", NO_BACKEND_REASON
     return ResolvedSettings(
         source="workspace",

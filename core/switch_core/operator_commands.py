@@ -1,5 +1,6 @@
 """What the platform operator's server commands share: `switch-orgs`,
-`switch-accounts`, `switch-connector-apps` and `switch-promote-org-admin`.
+`switch-accounts`, `switch-connector-apps`, `switch-promote-org-admin` and
+`switch-suspend`.
 
 The operator has no pages in the dashboard. What they do across the whole
 deployment they do with these commands, run where switch-core runs, with its

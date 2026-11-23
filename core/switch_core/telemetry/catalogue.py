@@ -221,9 +221,15 @@ TRISTATE = one_of("true", "false", "unknown")
 
 
 # Which decision backend a workspace's auto-route used: the server's own
-# decision service as its default, the workspace's own endpoint, or Haiku.
+# decision service as its default, the workspace's own endpoint, or a choice
+# that service runs (Haiku, its self-hosted model, Gemini).
 DECISION_BACKEND = one_of(
-    "server_default", "endpoint", "haiku_anthropic", "haiku_bedrock"
+    "server_default",
+    "endpoint",
+    "haiku_anthropic",
+    "haiku_bedrock",
+    "self_hosted",
+    "gemini",
 )
 
 # The confidence the decision service gave its choice, in tenths above one

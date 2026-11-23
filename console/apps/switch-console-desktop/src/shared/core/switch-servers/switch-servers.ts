@@ -1051,10 +1051,31 @@ export type ClearTrustSettingsResult =
 
 /**
  * Who decides an untagged message in a workspace's auto-route rooms: nobody
- * (`none`), a self-hosted decision endpoint, or Haiku run inside the server's
- * decision service, through the Anthropic API or Amazon Bedrock.
+ * (`none`), the workspace's own decision endpoint, or a model run inside the
+ * server's decision service (`DecisionServiceChoice`).
  */
-export type DecisionBackend = 'none' | 'endpoint' | 'haiku_anthropic' | 'haiku_bedrock';
+export type DecisionBackend =
+  | 'none'
+  | 'endpoint'
+  | 'haiku_anthropic'
+  | 'haiku_bedrock'
+  | 'self_hosted'
+  | 'gemini';
+
+/** The choices that run inside the server's decision service: Haiku with the
+ * workspace's Anthropic key, Haiku on Amazon Bedrock, the service's own
+ * self-hosted model, and Gemini (with the fallback the service applies). */
+export type DecisionServiceChoice = 'haiku_anthropic' | 'haiku_bedrock' | 'self_hosted' | 'gemini';
+
+/** A backend as the server's decision service describes it: its model, the
+ * label people see, the confidence threshold it uses when the workspace sets
+ * none, and what it falls back to when it is slow. */
+export type DecisionBackendInfo = {
+  label: string;
+  model: string;
+  threshold: number | null;
+  fallback: { backend: string; model: string; label: string; afterS: number } | null;
+};
 
 /**
  * A workspace's decision routing settings (`GET /decision-settings`), read for
@@ -1078,6 +1099,9 @@ export type DecisionSettings = {
   /** Null while the workspace uses the server default. */
   workspace: {
     backend: DecisionBackend;
+    /** A saved choice this server's version doesn't know (a newer one saved
+     * it): `backend` then reads `none`, which is what applies. */
+    unrecognizedBackend: string | null;
     endpoint: string | null;
     threshold: number | null;
     hasApiKey: boolean;
@@ -1085,10 +1109,31 @@ export type DecisionSettings = {
     apiKeyUnreadable: boolean;
     updatedAt: string;
   } | null;
-  serverDefault: { configured: boolean; endpoint: string | null; hasApiKey: boolean };
-  /** Which Haiku backends the server can run: both need its decision service,
-   * and Bedrock also its operator's say-so. */
-  options: { haikuAnthropic: boolean; haikuBedrock: boolean };
+  serverDefault: {
+    configured: boolean;
+    endpoint: string | null;
+    hasApiKey: boolean;
+    /** The default backend as the decision service describes it; null when
+     * there is none, it can't be read, or the server predates this. */
+    info: DecisionBackendInfo | null;
+  };
+  /**
+   * Which choices run by the server's decision service a workspace may newly
+   * save, and how the service describes each one it lists. `source` says
+   * where that came from: the service's own list (`service`), the server's
+   * configuration for a service that lists none (`configuration`), nowhere
+   * because the service couldn't be read (`unavailable`: only what is saved
+   * is offered, and `note` says why), or no service at all (`none`).
+   */
+  options: {
+    haikuAnthropic: boolean;
+    haikuBedrock: boolean;
+    selfHosted: boolean;
+    gemini: boolean;
+    details: Partial<Record<DecisionServiceChoice, DecisionBackendInfo>>;
+    source: 'service' | 'configuration' | 'unavailable' | 'none';
+    note: string | null;
+  };
 };
 
 /**
@@ -1148,7 +1193,8 @@ export type DecisionTestErrorCode =
   | 'key_refused'
   | 'bad_answer'
   | 'backend_unavailable'
-  | 'not_configured';
+  | 'not_configured'
+  | 'refused';
 
 /** One sample decision run against unsaved values: the pick (null for none),
  * its confidence and latency, or why it failed. */

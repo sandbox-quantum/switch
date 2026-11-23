@@ -27,7 +27,15 @@ from typing import Literal
 HEARTBEAT_INTERVAL_SECONDS = 10.0
 HEARTBEAT_TTL_SECONDS = 30.0
 
-CloseCode = Literal["taken_over", "heartbeat_lapsed", "closed", "launch_superseded"]
+# `account_suspended` ends only a controller's stream: its owner was suspended,
+# and it is refused until that is lifted (`controller_presence.OWNER_SUSPENDED`).
+CloseCode = Literal[
+    "taken_over",
+    "heartbeat_lapsed",
+    "closed",
+    "launch_superseded",
+    "account_suspended",
+]
 
 
 @dataclass(frozen=True, slots=True)
