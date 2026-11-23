@@ -160,10 +160,17 @@ class ControllerConnectionLedger:
                 for transition in written:
                     self._announce(transition.tenant_id, transition.controller_id)
         except BaseException:
-            for transition in unwritten:
-                self._pending.setdefault(
-                    (transition.controller_id, transition.connection_id), transition
-                )
+            # Ahead of what was queued while the write was failing, which
+            # happened after it; a connection queued again since keeps only
+            # its newer transition, where that was queued.
+            arrived = self._pending
+            self._pending = {
+                (transition.controller_id, transition.connection_id): transition
+                for transition in unwritten
+            }
+            for key, transition in arrived.items():
+                self._pending.pop(key, None)
+                self._pending[key] = transition
             raise
 
     async def _write_one(self, session: AsyncSession, transition: _Transition) -> bool:
