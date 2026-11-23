@@ -91,12 +91,18 @@ export function clearSignInMarks(): void {
 
 const NEXT_LIMIT = 2048;
 
+/** Control characters, which a browser drops from an address before reading
+ * it: `/\t/evil.example` would arrive as `//evil.example`, another site. */
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+
 /** `value` as a place on this dashboard to land after signing in, or null
  * when it is not one: anything a browser could read as another site (a
- * scheme, `//`, a backslash) lands on the home page instead. The server
- * checks the same of what it is sent. */
+ * scheme, `//`, a backslash, a control character) lands on the home page
+ * instead. The server checks the same of what it is sent, and also that it
+ * is one of the dashboard's pages. */
 export function dashboardLocation(value: string | null): string | null {
   if (value === null || value === "" || value.length > NEXT_LIMIT) return null;
+  if (CONTROL_CHARACTER.test(value)) return null;
   if (!value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return null;
   return value;
 }

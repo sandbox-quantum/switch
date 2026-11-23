@@ -313,6 +313,11 @@ class TestCompletingASignIn:
             "//elsewhere.example.test/x",
             "/\\elsewhere",
             "rooms",
+            # A browser drops a tab from an address: this is //elsewhere.
+            "/\t/elsewhere.example.test",
+            "/\x00/elsewhere.example.test",
+            # On this host, but not one of the dashboard's pages.
+            "/gateway/auth/oidc/login",
         ],
     )
     async def test_a_landing_place_off_the_dashboard_lands_on_its_home(
@@ -337,10 +342,10 @@ class TestCompletingASignIn:
     ) -> None:
         app = _app(session_factory, _WorkOS(), _config())
         async with _client(app) as client:
-            first = await _start(client, "?next=%2Ffirst")
-            second = await _start(client, "?next=%2Fsecond")
-            assert (await _come_back(client, second)).headers["location"] == "/second"
-            assert (await _come_back(client, first)).headers["location"] == "/first"
+            first = await _start(client, "?next=%2Frooms")
+            second = await _start(client, "?next=%2Fagents")
+            assert (await _come_back(client, second)).headers["location"] == "/agents"
+            assert (await _come_back(client, first)).headers["location"] == "/rooms"
 
     async def test_an_unverified_address_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]

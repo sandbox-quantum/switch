@@ -1506,6 +1506,12 @@ class TestWhereAGenericSignInLands:
         await oidc_routes.oidc_login(
             request=request,  # type: ignore[arg-type]
             config=_config(),
+            next="/\t/elsewhere.example.com/",
+        )
+        assert "oidc_next" not in request.session
+        await oidc_routes.oidc_login(
+            request=request,  # type: ignore[arg-type]
+            config=_config(),
             next="/agents/a1",
         )
         assert request.session["oidc_next"] == "/agents/a1"

@@ -41,6 +41,7 @@ from switch_core.gateway.auth import (
     signed_in_now,
     signup_refused_by_edge,
 )
+from switch_core.gateway.browser_handoff import checked_next
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_config,
@@ -235,7 +236,6 @@ async def _bring_in_organizations(
 
 # ── Where a sign-in lands ────────────────────────────────────────────────────
 
-_NEXT_LIMIT = 2048
 # What WorkOS adds when it sends the browser to the Initiate login URI for a
 # sign-in to continue (an invitation, an organization's own sign-in, a login
 # hint), forwarded to AuthKit's sign-in as they came.
@@ -244,20 +244,20 @@ _FORWARDED_VALUE = re.compile(r"^[A-Za-z0-9_.@+-]{1,512}$")
 
 
 def _dashboard_location(value: str | None) -> str | None:
-    """`value` as a location on the dashboard to land on after signing in,
-    query kept and fragment dropped, or None when it is not one: anything
-    with a scheme or host, or that a browser could read as another host
-    (`//`, `\\`), lands on the dashboard's home instead."""
-    if value is None or not value or len(value) > _NEXT_LIMIT:
-        return None
-    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+    """`value` as a page of the dashboard to land on after signing in, query
+    kept and fragment dropped, or None to land on its home: the one-time
+    link's rule (`browser_handoff.checked_next`), with a place it refuses
+    dropped rather than refused, since the dashboard asks for wherever it
+    was when the session ended and a stray address must not stop anyone
+    signing in."""
+    if not value:
         return None
     try:
-        parts = urlsplit(value)
-    except ValueError:
+        checked = checked_next(value)
+    except HTTPException as refused:
+        logger.info("Sign-in lands on the dashboard's home: %s", refused.detail)
         return None
-    if parts.scheme or parts.netloc:
-        return None
+    parts = urlsplit(checked)
     return urlunsplit(("", "", parts.path, parts.query, ""))
 
 
