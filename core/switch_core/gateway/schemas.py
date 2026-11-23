@@ -2549,6 +2549,31 @@ class BudgetResponse(BaseModel):
     exhausted: bool
 
 
+class FreshnessPolicyCreateRequest(BaseModel):
+    """A new freshness policy. `agent_id` null covers every agent in workspace."""
+
+    agent_id: str | None = None
+    max_age_hours: int = Field(gt=0, le=24 * 365)
+    action: Literal["reset", "refuse"] = "reset"
+
+
+class FreshnessPolicyUpdateRequest(BaseModel):
+    max_age_hours: int = Field(gt=0, le=24 * 365)
+    action: Literal["reset", "refuse"] = "reset"
+
+
+class FreshnessPolicyResponse(BaseModel):
+    """A freshness policy configuration."""
+
+    id: str
+    tenant_id: str
+    agent_id: str | None
+    agent_name: str | None
+    max_age_hours: int
+    action: str
+    created_at: datetime
+
+
 # ── Switch Trust ──────────────────────────────────────────────────────────────
 
 

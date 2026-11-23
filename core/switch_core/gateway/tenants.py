@@ -79,6 +79,11 @@ from switch_core.db.stores.erasure_store import (
     ErasureStore,
     UnknownIdentity,
 )
+from switch_core.db.stores.freshness_policy_store import (
+    FreshnessPolicyNotFound,
+    FreshnessPolicyResolved,
+    FreshnessPolicyStore,
+)
 from switch_core.db.stores.invitation_store import (
     InvitationNotUsableError,
     InvitationStore,
@@ -124,6 +129,7 @@ from switch_core.gateway.dependencies import (
     get_collab_lifecycle,
     get_config,
     get_erasure_store,
+    get_freshness_policy_store,
     get_invitation_store,
     get_invite_mailer,
     get_join_domain_store,
@@ -159,6 +165,8 @@ from switch_core.gateway.schemas import (
     CurrentTenantResponse,
     ErasureCreateRequest,
     ErasureDetail,
+    FreshnessPolicyCreateRequest,
+    FreshnessPolicyResponse,
     InvitationAcceptRequest,
     InvitationAcceptResponse,
     InvitationCreateRequest,
@@ -1046,6 +1054,83 @@ async def delete_budget(
         await budget_store.delete(session, tenant_id=tenant_id, budget_id=budget_id)
     except BudgetNotFound as exc:
         raise HTTPException(status_code=404, detail="Budget not found") from exc
+    await session.commit()
+    return Response(status_code=204)
+
+
+def _freshness_policy_response(p: FreshnessPolicyResolved) -> FreshnessPolicyResponse:
+    return FreshnessPolicyResponse(
+        id=p.id,
+        tenant_id=p.tenant_id,
+        agent_id=p.agent_id,
+        agent_name=p.agent_name,
+        max_age_hours=p.max_age_hours,
+        action=p.action,
+        created_at=p.created_at,
+    )
+
+
+@router.get("/tenants/{tenant_id}/freshness-policies")
+async def list_freshness_policies(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    freshness_store: Annotated[
+        FreshnessPolicyStore, Depends(get_freshness_policy_store)
+    ],
+    _user: Annotated[User, Depends(get_current_user)],
+) -> list[FreshnessPolicyResponse]:
+    """List every session freshness policy configured for the tenant."""
+    _require_bound_tenant(tenant_id)
+    policies = await freshness_store.list_policies(session, tenant_id)
+    return [_freshness_policy_response(p) for p in policies]
+
+
+@router.post("/tenants/{tenant_id}/freshness-policies", status_code=201)
+async def create_or_update_freshness_policy(
+    tenant_id: str,
+    body: FreshnessPolicyCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    freshness_store: Annotated[
+        FreshnessPolicyStore, Depends(get_freshness_policy_store)
+    ],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> FreshnessPolicyResponse:
+    """Set or update a session freshness policy. Admins only."""
+    _require_bound_tenant(tenant_id)
+    policy = await freshness_store.create_or_update(
+        session,
+        tenant_id=tenant_id,
+        agent_id=body.agent_id,
+        max_age_hours=body.max_age_hours,
+        action=body.action,
+    )
+    await session.commit()
+    resolved = await freshness_store.get(session, tenant_id, policy.id)
+    if resolved is None:
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve created freshness policy"
+        )
+    return _freshness_policy_response(resolved)
+
+
+@router.delete("/tenants/{tenant_id}/freshness-policies/{policy_id}", status_code=204)
+async def delete_freshness_policy(
+    tenant_id: str,
+    policy_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    freshness_store: Annotated[
+        FreshnessPolicyStore, Depends(get_freshness_policy_store)
+    ],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> Response:
+    """Remove a session freshness policy. Admins only."""
+    _require_bound_tenant(tenant_id)
+    try:
+        await freshness_store.delete(session, tenant_id=tenant_id, policy_id=policy_id)
+    except FreshnessPolicyNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail="Freshness policy not found"
+        ) from exc
     await session.commit()
     return Response(status_code=204)
 

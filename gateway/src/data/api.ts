@@ -3599,6 +3599,43 @@ export async function deleteBudget(tenantId: string, budgetId: string): Promise<
   if (!res.ok) throw await failure(res);
 }
 
+// ── Session freshness policies ────────────────────────────────────────────────
+
+export interface FreshnessPolicy {
+  id: string;
+  tenant_id: string;
+  agent_id: string | null;
+  agent_name: string | null;
+  max_age_hours: number;
+  action: "reset" | "refuse";
+  created_at: string;
+}
+
+export interface FreshnessPolicyCreate {
+  agent_id?: string | null;
+  max_age_hours: number;
+  action?: "reset" | "refuse";
+}
+
+export async function fetchFreshnessPolicies(tenantId: string): Promise<FreshnessPolicy[] | null> {
+  return fetchJson<FreshnessPolicy[]>(`/tenants/${tenantId}/freshness-policies`);
+}
+
+export async function setFreshnessPolicy(
+  tenantId: string,
+  body: FreshnessPolicyCreate,
+): Promise<FreshnessPolicy> {
+  return jsonRequest<FreshnessPolicy>(`/tenants/${tenantId}/freshness-policies`, "POST", body);
+}
+
+export async function deleteFreshnessPolicy(tenantId: string, policyId: string): Promise<void> {
+  const res = await gatewayFetch(`${BASE}/tenants/${tenantId}/freshness-policies/${policyId}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) throw await failure(res);
+}
+
 // ── Service connections and grants ───────────────────────────────────────────
 
 /** A grant giving an agent access to its owner's connection to a service. */
