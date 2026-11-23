@@ -235,12 +235,13 @@ class TestCompletingASignIn:
             "Ada Lovelace",
             None,
         )
-        assert (row.user_id, row.provider, row.session_id, row.followed) == (
-            user.id,
-            "workos",
-            "session_ONE",
-            True,
-        )
+        assert (
+            row.user_id,
+            row.provider,
+            row.provider_user_id,
+            row.session_id,
+            row.followed,
+        ) == (user.id, "workos", "user_ADA", "session_ONE", True)
         async with session_factory() as session:
             identity = await session.scalar(
                 select(OidcIdentity).where(OidcIdentity.user_id == user.id)
@@ -431,6 +432,7 @@ class TestCompletingASignIn:
                 session,
                 user_id=other.id,
                 provider="workos",
+                provider_user_id="user_OTHER",
                 session_id="session_ONE",
                 followed=True,
                 now=datetime.now(UTC),

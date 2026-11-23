@@ -519,7 +519,8 @@ class IdentitySession(Base):
     follows it, so a session ended there (revoked, its password reset, timed
     out) ends the Switch session that came from it, and signing out of Switch
     ends it there too (`gateway/identity_sessions.py`). Nothing of the
-    provider's but its session id is kept: no token.
+    provider's is kept but its session id and the user id it lists that
+    session under (`provider_user_id`): no token.
 
     The session cookie names a row by `id` (its `isid` claim), never by the
     provider's `session_id`, so a session id the provider hands back after a
@@ -549,6 +550,9 @@ class IdentitySession(Base):
         Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     provider: Mapped[str] = mapped_column(Text, nullable=False)
+    # The provider's own id for the person (a WorkOS user id), which their
+    # sessions are listed under there; `user_id` is Switch's account.
+    provider_user_id: Mapped[str] = mapped_column(Text, nullable=False)
     session_id: Mapped[str] = mapped_column(Text, nullable=False)
     followed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

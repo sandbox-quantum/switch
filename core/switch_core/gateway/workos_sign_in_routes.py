@@ -229,6 +229,7 @@ async def finish_organization_sign_in(
                 session,
                 user_id=user.id,
                 provider="workos",
+                provider_user_id=token.subject,
                 session_id=session_id,
                 followed=False,
                 now=datetime.now(UTC),

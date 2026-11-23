@@ -208,7 +208,11 @@ class TestTheSignInIsRecorded:
         assert signed_in.status_code == 303
         async with session_factory() as session:
             [row] = await IdentitySessionStore().live_for_user(session, ada)
-        assert (row.session_id, row.followed) == ("session_ADMIN", False)
+        assert (row.session_id, row.provider_user_id, row.followed) == (
+            "session_ADMIN",
+            f"user_{ada}",
+            False,
+        )
 
 
 class TestChangingMembers:

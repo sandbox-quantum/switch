@@ -92,7 +92,8 @@ After a 30-day grace period, every pass also deletes:
 Once a pass has been through every workspace, it also deletes the records of
 people's sessions at WorkOS AuthKit (`identity_sessions`) that ended, or began,
 more than 44 days ago: the 14 days a sign-in can last, then the same 30-day
-grace. They hold an account id and WorkOS's session id, nothing else.
+grace. They hold an account id, its WorkOS user id and WorkOS's session id,
+nothing else.
 
 ### What is deliberately not touched
 

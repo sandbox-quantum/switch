@@ -27,6 +27,10 @@ async def _user(session_factory: async_sessionmaker[AsyncSession]) -> str:
         return user.id
 
 
+def _workos_user(user_id: str) -> str:
+    return f"user_{user_id}"
+
+
 async def _record(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: str,
@@ -40,6 +44,7 @@ async def _record(
             session,
             user_id=user_id,
             provider="workos",
+            provider_user_id=_workos_user(user_id),
             session_id=session_id,
             followed=followed,
             now=now,
@@ -65,6 +70,7 @@ async def test_a_live_session_signed_in_to_again_is_the_same_row(
     assert row is not None
     assert row.checked_at == later
     assert row.followed
+    assert row.provider_user_id == _workos_user(user_id)
 
 
 async def test_an_ended_session_handed_out_again_gets_a_new_row(
@@ -96,7 +102,26 @@ async def test_a_session_live_under_someone_else_is_refused(
                 session,
                 user_id=eve,
                 provider="workos",
+                provider_user_id=_workos_user(eve),
                 session_id="session_C",
+                followed=True,
+                now=NOW,
+            )
+
+
+async def test_a_session_live_under_another_provider_user_is_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    ada = await _user(session_factory)
+    await _record(session_factory, ada, "session_C2")
+    async with session_factory() as session:
+        with pytest.raises(IdentitySessionConflict):
+            await IdentitySessionStore().record(
+                session,
+                user_id=ada,
+                provider="workos",
+                provider_user_id="user_SOMEONE_ELSE",
+                session_id="session_C2",
                 followed=True,
                 now=NOW,
             )

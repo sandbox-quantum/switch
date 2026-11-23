@@ -32,6 +32,7 @@ class IdentitySessionRow:
     id: str
     user_id: str
     provider: str
+    provider_user_id: str
     session_id: str
     followed: bool
     checked_at: datetime
@@ -43,6 +44,7 @@ def _row(session: IdentitySession) -> IdentitySessionRow:
         id=session.id,
         user_id=session.user_id,
         provider=session.provider,
+        provider_user_id=session.provider_user_id,
         session_id=session.session_id,
         followed=session.followed,
         checked_at=session.checked_at,
@@ -57,6 +59,7 @@ class IdentitySessionStore:
         *,
         user_id: str,
         provider: str,
+        provider_user_id: str,
         session_id: str,
         followed: bool,
         now: datetime,
@@ -80,10 +83,12 @@ class IdentitySessionStore:
                 )
             )
             if live is not None:
-                if live.user_id != user_id:
+                if live.user_id != user_id or live.provider_user_id != provider_user_id:
                     raise IdentitySessionConflict(
                         f"{provider} session {session_id} is live under account "
-                        f"{live.user_id}, not {user_id}"
+                        f"{live.user_id} ({provider} user "
+                        f"{live.provider_user_id}), not {user_id} "
+                        f"({provider_user_id})"
                     )
                 live.checked_at = now
                 live.followed = live.followed or followed
@@ -92,6 +97,7 @@ class IdentitySessionStore:
             row = IdentitySession(
                 user_id=user_id,
                 provider=provider,
+                provider_user_id=provider_user_id,
                 session_id=session_id,
                 followed=followed,
                 created_at=now,

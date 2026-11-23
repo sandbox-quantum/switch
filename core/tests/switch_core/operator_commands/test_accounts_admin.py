@@ -79,6 +79,7 @@ async def _identity_session(
             session,
             user_id=user_id,
             provider="workos",
+            provider_user_id="user_ACCOUNT",
             session_id=session_id,
             followed=True,
             now=datetime.now(UTC),

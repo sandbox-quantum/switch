@@ -8,6 +8,7 @@ Real HTTP against real Postgres; WorkOS is a stand-in.
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -34,7 +35,7 @@ from switch_core.gateway.auth import (
 from switch_core.gateway.auth_routes import router
 from switch_core.gateway.identity_sessions import CHECK_EVERY, IdentitySessions
 from switch_core.keys import Keyring, Purpose
-from switch_core.workos_authkit import AuthKitUnavailable
+from switch_core.workos_authkit import AuthKit, AuthKitUnavailable
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
@@ -51,6 +52,9 @@ class _WorkOS:
         self.fail: Exception | None = None
 
     async def active_session_ids(self, user_id: str) -> set[str]:
+        # WorkOS lists sessions under its own user id, never a Switch
+        # account's.
+        assert user_id.startswith("user_"), f"not a WorkOS user id: {user_id}"
         self.asked.append(user_id)
         if self.fail is not None:
             raise self.fail
@@ -102,6 +106,11 @@ async def _person(session_factory: async_sessionmaker[AsyncSession], email: str)
         return user.id
 
 
+def _workos_user(user_id: str) -> str:
+    """The WorkOS user a test account signs in as."""
+    return f"user_{user_id.replace('-', '')[:12].upper()}"
+
+
 async def _signed_in(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: str,
@@ -113,6 +122,7 @@ async def _signed_in(
             session,
             user_id=user_id,
             provider="workos",
+            provider_user_id=_workos_user(user_id),
             session_id=session_id,
             followed=True,
             now=checked_at,
@@ -240,7 +250,7 @@ async def test_a_sign_in_not_checked_lately_is_asked_about_and_kept_while_alive(
         assert (await client.get("/auth/me")).status_code == 200
         await _settle(follower)
         assert (await client.get("/auth/me")).status_code == 200
-    assert workos.asked == [ada]
+    assert workos.asked == [_workos_user(ada)]
     async with session_factory() as session:
         row = await _STORE.get(session, row_id)
     assert row is not None and row.ended_at is None and row.checked_at > stale
@@ -283,7 +293,7 @@ async def test_requests_at_once_ask_workos_once(
     async with _client(app, _cookie(ada, "ada-once@example.test", row_id)) as client:
         await asyncio.gather(*(client.get("/auth/me") for _ in range(5)))
     await _settle(follower)
-    assert workos.asked == [ada]
+    assert workos.asked == [_workos_user(ada)]
 
 
 async def test_workos_not_answering_keeps_the_session(
@@ -301,6 +311,91 @@ async def test_workos_not_answering_keeps_the_session(
         assert (await client.get("/auth/me")).status_code == 200
     async with session_factory() as session:
         assert (await _STORE.get(session, row_id)).ended_at is None  # type: ignore[union-attr]
+
+
+def _real_authkit(answer: httpx.Response, paths: list[str]) -> AuthKit:
+    """AuthKit itself, over a WorkOS that answers every request with `answer`
+    and notes the paths asked for."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return answer
+
+    return AuthKit(
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        "sk_test_example",  # gitleaks:allow
+        "https://api.workos.test",
+        "client_EXAMPLE",
+    )
+
+
+async def _check_with(
+    session_factory: async_sessionmaker[AsyncSession],
+    email: str,
+    answer: httpx.Response,
+) -> tuple[str, str, list[str], int]:
+    """One stale AuthKit sign-in, checked once against `answer`: the account,
+    its row, the paths asked of WorkOS, and the status of the next request."""
+    user_id = await _person(session_factory, email)
+    stale = datetime.now(UTC) - CHECK_EVERY - timedelta(minutes=2)
+    row_id = await _signed_in(session_factory, user_id, "session_REAL", stale)
+    paths: list[str] = []
+    app, follower = _app(session_factory, _real_authkit(answer, paths))  # type: ignore[arg-type]
+    async with _client(app, _cookie(user_id, email, row_id)) as client:
+        assert (await client.get("/auth/me")).status_code == 200
+        await _settle(follower)
+        status = (await client.get("/auth/me")).status_code
+    return user_id, row_id, paths, status
+
+
+async def test_workos_is_asked_about_its_own_user_not_the_switch_account(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    alive = httpx.Response(
+        200,
+        json={
+            "data": [{"id": "session_REAL", "status": "active", "ended_at": None}],
+            "list_metadata": {"after": None},
+        },
+    )
+    user_id, _, paths, status = await _check_with(
+        session_factory, "ada-real@example.test", alive
+    )
+    assert paths == [f"/user_management/users/{_workos_user(user_id)}/sessions"]
+    assert status == 200
+
+
+async def test_a_user_workos_no_longer_has_ends_the_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    gone = httpx.Response(404, json={"code": "entity_not_found"})
+    _, row_id, _, status = await _check_with(
+        session_factory, "ada-deleted@example.test", gone
+    )
+    assert status == 401
+    async with session_factory() as session:
+        assert (await _STORE.get(session, row_id)).ended_at is not None  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("refusal", [401, 403])
+async def test_a_refused_api_key_keeps_the_session_and_says_so_loudly(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+    refusal: int,
+) -> None:
+    caplog.set_level(logging.ERROR, logger="switch_core.gateway.identity_sessions")
+    _, row_id, _, status = await _check_with(
+        session_factory,
+        f"ada-key-{refusal}@example.test",
+        httpx.Response(refusal, json={"code": "unauthorized"}),
+    )
+    assert status == 200
+    async with session_factory() as session:
+        assert (await _STORE.get(session, row_id)).ended_at is None  # type: ignore[union-attr]
+    assert any(
+        record.levelno == logging.ERROR and "refused the check" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 async def test_without_authkit_an_ended_sign_in_is_still_refused_but_none_is_asked_about(

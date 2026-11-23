@@ -654,6 +654,7 @@ async def test_a_browser_opened_from_an_authkit_sign_in_ends_when_that_sign_in_d
             session,
             user_id=people.ada.id,
             provider="workos",
+            provider_user_id="user_ADA",
             session_id="session_CONSOLE",
             followed=True,
             now=datetime.now(UTC),

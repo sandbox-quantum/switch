@@ -43,6 +43,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("provider", sa.Text(), nullable=False),
+        sa.Column("provider_user_id", sa.Text(), nullable=False),
         sa.Column("session_id", sa.Text(), nullable=False),
         sa.Column("followed", sa.Boolean(), nullable=False),
         sa.Column(

@@ -323,8 +323,10 @@ class AuthKit:
         return organizations, pending
 
     async def active_session_ids(self, user_id: str) -> set[str]:
-        """The ids of the person's AuthKit sessions that are still active,
-        across every application of the environment."""
+        """The ids of the AuthKit sessions of WorkOS user `user_id` (a
+        `user_…` id, not a Switch account's) that are still active, across
+        every application of the environment. A user the environment no
+        longer has (404) has none."""
         path = f"/user_management/users/{user_id}/sessions"
         found: set[str] = set()
         after: str | None = None
@@ -333,6 +335,8 @@ class AuthKit:
             if after is not None:
                 params["after"] = after
             response = await self._request("GET", path, params=params, authorized=True)
+            if response.status_code == 404:
+                return set()
             if response.status_code != 200:
                 raise self._refusal(response, path)
             body = _body(response)

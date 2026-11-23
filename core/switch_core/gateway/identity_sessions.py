@@ -10,11 +10,13 @@ the check already holds.
 The session is followed: when WorkOS was last asked about it more than
 `CHECK_EVERY` ago, the request that notices claims the next check (a
 conditional update, so one request across every process gets it) and a
-background task asks WorkOS for the person's active sessions. A session
-WorkOS no longer lists ended there: revoked, its password reset, timed out,
-or signed out of elsewhere, so its row is marked ended and the next request
-on that cookie gets 401. WorkOS being unreachable or busy never ends a
-session: it is kept, logged and counted, and asked again later.
+background task asks WorkOS for the active sessions of the WorkOS user the
+row names (`provider_user_id`). A session WorkOS no longer lists ended there:
+revoked, its password reset, timed out, or signed out of elsewhere; so did
+every session of a user WorkOS no longer has. Its row is marked ended and the
+next request on that cookie gets 401. WorkOS being unreachable or busy never
+ends a session: it is kept, logged and counted, and asked again later. Nor
+does WorkOS refusing the API key, which is logged as an error.
 
 The gateway keeps no WorkOS token, so following a session means asking
 WorkOS with the application's API key, never refreshing anything.
@@ -39,7 +41,12 @@ from switch_core.db.stores.identity_session_store import (
 )
 from switch_core.observability.catalogue import AUTH_IDENTITY_SESSION_CHECKS
 from switch_core.observability.metrics import metrics
-from switch_core.workos_authkit import AuthKit, AuthKitError
+from switch_core.workos_authkit import (
+    AuthKit,
+    AuthKitError,
+    AuthKitRefused,
+    AuthKitUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,14 +150,27 @@ class IdentitySessions:
             if row is None:
                 return
             async with self._checks:
-                active = await authkit.active_session_ids(row.user_id)
-        except AuthKitError as error:
-            retry_after = getattr(error, "retry_after", None)
-            if retry_after:
-                self._paused_until = datetime.now(UTC) + timedelta(seconds=retry_after)
+                active = await authkit.active_session_ids(row.provider_user_id)
+        except AuthKitUnavailable as error:
+            if error.retry_after:
+                self._paused_until = datetime.now(UTC) + timedelta(
+                    seconds=error.retry_after
+                )
             logger.warning(
                 "Could not check identity session %s with WorkOS; the session is "
                 "kept and checked again later: %s",
+                row_id,
+                error.message,
+            )
+            metrics().increment(AUTH_IDENTITY_SESSION_CHECKS, {"outcome": "failed"})
+            return
+        except AuthKitRefused as error:
+            # Not WorkOS being busy: the API key refused (401, 403) or a
+            # request WorkOS won't answer. Kept, as it is no word on the
+            # session, but loud, since every check fails until it is fixed.
+            logger.error(
+                "WorkOS refused the check of identity session %s; the session is "
+                "kept, and every check fails until this is fixed: %s",
                 row_id,
                 error.message,
             )

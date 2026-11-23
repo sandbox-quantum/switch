@@ -354,6 +354,22 @@ async def test_only_active_sessions_are_alive_across_every_page() -> None:
     }
 
 
+async def test_a_user_workos_no_longer_has_has_no_active_sessions() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/user_management/users/user_GONE/sessions"
+        return httpx.Response(404, json={"code": "entity_not_found"})
+
+    assert await _authkit(handler).active_session_ids("user_GONE") == set()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_a_refused_session_listing_is_raised(status: int) -> None:
+    with pytest.raises(AuthKitRefused):
+        await _authkit(
+            lambda request: httpx.Response(status, json={"code": "unauthorized"})
+        ).active_session_ids("user_A")
+
+
 @pytest.mark.parametrize("status", [200, 204, 404])
 async def test_revoking_a_session_workos_no_longer_has_counts_as_done(
     status: int,
