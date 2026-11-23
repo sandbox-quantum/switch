@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -209,7 +210,11 @@ class ResourceService:
         }
         if not readable:
             return {**payload, "withheld": True}
-        return {**payload, "instructions": doc.instructions}
+        return {
+            **payload,
+            "instructions": doc.instructions,
+            "content_hash": hashlib.sha256(doc.content.encode("utf-8")).hexdigest()[:16],
+        }
 
     # ── Reference types ───────────────────────────────────────────────────
 

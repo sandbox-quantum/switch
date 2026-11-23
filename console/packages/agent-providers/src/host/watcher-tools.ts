@@ -236,7 +236,14 @@ export function sessionToolAnswerer(deps: {
     caller: Caller,
     catalog: SwitchToolCatalog,
     ask: Extract<HostAsk, { type: 'room-instructions' }>
-  ): Promise<{ instructions: string }> => {
+  ): Promise<{
+    instructions: string;
+    resources?: {
+      documents: unknown[];
+      references: unknown[];
+      packages: unknown[];
+    };
+  }> => {
     const attended = deps.placements.roomOf(caller.sessionId);
     if (attended !== ask.roomId)
       throw new Error(
@@ -250,7 +257,15 @@ export function sessionToolAnswerer(deps: {
     const instructions = result.structuredContent?.instructions;
     if (typeof instructions !== 'string')
       throw new Error(`connect_to_room answered for room ${ask.roomId} without its instructions.`);
-    return { instructions: instructions.replace(ROOM_SECTION_HEADING, '').trim() };
+    const raw = result.structuredContent;
+    return {
+      instructions: instructions.replace(ROOM_SECTION_HEADING, '').trim(),
+      resources: {
+        documents: Array.isArray(raw?.documents) ? raw.documents : [],
+        references: Array.isArray(raw?.references) ? raw.references : [],
+        packages: Array.isArray(raw?.packages) ? raw.packages : [],
+      },
+    };
   };
 
   return async (caller, ask) => {

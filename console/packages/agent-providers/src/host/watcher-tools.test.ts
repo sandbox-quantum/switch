@@ -253,6 +253,7 @@ it('reads the instructions of the room a session attends, without moving it', as
 
   await expect(answer(session, { type: 'room-instructions', roomId: 'room' })).resolves.toEqual({
     instructions: 'Sign every reply.',
+    resources: { documents: [], references: [], packages: [] },
   });
   expect(calls.connect.mock.calls).toEqual([
     ['session', 'connect_to_room', { room_id: 'room', include_general_instructions: false }],
@@ -264,6 +265,7 @@ it('reads the instructions of the room a session attends, without moving it', as
   });
   await expect(answer(session, { type: 'room-instructions', roomId: 'room' })).resolves.toEqual({
     instructions: '',
+    resources: { documents: [], references: [], packages: [] },
   });
 
   calls.connect.mockResolvedValue({
