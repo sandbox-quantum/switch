@@ -1,4 +1,4 @@
-import { Alert, Box, Button, Card, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Stack } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router";
 import {
@@ -8,6 +8,7 @@ import {
   peekBrowserHandoff,
   redeemBrowserHandoff,
 } from "../../data/api";
+import { AuthCard } from "./AuthLayout";
 
 /** Where Switch Console's sign-in link opens. */
 export const HANDOFF_PATH = "/auth/handoff";
@@ -91,62 +92,69 @@ export default function BrowserHandoffPage() {
     })();
   }, []);
 
+  if (state.kind === "refused") {
+    return (
+      <AuthCard
+        title="Couldn't sign you in"
+        subtitle="Switch Console's sign-in link didn't work."
+        notice={null}
+        footer={null}
+      >
+        <Stack spacing={2}>
+          <Alert severity="warning">{state.message}</Alert>
+          <Button variant="contained" fullWidth component={RouterLink} to="/login">
+            Sign in
+          </Button>
+        </Stack>
+      </AuthCard>
+    );
+  }
+
+  if (state.kind === "ask") {
+    const { link } = state;
+    return (
+      <AuthCard
+        title="Opening a page from Switch Console"
+        subtitle={
+          link.signed_in_as === null
+            ? `Switch Console is signing this browser in as ${person(link)}. Continue?`
+            : `You're signed in here as ${person(link.signed_in_as)}. Continue as ${person(link)}?`
+        }
+        notice={null}
+        footer={null}
+      >
+        <Stack spacing={1}>
+          {link.workspace_name && (
+            <Alert severity="info" sx={{ mb: 1 }}>{`The page opens in ${link.workspace_name}.`}</Alert>
+          )}
+          <Button variant="contained" fullWidth onClick={() => void redeem(state.code)}>
+            {`Continue as ${link.name}`}
+          </Button>
+          {link.signed_in_as === null ? (
+            <Button variant="outlined" fullWidth component={RouterLink} to="/login">
+              Sign in another way
+            </Button>
+          ) : (
+            <Button variant="outlined" fullWidth onClick={() => window.location.replace("/")}>
+              {`Stay as ${link.signed_in_as.name}`}
+            </Button>
+          )}
+        </Stack>
+      </AuthCard>
+    );
+  }
+
   return (
-    <Box
-      sx={{
-        display: "flex",
-        minHeight: "100vh",
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "var(--sw-canvas)",
-        py: 4,
-      }}
+    <AuthCard
+      title="Opening a page from Switch Console"
+      subtitle="Signing you in…"
+      notice={null}
+      footer={null}
     >
-      <Card sx={{ width: 420, p: 4, boxShadow: "var(--sw-shadow-surface)" }}>
-        <Typography variant="h6" sx={{ mb: 2 }}>
-          Switch Gateway
-        </Typography>
-        {state.kind === "working" && (
-          <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-            <CircularProgress size={20} />
-            <Typography variant="body2">Signing you in…</Typography>
-          </Stack>
-        )}
-        {state.kind === "refused" && (
-          <Stack spacing={2}>
-            <Alert severity="warning">{state.message}</Alert>
-            <Button variant="contained" component={RouterLink} to="/login">
-              Sign in
-            </Button>
-          </Stack>
-        )}
-        {state.kind === "ask" && (
-          <Stack spacing={2}>
-            <Typography variant="body2">
-              {state.link.signed_in_as === null
-                ? `Switch Console is signing this browser in as ${person(state.link)}. Continue?`
-                : `You're signed in here as ${person(state.link.signed_in_as)}. Continue as ${person(state.link)}?`}
-            </Typography>
-            {state.link.workspace_name && (
-              <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                {`The page opens in ${state.link.workspace_name}.`}
-              </Typography>
-            )}
-            <Button variant="contained" onClick={() => void redeem(state.code)}>
-              {`Continue as ${state.link.name}`}
-            </Button>
-            {state.link.signed_in_as === null ? (
-              <Button variant="outlined" component={RouterLink} to="/login">
-                Sign in another way
-              </Button>
-            ) : (
-              <Button variant="outlined" onClick={() => window.location.replace("/")}>
-                {`Stay as ${state.link.signed_in_as.name}`}
-              </Button>
-            )}
-          </Stack>
-        )}
-      </Card>
-    </Box>
+      <Box sx={{ display: "flex", justifyContent: "center", py: 1 }}>
+        <CircularProgress size={24} aria-label="Signing you in" />
+      </Box>
+    </AuthCard>
   );
 }
+

@@ -24,17 +24,20 @@ function Backdrop({ children }: { children: ReactNode }) {
   );
 }
 
-/** The layout of every screen shown before the app: signing in, accepting an
- * invitation, choosing a workspace, and creating one. The mark, a title and
- * one line on what to do, the screen's own content, and a footer. */
-export default function AuthLayout({
+/** The card every screen before the app sits on: the mark, a title and one
+ * line on what to do, a notice above the screen's own content, and a footer.
+ * Needs no session, so a page outside the app's session, such as the one
+ * Switch Console's sign-in link opens, uses it too. */
+export function AuthCard({
   title,
   subtitle,
+  notice,
   children,
   footer,
 }: {
   title: string;
   subtitle: ReactNode;
+  notice: ReactNode;
   children: ReactNode;
   footer: ReactNode;
 }) {
@@ -60,13 +63,34 @@ export default function AuthLayout({
             {subtitle}
           </Typography>
         </Stack>
-        <LinkNoticeBanner />
+        {notice}
         {children}
         {footer !== null && (
           <Box sx={{ mt: 3, textAlign: "center" }}>{footer}</Box>
         )}
       </Card>
     </Backdrop>
+  );
+}
+
+/** The layout of every screen shown before the app inside its session:
+ * signing in, accepting an invitation, choosing a workspace, and creating
+ * one. `AuthCard`, with the notice a link naming a workspace leaves. */
+export default function AuthLayout({
+  title,
+  subtitle,
+  children,
+  footer,
+}: {
+  title: string;
+  subtitle: ReactNode;
+  children: ReactNode;
+  footer: ReactNode;
+}) {
+  return (
+    <AuthCard title={title} subtitle={subtitle} notice={<LinkNoticeBanner />} footer={footer}>
+      {children}
+    </AuthCard>
   );
 }
 

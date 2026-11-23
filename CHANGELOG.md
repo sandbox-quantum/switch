@@ -202,9 +202,10 @@ version of their own to them without also giving them a release of their own.
   Switch Trust uses, and Org admin as Org Admin; the stored role is unchanged.
   Organizations kept in Switch are unaffected.
 - **The dashboard's sign-in and first screens share one look.** Signing in,
-  accepting an invitation, choosing a workspace, creating an organization, and
-  the screens shown while the session loads or when it cannot be read now sit
-  on one card with the Switch mark. The flows themselves are unchanged.
+  accepting an invitation, choosing a workspace, creating an organization,
+  the page Switch Console's sign-in link opens, and the screens shown while
+  the session loads or when it cannot be read now sit on one card with the
+  Switch mark. The flows themselves are unchanged.
 - **One sign-in button for each configured way of signing in.** Where
   `GATEWAY_OIDC_LOGIN_OPTIONS` lists several (Google and Microsoft, say), the
   dashboard's sign-in page now offers a button for each, going straight to that
