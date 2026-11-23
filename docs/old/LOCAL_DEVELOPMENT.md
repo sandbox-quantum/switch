@@ -3,7 +3,7 @@
 This covers the local-development path only: everything runs on your own
 machine, with hot-reload on the backend and the frontend. It's a different
 shape from the two paths the published docs cover —
-[`standalone`](../official/deploy/self-host.md) (single Docker Compose stack,
+[`standalone`](https://docs.switchagents.ai/switch-rooms/deploy/self-host) (single Docker Compose stack,
 built images, no host toolchain) and the Helm chart — so don't reach for
 those commands here; `just standalone-up` runs a whole different set of
 containers and none of what follows applies to it.
