@@ -85,6 +85,14 @@ class Claimed:
     machine: CloudMachine
     workspace: MachineWorkspace
     change: ClaimChange | None
+    # A new machine that took a warm pool box (its id is the pool box's).
+    from_pool: bool = False
+
+
+# The warm pool's pick inside a claim (`box_provision.claim_pool_box`): given
+# the claim's session, the owner and the time, the id of a pool box it claimed
+# for them (the new machine's id), or None for a box made from scratch.
+PoolPick = Callable[[AsyncSession, str, datetime], Awaitable[str | None]]
 
 
 class CloudMachineConflict(Exception):
@@ -511,6 +519,7 @@ class CloudMachineStore:
         revoke: RevokeController | None = None,
         backend: Literal["vm", "box"] = "vm",
         per_workspace: int = 0,
+        pool_pick: PoolPick | None = None,
     ) -> Claimed:
         """The owner's machine, reused or newly claimed within `capacity`,
         serving the bound workspace, and what the claim changed.
@@ -528,6 +537,12 @@ class CloudMachineStore:
         `per_workspace` (hosted agents v2's `hosted_launch_capacity_per_workspace`;
         0 for none) caps the live machines serving the bound workspace: a new
         machine, or one joining this workspace, is refused at it.
+
+        `pool_pick` (the warm pool's T1) runs only where a brand-new `box`
+        row would be inserted, after every check above: an owner with a live
+        or revivable row never takes a pool box. When it claims one, the new
+        row takes the pool box's id, in this same transaction, so the claim,
+        its audit entry and its bind request commit with the row or not at all.
         """
         # A paused user claims nothing, box or no box. The
         # pause is v2's: with it off, no read, as before v2.
@@ -589,7 +604,12 @@ class CloudMachineStore:
                 # A new box for an owner with no live machine, as a new row is.
                 machine, workspace = revived
                 return Claimed(machine=machine, workspace=workspace, change="new")
-        machine_id = str(uuid4())
+        picked = (
+            await pool_pick(session, owner_id, now)
+            if pool_pick is not None and backend == "box"
+            else None
+        )
+        machine_id = picked or str(uuid4())
         await lock_machine(session, machine_id)
         machine = CloudMachine(
             id=machine_id,
@@ -605,7 +625,12 @@ class CloudMachineStore:
         await session.flush()
         workspace = self._add_workspace(session, machine, now)
         await session.flush()
-        return Claimed(machine=machine, workspace=workspace, change="new")
+        return Claimed(
+            machine=machine,
+            workspace=workspace,
+            change="new",
+            from_pool=picked is not None,
+        )
 
     async def _revive(
         self,

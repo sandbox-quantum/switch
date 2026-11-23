@@ -57,6 +57,8 @@ from switch_core.visibility.box_provision import (
     BOX_MISSING,
     ask_for_box,
     box_provisioning_on,
+    pool_pick_for,
+    refill_after_claim,
 )
 from switch_core.visibility.hosted_access import block_reason_in
 from switch_core.visibility.reason_codes import StopReason
@@ -331,6 +333,9 @@ async def ensure_machine(
         per_workspace=(
             getattr(config, "hosted_launch_capacity_per_workspace", 0) if v2 else 0
         ),
+        # The warm pool (T1): a brand-new box takes a waiting pool box when
+        # one is free. None with no pool, so every box is made, as before.
+        pool_pick=pool_pick_for(config, settings) if v2 else None,
     )
     if claimed.change is not None:
         emit_after_commit(
@@ -405,6 +410,8 @@ async def ensure(
         settings=settings,
         now=datetime.now(UTC),
     )
+    # A pool box it took is replaced at once, not at the next sweep.
+    await refill_after_claim(factory, config, machine.id, datetime.now(UTC))
     return await machine_summary(session, machine, workspace)
 
 

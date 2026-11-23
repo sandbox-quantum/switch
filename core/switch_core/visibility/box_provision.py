@@ -43,8 +43,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
-from switch_core.db.models import CloudMachine, ServerAuditEvent
+from switch_core.db.models import CloudMachine, ServerAuditEvent, require_tenant_id
 from switch_core.db.stores.hosted_machine_store import (
+    PoolPick,
     _advisory_lock,
     bump_revision,
     ever_hosted,
@@ -62,7 +63,7 @@ from switch_core.providers.hosted import (
 from switch_core.tenant_context import no_tenant
 from switch_core.visibility.alerts import Condition, Verdict, apply_alert
 from switch_core.visibility.dependencies import process_keyed_id_key
-from switch_core.visibility.hosted_access import block_reason
+from switch_core.visibility.hosted_access import block_reason, block_reason_in
 from switch_core.visibility.keyed_id import KeyedIdKey, KeyedIdKind
 
 logger = logging.getLogger(__name__)
@@ -535,9 +536,8 @@ async def _box_state(
     return state
 
 
-async def _cap_reached(
-    session: AsyncSession, *, now: datetime, per_minute: int, ceiling: int
-) -> Waiting | None:
+async def _requests_in_window(session: AsyncSession, now: datetime) -> int:
+    """Provision requests (of every kind, binds included) in the last minute."""
     recent = await session.scalar(
         select(func.count())
         .select_from(ServerAuditEvent)
@@ -547,7 +547,13 @@ async def _cap_reached(
             ServerAuditEvent.occurred_at > now - timedelta(minutes=1),
         )
     )
-    if (recent or 0) >= per_minute:
+    return recent or 0
+
+
+async def _cap_reached(
+    session: AsyncSession, *, now: datetime, per_minute: int, ceiling: int
+) -> Waiting | None:
+    if await _requests_in_window(session, now) >= per_minute:
         return "rate"
     if await boxes_made(session) >= ceiling:
         return "ceiling"
@@ -969,6 +975,132 @@ async def refill_pool(
                 made.append(box_id)
             await session.commit()
     return made
+
+
+def pool_pick_for(
+    config: SwitchConfig, settings: HostedControllerSettings | None
+) -> PoolPick | None:
+    """The warm pool's pick for `CloudMachineStore.claim` (T1), or None when
+    this server takes no pool boxes (no pool, box provisioning off, no
+    settings): then every new box is made from scratch, as before."""
+    if (
+        settings is None
+        or getattr(config, "hosted_pool_size", 0) <= 0
+        or not box_provisioning_on(config)
+    ):
+        return None
+    gate_settings = settings
+
+    async def pick(session: AsyncSession, owner_id: str, now: datetime) -> str | None:
+        return await claim_pool_box(
+            session, owner_id=owner_id, config=config, settings=gate_settings, now=now
+        )
+
+    return pick
+
+
+async def claim_pool_box(
+    session: AsyncSession,
+    *,
+    owner_id: str,
+    config: SwitchConfig,
+    settings: HostedControllerSettings,
+    now: datetime,
+) -> str | None:
+    """T1, the claim: inside `CloudMachineStore.claim`, under `lock_claims`,
+    on its session (bound to the claiming workspace), only where a brand-new
+    box row would be inserted. Takes the oldest current, in-date waiting pool
+    box (`FOR UPDATE SKIP LOCKED`), marks it claimed (checked to change one
+    row), and writes the `hosted.pool_box_claimed` entry and the `bind`
+    request; the caller inserts the machine with the returned id, in the same
+    transaction. None, and nothing written, when there's no box to take or
+    any gate a made box would meet is shut: then the person gets a box made
+    from scratch at once (the fallback), which meets the same gates.
+
+    The gates, as for any box: a keyed-id key, a box operator seen within
+    `OPERATOR_FRESH` that can bind and name boxes by box, the user and
+    workspace lists, no pause, turn-off or suspension here, and room in the
+    per-minute window (a claim counts as a request in it). A pool box is
+    counted against the ceiling already, so a claim doesn't count again."""
+    from switch_core.db.stores import hosted_pool_store
+
+    key = process_keyed_id_key()
+    if key is None:
+        return None
+    operator = await hosted_pool_store.operator(session)
+    if (
+        operator is None
+        or now - operator.seen_at > OPERATOR_FRESH
+        or not {"bind", "box_keyed_names"} <= set(operator.capabilities or [])
+    ):
+        return None
+    tenant_id = require_tenant_id()
+    v2 = v2_of(config)
+    if not machines_user_allowed(
+        settings, owner_id, v2=v2
+    ) or not machines_tenant_allowed(settings, tenant_id, v2=v2):
+        return None
+    if await block_reason_in(session, owner_id, tenant_id) is not None:
+        return None
+    if await _requests_in_window(session, now) >= config.hosted_provisions_per_minute:
+        return None
+    box = await hosted_pool_store.pick_waiting(session, operator.template_revision, now)
+    if box is None or not await hosted_pool_store.mark_claimed(session, box.id, now):
+        return None
+    box_keyed = key.keyed_id(KeyedIdKind.BOX, box.id)
+    user_keyed = key.keyed_id(KeyedIdKind.USER, owner_id)
+    await record_server_audit_event(
+        session,
+        actor_user_id=None,
+        action=ServerAuditAction.HOSTED_POOL_BOX_CLAIMED,
+        target_type="box",
+        target_id=box_keyed,
+        details={"machine_id": box.id, "user": user_keyed},
+    )
+    await record_server_audit_event(
+        session,
+        actor_user_id=None,
+        action=ServerAuditAction.HOSTED_BOX_PROVISION,
+        target_type="box",
+        target_id=box_keyed,
+        details={
+            "phase": "requested",
+            "by": "core",
+            "kind": "bind",
+            "machine_id": box.id,
+            "user": user_keyed,
+            "size": None,
+            "expires_at": (now + TTL).isoformat(),
+        },
+    )
+    return box.id
+
+
+async def refill_after_claim(
+    session_factory: async_sessionmaker[AsyncSession],
+    config: SwitchConfig,
+    machine_id: str,
+    now: datetime,
+) -> list[str]:
+    """Refill the pool just after T1 commits, when this machine took a pool
+    box within the last minute; the sweep refills too. Returns the new pool
+    box ids (none with no pool, or when the machine was made from scratch)."""
+    from switch_core.db.stores import hosted_pool_store
+
+    if getattr(config, "hosted_pool_size", 0) <= 0:
+        return []
+    with no_tenant():
+        async with session_factory() as session:
+            row = await hosted_pool_store.get(session, machine_id)
+            await session.commit()
+    if (
+        row is None
+        or row.state != "claimed"
+        or row.claimed_at is None
+        or now - row.claimed_at > timedelta(minutes=1)
+    ):
+        return []
+    return await refill_pool(session_factory, config, now)
 
 
 # A bind that reached this step is the person's: never reaped, never pooled.
