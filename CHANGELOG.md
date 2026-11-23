@@ -88,9 +88,10 @@ version of their own to them without also giving them a release of their own.
 - **Switch Trust lists your agents.** When an organization connects a Switch
   Trust policy, Switch sends Switch Trust the agents of each of its
   workspaces, under the policy's API key, so they appear in its AI
-  inventory: each agent's coding agent, model, tools, granted services,
-  permission settings, who may address it, and its owner. Changes reach it
-  within a minute or two, and a deleted agent or workspace leaves the
+  inventory: each agent's coding agent, model, tools (with their parameter
+  schemas, so a tool matches the same tool in checked traffic), granted
+  services, permission settings, who may address it, and its owner. Changes
+  reach it within a minute or two, and a deleted agent or workspace leaves the
   inventory. Disconnecting, or connecting a policy under another key,
   removes the organization's agents from the Switch Trust they were sent to.
   A managed agent's instructions are included only when an organization

@@ -38,10 +38,10 @@ organization's settings cannot be read, nothing is withdrawn: its workspaces
 would read as gone.
 
 **What is sent.** Names, description, the runtime, the model, the permission
-settings, the addressing preset, the owner's name, tools and granted
-services. A managed agent's instructions only when the organization's admin
-has turned on `share_agent_instructions`. Never a credential, a message or a
-file.
+settings, the addressing preset, the owner's name, tools (with their
+parameter schemas) and granted services. A managed agent's instructions only
+when the organization's admin has turned on `share_agent_instructions`. Never
+a credential, a message or a file.
 
 Inventory and checks are separate: the sync costs nothing in Switch Trust,
 and each agent's guardrail checks carry the same identity
@@ -119,6 +119,11 @@ MAX_AGENTS = 1000
 MAX_TOOLS_PER_AGENT = 200
 MAX_SERVICES_PER_AGENT = 100
 MAX_DESCRIPTION_BYTES = 4096
+# A tool's parameter schema is sent so Switch Trust matches the tool to the
+# same tool in the traffic it checks. An agent registers its own tools, so one
+# over this size is sent by name only rather than letting a single agent swell
+# its workspace's snapshot past what Switch Trust accepts.
+MAX_PARAMETERS_BYTES = 16384
 
 
 class InventorySyncError(Exception):
@@ -217,7 +222,16 @@ def _cut_to_bytes(text: str, limit: int) -> str:
     return encoded[:limit].decode(errors="ignore")
 
 
-def _definition_tools(definition: dict[str, Any]) -> list[dict[str, str]]:
+def _tool(name: str, description: str, parameters: Any) -> dict[str, Any]:
+    tool: dict[str, Any] = {"name": name, "description": description}
+    if isinstance(parameters, dict) and parameters:
+        encoded = json.dumps(parameters, separators=(",", ":"), sort_keys=True)
+        if len(encoded.encode()) <= MAX_PARAMETERS_BYTES:
+            tool["parameters"] = parameters
+    return tool
+
+
+def _definition_tools(definition: dict[str, Any]) -> list[dict[str, Any]]:
     name = definition.get("provider")
     if not isinstance(name, str):
         # A malformed definition. Its agent is still listed; only the
@@ -228,7 +242,7 @@ def _definition_tools(definition: dict[str, Any]) -> list[dict[str, str]]:
     except UnknownProvider:
         # A definition stored for a provider this release no longer runs.
         return []
-    return [{"name": t.name, "description": t.description} for t in provider.tools]
+    return [_tool(t.name, t.description, t.parameters) for t in provider.tools]
 
 
 def _agent_entry(
@@ -258,7 +272,7 @@ def _agent_entry(
     if owner_name:
         entry["owner"] = owner_name
 
-    declared: list[dict[str, str]] = []
+    declared: list[dict[str, Any]] = []
     if definition is not None:
         doc = definition.definition
         if doc.get("model"):
@@ -274,10 +288,10 @@ def _agent_entry(
             entry["instructions"] = doc["instructions"]
         declared.extend(_definition_tools(doc))
     declared.extend(
-        {"name": t.name, "description": t.description} for t in tools if t.name
+        _tool(t.name, t.description, t.args_schema) for t in tools if t.name
     )
     seen: set[str] = set()
-    unique_tools: list[dict[str, str]] = []
+    unique_tools: list[dict[str, Any]] = []
     for tool in declared:
         if tool["name"] in seen:
             continue

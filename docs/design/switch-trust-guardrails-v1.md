@@ -333,7 +333,7 @@ agent:
 | `instructions` | the definition, only with `share_agent_instructions` on |
 | `addressing` | `policy_kind(agents.addressing_policy)` |
 | `owner` | the owner's `users.name` |
-| `tools` | the provider's own tools (managed), then the agent's `tools` rows |
+| `tools` | the provider's own tools (managed), then the agent's `tools` rows, each with its `args_schema` as `parameters` (dropped over 16 KiB) |
 | `mcp_servers` | `service_grants`: the service and its access level |
 
 No credential, message or file is ever sent. A workspace over Switch Trust's

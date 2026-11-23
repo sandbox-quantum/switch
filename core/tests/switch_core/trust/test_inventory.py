@@ -48,6 +48,7 @@ from switch_core.trust.identity import agent_fingerprint
 from switch_core.trust.inventory import (
     MAX_AGENTS,
     MAX_DESCRIPTION_BYTES,
+    MAX_PARAMETERS_BYTES,
     REFRESH_EVERY_SECONDS,
     SYNC_INTERVAL_SECONDS,
     SYNC_KEY,
@@ -146,7 +147,14 @@ async def _managed_agent(session: AsyncSession, owner: User) -> Agent:
             },
         )
     )
-    session.add(Tool(agent_id=agent.id, name="lint", description="Runs the linter"))
+    session.add(
+        Tool(
+            agent_id=agent.id,
+            name="lint",
+            description="Runs the linter",
+            args_schema=LINT_SCHEMA,
+        )
+    )
     session.add(
         ServiceConnection(
             user_id=owner.id,
@@ -176,6 +184,13 @@ async def _managed_agent(session: AsyncSession, owner: User) -> Agent:
     )
     await session.flush()
     return agent
+
+
+LINT_SCHEMA = {
+    "type": "object",
+    "properties": {"path": {"type": "string"}},
+    "required": ["path"],
+}
 
 
 def _by_name(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -226,6 +241,10 @@ class TestBuildSnapshot:
         assert "Bash" in tool_names
         assert tool_names[-1] == "lint"
         assert len(tool_names) == len(set(tool_names))
+        # A declared schema is sent, so the tool matches the same tool in
+        # checked traffic; a built-in declared by name only has none.
+        assert reviewer["tools"][-1]["parameters"] == LINT_SCHEMA
+        assert "parameters" not in reviewer["tools"][0]
         assert reviewer["mcp_servers"] == [{"name": "github", "access": "read"}]
 
         helper = agents["helper"]
@@ -329,6 +348,32 @@ class TestBuildSnapshot:
         assert old["kind"] == "managed"
         assert old["model"] == "opus"
         assert "tools" not in old
+
+    async def test_an_oversized_tool_schema_is_sent_by_name_only(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        huge = {"type": "object", "description": "x" * MAX_PARAMETERS_BYTES}
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            agent = await _agent(session, name="bulky", owner=None)
+            session.add(
+                Tool(
+                    agent_id=agent.id,
+                    name="dump",
+                    description="Dumps everything",
+                    args_schema=huge,
+                )
+            )
+            await session.commit()
+            snapshot = await build_snapshot(
+                session,
+                server=SERVER,
+                tenant_id=TENANT_ZERO_ID,
+                share_instructions=False,
+            )
+
+        assert _by_name(snapshot)["bulky"]["tools"] == [
+            {"name": "dump", "description": "Dumps everything"}
+        ]
 
     async def test_a_long_description_is_cut_to_fit(
         self, session_factory: async_sessionmaker[AsyncSession]
