@@ -954,12 +954,13 @@ class SwitchConfig(BaseSettings):
     # limited, as some do a workspace's worth of work in one statement.
     gateway_read_statement_timeout: str = "10s"
     # Long-lived gateway streams of one kind (the chats feed, the activity
-    # feed, the change notices) one caller may hold in a process. Console
-    # opens one of each per server, so 8 leaves room for a person's machines
-    # and browser tabs. Past it, the caller's oldest of that kind is closed
+    # feed, the change notices) one person may hold in one workspace, in a
+    # process. Console opens one of each per workspace, so 16 leaves room for
+    # a person's machines and browser tabs, as the change notices' own limit
+    # did before (`gateway/changes.py`). Past it, the caller's oldest of that kind is closed
     # for the new one, or the new one is refused 429 when the oldest is under
     # 30 s old (`gateway/stream_caps.py`).
-    gateway_streams_per_caller: int = Field(default=8, ge=1)
+    gateway_streams_per_caller: int = Field(default=16, ge=1)
     # Long-lived gateway streams of every kind a process holds at once,
     # counting those still opening. Each holds no database connection while
     # it waits, but a task, a file handle and a subscription, and reads again

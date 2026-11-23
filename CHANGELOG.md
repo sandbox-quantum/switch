@@ -68,8 +68,8 @@ version of their own to them without also giving them a release of their own.
 - **One person can no longer hold unbounded live streams.** The chats feed,
   the activity feed and the change-notice socket stay open for as long as
   Console or a tab runs, and nothing bounded how many one caller opened. One
-  signed-in person (else one address) now holds at most
-  `GATEWAY_STREAMS_PER_CALLER` (8) of each kind per process: a newer one
+  signed-in person in one workspace (else one address) now holds at most
+  `GATEWAY_STREAMS_PER_CALLER` (16) of each kind per process: a newer one
   closes their oldest of that kind, or is refused 429 while that oldest is
   under 30 seconds old. A process holds at most `GATEWAY_STREAMS_PER_PROCESS`
   (4000) of every kind together, past which a new one is refused 503 with a

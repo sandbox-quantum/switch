@@ -27,13 +27,13 @@ from switch_core.keys import Keyring
 _KEYRING = Keyring.parse("test:" + secrets.token_hex(32), legacy_secret=None)
 
 
-def _session(user_id: str) -> str:
+def _session(user_id: str, tenant_id: str | None = None) -> str:
     return create_jwt(
         user_id,
         f"{user_id}@example.com",
         "user",
         _KEYRING,
-        None,
+        tenant_id,
         session_version=0,
         auth_time=datetime.now(UTC),
         session_id=f"session-{user_id}",
@@ -274,6 +274,20 @@ async def test_one_caller_does_not_close_anothers_streams() -> None:
 
     assert gateway.running == {"ada", "bob"}
     for conn in (ada, bob):
+        await conn.leave()
+
+
+async def test_one_person_in_two_workspaces_holds_a_limit_in_each() -> None:
+    gateway = _Gateway()
+    caps = _caps(gateway, per_caller=1)
+    here = _Conn(caps, "/chats/events", "here", session=_session("ada", "t-1"))
+    await _until(lambda: "here" in gateway.running)
+
+    there = _Conn(caps, "/chats/events", "there", session=_session("ada", "t-2"))
+    await _until(lambda: "there" in gateway.running)
+
+    assert gateway.running == {"here", "there"}
+    for conn in (here, there):
         await conn.leave()
 
 

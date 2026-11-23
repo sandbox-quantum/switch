@@ -8,7 +8,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import bcrypt
 import jwt
@@ -358,9 +358,9 @@ def _session_key(token: str, keyring: Keyring) -> bytes | str:
         raise jwt.InvalidTokenError(str(exc)) from exc
 
 
-def session_subject(token: str, keyring: Keyring) -> str | None:
-    """The user a session token names, if its signature checks out and it has
-    not expired; None otherwise. Reads nothing: whether the session was ended
+def session_claims(token: str, keyring: Keyring) -> dict[str, Any] | None:
+    """A session token's claims, if its signature checks out and it has not
+    expired; None otherwise. Reads nothing: whether the session was ended
     since, or the user is still there, is for authentication to ask."""
     try:
         payload = jwt.decode(
@@ -368,7 +368,13 @@ def session_subject(token: str, keyring: Keyring) -> str | None:
         )
     except jwt.InvalidTokenError:
         return None
-    subject = payload.get("sub")
+    return payload if isinstance(payload, dict) else None
+
+
+def session_subject(token: str, keyring: Keyring) -> str | None:
+    """The user a session token names, as `session_claims` reads it."""
+    payload = session_claims(token, keyring)
+    subject = payload.get("sub") if payload is not None else None
     return subject if isinstance(subject, str) else None
 
 

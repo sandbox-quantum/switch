@@ -14,10 +14,11 @@ read.
 
 This middleware bounds both, per kind of stream.
 
-One caller (`caller_key`: the person a session cookie names, else the address
-it came from) holds at most `per_caller` streams of each kind in this process.
-Console opens one of each per server, so the limit is only met by many windows
-or tabs of one person, or by a client that leaks them. Past it, the caller's
+One caller (`stream_caller`: the person a session cookie names in the
+workspace it selects, else the address it came from) holds at most
+`per_caller` streams of each kind in this process. Console opens one of each
+per workspace it is signed in to, so the limit is only met by many windows or
+tabs of one person in one workspace, or by a client that leaks them. Past it, the caller's
 oldest stream of that kind is closed to make room for the new one, rather than
 the new one refused. A client that lost its network reconnects before the old
 stream is noticed gone: the server learns that only when a write to it fails,
@@ -61,9 +62,11 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from switch_core.gateway.admission import STREAMS, caller_key, route_path
+from switch_core.gateway.auth import session_claims
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import (
     GATEWAY_STREAMS_CLOSED_FOR_NEWER,
@@ -120,6 +123,20 @@ def stream_kind(scope: Scope) -> str | None:
     return None
 
 
+def stream_caller(scope: Scope, keyring: Keyring) -> str:
+    """Who a stream is counted against: as `caller_key`, but a person per
+    workspace their session cookie selects. Console opens its streams once per
+    workspace, so someone signed in to several on a few machines would
+    otherwise reach the limit and close their own live feeds in turn."""
+    token = HTTPConnection(scope).cookies.get("switch_auth")
+    claims = session_claims(token, keyring) if token else None
+    subject = claims.get("sub") if claims is not None else None
+    if not isinstance(subject, str):
+        return caller_key(scope, keyring)
+    tenant = claims.get("tenant_id") if claims is not None else None
+    return f"user:{subject}" + (f" tenant:{tenant}" if tenant else "")
+
+
 class GatewayStreamCaps:
     def __init__(
         self,
@@ -154,7 +171,7 @@ class GatewayStreamCaps:
         if kind is None:
             await self.app(scope, receive, send)
             return
-        caller = caller_key(scope, self._keyring)
+        caller = stream_caller(scope, self._keyring)
         if self.per_process and self._open >= self.per_process:
             retry = random.randint(*_PROCESS_RETRY_S)
             self._note_refusal(caller, kind, "process")
