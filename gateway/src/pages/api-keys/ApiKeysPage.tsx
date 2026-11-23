@@ -18,6 +18,7 @@ import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { useAuth } from "../../data/AuthContext";
 import {
   type ApiKeyDetail,
+  RETIRED_KEY_TYPE,
   deleteApiKey,
   loadApiKeys,
   loadWorkspaceApiKeys,
@@ -43,6 +44,8 @@ const byLabel = (a: FilterOption, b: FilterOption) => a.label.localeCompare(b.la
  *  keys by their agent's name, the way agents are looked for. */
 const ADDING_ORDER = { field: "created_at", sort: "desc" } as const;
 const AGENT_ORDER = { field: "label", sort: "asc" } as const;
+
+type KeyKind = "adding" | "agent" | "retired";
 
 /** What an agent key is called: its agent's name now, or, its agent gone,
  *  the name it was made for. */
@@ -80,8 +83,14 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const keys = useMemo(() => data ?? [], [data]);
-  const addingKeys = useMemo(() => keys.filter((key) => key.type !== "agent"), [keys]);
+  const addingKeys = useMemo(
+    () => keys.filter((key) => key.type !== "agent" && key.type !== RETIRED_KEY_TYPE),
+    [keys],
+  );
   const agentKeys = useMemo(() => keys.filter((key) => key.type === "agent"), [keys]);
+  // Kept for someone to see and remove rather than deleted by the server; none
+  // of them authenticates any more.
+  const retiredKeys = useMemo(() => keys.filter((key) => key.type === RETIRED_KEY_TYPE), [keys]);
 
   const copy = useCallback(async (key: ApiKeyDetail, name: string) => {
     let plaintext: string;
@@ -135,7 +144,7 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
   );
 
   const columnsFor = useCallback(
-    (rows: ApiKeyDetail[], kind: "adding" | "agent"): TableColumn<ApiKeyDetail>[] => {
+    (rows: ApiKeyDetail[], kind: KeyKind): TableColumn<ApiKeyDetail>[] => {
       const nameOf = (key: ApiKeyDetail) => (kind === "agent" ? agentKeyName(key) : key.label);
       return [
         {
@@ -189,6 +198,27 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
               } satisfies TableColumn<ApiKeyDetail>,
             ]
           : []),
+        ...(kind === "retired"
+          ? [
+              {
+                field: "agent_name",
+                headerName: "Held by",
+                width: 220,
+                sortable: false,
+                // One an agent still holds goes once the agent is deleted.
+                renderCell: ({ row }: { row: ApiKeyDetail }) =>
+                  row.agent_name === null ? (
+                    <Typography component="span" variant="body2" color="text.secondary">
+                      No agent
+                    </Typography>
+                  ) : (
+                    <Typography component="span" variant="body2">
+                      {row.agent_name}: delete the agent first
+                    </Typography>
+                  ),
+              } satisfies TableColumn<ApiKeyDetail>,
+            ]
+          : []),
         {
           field: "actions",
           headerName: "",
@@ -210,6 +240,7 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
 
   const addingColumns = useMemo(() => columnsFor(addingKeys, "adding"), [columnsFor, addingKeys]);
   const agentColumns = useMemo(() => columnsFor(agentKeys, "agent"), [columnsFor, agentKeys]);
+  const retiredColumns = useMemo(() => columnsFor(retiredKeys, "retired"), [columnsFor, retiredKeys]);
 
   const selectFilters = useMemo<SelectFilter[]>(
     () => (yours ? [] : [{ field: "owner_name", label: "Owner", allLabel: "All owners" }]),
@@ -219,6 +250,13 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
     () => ({
       label: "Search keys",
       text: (key: ApiKeyDetail) => [key.label, key.key_prefix, key.owner_name].join(" "),
+    }),
+    [],
+  );
+  const retiredSearch = useMemo(
+    () => ({
+      label: "Search retired keys",
+      text: (key: ApiKeyDetail) => [key.label, key.key_prefix, key.owner_name, key.agent_name ?? ""].join(" "),
     }),
     [],
   );
@@ -312,6 +350,27 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
             </TableEmptyState>,
           )}
         </Box>
+        {retiredKeys.length > 0 && (
+          <Box>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 2 }}>
+              <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 600 }}>
+                Retired keys
+              </Typography>
+              <InfoTip>
+                Keys that no longer sign anything in, kept here for someone to remove. Nobody can copy one. A key an
+                agent still holds can go once that agent is deleted.
+              </InfoTip>
+            </Stack>
+            {table(
+              retiredKeys,
+              retiredColumns,
+              retiredSearch,
+              { one: "retired key", other: "retired keys" },
+              ADDING_ORDER,
+              null,
+            )}
+          </Box>
+        )}
       </Stack>
     );
   }
@@ -369,7 +428,9 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
           deleting &&
           (deleting.type === "agent"
             ? `Delete the key "${deleting.label}"? Its agent has been deleted, so nothing signs in with it.`
-            : `Delete ${deletingOthers ? `${deleting.owner_name}'s key` : "the key"} "${deleting.label}"? It stops working at once, so nothing more can be added with it. Agents already added with it stay. This can't be undone.`)
+            : deleting.type === RETIRED_KEY_TYPE
+              ? `Delete ${deletingOthers ? `${deleting.owner_name}'s retired key` : "the retired key"} "${deleting.label}"? It no longer signs anything in, so nothing depends on it.`
+              : `Delete ${deletingOthers ? `${deleting.owner_name}'s key` : "the key"} "${deleting.label}"? It stops working at once, so nothing more can be added with it. Agents already added with it stay. This can't be undone.`)
         }
         onClose={() => setDeleteOpen(false)}
         onConfirm={async () => {

@@ -130,4 +130,48 @@ describe("ApiKeysPage", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /Copy key/ }));
     expect(await screen.findByText("Your browser blocked the clipboard, so nothing was copied.")).toBeTruthy();
   });
+
+  it("lists retired keys apart, never to copy, and deletable once no agent holds one", async () => {
+    signedInAs("admin");
+    const GONE = apiKey("gone", {
+      type: "retired",
+      label: "server-connector:gone (retired)",
+      owner_id: "u2",
+      owner_name: "Grace",
+      can_reveal: false,
+    });
+    const HELD = apiKey("held", {
+      type: "retired",
+      label: "stranded (retired)",
+      owner_id: "u2",
+      owner_name: "Grace",
+      agent_id: "a3",
+      agent_name: "stranded",
+      can_reveal: false,
+      can_delete: false,
+    });
+    answer({ "GET /api-keys/workspace": [200, [MINE, GONE, HELD]] });
+    render(<ApiKeysPage />);
+
+    expect(await screen.findByText("Retired keys")).toBeTruthy();
+    expect(openingOrder.get("keys")).toBeDefined();
+    expect(openingOrder.has("retired keys")).toBe(true);
+    expect(await menuOf("gone", "server-connector:gone (retired)")).toEqual(["Delete"]);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Delete/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/Grace's retired key .* nothing depends on it/)).toBeTruthy();
+
+    const held = within(screen.getByTestId("row-held"));
+    expect(held.getByText("stranded: delete the agent first")).toBeTruthy();
+    expect(held.queryByRole("button")).toBeNull();
+  });
+
+  it("shows no retired section when nothing is retired", async () => {
+    signedInAs("member");
+    answer({ "GET /api-keys": [200, [MINE]] });
+    render(<ApiKeysPage />);
+
+    await screen.findByTestId("row-mine");
+    expect(screen.queryByText("Retired keys")).toBeNull();
+  });
 });

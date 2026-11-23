@@ -38,14 +38,6 @@ from switch_core.bridges.agent.api.schemas import (
     HistoryResponse,
     ParticipantInfo,
     ParticipantsResponse,
-    PostLlmResponseRequest,
-    PostLlmResponseResponse,
-    PostToolResultRequest,
-    PostToolResultResponse,
-    PreLlmRequestRequest,
-    PreLlmRequestResponse,
-    PreToolCallRequest,
-    PreToolCallResponse,
     RegisterAgentRequest,
     RegisterAgentResponse,
     RegisterKnownAgentBulkRequest,
@@ -1765,109 +1757,6 @@ async def report_events(
         raise HTTPException(status_code=403, detail=str(e)) from e
 
     return Response(status_code=202)
-
-
-# Mediation endpoints
-
-
-@router.post("/{agent_id}/mediation/pre-tool-call")
-async def pre_tool_call(
-    agent_id: str,
-    req: PreToolCallRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PreToolCallResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.pre_tool_call(
-            agent.id,
-            req.room_id,
-            req.tool_name,
-            req.arguments,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PreToolCallResponse(verdict=result["verdict"], reason=result["reason"])  # type: ignore[arg-type]
-
-
-@router.post("/{agent_id}/mediation/pre-llm-request")
-async def pre_llm_request(
-    agent_id: str,
-    req: PreLlmRequestRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PreLlmRequestResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.pre_llm_request(
-            agent.id,
-            req.room_id,
-            req.model,
-            req.messages,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PreLlmRequestResponse(verdict=result["verdict"], reason=result["reason"])  # type: ignore[arg-type]
-
-
-@router.post("/{agent_id}/mediation/post-tool-result")
-async def post_tool_result(
-    agent_id: str,
-    req: PostToolResultRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PostToolResultResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.post_tool_result(
-            agent.id,
-            req.room_id,
-            req.tool_name,
-            req.result,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PostToolResultResponse(verdict=result["verdict"])  # type: ignore[arg-type]
-
-
-@router.post("/{agent_id}/mediation/post-llm-response")
-async def post_llm_response(
-    agent_id: str,
-    req: PostLlmResponseRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PostLlmResponseResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.post_llm_response(
-            agent.id,
-            req.room_id,
-            req.model,
-            req.response,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PostLlmResponseResponse(verdict=result["verdict"])  # type: ignore[arg-type]
 
 
 # Feature flag endpoints

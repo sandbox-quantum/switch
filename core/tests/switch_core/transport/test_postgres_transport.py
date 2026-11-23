@@ -2766,13 +2766,12 @@ class TestBeingRemovedFromARoom:
         )
 
         await asyncio.wait_for(kicked.wait(), timeout=5)
-        # Let the rest of the startup path run and decide what to subscribe
-        # to. Bailing out the moment it subscribes keeps a regression fast to
-        # see rather than making every run wait out the window.
-        for _ in range(100):
-            await asyncio.sleep(0.01)
-            if room_id in removed._watching:
-                break
+        # The startup read holds this lock until it has decided what to
+        # subscribe to. Polling `_watching` instead caught the room's claim,
+        # which is taken before the membership read and released after it.
+        async with asyncio.timeout(5):
+            async with removed._reading_rooms:
+                pass
         assert room_id not in removed._watching
         assert room_id not in removed._cursors
 
