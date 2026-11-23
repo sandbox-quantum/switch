@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents-key';
 import type { ChatAgent, ChatSummary } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { cachedOwnAgents, isBuddyChat, rememberBuddyChat, rememberedBuddy } from './buddy-chat';
+import {
+  cachedOwnAgents,
+  forgetBuddyChat,
+  isBuddyChat,
+  REMEMBERED_BUDDY_CHAT_MS,
+  rememberBuddyChat,
+  rememberedBuddy,
+} from './buddy-chat';
 
 const BUDDY_RUN = { id: 'official:switch-buddy', key: 'buddy', revision: 1 };
 const OTHER_RUN = { id: 'official:team', key: 'buddy', revision: 1 };
@@ -103,10 +110,22 @@ describe('isBuddyChat', () => {
 
 describe('rememberBuddyChat', () => {
   it('remembers the buddy a chat was opened with, by server and room', () => {
-    rememberBuddyChat('server-1', 'room-1', 'buddy-1');
-    expect(rememberedBuddy('server-1', 'room-1')).toBe('buddy-1');
-    expect(rememberedBuddy('server-2', 'room-1')).toBeNull();
-    expect(rememberedBuddy('server-1', 'room-2')).toBeNull();
+    rememberBuddyChat('server-1', 'room-1', 'buddy-1', 1000);
+    expect(rememberedBuddy('server-1', 'room-1', 1000)).toBe('buddy-1');
+    expect(rememberedBuddy('server-2', 'room-1', 1000)).toBeNull();
+    expect(rememberedBuddy('server-1', 'room-2', 1000)).toBeNull();
+  });
+
+  it('stops vouching for it after a while, since it may have become a group elsewhere', () => {
+    rememberBuddyChat('server-1', 'room-3', 'buddy-1', 1000);
+    expect(rememberedBuddy('server-1', 'room-3', 1000 + REMEMBERED_BUDDY_CHAT_MS)).toBe('buddy-1');
+    expect(rememberedBuddy('server-1', 'room-3', 1001 + REMEMBERED_BUDDY_CHAT_MS)).toBeNull();
+  });
+
+  it('forgets a chat someone was added to', () => {
+    rememberBuddyChat('server-1', 'room-4', 'buddy-1', 1000);
+    forgetBuddyChat('server-1', 'room-4');
+    expect(rememberedBuddy('server-1', 'room-4', 1000)).toBeNull();
   });
 });
 

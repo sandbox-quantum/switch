@@ -129,7 +129,7 @@ describe('the chats store’s send', () => {
   });
 
   it('counts the buddy’s chat on a server the chats list does not follow', async () => {
-    rememberBuddyChat('server-2', 'room-elsewhere', 'buddy-2');
+    rememberBuddyChat('server-2', 'room-elsewhere', 'buddy-2', Date.now());
 
     expect(await sendIn('server-2', 'room-elsewhere')).toMatchObject({
       serverId: 'server-2',

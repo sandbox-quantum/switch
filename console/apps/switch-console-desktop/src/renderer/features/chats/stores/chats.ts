@@ -27,7 +27,7 @@ function sentToBuddy(serverId: string, roomId: string): boolean {
       workspacesStore.idOnServerInScope(serverId),
       switchServersStore.statusFor(serverId)?.user?.id ?? null
     ),
-    rememberedBuddy(serverId, roomId)
+    rememberedBuddy(serverId, roomId, Date.now())
   );
 }
 

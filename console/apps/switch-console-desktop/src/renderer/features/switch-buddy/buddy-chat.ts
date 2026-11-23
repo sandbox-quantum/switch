@@ -6,8 +6,16 @@ import { isBuddy } from './buddy-identity';
 
 type OwnAgent = Pick<ManagedAgentView, 'agentId' | 'name' | 'template'>;
 
-/** The chats opened as a buddy's own, by server and room: the buddy each was opened with. */
-const openedWithBuddy = new Map<string, string>();
+/**
+ * How long a chat opened as the buddy's own is taken as one without the chats
+ * list to check it against: long enough for the first messages after it is
+ * opened, the moment this exists for, and short enough that a chat made a
+ * group from elsewhere meanwhile is not counted for long.
+ */
+export const REMEMBERED_BUDDY_CHAT_MS = 30 * 60_000;
+
+/** The chats opened as a buddy's own, by server and room: the buddy each was opened with, and when. */
+const openedWithBuddy = new Map<string, { buddyId: string; at: number }>();
 
 const roomKey = (serverId: string, roomId: string) => `${serverId}\u0000${roomId}`;
 
@@ -15,15 +23,27 @@ const roomKey = (serverId: string, roomId: string) => `${serverId}\u0000${roomId
  * Notes that this chat was found or made as the buddy's own, with the buddy
  * alone in it, so a message sent there counts as one to the buddy even where
  * the chats list does not hold the chat (another server than the one it
- * follows, or before it has caught up).
+ * follows, or before it has caught up), for {@link REMEMBERED_BUDDY_CHAT_MS}.
  */
-export function rememberBuddyChat(serverId: string, roomId: string, buddyId: string): void {
-  openedWithBuddy.set(roomKey(serverId, roomId), buddyId);
+export function rememberBuddyChat(
+  serverId: string,
+  roomId: string,
+  buddyId: string,
+  now: number
+): void {
+  openedWithBuddy.set(roomKey(serverId, roomId), { buddyId, at: now });
 }
 
-/** The buddy a chat was opened with (`rememberBuddyChat`), or null. */
-export function rememberedBuddy(serverId: string, roomId: string): string | null {
-  return openedWithBuddy.get(roomKey(serverId, roomId)) ?? null;
+/** Someone else was added to the chat: it is no longer the buddy's alone. */
+export function forgetBuddyChat(serverId: string, roomId: string): void {
+  openedWithBuddy.delete(roomKey(serverId, roomId));
+}
+
+/** The buddy a chat was opened with (`rememberBuddyChat`) if that was recent enough, or null. */
+export function rememberedBuddy(serverId: string, roomId: string, now: number): string | null {
+  const entry = openedWithBuddy.get(roomKey(serverId, roomId));
+  if (!entry || now - entry.at > REMEMBERED_BUDDY_CHAT_MS) return null;
+  return entry.buddyId;
 }
 
 /**

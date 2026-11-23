@@ -57,7 +57,7 @@ async function findOrMakeBuddyChat(
   );
   const existing = direct.find((chat) => chat.name === BUDDY_CHAT_NAME) ?? direct[0];
   if (existing) {
-    rememberBuddyChat(serverId, existing.roomId, agentId);
+    rememberBuddyChat(serverId, existing.roomId, agentId, Date.now());
     return existing;
   }
   const chat = await rpc.chats.create({
@@ -71,7 +71,7 @@ async function findOrMakeBuddyChat(
       agentName: agent.name,
     }),
   });
-  rememberBuddyChat(serverId, chat.roomId, agentId);
+  rememberBuddyChat(serverId, chat.roomId, agentId, Date.now());
   chatsStore.add(serverId, chat);
   // Named here, so its first message does not rename it.
   chatTitler.created(chat, true);
@@ -134,7 +134,7 @@ export async function askBuddy(
     requestId: crypto.randomUUID(),
     greeting: null,
   });
-  rememberBuddyChat(serverId, chat.roomId, agent.agentId);
+  rememberBuddyChat(serverId, chat.roomId, agent.agentId, Date.now());
   chatsStore.add(serverId, chat);
   chatTitler.created(chat, false);
   const roomId = chat.roomId;
