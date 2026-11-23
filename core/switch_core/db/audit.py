@@ -8,6 +8,9 @@ change to the server as a whole, which no tenant owns, goes to
 Functions rather than an injected store because there is nothing to hold: each
 call takes the session of the change it records, so the event commits or rolls
 back with that change.
+
+Each event is also written to the security event stream once its transaction
+commits (`security_events.py`), which is how it reaches a log pipeline.
 """
 
 from __future__ import annotations
@@ -24,11 +27,18 @@ from switch_core.db.models import (
     OrganizationAuditEvent,
     ServerAuditEvent,
 )
+from switch_core.logging_context import current_log_context
+from switch_core.security_events import (
+    SecurityEvent,
+    SecurityScope,
+    emit_after_commit,
+    subject_ids,
+)
 
 # Set, to true, in the details of every audit event a platform operator's
 # server command records (`switch-accounts`, `switch-connector-apps`,
-# `switch-promote-org-admin`): no account is behind the change, so the event
-# names no actor.
+# `switch-promote-org-admin`, `switch-suspend`): no account is behind the
+# change, so the event names no actor.
 PLATFORM_OPERATOR_COMMAND = "platform_operator_command"
 
 
@@ -103,6 +113,46 @@ class AuditAction(StrEnum):
     # Switch Console signed a browser in to the workspace with a one-time
     # link, opening a dashboard page (`details.next`).
     BROWSER_HANDOFF = "auth.browser_handoff"
+    ROOM_CREATED = "room.created"
+    ROOM_ARCHIVED = "room.archived"
+    ROOM_UNARCHIVED = "room.unarchived"
+    ROOM_DELETED = "room.deleted"
+    # A client joined or left a room (`client_rooms`): an agent, a person in
+    # Switch Console, or a person on a bridged platform. Bridges and Switch's
+    # own system clients are not recorded. `details.client_type` says which.
+    ROOM_MEMBER_ADDED = "room.member_added"
+    ROOM_MEMBER_REMOVED = "room.member_removed"
+    AGENT_REGISTERED = "agent.registered"
+    # An existing agent registered again, which issues it a new key.
+    AGENT_REREGISTERED = "agent.reregistered"
+    AGENT_MANAGEMENT_GRANTED = "agent.can_manage_agents_granted"
+    AGENT_MANAGEMENT_REVOKED = "agent.can_manage_agents_revoked"
+    # A managed agent was created with, or changed to, `auto_approve`: its
+    # sessions run tools without asking anyone.
+    AGENT_AUTO_APPROVE_ENABLED = "agent.auto_approve_enabled"
+    CONTROLLER_ENROLLED = "controller.enrolled"
+    CONTROLLER_REVOKED = "controller.revoked"
+    # Switch Trust blocked a message, or redacted it before it was delivered
+    # (`trust/client.py`): the policy, the outcome and what each finding
+    # was, never the text found. Alerts and errors are log-only.
+    TRUST_MESSAGE_BLOCKED = "trust.message_blocked"
+    TRUST_MESSAGE_REDACTED = "trust.message_redacted"
+    # Incident control by a workspace admin or the server's operator
+    # (`room_moderation.py`): an agent or a person taken out of every room
+    # they were in, the rooms named in `details.rooms`; and a room made
+    # read-only, or writable again.
+    MEMBER_REMOVED_FROM_ALL_ROOMS = "member.removed_from_all_rooms"
+    ROOM_FROZEN = "room.frozen"
+    ROOM_UNFROZEN = "room.unfrozen"
+
+    # Suspending and lifting a suspension (`accounts/suspension.py`), and
+    # re-issuing an agent's key on request; `details.reason` says why. A
+    # person's are recorded in every workspace they are in or own agents in.
+    AGENT_SUSPENDED = "agent.suspended"
+    AGENT_UNSUSPENDED = "agent.unsuspended"
+    AGENT_KEY_ROTATED = "agent.key_rotated"
+    USER_SUSPENDED = "user.suspended"
+    USER_UNSUSPENDED = "user.unsuspended"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -142,6 +192,9 @@ class OrganizationAuditAction(StrEnum):
     DIRECTORY_CONFLICT = "organization.directory_conflict"
     # An operator made the organization follow one in the directory.
     LINKED_TO_DIRECTORY = "organization.linked_to_directory"
+    # Someone finished signing in to the organization's directory to act as
+    # one of its admins (`gateway/workos_sign_in_routes.py`).
+    DIRECTORY_SIGN_IN = "organization.directory_sign_in"
 
 
 class OrganizationIssueKind(StrEnum):
@@ -191,6 +244,28 @@ class ServerAuditAction(StrEnum):
     # or released it again (`switch-cloud-machine`).
     CLOUD_MACHINE_ADMIN_STOPPED = "cloud_machine.admin_stopped"
     CLOUD_MACHINE_ADMIN_RELEASED = "cloud_machine.admin_released"
+    # A person signed in to the gateway. A failed sign-in is a log-only
+    # security event (`security_events.SecuritySignal.SIGN_IN_FAILED`): it
+    # names no account it can trust, and a row per attempt would let anyone
+    # grow this table at will.
+    USER_SIGNED_IN = "user.signed_in"
+    # An account suspended or let back in (`accounts/suspension.py`), by
+    # whoever did it; `details.reason` says why.
+    USER_SUSPENDED = "user.suspended"
+    USER_UNSUSPENDED = "user.unsuspended"
+
+
+def request_actor() -> tuple[str | None, str | None]:
+    """Who the current request acts for, as authentication bound it: the
+    signed-in person, or the owner of the agent or controller calling
+    (`gateway/auth.py`, `bridges/agent/auth.py`), and the calling agent when
+    an agent is calling. `(None, None)` outside a request.
+
+    For a change made deep below the route, in a function many callers share,
+    where threading the actor through every caller would be the alternative.
+    """
+    context = current_log_context()
+    return context.user_id, context.agent_id
 
 
 async def record_audit_event(
@@ -214,6 +289,13 @@ async def record_audit_event(
     )
     session.add(event)
     await session.flush()
+    _mirror(
+        session,
+        event,
+        SecurityScope.TENANT,
+        tenant_id=tenant_id,
+        organization_id=None,
+    )
     return event
 
 
@@ -242,6 +324,13 @@ async def record_organization_audit_event(
     )
     session.add(event)
     await session.flush()
+    _mirror(
+        session,
+        event,
+        SecurityScope.ORGANIZATION,
+        tenant_id=None,
+        organization_id=organization_id,
+    )
     return event
 
 
@@ -264,7 +353,35 @@ async def record_server_audit_event(
     )
     session.add(event)
     await session.flush()
+    _mirror(session, event, SecurityScope.SERVER, tenant_id=None, organization_id=None)
     return event
+
+
+def _mirror(
+    session: AsyncSession,
+    event: AuditEvent | OrganizationAuditEvent | ServerAuditEvent,
+    scope: SecurityScope,
+    *,
+    tenant_id: str | None,
+    organization_id: str | None,
+) -> None:
+    agent_id, room_id = subject_ids(event.target_type, event.target_id, event.details)
+    emit_after_commit(
+        session,
+        SecurityEvent(
+            action=event.action,
+            scope=scope,
+            tenant_id=tenant_id,
+            organization_id=organization_id,
+            actor_user_id=event.actor_user_id,
+            target_type=event.target_type,
+            target_id=event.target_id,
+            agent_id=agent_id,
+            room_id=room_id,
+            details=None if event.details is None else dict(event.details),
+            audit_event_id=event.id,
+        ),
+    )
 
 
 async def list_audit_events(

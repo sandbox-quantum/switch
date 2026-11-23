@@ -89,7 +89,8 @@ BEGIN
         AND NEW.name IS NOT DISTINCT FROM OLD.name
         AND NEW.description IS NOT DISTINCT FROM OLD.description
         AND NEW.bridge_id IS NOT DISTINCT FROM OLD.bridge_id
-        AND NEW.archived_at IS NOT DISTINCT FROM OLD.archived_at THEN
+        AND NEW.archived_at IS NOT DISTINCT FROM OLD.archived_at
+        AND NEW.frozen_at IS NOT DISTINCT FROM OLD.frozen_at THEN
         RETURN NULL;
     ELSE
         changed := NEW;
@@ -109,8 +110,8 @@ $$ LANGUAGE plpgsql
 
 CREATE_ROOM_NOTIFY_TRIGGER = f"""
 CREATE TRIGGER {ROOM_NOTIFY_TRIGGER_NAME}
-    AFTER UPDATE OF matrix_room_id, name, description, bridge_id, archived_at
-        OR DELETE ON rooms
+    AFTER UPDATE OF matrix_room_id, name, description, bridge_id, archived_at,
+        frozen_at OR DELETE ON rooms
     FOR EACH ROW EXECUTE FUNCTION {ROOM_NOTIFY_FUNCTION_NAME}()
 """
 

@@ -13,8 +13,16 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
-from switch_core.bridges.agent.protocol.controller_presence import Binding
-from switch_core.db.models import TENANT_ZERO_ID, AgentController, SwitchCoreProcess
+from switch_core.bridges.agent.protocol.controller_presence import (
+    OWNER_SUSPENDED,
+    Binding,
+)
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    AgentController,
+    SwitchCoreProcess,
+    User,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_operation_store import (
     AgentControllerOperationStore,
@@ -32,6 +40,7 @@ from switch_core.management.notifier import (
 from switch_core.management.signals import ControllerSignals
 from switch_core.process_lease import LEASE_TTL
 from switch_core.signals import SignalBus
+from switch_core.tenant_context import no_tenant
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from tests.switch_core.management.harness import (
     Harness,
@@ -149,6 +158,27 @@ class TestAcrossProcesses:
         assert subscription.drain() == [(CREDENTIAL_REVOKED, {})]
         assert streaming_there._presence.is_revoked("c1")
 
+    async def test_an_owner_suspension_disconnects_the_controller_in_the_other_process(
+        self, two_processes: tuple[ControllerSignals, ControllerSignals]
+    ) -> None:
+        handled_here, streaming_there = two_processes
+        presence = streaming_there._presence
+        conn = presence.open(
+            controller_id="c1", tenant_id=TENANT_ZERO_ID, resume_cursors={}
+        )
+        presence.attach_stream(conn)
+        subscription = streaming_there.notifier.subscribe("c1")
+
+        handled_here.owner_suspended("c1")
+        await _eventually(lambda: conn.closure is not None)
+
+        assert conn.closure == OWNER_SUSPENDED
+        assert presence.current_connection("c1") is None
+        # Not a revocation: nothing is wiped, and it may connect again once
+        # its token's check lets it.
+        assert not presence.is_revoked("c1")
+        assert subscription.drain() == []
+
 
 @pytest.fixture
 def harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
@@ -197,6 +227,41 @@ class TestResync:
                 await anext(stream)
 
         assert final == [(CREDENTIAL_REVOKED, {})]
+
+    async def test_a_controller_whose_owner_was_suspended_meanwhile_is_disconnected(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            opened = await open_connection(client, controller)
+            stream = await open_stream(harness, controller, opened)
+            (opening,) = await take(stream, 1)
+            with no_tenant():
+                async with harness.session_factory() as session:
+                    await session.execute(
+                        update(User)
+                        .where(User.id == owner.id)
+                        .values(
+                            suspended_at=datetime.now(UTC),
+                            suspended_by_role="operator",
+                        )
+                    )
+                    await session.commit()
+
+            await harness.management.service.signals.resync()
+            final = await take(stream, 2)
+            with pytest.raises(StopAsyncIteration):
+                await anext(stream)
+
+        # Nudged first, as the suspension itself does, then let go.
+        assert final == [
+            (ASSIGNMENT_CHANGED, {"revision": opening[1]["assignment_revision"]}),
+            (
+                "evicted",
+                {"code": OWNER_SUSPENDED.code, "reason": OWNER_SUSPENDED.message},
+            ),
+        ]
 
 
 @pytest.fixture

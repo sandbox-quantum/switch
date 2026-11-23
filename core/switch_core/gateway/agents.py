@@ -1100,7 +1100,22 @@ async def update_can_manage_agents(
             detail="Only the agent's owner can change whether it can manage agents.",
         )
 
+    was_enabled = agent.can_manage_agents
     await agent_store.update(session, agent_id, can_manage_agents=req.enabled)
+    if req.enabled != was_enabled:
+        await record_audit_event(
+            session,
+            tenant_id=agent.tenant_id,
+            actor_user_id=user.id,
+            action=(
+                AuditAction.AGENT_MANAGEMENT_GRANTED
+                if req.enabled
+                else AuditAction.AGENT_MANAGEMENT_REVOKED
+            ),
+            target_type="agent",
+            target_id=agent_id,
+            details={"agent_name": agent.name},
+        )
     await session.commit()
     await session.refresh(agent)
 

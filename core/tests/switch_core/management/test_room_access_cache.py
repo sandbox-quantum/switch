@@ -19,6 +19,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.db.models import TENANT_ZERO_ID, Room, UsageBudget, room_agents
 from switch_core.db.session_scope import tenant_session
+from switch_core.room_read_only import RoomReadOnly
 from tests.session_counting import CountingSessionFactory
 from tests.switch_core.bridges.agent.protocol.test_pool_checkouts import (
     _seed,
@@ -109,7 +110,7 @@ async def test_a_refusal_is_never_kept(
     assert cache.member(TENANT_ZERO_ID, outsider_id, room_id) is None
 
 
-@pytest.mark.parametrize("change", ["leave", "archive", "budget"])
+@pytest.mark.parametrize("change", ["leave", "archive", "freeze", "budget"])
 async def test_a_change_made_where_nothing_announces_it_is_heard(
     listening: Harness, change: str
 ) -> None:
@@ -140,9 +141,13 @@ async def test_a_change_made_where_nothing_announces_it_is_heard(
                     room_agents.c.agent_id == member_id,
                 )
             )
-        else:
+        elif change == "archive":
             await session.execute(
                 update(Room).where(Room.id == room_id).values(archived_at=func.now())
+            )
+        else:
+            await session.execute(
+                update(Room).where(Room.id == room_id).values(frozen_at=func.now())
             )
         await session.commit()
 
@@ -150,9 +155,13 @@ async def test_a_change_made_where_nothing_announces_it_is_heard(
     if change == "leave":
         with pytest.raises(PermissionError):
             await service.require_room_poster(member_id, room_id)
-    else:
-        room = await service.require_room_member(member_id, room_id)
-        assert room.archived
+        return
+    room = await service.require_room_member(member_id, room_id)
+    assert room.archived if change == "archive" else room.frozen
+    with pytest.raises(RoomReadOnly) as refused:
+        await service.require_room_poster(member_id, room_id)
+    assert refused.value.state == ("archived" if change == "archive" else "frozen")
+    assert "Do not retry" in str(refused.value)
 
 
 async def test_the_triggers_send_what_a_check_depends_on(
@@ -165,6 +174,7 @@ async def test_the_triggers_send_what_a_check_depends_on(
         # A column no check reads: nothing.
         update(Room).where(Room.id == room_id).values(instructions="be brief"),
         update(Room).where(Room.id == room_id).values(name="renamed"),
+        update(Room).where(Room.id == room_id).values(frozen_at=func.now()),
         delete(room_agents).where(room_agents.c.agent_id == member_id),
         insert(room_agents).values(room_id=room_id, agent_id=member_id),
         insert(UsageBudget).values(
@@ -189,6 +199,7 @@ async def test_the_triggers_send_what_a_check_depends_on(
         "agent_id": member_id,
     }
     assert signals == [
+        {"kind": "room.changed", "tenant_id": TENANT_ZERO_ID, "room_id": room_id},
         {"kind": "room.changed", "tenant_id": TENANT_ZERO_ID, "room_id": room_id},
         room_agent,
         room_agent,
