@@ -213,16 +213,18 @@ def postgres_url() -> Iterator[str]:
     container = PostgresContainer("postgres:16-alpine").with_command(
         "postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
     )
-    pg = container.start()
+    # start() inside the try: a readiness wait that times out on a busy runner
+    # leaves a created container behind, and Ryuk may be off (Podman).
     try:
-        host = pg.get_container_host_ip()
-        port = pg.get_exposed_port(5432)
+        container.start()
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(5432)
         yield (
-            f"postgresql+asyncpg://{pg.username}:{pg.password}"
-            f"@{host}:{port}/{pg.dbname}"
+            f"postgresql+asyncpg://{container.username}:{container.password}"
+            f"@{host}:{port}/{container.dbname}"
         )
     finally:
-        _remove(pg)
+        _remove(container)
 
 
 def _remove(container: PostgresContainer) -> None:
