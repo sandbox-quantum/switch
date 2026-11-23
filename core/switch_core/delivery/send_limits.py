@@ -74,8 +74,11 @@ class MessageTooLong(MessageRefused, ValueError):
 
 
 class SendRateLimited(MessageRefused):
-    """`first` is set for the first refusal since the sender's last message
-    got through, so a notice about it is given once, not once per message."""
+    """`first` is set for the first refusal of a run: since the sender's
+    allowance was last full again. A sender who keeps sending faster than
+    the rate has some messages let through and some refused, and is told
+    once for all of it, not once per refusal; one who waits until their
+    allowance has refilled is told again the next time it runs out."""
 
     reason = "rate_limited"
 
@@ -96,6 +99,7 @@ class SendRateLimited(MessageRefused):
 class _Bucket:
     tokens: float
     updated: float
+    # Refused since the allowance was last full (`SendRateLimited.first`).
     refused: bool = False
 
 
@@ -202,9 +206,10 @@ class SendLimits:
                 bucket.tokens + (now - bucket.updated) * self._per_second,
             )
             bucket.updated = now
+        if bucket.tokens >= self._burst:
+            bucket.refused = False
         if bucket.tokens >= 1:
             bucket.tokens -= 1
-            bucket.refused = False
             return
         first = not bucket.refused
         bucket.refused = True

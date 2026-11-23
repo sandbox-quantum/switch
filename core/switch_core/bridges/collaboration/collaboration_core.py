@@ -1970,8 +1970,9 @@ class CollaborationCore:
     ) -> None:
         """Tell the sender why Switch did not write their message into the
         room: too long, or sent too fast. A sender over their allowance is told
-        once, not once for every message after it; each refusal is counted
-        either way (`send_limits.py`)."""
+        once for a run of refusals, until their allowance has refilled, not
+        once for every message refused in it; each refusal is counted either
+        way (`SendRateLimited.first`)."""
         if isinstance(refused, SendRateLimited) and not refused.first:
             return
         logger.warning(
