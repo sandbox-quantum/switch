@@ -565,19 +565,36 @@ async def test_ensure_is_unavailable_when_machines_are_not_enabled(
     assert (await app.client.get("/hosted-machines")).json()["available"] is False
 
 
+@pytest.mark.parametrize("listed", [None, ["*"], "*"])
 async def test_every_workspace_may_use_machines_when_none_is_listed(
     controller_app,  # noqa: F811
+    listed,
 ):
+    """With hosted agents v2 on, `"*"` (as a list or bare) admits every
+    workspace and unset admits none. With it off, unset admits every
+    workspace, as before v2, and `"*"` is just a name (a bare one doesn't
+    load)."""
     app = controller_app
+    v2 = process_hosted_v2()
+    if listed == "*" and not v2:
+        return  # refused at load with v2 off: test_how_a_star_loads_in_each_mode
     fastapi_app = app.client._transport.app
-    fastapi_app.state.hosted_controller_settings = app.settings.model_copy(
-        update={"allowed_tenant_ids": None}
+    fastapi_app.state.hosted_controller_settings = (
+        HostedControllerSettings.model_validate(
+            {**app.settings.model_dump(), "allowed_tenant_ids": listed}
+            | {"token": app.settings.token.get_secret_value()},
+            context={"v2": v2},
+        )
     )
     async with app.factory() as session:
         await add_tenant(session, "tenant-b")
         await session.commit()
     with tenant_scope("tenant-b"):
         joined = await _ensure(app)
+    if (listed is None) == v2:  # unset with v2 on, or "*" with it off
+        assert joined.status_code == 503
+        assert joined.json() == {"detail": "This server does not support cloud agents."}
+        return
     assert joined.status_code == 200, joined.text
     assert joined.json()["machine_id"] == app.machine_id
     assert await tenants_of_cloud_machine(app.factory, app.machine_id) == [
@@ -652,16 +669,32 @@ async def test_an_account_off_the_list_in_a_listed_workspace_is_refused_alike(
     assert await _machine_count(app) == before
 
 
-async def test_no_account_list_changes_nothing(
+async def test_no_account_list_admits_every_account_only_with_v2_off(
+    controller_app,  # noqa: F811
+):
+    """Left out, as configs did before v2: every account with hosted agents
+    v2 off, exactly as before; none with it on, until the server names them
+    or sets `"*"`."""
+    app = controller_app
+    _allow_users(app, None)
+    ensured = await _ensure(app)
+    available = (await app.client.get("/hosted-machines")).json()["available"]
+    if process_hosted_v2():
+        assert ensured.status_code == 503
+        assert available is False
+    else:
+        assert ensured.status_code == 200
+        assert available is True
+
+
+async def test_every_account_is_said_with_a_star_only_with_v2_on(
     controller_app,  # noqa: F811
 ):
     app = controller_app
-    assert (
-        app.settings.allowed_user_ids is None
-    )  # the fixture leaves it out, as configs do today
-    _allow_users(app, None)
-    assert (await _ensure(app)).status_code == 200
-    assert (await app.client.get("/hosted-machines")).json()["available"] is True
+    _allow_users(app, ["*"])
+    expected = process_hosted_v2()  # with v2 off, "*" names nobody real
+    assert ((await _ensure(app)).status_code == 200) is expected
+    assert (await app.client.get("/hosted-machines")).json()["available"] is expected
 
 
 async def test_the_account_list_never_widens_the_workspace_list(
@@ -703,7 +736,7 @@ async def test_ensure_from_another_workspace_joins_the_owner_s_machine(
     controller_app,  # noqa: F811
 ):
     app = controller_app
-    app.settings.allowed_tenant_ids = None
+    app.settings.allowed_tenant_ids = ["*"] if process_hosted_v2() else None
     await update_machine(
         app.factory,
         app.machine_id,

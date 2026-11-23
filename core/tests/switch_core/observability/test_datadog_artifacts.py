@@ -359,6 +359,7 @@ _HOSTED_BOARD_ORDER = [
     "Hosted box anonymous memory (bytes), p95 / max. Needs distribution mapping, see README",
     "Hosted box starts: seconds to ready from the person's first request, p50 / p90, by case (first_start target 20 / 30 s, wake 10 / 20 s). Needs distribution mapping, see README",
     "Hosted box start stages: p50 seconds each, by case and stage (they add up to the total). Needs distribution mapping, see README",
+    "Cloud machine claims refused at a limit, by reason (workspace_full: the per-workspace cap, hosted agents v2)",
 ]
 
 

@@ -58,6 +58,7 @@ from switch_core.observability.catalogue import (
     HOSTED_BOXES_EXPECTED,
     HOSTED_BOXES_REPORTING,
     HOSTED_BOXES_VALVE_MEMORY,
+    HOSTED_CLAIM_REFUSED,
     HOSTED_CLOUD_ERRORS,
     HOSTED_CONTROLLER_ERRORS,
     HOSTED_CONTROLLER_RESTARTS,
@@ -902,3 +903,15 @@ class HostedSampler:
         engine, self._engine = self._engine, None
         if engine is not None:
             await engine.dispose()
+
+
+# Why a cloud machine claim was refused at a limit: fixed words only.
+CLAIM_REFUSALS = ("workspace_full",)
+
+
+def record_claim_refused(reason: str) -> None:
+    """Count one claim refused at a limit (`switch.hosted.claim_refused`), at
+    once: a refusal commits nothing. Only a fixed word, never who."""
+    if reason not in CLAIM_REFUSALS:
+        return
+    metrics().increment(HOSTED_CLAIM_REFUSED, {"reason": reason})

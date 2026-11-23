@@ -464,13 +464,16 @@ def test_the_opt_in_settings_are_unset_by_default() -> None:
 def test_unset_they_answer_as_upstream(
     monkeypatch: pytest.MonkeyPatch, allowed_tenants, user_id: str
 ) -> None:
-    """Unset, the cloud-machine check is upstream's rule for every account,
-    and agent management is open to every workspace, as upstream."""
+    """Unset, with hosted agents v2 off, the cloud-machine check is upstream's
+    rule for every account, and agent management is open to every workspace,
+    as upstream. With v2 on, an unset account list admits nobody."""
     from types import SimpleNamespace
 
+    from switch_core import hosted_v2
     from switch_core.gateway import hosted_machines
     from switch_core.providers.hosted import HostedControllerSettings, tenant_allowed
 
+    monkeypatch.setattr(hosted_v2, "_process_on", False)
     monkeypatch.setattr(hosted_machines, "require_tenant_id", lambda: "t-1")
     config = SimpleNamespace(hosted_agents_enabled=True, hosted_launch_capacity=1)
     # Only the lists matter here: every other setting is left at its default.
@@ -481,6 +484,8 @@ def test_unset_they_answer_as_upstream(
     upstream = allowed_tenants is None or "t-1" in allowed_tenants
     assert hosted_machines.machines_enabled(config, settings, user_id) is upstream  # type: ignore[arg-type]
     assert tenant_allowed(settings.management_tenant_ids, "any-workspace")
+    monkeypatch.setattr(hosted_v2, "_process_on", True)
+    assert hosted_machines.machines_enabled(config, settings, user_id) is False  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("on", [False, True])
@@ -695,9 +700,16 @@ async def test_unset_allow_lists_add_no_403_on_the_paths_that_check_them(
     if path is not None:
         settings = load_hosted_settings(path)
         assert settings is not None
+        from switch_core import hosted_v2
+
         monkeypatch.setattr(hosted_machines, "require_tenant_id", lambda: "t-2")
         config = SimpleNamespace(hosted_agents_enabled=True, hosted_launch_capacity=1)
+        # A v1 server: every account, as upstream.
+        monkeypatch.setattr(hosted_v2, "_process_on", False)
         assert hosted_machines.machines_enabled(config, settings, "any-user")  # type: ignore[arg-type]
+        # With v2 on, unset lists admit nobody.
+        monkeypatch.setattr(hosted_v2, "_process_on", True)
+        assert not hosted_machines.machines_enabled(config, settings, "any-user")  # type: ignore[arg-type]
 
 
 async def _sync(check: Any, authenticator: object) -> None:

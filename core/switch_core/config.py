@@ -394,9 +394,16 @@ class SwitchConfig(BaseSettings):
     # decides where a request comes from and this server never checks. Unset
     # or blank turns the check off.
     gateway_signup_refused_header: str | None = None
-    # How many cloud machines the bound tenant may have at once; 0 means this
-    # server cannot run them. The `hosted_agents` flag is what offers them.
+    # How many cloud machines may exist at once across the whole server (one
+    # count, v1 and v2 together, not per workspace); 0 means this server
+    # cannot run them. The `hosted_agents` flag is what offers them.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
+    # Hosted agents v2 only: how many live cloud machines may serve any one
+    # workspace, under `hosted_launch_capacity`, so one workspace can't take
+    # every machine. A box serving several workspaces counts in each. 0 means
+    # no per-workspace limit (Core warns at start when v2 is on and machines
+    # can run). With v2 off it's ignored.
+    hosted_launch_capacity_per_workspace: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     # How long a message may wait for room on a full box before it's let go and the agent shows
     # `waiting_too_long`. Sent to each box controller in Core's answer to its status report.

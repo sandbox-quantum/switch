@@ -112,12 +112,17 @@ from switch_core.gateway.workspace_guardrails import (
 from switch_core.gateway.workspace_services import (
     router as workspace_services_router,
 )
-from switch_core.hosted_v2 import require_hosted_v2, set_process_hosted_v2
+from switch_core.hosted_v2 import (
+    hosted_v2_on,
+    require_hosted_v2,
+    set_process_hosted_v2,
+)
 from switch_core.keys import Purpose
 from switch_core.organization_directory import OrganizationDirectory
 from switch_core.providers.hosted import (
     load_hosted_settings,
     log_operator_overlaps,
+    warn_if_no_per_workspace_limit,
     warn_if_open_to_all,
 )
 from switch_core.request_validation import validation_error_response
@@ -212,14 +217,22 @@ def create_gateway_app(
     app = FastAPI(title="Switch Gateway API")
     app.state.chat_service = chat_service
     app.state.hosted_controller_settings = load_hosted_settings(
-        config.hosted_controller_config_path
+        config.hosted_controller_config_path, v2=hosted_v2_on(config)
     )
     if config.hosted_launch_capacity and app.state.hosted_controller_settings is None:
         raise ValueError(
             "HOSTED_LAUNCH_CAPACITY above 0 requires HOSTED_CONTROLLER_CONFIG_PATH."
         )
     warn_if_open_to_all(
-        app.state.hosted_controller_settings, config.hosted_launch_capacity
+        app.state.hosted_controller_settings,
+        config.hosted_launch_capacity,
+        # Before `set_process_hosted_v2` below: asked of the config itself.
+        v2=hosted_v2_on(config),
+    )
+    warn_if_no_per_workspace_limit(
+        config.hosted_launch_capacity,
+        config.hosted_launch_capacity_per_workspace,
+        v2=hosted_v2_on(config),
     )
     # The operator bearer's overlaps: open ones named with their
     # end, lapsed ones still in the file warned about.

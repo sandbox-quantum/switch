@@ -125,6 +125,7 @@ def _hosted_app(
     app = FastAPI()
     app.state.hosted_controller_settings = HostedControllerSettings(
         allowed_tenant_ids=[require_tenant_id()],
+        allowed_user_ids=["*"] if process_hosted_v2() else None,
         token=TOKEN,
         agent_api_endpoint=API_ENDPOINT,
     )

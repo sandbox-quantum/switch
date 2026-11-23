@@ -48,7 +48,9 @@ from switch_core.observability.hosted import record_machine_event
 from switch_core.providers.hosted import (
     NOT_AVAILABLE,
     HostedControllerSettings,
-    tenant_allowed,
+    machines_tenant_allowed,
+    machines_user_allowed,
+    v2_of,
 )
 from switch_core.telemetry import emit_after_commit
 from switch_core.visibility.box_provision import (
@@ -89,8 +91,8 @@ def machines_enabled(
     return (
         config.hosted_agents_enabled
         and config.hosted_launch_capacity > 0
-        and tenant_allowed(settings.allowed_tenant_ids, require_tenant_id())
-        and (settings.allowed_user_ids is None or user_id in settings.allowed_user_ids)
+        and machines_tenant_allowed(settings, require_tenant_id(), v2=v2_of(config))
+        and machines_user_allowed(settings, user_id, v2=v2_of(config))
     )
 
 
@@ -320,6 +322,10 @@ async def ensure_machine(
         revoke=revoke_machine_controller if box_provisioning_on(config) else None,
         # With box provisioning on, a new machine is a cluster box it makes; off, a v1 one.
         backend="box" if box_provisioning_on(config) else "vm",
+        # Hosted agents v2's per-workspace cap; with v2 off, none, as before.
+        per_workspace=(
+            getattr(config, "hosted_launch_capacity_per_workspace", 0) if v2 else 0
+        ),
     )
     if claimed.change is not None:
         emit_after_commit(

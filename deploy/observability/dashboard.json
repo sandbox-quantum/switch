@@ -3735,6 +3735,25 @@
         "width": 6,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machine claims refused at a limit, by reason (workspace_full: the per-workspace cap, hosted agents v2)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.claim_refused{$service,$flint_env,$version,!version:0.27.0} by {reason}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 232,
+        "width": 6,
+        "height": 4
+      }
     }
   ]
 }

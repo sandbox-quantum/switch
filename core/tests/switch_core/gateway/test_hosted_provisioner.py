@@ -111,6 +111,9 @@ async def provisioner_app(session_factory):
     owner, machine_id = await _owner_and_machine(session_factory, email="p@example.com")
     settings = HostedControllerSettings(
         allowed_tenant_ids=[require_tenant_id()],
+        # The config below runs box provisioning, hosted agents v2's: every
+        # account is said with "*".
+        allowed_user_ids=["*"],
         token=TOKEN,
         provisioner_token=PROVISIONER,
         agent_api_endpoint="https://switch.example.com/api/agent",
@@ -762,6 +765,46 @@ async def test_a_claim_with_hosted_agents_switched_off_is_blocked(
     )
     assert claimed.status_code == 204
     assert (await _entries(app.factory))[-1].details["step"] == "blocked"
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+@pytest.mark.parametrize("unset", ["allowed_tenant_ids", "allowed_user_ids"])
+async def test_an_unset_list_asks_for_no_box_and_blocks_a_claim(
+    provisioner_app, unset: str
+) -> None:
+    """With hosted agents v2 on, an unset list admits nobody: no box is asked
+    for, and a request already written is blocked at its claim. `"*"` admits
+    everyone again."""
+    app = provisioner_app
+    await _ask(app.factory, app.machine_id)  # asked while the lists admitted it
+    setattr(app.settings, unset, None)
+    now = datetime.now(UTC)
+    claimed = await app.client.post(
+        "/hosted-provisioner/claim", headers=_bearer(PROVISIONER)
+    )
+    assert claimed.status_code == 204
+    assert (await _entries(app.factory))[-1].details["step"] == "blocked"
+    before = len(await _entries(app.factory))
+    asked = await ask_for_box(
+        app.factory,
+        machine_id=app.machine_id,
+        config=app.config,
+        settings=app.settings,
+        now=now,
+    )
+    assert asked is None
+    assert len(await _entries(app.factory)) == before
+    setattr(app.settings, unset, ["*"])
+    assert isinstance(
+        await ask_for_box(
+            app.factory,
+            machine_id=app.machine_id,
+            config=app.config,
+            settings=app.settings,
+            now=datetime.now(UTC),
+        ),
+        str,
+    )
 
 
 async def test_a_malformed_action_id_is_refused(provisioner_app) -> None:

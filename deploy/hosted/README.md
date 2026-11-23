@@ -59,13 +59,16 @@ cloud agents."
 Mount a private JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
 `allowed_tenant_ids`, a dedicated `token` of at least 32 characters and the
 HTTPS `agent_api_endpoint` the machines enroll against. `allowed_tenant_ids`
-lists the workspaces whose members may use cloud machines, or is `null` for
-every workspace. The optional `allowed_user_ids` narrows that to the listed
-accounts (user ids) within those workspaces; left out or `null`, every member
-may. An account off the list gets the same "not supported" answer as a
-workspace off its list. Core refuses unknown keys, the old `tenant_id` among
-them. With `HOSTED_LAUNCH_CAPACITY` above 0 and neither list set, Core logs a
-warning at start: cloud machines are then open to every workspace and account.
+lists the workspaces whose members may use cloud machines, and the optional
+`allowed_user_ids` the accounts within them. **With hosted agents v2 off,**
+as before: `null` (or leaving `allowed_user_ids` out) means every one, and a
+list means whom it names. **With hosted agents v2 on**
+(`HOSTED_BOX_PROVISIONING`), `null` or a missing list admits **nobody**, and
+`"*"` (alone, as `"*"` or `["*"]`) means every one: a server turning v2 on
+must name its workspaces and accounts, or set `"*"`, on both lists. Core
+warns at start when a list is unset, and refuses `"*"` beside other entries.
+An empty list admits nobody either way. Core refuses unknown keys, the old
+`tenant_id` among them.
 
 The optional `management_tenant_ids` is separate: when set, only the listed
 workspaces may use agent management at all (`/v1/management`,
@@ -80,7 +83,12 @@ runs agent management without cloud machines has to write a full hosted config
 to set it (with `HOSTED_LAUNCH_CAPACITY` left at 0, nothing else changes).
 `HOSTED_LAUNCH_CAPACITY` is how many machines may exist at once across the
 server, one per user, 0–100; 0
-means the server cannot run them. Keep it no higher than the hosted controller's
+means the server cannot run them. **With hosted agents v2 on,**
+`HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE` (0–100) caps the live machines serving
+any one workspace under that, so one workspace can't take them all; a box
+serving several workspaces counts in each. 0 means no per-workspace limit, and
+Core warns at start. Choose it, with the allow-lists, before v2 serves more
+than one workspace. With v2 off it's ignored. Keep it no higher than the hosted controller's
 `max_machines`. The backend chart exposes
 `switchCore.hostedControllerSecret` (file `controller.json`),
 `switchCore.hostedLaunchCapacity`, `switchCore.hostedIdleStopMinutes` and

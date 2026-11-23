@@ -53,7 +53,12 @@ from switch_core.db.stores.hosted_machine_store import (
     workspaces_on,
 )
 from switch_core.observability.hosted import record_machine_event
-from switch_core.providers.hosted import HostedControllerSettings, tenant_allowed
+from switch_core.providers.hosted import (
+    HostedControllerSettings,
+    machines_tenant_allowed,
+    machines_user_allowed,
+    v2_of,
+)
 from switch_core.tenant_context import no_tenant
 from switch_core.visibility.alerts import Condition, Verdict, apply_alert
 from switch_core.visibility.dependencies import process_keyed_id_key
@@ -480,13 +485,11 @@ async def box_allowed(
     # The server's main switch, as `machines_enabled` reads it.
     if not config.hosted_agents_enabled or config.hosted_launch_capacity <= 0:
         return False
-    if (
-        settings.allowed_user_ids is not None
-        and machine.owner_id not in settings.allowed_user_ids
-    ):
+    v2 = v2_of(config)
+    if not machines_user_allowed(settings, machine.owner_id, v2=v2):
         return False
     for workspace in await workspaces_on(factory, machine.id):
-        if not tenant_allowed(settings.allowed_tenant_ids, workspace.tenant_id):
+        if not machines_tenant_allowed(settings, workspace.tenant_id, v2=v2):
             continue
         if await block_reason(factory, machine.owner_id, workspace.tenant_id) is None:
             return True

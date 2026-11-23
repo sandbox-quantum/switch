@@ -1036,6 +1036,15 @@ HOSTED_MACHINE_EVENTS = _spec(
     "reason",
     "backend",
 )
+HOSTED_CLAIM_REFUSED = _spec(
+    "switch.hosted.claim_refused",
+    "sum",
+    "{claim}",
+    "Cloud machine claims refused at a limit. `reason` is a fixed word: "
+    "`workspace_full` (the workspace's `HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE`, "
+    "hosted agents v2 only). Never which workspace or person.",
+    "reason",
+)
 HOSTED_RECONCILER_SILENCE = _spec(
     "switch.hosted.reconciler_silence",
     "gauge",
@@ -1295,6 +1304,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_BOXES_REPORTING,
         HOSTED_BOXES_EXPECTED,
         HOSTED_MACHINE_EVENTS,
+        HOSTED_CLAIM_REFUSED,
         HOSTED_RECONCILER_SILENCE,
         HOSTED_ALERTS_OPEN,
         HOSTED_PROVIDER_LOGIN_PROBLEMS,

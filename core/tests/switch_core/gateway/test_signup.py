@@ -35,6 +35,7 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_machines import MACHINES_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.keys import Keyring
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
@@ -52,7 +53,12 @@ def _hosted_settings(tenants: list[str] | None) -> HostedControllerSettings:
     """The real settings model, not a stand-in, so a field added to it (the
     account list, say) is there with its default rather than missing."""
     return HostedControllerSettings(
-        allowed_tenant_ids=tenants,
+        # None here means every workspace, said explicitly ("*"): with hosted
+        # agents v2 on, an unset list is nobody.
+        allowed_tenant_ids=(["*"] if process_hosted_v2() else None)
+        if tenants is None
+        else tenants,
+        allowed_user_ids=["*"] if process_hosted_v2() else None,
         token="t" * 32,
         agent_api_endpoint="https://switch.example.com/api/agent",
     )

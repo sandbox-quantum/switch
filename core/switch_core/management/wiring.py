@@ -258,7 +258,7 @@ def _management_tenant_ids(path: str | None, hosted_v2: bool) -> list[str] | Non
     `management_tenant_ids`, or None for every workspace. It belongs to hosted
     agents v2, so with v2 off it has no effect: said once at start, so an
     operator who set it isn't left expecting a restriction."""
-    settings = load_hosted_settings(path)
+    settings = load_hosted_settings(path, v2=hosted_v2)
     tenant_ids = None if settings is None else settings.management_tenant_ids
     if tenant_ids is not None and not hosted_v2:
         logger.warning(

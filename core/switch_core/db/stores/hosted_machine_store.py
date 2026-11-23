@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -32,6 +33,10 @@ MACHINE_NEEDS_ADMIN = (
     "Your cloud machine needs attention. Contact your server administrator."
 )
 MACHINES_FULL = "Every Switch Cloud machine on this server is in use. Try again later."
+WORKSPACE_MACHINES_FULL = (
+    "Every cloud machine this workspace may have is in use. Try again later, "
+    "or ask your administrator."
+)
 MACHINE_STOPPED_BY_ADMIN = (
     "Your cloud machine was stopped by a server administrator. Contact them to "
     "have it released."
@@ -40,6 +45,8 @@ MACHINE_BEING_REMOVED = (
     "Your previous cloud machine is being removed. Try again in a minute."
 )
 #: How many workspaces one machine serves: each runs its own agent controller.
+logger = logging.getLogger(__name__)
+
 MAX_MACHINE_WORKSPACES = 8
 #: The room-facing words for an operator's pause and an admin's turn-off.
 #: Fixed text, never anything from the request.
@@ -202,6 +209,34 @@ async def owner_paused(session: AsyncSession, owner_id: str) -> bool:
     return paused_at is not None
 
 
+async def _refuse_if_workspace_full(session: AsyncSession, per_workspace: int) -> None:
+    """Refuse a claim when the bound workspace already has `per_workspace`
+    live machines serving it (0: no limit). Counted on the workspace's own
+    rows, read with it bound, under the caller's `lock_claims`."""
+    if per_workspace <= 0:
+        return
+    serving = await session.scalar(
+        select(func.count())
+        .select_from(MachineWorkspace)
+        .join(CloudMachine, CloudMachine.id == MachineWorkspace.machine_id)
+        .where(
+            MachineWorkspace.tenant_id == require_tenant_id(),
+            CloudMachine.state != "deleted",
+        )
+    )
+    if (serving or 0) >= per_workspace:
+        from switch_core.observability.hosted import record_claim_refused
+
+        logger.warning(
+            "A cloud machine claim was refused: workspace %s has %d live machines, "
+            "its per-workspace limit.",
+            _keyed_workspace(require_tenant_id()) or "(no keyed-id key)",
+            serving,
+        )
+        record_claim_refused("workspace_full")
+        raise CloudMachineConflict(WORKSPACE_MACHINES_FULL)
+
+
 def claim_conflict(machine: CloudMachine, now: datetime) -> str | None:
     """The reason a live machine cannot be claimed, or None when it can."""
     if machine.stop_reason == "paused":
@@ -352,6 +387,7 @@ class CloudMachineStore:
         now: datetime,
         revoke: RevokeController | None = None,
         backend: Literal["vm", "box"] = "vm",
+        per_workspace: int = 0,
     ) -> Claimed:
         """The owner's machine, reused or newly claimed within `capacity`,
         serving the bound workspace, and what the claim changed.
@@ -365,6 +401,10 @@ class CloudMachineStore:
         A machine joining a workspace takes a new revision, so it is prepared
         again with a controller for it. The caller holds `lock_claims`, so no
         other claim can count towards capacity or join the machine meanwhile.
+
+        `per_workspace` (hosted agents v2's `hosted_launch_capacity_per_workspace`;
+        0 for none) caps the live machines serving the bound workspace: a new
+        machine, or one joining this workspace, is refused at it.
         """
         # A paused user claims nothing, box or no box. The
         # pause is v2's: with it off, no read, as before v2.
@@ -383,6 +423,7 @@ class CloudMachineStore:
                 serving = await tenants_of_cloud_machine(factory, machine.id)
                 if len(serving) >= MAX_MACHINE_WORKSPACES:
                     raise CloudMachineConflict(MACHINE_WORKSPACES_FULL)
+                await _refuse_if_workspace_full(session, per_workspace)
                 workspace = self._add_workspace(session, machine, now)
             if machine.desired_state == "retained":
                 machine.desired_state = "running"
@@ -411,6 +452,7 @@ class CloudMachineStore:
         )
         if (live or 0) >= capacity:
             raise CloudMachineConflict(MACHINES_FULL)
+        await _refuse_if_workspace_full(session, per_workspace)
         if revoke is not None:
             revived = await self._revive(session, factory, owner_id, revoke, now)
             if revived is not None:
@@ -687,6 +729,15 @@ def ever_hosted(workspaces: list[WorkspaceOnMachine]) -> bool:
     """Whether the machine's disk may hold anything worth keeping: a
     controller of it ever enrolled."""
     return any(workspace.controller_id is not None for workspace in workspaces)
+
+
+def _keyed_workspace(tenant_id: str) -> str | None:
+    """The workspace's keyed id, for a log line; None before a key is loaded."""
+    from switch_core.visibility.dependencies import process_keyed_id_key
+    from switch_core.visibility.keyed_id import KeyedIdKind
+
+    key = process_keyed_id_key()
+    return None if key is None else key.keyed_id(KeyedIdKind.WORKSPACE, tenant_id)
 
 
 def _keyed_box(machine_id: str) -> str | None:
