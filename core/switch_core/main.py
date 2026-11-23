@@ -126,6 +126,7 @@ from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
     app_connect_args,
     create_engine_from_config,
+    create_lease_engine,
     create_session_factory,
     create_unpooled_engine,
 )
@@ -831,12 +832,18 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     # This process's row in `switch_core_processes`, claimed before anything
     # can record a connection against it and held until the process drains.
-    # What another process reads to know this one is alive.
+    # What another process reads to know this one is alive. Renewed on a
+    # connection of its own, outside the pool, so requests and streams that
+    # fill the pool cannot make it lapse and drop everything this process
+    # holds (`create_lease_engine`).
+    lease_engine = create_lease_engine(config)
+    instrument_queries(lease_engine)
     process_lease = ProcessLease(
         process_id=process_id,
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in config.keyring.keys],
+        renewal_session_factory=create_session_factory(lease_engine),
     )
     await process_lease.renew()
     logger.info("Claimed switch-core process lease %s", process_id)
