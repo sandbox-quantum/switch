@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import type {
   OpenAgentStream,
   ProviderReadiness,
@@ -88,7 +89,7 @@ export class FakeRuntime implements AgentRuntime {
     directory: string | null
   ): Promise<string> {
     if (directory === null) return `/data/workspaces/${name}`;
-    if (!directory.startsWith('/'))
+    if (!isAbsolute(directory))
       throw new ReasonedError('definition_invalid', `'${directory}' is not absolute.`);
     return directory;
   }
@@ -103,7 +104,12 @@ export class FakeRuntime implements AgentRuntime {
     const observation = this.observation(agentId);
     Object.assign(observation, {
       alive: true,
-      configured: { provider: template.start.provider, cwd: template.start.input.cwd },
+      configured: {
+        provider: template.start.provider,
+        cwd: template.start.input.cwd,
+        runtimeMode: template.start.input.runtimeMode,
+        permissionMode: template.start.input.agentDefinition?.permissionMode ?? null,
+      },
       flags: { enabled: true, spawn: true },
       failure: null,
       takenOver: options.clearTakenOver ? null : observation.takenOver,

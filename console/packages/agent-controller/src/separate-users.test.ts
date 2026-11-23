@@ -122,6 +122,38 @@ describe.skipIf(process.platform === 'win32')('separate users', () => {
     expect(exec).toContain('"--env-file" "/etc/switch/agents.env"');
   });
 
+  it('keeps the controller from the cloud instance metadata and new privileges, as its agents are', () => {
+    const unit = lines(
+      controllerSystemUnit(config, {
+        cli: '/usr/lib/node_modules/switch-agent-controller/cli.mjs',
+        envFile: null,
+        path: '/usr/local/bin:/usr/bin:/bin',
+      })
+    );
+    const service = unit.slice(unit.indexOf('[Service]'), unit.indexOf('[Install]'));
+    expect(service).toContain('IPAddressDeny=169.254.169.254/32 fd00:ec2::254/128');
+    expect(service).toContain('NoNewPrivileges=yes');
+    expect(service).toContain('CapabilityBoundingSet=');
+    expect(service).toContain('RestrictSUIDSGID=yes');
+    expect(service).toContain('ProtectKernelTunables=yes');
+    expect(service).toContain('ProtectKernelModules=yes');
+    expect(service).toContain('ProtectClock=yes');
+    // The same deny the agents' units carry, so neither side can reach the metadata.
+    const agentDeny = lines(
+      agentUnitTemplate(config, {
+        sh: '/bin/sh',
+        find: '/usr/bin/find',
+        chown: '/usr/bin/chown',
+        path: '/usr/local/bin:/usr/bin:/bin',
+      })
+    ).find((line) => line.startsWith('IPAddressDeny='));
+    expect(service).toContain(agentDeny);
+    // A person's own account can run the controller: their home, their other
+    // processes' IPC and the agents' directories stay reachable to it.
+    for (const narrowing of ['ProtectHome=', 'ProtectSystem=', 'RemoveIPC=', 'PrivateTmp='])
+      expect(service.some((line) => line.startsWith(narrowing))).toBe(false);
+  });
+
   it('keeps out of the agents’ PATH what they cannot reach', () => {
     expect(
       agentPath('/home/builder/.local/bin:/usr/local/bin:relative:/root/bin:/usr/bin', [

@@ -7562,6 +7562,14 @@ tags; see RELEASING.md.
   offer them, while the socket is down, and when as many calls are in flight
   as Switch takes. A call the socket closes on is answered 502, as a request
   whose connection drops.
+- **A controller with its own data directory keeps its sessions there.** Run
+  with `--data-dir` or `SWITCH_CONTROLLER_DATA_DIR`, it keeps its agents'
+  session state in that directory's `sdk-sessions/`, not in your
+  `~/.local/state/switch`. A controller Switch Console runs, and a data
+  directory that ran agents before this version, keep the old location.
+- **An agent whose definition can no longer be applied is stopped.** One that
+  was running when its definition became invalid used to keep running under
+  the old one while its status read failed.
 
 #### Fixed
 - **A Claude Code login that is there but does not work is reported as not
@@ -7600,6 +7608,48 @@ tags; see RELEASING.md.
   with a new code, `5` (update the controller) or `6` (enroll the machine
   again), and the systemd unit and launchd job it installs do not restart it on
   either.
+
+#### Security
+- **The controller no longer installs an older release because the server
+  names one.** It used to follow Switch back to any signed release, so a
+  compromised server could return every controller to one with a known flaw.
+  It now installs only newer releases, and reports a refused one as a failed
+  update with the reason. To roll back, install the older release on the
+  machine yourself. A version it cannot compare, its own included, is reported
+  as that, naming the version, rather than as an older release.
+- **Refuses a working directory inside its own data directory.** An agent whose
+  definition names the data directory, anything in it, or a link leading there
+  fails as `definition_invalid` and is never started, so its tools cannot read
+  the controller credential, the sealing key or the relay tokens. The data
+  directory's old `workspaces` folder, where the server put agents defined
+  before the default moved to `~/.switch/agents`, is still allowed.
+- **Applies bypass and outside directories only where the machine allows
+  them.** What the machine's own user allowed is kept in `device-policy.json`
+  in the data directory, never sent to Switch, and managed with
+  `switch-agent-controller allow`, `disallow` and `policy` (or by Switch
+  Console for the controller it runs), which take turns, so changes made at
+  once all land. Until allowed, an agent asking for bypass (its definition's
+  `auto_approve`, or a Claude Code `permissionMode` of `bypassPermissions` or
+  `dontAsk` in its advanced configuration, which is then left out) runs with
+  approvals and its status says why, and one asking for a directory outside
+  the workspaces folder fails as `definition_invalid` with the command that
+  would allow it. A change is applied within seconds. Agents run as Linux
+  users of their own (`--separate-users`) are contained by their units and are
+  not affected. Existing bypass agents and agents with their own directory on
+  other controllers need allowing once after updating.
+- **The macOS keychain store quotes its data directory.** A `--data-dir`
+  holding a quote, backslash or newline no longer breaks, or adds a second
+  command to, the `security -i` line that stores a secret. Entries for any
+  other directory keep their names.
+- **The controller cannot reach the cloud instance metadata service.** Its
+  system unit (`install-service --separate-users`) now denies
+  `169.254.169.254` and `fd00:ec2::254`, as its agents' units already did. On a
+  Switch Cloud machine, one seat's controller could otherwise read the
+  instance's user data, including another workspace's unused enrollment code.
+  The unit also blocks new privileges, capabilities, SUID files and changes
+  to the kernel's settings, modules, logs, cgroups, the clock and the
+  hostname. It is rewritten the next time the setup runs, which a Switch
+  Cloud machine does on every boot.
 
 ### [0.1.1] - 2026-10-07
 
@@ -7653,6 +7703,18 @@ The Switch protocol client and MCP runtime
   socket's close code as `fallback_close_code`, so the server's log can tell
   it from a client built before the socket. Opening the event stream straight
   away, against an old server, sends neither.
+
+#### Security
+- **`send_attachment` sends only files inside the session's working
+  directory** or its downloaded attachments, with links followed, and refuses
+  any other path with the reason. A file with more than one hard link is
+  refused as well, unless it is an attachment the session downloaded, and a
+  path named in another case is accepted on macOS and Windows.
+  `download_attachment` saves each file readable by you alone, and replaces a
+  link planted at its name rather than writing through it.
+- **Requires the MCP TypeScript SDK 1.32.2 or later**, past its advisories for
+  the Streamable HTTP server transport the session's Switch tools are served
+  over.
 
 ### [0.8.0] - 2026-09-25
 
@@ -7856,6 +7918,18 @@ published on its own.
 - Serves the session-side half of service grants: granted skills in each
   session, the GitHub credential helper and `gh` wrapper, and scrubbing of
   issued tokens, as Switch Console does.
+
+#### Fixed
+- **An agent's sessions move with its folder**, as in Switch Console.
+
+#### Security
+- **The control socket compares its secret in constant time.**
+- **Shell setup can no longer add environment variables beyond the inherited
+  allowlist**, as in Switch Console.
+- **Applies bypass and outside directories only where the host allows them**,
+  as the agent-controller does, a Claude Code `permissionMode` that skips
+  approvals included: an SSH host's controller needs `switch-agent-controller
+  allow` run on that host.
 
 ### [1.9.12] - 2026-10-01
 

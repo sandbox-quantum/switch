@@ -144,6 +144,7 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
         log: silentLogger,
         dataDir: dataDir!,
         workspacesFor: () => join(dataDir!, 'workspaces'),
+        devicePolicy: null,
         version: '0.1.0',
         deviceId: null,
         updatedBy: 'self',
