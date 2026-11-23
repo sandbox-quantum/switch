@@ -81,10 +81,6 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_turn_with_request,
     with_mention,
 )
-from switch_core.bridges.collaboration.session.renderers.subagents import (
-    is_room_tool,
-    is_tool_call,
-)
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
 )
@@ -628,38 +624,33 @@ _MAX_SECTION_TEXT = 3000
 _MAX_ANSWER_SECTIONS = 40
 
 
-def _work_line(items: Sequence[Any]) -> str:
-    """How far a turn has got: "Working… · step 4".
+def _work_plan(title: str, status: str, link: tuple[str, str] | None) -> dict[str, Any]:
+    """A work message as one line: a plan block of one card.
 
-    A count rather than the step's title, because the title of a shell step is
-    the command it runs, which is not a label anyone should have to read in
-    the channel. The steps themselves are in the thread. Calls to Switch's own
-    room tools are talking, not work, and are not counted.
+    A plan block because it is the one place Slack draws its own icon beside
+    a line: a spinner while its card is in progress, a tick once complete and
+    a mark for an error. Its title is the whole line, plain text, so the
+    question it answers is named there but cannot be a link. The card holds
+    the link, as (url, label), where there is one; its steps are in the
+    message's thread.
     """
-    steps = sum(1 for item in items if is_tool_call(item) and not is_room_tool(item))
-    return f"{WORKING_NOTE} · step {steps}" if steps else WORKING_NOTE
-
-
-def _work_note(text: str, *, live: bool = True) -> dict[str, Any]:
-    """A work message's line of state, as a plan block of one card.
-
-    A plan block because it is the one place Slack draws its own spinner,
-    beside its title, while a card in it is in progress, and a tick once
-    none is: an animation that costs no edit per frame. Its title is the
-    line itself. Its one card says where the steps are, which is the
-    thread under this message, not inside the plan.
-    """
-    return {
-        "type": "plan",
-        "title": text[:_MAX_PLAN_TITLE],
-        "tasks": [
-            {
-                "task_id": "switch-work-thread",
-                "title": "The steps are in this message's thread",
-                "status": "in_progress" if live else "complete",
-            }
-        ],
+    task: dict[str, Any] = {
+        "task_id": "switch-work-thread",
+        "title": "Jump to the question" if link else "The steps are in the thread",
+        "status": status,
     }
+    if link is not None:
+        url, label = link
+        task["details"] = {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [{"type": "link", "url": url, "text": label}],
+                }
+            ],
+        }
+    return {"type": "plan", "title": title[:_MAX_PLAN_TITLE], "tasks": [task]}
 
 
 def _session_title(label: str, asked: AskedQuestion | None) -> str:
@@ -827,9 +818,6 @@ class SlackAdapter(PlatformAdapter):
         self._session_refusals_logged: set[str] = set()
         # Whether Slack shows its own Stop on a session (`native_stop_available`).
         self._native_stop: bool | None = None
-        # Work messages this process posted, and the line each now shows, so a
-        # step change is edited into it once and an unchanged one not at all.
-        self._work_notes: OrderedDict[str, str] = OrderedDict()
         # Session messages someone pressed Slack's own Stop on, whose turn must
         # not carry on in a new stream while the stop reaches the agent.
         self._sessions_stopped: OrderedDict[str, None] = OrderedDict()
@@ -1335,7 +1323,6 @@ class SlackAdapter(PlatformAdapter):
         stream cannot be opened in, is an ordinary Block Kit post.
         """
         content = self._own_stop_unless_native(content)
-        await self._note_work_step(content, thread_root_id)
         if self._streamable(content, thread_root_id):
             assert isinstance(content, TurnActivity) and thread_root_id
             ref = await self._open_stream(
@@ -1389,7 +1376,6 @@ class SlackAdapter(PlatformAdapter):
                 retry_after=remaining, text="Waiting for Slack to allow updates."
             )
         content = self._own_stop_unless_native(content)
-        await self._note_work_step(content, thread_root_id)
         stream = self._streams.get(message_ref)
         if stream is not None and isinstance(content, TurnActivity):
             try:
@@ -1996,9 +1982,6 @@ class SlackAdapter(PlatformAdapter):
             initiator_external_id,
             _session_title(agent.field_label, asked),
         )
-        self._work_notes[work_ref] = WORKING_NOTE
-        if len(self._work_notes) > _MAX_OPEN_STREAMS:
-            self._work_notes.popitem(last=False)
         return work_ref
 
     async def settle_work_message(
@@ -2008,13 +1991,17 @@ class SlackAdapter(PlatformAdapter):
         message_ref: str,
         summary: str,
         asked: AskedQuestion | None = None,
+        *,
+        failed: bool = False,
     ) -> None:
-        """Edit the note into the line the turn ended on, and end the session.
+        """Edit the line into how the turn ended, and end the session.
 
-        An edit, so it notifies nobody. The session is renamed to match and
-        set active (`close_session`).
+        An edit, so it notifies nobody, and the only one the line gets after
+        it is posted: it says nothing of the turn's progress while it runs,
+        which is in the thread. Its icon becomes a tick, or an error mark for
+        a turn that was stopped or failed. The session is set active
+        (`close_session`).
         """
-        self._work_notes.pop(message_ref, None)
         client = self._web_client
         if client is None:
             return
@@ -2026,7 +2013,9 @@ class SlackAdapter(PlatformAdapter):
                 channel=channel_id,
                 ts=ts,
                 text=summary,
-                blocks=self._work_blocks(summary, asked, live=False),
+                blocks=self._work_blocks(
+                    summary, asked, status="error" if failed else "complete"
+                ),
             )
         except SlackApiError as error:
             logger.warning(
@@ -2109,55 +2098,6 @@ class SlackAdapter(PlatformAdapter):
                 "status": "processing" if working else "active",
             }
         )
-
-    async def _note_work_step(
-        self, content: RichContent, thread_root_id: str | None
-    ) -> None:
-        """Edit how far a turn has got into its work message, when it changed.
-
-        "Working… · step 4". An edit, so it notifies nobody, and only when the
-        line would read differently, so a redraw for the clock or a remark
-        costs nothing. While Slack is limiting edits it is skipped rather than
-        queued: the turn's next change, or its next clock redraw, brings the
-        line up to date. After a restart this process has no memory of what
-        the line shows, so it is written once more.
-        """
-        if (
-            not isinstance(content, TurnActivity)
-            or not content.work_thread
-            or thread_root_id is None
-            or content.turn.status in TURN_ENDED
-        ):
-            return
-        shown = self._work_notes.get(thread_root_id)
-        line = _work_line(content.items)
-        if line == shown or self._rich_update_cooldown.remaining() > 0:
-            return
-        client = self._web_client
-        channel_id, ts = self._parse_message_ref(thread_root_id)
-        if client is None or not ts:
-            return
-        try:
-            await client.chat_update(
-                channel=channel_id,
-                ts=ts,
-                text=line,
-                blocks=self._work_blocks(line, content.asked),
-            )
-        except SlackApiError as error:
-            # A rate limit starts the cooldown the turn's own redraws respect.
-            # Anything else leaves the line as it was; the turn is unaffected.
-            if self._throttled(error, line) is None:
-                logger.warning(
-                    "Could not show how far the turn has got on work message %s (%s).",
-                    thread_root_id,
-                    error.response.get("error"),
-                )
-            return
-        self._work_notes[thread_root_id] = line
-        self._work_notes.move_to_end(thread_root_id)
-        if len(self._work_notes) > _MAX_OPEN_STREAMS:
-            self._work_notes.popitem(last=False)
 
     async def attach_activity(
         self,
@@ -2265,7 +2205,6 @@ class SlackAdapter(PlatformAdapter):
                     code,
                 )
                 return False
-        self._work_notes.pop(work_ref, None)
         return True
 
     def _permalink(self, message_ref: str, thread_ref: str | None = None) -> str | None:
@@ -2308,13 +2247,31 @@ class SlackAdapter(PlatformAdapter):
         return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
 
     def _work_blocks(
-        self, line: str, asked: AskedQuestion | None, *, live: bool = True
+        self,
+        state: str,
+        asked: AskedQuestion | None,
+        *,
+        status: str = "in_progress",
     ) -> list[dict[str, Any]]:
-        """A work message's blocks: what it answers, then how far it has got,
-        spinning while `live`."""
-        note = _work_note(line, live=live)
-        pointer = self._asked_block(asked)
-        return [pointer, note] if pointer else [note]
+        """A work message's one line: ↩ "the question" · its state, with the
+        question's link in the plan's card. A question that said nothing but
+        a mention is not named in the line, and is still linked."""
+        url = (
+            self._permalink(asked.message_ref, asked.thread_ref)
+            if asked is not None
+            else None
+        )
+        question = asked.text if asked is not None else ""
+        if not question:
+            link = (url, "The message this answers") if url else None
+            return [_work_plan(state, status, link)]
+        room = _MAX_PLAN_TITLE - len(state) - len(" ↩ “” · ")
+        if len(question) > room:
+            question = question[: max(room - 1, 0)].rstrip() + "…"
+        label = f"“{question}”"
+        return [
+            _work_plan(f"↩ {label} · {state}", status, (url, label) if url else None)
+        ]
 
     async def _set_session_status(self, arguments: dict[str, Any]) -> None:
         """`agents.sessions.setStatus`, learning from opening a session whether

@@ -1915,8 +1915,11 @@ class PlatformAdapter(ABC):
         message_ref: str,
         summary: str,
         asked: AskedQuestion | None = None,
+        *,
+        failed: bool = False,
     ) -> None:
-        """Rewrite a work message, in place, as the one line its turn ended on.
+        """Rewrite a work message, in place, as the one line its turn ended on,
+        marked as failed where it was stopped or failed.
         Best effort: a refusal is the adapter's to log."""
         raise NotImplementedError
 

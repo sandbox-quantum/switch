@@ -1627,6 +1627,7 @@ class AgentSessionActivityPublisher:
                 work_ref,
                 summary,
                 asked=content.asked,
+                failed=view.turn.status != "completed",
             )
         except Exception:
             logger.exception(
