@@ -78,15 +78,25 @@ def test_the_scope_rule_covers_every_account_and_fails_closed():
     assert "Audit" not in binding and "Warn" not in binding
 
 
-def scope_allows(namespace: str, runtime_class: str | None) -> bool:
-    """The scope rule's CEL, evaluated in Python from the patterns and names read out of the policy itself."""
-    classes = re.search(r"orValue\(''\) in \[([^\]]*)\]", SCOPE_CEL).group(1)
-    named = re.search(r"request\.namespace in \[([^\]]*)\]", SCOPE_CEL).group(1)
-    patterns = re.findall(r"request\.namespace\.matches\('([^']*)'\)", SCOPE_CEL)
+def scope_allows(
+    namespace: str, runtime_class: str | None, service_account: str = "default"
+) -> bool:
+    """The scope rule's class check, evaluated in Python from the patterns, names and exceptions read out of the
+    policy itself."""
+    rule = SCOPE_CEL.split("- expression:")[1]
+    classes = re.search(r"orValue\(''\) in \[([^\]]*)\]", rule).group(1)
+    named = re.search(r"request\.namespace in \[([^\]]*)\]", rule).group(1)
+    patterns = re.findall(r"request\.namespace\.matches\('([^']*)'\)", rule)
+    pairs = re.findall(
+        r"\(request\.namespace == '([^']+)' && object\.spec\.\?serviceAccountName\.orValue\('default'\) == '([^']+)'\)",
+        rule,
+    )
     if runtime_class not in [c.strip(" '") for c in classes.split(",")]:
         return True
-    return namespace in [n.strip(" '") for n in named.split(",")] or any(
-        re.search(p, namespace) for p in patterns
+    return (
+        namespace in [n.strip(" '") for n in named.split(",")]
+        or any(re.search(p, namespace) for p in patterns)
+        or (namespace, service_account) in pairs
     )
 
 
@@ -187,6 +197,7 @@ def test_p4_still_refuses_tolerations_in_the_box_template():
 # ---------------------------------------------------------------- hand-written agents tolerations
 
 HAND_RULE = """      request.namespace == 'kube-system' ||
+      (request.namespace == 'amazon-guardduty' && object.spec.?serviceAccountName.orValue('default') == 'aws-guardduty-agent') ||
       object.spec.?runtimeClassName.orValue('') in ['gvisor', 'gvisor-tuned'] ||
       (request.operation == 'UPDATE' &&
        object.spec.?tolerations.orValue([]) == oldObject.spec.?tolerations.orValue([])) ||
@@ -209,8 +220,12 @@ def covers_agents_taint(t: dict) -> bool:
     return (keyless_exists or pool) and t.get("effect", "") in ("", "NoSchedule")
 
 
-def hand_rule_allows(namespace, tolerations, runtime_class=None, old_tolerations=None):
+def hand_rule_allows(
+    namespace, tolerations, runtime_class=None, old_tolerations=None, service_account="default"
+):
     if namespace == "kube-system" or runtime_class in ("gvisor", "gvisor-tuned"):
+        return True
+    if (namespace, service_account) == ("amazon-guardduty", "aws-guardduty-agent"):
         return True
     if old_tolerations is not None and tolerations == old_tolerations:
         return True
@@ -291,3 +306,51 @@ def test_on_update_only_a_change_of_tolerations_is_checked():
 def test_the_class_rule_checks_create_only_and_the_datadog_follow_on_is_noted():
     assert "request.operation != 'CREATE' ||" in SCOPE_CEL
     assert "the Datadog agent's DaemonSet will live in its own namespace" in SCOPE
+
+
+def test_squid_may_use_gvisor_with_its_own_service_account_only():
+    assert scope_allows("egress-proxy", "gvisor", "squid")
+    assert not scope_allows("egress-proxy", "gvisor", "default")
+    assert not scope_allows("egress-proxy", "gvisor", "someone-else")
+    assert not scope_allows("egress-lists", "gvisor", "default")
+
+
+def test_every_gvisor_pod_template_in_these_files_is_admitted_by_the_scope_rule():
+    """Every Deployment, DaemonSet, StatefulSet or Job here that runs under gVisor must pass the scope rule, so the
+    policy can never refuse our own services' next pod."""
+    found = 0
+    for path in sorted(K8S.glob("*.yaml")):
+        for d in docs(path.read_text()):
+            kind = re.search(r"(?m)^kind: (\S+)", d)
+            if not kind or kind.group(1) not in ("Deployment", "DaemonSet", "StatefulSet", "Job"):
+                continue
+            rc = re.search(r"(?m)^      runtimeClassName: (\S+)", d)
+            if not rc:
+                continue
+            ns = re.search(r"(?m)^  namespace: (\S+)", d).group(1)
+            sa = re.search(r"(?m)^      serviceAccountName: (\S+)", d)
+            found += 1
+            assert scope_allows(ns, rc.group(1), sa.group(1) if sa else "default"), (
+                f"{path.name}: {ns}"
+            )
+    assert found >= 1
+
+
+def test_the_threat_detection_agent_may_tolerate_everything_with_its_own_account_only():
+    everything = [{"operator": "Exists"}]
+    assert hand_rule_allows("amazon-guardduty", everything, service_account="aws-guardduty-agent")
+    assert not hand_rule_allows("amazon-guardduty", everything, service_account="default")
+    assert not hand_rule_allows("default", everything, service_account="aws-guardduty-agent")
+
+
+def test_squid_has_its_own_service_account_with_no_token():
+    text = (K8S / "50-egress-proxy.yaml").read_text()
+    sa = doc(text, "ServiceAccount", "squid")
+    assert "automountServiceAccountToken: false" in sa and "  namespace: egress-proxy" in sa
+    dep = doc(text, "Deployment", "squid")
+    assert (
+        "      serviceAccountName: squid\n" in dep and "automountServiceAccountToken: false" in dep
+    )
+    assert not re.search(
+        r"(?m)^kind: (Role|RoleBinding|ClusterRoleBinding)$", text.split("kind: ServiceAccount")[0]
+    )

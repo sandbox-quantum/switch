@@ -187,18 +187,22 @@ spec:
       request.namespace.matches('^agents-user-k1-[0-9a-f]{16}$') ||
       request.namespace.matches('^agents-box-k1-[0-9a-f]{16}$') ||
       request.namespace.matches('^agents-check-[a-z0-9]([a-z0-9-]*[a-z0-9])?-(g1|px|rs)$') ||
-      request.namespace in ['switch-placeholders', 'switch-drain-room']
+      request.namespace in ['switch-placeholders', 'switch-drain-room'] ||
+      (request.namespace == 'egress-proxy' && object.spec.?serviceAccountName.orValue('default') == 'squid')
     message: the gvisor classes carry the agent pool's toleration, so only box namespaces
       (agents-user-k1-<16 hex> and the warm pool's agents-box-k1-<16 hex>), the node
-      gate's check namespaces, switch-placeholders and switch-drain-room may use them
+      gate's check namespaces, switch-placeholders, switch-drain-room and squid (its own
+      service account) may use them
   # Nothing may write the agents toleration by hand to run on an agent node outside the sandbox: a pod whose
   # tolerations cover switch.dev/pool=agents:NoSchedule (that exact key, or a key-less Exists) must name a gVisor
   # class, and so falls under the rule above. kube-system is excepted: EKS's node DaemonSets live there and tolerate
-  # every taint. Known follow-on: the Datadog agent's DaemonSet will live in its own namespace and tolerate
+  # every taint. GuardDuty's runtime agent (namespace amazon-guardduty, its own service account) is excepted the same
+  # way: a provider-managed security agent wanted on every node. Known follow-on: the Datadog agent's DaemonSet will live in its own namespace and tolerate
   # everything, so that namespace must join this exception when Datadog is added, or it is refused on agent nodes.
   # On UPDATE the check applies only if the tolerations changed.
   - expression: |-
       request.namespace == 'kube-system' ||
+      (request.namespace == 'amazon-guardduty' && object.spec.?serviceAccountName.orValue('default') == 'aws-guardduty-agent') ||
       object.spec.?runtimeClassName.orValue('') in ['gvisor', 'gvisor-tuned'] ||
       (request.operation == 'UPDATE' &&
        object.spec.?tolerations.orValue([]) == oldObject.spec.?tolerations.orValue([])) ||
