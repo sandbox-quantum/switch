@@ -45,6 +45,7 @@ from switch_core.gateway.browser_handoff import router as browser_handoff_router
 from switch_core.gateway.changes import router as changes_router
 from switch_core.gateway.chats import chat_error_response
 from switch_core.gateway.chats import router as chats_router
+from switch_core.gateway.cloud_files import router as cloud_files_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
 from switch_core.gateway.connector_apps import router as connector_apps_router
@@ -136,13 +137,18 @@ from switch_core.visibility.dependencies import (
     set_process_keyed_id_key,
 )
 from switch_core.visibility.hosted_access_routes import router as hosted_access_router
+from switch_core.visibility.hosted_usage import router as hosted_usage_router
 from switch_core.visibility.operator_action_routes import (
     router as operator_action_router,
 )
 from switch_core.visibility.operator_limits import configure_limits
 from switch_core.visibility.operators import OperatorList
+from switch_core.visibility.read_views import admin_router as visibility_admin_router
 from switch_core.visibility.read_views import (
     operator_router as visibility_operator_router,
+)
+from switch_core.visibility.shared_cloud_agents import (
+    router as shared_cloud_agents_router,
 )
 
 
@@ -252,16 +258,26 @@ def create_gateway_app(
     app.include_router(
         operator_action_router, tags=["hosted-operator"], dependencies=v2_only
     )
+    app.include_router(hosted_usage_router, tags=["hosted-admin"], dependencies=v2_only)
+    # The signed-in person's own agents on the shared cloud, with their states.
+    app.include_router(
+        shared_cloud_agents_router, tags=["shared-cloud"], dependencies=v2_only
+    )
+    # Your cloud files: the owner's files on their own box, behind its own flag too.
+    app.include_router(cloud_files_router, tags=["cloud-files"], dependencies=v2_only)
     # v1 hosted uses these two, so they stay up; their v2 parts are gated inside.
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
     app.include_router(
         hosted_provisioner_router, tags=["hosted-provisioner"], dependencies=v2_only
     )
-    # The operator's overview and "Show name". They answer 503 until a
-    # keyed-id key is set.
+    # The operator's overview and "Show name", and the admin's
+    # People data. They answer 503 until a keyed-id key is set.
     app.include_router(
         visibility_operator_router, tags=["visibility"], dependencies=v2_only
+    )
+    app.include_router(
+        visibility_admin_router, tags=["visibility"], dependencies=v2_only
     )
     app.state.connector_apps = connector_apps
     install_github_app(app.state, connector_apps.github_app())

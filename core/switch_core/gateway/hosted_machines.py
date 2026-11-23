@@ -35,6 +35,7 @@ from switch_core.gateway.cloud_controllers import (
     forget_missing_box,
     note_start_click,
     revoke_machine_controller,
+    start_summary,
     workspace_reported,
 )
 from switch_core.gateway.dependencies import (
@@ -241,6 +242,9 @@ async def machine_summary(
         # v1 or v2 (`vm` or `box`): Console shows v2's card and states only for
         # a box. With hosted agents v2 off, absent, as before v2.
         **({"backend": machine.backend} if v2 else {}),
+        # A v2 box still starting: `{kind, since}`, else null. With v2 off,
+        # absent, as before v2.
+        **({"start": start_summary(machine, state)} if v2 else {}),
         # Your cloud: from this workspace's controller only.
         **(
             your_cloud(None if controller is None else controller.status, now)

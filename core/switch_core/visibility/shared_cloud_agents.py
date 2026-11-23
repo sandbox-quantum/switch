@@ -1,5 +1,5 @@
-"""One agent's state on the shared cloud, as a card, and the operators' overview count it
-falls in.
+"""The signed-in person's agents on the shared cloud, each with its state (Console's existing
+`GET /shared-cloud/agents` contract).
 
 One agent's state comes from what Core already holds: its controller's status report entry, its
 box's lifecycle and its stop reason. The mapping follows Console's `sharedCloudFromSession` card rules,
@@ -10,12 +10,29 @@ or anything about other people's boxes.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
 
-from switch_core.db.models import CloudMachine
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from switch_core.db.models import CloudMachine, User, require_tenant_id
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
+from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.hosted_machine_store import idle_sleeping
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.gateway.dependencies import get_session
+from switch_core.process_lease import read_leases
+from switch_core.visibility.guards import require_user
 from switch_core.visibility.reason_codes import StopReason
-from switch_core.visibility.stop_reasons import AgentStopReason
+from switch_core.visibility.stop_reason_sources import (
+    agent_entry,
+    load_reason_signals,
+    reason_inputs,
+)
+from switch_core.visibility.stop_reasons import AgentStopReason, stop_reason
+
+router = APIRouter()
 
 # The codes that change the card (the copy): the others keep its usual state and show in the
 # Status panel.
@@ -117,3 +134,59 @@ def overview_bucket(card: dict[str, Any] | None) -> OverviewBucket:
     if card is None:
         return "resting"
     return _BUCKETS.get(card["state"], "unavailable")
+
+
+@router.get("/shared-cloud/agents")
+async def list_shared_cloud_agents(
+    user: Annotated[User, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """The caller's own agents on a Switch cloud box. `available` is false when they have no box,
+    which Console reads as "no shared cloud here"."""
+    tenant_id = require_tenant_id()
+    rows = await AgentDefinitionStore().list_for_owner(session, tenant_id, user.id)
+    controllers = {
+        c.id: c
+        for c in await AgentControllerStore().list_for_owner(
+            session, tenant_id, user.id
+        )
+    }
+    leases = await read_leases(session, SwitchCoreProcessStore())
+    signals = await load_reason_signals(
+        session,
+        tenant_id,
+        [agent.id for _, agent in rows],
+        controller_ids=list(controllers),
+        owner_ids=[user.id],
+    )
+    await session.commit()
+    now = datetime.now(UTC)
+    agents = []
+    for row, agent in rows:
+        controller = controllers.get(row.controller_id) if row.controller_id else None
+        box = signals.boxes.get(controller.id) if controller is not None else None
+        if box is None:
+            continue  # not on the shared cloud
+        provider = (row.definition or {}).get("provider")
+        reason = stop_reason(
+            reason_inputs(
+                agent,
+                controller,
+                leases,
+                signals,
+                now,
+                provider=provider if isinstance(provider, str) else None,
+            )
+        )
+        worked = signals.last_worked.get(agent.id)
+        shown = shared_cloud_agent(
+            agent.id,
+            row.desired_state,
+            agent_entry(controller, agent.id),
+            box,
+            reason,
+            worked.isoformat() if worked is not None else None,
+        )
+        if shown is not None:
+            agents.append(shown)
+    return {"available": bool(signals.boxes), "agents": agents}

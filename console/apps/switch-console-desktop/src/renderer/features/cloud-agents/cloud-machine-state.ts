@@ -12,12 +12,37 @@ export type MachineDisk = {
   low: boolean;
 };
 
+/**
+ * How long a v2 box may take before the card says it is taking longer than
+ * usual: the requirement's p90s for a first start and a wake.
+ */
+export const FIRST_START_SLOW_MS = 30_000;
+export const WAKE_SLOW_MS = 20_000;
+
+export const STARTING_TITLE = 'Starting your agent…';
+export const WAKING_TITLE = 'Waking your agent…';
+export const SLOW_TITLE = 'Still starting…';
+export const FAILED_TITLE = 'Couldn’t start your agent';
+export const PENDING_HELPER = 'Your agent will appear here when it’s ready.';
+export const SLOW_HELPER =
+  'This is taking longer than usual. You can leave this page; we’ll keep going.';
+
+/**
+ * A v2 box's start-up, as the card's status area shows it: on its way up
+ * (`slowAt` is when it turns "taking longer", null when Core gave no start
+ * time and so no hint is shown), or failed, with Core's own reason.
+ */
+export type BoxStatus =
+  | { kind: 'starting'; title: string; helper: string; slowAt: number | null }
+  | { kind: 'failed'; title: string; helper: string };
+
 export type MachinePresentation = {
   label: string;
   problem: string | null;
   retainUntil: string | null;
   disk: MachineDisk | null;
   actions: MachineAction[];
+  boxStatus: BoxStatus | null;
 };
 
 function isRetained(machine: CloudMachine): boolean {
@@ -112,9 +137,46 @@ function machineActions(machine: CloudMachine, now: number): MachineAction[] {
   return actions;
 }
 
+/**
+ * The status area for a v2 box, from Core's `start` and state alone; null for
+ * a v1 machine, a server with hosted agents v2 off (no `backend`), and a box
+ * neither starting nor failed, which keep the card's usual label.
+ *
+ * Core cannot tell a box waiting for a new machine from one starting where
+ * there is room, so there is no separate slow-path state: "taking longer"
+ * comes from how long ago Core was asked (`since`), never from when the page
+ * opened.
+ */
+function boxStatus(machine: CloudMachine, now: number): BoxStatus | null {
+  if (machine.backend !== 'box') return null;
+  if (isAdminStopped(machine) || isBeingDeleted(machine, now)) return null;
+  if (machine.state === 'error') {
+    return {
+      kind: 'failed',
+      title: FAILED_TITLE,
+      helper: machineProblem(machine, now) ?? 'The machine could not start.',
+    };
+  }
+  const start = machine.start;
+  if (!start) return null;
+  const threshold = start.kind === 'wake' ? WAKE_SLOW_MS : FIRST_START_SLOW_MS;
+  const since = start.since === null ? Number.NaN : Date.parse(start.since);
+  const slowAt = Number.isNaN(since) ? null : since + threshold;
+  if (slowAt !== null && now >= slowAt) {
+    return { kind: 'starting', title: SLOW_TITLE, helper: SLOW_HELPER, slowAt };
+  }
+  return {
+    kind: 'starting',
+    title: start.kind === 'wake' ? WAKING_TITLE : STARTING_TITLE,
+    helper: PENDING_HELPER,
+    slowAt,
+  };
+}
+
 /** What the machine card shows for a machine: its state, trouble, disk and actions. */
 export function machinePresentation(machine: CloudMachine, now: number): MachinePresentation {
   return {
+    boxStatus: boxStatus(machine, now),
     label: machineLabel(machine, now),
     problem: machineProblem(machine, now),
     retainUntil:

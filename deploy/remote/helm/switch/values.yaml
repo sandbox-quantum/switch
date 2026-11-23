@@ -558,9 +558,9 @@ switchCore:
   # additional_messaging_platforms (WhatsApp, Google Chat, Zulip, Signal,
   # Matrix, Rocket.Chat, Webex), additional_agent_providers (DeepSeek
   # Harness, Pi, GitHub Copilot, Kiro, Mistral Vibe, Goose, Qwen Code, Factory
-  # Droid, Cline, Junie) and hosted_awake_budgets (hosted agents v2).
-  # gateway_v2, agent_chats, group_chats and agent_management are still
-  # accepted but always on.
+  # Droid, Cline, Junie), hosted_awake_budgets and hosted_cloud_files (hosted
+  # agents v2). gateway_v2, agent_chats, group_chats and agent_management are
+  # still accepted but always on.
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people

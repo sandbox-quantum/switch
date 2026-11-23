@@ -526,6 +526,27 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/cloud-files/content",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "GET /gateway/cloud-files/list",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "GET /gateway/cloud-files/zip",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
       "route": "GET /gateway/collaborations",
       "auth": "session",
       "flags": []
@@ -986,6 +1007,13 @@
       ]
     },
     {
+      "route": "GET /gateway/shared-cloud/agents",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
       "route": "GET /gateway/shared-cloud/audit-events",
       "auth": "session",
       "flags": [
@@ -1055,6 +1083,20 @@
       "route": "GET /gateway/tenants/{tenant_id}/erasures",
       "auth": "session",
       "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/hosted-people",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/hosted-usage",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "GET /gateway/tenants/{tenant_id}/invitations",

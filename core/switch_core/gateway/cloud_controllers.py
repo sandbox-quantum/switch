@@ -500,6 +500,34 @@ def note_start_click(machine: CloudMachine, now: datetime) -> None:
     machine.heartbeat = heartbeat
 
 
+def start_summary(machine: CloudMachine, state: str) -> dict | None:
+    """What the owner's summary says about a v2 box still starting, for the
+    Console's "still starting" hint: None unless it's a box wanted running
+    whose state, as the workspace sees it, is `queued` or `provisioning`.
+    `kind` is `first` until the box has ever been ready, then `wake`; `since`
+    is when the first request that needed this start came in, at the current
+    revision (`note_start_click`'s marker), or None when there's no marker for
+    it. Core doesn't say "slow": the Console works that out from `since`."""
+    if (
+        machine.backend != "box"
+        or machine.desired_state != "running"
+        or state not in ("queued", "provisioning")
+    ):
+        return None
+    marker = (machine.heartbeat or {}).get(START_KEY)
+    since = (
+        marker.get("clicked_at")
+        if isinstance(marker, dict)
+        and marker.get("revision") == machine.revision
+        and _when(marker.get("clicked_at")) is not None
+        else None
+    )
+    return {
+        "kind": "first" if machine.first_ready_at is None else "wake",
+        "since": since,
+    }
+
+
 def start_segments(
     clock: datetime, marks: list[tuple[str, datetime | None]]
 ) -> list[tuple[str, float]]:

@@ -174,7 +174,8 @@ def test_the_latest_report_is_kept_and_can_be_forgotten() -> None:
 
 def test_the_members_answer_carries_no_hosted_field() -> None:
     """`GET /tenants/{id}/members` is open to any member,
-    so the hosted on/off value and box state are never in the members answer."""
+    so the hosted on/off value and box state live only in the admin-only
+    `hosted-people` route, never in the members answer."""
     from switch_core.gateway.schemas import MemberDetail
 
     hosted = {"hosted", "agents", "box_state", "memory_band", "last_active_at"}

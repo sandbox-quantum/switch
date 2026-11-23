@@ -19,28 +19,34 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import ServerAuditAction
 from switch_core.db.models import (
     AgentController,
+    AgentDefinition,
     CloudMachine,
     Tenant,
+    TenantMember,
     User,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.hosted_machine_store import workspace_on
+from switch_core.db.stores.hosted_machine_store import CloudMachineStore, workspace_on
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
 from switch_core.gateway.dependencies import (
     get_config,
+    get_session,
     get_session_factory,
 )
 from switch_core.gateway.hosted_machines import (
+    hosted_settings,
+    machines_enabled,
     your_cloud,
 )
-from switch_core.tenant_context import no_tenant
+from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.tenant_context import current_tenant_id, no_tenant
 from switch_core.visibility.alerts import overview_alerts
 from switch_core.visibility.audit_log import (
     check_reason,
@@ -49,7 +55,7 @@ from switch_core.visibility.audit_log import (
 from switch_core.visibility.box_provision import box_provisioning_on, boxes_made
 from switch_core.visibility.cluster_report import latest_cluster_report
 from switch_core.visibility.dependencies import get_keyed_id_key
-from switch_core.visibility.guards import require_operator
+from switch_core.visibility.guards import require_operator, require_workspace_admin
 from switch_core.visibility.keyed_id import KeyedIdKey, KeyedIdKind
 from switch_core.visibility.operator_limits import (
     RATE_LIMITED,
@@ -65,6 +71,7 @@ from switch_core.visibility.shared_cloud_agents import (
 )
 
 operator_router = APIRouter()
+admin_router = APIRouter()
 
 # The report is from the last 30 s when the operator is healthy; past this the
 # screen says how old it is.
@@ -694,3 +701,93 @@ async def operator_reveal(
         raise HTTPException(404, "Not found")
     await record_operator_result(factory, record, result="done")
     return answer
+
+
+# --- the workspace admin's People tab -----------------------------------------------------------
+
+
+class PersonRow(BaseModel):
+    user_id: str
+    name: str
+    hosted: Literal["on", "off"]
+    agents: int
+    box_state: BoxState | None
+    memory_band: MemoryBand | None
+    last_active_at: str | None
+    # An operator's pause wins over the admin's switch, read from
+    # the mark on the user (`users.hosted_paused_at`), box or not.
+    paused_by_switch: bool = False
+    # Whether the admin's switch can do anything for this person: false when
+    # the server's own allow-list doesn't admit them, so Console shows "Not
+    # enabled by Switch" instead of a switch that changes nothing.
+    switchable: bool = True
+
+
+class PeopleView(BaseModel):
+    people: list[PersonRow]
+    # Whether the admin's per-person switch can be used:
+    # `PUT /tenants/{t}/hosted-people/{user}` is served beside this read.
+    switchable: bool = True
+
+
+@admin_router.get("/tenants/{tenant_id}/hosted-people")
+async def workspace_hosted_people(
+    tenant_id: str,
+    _admin: Annotated[User, Depends(require_workspace_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
+    response: Response,
+) -> PeopleView:
+    """Who in this workspace has hosted agents: on or off, how many agents,
+    their box's state, memory as a band and when it was last active. This
+    workspace's people only, and counts and states only."""
+    if current_tenant_id() != tenant_id:
+        raise HTTPException(403, "Not authorized for this tenant")
+    response.headers["Cache-Control"] = "no-store"
+    members = list(
+        await session.execute(
+            select(User, TenantMember)
+            .join(TenantMember, TenantMember.user_id == User.id)
+            .where(TenantMember.tenant_id == tenant_id)
+            .order_by(User.name)
+        )
+    )
+    machines = CloudMachineStore()
+    rows = []
+    for user, membership in members:
+        allowed = settings is not None and machines_enabled(config, settings, user.id)
+        box = await machines.live_for_owner(session, user.id)
+        here = None if box is None else await workspace_on(session, box.id)
+        if not allowed and here is None:
+            continue
+        agents = 0
+        if here is not None and here.controller_id is not None:
+            agents = (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AgentDefinition)
+                    .where(
+                        AgentDefinition.tenant_id == tenant_id,
+                        AgentDefinition.owner_id == user.id,
+                        AgentDefinition.controller_id == here.controller_id,
+                    )
+                )
+            ) or 0
+        shown = box if here is not None else None
+        rows.append(
+            PersonRow(
+                user_id=user.id,
+                name=user.name,
+                # On only while the server allows it and the admin hasn't
+                # turned this person off here (`hosted_enabled`).
+                hosted="on" if allowed and membership.hosted_enabled else "off",
+                agents=agents,
+                box_state=None if shown is None else box_state(shown),
+                memory_band=None if shown is None else memory_band(shown),
+                last_active_at=None if shown is None else shown.active_at.isoformat(),
+                paused_by_switch=user.hosted_paused_at is not None,
+                switchable=allowed,
+            )
+        )
+    return PeopleView(people=rows)
