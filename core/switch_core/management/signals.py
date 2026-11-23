@@ -137,6 +137,11 @@ class ControllerSignals:
             str, tuple[Fingerprint, frozenset[str]]
         ] = {}
         self._connections_seen: dict[str, set[str]] = {}
+        # The controllers of each tenant held by another process, as that
+        # read left them here. Something else here can forget them (the lease
+        # watch, `forget_processes`), and a re-check that finds them changed
+        # reads the tenant again, however unchanged its rows and leases are.
+        self._held_elsewhere_seen: dict[str, frozenset[str]] = {}
         # Controllers, by (tenant id, controller id), whose bindings another
         # process changed and this one has still to read.
         self._bindings_owed = bus.pending_work(
@@ -314,6 +319,8 @@ class ControllerSignals:
                 if (
                     check_first
                     and last is not None
+                    and self._held_elsewhere_now(tenant_id)
+                    == self._held_elsewhere_seen.get(tenant_id)
                     and last
                     == (
                         await self._controllers.connections_fingerprint(
@@ -347,8 +354,16 @@ class ControllerSignals:
                     await self._read_connection(tenant_id, controller.id)
                     continue
                 self._apply_connection(controller, leases, rooms[controller.id])
+            self._held_elsewhere_seen[tenant_id] = self._held_elsewhere_now(tenant_id)
         for controller_id in elsewhere - seen:
             self._presence.held_elsewhere(controller_id, None)
+
+    def _held_elsewhere_now(self, tenant_id: str) -> frozenset[str]:
+        return frozenset(
+            controller_id
+            for controller_id in self._connections_seen.get(tenant_id, ())
+            if self._presence.holder_elsewhere(controller_id) is not None
+        )
 
     async def _rooms_if_held_elsewhere(
         self,
