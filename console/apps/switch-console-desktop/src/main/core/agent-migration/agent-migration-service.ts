@@ -172,11 +172,6 @@ export type AgentMigrationDeps = {
   targets: {
     resolve(agent: MigrationAgent): Promise<TargetLookup>;
     /**
-     * Turns the agent's machine on to run managed agents (this computer's
-     * controller, or an SSH host's), as its own toggle does.
-     */
-    enable(agent: MigrationAgent): Promise<void>;
-    /**
      * Repairs the controller the agent's machine runs for its server: enrolls
      * the machine again when Switch revoked or forgot it, and restarts it when
      * it is stopped or runs an older build than this Console. `not-set-up`
@@ -373,8 +368,9 @@ export class AgentMigrationService {
   /**
    * Moves every agent this Console runs that can be managed: linked to a
    * server with agent management, and owned by the signed-in user. A machine
-   * that is not running managed agents yet is set up first. Turns running are
-   * cut. A machine whose controller Switch revoked or forgot is enrolled
+   * that is not running managed agents yet is left alone: only the person
+   * makes a computer a machine, with the consent `TurnOnMachine` asks for,
+   * and its agents move on the first pass after. Turns running are cut. A machine whose controller Switch revoked or forgot is enrolled
    * again, and the agents moved onto the old one are placed on the new one.
    * Agents someone else owns, or on a server without agent management, are
    * left as they are; any other reason an agent did not move is kept as a
@@ -527,6 +523,16 @@ export class AgentMigrationService {
     let controllerId: string;
     try {
       const prepared = await this.prepareMachine(first, where);
+      if (prepared.kind === 'needs-consent') {
+        if (this.controllers.get(key)?.state.kind !== 'needs-consent')
+          this.deps.log.info('Not moving agents: the machine is not running managed agents', {
+            machine: where,
+            serverId: first.serverId,
+          });
+        this.controllerState(key, { kind: 'needs-consent', workspaceId: first.workspaceId! });
+        for (const agent of group) this.problems.delete(agent.id);
+        return;
+      }
       if (prepared.kind === 'incompatible') {
         this.deps.log.warn('Not moving agents: the server cannot take this Console’s controller', {
           machine: where,
@@ -839,26 +845,21 @@ export class AgentMigrationService {
 
   /**
    * The controller a group of agents is placed on, once the machine runs one
-   * this Console can use. Anything changed on the way (a machine set up,
-   * enrolled again, or restarted) is waited for until Switch lists the
-   * controller online.
+   * this Console can use. Anything changed on the way (a machine enrolled
+   * again, or restarted) is waited for until Switch lists the controller
+   * online. A machine that runs none is `needs-consent`: it is not set up here.
    */
   private async prepareMachine(
     agent: MigrationAgent,
     where: string
-  ): Promise<{ kind: 'ready'; controllerId: string } | { kind: 'incompatible'; reason: string }> {
+  ): Promise<
+    | { kind: 'ready'; controllerId: string }
+    | { kind: 'incompatible'; reason: string }
+    | { kind: 'needs-consent' }
+  > {
     const healed = await this.deps.targets.heal(agent);
     if (healed.kind === 'incompatible') return healed;
-    if (healed.kind === 'not-set-up') {
-      this.deps.log.info('Setting a machine up to move its agents', { machine: where });
-      try {
-        await this.deps.targets.enable(agent);
-      } catch (error) {
-        throw new Error(`${where} could not be set up to run managed agents: ${message(error)}`, {
-          cause: error,
-        });
-      }
-    }
+    if (healed.kind === 'not-set-up') return { kind: 'needs-consent' };
     const deadline = this.deps.now() + this.deps.machineReadyWaitMs;
     for (;;) {
       const lookup = await this.deps.targets.resolve(agent).catch((error: unknown) => ({
@@ -870,7 +871,7 @@ export class AgentMigrationService {
         throw new Error(lookup.blocker ?? `${where} cannot take agents.`);
       if (this.deps.now() >= deadline)
         throw new Error(
-          `${where} was set up to run managed agents, but is not ready for them yet: ${lookup.blocker ?? 'it has not reached Switch'}.`
+          `${where}’s controller was enrolled again or restarted, but is not ready for agents yet: ${lookup.blocker ?? 'it has not reached Switch'}.`
         );
       await this.deps.sleep(this.deps.pollMs);
     }

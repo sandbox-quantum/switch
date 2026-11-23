@@ -5144,7 +5144,12 @@ version of their own to them without also giving them a release of their own.
   a chat or on a web page, no longer enrolls the computer. A button and a
   confirmation that names the server do. On Meet switch-buddy, picking a
   provider signed in on this computer while it is not yet a machine asks the
-  same question, and starts switch-buddy once you confirm.
+  same question, and starts switch-buddy once you confirm. The automatic move
+  of the agents Console runs onto managed machines no longer sets up this
+  computer or an SSH host either, when a server turns agent management on: it
+  moves agents only onto computers that are already machines. Settings →
+  Managed agents lists each one that is not, as waiting for you, with the same
+  button and confirmation; Console keeps running its agents until you do.
 - **You decide on this computer whether a managed agent may skip approvals or
   work outside its folder.** The agents controller Console runs no longer
   applies either just because the server's copy of the agent asks for it.
