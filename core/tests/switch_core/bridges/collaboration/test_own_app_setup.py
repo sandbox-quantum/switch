@@ -112,10 +112,10 @@ class TestSlackManifest:
         assert len(slack_create_url(manifest)) <= 6000
 
         manifest["settings"]["event_subscriptions"]["bot_events"] += [
-            "channel_deleted",
-            "channel_archive",
-            "group_deleted",
-            "group_archive",
+            "channel_created",
+            "group_left",
+            "member_joined_channel",
+            "member_left_channel",
         ]
         assert len(slack_create_url(manifest)) <= 6000
 

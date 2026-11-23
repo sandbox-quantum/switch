@@ -7,6 +7,10 @@ from typing import Any
 import pytest
 from slack_sdk.errors import SlackApiError
 
+from switch_core.bridges.collaboration.adapter import (
+    ChannelArchivedError,
+    ChannelNotFoundError,
+)
 from switch_core.bridges.collaboration.collaboration_core import _no_agents_notice
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
@@ -1529,3 +1533,195 @@ def test_backtick_wrapped_command_from_bot_is_not_run() -> None:
 
     # An agent posting a `!command` reference must never trigger it.
     assert commands == []
+
+
+def test_send_message_terminal_channel_errors() -> None:
+    adapter = _adapter()
+
+    class _ErrorClient:
+        def __init__(self, error_code: str) -> None:
+            self.error_code = error_code
+
+        async def chat_postMessage(self, **kwargs: Any) -> dict[str, Any]:
+            raise SlackApiError(self.error_code, response={"error": self.error_code})
+
+    adapter._web_client = _ErrorClient("is_archived")  # type: ignore[assignment]
+    with pytest.raises(ChannelArchivedError) as exc_info:
+        _run(adapter.send_message("C123", "bot", "hello"))
+    assert exc_info.value.channel_id == "C123"
+
+    adapter._web_client = _ErrorClient("channel_not_found")  # type: ignore[assignment]
+    with pytest.raises(ChannelNotFoundError) as exc_info_nf:
+        _run(adapter.send_message("C123", "bot", "hello"))
+    assert exc_info_nf.value.channel_id == "C123"
+
+    # Transient error is swallowed and returns None
+    adapter._web_client = _ErrorClient("rate_limited")  # type: ignore[assignment]
+    result = _run(adapter.send_message("C123", "bot", "hello"))
+    assert result is None
+
+
+def test_admin_message_terminal_channel_errors() -> None:
+    adapter = _adapter()
+
+    class _ErrorClient:
+        def __init__(self, error_code: str) -> None:
+            self.error_code = error_code
+
+        async def chat_postMessage(self, **kwargs: Any) -> dict[str, Any]:
+            raise SlackApiError(self.error_code, response={"error": self.error_code})
+
+    adapter._web_client = _ErrorClient("is_archived")  # type: ignore[assignment]
+    with pytest.raises(ChannelArchivedError):
+        _run(adapter.admin_message("C123", "notice"))
+
+    adapter._web_client = _ErrorClient("channel_not_found")  # type: ignore[assignment]
+    with pytest.raises(ChannelNotFoundError):
+        _run(adapter.admin_message("C123", "notice"))
+
+    adapter._web_client = _ErrorClient("rate_limited")  # type: ignore[assignment]
+    result = _run(adapter.admin_message("C123", "notice"))
+    assert result is None
+
+
+def test_post_blocks_terminal_channel_errors() -> None:
+    adapter = _adapter()
+
+    class _ErrorClient:
+        def __init__(self, error_code: str) -> None:
+            self.error_code = error_code
+
+        async def chat_postMessage(self, **kwargs: Any) -> dict[str, Any]:
+            raise SlackApiError(self.error_code, response={"error": self.error_code})
+
+    adapter._web_client = _ErrorClient("is_archived")  # type: ignore[assignment]
+    with pytest.raises(ChannelArchivedError):
+        _run(
+            adapter.post_blocks(
+                "C123", "bot", "fallback", [], None, reply_broadcast=False
+            )
+        )
+
+    adapter._web_client = _ErrorClient("channel_not_found")  # type: ignore[assignment]
+    with pytest.raises(ChannelNotFoundError):
+        _run(
+            adapter.post_blocks(
+                "C123", "bot", "fallback", [], None, reply_broadcast=False
+            )
+        )
+
+
+def test_send_attachment_terminal_channel_errors() -> None:
+    adapter = _adapter()
+
+    class _ErrorClient:
+        def __init__(self, error_code: str) -> None:
+            self.error_code = error_code
+
+        async def files_upload_v2(self, **kwargs: Any) -> dict[str, Any]:
+            raise SlackApiError(self.error_code, response={"error": self.error_code})
+
+    adapter._web_client = _ErrorClient("is_archived")  # type: ignore[assignment]
+    with pytest.raises(ChannelArchivedError):
+        _run(adapter.send_attachment("C123", "bot", "test.txt", "text/plain", b"data"))
+
+    adapter._web_client = _ErrorClient("channel_not_found")  # type: ignore[assignment]
+    with pytest.raises(ChannelNotFoundError):
+        _run(adapter.send_attachment("C123", "bot", "test.txt", "text/plain", b"data"))
+
+
+def test_dispatch_event_channel_lifecycle() -> None:
+    adapter = _adapter()
+    archived: list[str] = []
+    unarchived: list[str] = []
+    deleted: list[str] = []
+
+    async def on_archived(ch: str) -> None:
+        archived.append(ch)
+
+    async def on_unarchived(ch: str) -> None:
+        unarchived.append(ch)
+
+    async def on_deleted(ch: str) -> None:
+        deleted.append(ch)
+
+    adapter.set_channel_archived_handler(on_archived)
+    adapter.set_channel_unarchived_handler(on_unarchived)
+    adapter.set_channel_deleted_handler(on_deleted)
+    adapter._channel_name_cache["C123"] = "general"
+
+    # Top-level Events API channel_archive
+    _run(
+        adapter.dispatch_event(
+            envelope_type="events_api",
+            payload={"event": {"type": "channel_archive", "channel": "C123"}},
+        )
+    )
+    assert archived == ["C123"]
+
+    # Top-level Events API group_archive
+    _run(
+        adapter.dispatch_event(
+            envelope_type="events_api",
+            payload={"event": {"type": "group_archive", "channel": "G456"}},
+        )
+    )
+    assert archived == ["C123", "G456"]
+
+    # Message subtype channel_archive
+    _run(
+        adapter.dispatch_event(
+            envelope_type="events_api",
+            payload={
+                "event": {
+                    "type": "message",
+                    "subtype": "channel_archive",
+                    "channel": "C789",
+                }
+            },
+        )
+    )
+    assert archived == ["C123", "G456", "C789"]
+
+    # Top-level Events API channel_unarchive
+    _run(
+        adapter.dispatch_event(
+            envelope_type="events_api",
+            payload={"event": {"type": "channel_unarchive", "channel": "C123"}},
+        )
+    )
+    assert unarchived == ["C123"]
+
+    # Message subtype group_unarchive
+    _run(
+        adapter.dispatch_event(
+            envelope_type="events_api",
+            payload={
+                "event": {
+                    "type": "message",
+                    "subtype": "group_unarchive",
+                    "channel": "G456",
+                }
+            },
+        )
+    )
+    assert unarchived == ["C123", "G456"]
+
+    # Top-level Events API channel_deleted
+    _run(
+        adapter.dispatch_event(
+            envelope_type="events_api",
+            payload={"event": {"type": "channel_deleted", "channel": "C123"}},
+        )
+    )
+    assert deleted == ["C123"]
+    assert "C123" not in adapter._channel_name_cache
+
+    # Top-level Events API group_deleted
+    _run(
+        adapter.dispatch_event(
+            envelope_type="events_api",
+            payload={"event": {"type": "group_deleted", "channel": "G999"}},
+        )
+    )
+    assert deleted == ["C123", "G999"]

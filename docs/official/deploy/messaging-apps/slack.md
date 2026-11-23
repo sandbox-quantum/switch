@@ -115,7 +115,13 @@ Declaring the app an Agent blocks workspace guests from using it and turns every
                 "message.channels",
                 "message.groups",
                 "message.im",
-                "message.mpim"
+                "message.mpim",
+                "channel_deleted",
+                "channel_archive",
+                "channel_unarchive",
+                "group_deleted",
+                "group_archive",
+                "group_unarchive"
             ]
         },
         "interactivity": {
@@ -281,7 +287,7 @@ Under **OAuth & Permissions**, in **Bot Token Scopes**:
 
 ### Event subscriptions
 
-Subscribe the bot to `app_home_opened`, `message.channels`, `message.groups`, `message.im`, and `message.mpim`. With Socket Mode there's no request URL to supply. Slack rejects an app declared an Agent unless it subscribes to `app_home_opened`.
+Subscribe the bot to `app_home_opened`, `message.channels`, `message.groups`, `message.im`, `message.mpim`, `channel_deleted`, `channel_archive`, `channel_unarchive`, `group_deleted`, `group_archive`, and `group_unarchive`. With Socket Mode there's no request URL to supply. Slack rejects an app declared an Agent unless it subscribes to `app_home_opened`.
 
 You don't need `app_mention`. Switch finds messages that tag the app in the `message.*` events it already receives.
 
