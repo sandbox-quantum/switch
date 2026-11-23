@@ -14,6 +14,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     AskedQuestion,
@@ -2137,6 +2138,7 @@ async def _asking_message(
     sent_at: datetime | None = None,
     mapped_to: str | None = None,
     thread_root: str | None = None,
+    group: dict[str, object] | None = None,
 ) -> None:
     """A person's message, as Switch stored it: by default the one the turn
     answers."""
@@ -2157,7 +2159,11 @@ async def _asking_message(
                 event_type="m.room.message",
                 msgtype="m.text",
                 body=body,
-                content={"msgtype": "m.text", "body": body},
+                content={
+                    "msgtype": "m.text",
+                    "body": body,
+                    **({ATTACHMENT_GROUP_KEY: group} if group is not None else {}),
+                },
                 thread_root_event_id=thread_root,
                 **({"sent_at": sent_at} if sent_at is not None else {}),
             )
@@ -2472,3 +2478,32 @@ async def test_a_thread_session_stays_working_while_another_turn_there_runs(
     await _thread_turn(service, bridged.room_id, "completed", 5)
     await platform.wait_until(lambda: len(platform.of("remove_work_thread")) == 2)
     assert platform.sessions_ended == [False, True], "the last one ends it"
+
+
+async def test_a_bare_mention_after_a_message_with_files_names_its_text(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    """A message with two files is two rows, and only the first carries its
+    text: the later one, which is the latest, says only its file's name."""
+    await _asking_message(
+        session_factory,
+        bridged,
+        "what do you make of these?",
+        event_id="sw_files0",
+        mapped_to="1699999990.0001",
+        group={"id": "g1", "index": 0, "total": 2},
+    )
+    await _asking_message(
+        session_factory,
+        bridged,
+        "file-2.png",
+        event_id="sw_files1",
+        mapped_to="1699999990.0002",
+        group={"id": "g1", "index": 1, "total": 2},
+    )
+    await _asking_message(session_factory, bridged, "@agent")
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [
+        AskedQuestion("1699999990.0001", "what do you make of these?")
+    ]

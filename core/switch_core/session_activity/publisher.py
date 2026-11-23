@@ -54,6 +54,7 @@ from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
@@ -1491,6 +1492,8 @@ class AgentSessionActivityPublisher:
                 .order_by(Message.seq.desc())
                 .limit(1)
             )
+            if before is not None:
+                before = await _group_start(db, before)
             if before is not None and (snippet := question_snippet(before.body or "")):
                 text = snippet
                 ref = (
@@ -2564,6 +2567,25 @@ _MAX_ASKED = 1000
 _QUESTION_SNIPPET = 80
 _LEADING_MENTIONS = re.compile(r"^(?:\s*@\S+)+\s*")
 _TRAILING_MENTIONS = re.compile(r"\s*(?:@\S+\s*)+$")
+
+
+async def _group_start(db: AsyncSession, message: Message) -> Message:
+    """The first part of the multi-file message `message` belongs to, which
+    carries its text; `message` itself when it is not one, or is that part.
+    A later part's body is only its file's name."""
+    group = parse_attachment_group(message.content or {})
+    if group is None or group[1] == 0:
+        return message
+    start = await db.scalar(
+        select(Message)
+        .where(
+            Message.room_id == message.room_id,
+            Message.content[ATTACHMENT_GROUP_KEY]["id"].astext == group[0],
+            Message.content[ATTACHMENT_GROUP_KEY]["index"].as_integer() == 0,
+        )
+        .limit(1)
+    )
+    return start if start is not None else message
 
 
 def _as_datetime(value: object) -> datetime:
