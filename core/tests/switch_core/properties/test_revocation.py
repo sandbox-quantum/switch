@@ -38,6 +38,12 @@ HELD_SHOULD_REACH = (
     *SHOULD_REACH,
     "a process that missed the revocation acts on it within the TTL",
 )
+# The broker's slow check is never held: it reads nothing worth holding,
+# since every check reads the database.
+DIRECT_SHOULD_REACH = (
+    "a listening connection is severed",
+    "a severed process connects again",
+)
 REREAD_SHOULD_REACH = (
     *SHOULD_REACH,
     "a process that missed the change is behind until it re-reads",
@@ -264,7 +270,7 @@ def test_a_revoked_connector_grant_issues_nothing_anywhere(
 ) -> None:
     COVERAGE.clear()
     run_state_machine_as_test(machine_on(postgres_schema, ConnectorGrant, clock))
-    _reached(SHOULD_REACH)
+    _reached(DIRECT_SHOULD_REACH)
 
 
 class _drawing:
