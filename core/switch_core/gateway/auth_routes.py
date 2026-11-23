@@ -130,7 +130,7 @@ from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
-from switch_core.visibility.box_provision import ask_for_box
+from switch_core.visibility.box_provision import ask_for_box, box_provisioning_on
 from switch_core.visibility.guards import get_operator_list
 from switch_core.visibility.operators import OperatorList
 
@@ -378,7 +378,16 @@ async def signup(
             signed_in_now(),
         )
         signed_in = _session_response(user)
-        machine = await _prewarm(session, session_factory, user.id, config, settings)
+        if box_provisioning_on(config):
+            # Hosted agents v2: no box at sign-up. One is made, or taken from
+            # the warm pool, at the person's first start, so the pool's boxes
+            # go to people who use them. The answer says nothing is wrong, as
+            # before (Console shows nothing for `starting`).
+            machine = SignupMachine(status="starting", reason=None)
+        else:
+            machine = await _prewarm(
+                session, session_factory, user.id, config, settings
+            )
     return SignupResponse(**signed_in.model_dump(), machine=machine)
 
 

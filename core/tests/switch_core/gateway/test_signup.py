@@ -207,6 +207,18 @@ async def test_disabled_signup_is_refused(signup_app):
         assert await session.scalar(select(func.count()).select_from(User)) == 0
 
 
+async def test_with_hosted_agents_v2_a_signup_makes_no_box(signup_app) -> None:
+    """With v2's box provisioning on, a box is made, or taken from the warm
+    pool, at the person's first start, never at sign-up: the answer still
+    says nothing is wrong."""
+    app = signup_app
+    app.config.hosted_box_provisioning = True
+    response = await _signup(app, email="new.person@example.com")
+    assert response.status_code == 201, response.text
+    assert response.json()["machine"] == {"status": "starting", "reason": None}
+    assert await _machines(app) == []
+
+
 async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(
     signup_app,
 ):
