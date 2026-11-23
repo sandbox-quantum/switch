@@ -7,3 +7,20 @@
 export function usageNoticeOwed(telemetry: { askedAt: number | null } | undefined): boolean {
   return telemetry === undefined || telemetry.askedAt === null;
 }
+
+/**
+ * Whether the workspace shows the usage-data notice itself: only to an
+ * install that already holds servers and is not in the first run, whose pages
+ * carry the notice. A new install can reach the workspace before then (Settings
+ * opens without a server), and must not be shown it there first.
+ */
+export function workspaceShowsUsageNotice(state: {
+  onboardingEnabled: boolean;
+  loaded: boolean;
+  installIsEmpty: boolean;
+  onboardingInProgress: boolean;
+}): boolean {
+  return (
+    state.onboardingEnabled && state.loaded && !state.installIsEmpty && !state.onboardingInProgress
+  );
+}

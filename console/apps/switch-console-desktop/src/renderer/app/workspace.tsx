@@ -17,7 +17,10 @@ import {
 import { FROZEN } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { TelemetryConsentGate } from '@renderer/features/telemetry/TelemetryConsentGate';
-import { usageNoticeOwed } from '@renderer/features/telemetry/usage-notice';
+import {
+  usageNoticeOwed,
+  workspaceShowsUsageNotice,
+} from '@renderer/features/telemetry/usage-notice';
 import { CommandShortcutBinder } from '@renderer/lib/commands/command-shortcut-binder';
 import { AppKeyboardShortcuts } from '@renderer/lib/components/app-keyboard-shortcuts';
 import { MonacoKeyboardBridge } from '@renderer/lib/components/monaco-keyboard-bridge';
@@ -103,6 +106,12 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
   const currentViewId = useCurrentViewId();
   const flagsReady = useFlagsReady();
   const { value: telemetry } = useAppSettingsKey('telemetry');
+  const usageNotice = workspaceShowsUsageNotice({
+    onboardingEnabled: BUILD_FEATURE_FLAGS.onboarding,
+    loaded: switchServersStore.loaded,
+    installIsEmpty: switchServersStore.installIsEmpty,
+    onboardingInProgress: onboardingStore.inProgress,
+  });
   const shape = shellShape({
     loaded: switchServersStore.loaded,
     listError: switchServersStore.listError,
@@ -163,10 +172,8 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
           />
           {/* Builds without the first-run pages show it from App. An install that
               had servers before them never saw the notice those pages carry. */}
-          {BUILD_FEATURE_FLAGS.onboarding && <TelemetryConsentGate />}
-          {!frozen && !(BUILD_FEATURE_FLAGS.onboarding && usageNoticeOwed(telemetry)) && (
-            <BuddyIntroDialog />
-          )}
+          {usageNotice && <TelemetryConsentGate />}
+          {!frozen && !(usageNotice && usageNoticeOwed(telemetry)) && <BuddyIntroDialog />}
         </>
       );
     }
