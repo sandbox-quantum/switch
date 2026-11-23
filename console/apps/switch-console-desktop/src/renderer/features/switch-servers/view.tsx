@@ -208,11 +208,15 @@ const UNREACHABLE_RETRY_MS = 10_000;
 /**
  * The reason a server could not be reached, without the address the card's
  * title already names: "Can't reach <host>: …" from a network failure, or
- * "<host> …" from a redirect.
+ * "<host> …" from a redirect, which the title already calls not a Switch server.
  */
 function withoutAddress(reason: string | null, host: string): string | null {
   if (!reason) return null;
-  const prefix = [`Can't reach ${host}: `, `${host} `].find((p) => reason.startsWith(p));
+  const prefix = [
+    `Can't reach ${host}: `,
+    `${host} doesn't answer as a Switch server: `,
+    `${host} `,
+  ].find((p) => reason.startsWith(p));
   if (!prefix) return reason;
   const rest = reason.slice(prefix.length);
   return rest.charAt(0).toUpperCase() + rest.slice(1);

@@ -204,9 +204,8 @@ it('heads a redirect as not a Switch server, naming the address once', async () 
     "localhost:41001 doesn't answer as a Switch server: it redirects to elsewhere.example.org. Check the address."
   );
   expect(text).toContain("localhost:41001 isn't answering as a Switch server");
-  expect(text).toContain(
-    "Doesn't answer as a Switch server: it redirects to elsewhere.example.org. Check the address."
-  );
+  expect(text).toContain('It redirects to elsewhere.example.org. Check the address.');
+  expect(text).not.toContain("Doesn't answer as a Switch server");
   expect(text).not.toContain("Can't reach");
   expect(text.split('localhost:41001').length - 1).toBe(1);
 });

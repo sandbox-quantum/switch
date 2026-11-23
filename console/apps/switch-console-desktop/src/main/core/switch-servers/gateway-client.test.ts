@@ -2610,6 +2610,20 @@ describe('sign-up support', () => {
     await expect(probeGateway(SERVER)).resolves.toBeUndefined();
   });
 
+  it('does not count a redirect as an answer to the reachability check', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: 'https://elsewhere.example.org/' } })
+    );
+    await expect(probeGateway(SERVER)).rejects.toMatchObject({ name: 'RedirectedAddressError' });
+  });
+
+  it('does not count a web page in place of the API as an answer to the reachability check', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>app</html>', { status: 200, headers: { 'content-type': 'text/html' } })
+    );
+    await expect(probeGateway(SERVER)).rejects.toMatchObject({ name: 'NoManagementApiError' });
+  });
+
   it('reports a proxy’s 502 page as the failure it is, not as a missing route', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response('<html>Bad Gateway</html>', {
