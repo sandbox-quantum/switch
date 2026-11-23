@@ -1895,71 +1895,6 @@ async def inline_publisher(
         await publisher.stop()
 
 
-async def test_an_inline_turn_is_one_message_at_the_root_kept_at_the_end(
-    service, inline_publisher, inline_platform, bridged, session_factory
-):
-    platform = inline_platform
-    await _turn(service, bridged.room_id, "running", 1)
-    await platform.wait_until(lambda: bool(platform.of("open_session")))
-    [first] = _turns(platform)
-    assert (first.call, first.thread_ref) == ("post_rich", None)
-    assert first.content.interrupt_turn_id == "turn-1", "it carries the Stop button"
-    [session] = platform.of("open_session")
-    assert (session.ref, session.content) == (first.ref, "UASKER")
-    assert platform.of("open_work_message") == []
-
-    await _tool(service, bridged.room_id, "in-progress", 1)
-    await _step(
-        service,
-        bridged.room_id,
-        item_id="post-1",
-        kind="tool-activity",
-        status="completed",
-        revision=1,
-        title="mcp__switch__post_message",
-    )
-    await _tool(service, bridged.room_id, "completed", 2)
-    await _answer(session_factory, bridged)
-    await _turn(service, bridged.room_id, "completed", 5)
-    await platform.wait_until(lambda: bool(platform.of("close_session")))
-    last = _turns(platform)[-1]
-    assert (last.call, last.ref, last.thread_ref) == ("update_rich", first.ref, None)
-    assert [item.item_id for item in last.content.items] == ["tool-1"], (
-        "room tools are not work"
-    )
-    [closed] = platform.of("close_session")
-    assert closed.ref == first.ref
-    assert closed.content.endswith(" 1 tool call.")
-    assert platform.of("remove_status_message") == []
-    post = await _turn_post(session_factory)
-    assert post.work_finished_at is not None
-    assert post.folded_into is None
-
-
-async def test_an_inline_turn_that_only_talked_deletes_its_message(
-    service, inline_publisher, inline_platform, bridged, session_factory
-):
-    platform = inline_platform
-    await _turn(service, bridged.room_id, "running", 1)
-    await platform.wait_until(lambda: bool(platform.of("open_session")))
-    [first] = _turns(platform)
-    await _step(
-        service,
-        bridged.room_id,
-        item_id="post-1",
-        kind="tool-activity",
-        status="completed",
-        revision=1,
-        title="mcp__switch__post_message",
-    )
-    await _turn(service, bridged.room_id, "completed", 3)
-    await platform.wait_until(lambda: bool(platform.of("remove_status_message")))
-    [removed] = platform.of("remove_status_message")
-    assert removed.ref == first.ref
-    assert platform.of("close_session") == []
-    assert (await _turn_post(session_factory)).folded_into == first.ref
-
-
 async def test_an_inline_turn_asked_in_a_thread_keeps_its_work_there(
     service, inline_publisher, inline_platform, bridged
 ):
@@ -1992,21 +1927,6 @@ async def test_slacks_stop_on_a_work_message_finds_the_turn_it_shows(
     target = await work_publisher.stop_target(bridged.channel_id, opened.ref)
     assert target is not None
     assert (target.turn_id, target.running_turn_id) == ("turn-1", "turn-1")
-
-
-async def test_an_inline_message_is_redrawn_without_its_stop_where_slack_has_one(
-    service, inline_publisher, inline_platform, bridged
-):
-    """The message goes up before the session says Slack draws its own Stop;
-    it is drawn again at once, marked as having a session, so the adapter
-    leaves Switch's out."""
-    inline_platform.native_stop = True
-    await _turn(service, bridged.room_id, "running", 1)
-    await inline_platform.wait_until(lambda: len(_turns(inline_platform)) >= 2)
-    first, again = _turns(inline_platform)[:2]
-    assert (first.call, again.call) == ("post_rich", "update_rich")
-    assert again.ref == first.ref
-    assert again.content.has_session
 
 
 async def test_a_turn_someone_stopped_says_who_in_its_ending(
@@ -2136,14 +2056,21 @@ async def test_a_work_thread_is_told_the_question_it_answers(
 async def test_an_inline_session_is_titled_by_its_question(
     service, inline_publisher, inline_platform, bridged, session_factory
 ):
-    await _asking_message(session_factory, bridged, "@agent how many PRs are open?")
+    await _asking_message(
+        session_factory,
+        bridged,
+        "@agent how many PRs are open?",
+        event_id="sw_reply",
+        mapped_to="1700000000.0009",
+        thread_root=ASKED,
+    )
     platform = inline_platform
-    await _turn(service, bridged.room_id, "running", 1)
+    await _thread_turn(service, bridged.room_id, "running", 1)
     await _tool(service, bridged.room_id, "in-progress", 1)
     await platform.wait_until(lambda: bool(platform.of("open_session")))
     assert platform.titles == ["how many PRs are open?"]
     await _tool(service, bridged.room_id, "completed", 2)
-    await _turn(service, bridged.room_id, "completed", 5)
+    await _thread_turn(service, bridged.room_id, "completed", 5)
     await platform.wait_until(lambda: bool(platform.of("close_session")))
     assert platform.titles == ["how many PRs are open?"], "never retitled"
 
@@ -2449,3 +2376,15 @@ async def test_a_bare_mention_after_a_message_with_files_names_its_text(
     assert work_platform.asked == [
         AskedQuestion("1699999990.0001", "what do you make of these?")
     ]
+
+
+async def test_a_root_question_in_a_room_left_on_the_retired_inline_setting_gets_a_work_thread(
+    service, inline_publisher, inline_platform, bridged
+):
+    """`!work-threads inline` is gone; a room that still has it reads as on."""
+    await _turn(service, bridged.room_id, "running", 1)
+    await inline_platform.wait_until(
+        lambda: bool(inline_platform.of("open_work_message"))
+    )
+    [first] = _turns(inline_platform)
+    assert first.thread_ref == inline_platform.of("open_work_message")[0].ref

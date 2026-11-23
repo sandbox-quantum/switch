@@ -1331,20 +1331,12 @@ class AgentSessionActivityPublisher:
             if mode == "thread":
                 drawn_in = await self._work_thread(key, view, target, answering, asked)
             elif mode == "inline":
-                # One message of the agent's, posted as the turn starts (not
-                # while it is queued) and edited from then on: at the channel
-                # root for a question asked there, in the thread for one asked
-                # in a thread. Either way it points back at the question: in
-                # a thread, every turn shares the thread's one session, and
-                # the line says which question each status message answers.
-                at_root = _known_root_turn(view.row)
-                drawn_in = (
-                    None
-                    if view.turn.status == "queued"
-                    else replace(target, thread_ref=None)
-                    if at_root
-                    else target
-                )
+                # A question asked in a thread: one status reply of the
+                # agent's there, posted as the turn starts (not while it is
+                # queued) and edited from then on. It points back at the
+                # question: every turn in a thread shares the thread's one
+                # session, and the line says which question each answers.
+                drawn_in = None if view.turn.status == "queued" else target
                 content = replace(content, items=work_items(content.items))
             if drawn_in is None:
                 post = None
@@ -1510,7 +1502,7 @@ class AgentSessionActivityPublisher:
             return "inline"
         if not await self._adapter.hosts_work_threads(target.channel_id):
             return None
-        return target.work_mode
+        return "thread"
 
     async def _work_thread(
         self,
@@ -1765,8 +1757,9 @@ class AgentSessionActivityPublisher:
     ) -> TurnStatusPost | None:
         """Post the turn in its thread, or at the channel root with none to thread under.
 
-        `inline` (`!work-threads inline`): the message is the turn's work
-        message as well, recorded as such so its ending finds it.
+        `inline` (a question asked in a thread of a room with work threads):
+        the message is the turn's work message as well, recorded as such so
+        its ending finds it.
 
         `post` is the turn's row as it stood before the message, marker and
         all, and is stored once the platform has the message. One the platform
@@ -2411,9 +2404,9 @@ def _until_the_clock_moves(elapsed: float | None) -> float:
 
 
 def _inline(post: TurnStatusPost) -> bool:
-    """Whether a turn is drawn inline (`!work-threads inline`, or any question
-    asked in a thread of a room with work threads): its own message is its
-    work message, at the channel root or in the asker's thread."""
+    """Whether a turn is drawn inline (a question asked in a thread of a room
+    with work threads): its own message, a reply in the asker's thread, is
+    its work message."""
     return (
         post.work_message_ref is not None
         and post.work_message_ref == post.external_post_id

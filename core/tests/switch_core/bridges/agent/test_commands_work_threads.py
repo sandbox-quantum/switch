@@ -131,25 +131,29 @@ async def test_anything_else_shows_usage(
     room_id = await _room(session_factory)
     host, posted = _host(session_factory, room_id)
     await _run(host, "maybe")
-    assert posted[-1].startswith("Usage: `!work-threads on`, `!work-threads inline`")
+    assert posted[-1].startswith("Usage: `!work-threads on`, `!work-threads off`")
     assert allowed == []
 
 
-async def test_inline_is_a_setting_of_its_own(
+async def test_inline_is_no_longer_a_setting(
     session_factory: async_sessionmaker[AsyncSession], allowed: list[str]
 ) -> None:
     room_id = await _room(session_factory)
     host, posted = _host(session_factory, room_id)
-    store = RoomStore()
-
     await _run(host, "inline")
-    assert "Work threads are **inline**" in posted[-1]
-    async with session_factory() as session:
-        assert await store.work_threads_mode(session, room_id) == "inline"
-        room = await store.get(session, room_id)
-        assert room is not None
-        assert room.metadata_[WORK_THREADS_ON_KEY] == "inline"
+    assert posted[-1].startswith("Usage: `!work-threads on`, `!work-threads off`")
+    assert allowed == []
 
-    await _run(host, "on")
+
+async def test_a_room_left_on_the_retired_inline_setting_reads_as_on(
+    session_factory: async_sessionmaker[AsyncSession], allowed: list[str]
+) -> None:
+    room_id = await _room(session_factory)
     async with session_factory() as session:
-        assert await store.work_threads_mode(session, room_id) == "thread"
+        room = await session.get(Room, room_id)
+        assert room is not None
+        room.metadata_ = {**room.metadata_, WORK_THREADS_ON_KEY: "inline"}
+        await session.commit()
+    host, posted = _host(session_factory, room_id)
+    await _run(host, "")
+    assert "Work threads are **on**" in posted[-1]

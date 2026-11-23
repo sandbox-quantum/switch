@@ -2498,8 +2498,8 @@ class SlackAdapter(PlatformAdapter):
                     f"switch-request:{content.publication_token}"
                 )
             if content.has_session and not content.work_thread:
-                # Inline (`!work-threads inline`): this message is the turn's
-                # session, so it is what points back at the question.
+                # Inline (a question asked in a thread): this message is the
+                # turn's status, so it is what points back at the question.
                 pointer = self._asked_block(content.asked)
                 if pointer is not None and len(message.blocks) < 50:
                     message.blocks.insert(0, pointer)
