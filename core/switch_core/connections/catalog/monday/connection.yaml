@@ -1,0 +1,51 @@
+slug: monday
+name: monday.com
+category: Project management
+description: Candidate for reading and updating monday.com boards and items.
+# DCR permissions and identity compatibility need live verification before use.
+enabled: false
+adapter: oauth
+auth:
+  type: oauth
+
+  oauth:
+    # monday offers dynamic registration for its MCP server, but a client it
+    # has not pre-approved connects only after the account admin approves it
+    # and its redirect URIs under Dynamic connectors. Switch names exact
+    # loopback ports so the admin approves a fixed, short list.
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Revocation metadata and account removal still need live verification.
+    remove_access: Remove Switch in monday.com's connected apps settings.
+  identity:
+    # Candidate only: GraphQL GET and MCP-token compatibility are unverified.
+    url: https://api.monday.com/v2?query=%7Bme%7Bid%20email%7D%7D
+    account_id: data.me.id
+    label: data.me.email
+mcp:
+  servers:
+    - { name: monday, url: "https://mcp.monday.com/mcp" }
+access:
+  # Requested scopes only. DCR inherits user permissions; these lists do not
+  # prove read-only enforcement. Switch passes through the original token.
+  read:
+    scopes:
+      - me:read
+      - users:read
+      - workspaces:read
+      - boards:read
+      - updates:read
+      - docs:read
+  write:
+    scopes:
+      - me:read
+      - users:read
+      - workspaces:read
+      - boards:read
+      - boards:write
+      - updates:read
+      - updates:write
+      - docs:read
+      - docs:write
+tools: { mode: pass_through }

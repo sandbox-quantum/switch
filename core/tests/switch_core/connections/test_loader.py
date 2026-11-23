@@ -38,6 +38,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "notion",
         "sentry",
         "linear",
+        "monday",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -60,6 +61,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
     assert "SKILL.md" in CATALOG["linear"].skill_files
+    assert not CATALOG["monday"].skill_files
 
 
 def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
@@ -402,6 +404,53 @@ def test_the_shipped_notion_entry_signs_in_as_the_spike_found_it_must():
     assert identity.account_id == ["workspace_id", "user_id"]
     # The answer names nothing by name, so the workspace's id tells two apart.
     assert identity.label == "workspace_id"
+
+
+def test_monday_candidate_stays_disabled_pending_live_verification():
+    definition = CATALOG["monday"].definition
+    assert definition.enabled is False
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # An account admin approves the dynamic client and its redirect URIs, so
+    # the loopback ports are a fixed list. Live revocation remains unverified.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is False
+    assert oauth.authorization_url is None and oauth.revocation_url is None
+    assert (
+        oauth.remove_access == "Remove Switch in monday.com's connected apps settings."
+    )
+    # Token lifetime is intentionally unspecified until vendor behavior is
+    # measured; the candidate must not encode a guessed policy.
+    assert definition.token is None
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("monday", "https://mcp.monday.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = definition.access.read.scopes or []
+    write = definition.access.write.scopes or []
+    # These are requested scopes, not proof of vendor-enforced permissions.
+    assert not [scope for scope in read if scope.endswith(":write")]
+    assert set(read) < set(write)
+    assert set(write) - set(read) == {"boards:write", "updates:write", "docs:write"}
+    # The requested list omits admin and workspace-write scopes.
+    for scope in (
+        "account:read",
+        "users:write",
+        "teams:write",
+        "webhooks:write",
+        "workspaces:write",
+    ):
+        assert scope not in write
+    identity = definition.auth.identity
+    assert identity is not None
+    assert identity.url.startswith("https://api.monday.com/v2?query=")
+    assert (identity.account_id, identity.label) == ("data.me.id", "data.me.email")
 
 
 RESTRICTED_DRIVE = {
