@@ -132,7 +132,8 @@ function redirectMessage(url: string, location: string): string {
   }
   const sameSite = bareHostname(target.hostname) === bareHostname(source.hostname);
   if (sameSite && source.protocol === 'http:' && target.protocol === 'https:') {
-    return `${from} only answers over https. Enter the address as https://${target.host}.`;
+    const path = source.pathname.replace(/\/+$/, '');
+    return `${from} only answers over https. Enter the address as https://${target.host}${path}.`;
   }
   if (target.host === source.host) {
     return `${from} redirects instead of answering as a Switch server. Check the address.`;

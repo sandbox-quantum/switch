@@ -56,8 +56,10 @@ const STATE_LABEL: Record<ServerState, string> = {
 /** The state as a listed server reads it, next to its placement badge. */
 export function serverStatusLabel(server: SwitchServer): string {
   const state = serverState(server);
-  // Naming the address is what tells a typo apart from a sign-in problem.
-  if (state === 'unreachable') return `Can't reach ${urlHost(server.url)}`;
+  // Naming the address is what tells a typo apart from a sign-in problem. A
+  // server this app runs is reached at a local port nobody typed, so it keeps
+  // the usual label.
+  if (state === 'unreachable' && !server.managed) return `Can't reach ${urlHost(server.url)}`;
   return STATE_LABEL[state];
 }
 

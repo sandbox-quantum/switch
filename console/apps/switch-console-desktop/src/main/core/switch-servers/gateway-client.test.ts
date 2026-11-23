@@ -2533,6 +2533,21 @@ describe('sign-up support', () => {
     });
   });
 
+  it('keeps the path of the address entered in the https suggestion', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 301,
+        headers: { location: 'https://example.com/switch/gateway/auth/config' },
+      })
+    );
+    await expect(
+      fetchAuthConfig({ ...(SERVER as object), url: 'http://example.com/switch' } as never)
+    ).rejects.toMatchObject({
+      message:
+        'example.com only answers over https. Enter the address as https://example.com/switch.',
+    });
+  });
+
   it('says to use https when plain http redirects to the same host on another port', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(null, {
@@ -2592,6 +2607,13 @@ describe('sign-up support', () => {
 
   it('counts any answer to the reachability check, a refusal included', async () => {
     fetchMock.mockResolvedValueOnce(new Response('nope', { status: 503 }));
+    await expect(probeGateway(SERVER)).resolves.toBeUndefined();
+  });
+
+  it('counts a web page in place of the API as an answer to the reachability check', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>app</html>', { status: 200, headers: { 'content-type': 'text/html' } })
+    );
     await expect(probeGateway(SERVER)).resolves.toBeUndefined();
   });
 

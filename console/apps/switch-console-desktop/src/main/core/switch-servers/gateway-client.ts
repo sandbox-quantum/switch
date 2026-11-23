@@ -459,6 +459,10 @@ export async function gatewayRequest(
   return response;
 }
 
+function isHtmlResponse(response: Response): boolean {
+  return (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
+}
+
 /**
  * Whether something other than switch-core answered a `/gateway` call: every
  * answer the management API gives is JSON, its 404 included, so a page that
@@ -466,10 +470,6 @@ export async function gatewayRequest(
  * with no route for the path) is not from it. A proxy's 502 page means the
  * server is down, which the caller reports as it is.
  */
-function isHtmlResponse(response: Response): boolean {
-  return (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
-}
-
 function answeredWithPage(response: Response): boolean {
   return isHtmlResponse(response) && (response.ok || response.status === 404);
 }
@@ -974,6 +974,9 @@ export async function probeGateway(server: SwitchServer): Promise<void> {
     await res.body?.cancel();
   } catch (cause) {
     if (cause instanceof GatewayError && cause.kind !== 'network') return;
+    // A web page in place of the API is an answer too: the server is there, and
+    // the sign-in page says what is wrong with the address from its own read.
+    if (cause instanceof NoManagementApiError) return;
     throw cause;
   }
 }
