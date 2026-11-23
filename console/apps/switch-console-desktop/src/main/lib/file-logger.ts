@@ -44,12 +44,14 @@ const SECRET_KEY_NAMES = `(?:[a-z0-9]+[_-])*[a-z0-9]*(?:${SECRET_KEY_WORDS})`;
  * A Switch agent or API key: `secrets.token_urlsafe(32)`, 43 characters of
  * base64url with no prefix, so it is matched on shape alone. The run has to
  * stand on its own (not part of a longer one, nor of a padded base64 value),
- * must not follow `$` (an event id of the old message bus has the same shape),
- * and must mix upper case, lower case and digits, which keeps hex digests,
- * long names and paths out.
+ * must not follow `$` (an event id of the old message bus has the same shape)
+ * or `SHA256:` (an SSH key's fingerprint is 43 characters of unpadded base64,
+ * and the host-key checks log one when they refuse or trust a key), and must
+ * mix upper case, lower case and digits, which keeps hex digests, long names
+ * and paths out.
  */
 const SWITCH_TOKEN =
-  /(?<![\w$-])(?=[\w-]{0,42}[A-Z])(?=[\w-]{0,42}[a-z])(?=[\w-]{0,42}\d)[\w-]{43}(?![\w=-])/g;
+  /(?<![\w$-])(?<!SHA256:)(?=[\w-]{0,42}[A-Z])(?=[\w-]{0,42}[a-z])(?=[\w-]{0,42}\d)[\w-]{43}(?![\w=-])/g;
 
 type RedactionReplacement = string | ((substring: string, ...args: string[]) => string);
 

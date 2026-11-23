@@ -235,6 +235,14 @@ describe('redactDiagnosticLog', () => {
     expect(redactSecrets(`saw ${value} here`)).toBe(`saw ${value} here`);
   });
 
+  it('leaves an SSH key’s SHA256 fingerprint alone, on disk and in the export', () => {
+    // 43 characters of base64 with no padding: a Switch token's shape after the prefix.
+    const line = 'host key SHA256:q0Lr3Zx9Wm2Kp7Vb4Nt6Ys8Hd1Fg5Jc0Qe9Ua3Ri7Ok trusted';
+
+    expect(redactSecrets(line)).toBe(line);
+    expect(redactDiagnosticLog(line)).toBe(line);
+  });
+
   it('leaves token counts alone', () => {
     const line = 'inputTokens: 123, maxTokens=4096, max_tokens: 2048, tokenCount=5';
 

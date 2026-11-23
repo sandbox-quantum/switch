@@ -5112,7 +5112,8 @@ version of their own to them without also giving them a release of their own.
 - **The log keeps more kinds of credential out.** camelCase names such as
   accessToken, refreshToken and clientSecret, cookie headers, Basic
   authorization, and Switch agent keys written without a label are now
-  redacted in Switch Console's log and its diagnostics export.
+  redacted in Switch Console's log and its diagnostics export. An SSH host
+  key's `SHA256:` fingerprint, which has the same shape, stays readable.
 - **A repository can no longer make an agent's token committable.** Console
   keeps its own `.gitignore` in `.switch/agents/` even where a repository
   ships a different one, and refuses to write the token into a file the
