@@ -408,7 +408,9 @@ PROBE_NAMESPACE = box_namespace("k1-0000000000000000")
 PROBE_MACHINE = "00000000-0000-4000-8000-000000000000"
 # Bumped with any change to what a box is made of; with the image digest, Core's `template_revision`. Core retires
 # waiting pool boxes made at an older one.
-TEMPLATE_VERSION = "t1"
+TEMPLATE_VERSION = (
+    "t2"  # t2: the starter container, the code read-only to the pod group, safe-to-evict
+)
 
 
 def template_revision(config: OperatorConfig) -> str:
@@ -545,7 +547,12 @@ def box_objects(action: ProvisionAction, config: OperatorConfig) -> list[tuple[s
             "serviceName": "box",
             "selector": {"matchLabels": {"app": "switch-box"}},
             "template": {
-                "metadata": {"labels": {"app": "switch-box", label: user_name}},
+                "metadata": {
+                    "labels": {"app": "switch-box", label: user_name},
+                    # The cluster autoscaler never removes a node a box runs on: the box's disks and work are
+                    # there. Our own drain and moves evict through the API and don't read this.
+                    "annotations": {SAFE_TO_EVICT: "false"},
+                },
                 "spec": _box_pod_spec(config, size, user_name, zone, label),
             },
         },
@@ -617,6 +624,35 @@ _HARDENED = {
     "readOnlyRootFilesystem": True,
     "capabilities": {"drop": ["ALL"]},
 }
+
+SAFE_TO_EVICT = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+LOGIN_CHECK_KEY = "https_proxy"  # the one login key the starter checks for, presence only
+SECRET_MODE = 0o440  # Secret files are root-owned: readable by the pod's group, only in containers that mount them
+# The starter container: the main containers start only once the box's code and its proxy login are both there, so
+# a box can wait (a pool box until it's claimed) without starting, and the main containers start once, reading both.
+# It reads two files and prints a fixed line: never their content. Run from the box's own image (no new image).
+STARTER_SCRIPT = (
+    "until [ -s /etc/switch/enrol/code ] && [ -s /etc/switch/login/" + LOGIN_CHECK_KEY + " ]; "
+    "do sleep 0.5; done; echo 'switch-box: code and login present'"
+)
+
+
+def _starter(config: OperatorConfig) -> dict:
+    return {
+        "name": "starter",
+        "image": config.image,
+        "imagePullPolicy": "IfNotPresent",
+        "command": ["sh", "-c", STARTER_SCRIPT],
+        "securityContext": {"runAsUser": 2001, "runAsGroup": 2000, **_HARDENED},
+        "resources": {
+            "requests": {"cpu": "10m", "memory": "16Mi"},
+            "limits": {"cpu": "100m", "memory": "32Mi"},
+        },
+        "volumeMounts": [
+            {"name": "enrol", "mountPath": "/etc/switch/enrol", "readOnly": True},
+            {"name": "login-check", "mountPath": "/etc/switch/login", "readOnly": True},
+        ],
+    }
 
 
 def _box_pod_spec(
@@ -753,14 +789,32 @@ def _box_pod_spec(
             "seccompProfile": {"type": "RuntimeDefault"},
         },
         "containers": [controller, agents],
+        "initContainers": [_starter(config)],
         "volumes": [
             {"name": "data-controller", "persistentVolumeClaim": {"claimName": "data-controller"}},
             {"name": "data-agents", "persistentVolumeClaim": {"claimName": "data-agents"}},
             {"name": "tmp-controller", "emptyDir": {"sizeLimit": "512Mi"}},
             {"name": "tmp-agents", "emptyDir": {"sizeLimit": "2Gi"}},
             {"name": "ca", "configMap": {"name": CA_CONFIGMAP}},
-            {"name": "enrol", "secret": {"secretName": ENROL_SECRET, "optional": True}},
+            {
+                "name": "enrol",
+                "secret": {
+                    "secretName": ENROL_SECRET,
+                    "optional": True,
+                    "defaultMode": SECRET_MODE,
+                },
+            },
             {"name": "claude-managed", "configMap": {"name": SETTINGS_CONFIGMAP}},
+            # One key of the login Secret, for the starter only: the main containers read it from their environment.
+            {
+                "name": "login-check",
+                "secret": {
+                    "secretName": LOGIN_SECRET,
+                    "optional": True,
+                    "defaultMode": SECRET_MODE,
+                    "items": [{"key": LOGIN_CHECK_KEY, "path": LOGIN_CHECK_KEY}],
+                },
+            },
         ],
     }
 
@@ -880,6 +934,12 @@ _SPEC_DEFAULTS: dict[tuple[str, ...], Any] = {
     ("template", "spec", "serviceAccount"): SameAs("serviceAccountName"),
     ("template", "spec", "containers", "*", "terminationMessagePath"): "/dev/termination-log",
     ("template", "spec", "containers", "*", "terminationMessagePolicy"): "File",
+    ("template", "spec", "initContainers", "*", "terminationMessagePath"): "/dev/termination-log",
+    ("template", "spec", "initContainers", "*", "terminationMessagePolicy"): "File",
+    # `kubectl rollout restart` adds this beside the box's own annotation (safe-to-evict).
+    ("template", "metadata", "annotations", RESTARTED_AT): lambda v: (
+        isinstance(v, str) and _TIMESTAMP_RE.fullmatch(v) is not None
+    ),
     ("template", "spec", "volumes", "*", "configMap", "defaultMode"): 420,
     ("template", "spec", "volumes", "*", "secret", "defaultMode"): 420,
 }
@@ -983,6 +1043,10 @@ def _box_as_sized(wanted: dict, existing: dict, size: BoxSize) -> dict:
     and a box keeps the cap it was made with (DEPLOY.md)."""
     out = copy.deepcopy(wanted)
     have = existing["spec"]["template"]["spec"]["containers"]
+    # The starter runs the box's image too: the existing (already allowed) one, as each main container does.
+    have_init = existing["spec"]["template"]["spec"].get("initContainers") or []
+    for i, starter in enumerate(out["spec"]["template"]["spec"].get("initContainers", [])):
+        starter["image"] = (have_init[i] if i < len(have_init) else have[0])["image"]
     for container, existing_container in zip(
         out["spec"]["template"]["spec"]["containers"], have, strict=True
     ):
@@ -1044,11 +1108,32 @@ def _earlier_templates(spec: dict) -> list[tuple[str | None, dict]]:
     (test_the_template_fields_have_their_earlier_shapes fails until it has one).
     - "before the daily call cap": no SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS. Such a box runs without
       the per-box cap until it is recreated (DEPLOY.md): the operator may create StatefulSets, not change them."""
-    before_cap = copy.deepcopy(spec)
+    before_starter = _before_starter(spec)
+    before_cap = copy.deepcopy(before_starter)
     for container in before_cap["template"]["spec"]["containers"]:
         if "env" in container:
             container["env"] = [e for e in container["env"] if e.get("name") != DAILY_CALLS_ENV]
-    return [(None, spec), ("before the daily call cap", before_cap)]
+    return [
+        (None, spec),
+        ("before the starter container", before_starter),
+        ("before the daily call cap", before_cap),
+    ]
+
+
+def _before_starter(spec: dict) -> dict:
+    """The template before the starter container (template t1): no init container, no `login-check` volume, the
+    code Secret at the server's default mode, and no pod annotation. Such a box waits for nothing at start, as
+    before; its code is written before its first start, so it starts as it always did."""
+    out = copy.deepcopy(spec)
+    template = out["template"]
+    template["metadata"].pop("annotations", None)
+    pod = template["spec"]
+    pod.pop("initContainers", None)
+    pod["volumes"] = [v for v in pod["volumes"] if v["name"] != "login-check"]
+    for volume in pod["volumes"]:
+        if volume["name"] == "enrol":
+            volume["secret"].pop("defaultMode", None)
+    return out
 
 
 def box_matches(

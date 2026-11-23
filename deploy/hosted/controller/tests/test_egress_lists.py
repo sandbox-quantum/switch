@@ -1028,3 +1028,57 @@ def test_settings_keyed_by_a_box_keyed_name_are_refused():
     boxes = {"22222222-2222-2222-2222-222222222222": "agents-box-k1-00000000000000aa"}
     with pytest.raises(EgressConfigError):
         parse_egress(json.dumps({"agents-box-k1-00000000000000aa": {"parts": []}}), boxes, (), True)
+
+
+# ---- the starter's one-key login check is the only mount of the login Secret allowed ----
+
+
+def _starter_pod(**change):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller.egress_lists import LOGIN_CHECK_VOLUME
+
+    pod = {
+        "initContainers": [
+            {
+                "name": "starter",
+                "volumeMounts": [
+                    {"name": "login-check", "mountPath": "/etc/switch/login", "readOnly": True}
+                ],
+            }
+        ],
+        "containers": [{"name": "controller"}, {"name": "agents"}],
+        "volumes": [json.loads(json.dumps(LOGIN_CHECK_VOLUME))],
+    }
+    for fn in change.values():
+        fn(pod)
+    return pod
+
+
+def test_the_starters_login_check_is_allowed():
+    from switch_hosted_controller.egress_lists import check_box_pod_spec
+
+    assert check_box_pod_spec(_starter_pod(), split=True) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda p: p["volumes"][0]["secret"]["items"].append(
+            {"key": "ctl_https_proxy", "path": "c"}
+        ),
+        lambda p: p["volumes"][0]["secret"].pop("items"),  # the whole Secret
+        lambda p: (
+            p["containers"][0]
+            .setdefault("volumeMounts", [])
+            .append({"name": "login-check", "mountPath": "/x", "readOnly": True})
+        ),
+        lambda p: p["initContainers"][0]["volumeMounts"][0].update(readOnly=False),
+        lambda p: p["initContainers"][0].update(name="other"),
+        lambda p: p["volumes"].append(
+            {"name": "again", "secret": {"secretName": "switch-proxy-login"}}
+        ),
+    ],
+)
+def test_any_other_mount_of_the_login_secret_is_refused(change):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller.egress_lists import check_box_pod_spec
+
+    assert check_box_pod_spec(_starter_pod(c=change), split=True) != []

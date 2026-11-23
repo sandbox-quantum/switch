@@ -730,6 +730,21 @@ def test_the_operator_builds_exactly_the_ticked_template():
     cap = {"name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS", "value": "500"}
     assert controller["env"].count(cap) == 1
     controller["env"].remove(cap)
+    # And template t2's three (warm pool), checked exactly and taken out the same way: the starter
+    # container, the code Secret readable by the pod's group only (0440) with the starter's one-key login check, and
+    # the autoscaler's safe-to-evict mark.
+    from switch_hosted_controller.box_operator import _before_starter
+
+    (sts,) = [o for _, o in built if o["kind"] == "StatefulSet"]
+    pod = sts["spec"]["template"]["spec"]
+    (starter,) = pod["initContainers"]
+    assert starter["name"] == "starter" and starter["image"] == config.image
+    assert sts["spec"]["template"]["metadata"]["annotations"] == {
+        "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
+    }
+    assert [v for v in pod["volumes"] if v["name"] == "enrol"][0]["secret"]["defaultMode"] == 0o440
+    assert [v["name"] for v in pod["volumes"]][-1] == "login-check"
+    sts["spec"] = _before_starter(sts["spec"])
     ours = {(o["kind"], o["metadata"]["name"]): o for _, o in built}
     theirs = {(o["kind"], o["metadata"]["name"]): o for o in rendered}
     assert set(ours) == set(theirs)
@@ -923,23 +938,27 @@ def test_the_api_servers_own_defaults_still_count_as_ours():
         minReadySeconds=0,
     )
     spec["template"]["metadata"]["creationTimestamp"] = None
-    spec["template"]["metadata"]["annotations"] = {
-        "kubectl.kubernetes.io/restartedAt": "2026-10-26T14:03:11+01:00"
-    }  # a manual `kubectl rollout restart`
+    spec["template"]["metadata"]["annotations"]["kubectl.kubernetes.io/restartedAt"] = (
+        "2026-10-26T14:03:11+01:00"  # a manual `kubectl rollout restart`, beside the box's own annotation
+    )
     spec["template"]["spec"].update(
         restartPolicy="Always",
         dnsPolicy="ClusterFirst",
         schedulerName="default-scheduler",
         serviceAccount="box",  # copied from serviceAccountName
     )
-    for container in spec["template"]["spec"]["containers"]:
+    for container in (
+        spec["template"]["spec"]["containers"] + spec["template"]["spec"]["initContainers"]
+    ):
         container.update(
             terminationMessagePath="/dev/termination-log", terminationMessagePolicy="File"
         )
     for volume in spec["template"]["spec"]["volumes"]:
         for source in ("configMap", "secret"):
             if source in volume:
-                volume[source]["defaultMode"] = 420
+                volume[source].setdefault(
+                    "defaultMode", 420
+                )  # where this set none (enrol's is 0440)
     spec["replicas"] = 1  # the scaler started it
     kube.objects[("StatefulSet", NS, "box")]["status"] = {"replicas": 1}
     kube.objects[("StatefulSet", NS, "box")]["metadata"].update(
@@ -1156,6 +1175,12 @@ def test_every_default_the_real_api_server_added_still_counts_as_ours():
 
     added = add_missing(spec, real)
     added += add_missing(spec["template"]["metadata"], real["template"]["metadata"])
+    # Our template sets an annotation now (safe-to-evict); the real cluster's (a restart mark) goes beside it.
+    real_marks = real["template"]["metadata"].get("annotations") or {}
+    ours_marks = spec["template"]["metadata"].setdefault("annotations", {})
+    if any(k not in ours_marks for k in real_marks):
+        added.append("annotations")
+        ours_marks.update({k: v for k, v in real_marks.items() if k not in ours_marks})
     added += add_missing(spec["template"]["spec"], real["template"]["spec"])
     (real_container,) = real["template"]["spec"]["containers"]
     for container in spec["template"]["spec"]["containers"]:
@@ -1214,10 +1239,13 @@ def test_every_box_controller_gets_the_daily_call_cap():  # type: ignore[no-unty
 
 
 def _without_daily_calls(kube):  # type: ignore[no-untyped-def]
-    """The box as the template made it before the daily call cap: the same, minus that one env entry."""
-    controller = kube.objects[("StatefulSet", NS, "box")]["spec"]["template"]["spec"]["containers"][
-        0
-    ]
+    """The box as the template made it before the daily call cap: also before the starter container
+    (t2), which came later, and minus that one env entry."""
+    from switch_hosted_controller.box_operator import _before_starter
+
+    box = kube.objects[("StatefulSet", NS, "box")]
+    box["spec"] = _before_starter(box["spec"])
+    controller = box["spec"]["template"]["spec"]["containers"][0]
     before = len(controller["env"])
     controller["env"] = [
         e for e in controller["env"] if e["name"] != "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS"
@@ -1296,6 +1324,7 @@ PINNED_TEMPLATE_FIELDS = {
         "containers",
         "enableServiceLinks",
         "hostname",
+        "initContainers",
         "nodeSelector",
         "runtimeClassName",
         "securityContext",
@@ -1642,7 +1671,7 @@ def test_every_claim_carries_this_builds_template_revision():
     op = BoxOperator(core, ProbeKube([False]), cfg())
     op.run_once()
     revision = core.reports[0]["template_revision"]
-    assert re.fullmatch(r"t1-[0-9a-f]{12}", revision)
+    assert re.fullmatch(r"t2-[0-9a-f]{12}", revision)
     from switch_hosted_controller.box_operator import template_revision
 
     other = cfg(image="registry.example/hosted-agents-box@sha256:" + "b" * 64)
@@ -1650,3 +1679,109 @@ def test_every_claim_carries_this_builds_template_revision():
         template_revision(other) != revision
     )  # a new image is a new revision: Core retires older pool boxes
     assert template_revision(cfg()) == revision
+
+
+# ---- template t2: the starter container (warm pool) ----
+
+
+def _sts_pod(kube, ns=NS):  # type: ignore[no-untyped-def]
+    return kube.objects[("StatefulSet", ns, "box")]["spec"]["template"]["spec"]
+
+
+def test_the_code_and_the_login_check_are_mounted_exactly_where_agreed():
+    """`switch-enrol` by exactly the controller and the starter; the one login key by the starter alone. The main
+    containers keep reading the login from their environment, as before."""
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    pod = _sts_pod(kube)
+    everyone = pod["initContainers"] + pod["containers"]
+    mounts = {c["name"]: {m["name"] for m in c.get("volumeMounts", [])} for c in everyone}
+    assert {n for n, m in mounts.items() if "enrol" in m} == {"controller", "starter"}
+    assert {n for n, m in mounts.items() if "login-check" in m} == {"starter"}
+    for c in pod["containers"]:
+        refs = [e["valueFrom"]["secretKeyRef"]["name"] for e in c["env"] if "valueFrom" in e]
+        assert "switch-proxy-login" in refs, c["name"]
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert volumes["enrol"]["secret"]["defaultMode"] == 0o440
+    assert volumes["login-check"]["secret"]["items"] == [
+        {"key": "https_proxy", "path": "https_proxy"}
+    ]
+    assert volumes["login-check"]["secret"]["defaultMode"] == 0o440
+    assert all(m.get("readOnly") is True for m in pod["initContainers"][0]["volumeMounts"])
+
+
+def test_the_starter_is_the_box_image_hardened_small_and_prints_no_content():
+    from switch_hosted_controller.box_operator import STARTER_SCRIPT
+
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    (starter,) = _sts_pod(kube)["initContainers"]
+    assert starter["image"] == RAW_CONFIG["image"]
+    assert starter["securityContext"] == {
+        "runAsUser": 2001,
+        "runAsGroup": 2000,
+        "allowPrivilegeEscalation": False,
+        "readOnlyRootFilesystem": True,
+        "capabilities": {"drop": ["ALL"]},
+    }
+    assert starter["resources"]["limits"] == {"cpu": "100m", "memory": "32Mi"}
+    assert (
+        "cat " not in STARTER_SCRIPT and "$(" not in STARTER_SCRIPT
+    )  # it tests the files, never reads them out
+    assert kube.objects[("StatefulSet", NS, "box")]["spec"]["template"]["metadata"][
+        "annotations"
+    ] == {"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"}
+    assert _sts_pod(kube)["automountServiceAccountToken"] is False
+
+
+@pytest.mark.parametrize("order", ["code first", "login first"])
+def test_the_starter_waits_for_both_files_then_exits_once(tmp_path, order):  # type: ignore[no-untyped-def]
+    """The starter's own script, run with sh: it keeps waiting with one file or none, exits once both are there,
+    in either order, and prints a fixed line only."""
+    import subprocess
+    import time
+
+    from switch_hosted_controller.box_operator import STARTER_SCRIPT
+
+    enrol, login = tmp_path / "enrol", tmp_path / "login"
+    enrol.mkdir()
+    login.mkdir()
+    script = STARTER_SCRIPT.replace("/etc/switch/enrol", str(enrol)).replace(
+        "/etc/switch/login", str(login)
+    )
+    proc = subprocess.Popen(["sh", "-c", script], stdout=subprocess.PIPE, text=True)
+    first, second = (enrol / "code", login / "https_proxy")
+    if order == "login first":
+        first, second = second, first
+    time.sleep(0.8)
+    assert proc.poll() is None  # neither yet
+    first.write_text("SECRET-CANARY-1")
+    time.sleep(1.2)
+    assert proc.poll() is None  # one only
+    second.write_text("SECRET-CANARY-2")
+    out, _ = proc.communicate(timeout=5)
+    assert proc.returncode == 0
+    assert out == "switch-box: code and login present\n"
+
+
+@pytest.mark.parametrize("make", [action, box_action])
+def test_a_box_made_before_the_starter_is_still_reused(make, caplog):  # type: ignore[no-untyped-def]
+    """A box made by template t1 (no starter, the code at the default mode, no annotation) is still its own on
+    re-claim, for both name shapes, writes nothing, and says it re-used an earlier shape."""
+    from switch_hosted_controller.box_operator import _before_starter
+
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(make())
+    ns = BOX_NS if make is box_action else NS
+    box = kube.objects[("StatefulSet", ns, "box")]
+    box["spec"] = _before_starter(box["spec"])
+    caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
+    assert _again_with(kube, cfg(), make()) == ("done", ns, None)
+    assert any("before the starter container" in r.getMessage() for r in caplog.records)
+
+
+def test_a_box_with_a_changed_starter_is_refused():
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    _sts_pod(kube)["initContainers"][0]["command"] = ["sh", "-c", "cat /etc/switch/enrol/code"]
+    assert _again(kube, cfg())[0] == "failed"

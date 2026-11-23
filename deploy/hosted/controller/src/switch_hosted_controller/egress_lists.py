@@ -619,21 +619,47 @@ def _literal_credential(env: dict) -> str | None:
     return None
 
 
+# The one volume of the login Secret a box may have: the starter's presence check of one key (`box_operator`).
+LOGIN_CHECK_VOLUME = {
+    "name": "login-check",
+    "secret": {
+        "secretName": LOGIN_SECRET,
+        "optional": True,
+        "defaultMode": 0o440,
+        "items": [{"key": "https_proxy", "path": "https_proxy"}],
+    },
+}
+
+
 def check_box_pod_spec(pod_spec: dict, split: bool, controller: str = "controller") -> list[str]:
     """Problems with how a box's pod takes its proxy logins, for render-user to refuse before applying. The login
     Secret holds both logins on a split box, so each container must take only its own key, one value at a time:
-    - no container loads the whole Secret (`envFrom`), and no volume mounts it;
+    - no container loads the whole Secret (`envFrom`), and no volume mounts it, but for one exception: the starter
+      container's `login-check` volume, exactly one key (`https_proxy`) by `items`, mounted by the starter alone,
+      read-only, to check it's there (warm pool);
     - a container other than the controller takes `https_proxy` only, never a `ctl_` key;
     - the controller takes `ctl_https_proxy` only on a split box.
     """
     problems = []
+    login_volumes = set()
     for volume in pod_spec.get("volumes") or []:
         sources = [volume.get("secret") or {}] + [
             src.get("secret") or {} for src in (volume.get("projected") or {}).get("sources") or []
         ]
         if any(src.get("secretName", src.get("name")) == LOGIN_SECRET for src in sources):
-            problems.append(f"volume {volume.get('name')!r} mounts {LOGIN_SECRET}")
+            login_volumes.add(volume.get("name"))
+            if volume != LOGIN_CHECK_VOLUME:
+                problems.append(f"volume {volume.get('name')!r} mounts {LOGIN_SECRET}")
     containers = list(pod_spec.get("initContainers") or []) + list(pod_spec.get("containers") or [])
+    starters = {c.get("name") for c in pod_spec.get("initContainers") or []}
+    for container in containers:
+        for mount in container.get("volumeMounts") or []:
+            if mount.get("name") not in login_volumes:
+                continue
+            if container.get("name") != "starter" or "starter" not in starters:
+                problems.append(f"container {container.get('name')!r} mounts {LOGIN_SECRET}")
+            elif mount.get("readOnly") is not True or "subPath" in mount:
+                problems.append(f"the starter mounts {LOGIN_SECRET} other than read-only and whole")
     for container in containers:
         name = container.get("name")
         for source in container.get("envFrom") or []:
