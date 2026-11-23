@@ -1201,6 +1201,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         window_seconds=COALESCE_SECONDS,
     )
     room_service.on_room_changed(room_changes.room_changed)
+    room_service.on_room_deleted(room_changes.room_deleted)
     postgres_provisioning.on_membership_changed(room_changes.room_changed)
     management = create_management(
         config,

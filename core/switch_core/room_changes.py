@@ -7,6 +7,12 @@ owners of its agents. A room is reported when it is created or archived or
 unarchived, when its agents change, and when anyone joins or leaves it; the
 client that left is named so the person who lost the room is told too.
 
+A deleted room can't be read for who it concerned, since the room, its
+members and its agents go with it, so `delete_room` reads them before it
+deletes and hands them over (`room_deleted`). Without that, an owner or an
+agent's owner who was not in the room heard nothing, and their Console kept
+listing the room until its next full read.
+
 The notice is a "read again", so it is sent from a task of its own after the
 change has committed, and a lost one costs only a delay: Console still reads
 its lists every few minutes. Changes to one room within `COALESCE_SECONDS` of
@@ -72,6 +78,9 @@ class RoomChanges:
         self._tasks: set[asyncio.Task[None]] = set()
         # Client ids gathered for each room whose window is open.
         self._pending: dict[tuple[str, str], set[str]] = {}
+        # People to tell about a room whatever its read finds, gathered for
+        # each room whose window is open: those a deleted room concerned.
+        self._known: dict[tuple[str, str], set[str]] = {}
 
     def room_changed(self, tenant_id: str, room_id: str, client_ids: list[str]) -> None:
         """Tell everyone the room concerns, and the people behind `client_ids`
@@ -81,6 +90,17 @@ class RoomChanges:
             self._pending[key].update(client_ids)
             return
         self._pending[key] = set(client_ids)
+        self._start(tenant_id, [room_id])
+
+    def room_deleted(self, tenant_id: str, room_id: str, user_ids: list[str]) -> None:
+        """Tell `user_ids`, read before the room was deleted, that it changed.
+        Returns at once. Joins the window its members' removal opened, if that
+        is still open, so each person is told once."""
+        key = (tenant_id, room_id)
+        self._known.setdefault(key, set()).update(user_ids)
+        if key in self._pending:
+            return
+        self._pending[key] = set()
         self._start(tenant_id, [room_id])
 
     def rooms_changed(self, tenant_id: str, room_ids: list[str]) -> None:
@@ -118,10 +138,14 @@ class RoomChanges:
                 room_id: sorted(self._pending.pop((tenant_id, room_id)))
                 for room_id in room_ids
             }
+            known = {
+                room_id: self._known.pop((tenant_id, room_id), set())
+                for room_id in room_ids
+            }
         async with tenant_session(self._session_factory, tenant_id) as session:
             concerned = await people_concerned(session, changed)
         for room_id, user_ids in concerned.items():
-            for user_id in user_ids:
+            for user_id in sorted({*user_ids, *known[room_id]}):
                 self._publisher.publish(tenant_id, user_id, ROOM, room_id)
 
 

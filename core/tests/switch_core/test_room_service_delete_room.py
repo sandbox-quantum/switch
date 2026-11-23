@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from typing import Any
 
@@ -384,3 +385,55 @@ class TestDeleteRoomRetiresChannel:
         )
 
         assert await svc.delete_room("room-1", retire_channel=True) is None
+
+    async def test_tells_who_the_room_concerned_read_before_the_delete(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The owner and the owners of its agents are read from the room, so
+        they are read before the delete takes it (`room_changes.room_deleted`)."""
+        events: list[Any] = []
+        member = SimpleNamespace(transport_user_id="@bob:switch.local")
+        svc, room_store = _build_service(
+            room=_bridged_room(),
+            client_ids=["client-bob"],
+            clients={"client-bob": member},
+            bridges={"bridge-x": _FakeCollaborationCore(events)},
+            events=events,
+        )
+
+        @contextlib.asynccontextmanager
+        async def tenant_session(_factory: Any, tenant_id: str) -> Any:
+            yield SimpleNamespace(tenant_id=tenant_id)
+
+        async def people_concerned(
+            session: Any, changed: dict[str, list[str]]
+        ) -> dict[str, list[str]]:
+            events.append(("read_people", session.tenant_id, changed))
+            return {"room-1": ["alice", "bob", "carol"]}
+
+        monkeypatch.setattr("switch_core.room_service.tenant_session", tenant_session)
+        monkeypatch.setattr(
+            "switch_core.room_service.people_concerned", people_concerned
+        )
+        svc.on_room_deleted(
+            lambda tenant_id, room_id, user_ids: events.append(
+                ("told", tenant_id, room_id, user_ids, list(room_store.deleted))
+            )
+        )
+
+        await svc.delete_room("room-1", retire_channel=False)
+
+        names = [e[0] for e in events]
+        assert names.index("read_people") < names.index("kick")
+        assert events[names.index("read_people")][1:] == (
+            "room-tenant",
+            {"room-1": ["client-bob"]},
+        )
+        # Told after the room is gone, with the people read before.
+        assert events[-1] == (
+            "told",
+            "room-tenant",
+            "room-1",
+            ["alice", "bob", "carol"],
+            ["room-1"],
+        )

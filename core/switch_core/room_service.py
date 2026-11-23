@@ -64,6 +64,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
+from switch_core.room_changes import people_concerned
 from switch_core.room_policy import FIXED_MEMBERSHIP, visibility_for_channel
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -241,6 +242,7 @@ class RoomService:
     _telemetry: TelemetryService | None = None
     _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
     _room_listeners: tuple[Callable[[str, str, list[str]], None], ...] = ()
+    _room_deleted_listeners: tuple[Callable[[str, str, list[str]], None], ...] = ()
     _people_left_listeners: tuple[
         Callable[[str, str, list[str]], Awaitable[None]], ...
     ] = ()
@@ -285,6 +287,12 @@ class RoomService:
                 listener(tenant_id, room_id, [])
             except Exception:
                 logger.exception("Room listener failed for room %s", room_id)
+
+    def on_room_deleted(self, listener: Callable[[str, str, list[str]], None]) -> None:
+        """Call `listener(tenant_id, room_id, user_ids)` once a room is deleted,
+        with the people it concerned, read before the delete took them with
+        it (`room_changes.room_deleted`). It must not block."""
+        self._room_deleted_listeners = (*self._room_deleted_listeners, listener)
 
     def on_room_agents_changed(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -1293,6 +1301,15 @@ class RoomService:
 
         # Before the delete: the cascade takes the messages with the room.
         was_ever_active = await self._was_ever_active(room.tenant_id, room_id)
+        # Also before it: the owner and the owners of its agents are read from
+        # the room, and once it is gone only the members removed below would
+        # still be found.
+        concerned: list[str] = []
+        if self._room_deleted_listeners:
+            async with tenant_session(self._session_factory, room.tenant_id) as session:
+                concerned = (await people_concerned(session, {room_id: client_ids}))[
+                    room_id
+                ]
 
         # `kick_user` and the delete below both write rows scoped to this
         # room's tenant (a membership removal, then the room itself), so both
@@ -1337,6 +1354,12 @@ class RoomService:
             self._collab_lifecycle.rooms_changed(bridge_id)
 
         logger.info("Deleted room %s", room_id)
+
+        for listener in self._room_deleted_listeners:
+            try:
+                listener(room.tenant_id, room_id, concerned)
+            except Exception:
+                logger.exception("Room deleted listener failed for room %s", room_id)
 
         if self._telemetry is None:
             return channel
