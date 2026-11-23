@@ -72,11 +72,16 @@ async def test_each_message_is_checked_against_its_own_organizations_policy(
         keyring=TEST_KEYRING,
         client=httpx.AsyncClient(transport=httpx.MockTransport(switch_trust)),
         timeout_seconds=1.0,
+        server_id="srv-1",
     )
 
     for tenant_id in (acme, globex, unchecked):
         await client.check(
-            tenant_id=tenant_id, role="user", content="hi", room_id="room-1"
+            tenant_id=tenant_id,
+            role="user",
+            content="hi",
+            room_id="room-1",
+            agent=None,
         )
 
     assert asked == [
@@ -110,6 +115,7 @@ async def test_a_workspace_in_no_organization_is_checked_once_it_has_one(
         keyring=TEST_KEYRING,
         client=httpx.AsyncClient(transport=httpx.MockTransport(switch_trust)),
         timeout_seconds=1.0,
+        server_id="srv-1",
     )
 
     unchecked = await client.is_active(adopted)
@@ -120,7 +126,9 @@ async def test_a_workspace_in_no_organization_is_checked_once_it_has_one(
         await session.commit()
     remembered = await client.is_active(adopted)
     client.forget_all()
-    await client.check(tenant_id=adopted, role="user", content="hi", room_id="room-1")
+    await client.check(
+        tenant_id=adopted, role="user", content="hi", room_id="room-1", agent=None
+    )
 
     assert unchecked is False
     assert remembered is False

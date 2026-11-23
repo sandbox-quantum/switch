@@ -3081,6 +3081,12 @@ class OrganizationTrustSettings(OrganizationScoped, Base):
     policy_id: Mapped[str] = mapped_column(Text, nullable=False)
     policy_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    # Whether the agent inventory sent to this policy's Switch Trust carries
+    # each managed agent's instructions (`trust/inventory.py`). Off unless an
+    # admin turns it on; connecting another policy keeps the choice.
+    share_agent_instructions: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", default=False, nullable=False
+    )
     updated_by: Mapped[str | None] = mapped_column(
         Text,
         ForeignKey(
@@ -3095,6 +3101,66 @@ class OrganizationTrustSettings(OrganizationScoped, Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class TrustInventoryTarget(Base):
+    """A Switch Trust the agent inventory is sent to (`trust/inventory.py`).
+
+    One row per endpoint and API key the inventory has been sent under,
+    keyed by a hash of the two. Each organization's settings name only the
+    one it sends to now, so when they change or are cleared, the key that can
+    still withdraw its workspaces' agents from the previous Switch Trust lives
+    here until the sync has done so, and the row goes with it. Not scoped to
+    an organization: the row has to outlive the settings and the
+    organization, and two organizations connected under one key share it.
+    """
+
+    __tablename__ = "trust_inventory_targets"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TrustInventorySent(Base):
+    """What one workspace's inventory last did at one Switch Trust.
+
+    `digest` is the snapshot it last took, so an unchanged one is not sent
+    again; `failed_digest`, `failures` and `retry_at` hold off a snapshot it
+    refused, or could not be reached with, without holding off a changed one.
+    `tenant` is a workspace's id, deliberately not a `tenant_id` foreign key:
+    the row has to outlive its workspace, since it is how the sync knows a
+    deleted workspace's agents are still listed there. Kept by the process
+    holding the sync's lease, under its fence. Not tenant-scoped, for the
+    same reason.
+    """
+
+    __tablename__ = "trust_inventory_sent"
+
+    target_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey(
+            "trust_inventory_targets.id",
+            name="fk_trust_inventory_sent_target",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    tenant: Mapped[str] = mapped_column(Text, primary_key=True)
+    digest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failed_digest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failures: Mapped[int] = mapped_column(
+        Integer, server_default="0", default=0, nullable=False
+    )
+    retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 

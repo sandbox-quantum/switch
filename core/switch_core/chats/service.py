@@ -2522,6 +2522,7 @@ class ChatService:
                     role="user",
                     content=body,
                     room_id=room.id,
+                    agent=None,
                 ),
                 check_attachments(
                     self._trust_client,
@@ -2530,6 +2531,7 @@ class ChatService:
                     role="user",
                     files=files,
                     room_id=room.id,
+                    agent=None,
                 ),
             )
         elif body.strip():
@@ -2540,6 +2542,7 @@ class ChatService:
                 role="user",
                 content=body,
                 room_id=room.id,
+                agent=None,
             )
         elif files:
             files_check = await check_attachments(
@@ -2549,6 +2552,7 @@ class ChatService:
                 role="user",
                 files=files,
                 room_id=room.id,
+                agent=None,
             )
 
         if text_check is not None and (

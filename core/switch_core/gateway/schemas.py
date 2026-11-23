@@ -2719,7 +2719,9 @@ class OrganizationGuardrailsResponse(BaseModel):
     """The Switch Trust policy the organization connected, as its admins see
     it: never the API key, only its last four characters, None when it can't
     be read. `policy_name` is Switch Trust's name for the policy when it gave
-    one; `policy_url` where Switch Trust shows it, when Switch knows."""
+    one; `policy_url` where Switch Trust shows it, when Switch knows.
+    `share_agent_instructions` is whether the agent inventory sent to Switch
+    Trust carries managed agents' instructions; false when not connected."""
 
     connected: bool
     policy_id: str | None
@@ -2728,6 +2730,7 @@ class OrganizationGuardrailsResponse(BaseModel):
     api_key_last4: str | None
     connected_by_name: str | None
     connected_at: str | None
+    share_agent_instructions: bool
 
 
 class WorkspaceGuardrails(BaseModel):
@@ -2754,6 +2757,13 @@ class OrganizationGuardrailsConnectRequest(BaseModel):
     api_key: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)
     ]
+
+
+class OrganizationGuardrailsUpdateRequest(BaseModel):
+    """What can change about a connected policy without connecting it again:
+    whether the agent inventory carries managed agents' instructions."""
+
+    share_agent_instructions: bool
 
 
 # ── Feature flags ────────────────────────────────────────────────────────────

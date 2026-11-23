@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,6 +68,17 @@ class OrganizationTrustSettingsStore:
         saved = await self.get(session, organization_id)
         assert saved is not None
         return saved
+
+    async def set_share_agent_instructions(
+        self, session: AsyncSession, organization_id: str, share: bool
+    ) -> None:
+        """Whether the agent inventory carries managed agents' instructions
+        (`trust/inventory.py`). Kept when another policy is connected."""
+        await session.execute(
+            update(OrganizationTrustSettings)
+            .where(OrganizationTrustSettings.organization_id == organization_id)
+            .values(share_agent_instructions=share)
+        )
 
     async def clear(self, session: AsyncSession, organization_id: str) -> None:
         await session.execute(

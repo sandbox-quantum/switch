@@ -300,7 +300,7 @@ class TestSendMessage:
         sent: list[tuple[str, str]] = []
 
         class _Client:
-            agent = SimpleNamespace(name="member")
+            agent = SimpleNamespace(id=member_id, name="member", display_name=None)
 
             async def send_message(
                 self, transport_room_id: str, content: str, **_kwargs: Any

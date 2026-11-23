@@ -38,5 +38,5 @@ class TrustConnectionCheck:
             client=self._client,
         )
         return await checker.check(
-            role="user", content=_CHECKED_TEXT, room_id=_SESSION_ID
+            role="user", content=_CHECKED_TEXT, room_id=_SESSION_ID, agent=None
         )

@@ -19,6 +19,7 @@ from switch_core.trust.client import (
     TrustCheckResult,
     TrustFinding,
 )
+from switch_core.trust.identity import TrustAgent
 
 _FINDING = (TrustFinding(category="pii/email", detector_name="e", severity="high"),)
 
@@ -35,7 +36,13 @@ class _ContentTrustClient:
         return self._active
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         self.checked.append((role, content))
         if "FORBIDDEN" in content:

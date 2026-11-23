@@ -1136,6 +1136,11 @@
       "flags": []
     },
     {
+      "route": "PATCH /gateway/organizations/current/guardrails",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PATCH /gateway/organizations/current/members/{user_id}",
       "auth": "session",
       "flags": []

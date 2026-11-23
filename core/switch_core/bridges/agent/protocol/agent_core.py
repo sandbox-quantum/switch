@@ -187,6 +187,7 @@ from switch_core.trust.client import (
     trust_annotation,
     trust_is_active,
 )
+from switch_core.trust.identity import TrustAgent, agent_label
 from switch_core.ui_spec import UI_CONTENT_KEY, UISpec, trust_text
 
 if TYPE_CHECKING:
@@ -416,6 +417,15 @@ def _require_postable(room: RoomDescriptor) -> None:
         raise RoomReadOnly(room.name, "frozen")
     if room.archived:
         raise RoomReadOnly(room.name, "archived")
+
+
+def _trust_agent(client: AgentActor) -> TrustAgent:
+    """The agent a message `client` sends is checked as: the one the agent
+    inventory describes (`trust/inventory.py`)."""
+    agent = client.agent
+    return TrustAgent(
+        agent_id=agent.id, label=agent_label(agent.name, agent.display_name)
+    )
 
 
 class AgentCore:
@@ -996,6 +1006,13 @@ class AgentCore:
             agent = await self.agent_store.get(session, agent_id)
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
+        # A running agent's guardrail checks name it from the row its actor
+        # holds, as a rename does (`rename_agent`): here now, and in every
+        # other process once they re-read its client.
+        actor = self.client_lifecycle.get(agent.client_id)
+        if isinstance(actor, AgentActor):
+            actor.set_agent(agent)
+        self.client_lifecycle.announce(tenant_id, [agent.client_id])
         identity = agent_identity(agent)
         failures: list[str] = []
         for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
@@ -1831,6 +1848,7 @@ class AgentCore:
             role="assistant",
             content=content,
             room_id=room.id,
+            agent=_trust_agent(client),
         )
         return await self._apply_trust_check(
             room, content, check, thread_root_id, client
@@ -1881,6 +1899,7 @@ class AgentCore:
                 role="assistant",
                 content=content,
                 room_id=room.id,
+                agent=_trust_agent(client),
             ),
             check_message(
                 self.trust_client,
@@ -1889,6 +1908,7 @@ class AgentCore:
                 role="assistant",
                 content=trust_text(ui),
                 room_id=room.id,
+                agent=_trust_agent(client),
             ),
         )
         if card_check.blocked or (
@@ -2195,6 +2215,7 @@ class AgentCore:
                 role="assistant",
                 files=files,
                 room_id=room.id,
+                agent=_trust_agent(client),
             )
             if caption_text is not None:
                 caption_check, files_check = await asyncio.gather(
@@ -2205,6 +2226,7 @@ class AgentCore:
                         role="assistant",
                         content=caption_text,
                         room_id=room.id,
+                        agent=_trust_agent(client),
                     ),
                     files_check_task,
                 )

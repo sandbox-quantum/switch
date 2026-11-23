@@ -20,6 +20,7 @@ from switch_core.keys import UndecryptableError
 from switch_core.logging_context import log_context, structured_fields
 from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 from switch_core.trust.client import (
+    CheckedAgent,
     DynamicTrustClient,
     GuardrailBlockedError,
     GuardrailsCheckError,
@@ -32,6 +33,7 @@ from switch_core.trust.client import (
     trust_annotation,
     trust_is_active,
 )
+from switch_core.trust.identity import TrustAgent, agent_fingerprint
 
 
 @dataclass
@@ -108,13 +110,18 @@ def _dynamic_client(
         keyring=keyring or _FakeKeyring(),  # type: ignore[arg-type]
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         timeout_seconds=1.0,
+        server_id="srv-1",
         **kwargs,
     )
 
 
 async def _check(client: DynamicTrustClient, tenant_id: str = "tenant-1"):
     return await client.check(
-        tenant_id=tenant_id, role="user", content="hi", room_id="room-1"
+        tenant_id=tenant_id,
+        role="user",
+        content="hi",
+        room_id="room-1",
+        agent=None,
     )
 
 
@@ -221,6 +228,7 @@ async def test_dynamic_client_turns_an_undecryptable_key_into_a_check_error(
         role="user",
         content="hi",
         room_id="room-1",
+        agent=None,
     )
     assert result.outcome == "errored"
 
@@ -368,19 +376,74 @@ async def test_posts_the_one_message_with_the_expected_headers():
         return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
 
     client = _client(handler)
-    result = await client.check(role="user", content="hi", room_id="room-1")
+    result = await client.check(role="user", content="hi", room_id="room-1", agent=None)
 
     assert seen["url"] == "https://trust.example/guardrails/check"
     assert seen["policy"] == "pol_123"
     assert seen["key"] == "k"
-    # Always the same constant agent identity (Switch has no single "agent" to
-    # attribute a check to); the room and a fresh per-check id carry the
-    # per-call distinction instead.
+    # A message no agent wrote carries the one shared identity; the room and
+    # a fresh per-check id carry the per-call distinction.
     assert seen["agent_name"] == "Switch Rooms Agents"
     assert seen["session_id"] == "room-1"
     assert uuid.UUID(str(seen["turn_id"]))  # a fresh, well-formed UUID
     assert seen["body"] == {"messages": [{"role": "user", "content": "hi"}]}
     assert result.blocked is False
+
+
+@pytest.mark.asyncio
+async def test_an_agents_message_carries_the_agents_own_identity():
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["agent_id"] = request.headers.get("x-agent-id")
+        seen["agent_name"] = request.headers.get("x-agent-name")
+        return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+
+    await _dynamic_client(_ROW, handler).check(
+        tenant_id="tenant-1",
+        role="assistant",
+        content="hi",
+        room_id="room-1",
+        agent=TrustAgent(agent_id="a1", label="Reviewer"),
+    )
+
+    # The fingerprint the agent inventory names the agent by, in the
+    # workspace the check is made in.
+    assert seen["agent_id"] == agent_fingerprint("srv-1", "tenant-1", "a1")
+    assert seen["agent_name"] == "Reviewer"
+
+
+@pytest.mark.asyncio
+async def test_a_name_beyond_ascii_goes_out_as_utf8():
+    raw: dict[str, bytes] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw["agent_name"] = dict(request.headers.raw)[b"x-agent-name"]
+        return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+
+    await _client(handler).check(
+        role="assistant",
+        content="hi",
+        room_id="room-1",
+        agent=CheckedAgent(agent_id="agn_1", name="Café 🤖\r\nbot"),
+    )
+
+    assert raw["agent_name"] == "Café 🤖bot".encode()
+
+
+@pytest.mark.asyncio
+async def test_a_message_no_agent_wrote_carries_no_agent_id():
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["agent_id"] = request.headers.get("x-agent-id")
+        return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+
+    await _client(handler).check(
+        role="user", content="hi", room_id="room-1", agent=None
+    )
+
+    assert seen["agent_id"] is None
 
 
 @pytest.mark.asyncio
@@ -392,8 +455,8 @@ async def test_each_check_gets_its_own_turn_id():
         return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
 
     client = _client(handler)
-    await client.check(role="user", content="hi", room_id="room-1")
-    await client.check(role="user", content="hi", room_id="room-1")
+    await client.check(role="user", content="hi", room_id="room-1", agent=None)
+    await client.check(role="user", content="hi", room_id="room-1", agent=None)
 
     assert len(seen) == 2
     assert seen[0] != seen[1]
@@ -414,7 +477,7 @@ async def test_a_trailing_slash_on_the_base_url_does_not_double_up():
         timeout_seconds=1.0,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    await client.check(role="user", content="hi", room_id="room-1")
+    await client.check(role="user", content="hi", room_id="room-1", agent=None)
     assert seen["url"] == "https://trust.example/guardrails/check"
 
 
@@ -440,7 +503,10 @@ async def test_a_blocked_outcome_carries_its_findings():
 
     client = _client(handler)
     result = await client.check(
-        role="user", content="my email is user@example.com", room_id="room-1"
+        role="user",
+        content="my email is user@example.com",
+        room_id="room-1",
+        agent=None,
     )
 
     assert result.blocked is True
@@ -456,7 +522,7 @@ async def test_a_blocked_outcome_carries_its_findings():
 async def test_an_error_response_raises_rather_than_allowing_silently():
     client = _client(lambda request: httpx.Response(503, text="unavailable"))
     with pytest.raises(GuardrailsCheckError, match="503"):
-        await client.check(role="user", content="hi", room_id="room-1")
+        await client.check(role="user", content="hi", room_id="room-1", agent=None)
 
 
 @pytest.mark.asyncio
@@ -466,13 +532,17 @@ async def test_a_network_failure_raises():
 
     client = _client(handler)
     with pytest.raises(GuardrailsCheckError, match="failed"):
-        await client.check(role="user", content="hi", room_id="room-1")
+        await client.check(role="user", content="hi", room_id="room-1", agent=None)
 
 
 @pytest.mark.asyncio
 async def test_null_client_always_allows():
     result = await NullTrustClient().check(
-        tenant_id="tenant-1", role="user", content="anything", room_id="room-1"
+        tenant_id="tenant-1",
+        role="user",
+        content="anything",
+        room_id="room-1",
+        agent=None,
     )
     assert result.blocked is False
 
@@ -489,6 +559,7 @@ async def test_check_message_fails_open_on_error(
         role="user",
         content="hi",
         room_id="room-1",
+        agent=None,
     )
     assert result == TrustCheckResult(
         outcome="errored", policy_id=None, policy_name=None
@@ -512,6 +583,7 @@ async def test_check_message_passes_through_a_block(
         role="assistant",
         content="hi",
         room_id="room-1",
+        agent=None,
     )
     assert result.blocked is True
 
@@ -521,7 +593,13 @@ class _Verdict:
         self._result = result
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         return self._result
 
@@ -556,6 +634,7 @@ async def _check_verdict(
             role="assistant",
             content="my key is AKIAEXAMPLE",
             room_id="room-1",
+            agent=None,
         )
 
 
@@ -658,6 +737,7 @@ async def test_an_ok_verdict_is_not_a_security_event(
         role="user",
         content="hi",
         room_id="room-1",
+        agent=None,
     )
     assert _security_records(caplog) == []
 
@@ -668,7 +748,7 @@ async def test_an_error_status_is_told_apart_from_no_answer():
     couldn't be reached (`gateway/organization_guardrails.py`)."""
     client = _client(lambda request: httpx.Response(401, text="bad key"))
     with pytest.raises(GuardrailsRefusedError) as raised:
-        await client.check(role="user", content="hi", room_id="room-1")
+        await client.check(role="user", content="hi", room_id="room-1", agent=None)
     assert raised.value.status_code == 401
 
 
@@ -709,6 +789,7 @@ async def test_a_redacted_outcome_swaps_the_detected_text():
         role="user",
         content="email me at user@example.com please",
         room_id="room-1",
+        agent=None,
     )
 
     assert result.outcome == "redacted"
@@ -724,7 +805,9 @@ async def test_a_redacted_outcome_with_no_detected_text_redacts_nothing():
             200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_REDACTED", "findings": []}
         )
     )
-    result = await client.check(role="user", content="hello", room_id="room-1")
+    result = await client.check(
+        role="user", content="hello", room_id="room-1", agent=None
+    )
     assert result.outcome == "redacted"
     assert result.redacted_content == "hello"
 
@@ -740,7 +823,7 @@ async def test_an_alerted_outcome_is_not_blocked():
             },
         )
     )
-    result = await client.check(role="user", content="hi", room_id="room-1")
+    result = await client.check(role="user", content="hi", room_id="room-1", agent=None)
     assert result.outcome == "alerted"
     assert result.blocked is False
     assert result.redacted_content is None
@@ -751,7 +834,7 @@ async def test_an_unrecognised_outcome_is_treated_as_errored_not_allowed_silentl
     client = _client(
         lambda request: httpx.Response(200, json={"outcome": "SOMETHING_NEW"})
     )
-    result = await client.check(role="user", content="hi", room_id="room-1")
+    result = await client.check(role="user", content="hi", room_id="room-1", agent=None)
     assert result.outcome == "errored"
 
 
@@ -797,7 +880,13 @@ class _UnreadableSettingsClient:
         raise GuardrailsCheckError("database unavailable")
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         raise AssertionError("not called")
 

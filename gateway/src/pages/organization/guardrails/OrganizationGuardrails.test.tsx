@@ -16,6 +16,7 @@ const NONE: Guardrails = {
   api_key_last4: null,
   connected_by_name: null,
   connected_at: null,
+  share_agent_instructions: false,
 };
 
 const CONNECTED: Guardrails = {
@@ -26,6 +27,7 @@ const CONNECTED: Guardrails = {
   api_key_last4: "6789",
   connected_by_name: "Olga",
   connected_at: "2026-11-12T10:00:00Z",
+  share_agent_instructions: false,
 };
 
 function renderIt() {
@@ -111,6 +113,29 @@ describe("OrganizationGuardrails", () => {
 
     await waitFor(() => expect(calls.some((c) => c.method === "DELETE")).toBe(true));
     expect(await screen.findByText(/Switch Trust is disconnected/)).toBeTruthy();
+  });
+
+  it("turns sharing agent instructions on", async () => {
+    const calls = answerFetch({
+      "GET /organizations/current/guardrails": [
+        [200, CONNECTED],
+        [200, { ...CONNECTED, share_agent_instructions: true }],
+      ],
+      "PATCH /organizations/current/guardrails": [200, { ...CONNECTED, share_agent_instructions: true }],
+    });
+    renderIt();
+
+    const toggle = (await screen.findByLabelText("Share agent instructions")) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ share_agent_instructions: true }),
+    );
+    expect(await screen.findByText("Agent instructions are shared with Switch Trust's inventory.")).toBeTruthy();
+    await waitFor(() =>
+      expect((screen.getByLabelText("Share agent instructions") as HTMLInputElement).checked).toBe(true),
+    );
   });
 
   it("says when the kept key can no longer be read", async () => {

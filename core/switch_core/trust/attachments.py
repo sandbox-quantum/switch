@@ -35,6 +35,7 @@ from switch_core.trust.client import (
     TrustFinding,
     check_message,
 )
+from switch_core.trust.identity import TrustAgent
 
 __all__ = [
     "RELAY_UNCHECKED_FILES",
@@ -91,6 +92,7 @@ async def check_attachments(
     role: Role,
     files: Sequence[tuple[bytes, str, str]],
     room_id: str,
+    agent: TrustAgent | None,
 ) -> AttachmentsVerdict:
     """Check every file in `files` ((data, filename, mimetype) each) against
     Switch Trust, concurrently. Only call this when Switch Trust is on
@@ -120,6 +122,7 @@ async def check_attachments(
                 role=role,
                 content=text,
                 room_id=room_id,
+                agent=agent,
             )
             for _index, text in to_check
         )

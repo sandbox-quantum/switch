@@ -25,6 +25,7 @@ from switch_core.trust.client import (
     TrustCheckResult,
     TrustFinding,
 )
+from switch_core.trust.identity import TrustAgent
 from tests.integration.conftest import Harness, SessionEnv
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
@@ -34,11 +35,19 @@ class _FixedTrustClient:
     def __init__(self, result: TrustCheckResult) -> None:
         self._result = result
         self.room_ids: list[str] = []
+        self.agents: list[TrustAgent | None] = []
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         self.room_ids.append(room_id)
+        self.agents.append(agent)
         return self._result
 
 
@@ -46,7 +55,13 @@ class _FailingTrustClient:
     """A Switch Trust outage: every check raises, never answers an outcome."""
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         raise GuardrailsCheckError("boom")
 
@@ -165,6 +180,11 @@ async def test_blocked_agent_message_is_not_sent_and_names_the_agent(
     assert "e2e-trust-blocked" in admin_rows[0].content["body"]
     assert "blocked by Switch Trust" in admin_rows[0].content["body"]
     assert trust_client.room_ids == [room_id]
+    # Checked as the agent that sent it, not as Switch as a whole.
+    [checked_as] = trust_client.agents
+    assert checked_as is not None
+    assert checked_as.agent_id == agent_id
+    assert checked_as.label == "e2e-trust-blocked"
 
 
 async def test_redacted_outcome_with_nothing_to_redact_is_not_sent(

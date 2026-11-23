@@ -9,6 +9,7 @@ from sqlalchemy import select
 from switch_core.db.audit import AuditAction
 from switch_core.db.models import AuditEvent
 from switch_core.trust.client import TrustCheckResult, TrustFinding
+from switch_core.trust.identity import TrustAgent
 from tests.switch_core.gateway.conftest import _Harness
 
 _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high"),)
@@ -24,7 +25,13 @@ class _ContentTrustClient:
         return True
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         self.checked.append((role, content))
         if "FORBIDDEN" in content:

@@ -25,6 +25,7 @@ from switch_core.trust.attachments import (
     extract_file_text,
 )
 from switch_core.trust.client import TrustCheckResult, TrustFinding
+from switch_core.trust.identity import TrustAgent
 
 
 class _ContentTrustClient:
@@ -38,7 +39,13 @@ class _ContentTrustClient:
         return True
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         self.checked.append((role, content))
         finding = (TrustFinding(category="test", detector_name="t", severity="high"),)
@@ -134,6 +141,7 @@ async def test_an_image_alone_carries_no_note_and_is_not_checked(
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
+        agent=None,
     )
     assert verdict == AttachmentsVerdict()
     assert client.checked == []
@@ -151,6 +159,7 @@ async def test_an_image_still_blocks_when_unchecked_files_are_not_relayed(
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
+        agent=None,
     )
     assert verdict.blocked
     assert "cat.png could not be checked" in verdict.block_reasons[0]
@@ -176,6 +185,7 @@ async def test_a_blocked_file_blocks_and_names_the_file(
         role="user",
         files=[(b"fine", "a.txt", "text/plain"), (b"FORBIDDEN", "b.txt", "text/plain")],
         room_id="room-1",
+        agent=None,
     )
     assert verdict.blocked
     assert any("b.txt" in reason for reason in verdict.block_reasons)
@@ -192,6 +202,7 @@ async def test_a_redacted_file_blocks_because_a_file_cannot_be_redacted(
         role="user",
         files=[(b"my SECRET", "notes.md", "text/markdown")],
         room_id="room-1",
+        agent=None,
     )
     assert verdict.blocked
     assert verdict.block is not None and verdict.block.outcome == "blocked"
@@ -214,6 +225,7 @@ async def test_unreadable_flagged_and_long_files_each_carry_a_note(
             (b"b" * (TRUST_FILE_TEXT_LIMIT + 1), "long.log", "text/plain"),
         ],
         room_id="room-1",
+        agent=None,
     )
     assert not verdict.blocked
     assert verdict.flagged
@@ -242,6 +254,7 @@ async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checke
         role="user",
         files=[(b" " * TRUST_FILE_TEXT_LIMIT + b"FORBIDDEN", "pad.txt", "text/plain")],
         room_id="room-1",
+        agent=None,
     )
     assert not verdict.blocked
     assert client.checked == []
@@ -263,6 +276,7 @@ async def test_unchecked_files_block_when_the_policy_says_so(
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
+        agent=None,
     )
     assert verdict.blocked
     assert "cat.png could not be checked" in verdict.block_reasons[0]
@@ -497,6 +511,7 @@ async def test_a_renamed_header_is_found_through_the_relationships(
             )
         ],
         room_id="room-1",
+        agent=None,
     )
     assert verdict.blocked
     assert "memo.docx was blocked" in verdict.block_reasons[0]
@@ -540,6 +555,7 @@ async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note(
         role="user",
         files=[(data, "memo.docx", _DOCX_TYPE)],
         room_id="room-1",
+        agent=None,
     )
     assert not verdict.blocked
     [note] = verdict.notes
@@ -633,6 +649,7 @@ async def test_a_document_that_takes_too_long_to_read_is_not_checked(
             role="user",
             files=[(_pdf("FORBIDDEN"), "slow.pdf", "application/pdf")],
             room_id="room-1",
+            agent=None,
         )
     assert not verdict.blocked
     assert verdict.notes == (
@@ -677,6 +694,7 @@ async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks(
             (_pdf("FORBIDDEN report"), "report.pdf", "application/pdf"),
         ],
         room_id="room-1",
+        agent=None,
     )
     assert verdict.blocked
     reasons = " ".join(verdict.block_reasons)
@@ -694,6 +712,7 @@ async def test_a_scanned_pdf_is_relayed_with_a_not_checked_note(
         role="user",
         files=[(_pdf(None), "scan.pdf", "application/pdf")],
         room_id="room-1",
+        agent=None,
     )
     assert not verdict.blocked
     [note] = verdict.notes
