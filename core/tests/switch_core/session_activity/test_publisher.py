@@ -1549,10 +1549,11 @@ async def test_a_root_asked_turn_works_in_a_thread_under_its_own_message(
     assert post.thread_ref == opened.ref
 
 
-async def test_a_turn_with_nothing_to_show_removes_its_work_message(
+async def test_a_turn_with_nothing_to_show_keeps_its_work_message(
     service, work_publisher, work_platform, bridged, session_factory
 ):
-    """Only Switch's own room tools: talking, not work. No plan, no line."""
+    """Only Switch's own room tools: talking, not work. The work message
+    stays all the same, as the record of the turn."""
     await _turn(service, bridged.room_id, "running", 1)
     await _step(
         service,
@@ -1565,13 +1566,14 @@ async def test_a_turn_with_nothing_to_show_removes_its_work_message(
     )
     await _answer(session_factory, bridged)
     await _turn(service, bridged.room_id, "completed", 3)
-    await work_platform.wait_until(lambda: bool(work_platform.of("remove_work_thread")))
+    await work_platform.wait_until(
+        lambda: bool(work_platform.of("settle_work_message"))
+    )
     [opened] = work_platform.of("open_work_message")
-    assert work_platform.of("remove_work_thread")[0].ref == opened.ref
-    assert work_platform.of("attach_activity") == []
-    assert work_platform.of("settle_work_message") == []
+    assert work_platform.of("settle_work_message")[0].ref == opened.ref
+    assert work_platform.of("remove_work_thread") == []
     post = await _turn_post(session_factory)
-    assert post.folded_into == opened.ref
+    assert post.folded_into is None
 
 
 async def test_room_tools_are_left_out_of_the_plan_and_its_count(
@@ -1757,89 +1759,25 @@ async def _worked(service, room_id) -> None:
     await _tool(service, room_id, "in-progress", 1)
 
 
-async def test_an_answered_turn_folds_its_plan_into_the_answer(
+async def test_an_answered_turn_keeps_its_work_message_and_thread(
     service, work_publisher, work_platform, bridged, session_factory
 ):
-    """The plan goes under the answer, then the streams and the work message
-    go: the answer is the one message the turn leaves."""
+    """The work message stays where it was and says how the turn went, its
+    thread of steps under it: nothing is folded into the answer or deleted,
+    so the session stays listed in the asker's Agents & tools."""
     platform = work_platform
     await _worked(service, bridged.room_id)
     await _tool_drawn(platform)
     [opened] = platform.of("open_work_message")
-    first = _turns(platform)[0]
-    answer = await _answer(session_factory, bridged)
+    await _answer(session_factory, bridged)
     await _tool(service, bridged.room_id, "completed", 2)
     await _turn(service, bridged.room_id, "completed", 5)
-    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
-    [attached] = platform.of("attach_activity")
-    assert (attached.ref, attached.content) == (f"{answer}-post", "It's 15:59.")
-    [removed] = platform.of("remove_work_thread")
-    assert (removed.ref, removed.content) == (opened.ref, [first.ref])
-    assert platform.of("settle_work_message") == []
-    post = await _turn_post(session_factory)
-    assert post.folded_into == f"{answer}-post"
-    assert post.work_finished_at is not None
-    assert post.work_message_ref == opened.ref
-
-
-async def test_an_answer_not_posted_yet_is_waited_for(
-    service, work_publisher, work_platform, bridged, session_factory
-):
-    platform = work_platform
-    await _worked(service, bridged.room_id)
-    await _tool_drawn(platform)
-    answer = await _answer(session_factory, bridged, mapped=False)
-    await _turn(service, bridged.room_id, "completed", 5)
-    await asyncio.sleep(1.5)
-    assert platform.of("attach_activity") == []
-    assert platform.of("settle_work_message") == []
-    await _map(session_factory, bridged, answer)
-    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
-    assert platform.of("attach_activity")[0].ref == f"{answer}-post"
-
-
-async def test_a_card_for_an_answer_keeps_the_work_message(
-    service, work_publisher, work_platform, bridged, session_factory
-):
-    platform = work_platform
-    await _worked(service, bridged.room_id)
-    await _tool_drawn(platform)
-    await _answer(
-        session_factory,
-        bridged,
-        content={"msgtype": "m.text", "body": "x", "com.switch.ui": {"root": "c"}},
-    )
-    await _turn(service, bridged.room_id, "completed", 5)
     await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
+    [settled] = platform.of("settle_work_message")
+    assert settled.ref == opened.ref
+    assert settled.content.startswith("Worked for ")
     assert platform.of("attach_activity") == []
-    assert platform.of("settle_work_message")[0].content.startswith("Worked for ")
-
-
-async def test_a_refused_attach_keeps_the_work_message(
-    service, work_publisher, work_platform, bridged, session_factory
-):
-    platform = work_platform
-    platform.attach_refused = True
-    await _worked(service, bridged.room_id)
-    await _tool_drawn(platform)
-    await _answer(session_factory, bridged)
-    await _turn(service, bridged.room_id, "completed", 5)
-    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
     assert platform.of("remove_work_thread") == []
-    assert (await _turn_post(session_factory)).folded_into is None
-
-
-async def test_a_refused_delete_keeps_the_work_message_with_its_ending(
-    service, work_publisher, work_platform, bridged, session_factory
-):
-    platform = work_platform
-    platform.remove_refused = True
-    await _worked(service, bridged.room_id)
-    await _tool_drawn(platform)
-    await _answer(session_factory, bridged)
-    await _turn(service, bridged.room_id, "completed", 5)
-    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
-    assert platform.of("settle_work_message")[0].content.startswith("Worked for ")
     post = await _turn_post(session_factory)
     assert post.folded_into is None
     assert post.work_finished_at is not None
@@ -1858,7 +1796,7 @@ async def test_an_interrupted_turn_keeps_the_work_message_even_with_an_answer(
     assert platform.of("settle_work_message")[0].content.startswith("Turn interrupted.")
 
 
-async def test_a_turn_carried_on_in_a_new_stream_is_drawn_there_and_removes_both(
+async def test_a_turn_carried_on_in_a_new_stream_is_drawn_there_and_kept(
     service, work_publisher, work_platform, bridged, session_factory
 ):
     platform = work_platform
@@ -1872,28 +1810,10 @@ async def test_a_turn_carried_on_in_a_new_stream_is_drawn_there_and_removes_both
     assert post.earlier_post_ids == [first.ref]
     moved = post.external_post_id
     assert moved.startswith("moved-")
-    answer = await _answer(session_factory, bridged)
     await _turn(service, bridged.room_id, "completed", 5)
-    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
+    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
     assert _turns(platform)[-1].ref == moved
-    [removed] = platform.of("remove_work_thread")
-    assert removed.content == [first.ref, moved]
-    assert platform.of("attach_activity")[0].ref == f"{answer}-post"
-
-
-async def test_the_answer_is_the_agents_last_message_since_the_turn_began(
-    service, work_publisher, work_platform, bridged, session_factory
-):
-    """An answer split across messages: the plan goes under the last part."""
-    platform = work_platform
-    await _worked(service, bridged.room_id)
-    await _tool_drawn(platform)
-    await _answer(session_factory, bridged, body="Part one")
-    last = await _answer(session_factory, bridged, body="Part two")
-    await _turn(service, bridged.room_id, "completed", 5)
-    await platform.wait_until(lambda: bool(platform.of("attach_activity")))
-    [attached] = platform.of("attach_activity")
-    assert (attached.ref, attached.content) == (f"{last}-post", "Part two")
+    assert platform.of("remove_work_thread") == []
 
 
 async def test_a_restart_finishes_a_work_thread_whose_ending_had_not_run(
