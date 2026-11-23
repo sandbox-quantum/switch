@@ -262,7 +262,7 @@ def _wire_stop_reason(machine: CloudMachine, v2: bool) -> str | None:
     reason codes."""
     if admin_stopped(machine):
         return "owner" if machine.desired_state == "stopped" else None
-    if v2 and machine.stop_reason in ("paused", "turned_off", "migration"):
+    if v2 and machine.stop_reason in ("paused", "turned_off", "migration", "suspended"):
         return "owner"
     return machine.stop_reason
 

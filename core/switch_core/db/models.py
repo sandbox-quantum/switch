@@ -601,7 +601,7 @@ class CloudMachine(Base):
             name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
-            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'paused', 'turned_off', 'admin', 'migration')",
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'paused', 'turned_off', 'admin', 'migration', 'suspended')",
             name="ck_cloud_machine_stop_reason",
         ),
         CheckConstraint(

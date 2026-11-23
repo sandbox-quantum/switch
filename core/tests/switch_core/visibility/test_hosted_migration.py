@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.suspension import Suspender, suspend_user, unsuspend_user
 from switch_core.cloud_machine_admin import release_machine, stop_machine
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
@@ -841,6 +842,30 @@ async def test_a_pause_mid_move_stops_it(
     assert "freeze_replaced" in (await world.migrations.plan(ada.id)).refusals
     with pytest.raises(MigrationRefused):
         await world.step(ada, op)
+
+
+async def test_a_suspended_person_is_not_moved_until_it_is_lifted(
+    session_factory: async_sessionmaker[AsyncSession], people: dict[str, Any]
+) -> None:
+    """No step of a move is taken for a suspended person, so their box never
+    starts: not the first step, nor any after it. Lifting the suspension lets
+    the move carry on."""
+    world = World(session_factory)
+    ada, op = people["ada"], people["op"].id
+    await world.v1_machine(ada)
+    operator = Suspender(user_id=None, role="operator")
+    await suspend_user(session_factory, user_id=ada.id, by=operator, reason="test")
+    assert "suspended" in (await world.migrations.plan(ada.id)).refusals
+    with pytest.raises(MigrationRefused):
+        await world.step(ada, op)
+    await unsuspend_user(session_factory, user_id=ada.id, by=operator)
+    await world.step(ada, op)
+    await suspend_user(session_factory, user_id=ada.id, by=operator, reason="test")
+    assert "suspended" in (await world.migrations.plan(ada.id)).refusals
+    with pytest.raises(MigrationRefused):
+        await world.step(ada, op)
+    await unsuspend_user(session_factory, user_id=ada.id, by=operator)
+    assert (await world.migrations.plan(ada.id)).refusals == []
 
 
 async def test_an_administrator_s_stop_mid_move_stops_it(

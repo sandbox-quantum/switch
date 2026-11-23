@@ -68,6 +68,10 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
+from switch_core.db.stores.hosted_machine_store import (
+    lift_box_suspension,
+    suspend_box,
+)
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenants_of_user
 from switch_core.tenant_context import no_tenant, tenant_scope
@@ -477,6 +481,9 @@ async def suspend_user(
                 user.session_version = user.session_version + 1
             elif changed:
                 _mark(user, by, reason, user.suspended_at)
+            # Their hosted box stops now, not at its next wake, and nothing
+            # starts it while the suspension lasts (re-run safely).
+            stopped_box = await suspend_box(session, user_id, datetime.now(UTC))
             if changed:
                 await record_server_audit_event(
                     session,
@@ -484,7 +491,12 @@ async def suspend_user(
                     action=ServerAuditAction.USER_SUSPENDED,
                     target_type="user",
                     target_id=user_id,
-                    details={"reason": reason, "by_role": by.role, **_by_command(by)},
+                    details={
+                        "reason": reason,
+                        "by_role": by.role,
+                        **_by_command(by),
+                        **({"box_stopped": True} if stopped_box else {}),
+                    },
                 )
             # Its agents are suspended as the account now is, by whoever made
             # its suspension, which a re-run did not change.
@@ -587,6 +599,9 @@ async def unsuspend_user(
                 "by_role": user.suspended_by_role,
             }
             _clear(user)
+            # A box stopped for the suspension stays stopped, as if asleep:
+            # the next message wakes it, through every gate again.
+            await lift_box_suspension(session, user_id, datetime.now(UTC))
             await record_server_audit_event(
                 session,
                 actor_user_id=by.user_id,

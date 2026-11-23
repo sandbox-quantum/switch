@@ -57,6 +57,7 @@ from switch_core.db.stores.hosted_machine_store import (
     admin_stopped,
     bump_revision,
     owner_paused,
+    owner_suspended,
     workspace_on,
 )
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine, tenants_of_user
@@ -104,13 +105,23 @@ async def member_enabled(session: AsyncSession, tenant_id: str, user_id: str) ->
     return enabled is not False
 
 
+# What a suspended account (`accounts/suspension.py`) is blocked as: every
+# start, wake, claim, placement and enrolment path already refuses a pause,
+# and its codes reach nobody the suspension doesn't already shut out.
+SUSPENDED_BLOCKS_AS = StopReason.PAUSED_BY_SWITCH
+
+
 async def block_reason_in(
     session: AsyncSession, owner_id: str, tenant_id: str | None
 ) -> StopReason | None:
     """`block_reason` on a session the caller already has, bound to
     `tenant_id` (or to no tenant when it's None): the machine table is global,
     and the user and member rows are read under the caller's binding."""
-    if await owner_paused(session, owner_id):
+    # A suspended account blocks as a pause does (`SUSPENDED_BLOCKS_AS`), so
+    # every path that refuses a paused owner refuses it too.
+    if await owner_paused(session, owner_id) or await owner_suspended(
+        session, owner_id
+    ):
         return StopReason.PAUSED_BY_SWITCH
     if tenant_id is not None and not await member_enabled(session, tenant_id, owner_id):
         return StopReason.TURNED_OFF_BY_ADMIN
@@ -142,9 +153,12 @@ async def block_reason(
     sessions, so it can be called from any path."""
     with no_tenant():
         async with session_factory() as session:
-            paused = await owner_paused(session, owner_id)
+            paused = await owner_paused(session, owner_id) or await owner_suspended(
+                session, owner_id
+            )
             await session.commit()
     if paused:
+        # A suspended account too (`SUSPENDED_BLOCKS_AS`).
         return StopReason.PAUSED_BY_SWITCH
     if tenant_id is None:
         return None

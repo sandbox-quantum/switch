@@ -68,6 +68,7 @@ from switch_core.db.stores.hosted_machine_store import (
     CloudMachineStore,
     RevokeController,
     admin_stopped,
+    owner_suspended,
     workspace_on,
 )
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
@@ -453,9 +454,10 @@ class HostedMigrations:
                     if not _box_stopped(machine):
                         # First the box stops, held stopped for the move, so
                         # nothing runs on it while its controller is revoked.
-                        if machine.stop_reason in ("paused", "turned_off"):
+                        if machine.stop_reason in ("paused", "turned_off", "suspended"):
                             raise MigrationRefused(
-                                "blocked", "The person is paused or turned off."
+                                "blocked",
+                                "The person is paused, turned off or suspended.",
                             )
                         if admin_stopped(machine):
                             raise MigrationRefused(
@@ -614,6 +616,10 @@ class HostedMigrations:
             return refusals
         if machine is None:
             return ["no_machine"]
+        if await self._suspended(owner_id):
+            # A suspended person's box never starts, so no step of a move is
+            # taken for them until the suspension is lifted.
+            refusals.append("suspended")
         starting = record is None or record.step == "rolled_back"
         if starting:
             if machine.backend != "vm":
@@ -638,6 +644,11 @@ class HostedMigrations:
             # administrator's stop): stop here.
             refusals.append("freeze_replaced")
         return refusals
+
+    async def _suspended(self, owner_id: str) -> bool:
+        with no_tenant():
+            async with self._factory() as session:
+                return await owner_suspended(session, owner_id)
 
     async def _machine_of(
         self, session: AsyncSession, owner_id: str, record: HostedMigration | None

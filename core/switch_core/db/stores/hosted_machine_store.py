@@ -38,6 +38,9 @@ WORKSPACE_MACHINES_FULL = (
     "Every cloud machine this workspace may have is in use. Try again later, "
     "or ask your administrator."
 )
+MACHINE_SUSPENDED = (
+    "This account is suspended. Contact your workspace admin or the server's operator."
+)
 MACHINE_STOPPED_BY_ADMIN = (
     "Your cloud machine was stopped by a server administrator. Contact them to "
     "have it released."
@@ -272,8 +275,58 @@ async def move_holds(session: AsyncSession, owner_id: str) -> bool:
     return step in MOVE_HOLD_STEPS
 
 
+async def owner_suspended(session: AsyncSession, owner_id: str) -> bool:
+    """Whether the owner's account is suspended (`accounts/suspension.py`):
+    their box is stopped as `suspended` and nothing starts, wakes or
+    reconnects it until the suspension is lifted."""
+    suspended_at = await session.scalar(
+        select(User.suspended_at).where(User.id == owner_id)
+    )
+    return suspended_at is not None
+
+
+async def suspend_box(
+    session: AsyncSession, owner_id: str, now: datetime
+) -> str | None:
+    """Stop the owner's live box at once as their account is suspended:
+    wanted stopped, `stop_reason` `suspended` (which no other stop but an
+    administrator's replaces, and nothing starts), and a new revision, so the
+    box scaler scales it to 0 on its next pass. Only a hosted agents v2 box:
+    a v1 machine's controller is already refused and disconnected by the
+    suspension. Returns the box's id, or None when there's none. The caller
+    holds no other machine lock and commits."""
+    store = CloudMachineStore()
+    machine = await store.live_for_owner(session, owner_id)
+    if machine is None or machine.backend != "box":
+        return None
+    machine = await store.locked(session, machine.id)
+    if machine is None or machine.state == "deleted":
+        return None
+    if machine.stop_reason != "suspended":  # a re-run changes nothing
+        store.stop(machine, "suspended", now)
+    return machine.id
+
+
+async def lift_box_suspension(
+    session: AsyncSession, owner_id: str, now: datetime
+) -> None:
+    """When the owner's suspension is lifted, a box stopped for it stays
+    stopped, as if asleep: the next message wakes it, through every gate
+    again. The caller holds no other machine lock and commits."""
+    store = CloudMachineStore()
+    machine = await store.live_for_owner(session, owner_id)
+    if machine is None:
+        return
+    machine = await store.locked(session, machine.id)
+    if machine is not None and machine.stop_reason == "suspended":
+        machine.stop_reason = "idle"
+        machine.updated_at = now
+
+
 def claim_conflict(machine: CloudMachine, now: datetime) -> str | None:
     """The reason a live machine cannot be claimed, or None when it can."""
+    if machine.stop_reason == "suspended":
+        return MACHINE_SUSPENDED
     if machine.stop_reason == "paused":
         return MACHINE_PAUSED
     if admin_stopped(machine):
@@ -451,6 +504,9 @@ class CloudMachineStore:
         # joining mid-move would be one the move didn't plan for.
         if process_hosted_v2() and await owner_moving(session, owner_id):
             raise CloudMachineConflict(MACHINE_MIGRATING)
+        # Nor does a suspended one (v2 too, as the box stop is).
+        if process_hosted_v2() and await owner_suspended(session, owner_id):
+            raise CloudMachineConflict(MACHINE_SUSPENDED)
         machine = await self.live_for_owner(session, owner_id)
         if machine is not None:
             machine = await self.locked(session, machine.id)
@@ -809,7 +865,10 @@ class CloudMachineStore:
 
     def start(self, machine: CloudMachine, now: datetime) -> None:
         # An operator's pause holds: nothing starts the box until a resume
-        # clears it, whichever path asks.
+        # clears it, whichever path asks. So does a suspension, until it's
+        # lifted.
+        if machine.stop_reason == "suspended":
+            raise CloudMachineConflict(MACHINE_SUSPENDED)
         if machine.stop_reason == "paused":
             raise CloudMachineConflict(MACHINE_PAUSED)
         if admin_stopped(machine):
@@ -828,29 +887,41 @@ class CloudMachineStore:
     def stop(
         self,
         machine: CloudMachine,
-        reason: Literal["idle", "owner", "paused", "turned_off", "admin", "migration"],
+        reason: Literal[
+            "idle", "owner", "paused", "turned_off", "admin", "migration", "suspended"
+        ],
         now: datetime,
     ) -> None:
         # Only an administrator's release lifts their stop, only an operator's
-        # resume clears a pause, and only turning the person on clears a
-        # turn-off: no other stop replaces any of them. An administrator's stop
-        # replaces either, and a pause may replace a turn-off.
+        # resume clears a pause, only turning the person on clears a
+        # turn-off, and only lifting a suspension clears that: no other stop
+        # replaces any of them. An administrator's stop replaces each, and a
+        # suspension replaces a pause or a turn-off.
         if admin_stopped(machine) and reason != "admin":
             return
-        if machine.stop_reason == "paused" and reason not in ("paused", "admin"):
+        if machine.stop_reason == "suspended" and reason not in ("suspended", "admin"):
             return
-        # A migration's freeze holds the same way: only a pause or an
-        # administrator's stop replaces it (and the move then refuses to carry on).
+        if machine.stop_reason == "paused" and reason not in (
+            "paused",
+            "admin",
+            "suspended",
+        ):
+            return
+        # A migration's freeze holds the same way: only a pause, a suspension
+        # or an administrator's stop replaces it (and the move then refuses to
+        # carry on).
         if machine.stop_reason == "migration" and reason not in (
             "paused",
             "admin",
             "migration",
+            "suspended",
         ):
             return
         if machine.stop_reason == "turned_off" and reason not in (
             "paused",
             "turned_off",
             "admin",
+            "suspended",
         ):
             return
         machine.desired_state = "stopped"
@@ -937,7 +1008,13 @@ class CloudMachineStore:
         # left: clean-up never retains it, so its disk never expires.
         # Nor does a v1 machine frozen for the move: retaining would end its VM,
         # which a rollback needs.
-        if machine.stop_reason in ("paused", "turned_off", "admin", "migration"):
+        if machine.stop_reason in (
+            "paused",
+            "turned_off",
+            "admin",
+            "migration",
+            "suspended",
+        ):
             return False
         machine.desired_state = "retained"
         machine.stop_reason = None
