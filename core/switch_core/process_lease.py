@@ -142,6 +142,10 @@ class ProcessLease:
         # answered: the database stamped the lease at some moment after this,
         # so a deadline counted from here can only be early.
         self._renewed_at: float | None = None
+        # The task running `run`, which `stop` ends before it writes: the
+        # lease's one connection is then free, and no renewal can land after
+        # the stop and clear `stopped_at` again.
+        self._renewing: asyncio.Task[None] | None = None
 
     def surely_held(self) -> bool:
         """Whether no other process can yet read this lease as lapsed.
@@ -173,6 +177,9 @@ class ProcessLease:
             await self._processes.renew(session, self.process_id, self._key_ids)
             pruned = await self._processes.prune(session, PRUNE_AFTER)
             await session.commit()
+        if self._stopped:
+            # `stop` ran while this was in flight: its release stands.
+            return
         self._renewed_at = sent_at
         if pruned:
             logger.info("Pruned %d switch-core process lease(s) long stale", pruned)
@@ -188,6 +195,12 @@ class ProcessLease:
         if self._stopped:
             return
         self._stopped = True
+        renewing = self._renewing
+        if renewing is not None and renewing is not asyncio.current_task():
+            # A renewal stalled on the database would otherwise hold the
+            # lease's one connection, and this write would time out behind it.
+            renewing.cancel()
+            await asyncio.wait({renewing})
         self._renewed_at = None
         async with self._renewal_session_factory() as session:
             await self._processes.stop(session, self.process_id)
@@ -202,8 +215,10 @@ class ProcessLease:
 
         Counted from the last renewal, wherever it was made, so a loop started
         late (after a slow boot, whose renewal came from `Ownership.start`)
-        renews at once rather than an interval after it starts."""
-        while True:
+        renews at once rather than an interval after it starts. Ended by
+        `stop`."""
+        self._renewing = asyncio.current_task()
+        while not self._stopped:
             await asyncio.sleep(self._until_next_renewal())
             try:
                 await self.renew()

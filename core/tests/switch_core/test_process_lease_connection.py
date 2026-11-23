@@ -145,3 +145,95 @@ async def test_on_the_shared_pool_a_full_pool_fails_the_renewal(
             await lease.renew()
 
     await _with_pool_full(shared, renewal_fails)
+
+
+async def _stall_the_next_prune(
+    lease: ProcessLease, engine: AsyncEngine
+) -> tuple[AsyncSession, Callable[[], Awaitable[None]]]:
+    """Leave a lease long dead, and hold its row locked in a session of
+    `engine`: the next renewal's prune waits on that lock, as it would behind
+    a slow transaction, until `wait_for_stall` sees it and the caller closes
+    the session."""
+    dead = _lease(engine)
+    await dead.renew()
+    holder = AsyncSession(engine)
+    await holder.execute(
+        text(
+            "UPDATE switch_core_processes SET beat_at = now() - interval '2 hours'"
+            " WHERE id = :id"
+        ),
+        {"id": dead.process_id},
+    )
+    await holder.commit()
+    await holder.execute(
+        text("SELECT 1 FROM switch_core_processes WHERE id = :id FOR UPDATE"),
+        {"id": dead.process_id},
+    )
+
+    async def wait_for_stall() -> None:
+        async def stalled() -> bool:
+            async with AsyncSession(engine) as session:
+                waiting = await session.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity"
+                        " WHERE wait_event_type = 'Lock'"
+                        " AND query LIKE 'DELETE FROM switch_core_processes%'"
+                    )
+                )
+                return bool(waiting)
+
+        while not await stalled():
+            await asyncio.sleep(0.05)
+
+    return holder, wait_for_stall
+
+
+async def test_a_stalled_renewal_does_not_hold_up_the_release(
+    shared: AsyncEngine, lease_engine: AsyncEngine
+) -> None:
+    """The lease has one connection. A renewal stalled on it would make the
+    release wait behind it and give up, leaving `stopped_at` unwritten: the
+    release ends the renewal first."""
+    lease = _lease(shared, lease_engine)
+    await lease.renew()
+    holder, wait_for_stall = await _stall_the_next_prune(lease, shared)
+    renewing = asyncio.create_task(lease.run())
+    try:
+        # The loop renews at once only once a renewal is due.
+        lease._renewed_at = None
+        await asyncio.wait_for(wait_for_stall(), timeout=10)
+        await asyncio.wait_for(lease.stop(), timeout=2)
+    finally:
+        await holder.close()
+        renewing.cancel()
+        await asyncio.wait({renewing})
+
+    assert renewing.done()
+    assert not lease.surely_held()
+    leases = await lease.read_all()
+    assert not leases.holds(lease.process_id)
+
+
+async def test_a_renewal_that_lands_after_the_release_does_not_claim_it_back(
+    shared: AsyncEngine,
+) -> None:
+    """A renewal outside the loop (the first one, from `Ownership.start`) can
+    still be in flight when the release runs, and finishes after it."""
+    lease = _lease(shared)
+    await lease.renew()
+    holder, wait_for_stall = await _stall_the_next_prune(lease, shared)
+    renewal = asyncio.create_task(lease.renew())
+    try:
+        await asyncio.wait_for(wait_for_stall(), timeout=10)
+        # The release's write waits on the renewal's row lock, so it lands
+        # after the renewal commits.
+        stopping = asyncio.create_task(lease.stop())
+        await asyncio.sleep(0.1)
+    finally:
+        await holder.close()
+    await asyncio.wait_for(renewal, timeout=5)
+    await asyncio.wait_for(stopping, timeout=5)
+
+    assert not lease.surely_held()
+    leases = await lease.read_all()
+    assert not leases.holds(lease.process_id)
