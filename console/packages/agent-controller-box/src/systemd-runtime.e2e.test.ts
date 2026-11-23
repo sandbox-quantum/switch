@@ -159,6 +159,7 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
           streamIdleMs: 5_000,
           streamInitialBackoffMs: 50,
           streamMaxBackoffMs: 500,
+          streamSuspendedRetryMs: 500,
           eventBufferLimit: 100,
         },
       },

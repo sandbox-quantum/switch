@@ -89,6 +89,15 @@ export function isRevoked(error: unknown): boolean {
   return error instanceof ControllerApiError && error.code === 'controller_revoked';
 }
 
+/**
+ * The controller's owner is suspended. Not a revocation: its credential is
+ * kept, and Switch lets the same credential in again once the suspension is
+ * lifted, so the controller stops its agents and keeps asking, slowly.
+ */
+export function isAccountSuspended(error: unknown): boolean {
+  return error instanceof ControllerApiError && error.code === 'account_suspended';
+}
+
 /** Another instance of this controller took its stream connection over: terminal for this one. */
 export function isTakenOver(error: unknown): boolean {
   return error instanceof ControllerApiError && error.code === 'taken_over';
