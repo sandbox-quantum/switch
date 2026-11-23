@@ -26,6 +26,7 @@ from switch_core.sessions.errors import SessionError
 from switch_core.transport.derived_ids import derived_writes
 from switch_core.trust import client as trust_client_module
 from switch_core.trust.client import NullTrustClient, TrustCheckResult
+from switch_core.trust.identity import TrustAgent
 from switch_core.ui_spec import (
     UI_CONTENT_KEY,
     UI_PRESS_KEY,
@@ -518,7 +519,13 @@ def test_a_press_that_failed_before_its_send_leaves_the_card_unanswered() -> Non
 
 class _RedactingTrust:
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         return TrustCheckResult(
             outcome="redacted",

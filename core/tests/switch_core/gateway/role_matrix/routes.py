@@ -526,6 +526,12 @@ ROUTES: dict[str, Case] = {
         org_admin(),
         json={"policy_id": "pol_example", "api_key": "example-key"},
     ),
+    "PATCH /gateway/organizations/current/guardrails": patch(
+        f"{G}/organizations/current/guardrails",
+        org_admin(ok=409),
+        json={"share_agent_instructions": True},
+        why="No policy is connected in the matrix's organization.",
+    ),
     "DELETE /gateway/organizations/current/guardrails": delete(
         f"{G}/organizations/current/guardrails", org_admin()
     ),

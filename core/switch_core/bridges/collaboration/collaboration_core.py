@@ -1697,6 +1697,7 @@ class CollaborationCore:
                 role="user",
                 content=content,
                 room_id=room_id,
+                agent=None,
             )
             # A REDACTED verdict with nothing to redact with is not safe to
             # treat as a pass: sending the original content then would be
@@ -1795,6 +1796,7 @@ class CollaborationCore:
                 role="user",
                 files=files,
                 room_id=room_id,
+                agent=None,
             )
             if content.strip():
                 caption_check, files_check = await asyncio.gather(
@@ -1805,6 +1807,7 @@ class CollaborationCore:
                         role="user",
                         content=content,
                         room_id=room_id,
+                        agent=None,
                     ),
                     files_check_task,
                 )

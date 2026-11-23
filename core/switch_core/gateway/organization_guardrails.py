@@ -7,6 +7,11 @@ here, not discovered at the first message. Each change reaches every process
 before its next check in the organization (`trust/signals.py`) and is
 recorded in the organization's audit log; the key is never returned or
 recorded.
+
+Whether the agent inventory sent to the policy's Switch Trust carries managed
+agents' instructions (`trust/inventory.py`) is changed here too, and kept
+when another policy is connected. The inventory sync reads it on its next
+pass, so it needs no signal.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from switch_core.gateway.organizations import made_from, require_organization_ad
 from switch_core.gateway.schemas import (
     OrganizationGuardrailsConnectRequest,
     OrganizationGuardrailsResponse,
+    OrganizationGuardrailsUpdateRequest,
 )
 from switch_core.keys import UndecryptableError
 from switch_core.trust.client import GuardrailsCheckError, GuardrailsRefusedError
@@ -59,6 +65,7 @@ _NOT_CONNECTED = OrganizationGuardrailsResponse(
     api_key_last4=None,
     connected_by_name=None,
     connected_at=None,
+    share_agent_instructions=False,
 )
 
 
@@ -99,6 +106,7 @@ async def _response(
             names.get(settings.updated_by) if settings.updated_by else None
         ),
         connected_at=settings.updated_at.isoformat(),
+        share_agent_instructions=settings.share_agent_instructions,
     )
 
 
@@ -213,6 +221,51 @@ async def connect_organization_guardrails(
     await session.commit()
     trust_settings_changed(access.organization_id)
     return await _response(session, user_store, settings, config)
+
+
+@router.patch("/organizations/current/guardrails")
+async def update_organization_guardrails(
+    req: OrganizationGuardrailsUpdateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> OrganizationGuardrailsResponse:
+    """Turn sharing managed agents' instructions with Switch Trust's agent
+    inventory on or off. 409 while no policy is connected: there is nowhere
+    to share them. Changing nothing records nothing."""
+    access = await require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=False
+    )
+    store = OrganizationTrustSettingsStore()
+    current = await store.get(session, access.organization_id, for_update=True)
+    if current is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Connect a Switch Trust policy before choosing what it is sent.",
+        )
+    if current.share_agent_instructions != req.share_agent_instructions:
+        await store.set_share_agent_instructions(
+            session, access.organization_id, req.share_agent_instructions
+        )
+        await record_organization_audit_event(
+            session,
+            organization_id=access.organization_id,
+            actor_user_id=user.id,
+            action=OrganizationAuditAction.GUARDRAILS_INSTRUCTIONS_SHARING_CHANGED,
+            target_type="guardrails",
+            target_id=current.policy_id,
+            details={
+                "policy_id": current.policy_id,
+                "share_agent_instructions": req.share_agent_instructions,
+                **made_from(access),
+            },
+        )
+        await session.commit()
+        current = await store.get(session, access.organization_id)
+        assert current is not None
+    return await _response(session, user_store, current, config)
 
 
 @router.delete("/organizations/current/guardrails")

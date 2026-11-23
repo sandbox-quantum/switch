@@ -58,10 +58,12 @@ interception point further down the stack.
    on the guardrails external processor (server side) — with headers
    `x-guardrails-policy-id`, `x-flintai-api-key`, and three
    always-set identity headers Switch Trust uses to group checks:
-   - `x-agent-name`: a constant, `Switch Rooms Agents` — Switch has no single agent
-     to attribute a check to (a room can hold several, and a human-authored
-     message has none at all), so every check is reported under one identity
-     rather than inventing a per-sender one Switch Trust has no use for.
+   - `x-agent-name` (and `x-agent-id`): who wrote the message. An agent's
+     send carries that agent's identity: `x-agent-id` is its fingerprint in
+     Switch Trust, the one the agent inventory lists it under (§Agent
+     inventory), and `x-agent-name` its display name, or its name when it has
+     none. A person's message has no agent behind it, so it carries no
+     `x-agent-id` and the constant name `Switch Rooms Agents`.
    - `x-agent-session-id`: the Switch room id — a room is the closest thing
      Switch has to an agentic session.
    - `x-agent-turn-id`: a fresh UUID per check. Switch has no stable
@@ -198,9 +200,10 @@ bootstrap stopgap, never a real deployment's config, and are gone: see
   headers, confirmed as-is.
 - `x-agent-name` / `x-agent-session-id` / `x-agent-turn-id` are always set,
   never omitted: a deployment-side bug report showed a check going out with no
-  agent attribution at all. `x-agent-name` is a fixed constant rather than
-  per-caller, since nothing in Switch maps cleanly to the "one agent" these
-  headers assume — see the header list above. `TrustClient.check` takes
+  agent attribution at all. `x-agent-name` was first a fixed constant for
+  every check; once Switch Trust could list Switch's agents (§Agent
+  inventory), an agent's send carries its own identity, and only a person's
+  message keeps the constant — see the header list above. `TrustClient.check` takes
   `room_id` as a required parameter (no default) precisely so a call site
   cannot forget it; the other two headers need no caller input at all.
 - The hook point moved from the originally-sketched `Actor.send_message` to
@@ -295,3 +298,104 @@ ID" and "Switch Trust API key" rather than the gateway's own field names, to
 read as Switch Trust's settings rather than generic form fields; the timeout
 is not surfaced at all. The key field shows "configured, ending •••1234"
 instead of ever prefilling the real value, matching the write-only API above.
+
+## Agent inventory
+
+Switch Trust keeps an inventory of AI agents. Switch sends it its own, so the
+agents behind the checks are listed with what they are made of, and so an
+organization can see its agents in Switch Trust whether or not they send any
+message. Listing agents costs nothing there; only checks count toward usage.
+
+**Where.** Guardrails are set per organization
+(`organization_trust_settings`, Organization settings › Guardrails), and so is
+the inventory: each organization's workspaces go to the endpoint its policy
+was connected at, under its API key. An organization with no policy sends
+nothing. Two organizations connected under the same key send to the same
+Switch Trust, each its own workspaces.
+
+**Transport.** `POST {endpoint}/integrations/switch-rooms/agents/sync` with
+`Authorization: ApiKey <key>`. One request per workspace, carrying a complete
+snapshot of its agents: Switch Trust replaces its view of that workspace with
+each one, so an agent missing from it drops out. A workspace that is deleted
+is sent once more with no agents.
+
+**Snapshot.** The deployment (`server.id`, `server.name` = `ID_SERVER_NAME`,
+`server.version`), the workspace (`tenant.id`, `tenant.name`), and for each
+agent:
+
+| Field | From |
+|---|---|
+| `id`, `name`, `display_name`, `description` | `agents` (`description` cut to 4096 bytes) |
+| `runtime` | `agents.metadata.known_agent_type` |
+| `kind` | `managed` with an `agent_definitions` row, else `registered` |
+| `model`, `auto_mode`, `auto_approve` | the definition (managed only) |
+| `permission_mode` | the definition's `advanced_config.permissionMode` |
+| `instructions` | the definition, only with `share_agent_instructions` on |
+| `addressing` | `policy_kind(agents.addressing_policy)` |
+| `owner` | the owner's `users.name` |
+| `tools` | the provider's own tools (managed), then the agent's `tools` rows, each with its `args_schema` as `parameters` (dropped over 16 KiB) |
+| `mcp_servers` | `service_grants`: the service and its access level |
+
+No credential, message or file is ever sent. A workspace over Switch Trust's
+limits (1000 agents, 200 tools or 100 services per agent) is not sent, and
+the reason is logged: a partial snapshot would drop the agents it left out.
+
+**Identity.** `deployment_identity.client_id` names the deployment. It is
+seeded once by the migrations and never changes, which matters because it is
+part of every agent's fingerprint:
+`agn_` + hex(SHAKE-256(`switch_rooms:<server>/<workspace>/<agent>`)[:16])
+(`trust/identity.py`). Switch Trust derives the same value; the sync compares
+the fingerprints it answers with and fails on a difference, since checks from
+that agent would then land elsewhere. A test pins one vector on each side.
+A check names the workspace it is made in, so the client derives the same
+fingerprint for an agent's send.
+
+**When.** One process runs the sync (owned work, `ownership.py`). Every
+minute it reads each organization's settings and workspaces
+(`all_organization_ids`, `tenants_of_organization`, then each under its own
+policy), builds each workspace's snapshot, four at a time, and sends it if it
+changed since the last one sent, or six hours have passed. Polling the tables
+rather than hooking each place an agent, definition or grant changes means no
+change can be missed, in whichever process makes it.
+
+**What was sent is stored.** `trust_inventory_sent` keeps, per Switch Trust
+and workspace, the digest of the snapshot it last took, so a restart or the
+sync moving to another process sends nothing again, and a workspace deleted
+while no process was looking is still emptied. A snapshot refused (over the
+limits, a 4xx, a fingerprint mismatch) or not delivered is held off for one
+minute, doubling up to six hours, until it changes. Every write names the
+sync's lease token, and the sync asks whether it still holds the lease before
+every send, so a process that lost it stops rather than racing the new owner.
+Both tables are global (`rls_ddl.GLOBAL_TABLES`): a row has to outlive the
+settings, organization or workspace it was sent for.
+
+**Withdrawal.** Each endpoint and key the inventory went to is a
+`trust_inventory_targets` row, its key encrypted like the settings' own (and
+re-encrypted with it, `db/key_rotation.py`). When an organization
+disconnects, connects a policy under another key, or is deleted, the next
+pass sends each of its workspaces listed at the old Switch Trust a snapshot
+with no agents; once no organization sends there, the row and its key are
+deleted. One that still fails after twelve attempts, about a day, is given up
+and logged as an error: the key may have been revoked, and only Switch Trust
+can then remove the agents. While any organization's key cannot be decrypted,
+nothing is withdrawn anywhere: its workspaces would read as gone without
+having left.
+
+**Name.** Checks and the inventory name an agent the same way (its display
+name, trimmed, else its identifier; `trust/identity.py`), so neither renames
+the agent the other wrote. A changed display name reaches the running agent's
+checks at once (`update_bridge_identities` refreshes its actor), as a rename
+already did. Names go out as UTF-8 header bytes, without control characters.
+
+**Known limitation: renames.** Switch Trust keeps the name an agent was
+first listed with, so a later display-name change does not show there
+yet. Switch sends the new name in every snapshot and check; it is
+Switch Trust's storage that does not overwrite an agent's name.
+
+**Instructions.** `organization_trust_settings.share_agent_instructions`, off
+by default, set by an organization admin through
+`PATCH /organizations/current/guardrails` and the Guardrails page (audited as
+`organization.guardrails_instructions_sharing_changed`). Connecting another
+policy keeps it. An organization that connected a policy for message checks
+did not agree to send its agents' prompts. The sync reads it on its next
+pass, so changing it signals no process.

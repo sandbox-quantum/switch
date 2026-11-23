@@ -1,6 +1,16 @@
 import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
 import SwapHoriz from "@mui/icons-material/SwapHoriz";
-import { Alert, Box, Button, CircularProgress, Stack, TextField, Typography } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  FormControlLabel,
+  Stack,
+  Switch,
+  TextField,
+  Typography,
+} from "@mui/material";
 import { useCallback, useState } from "react";
 import ConfirmDialog from "../../../components/ConfirmDialog";
 import InfoTip from "../../../components/InfoTip";
@@ -11,6 +21,7 @@ import {
   connectOrganizationGuardrails,
   disconnectOrganizationGuardrails,
   fetchOrganizationGuardrails,
+  setOrganizationGuardrailsSharing,
 } from "../../../data/api";
 import { MONO_SX, formatDate } from "../../../theme/format";
 import GuardrailPolicyCard from "../../guardrails/GuardrailPolicyCard";
@@ -18,6 +29,9 @@ import { useLoad } from "../../workspace/useLoad";
 
 const EVERYWHERE =
   "Every workspace, every room, every agent, both directions. There is no per-workspace version.";
+
+const INVENTORY =
+  "Switch Trust also lists the agents of every workspace in its AI inventory: their runtime, model, tools, granted services and permission settings. Listing them is free; only checked messages count.";
 
 /** How short an API key Switch Trust could have issued, at the least: the
  * form waits for one at least this long rather than send a fragment. */
@@ -33,6 +47,8 @@ export default function OrganizationGuardrails({ organizationName }: { organizat
   const [setting, setSetting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [sharingError, setSharingError] = useState<string | null>(null);
 
   const connected = async (policy: Guardrails) => {
     setSetting(false);
@@ -44,6 +60,24 @@ export default function OrganizationGuardrails({ organizationName }: { organizat
     await disconnectOrganizationGuardrails();
     setNotice("Switch Trust is disconnected. Nothing is checked until a policy is connected.");
     await refetch();
+  };
+
+  const share = async (on: boolean) => {
+    setSharing(true);
+    setSharingError(null);
+    try {
+      await setOrganizationGuardrailsSharing(on);
+      setNotice(
+        on
+          ? "Agent instructions are shared with Switch Trust's inventory."
+          : "Agent instructions are no longer shared with Switch Trust's inventory.",
+      );
+      await refetch();
+    } catch (err) {
+      setSharingError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSharing(false);
+    }
   };
 
   const subtitle =
@@ -115,6 +149,27 @@ export default function OrganizationGuardrails({ organizationName }: { organizat
             {data.connected_at !== null &&
               ` · Connected${data.connected_by_name ? ` by ${data.connected_by_name}` : ""} on ${formatDate(data.connected_at)}`}
           </Typography>
+          <Stack spacing={0.5} sx={{ pt: 2 }}>
+            <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+              <Typography variant="subtitle2">Agent inventory</Typography>
+              <InfoTip>{INVENTORY}</InfoTip>
+            </Stack>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={data.share_agent_instructions}
+                  disabled={sharing}
+                  onChange={(_, on) => void share(on)}
+                />
+              }
+              label="Share agent instructions"
+            />
+            <Typography variant="caption" color="text.secondary">
+              Include each managed agent's instructions in the inventory, so Switch Trust can assess
+              them. Off: the inventory lists agents without their instructions.
+            </Typography>
+            {sharingError && <Alert severity="error">{sharingError}</Alert>}
+          </Stack>
         </Stack>
       ) : (
         <Button variant="contained" onClick={() => setSetting(true)}>

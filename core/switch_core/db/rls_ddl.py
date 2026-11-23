@@ -167,6 +167,13 @@ ORGANIZATION_POLICY_NAME = "organization_isolation"
 # section) — a policy that varied per tenant would be a new scoped table, not
 # a row here.
 #
+# `trust_inventory_targets` and `trust_inventory_sent` are where the agent
+# inventory (`trust/inventory.py`) was sent and what each workspace's last did
+# there. One process sends it for every organization, and a row has to outlive
+# the organization settings, organization or workspace it was sent for, since
+# it is how the sync knows to withdraw their agents. A row holds a key to
+# withdraw with and digests, no workspace's data.
+#
 # `service_oauth_clients` holds the OAuth client Core registered for itself at
 # a vendor that offers no other way to have one. The vendor sees one Switch,
 # so there is one client per deployment and service, shared by every tenant's
@@ -213,6 +220,8 @@ GLOBAL_TABLES = frozenset(
         "ownership_leases",
         "directory_event_cursors",
         "trust_settings",
+        "trust_inventory_targets",
+        "trust_inventory_sent",
         "service_oauth_clients",
         "schema_expand_only_revisions",
         "service_app_credentials",

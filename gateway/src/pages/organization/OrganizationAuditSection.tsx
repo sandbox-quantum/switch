@@ -25,6 +25,7 @@ const ACTION_LABELS: Record<string, string> = {
   "organization.member_removed": "User removed",
   "organization.guardrails_connected": "Guardrails connected",
   "organization.guardrails_disconnected": "Guardrails disconnected",
+  "organization.guardrails_instructions_sharing_changed": "Agent instruction sharing changed",
   "organization.connector_app_saved": "Connector app saved",
   "organization.connector_app_removed": "Connector app removed",
   "organization.service_set": "Service switched",

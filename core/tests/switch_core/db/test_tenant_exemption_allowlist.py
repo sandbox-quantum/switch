@@ -75,6 +75,11 @@ _ALLOWED_MODULES = {
     # workspace: enumerate, then read each one's connections under its own
     # policy, the same shape as service-token upkeep above.
     "switch_core.gateway.connector_apps",
+    # The Switch Trust agent inventory sends each organization's workspaces'
+    # agents to the Switch Trust it connected: enumerate the organizations
+    # and their workspaces, then read each organization's settings and each
+    # workspace's agents under its own policy.
+    "switch_core.trust.inventory",
     # Data retention deletes what each workspace no longer keeps, hourly:
     # enumerate, then bind each tenant and work under its own policy, the same
     # shape as session-activity upkeep.
@@ -317,6 +322,12 @@ _RAW_SESSION_FACTORY_MODULES = {
     # deployment and service, shared by every tenant's sign-ins, so read at
     # boot and after the operator changes one, in a session bound to none.
     "switch_core.connections.app_credentials",
+    # Where the Switch Trust agent inventory was sent and what each
+    # workspace's last did there (`trust_inventory_targets`,
+    # `trust_inventory_sent`, in `rls_ddl.GLOBAL_TABLES`): one process sends
+    # it for every organization, and a row outlives the organization it was
+    # sent for. Every organization and workspace it reads is bound.
+    "switch_core.trust.inventory",
     # Account deletion reads the account that asked, in `users`, which is
     # global (`rls_ddl.GLOBAL_TABLES`); every workspace and organization it
     # leaves is bound.

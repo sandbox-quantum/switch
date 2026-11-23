@@ -260,6 +260,7 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.connection_check import TrustConnectionCheck
+from switch_core.trust.inventory import own_inventory_sync
 from switch_core.trust.setup import build_trust_client
 from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
@@ -946,8 +947,11 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
-    trust_client, trust_http = build_trust_client(session_factory, config)
+    trust_client, trust_inventory, trust_http = await build_trust_client(
+        session_factory, config
+    )
     trust_signals = TrustSettingsSignals(client=trust_client, bus=signal_bus)
+    own_inventory_sync(ownership, trust_inventory)
 
     # ── Decision routing (off unless the decision_routing flag is on) ────────
     # Built either way, so workspace admins can set up and test a backend; only

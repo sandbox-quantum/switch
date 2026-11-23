@@ -29,6 +29,7 @@ from switch_core.trust.client import (
     TrustCheckResult,
     TrustFinding,
 )
+from switch_core.trust.identity import TrustAgent
 from switch_core.ui_spec import UI_CONTENT_KEY, UISpecError, parse_ui_spec
 
 _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high"),)
@@ -44,7 +45,13 @@ def _bound_workspace() -> Iterator[None]:
 
 class _ContentTrustClient:
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         if "forbidden" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)
@@ -67,7 +74,7 @@ class _FakeClient:
     def __init__(self) -> None:
         self.sent: list[str] = []
         self.extra: list[Any] = []
-        self.agent = SimpleNamespace(name="helper")
+        self.agent = SimpleNamespace(id="agent-1", name="helper", display_name=None)
 
     async def send_message(self, room_id: str, content: str, **kw: Any) -> str:
         self.sent.append(content)

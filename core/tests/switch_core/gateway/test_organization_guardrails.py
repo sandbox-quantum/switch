@@ -189,8 +189,13 @@ async def test_only_the_organizations_admins_reach_the_routes(world: _World) -> 
                 (await client.get(GUARDRAILS)).status_code,
                 (await client.put(GUARDRAILS, json=_BODY)).status_code,
                 (await client.delete(GUARDRAILS)).status_code,
+                (
+                    await client.patch(
+                        GUARDRAILS, json={"share_agent_instructions": True}
+                    )
+                ).status_code,
             ]
-        assert answers == [403, 403, 403], someone.name
+        assert answers == [403, 403, 403, 403], someone.name
     assert world.switch_trust.asked == []
 
 
@@ -207,6 +212,7 @@ async def test_nothing_is_connected_to_begin_with(world: _World) -> None:
         "api_key_last4": None,
         "connected_by_name": None,
         "connected_at": None,
+        "share_agent_instructions": False,
     }
 
 
@@ -348,6 +354,34 @@ async def test_disconnecting_stops_the_checks_once(world: _World) -> None:
         OrganizationAuditAction.GUARDRAILS_CONNECTED,
         OrganizationAuditAction.GUARDRAILS_DISCONNECTED,
     ]
+
+
+async def test_sharing_agent_instructions_is_kept_across_policies(
+    world: _World,
+) -> None:
+    admin = await world.org_admin()
+    async with world.client(admin) as client:
+        refused = await client.patch(
+            GUARDRAILS, json={"share_agent_instructions": True}
+        )
+        await client.put(GUARDRAILS, json=_BODY)
+        on = await client.patch(GUARDRAILS, json={"share_agent_instructions": True})
+        again = await client.patch(GUARDRAILS, json={"share_agent_instructions": True})
+        replaced = await client.put(GUARDRAILS, json={**_BODY, "policy_id": "pol_2"})
+
+    assert refused.status_code == 409
+    assert on.status_code == again.status_code == 200
+    assert on.json()["share_agent_instructions"] is True
+    assert replaced.json()["share_agent_instructions"] is True
+    # Read by the inventory sync on its next pass: no check needs to know.
+    assert world.changed == [TENANT_ZERO_ID, TENANT_ZERO_ID]
+    events = await world.audit()
+    assert [event.action for event in events] == [
+        OrganizationAuditAction.GUARDRAILS_CONNECTED,
+        OrganizationAuditAction.GUARDRAILS_INSTRUCTIONS_SHARING_CHANGED,
+        OrganizationAuditAction.GUARDRAILS_CONNECTED,
+    ]
+    assert events[1].details["share_agent_instructions"] is True
 
 
 async def test_the_old_server_wide_routes_say_where_the_setting_went(

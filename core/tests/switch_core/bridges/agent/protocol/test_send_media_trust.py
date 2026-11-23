@@ -17,6 +17,7 @@ from switch_core.trust.client import (
     TrustCheckResult,
     TrustFinding,
 )
+from switch_core.trust.identity import TrustAgent
 
 # The start of a real PNG: not text, so Switch Trust cannot read it.
 _PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
@@ -43,7 +44,13 @@ class _ContentTrustClient:
         return self._active
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         self.checked.append((role, content))
         if "FORBIDDEN" in content:
@@ -65,7 +72,7 @@ class _FakeClient:
     def __init__(self) -> None:
         self.uploads: list[str] = []
         self.sends: list[dict[str, Any]] = []
-        self.agent = SimpleNamespace(name="helper")
+        self.agent = SimpleNamespace(id="agent-1", name="helper", display_name=None)
 
     async def upload_media(self, data: bytes, content_type: str, filename: str) -> str:
         if filename == "unsendable.txt":

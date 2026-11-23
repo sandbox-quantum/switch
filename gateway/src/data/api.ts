@@ -1993,6 +1993,9 @@ export interface OrganizationGuardrails {
   api_key_last4: string | null;
   connected_by_name: string | null;
   connected_at: string | null;
+  /** Whether the agent inventory sent to Switch Trust carries managed
+   * agents' instructions; false when not connected. */
+  share_agent_instructions: boolean;
 }
 
 export async function fetchOrganizationGuardrails(): Promise<OrganizationGuardrails> {
@@ -2008,6 +2011,16 @@ export async function connectOrganizationGuardrails(
   return jsonRequest("/organizations/current/guardrails", "PUT", {
     policy_id: policyId,
     api_key: apiKey,
+  });
+}
+
+/** Turn sharing managed agents' instructions with Switch Trust's agent
+ * inventory on or off; refused while no policy is connected. */
+export async function setOrganizationGuardrailsSharing(
+  shareAgentInstructions: boolean,
+): Promise<OrganizationGuardrails> {
+  return jsonRequest("/organizations/current/guardrails", "PATCH", {
+    share_agent_instructions: shareAgentInstructions,
   });
 }
 

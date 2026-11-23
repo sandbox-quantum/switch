@@ -16,6 +16,7 @@ from switch_core.trust.client import (
     TrustCheckResult,
     TrustFinding,
 )
+from switch_core.trust.identity import TrustAgent
 
 # Switch Trust guardrails, enforced in CollaborationCore._handle_inbound_message
 # before a human-authored message becomes a room row (docs/design/switch-trust-guardrails-v1.md).
@@ -88,12 +89,20 @@ class _FixedTrustClient:
     def __init__(self, result: TrustCheckResult) -> None:
         self._result = result
         self.room_ids: list[str] = []
+        self.agents: list[TrustAgent | None] = []
         self.tenant_ids: list[str] = []
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         self.room_ids.append(room_id)
+        self.agents.append(agent)
         self.tenant_ids.append(tenant_id)
         return self._result
 
@@ -102,7 +111,13 @@ class _FailingTrustClient:
     """A Switch Trust outage: every check raises, never answers an outcome."""
 
     async def check(
-        self, *, tenant_id: str, role: str, content: str, room_id: str
+        self,
+        *,
+        tenant_id: str,
+        role: str,
+        content: str,
+        room_id: str,
+        agent: TrustAgent | None,
     ) -> TrustCheckResult:
         raise GuardrailsCheckError("boom")
 
@@ -291,6 +306,8 @@ async def test_allowed_message_is_relayed_unaffected(
     # The check is scoped to the room it happened in, and made against the
     # policy of the room's own workspace's organization.
     assert trust_client.room_ids == ["room-uuid"]
+    # A person's message is written by no agent.
+    assert trust_client.agents == [None]
     assert trust_client.tenant_ids == [TENANT_ZERO_ID]
     bridge._room_tenant.assert_awaited_once_with("room-uuid")
 
