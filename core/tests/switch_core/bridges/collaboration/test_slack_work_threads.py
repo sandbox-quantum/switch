@@ -273,33 +273,24 @@ def _work(items: list[Item], status: str = "running") -> TurnActivity:
 # ── The ending ───────────────────────────────────────────────────────────────
 
 
-async def test_removing_a_work_thread_takes_the_replies_first() -> None:
+async def test_a_refused_delete_keeps_the_status_message() -> None:
     client = FakeWebClient()
-    adapter = _adapter(client)
-    ok = await adapter.remove_work_thread(
-        CHANNEL, f"{CHANNEL}:5.0", [f"{CHANNEL}:6.0", f"{CHANNEL}:7.0"]
-    )
-    assert ok
-    assert [d["ts"] for d in client.deleted] == ["6.0", "7.0", "5.0"]
-    [session] = _sessions(client)
-    assert session == {"channel_id": CHANNEL, "thread_ts": "5.0", "status": "active"}
-
-
-async def test_a_refused_delete_stops_before_the_work_message() -> None:
-    client = FakeWebClient()
-    refusals = iter(["message_not_found", "cant_delete_message"])
 
     async def chat_delete(**kwargs: Any) -> FakeResponse:
-        client.deleted.append(kwargs)
-        raise SlackApiError("no", FakeResponse({"error": next(refusals)}))
+        raise SlackApiError("no", FakeResponse({"error": "cant_delete_message"}))
 
     client.chat_delete = chat_delete  # type: ignore[method-assign]
-    adapter = _adapter(client)
-    ok = await adapter.remove_work_thread(
-        CHANNEL, f"{CHANNEL}:5.0", [f"{CHANNEL}:6.0", f"{CHANNEL}:7.0"]
-    )
-    assert not ok
-    assert [d["ts"] for d in client.deleted] == ["6.0", "7.0"]
+    assert not await _adapter(client).remove_status_message(CHANNEL, f"{CHANNEL}:5.0")
+
+
+async def test_a_status_message_already_gone_counts_as_deleted() -> None:
+    client = FakeWebClient()
+
+    async def chat_delete(**kwargs: Any) -> FakeResponse:
+        raise SlackApiError("no", FakeResponse({"error": "message_not_found"}))
+
+    client.chat_delete = chat_delete  # type: ignore[method-assign]
+    assert await _adapter(client).remove_status_message(CHANNEL, f"{CHANNEL}:5.0")
 
 
 async def test_a_closed_stream_in_a_work_thread_carries_on_in_a_new_one() -> None:
@@ -739,8 +730,8 @@ async def test_a_stop_not_acted_on_takes_the_session_off_stopping(
 async def test_removing_an_inline_reply_ends_the_session_on_its_thread() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
-    assert await adapter.remove_work_thread(
-        CHANNEL, f"{CHANNEL}:4.0", [], session_ref=f"{CHANNEL}:3.0"
+    assert await adapter.remove_status_message(
+        CHANNEL, f"{CHANNEL}:4.0", session_ref=f"{CHANNEL}:3.0"
     )
     [session] = _sessions(client)
     assert session["thread_ts"] == "3.0"
@@ -767,8 +758,8 @@ async def test_a_question_asked_in_a_thread_is_linked_with_its_thread() -> None:
 async def test_removing_while_another_turn_has_the_session_leaves_it_working() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
-    assert await adapter.remove_work_thread(
-        CHANNEL, f"{CHANNEL}:5.0", [], session_ref=f"{CHANNEL}:1.0", end_session=False
+    assert await adapter.remove_status_message(
+        CHANNEL, f"{CHANNEL}:5.0", session_ref=f"{CHANNEL}:1.0", end_session=False
     )
     assert _sessions(client) == []
     assert [d["ts"] for d in client.deleted] == ["5.0"]

@@ -2063,50 +2063,38 @@ class SlackAdapter(PlatformAdapter):
             }
         )
 
-    async def remove_work_thread(
+    async def remove_status_message(
         self,
         channel_id: str,
-        work_ref: str,
-        stream_refs: Sequence[str],
+        message_ref: str,
         session_ref: str | None = None,
         *,
         end_session: bool = True,
     ) -> bool:
-        """Delete a turn's streams, then its work message, once the plan is
-        under the answer.
+        """Delete an inline status message whose turn only talked.
 
-        The session goes `active` first: deleting its message takes it out of
-        the asker's Agents & tools. The replies go before the message they
-        hang from, so it vanishes rather than staying as "This message was
-        deleted" over them. A message already gone counts as deleted. False at
-        the first refusal, with a warning, and nothing after it is deleted:
-        the caller keeps the work message then.
+        The session goes `active` first, unless another turn still has it:
+        deleting its message takes it out of the asker's Agents & tools. A
+        message already gone counts as deleted. False, with a warning, when
+        Slack refuses; the caller keeps the message then.
         """
         client = self._web_client
-        channel, ts = self._parse_message_ref(work_ref)
+        channel, ts = self._parse_message_ref(message_ref)
         if client is None or not ts:
             return False
-        _, session_ts = self._parse_message_ref(session_ref or work_ref)
         if end_session:
+            _, session_ts = self._parse_message_ref(session_ref or message_ref)
             await self._set_session_status(
                 {"channel_id": channel, "thread_ts": session_ts, "status": "active"}
             )
-        for ref in [*stream_refs, work_ref]:
-            _, message_ts = self._parse_message_ref(ref)
-            if not message_ts:
-                continue
-            self._streams.pop(ref, None)
-            try:
-                await client.chat_delete(channel=channel_id, ts=message_ts)
-            except SlackApiError as error:
-                code = error.response.get("error")
-                if code == "message_not_found":
-                    continue
+        try:
+            await client.chat_delete(channel=channel_id, ts=ts)
+        except SlackApiError as error:
+            code = error.response.get("error")
+            if code != "message_not_found":
                 logger.warning(
-                    "Slack would not delete %s from the work thread %s (%s); "
-                    "keeping the work message.",
-                    ref,
-                    work_ref,
+                    "Slack would not delete the status message %s (%s); keeping it.",
+                    message_ref,
                     code,
                 )
                 return False

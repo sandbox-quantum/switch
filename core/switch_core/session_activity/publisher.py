@@ -1593,10 +1593,9 @@ class AgentSessionActivityPublisher:
             # working while another of them still is.
             shared = await self._shares_session_with_a_running_turn(post)
             if nothing_to_show:
-                removed = await self._adapter.remove_work_thread(
+                removed = await self._adapter.remove_status_message(
                     target.channel_id,
                     work_ref,
-                    [],
                     session_ref=_session_ref(post),
                     end_session=not shared,
                 )

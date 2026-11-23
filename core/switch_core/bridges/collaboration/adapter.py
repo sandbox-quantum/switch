@@ -1864,19 +1864,18 @@ class PlatformAdapter(ABC):
         """
         raise NotImplementedError
 
-    async def remove_work_thread(
+    async def remove_status_message(
         self,
         channel_id: str,
-        work_ref: str,
-        stream_refs: Sequence[str],
+        message_ref: str,
         session_ref: str | None = None,
         *,
         end_session: bool = True,
     ) -> bool:
-        """Delete a work thread's streams and then its work message. True when
-        all of them are gone; False at the first refusal. The turn's session
-        is on `session_ref` where that is not the work message itself, and is
-        left as it is where `end_session` is false: another turn still has it."""
+        """Delete an inline turn's status message, for a turn that only talked.
+        True once it is gone. The turn's session, on `session_ref` where that
+        is not the message itself, is ended first, unless `end_session` is
+        false: another turn there still has it."""
         raise NotImplementedError
 
     async def open_session(

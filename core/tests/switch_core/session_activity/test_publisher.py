@@ -1429,11 +1429,10 @@ class WorkThreadPlatform(RecordingPlatform):
     # A redraw that carries on in a new message, as a stream Slack closed does.
     move_next_update: bool = False
 
-    async def remove_work_thread(
+    async def remove_status_message(
         self,
         channel_id: str,
-        work_ref: str,
-        stream_refs: Any,
+        message_ref: str,
         session_ref: str | None = None,
         *,
         end_session: bool = True,
@@ -1441,7 +1440,7 @@ class WorkThreadPlatform(RecordingPlatform):
         self.session_refs.append(session_ref)
         self.sessions_ended.append(end_session)
         self.drawn.append(
-            Drawn("remove_work_thread", channel_id, work_ref, None, list(stream_refs))
+            Drawn("remove_status_message", channel_id, message_ref, None, None)
         )
         return True
 
@@ -1567,7 +1566,7 @@ async def test_a_turn_with_nothing_to_show_keeps_its_work_message(
     )
     [opened] = work_platform.of("open_work_message")
     assert work_platform.of("settle_work_message")[0].ref == opened.ref
-    assert work_platform.of("remove_work_thread") == []
+    assert work_platform.of("remove_status_message") == []
     post = await _turn_post(session_factory)
     assert post.folded_into is None
 
@@ -1772,7 +1771,7 @@ async def test_an_answered_turn_keeps_its_work_message_and_thread(
     [settled] = platform.of("settle_work_message")
     assert settled.ref == opened.ref
     assert settled.content.startswith("Worked for ")
-    assert platform.of("remove_work_thread") == []
+    assert platform.of("remove_status_message") == []
     post = await _turn_post(session_factory)
     assert post.folded_into is None
     assert post.work_finished_at is not None
@@ -1810,7 +1809,7 @@ async def test_a_turn_carried_on_in_a_new_stream_is_drawn_there_and_kept(
     await _turn(service, bridged.room_id, "completed", 5)
     await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
     assert _turns(platform)[-1].ref == moved
-    assert platform.of("remove_work_thread") == []
+    assert platform.of("remove_status_message") == []
 
 
 async def test_a_restart_finishes_a_work_thread_whose_ending_had_not_run(
@@ -1931,7 +1930,7 @@ async def test_an_inline_turn_is_one_message_at_the_root_kept_at_the_end(
     [closed] = platform.of("close_session")
     assert closed.ref == first.ref
     assert closed.content.endswith(" 1 tool call.")
-    assert platform.of("remove_work_thread") == []
+    assert platform.of("remove_status_message") == []
     post = await _turn_post(session_factory)
     assert post.work_finished_at is not None
     assert post.folded_into is None
@@ -1954,9 +1953,9 @@ async def test_an_inline_turn_that_only_talked_deletes_its_message(
         title="mcp__switch__post_message",
     )
     await _turn(service, bridged.room_id, "completed", 3)
-    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
-    [removed] = platform.of("remove_work_thread")
-    assert (removed.ref, removed.content) == (first.ref, [])
+    await platform.wait_until(lambda: bool(platform.of("remove_status_message")))
+    [removed] = platform.of("remove_status_message")
+    assert removed.ref == first.ref
     assert platform.of("close_session") == []
     assert (await _turn_post(session_factory)).folded_into == first.ref
 
@@ -2292,8 +2291,8 @@ async def test_an_inline_turn_in_a_thread_that_only_talked_ends_the_threads_sess
     await platform.wait_until(lambda: bool(platform.of("open_session")))
     [first] = _turns(platform)
     await _thread_turn(service, bridged.room_id, "completed", 3)
-    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
-    [removed] = platform.of("remove_work_thread")
+    await platform.wait_until(lambda: bool(platform.of("remove_status_message")))
+    [removed] = platform.of("remove_status_message")
     assert removed.ref == first.ref, "the status message goes"
     assert platform.session_refs == [ASKED_POST], "and the thread's session ends"
 
@@ -2310,7 +2309,7 @@ async def test_a_finished_inline_turn_in_a_thread_closes_the_threads_session(
     await platform.wait_until(lambda: bool(platform.of("close_session")))
     [closed] = platform.of("close_session")
     assert closed.ref == ASKED_POST
-    assert platform.of("remove_work_thread") == []
+    assert platform.of("remove_status_message") == []
     assert all(drawn.content.asked is not None for drawn in _turns(platform)), (
         "every redraw keeps naming its question"
     )
@@ -2387,12 +2386,12 @@ async def test_a_thread_session_stays_working_while_another_turn_there_runs(
             turn_id="turn-2",
             message_id="sw_reply",
         )
-    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
+    await platform.wait_until(lambda: bool(platform.of("remove_status_message")))
     assert platform.sessions_ended == [False], "turn-1 is still working there"
     assert platform.of("close_session") == []
 
     await _thread_turn(service, bridged.room_id, "completed", 5)
-    await platform.wait_until(lambda: len(platform.of("remove_work_thread")) == 2)
+    await platform.wait_until(lambda: len(platform.of("remove_status_message")) == 2)
     assert platform.sessions_ended == [False, True], "the last one ends it"
 
 
@@ -2405,7 +2404,7 @@ async def test_a_turn_that_lost_its_ending_does_not_keep_the_session_working(
     await _thread_turn(service, bridged.room_id, "running", 1)
     await platform.wait_until(lambda: bool(platform.of("open_session")))
     await _thread_turn(service, bridged.room_id, "completed", 3)
-    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
+    await platform.wait_until(lambda: bool(platform.of("remove_status_message")))
     async with session_factory() as db, db.begin():
         await db.execute(update(TurnStatusPost).values(work_finished_at=None))
     for status, revision in (("running", 1), ("completed", 3)):
@@ -2419,7 +2418,7 @@ async def test_a_turn_that_lost_its_ending_does_not_keep_the_session_working(
             turn_id="turn-2",
             message_id="sw_reply",
         )
-    await platform.wait_until(lambda: len(platform.of("remove_work_thread")) == 2)
+    await platform.wait_until(lambda: len(platform.of("remove_status_message")) == 2)
     assert platform.sessions_ended[-1] is True, "turn-1 is over: turn-2 ends it"
 
 
