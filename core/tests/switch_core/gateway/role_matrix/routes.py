@@ -1470,45 +1470,14 @@ def listed_operator(ok: Expected = OK) -> dict[Persona, Expected]:
 
 
 HOSTED_V2_ROUTES: dict[str, Case] = {
-    # Gate: `gateway/cloud_files.py: _box`, the caller's own box only; 404
-    # `no_files` to anyone without one here. No persona has one, so nobody is
-    # shown another's files (another workspace's box: `test_cloud_files.py`).
-    "GET /gateway/cloud-files/list": Case(
-        Ask("GET", f"{G}/cloud-files/list", params={"path": ""}),
-        anyone(404),
-        "The caller's own box only; nobody here has one.",
-    ),
-    "GET /gateway/cloud-files/content": Case(
-        Ask("GET", f"{G}/cloud-files/content", params={"path": "README.md"}),
-        anyone(404),
-        "The caller's own box only; nobody here has one.",
-    ),
-    "GET /gateway/cloud-files/zip": Case(
-        Ask("GET", f"{G}/cloud-files/zip", params={"path": ""}),
-        anyone(404),
-        "The caller's own box only; nobody here has one.",
-    ),
-    # Gate: `visibility/shared_cloud_agents.py: list_shared_cloud_agents`, the
-    # caller's own agents only, so any signed-in person, about themselves.
-    "GET /gateway/shared-cloud/agents": get(f"{G}/shared-cloud/agents", anyone()),
     # Gate: `visibility/guards.py: require_workspace_admin`, an owner or admin
     # of the bound workspace by their own membership; the organization's admin
     # and the deployment admin are not. Another workspace's path is refused
     # too (`test_a_workspace_admin_is_refused_another_workspace`).
-    "GET /gateway/tenants/{tenant_id}/hosted-people": get(
-        f"{W}/hosted-people",
-        admin_by_membership(),
-        why="Workspace admins by membership only (`require_workspace_admin`).",
-    ),
     "PUT /gateway/tenants/{tenant_id}/hosted-people/{user_id}": put(
         f"{W}/hosted-people/{{member}}",
         admin_by_membership(),
         json={"enabled": False, **REASON},
-        why="Workspace admins by membership only (`require_workspace_admin`).",
-    ),
-    "GET /gateway/tenants/{tenant_id}/hosted-usage": get(
-        f"{W}/hosted-usage",
-        admin_by_membership(),
         why="Workspace admins by membership only (`require_workspace_admin`).",
     ),
     # Gate: `visibility/guards.py: require_operator`, the server's operator

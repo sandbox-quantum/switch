@@ -72,7 +72,6 @@ from switch_core.delivery.restart_notice import (
     RESTART_NOTICE_TEXT,
     restart_notice_key,
 )
-from switch_core.file_requests import FILES_REPLY, file_requests
 from switch_core.hosted_v2 import require_hosted_v2_here
 from switch_core.management import reason_codes, socket_calls
 from switch_core.management.auth import ManagementAuthenticator
@@ -907,9 +906,6 @@ async def connection_socket(
         return
 
     outbox = _Outbox(_SOCKET_OUTBOX)
-    # Your cloud files: this process now holds the socket, so the owner's file
-    # requests can go down it, on the answers' priority path.
-    file_requests.socket_opened(principal.controller_id, outbox, outbox.put_answer)
     pump = asyncio.create_task(_pump(frames, outbox))
     receiver = asyncio.create_task(
         _receive(
@@ -954,7 +950,6 @@ async def connection_socket(
         # The server closed the socket under us (uvicorn does on shutdown).
         return
     finally:
-        file_requests.socket_closed(principal.controller_id, outbox)
         pump.cancel()
         receiver.cancel()
         failure = pump.exception() if pump.done() and not pump.cancelled() else None
@@ -1089,9 +1084,6 @@ async def _receive(
                 protocol=protocol,
                 authenticator=authenticator,
             )
-            continue
-        if kind == FILES_REPLY:
-            file_requests.deliver(principal.controller_id, message)
             continue
         if kind != "pong":
             continue

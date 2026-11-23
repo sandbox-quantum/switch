@@ -1,5 +1,5 @@
-"""One agent's shared-cloud card state, from its status entry, its box and its reason, as
-Console's `/shared-cloud/agents` contract has it."""
+"""One agent's shared-cloud card state, from its status entry, its box and its reason, which
+the operators' overview counts."""
 
 from __future__ import annotations
 

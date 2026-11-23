@@ -54,9 +54,9 @@ def _hosted(path: str) -> bool:
 def test_the_route_filter() -> None:
     assert _hosted("/hosted-operator/users/{user_id}/pause")
     assert _hosted("/shared-cloud/audit-events")
-    assert _hosted("/tenants/{tenant_id}/hosted-people")
+    assert _hosted("/tenants/{tenant_id}/hosted-people/{user_id}")
     assert _hosted("/shared-cloud/overview")
-    assert _hosted("/shared-cloud/agents")
+    assert _hosted("/shared-cloud/reveal")
     assert not _hosted("/hosted-machines/{machine_id}")
     assert not _hosted("/hosted-controller/settings")
     assert not _hosted("/tenants/{tenant_id}/members")

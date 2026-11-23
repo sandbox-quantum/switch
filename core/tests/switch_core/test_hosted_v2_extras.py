@@ -598,13 +598,11 @@ def test_the_agent_apis_feature_flags_hide_v2s_own_flags_with_v2_off(
     from switch_core.feature_flags import (
         ECOSYSTEM_SHOW_OWNERS,
         HOSTED_AWAKE_BUDGETS,
-        HOSTED_CLOUD_FILES,
     )
 
     flags = {
         ECOSYSTEM_SHOW_OWNERS: True,
         HOSTED_AWAKE_BUDGETS: True,
-        HOSTED_CLOUD_FILES: False,
     }
     app = FastAPI()
     app.include_router(agent_router, prefix="/agent")

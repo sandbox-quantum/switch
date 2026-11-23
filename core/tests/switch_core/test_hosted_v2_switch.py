@@ -20,12 +20,10 @@ from switch_core.hosted_v2 import (
 )
 from switch_core.visibility.audit_routes import router as operator_audit_router
 from switch_core.visibility.hosted_access_routes import router as hosted_access_router
-from switch_core.visibility.hosted_usage import router as hosted_usage_router
 from switch_core.visibility.operator_action_routes import (
     router as operator_action_router,
 )
-from switch_core.visibility.read_views import admin_router, operator_router
-from switch_core.visibility.shared_cloud_agents import router as shared_cloud_router
+from switch_core.visibility.read_views import operator_router
 from tests.switch_core.gateway.test_app_route_mounting import _app
 from tests.switch_core.test_config_teams_app import _config
 
@@ -44,11 +42,8 @@ V2_ONLY_ROUTERS = (
     operator_audit_router,
     hosted_access_router,
     operator_action_router,
-    hosted_usage_router,
-    shared_cloud_router,
     hosted_provisioner_router,
     operator_router,
-    admin_router,
 )
 
 
@@ -141,7 +136,7 @@ def test_the_process_copy_is_set_at_start_and_logged(
 def test_the_gated_list_is_not_empty() -> None:
     # A guard on the test itself: an import that changed shape must not leave
     # the route checks below with nothing to check.
-    assert len(_v2_routes()) >= 15
+    assert len(_v2_routes()) >= 14
 
 
 @pytest.mark.parametrize(("method", "path"), _v2_routes())

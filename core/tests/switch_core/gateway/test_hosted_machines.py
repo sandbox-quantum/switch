@@ -57,8 +57,7 @@ async def test_summary_has_the_contract_shape(controller_app):  # noqa: F811
     # The fixture is the v2-off shape, which Switch Console's own test parses
     # too. With v2 on, the summary also names the backend and carries the
     # cloud figures; with it off, it is exactly the fixture and none of them.
-    # `start` is null here: a v1 machine, and asleep.
-    v2_only = ("room", "awake", "ai_calls_today", "start")
+    v2_only = ("room", "awake", "ai_calls_today")
     assert not set(v2_only) & set(expected)
     if process_hosted_v2():
         expected["backend"] = "vm"

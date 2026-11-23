@@ -253,8 +253,6 @@ async def test_a_machine_route_is_absent_with_v2_off_even_to_its_own_token(
 @pytest.mark.parametrize(
     ("method", "path", "body", "refused"),
     [
-        ("GET", "/gateway/tenants/another-workspace/hosted-people", None, 403),
-        ("GET", "/gateway/tenants/another-workspace/hosted-usage", None, 403),
         (
             "PUT",
             "/gateway/tenants/another-workspace/hosted-people/{member}",
@@ -273,8 +271,7 @@ async def test_a_workspace_admin_is_refused_another_workspace(
     refused: int,
 ) -> None:
     """The admin check is for the workspace the session is bound to: a path
-    naming any other is refused (`read_views.workspace_hosted_people`,
-    `hosted_usage.workspace_hosted_usage`, `hosted_access_routes.set_member_hosted`)."""
+    naming any other is refused (`hosted_access_routes.set_member_hosted`)."""
     from tests.switch_core.gateway.role_matrix.routes import Ask
 
     gateway, people = await _v2_gateway(session_factory, monkeypatch, tmp_path)

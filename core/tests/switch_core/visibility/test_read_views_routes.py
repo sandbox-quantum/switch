@@ -39,7 +39,6 @@ from switch_core.visibility.operator_limits import DEFAULTS as LIMIT_DEFAULTS
 from switch_core.visibility.operators import OperatorList
 from switch_core.visibility.read_views import (
     REVEALS_PER_HOUR,
-    admin_router,
     operator_router,
 )
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
@@ -111,7 +110,6 @@ async def views(controller_app, tmp_path):  # noqa: F811
     app.state.keyed_id_key = KEY
     app.state.operator_list = OperatorList(operators_file)
     app.include_router(operator_router)
-    app.include_router(admin_router)
     app.include_router(machines_router)
 
     async def session_dep():
@@ -591,42 +589,6 @@ async def test_a_workspace_name_can_be_revealed_too(views) -> None:
     assert answer.json()["email"] is None
 
 
-# --- the admin's People tab ---------------------------------------------------------------------
-
-
-async def test_the_admin_sees_their_people_with_a_memory_band_and_no_content(
-    views,
-) -> None:
-    await enrolled(views.base, agents=2)
-    await _running(views.base, used_pct=85)
-    views.as_("admin")
-    answer = await views.client.get(f"/tenants/{require_tenant_id()}/hosted-people")
-    assert answer.status_code == 200, answer.text
-    people = {row["user_id"]: row for row in answer.json()["people"]}
-    owner_row = people[views.base.owner_id]
-    assert (
-        owner_row["hosted"],
-        owner_row["agents"],
-        owner_row["box_state"],
-        owner_row["memory_band"],
-    ) == ("on", 2, "running", "high")
-    assert "memory_used_bytes" not in owner_row
-    _never_leaks(answer.text.replace(views.users["owner"].name, ""))
-
-
-@pytest.mark.parametrize("who", ["owner", "second"])
-async def test_a_plain_member_cant_open_the_people_tab(views, who) -> None:
-    views.as_(who)
-    answer = await views.client.get(f"/tenants/{require_tenant_id()}/hosted-people")
-    assert answer.status_code == 403
-
-
-async def test_naming_another_workspace_in_the_path_is_refused(views) -> None:
-    views.as_("admin")
-    answer = await views.client.get("/tenants/some-other-workspace/hosted-people")
-    assert answer.status_code == 403
-
-
 # --- Isolation: a user sees only their own -------------------------------------------------------------
 
 
@@ -649,18 +611,9 @@ async def test_the_new_routes_carry_nothing_from_a_box_free_text(views) -> None:
     """The heartbeat's free text (planted marker and dummy secret) reaches no answer."""
     await enrolled(views.base, agents=1)
     await _running(views.base, used_pct=60)
-    for who, route in (
-        ("operator", OVERVIEW),
-        ("admin", f"/tenants/{require_tenant_id()}/hosted-people"),
-    ):
-        views.as_(who)
-        answer = await views.client.get(route)
-        assert answer.status_code == 200, (route, answer.text)
-        _never_leaks(
-            answer.text.replace(views.users["owner"].name, "")
-            if who == "admin"
-            else answer.text
-        )
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 200, answer.text
+    _never_leaks(answer.text)
 
 
 # --- Pause marks: the pause lives on the user, the switch on the membership ----------------------
@@ -726,82 +679,6 @@ async def test_a_paused_user_with_no_box_is_still_listed_as_paused(views) -> Non
         views.users["second"].name,
         views.users["second"].email,
     )
-
-
-async def test_people_shows_the_pause_from_the_user_and_the_switch_from_the_membership(
-    views,
-) -> None:
-    await enrolled(views.base, agents=1)
-    await _running(views.base, used_pct=40)
-    views.as_("admin")
-    route = f"/tenants/{require_tenant_id()}/hosted-people"
-    before = (await views.client.get(route)).json()
-    assert before["switchable"] is True
-    row = {r["user_id"]: r for r in before["people"]}[views.base.owner_id]
-    assert (row["hosted"], row["paused_by_switch"]) == ("on", False)
-
-    await _pause(views.base, views.base.owner_id)
-    async with views.base.factory() as session:
-        membership = await session.scalar(
-            select(TenantMember).where(
-                TenantMember.tenant_id == require_tenant_id(),
-                TenantMember.user_id == views.base.owner_id,
-            )
-        )
-        assert membership is not None
-        membership.hosted_enabled = False
-        await session.commit()
-    after = (await views.client.get(route)).json()
-    row = {r["user_id"]: r for r in after["people"]}[views.base.owner_id]
-    assert (row["hosted"], row["paused_by_switch"]) == ("off", True)
-
-
-async def test_a_person_the_server_doesn_t_admit_has_no_switch(views) -> None:
-    """Someone off the server's allow-list keeps their row while they have
-    a box here, but the admin's switch would change nothing, so it's marked
-    not switchable."""
-    await enrolled(views.base, agents=1)
-    await _running(views.base, used_pct=40)
-    views.as_("admin")
-    route = f"/tenants/{require_tenant_id()}/hosted-people"
-    row = {r["user_id"]: r for r in (await views.client.get(route)).json()["people"]}[
-        views.base.owner_id
-    ]
-    assert row["switchable"] is True
-    listed = views.base.settings.allowed_user_ids
-    views.base.settings.allowed_user_ids = ["someone-else"]
-    try:
-        row = {
-            r["user_id"]: r for r in (await views.client.get(route)).json()["people"]
-        }[views.base.owner_id]
-    finally:
-        views.base.settings.allowed_user_ids = listed
-    assert (row["switchable"], row["hosted"]) == (False, "off")
-
-
-async def test_the_people_answer_has_exactly_the_contract_s_fields(views) -> None:
-    """The shape Console parses strictly (its People schema refuses any other
-    field): the same keys as the shared fixture, which Console's own test reads."""
-    from pathlib import Path
-
-    contract = json.loads(
-        (
-            Path(__file__).parent.parent
-            / "fixtures"
-            / "visibility"
-            / "hosted_people_response.json"
-        ).read_text()
-    )
-    await enrolled(views.base, agents=1)
-    await _running(views.base, used_pct=40)
-    views.as_("admin")
-    body = (
-        await views.client.get(f"/tenants/{require_tenant_id()}/hosted-people")
-    ).json()
-    assert set(body) == set(contract)
-    assert body["people"], body
-    for row in body["people"]:
-        assert set(row) == set(contract["people"][0])
 
 
 async def test_the_overview_shows_v5_s_alerts_with_template_text_only(views) -> None:

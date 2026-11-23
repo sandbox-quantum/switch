@@ -86,7 +86,7 @@ def test_routes_behind_the_hosted_v2_gate_name_the_hosted_v2_flag() -> None:
     for route in (
         "GET /gateway/shared-cloud/overview",
         "POST /gateway/shared-cloud/users/{user_keyed_id}/pause",
-        "GET /gateway/tenants/{tenant_id}/hosted-people",
+        "PUT /gateway/tenants/{tenant_id}/hosted-people/{user_id}",
     ):
         assert routes[route] == ["hosted_v2"], route
     # A route with no gate keeps no flag.

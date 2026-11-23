@@ -1,17 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
-import {
-  FAILED_TITLE,
-  FIRST_START_SLOW_MS,
-  isMachineAsleep,
-  machinePresentation,
-  PENDING_HELPER,
-  SLOW_HELPER,
-  SLOW_TITLE,
-  STARTING_TITLE,
-  WAKE_SLOW_MS,
-  WAKING_TITLE,
-} from './cloud-machine-state';
+import { isMachineAsleep, machinePresentation } from './cloud-machine-state';
 
 const sleepingMachine: CloudMachine = {
   machine_id: '3f1c2b4a-0000-4000-8000-000000000001',
@@ -331,94 +320,5 @@ describe('a machine an administrator stopped', () => {
     expect(shown.actions).toEqual([]);
     expect(shown.retainUntil).toBeNull();
     expect(isMachineAsleep(input, NOW)).toBe(false);
-  });
-});
-
-describe('a v2 box starting up', () => {
-  const ago = (ms: number) => new Date(NOW - ms).toISOString();
-  const box = (patch: Partial<CloudMachine>) =>
-    machine({ ...running, state: 'provisioning', backend: 'box', ...patch });
-
-  it('says it is starting, with no time, on a first start', () => {
-    const shown = present(box({ start: { kind: 'first', since: ago(5_000) } }));
-    expect(shown.boxStatus).toEqual({
-      kind: 'starting',
-      title: STARTING_TITLE,
-      helper: PENDING_HELPER,
-      slowAt: NOW - 5_000 + FIRST_START_SLOW_MS,
-    });
-  });
-
-  it('says it is waking on a wake', () => {
-    const shown = present(box({ start: { kind: 'wake', since: ago(5_000) } }));
-    expect(shown.boxStatus).toMatchObject({ title: WAKING_TITLE, helper: PENDING_HELPER });
-  });
-
-  it.each([
-    ['first start', 'first', FIRST_START_SLOW_MS],
-    ['wake', 'wake', WAKE_SLOW_MS],
-  ] as const)('turns "still starting" exactly at the threshold for a %s', (_, kind, threshold) => {
-    const before = present(box({ start: { kind, since: ago(threshold - 1) } }));
-    const at = present(box({ start: { kind, since: ago(threshold) } }));
-    expect(before.boxStatus?.title).not.toBe(SLOW_TITLE);
-    expect(at.boxStatus).toMatchObject({ title: SLOW_TITLE, helper: SLOW_HELPER });
-  });
-
-  it('counts from when Core was asked, not from when the card was opened', () => {
-    const shown = present(box({ start: { kind: 'first', since: ago(10 * 60_000) } }));
-    expect(shown.boxStatus?.title).toBe(SLOW_TITLE);
-  });
-
-  it('gives no "still starting" hint when Core has no start time', () => {
-    for (const since of [null, 'not a time']) {
-      const shown = present(box({ start: { kind: 'first', since } }));
-      expect(shown.boxStatus).toEqual({
-        kind: 'starting',
-        title: STARTING_TITLE,
-        helper: PENDING_HELPER,
-        slowAt: null,
-      });
-    }
-  });
-
-  it('treats a start time ahead of this clock as just started', () => {
-    const shown = present(box({ start: { kind: 'first', since: ago(-60_000) } }));
-    expect(shown.boxStatus?.title).toBe(STARTING_TITLE);
-  });
-
-  it('shows no status once Core says it is no longer starting', () => {
-    expect(present(box({ state: 'ready', start: null })).boxStatus).toBeNull();
-    expect(present(box({ start: undefined })).boxStatus).toBeNull();
-  });
-
-  it("says it could not start only when Core reports an error, with Core's reason", () => {
-    const shown = present(
-      box({ state: 'error', error_code: 'machine_connect_timeout', start: null })
-    );
-    expect(shown.boxStatus).toEqual({
-      kind: 'failed',
-      title: FAILED_TITLE,
-      helper: shown.problem,
-    });
-    expect(shown.actions).toEqual(['retry']);
-  });
-
-  it('leaves the card as it was for a v1 machine and with hosted agents v2 off', () => {
-    const start = { kind: 'first', since: ago(60_000) } as const;
-    for (const input of [
-      machine({ ...running, state: 'provisioning', backend: 'vm', start }),
-      machine({ ...running, state: 'provisioning' }),
-    ]) {
-      const shown = present(input);
-      expect(shown.boxStatus).toBeNull();
-      expect(shown.label).toBe('Provisioning');
-    }
-  });
-
-  it('shows the administrator stop, not a start, for a box held stopped', () => {
-    const shown = present(
-      box({ stopped_by_admin: true, start: { kind: 'first', since: ago(1_000) } })
-    );
-    expect(shown.boxStatus).toBeNull();
   });
 });
