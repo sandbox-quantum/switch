@@ -1823,12 +1823,13 @@ class SwitchConfig(BaseSettings):
                 "(GATEWAY_OIDC_*) set up against the same WorkOS environment: "
                 "the sign-in is what names the person there."
             )
-        if self.gateway_signup_mode != "invite_only":
+        # An organization someone creates for themselves under `open` is
+        # Switch's own (`WorkOSDirectory.create_organization` records nothing
+        # in WorkOS) until an operator links it with switch-link-workos.
+        if self.gateway_signup_mode == "default_tenant":
             raise ValueError(
-                "ORGANIZATION_DIRECTORY=workos needs GATEWAY_SIGNUP_MODE=invite_only: "
-                "until organizations can be created in WorkOS from Switch, a "
-                "customer's organization is linked by an operator "
-                "(switch-link-workos), not created by whoever signs up."
+                "ORGANIZATION_DIRECTORY=workos cannot be combined with "
+                "GATEWAY_SIGNUP_MODE=default_tenant; use invite_only or open."
             )
         changes = (
             self.members_service_url,

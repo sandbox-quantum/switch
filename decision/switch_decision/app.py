@@ -8,7 +8,6 @@ import hmac
 import logging
 import time
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from functools import partial
 from typing import Literal
 
@@ -27,9 +26,13 @@ from switch_decision.backends import (
 )
 from switch_decision.config import (
     DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_BEDROCK_OPENAI_MODEL,
     Settings,
+    backend_settings,
+    default_settings,
     fallback_settings,
     load_settings,
+    nameable_backends,
 )
 from switch_decision.fallback import BothFailed, Raced, race
 from switch_decision.logging_setup import (
@@ -139,11 +142,38 @@ app.add_middleware(RequestIdMiddleware)
 
 
 def backends_available(s: Settings) -> list[str]:
-    return (
-        ["default", "anthropic"]
-        + (["bedrock"] if s.bedrock_enabled else [])
-        + (["gemini_decision"] if s.gemini_decision_api_key else [])
-    )
+    return nameable_backends(s)
+
+
+def named_settings(s: Settings, name: str, model: str | None) -> Settings:
+    """The settings for a request that names `name` (and maybe a model), or
+    BackendUnavailable when the service does not offer it. Keys are checked
+    by the caller."""
+    if name == "default":
+        return default_settings(s)
+    if name not in nameable_backends(s) and name != "gemini_decision":
+        if name in ("bedrock", "bedrock_openai", "systemone"):
+            flag = {
+                "bedrock": "DECISION_BEDROCK_ENABLED",
+                "bedrock_openai": "DECISION_BEDROCK_OPENAI_ENABLED",
+                "systemone": "DECISION_SYSTEMONE_ENABLED",
+            }[name]
+            raise BackendUnavailable(
+                f"the {name} backend is not enabled on this service ({flag})"
+            )
+        raise BackendUnavailable(
+            f"unknown backend {name[:40]!r}; use one of {nameable_backends(s)}"
+        )
+    default_model = {
+        "anthropic": DEFAULT_ANTHROPIC_MODEL,
+        "bedrock": s.bedrock_model,
+        "gemini_decision": s.gemini_decision_model,
+        "bedrock_openai": s.bedrock_openai_model,
+        "systemone": s.systemone_model
+        or (s.model if s.backend == "systemone" else None),
+    }[name]
+    assert default_model is not None, "load_settings requires DECISION_SYSTEMONE_MODEL"
+    return backend_settings(s, name, model or default_model)
 
 
 def resolve_backend(request: Request) -> tuple[Settings, str | None]:
@@ -151,66 +181,87 @@ def resolve_backend(request: Request) -> tuple[Settings, str | None]:
     the per-request Anthropic or Gemini key, if any. Header values are never logged."""
     name = (request.headers.get(BACKEND_HEADER) or "default").strip().lower()
     model = (request.headers.get(MODEL_HEADER) or "").strip() or None
-    if name == "default":
-        return settings, None
+    key: str | None = None
     if name == "anthropic":
         key = (request.headers.get(ANTHROPIC_KEY_HEADER) or "").strip()
         if not key:
             raise BackendUnavailable(
                 f"the anthropic backend needs an {ANTHROPIC_KEY_HEADER} header"
             )
-        return replace(
-            settings, backend="anthropic", model=model or DEFAULT_ANTHROPIC_MODEL
-        ), key
-    if name == "bedrock":
-        if not settings.bedrock_enabled:
-            raise BackendUnavailable(
-                "the bedrock backend is not enabled on this service (DECISION_BEDROCK_ENABLED)"
-            )
-        return replace(
-            settings, backend="bedrock", model=model or settings.bedrock_model
-        ), None
     if name == "gemini_decision":
         # The request's own key, else the service's: setting
         # GEMINI_DECISION_API_KEY is what makes the backend available.
-        gemini_key = (request.headers.get(GEMINI_KEY_HEADER) or "").strip() or None
-        if gemini_key is None and not settings.gemini_decision_api_key:
+        key = (request.headers.get(GEMINI_KEY_HEADER) or "").strip() or None
+        if key is None and not settings.gemini_decision_api_key:
             raise BackendUnavailable(
                 "the gemini_decision backend needs GEMINI_DECISION_API_KEY on the "
                 f"service or an {GEMINI_KEY_HEADER} header"
             )
-        return replace(
-            settings,
-            backend="gemini_decision",
-            model=model or settings.gemini_decision_model,
-        ), gemini_key
-    raise BackendUnavailable(
-        f"unknown backend {name[:40]!r}; use one of {backends_available(settings)}"
-    )
+    return named_settings(settings, name, model), key
+
+
+# What Console shows for each backend and model; any other model shows its id.
+def backend_label(backend: str, model: str) -> str:
+    if backend == "bedrock_openai" and model == DEFAULT_BEDROCK_OPENAI_MODEL:
+        return "Qwen3 235B (Bedrock)"
+    if backend == "systemone" and model == "vllm-sr/d3-mini":
+        return "vllm-sr d3-mini (self-hosted)"
+    if backend == "gemini_decision":
+        return f"Gemini ({model})"
+    if backend == "bedrock" and "claude-haiku" in model:
+        return "Claude Haiku (Bedrock)"
+    if backend == "anthropic" and "claude-haiku" in model:
+        return "Claude Haiku (Anthropic)"
+    return model
+
+
+def backend_entry(s: Settings, name: str) -> dict:
+    """/health's description of what a request naming `name` gets."""
+    used = named_settings(s, name, None)
+    fallback = fallback_settings(s, used)
+    entry: dict = {
+        "backend": used.backend,
+        "model": used.model,
+        "label": backend_label(used.backend, used.model),
+        "threshold": used.confidence_threshold,
+        "fallback": None
+        if fallback is None
+        else {
+            "backend": fallback.backend,
+            "model": fallback.model,
+            "after_s": s.fallback_after_s,
+        },
+    }
+    if name == "default":
+        entry["is_default"] = True
+    return entry
 
 
 @app.get("/health")
 async def health() -> dict:
+    used = default_settings(settings)
     try:
-        server = await check(_client(), settings)
+        server = await check(_client(), used)
     except ModelServerError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    fallback = fallback_settings(settings)
+    fallback = fallback_settings(settings, used)
+    names = backends_available(settings)
     return {
         "ok": True,
-        "backend": settings.backend,
-        "model": settings.model,
-        "model_server": model_server(settings),
+        "backend": used.backend,
+        "model": used.model,
+        "model_server": model_server(used),
         "model_server_status": server,
-        "confidence_threshold": settings.confidence_threshold,
-        "min_lead": settings.min_lead,
-        "backends_available": backends_available(settings),
+        "confidence_threshold": used.confidence_threshold,
+        "min_lead": used.min_lead,
+        "backends_available": names,
         "fallback_backend": fallback.backend if fallback else None,
         "fallback_model": fallback.model if fallback else None,
         "fallback_after_s": settings.fallback_after_s if fallback else None,
         "fallback_confidence_threshold": settings.fallback_confidence_threshold
         if fallback
         else None,
+        "backends": {name: backend_entry(settings, name) for name in names},
     }
 
 
@@ -221,8 +272,7 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
             status_code=422, detail="agents must list at least one agent"
         )
     used, api_key = resolve_backend(request)
-    # A request that chose its backend gets that backend alone.
-    fallback = fallback_settings(settings) if used is settings else None
+    fallback = fallback_settings(settings, used)
     candidates = len(req.agents)
     started = time.monotonic()
     try:
