@@ -783,6 +783,25 @@ class TestMembership:
 
         assert presence.rooms("agent") == {ELSEWHERE, "third"}
 
+    def test_the_read_that_began_last_wins_whichever_finishes_first(
+        self,
+    ) -> None:
+        """Two reads of the agent's memberships: the older found it in the
+        room, the newer did not. In either order of finishing, the newer
+        read's answer is kept."""
+        for older_first in (True, False):
+            registry = AgentConnectionRegistry()
+            presence = registry.controllers
+            _bind(registry, "agent")
+            _go_live(registry, ("agent", set()))
+            older = presence.room_mark()
+            newer = presence.room_mark()
+            reads = [(older, True), (newer, False)]
+            for mark, member in reads if older_first else reversed(reads):
+                presence.room_read("agent", ROOM, member=member, mark=mark)
+
+            assert presence.rooms("agent") == set(), older_first
+
     def test_lapse_detach_and_revoke_take_it_out_of_every_room(self) -> None:
         registry = AgentConnectionRegistry()
         presence = registry.controllers

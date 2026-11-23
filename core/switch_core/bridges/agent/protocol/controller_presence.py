@@ -246,8 +246,8 @@ class ControllerPresence:
         # can tell which controllers changed under it (`connection_mark`).
         self._connection_changes = 0
         self._connection_changed_at: dict[str, int] = {}
-        self._room_changes = 0
-        self._room_changed_at: dict[tuple[str, str], int] = {}
+        self._room_stamps = 0
+        self._room_stamped: dict[tuple[str, str], int] = {}
 
     def connection_mark(self) -> int:
         """Where the connection changes stand now. Taken before reading the
@@ -263,17 +263,21 @@ class ControllerPresence:
         self._connection_changed_at[controller_id] = self._connection_changes
 
     def room_mark(self) -> int:
-        """Where the agents' room changes stand now. Taken before reading
-        memberships, so what is read is not applied over a join or a leave
-        made here since (`room_changed_since`)."""
-        return self._room_changes
+        """A stamp for a read of memberships beginning now. What the read
+        finds is applied to a room only where what is kept for it came from
+        an older read or change (`room_read`, `rooms_read`): whichever read
+        began last wins, whatever order they finish in."""
+        self._room_stamps += 1
+        return self._room_stamps
 
-    def room_changed_since(self, agent_id: str, room_id: str, mark: int) -> bool:
-        return self._room_changed_at.get((agent_id, room_id), 0) > mark
-
-    def _note_room_change(self, agent_id: str, room_id: str) -> None:
-        self._room_changes += 1
-        self._room_changed_at[(agent_id, room_id)] = self._room_changes
+    def _newer(self, agent_id: str, room_id: str, mark: int) -> bool:
+        """Whether a read or change stamped `mark` is newer than what is kept
+        for the room came from, recording it as the source if so."""
+        key = (agent_id, room_id)
+        if mark < self._room_stamped.get(key, 0):
+            return False
+        self._room_stamped[key] = mark
+        return True
 
     def use_auth_cache(self, cache: ControllerAuthCache) -> None:
         """The cache of controller-token reads to keep in step with the
@@ -647,18 +651,25 @@ class ControllerPresence:
         return True
 
     def room_joined(self, agent_id: str, room_id: str) -> None:
-        self._rooms_changed(agent_id, room_id, joined=True)
+        """The agent joined the room, as a write here committed it."""
+        self.room_read(agent_id, room_id, member=True, mark=self.room_mark())
 
     def room_left(self, agent_id: str, room_id: str) -> None:
-        self._rooms_changed(agent_id, room_id, joined=False)
+        """The agent left the room, as a write here committed it."""
+        self.room_read(agent_id, room_id, member=False, mark=self.room_mark())
 
-    def _rooms_changed(self, agent_id: str, room_id: str, *, joined: bool) -> None:
-        self._note_room_change(agent_id, room_id)
+    def room_read(
+        self, agent_id: str, room_id: str, *, member: bool, mark: int
+    ) -> None:
+        """Whether the agent is a member of the room, as a read stamped
+        `mark` found it; kept unless a newer read or change settled it."""
+        if not self._newer(agent_id, room_id, mark):
+            return
         binding = self._bindings.get(agent_id)
         rooms = self._rooms.get(agent_id)
-        if binding is None or rooms is None:
+        if binding is None or rooms is None or (room_id in rooms) == member:
             return
-        if joined:
+        if member:
             rooms.add(room_id)
         else:
             rooms.discard(room_id)
@@ -881,11 +892,10 @@ class ControllerPresence:
         return lapsed
 
     def rooms_read(self, agent_id: str, rooms: set[str], mark: int) -> None:
-        """Keep `rooms` for the agent, as read from its memberships after
-        `room_mark` returned `mark`. A room joined or left here since keeps
-        what that made it, since the read may be older; one whose change
-        came before the agent's rooms were kept here at all is left out,
-        for the re-check to settle."""
+        """Keep `rooms` for the agent, as a read of its memberships stamped
+        `mark` found them. A room a newer read or change settled keeps what
+        that made it; where that came before the agent's rooms were kept
+        here at all, the room is left out, for the re-check to settle."""
         if agent_id not in self._bindings:
             return
         kept = self._rooms.get(agent_id)
@@ -894,9 +904,9 @@ class ControllerPresence:
             room_id
             for room_id in rooms | current
             if (
-                room_id in current
-                if self.room_changed_since(agent_id, room_id, mark)
-                else room_id in rooms
+                room_id in rooms
+                if self._newer(agent_id, room_id, mark)
+                else room_id in current
             )
         }
 
