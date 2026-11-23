@@ -28,6 +28,7 @@ function agent(id: string, name: string): AgentSummary {
     can_edit_options: false,
     can_transfer: false,
     transfer_blocked_reason: null,
+    suspension: null,
   };
 }
 
