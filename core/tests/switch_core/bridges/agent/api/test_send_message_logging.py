@@ -36,7 +36,7 @@ async def test_send_message_logging(
 
     protocol.send_message.assert_awaited_once_with(agent.id, request.room_id, body)
     assert (
-        f"Received message from agent local room=room-1 length={len(body)}"
+        f"Received message from agent agent-1 for room room-1 ({len(body)} characters)"
         in caplog.messages
     )
     for record in caplog.records:

@@ -87,7 +87,6 @@ const room = {
   matrix_room_id: "!r1:example.test",
   external_channel_id: null,
   instructions: null,
-  protection_config: null,
   observe_config: null,
   agent_ids: ["a1"],
   agent_statuses: {},

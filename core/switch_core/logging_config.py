@@ -28,6 +28,7 @@ from switch_core.logging_context import (
     McpIdentityDiagnosticFilter,
     structured_fields,
 )
+from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 
 _configured = False
 
@@ -246,6 +247,9 @@ def configure_logging(
     root.setLevel(config.log_level.upper())
 
     logging.getLogger("switch_core").setLevel(config.switch_log_level.upper())
+    # The security event stream is for alerting, so turning switch-core's own
+    # level down to WARNING must not silence it.
+    logging.getLogger(SECURITY_LOGGER_NAME).setLevel(logging.INFO)
     # Every outbound HTTP call is logged at INFO by httpx, which at our request
     # rate is noise rather than signal.
     logging.getLogger("httpx").setLevel(logging.WARNING)

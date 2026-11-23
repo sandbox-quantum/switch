@@ -49,17 +49,20 @@ def binding_of(
     controller: AgentController,
     *,
     workspace_archived: bool,
+    agent_suspended: bool,
 ) -> Binding:
     """The binding Core keeps for a definition placed on `controller`: not
-    running while its workspace is archived, as its controller is told
-    (`schemas.assignment_entry`)."""
+    running while its workspace is archived or the agent is suspended, as its
+    controller is told (`schemas.assignment_entry`)."""
     assert row.controller_id == controller.id
     return Binding(
         agent_id=row.agent_id,
         controller_id=controller.id,
         tenant_id=tenant_id,
         controller_name=controller.name,
-        running=row.desired_state == "running" and not workspace_archived,
+        running=row.desired_state == "running"
+        and not workspace_archived
+        and not agent_suspended,
     )
 
 
@@ -142,10 +145,16 @@ async def reconcile_controller_bindings(
             if controller is not None
             else []
         )
-        for row, _agent in placed:
+        for row, agent in placed:
             assert controller is not None
             bindings.append(
-                binding_of(tenant_id, row, controller, workspace_archived=archived)
+                binding_of(
+                    tenant_id,
+                    row,
+                    controller,
+                    workspace_archived=archived,
+                    agent_suspended=agent.suspended_at is not None,
+                )
             )
         placed_here = {binding.agent_id for binding in bindings}
         for agent_id in presence.agents_of(controller_id) - placed_here:
@@ -155,7 +164,15 @@ async def reconcile_controller_bindings(
             elsewhere = await controllers.get(session, tenant_id, moved.controller_id)
             if elsewhere is not None:
                 bindings.append(
-                    binding_of(tenant_id, moved, elsewhere, workspace_archived=archived)
+                    binding_of(
+                        tenant_id,
+                        moved,
+                        elsewhere,
+                        workspace_archived=archived,
+                        agent_suspended=await definitions.agent_suspended(
+                            session, tenant_id, agent_id
+                        ),
+                    )
                 )
     presence.reconcile(
         bindings,
@@ -216,7 +233,9 @@ async def _read_bindings(
                     controller_id=placement.controller_id,
                     tenant_id=tenant_id,
                     controller_name=placement.controller_name,
-                    running=placement.desired_state == "running" and not archived,
+                    running=placement.desired_state == "running"
+                    and not archived
+                    and not placement.agent_suspended,
                 )
             )
     return bindings, revoked, fingerprints

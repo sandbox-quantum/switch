@@ -487,8 +487,8 @@ async def send_message(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict[str, object]:
     logger.debug(
-        "Received message from agent %s room=%s length=%d",
-        agent.name,
+        "Received message from agent %s for room %s (%d characters)",
+        agent.id,
         req.room_id,
         len(req.content),
     )
