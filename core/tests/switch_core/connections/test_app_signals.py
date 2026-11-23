@@ -162,6 +162,55 @@ class TestRecheck:
             await process.bus.stop()
         assert await process.apps.changed_since_resolved() == []
 
+    async def test_a_save_here_during_a_reread_is_not_undone(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """A queued re-read that read the row before an admin's save here
+        must not put the older app back after the save applied the new one:
+        the save's own announcement does not come back to this process."""
+        await _save(
+            session_factory,
+            GOOGLE,
+            client_id="first-client-id",
+            secrets={"client_secret": "example-secret-1111"},
+        )
+        process = await _process(postgres_url, session_factory)
+        store = process.apps.store
+        get = store.get
+        read, release = asyncio.Event(), asyncio.Event()
+
+        async def read_then_wait(session: AsyncSession, service: str) -> object:
+            row = await get(session, service)
+            if not read.is_set():
+                read.set()
+                await release.wait()
+            return row
+
+        store.get = read_then_wait  # type: ignore[method-assign,assignment]
+        queued = asyncio.create_task(
+            process.apps.apply(GOOGLE, broker=process.broker, state=process.state)
+        )
+        await asyncio.wait_for(read.wait(), DELIVERY_TIMEOUT)
+
+        # As the save route does: commit, then apply here.
+        await _save(
+            session_factory,
+            GOOGLE,
+            client_id="second-client-id",
+            secrets={"client_secret": "example-secret-2222"},
+        )
+        saving = asyncio.create_task(
+            process.apps.apply(GOOGLE, broker=process.broker, state=process.state)
+        )
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(queued, saving), DELIVERY_TIMEOUT)
+
+        assert process.apps.effective(GOOGLE).values.client_id == "second-client-id"  # type: ignore[union-attr]
+        assert await process.apps.changed_since_resolved() == []
+
     async def test_a_signal_for_a_service_this_build_has_no_app_for_is_ignored(
         self,
         postgres_url: str,

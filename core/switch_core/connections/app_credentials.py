@@ -39,6 +39,7 @@ changed on its next re-check.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -388,6 +389,11 @@ class ConnectorApps:
         # When each service's saved row was last changed, as this process
         # resolved it; None where there was no row.
         self._resolved_at: dict[str, datetime | None] = {}
+        # One resolve of a service's app at a time, from reading its row to
+        # putting the app to work. Two at once (a save here and the re-read
+        # an announcement queued) could finish in the other order, and the
+        # one that read the older row would put the older app back.
+        self._resolving: dict[str, asyncio.Lock] = {}
         self._signals: ConnectorAppSignals | None = None
 
     @property
@@ -435,8 +441,15 @@ class ConnectorApps:
             self._effective[service] = effective
             self._resolved_at[service] = _changed_at(rows.get(service))
 
+    def _lock(self, service: str) -> asyncio.Lock:
+        return self._resolving.setdefault(service, asyncio.Lock())
+
     async def reload(self, service: str) -> EffectiveCredentials:
         """Resolve one service's app again, after its row changed."""
+        async with self._lock(service):
+            return await self._reload_locked(service)
+
+    async def _reload_locked(self, service: str) -> EffectiveCredentials:
         spec = self.specs[service]
         async with self._session_factory() as session:
             row = await self._store.get(session, service)
@@ -472,17 +485,18 @@ class ConnectorApps:
         self, service: str, *, broker: ServiceBroker, state: State
     ) -> EffectiveCredentials:
         """Resolve `service`'s app again and put it to work at once."""
-        effective = await self.reload(service)
-        broker.replace_adapter(
-            service,
-            self.build(
+        async with self._lock(service):
+            effective = await self._reload_locked(service)
+            broker.replace_adapter(
                 service,
-                github_app=effective.github_app,
-                oauth_client=effective.oauth_client,
-            ),
-        )
-        if effective.spec.kind == "github_app":
-            install_github_app(state, effective.github_app)
+                self.build(
+                    service,
+                    github_app=effective.github_app,
+                    oauth_client=effective.oauth_client,
+                ),
+            )
+            if effective.spec.kind == "github_app":
+                install_github_app(state, effective.github_app)
         return effective
 
     def build(

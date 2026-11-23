@@ -140,6 +140,11 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A connector app saved in the dashboard is no longer briefly replaced by
+  the one before it.** A re-read of the app already under way when an
+  administrator saved a new one could finish last and put the older app back
+  on that server until the next re-check. A service's app is now resolved
+  one read at a time.
 - **The decision service is ready behind vLLM.** A model server whose
   `/health` answers 200 with an empty body counts as healthy; before, the
   service reported 503 while `/decide` worked.
