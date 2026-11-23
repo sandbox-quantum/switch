@@ -308,10 +308,14 @@ async def suspend_box(
 
 
 async def lift_box_suspension(
-    session: AsyncSession, owner_id: str, now: datetime
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    owner_id: str,
+    now: datetime,
 ) -> None:
     """When the owner's suspension is lifted, a box stopped for it stays
-    stopped, as if asleep: the next message wakes it, through every gate
+    stopped, held by whatever still holds it (`held_after_suspension`), or
+    otherwise asleep (`idle`), so the next message wakes it through every gate
     again. The caller holds no other machine lock and commits."""
     store = CloudMachineStore()
     machine = await store.live_for_owner(session, owner_id)
@@ -319,8 +323,37 @@ async def lift_box_suspension(
         return
     machine = await store.locked(session, machine.id)
     if machine is not None and machine.stop_reason == "suspended":
-        machine.stop_reason = "idle"
+        machine.stop_reason = await held_after_suspension(
+            session, factory, machine.id, owner_id
+        )
         machine.updated_at = now
+
+
+async def held_after_suspension(
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    machine_id: str,
+    owner_id: str,
+) -> Literal["paused", "migration", "turned_off", "idle"]:
+    """The stop reason a box takes back when its owner's suspension is lifted:
+    a suspension replaced a pause, a move's hold or a turn-off, and lifting it
+    must not leave the box wakeable while one of those still applies. A pause
+    first (it replaces both others), then a move holding the box, then a
+    turn-off in every workspace the box serves (as a turn-off stops a box only
+    when no other workspace needs it); otherwise `idle`."""
+    if await owner_paused(session, owner_id):
+        return "paused"
+    if await move_holds(session, owner_id):
+        return "migration"
+    tenants = await tenants_of_cloud_machine(factory, machine_id)
+    if not tenants:
+        return "idle"
+    for tenant_id in tenants:
+        async with tenant_session(factory, tenant_id) as scoped:
+            member = await scoped.get(TenantMember, (tenant_id, owner_id))
+            if member is None or member.hosted_enabled is not False:
+                return "idle"
+    return "turned_off"
 
 
 def claim_conflict(machine: CloudMachine, now: datetime) -> str | None:

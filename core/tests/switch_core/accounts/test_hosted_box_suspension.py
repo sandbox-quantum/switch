@@ -14,13 +14,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.accounts.suspension import Suspender, suspend_user, unsuspend_user
 from switch_core.db.audit import ServerAuditAction
-from switch_core.db.models import CloudMachine, ServerAuditEvent
+from switch_core.db.models import (
+    CloudMachine,
+    HostedMigration,
+    ServerAuditEvent,
+    TenantMember,
+    User,
+)
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_SUSPENDED,
     CloudMachineConflict,
     CloudMachineStore,
     lock_claims,
 )
+from switch_core.db.tenant_lookup import tenants_of_cloud_machine
 from switch_core.gateway.cloud_controllers import wake_controller_machine
 from switch_core.visibility.hosted_access import block_reason
 from switch_core.visibility.reason_codes import StopReason
@@ -256,3 +264,123 @@ async def test_a_v1_machine_is_left_to_the_suspensions_own_refusals(
         after = await CloudMachineStore().get(session, machine.id)
     assert after is not None
     assert (after.desired_state, after.stop_reason, after.revision) == snapshot
+
+
+async def _stop(harness: Harness, machine_id: str, reason: str) -> None:
+    async with harness.session_factory() as session:
+        row = await CloudMachineStore().locked(session, machine_id)
+        assert row is not None
+        CloudMachineStore().stop(row, reason, datetime.now(UTC))  # type: ignore[arg-type]
+        await session.commit()
+
+
+async def _reason(harness: Harness, machine_id: str) -> str | None:
+    async with harness.session_factory() as session:
+        row = await CloudMachineStore().get(session, machine_id)
+    assert row is not None
+    return row.stop_reason
+
+
+async def _pause_mark(harness: Harness, owner_id: str) -> None:
+    """An operator's pause mark on the person (`users.hosted_paused_at`)."""
+    async with harness.session_factory() as session:
+        user = await session.get(User, owner_id)
+        assert user is not None
+        user.hosted_paused_at = datetime.now(UTC)
+        await session.commit()
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+@pytest.mark.parametrize("paused_when", ["before", "during"])
+async def test_lifting_it_keeps_a_pause_that_still_applies(
+    harness: Harness, paused_when: str
+) -> None:
+    """Paused before the suspension (which replaced the pause's stop), or
+    paused while it lasted: either way the lift leaves the box paused, so
+    nothing wakes it until an operator resumes it."""
+    owner = await add_member(harness.session_factory, "ada")
+    machine = await _claim(harness.session_factory, owner, backend="box")
+    if paused_when == "before":
+        await _pause_mark(harness, owner.id)
+        await _stop(harness, machine.id, "paused")
+    await _suspend(harness, owner.id)
+    assert await _reason(harness, machine.id) == "suspended"
+    if paused_when == "during":
+        await _pause_mark(harness, owner.id)
+        await _stop(harness, machine.id, "paused")  # the suspension holds
+        assert await _reason(harness, machine.id) == "suspended"
+    await _lift(harness, owner.id)
+    assert await _reason(harness, machine.id) == "paused"
+    async with harness.session_factory() as session:
+        row = await CloudMachineStore().locked(session, machine.id)
+        assert row is not None
+        with pytest.raises(CloudMachineConflict):
+            CloudMachineStore().start(row, datetime.now(UTC))
+        await session.rollback()
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_lifting_it_keeps_a_turn_off_that_still_applies(
+    harness: Harness,
+) -> None:
+    """Turned off in the box's only workspace, then suspended: the lift leaves
+    the box turned off. Turned back on first, the lift leaves it asleep."""
+    owner = await add_member(harness.session_factory, "ada")
+    machine = await _claim(harness.session_factory, owner, backend="box")
+    [tenant_id] = await tenants_of_cloud_machine(harness.session_factory, machine.id)
+
+    async def turned(enabled: bool) -> None:
+        async with tenant_session(harness.session_factory, tenant_id) as session:
+            member = await session.get(TenantMember, (tenant_id, owner.id))
+            assert member is not None
+            member.hosted_enabled = enabled
+            await session.commit()
+
+    await turned(False)
+    await _stop(harness, machine.id, "turned_off")
+    await _suspend(harness, owner.id)
+    await _lift(harness, owner.id)
+    assert await _reason(harness, machine.id) == "turned_off"
+
+    await _suspend(harness, owner.id)
+    await turned(True)
+    await _lift(harness, owner.id)
+    assert await _reason(harness, machine.id) == "idle"
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_lifting_it_keeps_a_moves_hold_that_still_applies(
+    harness: Harness,
+) -> None:
+    """A box held for an operator's move to it, then suspended: the lift gives
+    the move its hold back, so the box stays stopped for the copy and the move
+    can carry on. Once the move has moved past its holds, the lift leaves the
+    box asleep."""
+    owner = await add_member(harness.session_factory, "ada")
+    machine = await _claim(harness.session_factory, owner, backend="box")
+    now = datetime.now(UTC)
+    async with harness.session_factory() as session:
+        session.add(
+            HostedMigration(
+                owner_id=owner.id,
+                machine_id=machine.id,
+                step="held",
+                started_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+    await _stop(harness, machine.id, "migration")
+    await _suspend(harness, owner.id)
+    assert await _reason(harness, machine.id) == "suspended"
+    await _lift(harness, owner.id)
+    assert await _reason(harness, machine.id) == "migration"
+
+    async with harness.session_factory() as session:
+        record = await session.get(HostedMigration, owner.id)
+        assert record is not None
+        record.step = "done"
+        await session.commit()
+    await _suspend(harness, owner.id)
+    await _lift(harness, owner.id)
+    assert await _reason(harness, machine.id) == "idle"

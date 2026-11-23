@@ -599,9 +599,12 @@ async def unsuspend_user(
                 "by_role": user.suspended_by_role,
             }
             _clear(user)
-            # A box stopped for the suspension stays stopped, as if asleep:
-            # the next message wakes it, through every gate again.
-            await lift_box_suspension(session, user_id, datetime.now(UTC))
+            # A box stopped for the suspension stays stopped: held again by a
+            # pause, a move or a turn-off that still applies, or else asleep,
+            # so the next message wakes it through every gate again.
+            await lift_box_suspension(
+                session, session_factory, user_id, datetime.now(UTC)
+            )
             await record_server_audit_event(
                 session,
                 actor_user_id=by.user_id,
