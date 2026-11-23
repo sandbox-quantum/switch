@@ -69,7 +69,6 @@ describe('buildEnvFile', () => {
   it('binds the managed stack to loopback and seeds the admin account', () => {
     expect(vars.SWITCH_BIND_ADDR).toBe('127.0.0.1');
     expect(vars.POSTGRES_BIND_ADDR).toBe('127.0.0.1');
-    expect(vars.MATTERMOST_BIND_ADDR).toBe('127.0.0.1');
     expect(vars.GATEWAY_COOKIE_SECURE).toBe('false');
     expect(vars.GATEWAY_ADMIN_EMAIL).toBe('admin@switch.local');
   });

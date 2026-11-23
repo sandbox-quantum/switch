@@ -130,7 +130,6 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `SWITCH_VERSION=${version}`,
     `SWITCH_BIND_ADDR=${LOCAL_SERVER_BIND_ADDR}`,
     `POSTGRES_BIND_ADDR=${LOCAL_SERVER_BIND_ADDR}`,
-    `MATTERMOST_BIND_ADDR=${LOCAL_SERVER_BIND_ADDR}`,
     `GATEWAY_HOST_PORT=${ports.gateway}`,
     `API_HOST_PORT=${ports.api}`,
     `POSTGRES_HOST_PORT=${ports.postgres}`,
