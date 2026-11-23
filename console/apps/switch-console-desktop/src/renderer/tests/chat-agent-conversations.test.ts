@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import {
   agentConversations,
   byLatestDirectChat,
-} from '@renderer/features/chats/agent-conversations';
-import type { ChatSummary } from '@shared/core/chats/chats';
+} from '@switch-console/chat-ui/model/agent-conversations';
+import { describe, expect, it } from 'vitest';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
 
 /** No room has any known activity: they order by name. */

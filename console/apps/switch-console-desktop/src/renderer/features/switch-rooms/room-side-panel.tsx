@@ -1,3 +1,4 @@
+import { chatAgentLabel } from '@switch-console/chat-ui/contracts/chats';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronDown,
@@ -10,9 +11,9 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
+import { chatFailure } from '@renderer/features/chats/chat-errors';
 import { chatMembersQueryKey } from '@renderer/features/chats/chat-people';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
-import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
@@ -42,7 +43,6 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { cn } from '@renderer/utils/utils';
-import { chatAgentLabel } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import {
   AddAgentPanel,

@@ -56,6 +56,7 @@ describe("featureFlagsFrom", () => {
       service_connections: false,
       organization_connector_apps: false,
       switch_buddy: false,
+      gateway_chats: false,
     });
   });
 });

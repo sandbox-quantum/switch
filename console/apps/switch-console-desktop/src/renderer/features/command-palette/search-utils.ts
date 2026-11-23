@@ -1,6 +1,6 @@
+import { type ChatSummary, chatAgentLabel } from '@switch-console/chat-ui/contracts/chats';
 import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
 import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
-import { type ChatSummary, chatAgentLabel } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { matchQuality, type SearchItem, type SearchItemKind } from '@shared/core/search';
 import type { RemoteRoomSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';

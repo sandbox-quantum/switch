@@ -7,27 +7,18 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 
-vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: () => () => {} },
-  rpc: { chats: { commands: async () => [] } },
-}));
 const toast = vi.hoisted(() => vi.fn());
-vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
-vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
-  useFeatureFlags: () => ({ group_chats: true }),
-}));
 
-import { ChatComposer } from '@renderer/features/chats/components/chat-composer';
+import { ChatComposer } from '@switch-console/chat-ui/components/chat-composer';
+import type { ChatActivityItem } from '@switch-console/chat-ui/contracts/activity';
+import type { ChatAgent } from '@switch-console/chat-ui/contracts/chats';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
 import {
   type ActivityApi,
   AgentActivities,
-} from '@renderer/features/chats/stores/chat-activity-store';
-import {
-  ChatTimeline,
-  type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
-import type { ChatActivityItem } from '@shared/core/chats/activity';
-import type { ChatAgent } from '@shared/core/chats/chats';
+} from '@switch-console/chat-ui/stores/chat-activity-store';
+import { ChatTimeline, type TimelineApi } from '@switch-console/chat-ui/stores/chat-timeline-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -96,17 +87,19 @@ async function render(post: ActivityApi['control'] = async (input) => `cmd-${inp
   await act(async () =>
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatComposer
-          serverId="s"
-          timeline={new ChatTimeline('room-1', {} as TimelineApi)}
-          agents={[agent('agent-a', 'Alpha'), agent('agent-b', 'Beta')]}
-          people={[]}
-          groupName="Ship review"
-          activities={activities}
-          replyTo={null}
-          onClearReply={() => {}}
-          disabled={null}
-        />
+        <ChatHostProvider host={stubChatHost({ toast })}>
+          <ChatComposer
+            serverId="s"
+            timeline={new ChatTimeline('room-1', {} as TimelineApi)}
+            agents={[agent('agent-a', 'Alpha'), agent('agent-b', 'Beta')]}
+            people={[]}
+            groupName="Ship review"
+            activities={activities}
+            replyTo={null}
+            onClearReply={() => {}}
+            disabled={null}
+          />
+        </ChatHostProvider>
       </QueryClientProvider>
     )
   );

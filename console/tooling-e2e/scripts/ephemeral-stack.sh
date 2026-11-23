@@ -111,10 +111,10 @@ cp "$REPO/.env.example" "$ENV_FILE"
 "$REPO/deploy/local/generate-env-secrets.sh" "$ENV_FILE" e2e
 if [ "$LANE" = browser ]; then
   # Every flag a page of the role matrix (gateway/src/routes/roleMatrix.ts)
-  # needs, so every page is there to open: connectors and the organization's
-  # connector apps (agent management is always on). Not follow-ups, nor their
-  # short window: only the fast lane's follow-ups scenario uses them.
-  FLAGS=service_connections,organization_connector_apps
+  # needs, so every page is there to open: connectors, the organization's
+  # connector apps and chats (agent management is always on). Not follow-ups,
+  # nor their short window: only the fast lane's follow-ups scenario uses them.
+  FLAGS=service_connections,organization_connector_apps,gateway_chats
   sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=$FLAGS|" "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
 elif [ "$NEEDS_CONTROLLER" = 0 ]; then
