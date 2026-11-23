@@ -11,8 +11,9 @@ in `gateway.agents`, so there is no import cycle.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 from sqlalchemy import ColumnElement, select
@@ -375,6 +376,7 @@ async def assemble_agent_detail(
                 else None,
                 lifecycle=row.lifecycle,
                 state=session_state(row, now),
+                created_at=str(row.created_at),
                 last_seen_at=str(row.last_seen_at),
                 controller_id=None,
             )
@@ -385,6 +387,7 @@ async def assemble_agent_detail(
     # no sessions at all — presence and the session list disagreeing is worse
     # than either being wrong alone. Rooms already covered by a row are skipped
     # so a client running both (a migration in progress) is not listed twice.
+    monotonic_now = time.monotonic()
     listed_rooms = {row.room_id for row in session_rows}
     for conn in agent_connections:
         # An `all`-scope connection claiming nothing is one room-agnostic
@@ -396,6 +399,9 @@ async def assemble_agent_detail(
             ):
                 continue
             listed_rooms.add(conn_room)
+            conn_started = now - timedelta(
+                seconds=max(0.0, monotonic_now - conn.opened_at)
+            )
             sessions.append(
                 AgentSessionDetail(
                     room_id=conn_room,
@@ -404,6 +410,7 @@ async def assemble_agent_detail(
                     else None,
                     lifecycle="connection",
                     state="live",
+                    created_at=str(conn_started),
                     last_seen_at=str(now),
                     controller_id=None,
                 )
@@ -414,12 +421,19 @@ async def assemble_agent_detail(
     # room-agnostic session.
     binding = connections.controllers.binding(agent.id)
     if binding is not None and connections.controllers.is_live(agent.id):
+        ctrl_conn = connections.controllers._connections.get(binding.controller_id)
+        ctrl_started = (
+            now - timedelta(seconds=max(0.0, monotonic_now - ctrl_conn.opened_at))
+            if ctrl_conn is not None
+            else now
+        )
         sessions.append(
             AgentSessionDetail(
                 room_id=None,
                 room_name=None,
                 lifecycle="controller",
                 state="live",
+                created_at=str(ctrl_started),
                 last_seen_at=str(now),
                 controller_id=binding.controller_id,
             )

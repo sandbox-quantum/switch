@@ -166,6 +166,7 @@ async def test_a_session_names_its_room_and_its_device_only_to_who_may_see_them(
                     room_name=None,
                     lifecycle="controller",
                     state="live",
+                    created_at="now",
                     last_seen_at="now",
                     controller_id="owners-laptop",
                 )

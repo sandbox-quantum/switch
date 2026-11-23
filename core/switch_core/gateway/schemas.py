@@ -528,6 +528,7 @@ class AgentSessionDetail(BaseModel):
     room_name: str | None
     lifecycle: str
     state: str
+    created_at: str
     last_seen_at: str
     controller_id: str | None
 

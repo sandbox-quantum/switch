@@ -171,6 +171,7 @@ export interface AgentSessionDetail {
   // connection) or `controller` (run by the agent controller it is placed on).
   lifecycle: string;
   state: string;
+  created_at: string;
   last_seen_at: string;
   // The agent controller running it, for a `controller` session, named to
   // whoever may manage the agent; else null.

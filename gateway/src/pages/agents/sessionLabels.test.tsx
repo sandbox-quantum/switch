@@ -11,6 +11,7 @@ function session(overrides: Partial<AgentSessionDetail>): AgentSessionDetail {
     room_name: "design",
     lifecycle: "connection",
     state: "live",
+    created_at: "2026-10-01T00:00:00Z",
     last_seen_at: "2026-10-01T00:00:00Z",
     controller_id: null,
     ...overrides,
@@ -89,5 +90,16 @@ describe("SessionsSection", () => {
     expect(screen.getByText("Not in a room yet")).toBeTruthy();
     expect(screen.getByText("Run by a device")).toBeTruthy();
     expect(screen.queryByText("Room-agnostic")).toBeNull();
+  });
+
+  it("renders session start time alongside last activity", () => {
+    renderSessions([
+      session({
+        created_at: "2026-10-01T08:00:00Z",
+        last_seen_at: "2026-10-01T10:00:00Z",
+      }),
+    ]);
+    expect(screen.getByText(/started/)).toBeTruthy();
+    expect(screen.getByText(/last seen/)).toBeTruthy();
   });
 });
