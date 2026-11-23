@@ -157,7 +157,7 @@ describe("OrganizationUsersPage", () => {
     expect(await screen.findByText(/someone has to be made an organization admin there/)).toBeTruthy();
     expect(menuItems("Bob")).toEqual([
       {
-        label: "Make Org admin",
+        label: "Make Org Admin",
         reason: "Org admin is granted in your organization's account settings.",
       },
     ]);
@@ -243,10 +243,10 @@ describe("OrganizationUsersPage", () => {
     await screen.findByTestId("row-bob");
 
     expect(await screen.findByText(/come from your organization's account settings/)).toBeTruthy();
-    expect(menuItems("Bob").find((item) => item.label === "Make Org admin")?.reason).toBe(
+    expect(menuItems("Bob").find((item) => item.label === "Make Org Admin")?.reason).toBe(
       "Org admin is granted in your organization's account settings.",
     );
-    expect(menuItems("Cy").find((item) => item.label === "Make Member")?.reason).toBeNull();
+    expect(menuItems("Cy").find((item) => item.label === "Make Viewer")?.reason).toBeNull();
     expect(menuItems("Bob").find((item) => item.label === "Remove from organization")).toBeTruthy();
   });
 
@@ -278,8 +278,8 @@ describe("OrganizationUsersPage", () => {
     };
     const promoteBob = async () => {
       await screen.findByTestId("row-bob");
-      fireEvent.click(within(openMenu("Bob")).getByText("Make Org admin"));
-      fireEvent.click(screen.getByRole("button", { name: "Make Org admin" }));
+      fireEvent.click(within(openMenu("Bob")).getByText("Make Org Admin"));
+      fireEvent.click(screen.getByRole("button", { name: "Make Org Admin" }));
     };
 
     beforeEach(() => {
@@ -306,7 +306,7 @@ describe("OrganizationUsersPage", () => {
 
       expect(await screen.findByText(/Changes you make here are made there too/)).toBeTruthy();
       await screen.findByTestId("row-bob");
-      expect(menuItems("Bob").find((item) => item.label === "Make Org admin")?.reason).toBeNull();
+      expect(menuItems("Bob").find((item) => item.label === "Make Org Admin")?.reason).toBeNull();
     });
 
     it("sends the admin to sign in there, keeping the change", async () => {

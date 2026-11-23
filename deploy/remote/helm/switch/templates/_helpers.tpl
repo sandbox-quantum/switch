@@ -1280,8 +1280,8 @@ render instead of a pod.
 {{- if not .Values.switchCore.oidc.enabled }}
 {{- fail "switchCore.organizationDirectory.mode workos needs switchCore.oidc.enabled, against the same WorkOS environment: the sign-in is what names the person there." }}
 {{- end }}
-{{- if ne .Values.switchCore.signup.mode "invite_only" }}
-{{- fail "switchCore.organizationDirectory.mode workos needs switchCore.signup.mode invite_only: a customer's organization is linked by an operator, not created by whoever signs up." }}
+{{- if eq .Values.switchCore.signup.mode "default_tenant" }}
+{{- fail "switchCore.organizationDirectory.mode workos cannot be combined with switchCore.signup.mode default_tenant; use invite_only or open." }}
 {{- end }}
 {{- if and $changes (lt (len $changes) 3) }}
 {{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are set together, or not at all." }}
