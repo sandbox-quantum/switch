@@ -5259,23 +5259,6 @@ class AgentCore:
         await self.room_service.set_room_archived(room_id, archived)
         return await self.get_room_detail(agent_id, room_id)
 
-    async def pre_tool_call(
-        self,
-        agent_id: str,
-        room_id: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Whether this agent may call this tool. Verdict and reason.
-
-        `arguments` is not inspected. It is accepted because a mediation
-        decision that looks at what is being passed is the obvious next thing
-        to want.
-        """
-        await self.require_room_member(agent_id, room_id)
-        verdict = await self.mediation.tool_access(agent_id, tool_name)
-        return {"verdict": verdict.verdict, "reason": verdict.reason}
-
     async def pre_llm_request(
         self,
         agent_id: str,
@@ -5285,7 +5268,7 @@ class AgentCore:
     ) -> dict[str, Any]:
         """Whether this agent may call this model. Verdict and reason.
 
-        `messages` is not inspected, for the same reason `arguments` is not.
+        `messages` is not inspected.
         """
         await self.require_room_member(agent_id, room_id)
         verdict = await self.mediation.model_access(agent_id, model)

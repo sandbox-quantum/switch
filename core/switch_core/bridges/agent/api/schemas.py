@@ -240,19 +240,6 @@ class ParticipantsResponse(BaseModel):
 # ── Mediation ────────────────────────────────────────────────────────────────
 
 
-class PreToolCallRequest(BaseModel):
-    room_id: str
-    tool_name: str
-    arguments: dict[str, Any]
-    request_id: str
-
-
-class PreToolCallResponse(BaseModel):
-    verdict: Literal["proceed", "blocked", "modified"]
-    reason: str | None = None
-    modified_arguments: dict[str, Any] | None = None
-
-
 class PreLlmRequestRequest(BaseModel):
     room_id: str
     model: str

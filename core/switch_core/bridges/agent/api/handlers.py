@@ -41,8 +41,6 @@ from switch_core.bridges.agent.api.schemas import (
     PostToolResultResponse,
     PreLlmRequestRequest,
     PreLlmRequestResponse,
-    PreToolCallRequest,
-    PreToolCallResponse,
     RegisterAgentRequest,
     RegisterAgentResponse,
     RegisterKnownAgentBulkRequest,
@@ -1673,31 +1671,6 @@ async def report_events(
 
 
 # Mediation endpoints
-
-
-@router.post("/{agent_id}/mediation/pre-tool-call")
-async def pre_tool_call(
-    agent_id: str,
-    req: PreToolCallRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PreToolCallResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.pre_tool_call(
-            agent.id,
-            req.room_id,
-            req.tool_name,
-            req.arguments,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PreToolCallResponse(verdict=result["verdict"], reason=result["reason"])  # type: ignore[arg-type]
 
 
 @router.post("/{agent_id}/mediation/pre-llm-request")

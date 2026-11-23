@@ -61,6 +61,15 @@ version of their own to them without also giving them a release of their own.
   chart.
 
 #### Security
+- **The pre-tool-call mediation route is removed.** `POST
+  /agents/{agent_id}/mediation/pre-tool-call` answered `proceed` for any tool
+  attached to the agent, judging by its name alone, and the retired Claude
+  Code connector plugin turned that into skipping Claude Code's own permission
+  prompt. Bash, Edit and Write are attached by default, so in a session
+  connected to a room, text from anyone who could post there could lead to
+  commands nobody approved. Copies of that plugin still installed now get a
+  404, which they treat as no decision, so Claude Code asks as it normally
+  would. Claude Code agents no longer advertise tool-call mediation.
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
   at once, leaving the rest to its own work, such as renewing its lease,

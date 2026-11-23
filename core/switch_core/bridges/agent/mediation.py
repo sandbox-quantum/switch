@@ -1,9 +1,12 @@
-"""Whether an agent may use the tool or model it is about to use.
+"""Whether an agent may use the model it is about to use: a lookup against
+the models the agent has attached.
 
-Two checks, both a lookup against what the agent has attached. They used to be
-reached by posting a Matrix event into a room and waiting up to ten seconds for
-an answer that was computed in the same process — see the commit that moved
-them here for why that was not doing anything a function call does not.
+There is no check for tools. One existed, answering `proceed` for any tool
+attached by name without seeing what the call did, and the retired Claude Code
+connector plugin turned that answer into skipping Claude Code's own permission
+prompt, so text in a room could drive shell commands nobody approved. Its
+route is gone, and a copy of that plugin still installed gets a 404, which it
+treats as no decision: Claude Code asks as it always would.
 
 Post-invocation mediation is not here, because there is nothing to decide: the
 `post_tool_result` and `post_llm_response` hooks exist as places to inspect
@@ -51,15 +54,6 @@ class MediationService:
     ) -> None:
         self._session_factory = session_factory
         self._agent_store = agent_store
-
-    async def tool_access(self, agent_id: str, tool_name: str) -> Verdict:
-        async with self._session_factory() as session:
-            tools = await self._agent_store.get_tools(session, agent_id)
-        if any(tool.name == tool_name for tool in tools):
-            return Verdict.proceed()
-        return Verdict.blocked(
-            f"Agent {agent_id} does not have tool '{tool_name}' attached"
-        )
 
     async def model_access(self, agent_id: str, model_name: str) -> Verdict:
         async with self._session_factory() as session:

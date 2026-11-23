@@ -287,7 +287,7 @@ agent's name/icon, preserving threads and attachments.
   can diverge from another or destroy what another has yet to read. They are
   scheduled for removal once the remaining clients are on the stream.
 - **Mediation is synchronous.** The bridge exposes
-  `POST /agents/.../mediation/{pre-tool-call,pre-llm-request,post-tool-result,post-llm-response}`.
+  `POST /agents/.../mediation/{pre-llm-request,post-tool-result,post-llm-response}`.
   `RequestTracker`
   ([`bridges/agent/request_tracker.py`](../core/switch_core/bridges/agent/request_tracker.py))
   registers a future per request; the `ResourceManagerClient`
