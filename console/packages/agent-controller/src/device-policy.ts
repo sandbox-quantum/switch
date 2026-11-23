@@ -1,5 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   allowedDirectories,
@@ -12,7 +13,7 @@ import {
   withinDirectory,
 } from '@switch-console/agent-providers';
 import { errorMessage, type Logger } from './log';
-import { expandHome } from './paths';
+import { defaultDataDir, expandHome } from './paths';
 import type { AgentAssignment, AgentDefinition } from './schemas';
 
 /**
@@ -230,7 +231,7 @@ export function bypassWithheldDetail(
   context: DefinitionContext
 ): string | null {
   if (!bypassWithheld(entry, context)) return null;
-  return `Switch asks for this agent to run without asking for approval (${bypassRequests(entry.definition).join('; ')}), and this device has not allowed that, so it asks. ${howToAllow(entry.agent_id, 'bypass')}`;
+  return `Switch asks for this agent to run without asking for approval (${bypassRequests(entry.definition).join('; ')}), and this device has not allowed that, so it asks. ${howToAllow(entry.agent_id, 'bypass', context.dataDir)}`;
 }
 
 /** Every assigned agent asking for something the device has not allowed. */
@@ -255,8 +256,32 @@ export function consentNeeds(
 }
 
 /** How a person allows `what` for the agent on this device, for messages that say it is not. */
-export function howToAllow(agentId: string, what: { directory: string } | 'bypass'): string {
-  const flag =
-    what === 'bypass' ? '--bypass' : `--directory '${what.directory.replaceAll("'", "'\\''")}'`;
-  return `Allow it on this device: Switch Console asks, or run \`switch-agent-controller allow ${agentId} ${flag}\`.`;
+export function howToAllow(
+  agentId: string,
+  what: { directory: string } | 'bypass',
+  dataDir: string
+): string {
+  const flag = what === 'bypass' ? '--bypass' : `--directory ${shellQuoted(what.directory)}`;
+  // The command and data directory this controller runs with: Switch Console
+  // starts an SSH host's as `node <bundle>.mjs` on a data directory of its
+  // own, and a policy written anywhere else is one it never reads.
+  const defaultDir = defaultDataDir({
+    platform: process.platform,
+    env: process.env,
+    home: homedir(),
+  });
+  const dataDirFlag = dataDir === defaultDir ? '' : ` --data-dir ${shellQuoted(dataDir)}`;
+  return `Allow it on this device: Switch Console asks, or run \`${controllerCommand()} allow ${agentId} ${flag}${dataDirFlag}\`.`;
+}
+
+function shellQuoted(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** How this controller was started: its installed command, or the bundle Node runs. */
+function controllerCommand(): string {
+  const script = process.argv[1];
+  return script && /^agent-controller(-[0-9a-f]+)?\.mjs$/.test(basename(script))
+    ? `node ${shellQuoted(script)}`
+    : 'switch-agent-controller';
 }

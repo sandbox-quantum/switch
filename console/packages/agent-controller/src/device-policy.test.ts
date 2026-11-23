@@ -72,7 +72,7 @@ describe('a permission mode that bypasses approvals', () => {
         context()
       )
     ).toBe(
-      'Switch asks for this agent to run without asking for approval (auto_approve; permissionMode dontAsk in its advanced configuration), and this device has not allowed that, so it asks. Allow it on this device: Switch Console asks, or run `switch-agent-controller allow agent-1 --bypass`.'
+      "Switch asks for this agent to run without asking for approval (auto_approve; permissionMode dontAsk in its advanced configuration), and this device has not allowed that, so it asks. Allow it on this device: Switch Console asks, or run `switch-agent-controller allow agent-1 --bypass --data-dir '/data'`."
     );
   });
 

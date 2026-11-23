@@ -80,7 +80,7 @@ export function definitionProblem(
   }
   const unallowed = unallowedDirectory(entry, context);
   if (unallowed !== null)
-    return `Switch asks for this agent to work in ${unallowed}, outside ${context.workspaces}, and this device has not allowed that. ${howToAllow(entry.agent_id, { directory: unallowed })}`;
+    return `Switch asks for this agent to work in ${unallowed}, outside ${context.workspaces}, and this device has not allowed that. ${howToAllow(entry.agent_id, { directory: unallowed }, context.dataDir)}`;
   return null;
 }
 

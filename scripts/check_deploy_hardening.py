@@ -17,15 +17,16 @@ fails when a change breaks it:
   moved to other content; a digest cannot;
 * every pod the chart runs is unprivileged: not root (as the user its image
   runs as), no privilege escalation, no capabilities, the runtime's seccomp
-  profile, a read-only root filesystem with emptyDirs where it writes
-  (Mattermost's main container aside), and no ServiceAccount token, since
-  nothing in it calls the Kubernetes API;
+  profile, a read-only root filesystem with emptyDirs where it writes, and no
+  ServiceAccount token, since nothing in it calls the Kubernetes API. The
+  optional decision service is held to the last alone: its model server's
+  root filesystem stays writable, and llama.cpp's upstream image runs as root;
 * the in-cluster Postgres admits only the release's own clients, and
-  switch-core, the gateway and Mattermost admit only who `networkPolicy.
-  ingressFrom` names once it names anyone;
-* the compose files publish Postgres and Mattermost on loopback whatever
-  SWITCH_BIND_ADDR says: it opens only Switch's own ports (the API and the
-  dashboard), and each of the two has a variable of its own.
+  switch-core and the gateway admit only who `networkPolicy.ingressFrom`
+  names once it names anyone;
+* the compose files publish Postgres on loopback whatever SWITCH_BIND_ADDR
+  says: it opens only Switch's own ports (the API and the dashboard), and
+  Postgres has a variable of its own.
 
 Needs `helm` and `docker compose` (no daemon) on PATH, and PyYAML. Run from
 the repo root:
@@ -61,7 +62,6 @@ WORKFLOWS = sorted(Path(".github/workflows").glob("*.yml"))
 FIRST_PARTY = {
     "switch-core",
     "gateway",
-    "setup",
     "switch-decision",
     "switch-decision-strands",
 }
@@ -217,7 +217,11 @@ def test_third_party_images_are_pinned_by_digest() -> None:
                 and not image.startswith("${SWITCH_REGISTRY")
             ):
                 refs[f"{path} {name}"] = image
-    for args in ((), ("-f", OPTIONAL)):
+    for args in (
+        (),
+        ("-f", OPTIONAL),
+        ("-f", OPTIONAL, "--set", "decision.modelServer.kind=llamacpp"),
+    ):
         for where, image in chart_images(render(*args)):
             name = image.split("@", 1)[0].rsplit(":", 1)[0].rsplit("/", 1)[-1]
             if name not in FIRST_PARTY:
@@ -243,8 +247,6 @@ WRITABLE = {
     "gateway": {"/tmp", "/var/cache/nginx"},
     "postgresql": {"/tmp", "/var/run/postgresql", "/var/lib/postgresql/data"},
 }
-# Containers whose root filesystem stays writable, and why. None today.
-WRITABLE_ROOT: set[str] = set()
 # The images the chart runs as the user they declare (`USER` in their Dockerfile).
 IMAGE_USERS = {
     "switch-core": "Dockerfile.switch",
@@ -322,10 +324,7 @@ def test_every_pod_runs_unprivileged() -> None:
                 )
                 assert context.get("seccompProfile") == {"type": "RuntimeDefault"}, name
                 assert context.get("allowPrivilegeEscalation") is False, name
-                assert context.get("readOnlyRootFilesystem") is (
-                    component not in WRITABLE_ROOT
-                    or container is not pod["containers"][0]
-                ), name
+                assert context.get("readOnlyRootFilesystem") is True, name
                 assert context.get("capabilities", {}).get("drop") == ["ALL"], name
             main = pod["containers"][0]
             mounts = {m["mountPath"] for m in main.get("volumeMounts") or []}
@@ -362,13 +361,16 @@ def peers(rule: dict[str, Any]) -> list[str]:
 
 
 def test_postgres_admits_only_the_release_clients() -> None:
-    policy = policies(render())["postgresql"]
-    assert policy["policyTypes"] == ["Ingress"]
-    [rule] = policy["ingress"]
-    assert sorted(peers(rule)) == sorted(
-        ["switch-core", "create-runtime-role", "migrate"]
-    ), rule
-    assert rule["ports"] == [{"protocol": "TCP", "port": 5432}]
+    # The migration Job is admitted even while it is off: switching it back on
+    # runs it as a pre-upgrade hook, under the policy already in place.
+    for args in ((), ("--set", "switchCore.migrations.preUpgradeJob=false")):
+        policy = policies(render(*args))["postgresql"]
+        assert policy["policyTypes"] == ["Ingress"]
+        [rule] = policy["ingress"]
+        assert sorted(peers(rule)) == sorted(
+            ["switch-core", "create-runtime-role", "migrate"]
+        ), (args, rule)
+        assert rule["ports"] == [{"protocol": "TCP", "port": 5432}]
     assert "postgresql" not in policies(
         render(
             "--set",

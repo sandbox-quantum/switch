@@ -96,6 +96,7 @@ _INDEXED_A_HOT_TABLE_BEFORE_THE_RULE = frozenset(
         "a7e3c1d9f204",
         "b5d2e08c17af",
         "c4d8e2f6a913",
+        "c71a4f9d2b83",
         "d8b4f2a6c1e9",
     }
 )

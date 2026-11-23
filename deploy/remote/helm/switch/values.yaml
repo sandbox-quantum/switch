@@ -1097,7 +1097,7 @@ decision:
           memory: "28Gi"
           nvidia.com/gpu: 1
     llamacpp:
-      image: ghcr.io/ggml-org/llama.cpp:server-cuda
+      image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:d68ec493c0ff9105ddfe2e909fff304117bc6e1fffbbd8d94182bd455983c264
       imagePullPolicy: IfNotPresent
       port: 8300
       # DECISION_MODEL unless `model` above is set.
@@ -1127,7 +1127,7 @@ decision:
         file: Qwen3.5-4B-Q4_K_M.gguf
         # Hex SHA-256 of the file. Empty skips the check (not recommended).
         sha256: 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
-        downloaderImage: curlimages/curl:8.11.1
+        downloaderImage: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
       # llama.cpp's /health is 503 until the model is loaded (seconds).
       startupProbe:
         periodSeconds: 5

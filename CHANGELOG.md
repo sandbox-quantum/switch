@@ -108,9 +108,8 @@ version of their own to them without also giving them a release of their own.
   event carries a value outside a property's allowed set, the error names the
   event and the property but not the value.
 - **Core's dependencies are past their known advisories.** authlib 1.9.8, mcp
-  1.30.0, fastmcp 3.4.11, aiohttp 3.14.5, joserfc 1.8.0, anyio 4.14.2,
-  opentelemetry-api 1.45.2, dnspython 2.9.2, certifi 2026.10.23 and multidict
-  6.9.1. Pull requests now fail on a known advisory in core's locked
+  1.30.0, fastmcp 3.4.11, aiohttp 3.14.5, joserfc 1.8.0, opentelemetry-api
+  1.45.2, dnspython 2.9.2 and multidict 6.9.1. Pull requests now fail on a known advisory in core's locked
   dependencies.
 - **An agent's change that widens what another agent may do on its own, or who
   may reach it, waits for the owner.** When an agent turns another agent's
@@ -165,7 +164,9 @@ version of their own to them without also giving them a release of their own.
   70 for Postgres. Each also gets no privilege escalation, no capabilities,
   the runtime's default seccomp profile and a read-only root filesystem, with
   emptyDirs where it writes. No pod mounts a ServiceAccount token any more.
-  Each component's `podSecurityContext` and `securityContext` are values. A
+  The optional decision service's model server keeps a writable root
+  filesystem, and llama.cpp's upstream image runs as root. Each component's
+  `podSecurityContext` and `securityContext` are values. A
   Postgres volume that an earlier release started as root keeps working: it
   already belongs to the `postgres` user. If `postgresql.image` is the Debian
   image, set its user, group and fsGroup to 999.
@@ -175,9 +176,9 @@ version of their own to them without also giving them a release of their own.
   once `networkPolicy.ingressFrom` names your ingress controller or load
   balancer. Each then admits those peers and the release's own pods that call
   it, and nothing else.
-- **The switch-core, setup and gateway images no longer run as root.**
-  switch-core and setup run as 10001, and the gateway's nginx runs as 101,
-  with its pid file in `/tmp`.
+- **The switch-core and gateway images no longer run as root.** switch-core
+  runs as 10001, and the gateway's nginx runs as 101, with its pid file in
+  `/tmp`.
 - **`SWITCH_BIND_ADDR` opens only Switch's own ports.** In the standalone
   compose, setting it publishes the API (8000) and the dashboard (3000).
   Postgres now stays on loopback, and `POSTGRES_BIND_ADDR` moves it. Before
@@ -189,12 +190,13 @@ version of their own to them without also giving them a release of their own.
   own files with switch-core's Content-Security-Policy, `X-Frame-Options:
   DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`,
   and no longer name the nginx version in the `Server` header.
-- **Images Switch does not build are pinned by digest.** The switch-core and
-  setup images build from `python:3.12.16-slim-trixie` (what `3.12-slim` is
-  today), and switch-core's uv is 0.13.1, no longer `latest`. The gateway
-  image builds from `nginx:1.31.8-alpine`. The chart's and the compose files'
-  Postgres and busybox images now carry a digest, as do the gitleaks image CI
-  runs. Renovate keeps the digests current.
+- **Images Switch does not build are pinned by digest.** The switch-core
+  image builds from `python:3.12.16-slim-trixie` (what `3.12-slim` is today),
+  and switch-core's uv is 0.13.1, no longer `latest`. The gateway image builds
+  from `nginx:1.31.8-alpine`. The chart's and the compose files' Postgres and
+  busybox images now carry a digest, as do the decision service's llama.cpp
+  server and weights downloader in the chart and the gitleaks image CI runs.
+  Renovate keeps the digests current.
 
 #### Added
 - **The decision service can use open-weights models on Amazon Bedrock.**
@@ -365,12 +367,6 @@ version of their own to them without also giving them a release of their own.
   short.** A refused later part of a split message used to leave the
   channel showing only the first parts, with no sign the rest was missing.
   A notice now says how many parts arrived, as on Mattermost and Discord.
-- **An upgrade from before 0.24.0 no longer has to hold every send while it
-  indexes `messages`.** Build `ix_messages_room_sent_at` by hand first with
-  `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_messages_room_sent_at ON
-  messages (room_id, sent_at);`, and the migration skips it. Before, the
-  migration failed if the index already existed. The Helm chart's README
-  covers this, and the 0.31.0 migration that can't be built ahead.
 - **The agent bridge's list of public paths no longer names a path nothing
   serves.** `/hosted/machines` was dropped; a cloud machine's supervisor is
   served under `/gateway`, which was already public to the bearer check.
@@ -5040,20 +5036,10 @@ version of their own to them without also giving them a release of their own.
   on this server".** The form checked the name against the server's agent
   list, which picks up the new agent before the dialog closes, so for a moment
   it reported its own agent as a clash.
-- **A file's name in a chat shows its real extension.** A name carrying
-  hidden or text-reversing characters could read as something else: a file
-  named with a right-to-left override showed as `invoiceexe.pdf` when it was
-  `invoice<…>fdp.exe`. The file, the line above it and replies naming it now
-  show each such character, and any path or control character, as `_`, and
-  that is also the name offered when you save it.
 - **HTML and other web-page attachments can be downloaded.** Saving one used
   to fail with a message telling you to ask whoever runs the server to fix
   its routing. It now saves like any other file, and is never opened in
   Switch Console.
-- **Links in room documents, library items and transcripts no longer open a
-  blank Switch Console window or another app.** A `mailto:`, `irc:` or
-  relative link there now does what it does in chat: a web link asks before
-  it opens in your browser, and any other link is refused with a notice.
 - **An agent's sessions move with its folder.** After an agent's directory
   changed, its rooms kept being answered, and `!reset` started over, in the old
   folder. The next message, or a reset, now starts a session where the agent
@@ -5066,6 +5052,16 @@ version of their own to them without also giving them a release of their own.
   database when Console starts.
 
 #### Security
+- **A file's name in a chat shows its real extension.** A name carrying
+  hidden or text-reversing characters could read as something else: a file
+  named with a right-to-left override showed as `invoiceexe.pdf` when it was
+  `invoice<…>fdp.exe`. The file, the line above it and replies naming it now
+  show each such character, and any path or control character, as `_`, and
+  that is also the name offered when you save it.
+- **Links in room documents, library items and transcripts no longer open a
+  blank Switch Console window or another app.** A `mailto:`, `irc:` or
+  relative link there now does what it does in chat: a web link asks before
+  it opens in your browser, and any other link is refused with a notice.
 - **Claude sessions keep their MCP tokens off the command line.** The Switch
   tools' token and every connector's used to be written into the `claude`
   process's arguments, where another user on a Linux machine could read them
@@ -5107,8 +5103,8 @@ version of their own to them without also giving them a release of their own.
 - **Signing out of a server tells the server.** Console now calls the
   server's sign-out before it forgets its copy of the session. A server that
   can't be reached is logged and the session is still forgotten here. A
-  server from this release ends that one session on sign-out, so a copy of it
-  stops working too; an older server only clears the cookie.
+  server from switch-core 0.32.0 on ends that one session on sign-out, so a
+  copy of it stops working too; an older server only clears the cookie.
 - **Switch Console's data folder, database and log are readable by your user
   alone on Linux and macOS.** The folder is made private (0700), and the
   database, its write-ahead files and the log private (0600), including ones
@@ -5148,9 +5144,9 @@ version of their own to them without also giving them a release of their own.
   applies either just because the server's copy of the agent asks for it.
   Console asks you, naming the agent, the server and what it could then do,
   and this computer's page under Machines lists what you allowed, with Revoke.
-  Until you allow it, an agent that asks for bypass runs and asks for
-  approval, and one that asks for a folder outside `~/.switch/agents` does not
-  start. Agents that ran with bypass or in their own folder before this
+  Until you allow it, an agent that asks for bypass runs as if bypass were
+  off, asking for approval as it otherwise would, and one that asks for a
+  folder outside `~/.switch/agents` does not start. Agents that ran with bypass or in their own folder before this
   release need allowing once. The question names the agent by its unique name
   and its server; a display name its owner set follows, marked as what the
   agent is shown as.
@@ -5218,9 +5214,10 @@ version of their own to them without also giving them a release of their own.
   use the camera, microphone, location, notifications or clipboard reading.
   Its web links go to your browser through the usual confirmation.
 - **Packaged builds no longer include DevTools.** Development builds keep them.
-- **"Open in" only opens folders.** A file or a macOS app bundle is shown in the
-  file manager instead of being opened, and folder names are passed to apps
-  safely.
+- **"Open in" only opens folders.** Given a file or a macOS app bundle, the
+  file manager shows it rather than opening it, and every other app refuses
+  it. Only apps on Console's list can be named, and folder names are passed
+  to them safely.
 - **The app window has a Content-Security-Policy.** It runs only Console's own
   scripts, so a flaw in how messages are displayed can't run code.
 - **The packaged app is harder to tamper with.** It refuses debugger flags,
@@ -7926,7 +7923,10 @@ tags; see RELEASING.md.
   the provider signs in with it, and report whether it does. The machine's own
   login still comes first; agents of a provider it has none for get the given
   one, run in a process of their own, and restart when it changes or is
-  withdrawn. Status reports `auth_source: "sealed"` for it.
+  withdrawn. Status reports `auth_source: "sealed"` for it. `enroll` and
+  `status` print the key's SHA-256 fingerprint, and `sealing-key` prints the
+  key itself, so its owner can check it against what Switch Console shows
+  before giving a login.
 
 - **Each agent as a Linux user of its own.** On Linux with systemd and polkit,
   `sudo switch-agent-controller install-service --separate-users` sets up, once,
@@ -7956,11 +7956,11 @@ tags; see RELEASING.md.
   session state in that directory's `sdk-sessions/`, not in your
   `~/.local/state/switch`. A controller Switch Console runs, and a data
   directory that ran agents before this version, keep the old location.
+
+#### Fixed
 - **An agent whose definition can no longer be applied is stopped.** One that
   was running when its definition became invalid used to keep running under
   the old one while its status read failed.
-
-#### Fixed
 - **A Claude Code login that is there but does not work is reported as not
   signed in.** `claude auth status` only says a login or key is present, so a
   key left by an old install read as signed in while every session failed.
@@ -7999,6 +7999,14 @@ tags; see RELEASING.md.
   either.
 
 #### Security
+- **Its agents get the session host's security fixes, as in Switch
+  Console.** Claude sessions take their MCP and connector tokens from the
+  environment, not the command line. Pi asks before changing files outside its
+  working directory, and before reading them unless bypass is on.
+  `send_attachment` sends only files from the working directory or the
+  session's downloads. Session folders and downloaded room files are private
+  to the controller's user, the session host's control socket compares its
+  secret in constant time, and an agent's sessions move with its folder.
 - **The controller no longer installs an older release because the server
   names one.** It used to follow Switch back to any signed release, so a
   compromised server could return every controller to one with a known flaw.
@@ -8320,8 +8328,16 @@ published on its own.
   allowlist**, as in Switch Console.
 - **Applies bypass and outside directories only where the host allows them**,
   as the agent-controller does, a Claude Code `permissionMode` that skips
-  approvals included: an SSH host's controller needs `switch-agent-controller
-  allow` run on that host.
+  approvals included. On an SSH host that means running
+  `switch-agent-controller allow` there; the agent's status names the exact
+  command, with `--data-dir` when the controller runs from a data directory
+  other than its default.
+- **Gets the session host's other security fixes, as in Switch Console.**
+  Claude sessions take their MCP and connector tokens from the environment,
+  Pi asks before touching files outside its working directory,
+  `send_attachment` sends only files from the working directory or the
+  session's downloads, and session folders and downloaded room files are
+  private.
 
 ### [1.9.12] - 2026-10-01
 

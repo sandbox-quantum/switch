@@ -17,10 +17,10 @@ spec:
     - Ingress
   ingress:
     - from:
-        {{- $clients := list "switch-core" "create-runtime-role" }}
-        {{- if .Values.switchCore.migrations.preUpgradeJob }}
-        {{- $clients = append $clients "migrate" }}
-        {{- end }}
+        {{- /* migrate whether or not this release runs it: turning the
+               pre-upgrade Job back on starts it under the previous
+               release's policy, which must already admit it. */}}
+        {{- $clients := list "switch-core" "create-runtime-role" "migrate" }}
         {{- range $clients }}
         - podSelector:
             matchLabels:

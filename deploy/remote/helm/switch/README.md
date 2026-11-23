@@ -156,9 +156,13 @@ Every pod runs as a non-root user: the one its image runs as. switch-core runs
 as 10001, the gateway's nginx as 101 and Postgres as 70 (the Alpine image's
 `postgres`). Every pod also has privilege escalation off, every capability
 dropped, the runtime's default seccomp profile and a read-only root
-filesystem, with emptyDirs where the process writes. No pod mounts a ServiceAccount token: nothing in the chart calls the
-Kubernetes API. Workload identity and the Teams app's federated credential
-mount tokens of their own.
+filesystem, with emptyDirs where the process writes. No pod mounts a
+ServiceAccount token: nothing in the chart calls the Kubernetes API. Workload
+identity and the Teams app's federated credential mount tokens of their own.
+
+The optional decision service's model server is the exception. It has
+privilege escalation off and every capability dropped, but its root
+filesystem stays writable, and llama.cpp's upstream image runs as root.
 
 Postgres needs no step on upgrade. A volume an earlier release started as
 root already belongs to the `postgres` user. If you point
@@ -258,19 +262,9 @@ An upgrade's migrations run before the new pods serve: in the pre-upgrade Job
 than one replica the old pods keep serving while they run, so a migration that
 locks a table pauses everything that writes to it.
 
-Two migrations build an index on `messages` that way. Every send waits until
-the build finishes, and the more history the table holds, the longer that is.
+One migration an upgrade can still run locks `messages` that way, so every
+send waits until it finishes:
 
-- **From before Switch 0.24.0:** revision `c71a4f9d2b83` adds
-  `ix_messages_room_sent_at`. Build it by hand first, as the schema owner and
-  outside a transaction, and the migration skips it:
-
-  ```sql
-  CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_messages_room_sent_at
-      ON messages (room_id, sent_at);
-  ```
-
-  If `\d messages` already lists the index, there is nothing to do.
 - **From before Switch 0.31.0:** revision `d8b4f2a6c1e9` adds a column to
   `messages` and a unique index on it, so the index can't be built ahead. The
   column starts empty, so the pause is one read of the whole table, not a full
