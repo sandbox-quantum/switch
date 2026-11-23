@@ -54,6 +54,7 @@ from switch_core.gateway.browser_handoff import (
 from switch_core.gateway.browser_handoff import router as handoff_router
 from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.keys import Keyring, Purpose
+from switch_core.workos_authkit import AuthKit
 from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -671,6 +672,69 @@ async def test_a_browser_opened_from_an_authkit_sign_in_ends_when_that_sign_in_d
         await session.commit()
     assert await _me(app, console) == 401
     assert await _me(app, browser) == 401
+
+
+async def test_signing_out_in_a_browser_console_opened_leaves_its_authkit_sign_in(
+    app: FastAPI,
+    people: SimpleNamespace,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The browser stands on Console's AuthKit session; signing out of the
+    browser ends only the browser's own session, and sends it nowhere."""
+
+    def workos(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"WorkOS was asked {request.url}")
+
+    app.state.identity_sessions = IdentitySessions(
+        session_factory,
+        AuthKit(
+            httpx.AsyncClient(transport=httpx.MockTransport(workos)),
+            "sk_test_example",  # gitleaks:allow
+            "https://api.workos.test",
+            "client_EXAMPLE",
+        ),
+    )
+    app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
+        keyring=_KEYRING,
+        gateway_cookie_secure=False,
+        gateway_password_login_enabled=True,
+        gateway_tenant_choice_enabled=False,
+        dashboard_base_url="https://dashboard.example.test",
+        **LOGIN_LIMIT_DEFAULTS,
+    )
+    store = IdentitySessionStore()
+    async with session_factory() as session:
+        row_id = await store.record(
+            session,
+            user_id=people.ada.id,
+            provider="workos",
+            provider_user_id="user_ADA",
+            session_id="session_CONSOLE",
+            followed=True,
+            now=datetime.now(UTC),
+        )
+        await session.commit()
+    console = _cookie(people.ada, identity_session=row_id)
+    browser = await _open_browser(app, console)
+
+    async with _client(app, browser) as client:
+        signed_out = await client.post("/auth/logout")
+
+    assert signed_out.status_code == 200
+    assert signed_out.json()["end_session_url"] is None
+    assert await _me(app, browser) == 401
+    assert await _me(app, console) == 200
+    async with session_factory() as session:
+        assert (await store.get(session, row_id)).ended_at is None  # type: ignore[union-attr]
+
+    # Console signing out of its own session does end it, there and at WorkOS.
+    async with _client(app, console) as client:
+        console_out = await client.post("/auth/logout")
+    assert console_out.json()["end_session_url"].startswith(
+        "https://api.workos.test/user_management/sessions/logout?session_id=session_CONSOLE"
+    )
+    async with session_factory() as session:
+        assert (await store.get(session, row_id)).ended_at is not None  # type: ignore[union-attr]
 
 
 async def test_signing_out_of_console_signs_out_the_browsers_it_opened(

@@ -248,6 +248,11 @@ the WorkOS environment shares. So:
   from it. Switch asks WorkOS about each session at most
   every five minutes, while it is in use. When WorkOS cannot be reached, the
   session is kept and asked about again later, never ended on a guess.
+- Switch Console signs in through the system browser, so a dashboard signed
+  in in that same browser shares Console's AuthKit session: signing out of
+  either signs out both. A browser Console opened through its sign-in link
+  is different: signing out there ends only that browser's session, and
+  leaves Console signed in.
 - An impersonated sign-in (WorkOS's support impersonation) is refused: Switch
   keeps no record of who was impersonating, so its audit log would credit the
   person impersonated.

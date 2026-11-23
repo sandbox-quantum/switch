@@ -163,6 +163,9 @@ version of their own to them without also giving them a release of their own.
   Signing out elsewhere, a revoke, a password reset and the environment's
   session policy all count. `switch-accounts sign-out` and `delete` end the
   account's AuthKit sign-ins too. An impersonated sign-in is refused.
+  Signing out in a browser Switch Console opened leaves Console signed in,
+  but a dashboard signed in in the same browser Console signed in through
+  shares Console's AuthKit session, so signing out of either signs out both.
   The routes are unchanged, so Switch Console signs in as before. In the Helm
   chart, `switchCore.signIn.provider: workos` with `switchCore.oidc.enabled`.
   The AuthKit application's setup, its session policy and moving from a WorkOS

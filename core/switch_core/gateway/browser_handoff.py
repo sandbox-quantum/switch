@@ -12,7 +12,7 @@ version, so it never outlives Console's session and ends with "Sign out of
 all devices". It stands on the AuthKit sign-in Console's session stands on,
 if any, so it ends when that ends at WorkOS. Signing out of Console's session
 signs it out too (`auth.sign_out_session`); signing out in the browser leaves
-Console's alone. `POST /auth/handoff/peek` tells the page whose link it is
+Console's alone, its AuthKit sign-in included (`auth_routes.logout`). `POST /auth/handoff/peek` tells the page whose link it is
 before spending it, so a browser signed in as someone else asks first.
 
 Peek and redeem take no session, and are checked against the server's own

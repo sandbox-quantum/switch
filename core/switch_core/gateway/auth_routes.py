@@ -49,6 +49,8 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import (
+    BROWSER_HANDOFFS,
+    SESSION_ID_CLAIM,
     SIGNUP_REFUSED_DETAIL,
     AuthenticatedCaller,
     AuthenticatedSession,
@@ -456,15 +458,27 @@ async def logout(
     to WorkOS to end it there, as signing out of any application sharing it
     does. Read with the cookie's signature checked and its expiry not, so an
     expired cookie still ends what it stood on.
+
+    Not for a browser opened from Switch Console's one-time link
+    (`gateway/browser_handoff.py`): it stands on Console's AuthKit session,
+    which signing out of the browser leaves alone, as it leaves Console's
+    Switch session. Only the browser's own session ends, and the answer
+    sends it nowhere.
     """
     await sign_out_session(session, request, config)
     end_session_url: str | None = None
     payload = signed_claims(request, config.keyring)
     identity_session = None if payload is None else identity_session_of(payload)
     if payload is not None and identity_session is not None:
-        end_session_url = await identity_sessions.end_here(
-            payload["sub"], identity_session, _sign_out_return(config)
-        )
+        session_id = payload.get(SESSION_ID_CLAIM)
+        opened_by_console = isinstance(
+            session_id, str
+        ) and await BROWSER_HANDOFFS.opened_by_link(session, session_id)
+        await session.rollback()
+        if not opened_by_console:
+            end_session_url = await identity_sessions.end_here(
+                payload["sub"], identity_session, _sign_out_return(config)
+            )
     response.delete_cookie("switch_auth", path="/")
     return SignOutResponse(ok=True, end_session_url=end_session_url)
 

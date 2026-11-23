@@ -180,6 +180,17 @@ class BrowserHandoffStore:
         )
         return handoff
 
+    async def opened_by_link(self, session: AsyncSession, browser_sid: str) -> bool:
+        """Whether `browser_sid` is a browser session a code was redeemed for.
+        Rows that link a session which could still be live are kept past
+        their expiry (`_prune`), so this holds for as long as it matters."""
+        found = await session.scalar(
+            select(BrowserHandoff.id)
+            .where(BrowserHandoff.browser_sid == browser_sid)
+            .limit(1)
+        )
+        return found is not None
+
     async def lock_sessions_opened_by(
         self, session: AsyncSession, console_sids: Sequence[str]
     ) -> list[OpenedSession]:
