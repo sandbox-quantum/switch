@@ -513,3 +513,167 @@ async def test_a_failed_account_is_recorded_and_retried_after_the_organization_w
     assert retried.finished
     assert [account.id for account in retried.deleted_accounts] == [dave]
     assert await _count(session_factory, User, User.id == dave) == 0
+
+
+@pytest.mark.parametrize(("backend", "revoked"), [("box", True), ("vm", False)])
+async def test_tearing_down_a_box_machine_revokes_its_controller(
+    session_factory: async_sessionmaker[AsyncSession], backend: str, revoked: bool
+) -> None:
+    """A hosted agents v2 box keeps its disk, which holds its controller
+    credential: tearing its machine down revokes the controller at once, and
+    every process is told. A v1 machine is torn down as before."""
+    import dataclasses
+
+    from tests.switch_core.hosted_machine_helpers import link_controller
+
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    alice = await _person(session_factory, "alice", [workspace], organization_id)
+    async with tenant_session(session_factory, workspace) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=alice,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=3,
+        )
+        machine.backend = backend
+        controller = await link_controller(session, machine)
+        await session.commit()
+        controller_id = controller.id
+    calls: list[tuple[str, str]] = []
+
+    async def revoke(_session: AsyncSession, tenant_id: str, cid: str) -> None:
+        calls.append((tenant_id, cid))
+
+    purge, _installer, signals = _purge(session_factory)
+    purge = dataclasses.replace(purge, revoke_box_controller=revoke)
+
+    first = await purge.run(await purge.plan(organization_id), "TICKET-3")
+    assert not first.finished  # still waits on the teardown, as before
+    removed = [
+        data["controller_id"]
+        for name, data in signals.published
+        if name == "controller.revoked"
+    ]
+    if revoked:
+        assert calls == [(workspace, controller_id)]
+        assert removed == [controller_id]
+    else:
+        assert calls == []
+        assert removed == []
+
+    # A second run while it waits doesn't revoke it again.
+    await purge.run(await purge.plan(organization_id), "TICKET-3")
+    assert len(calls) == (1 if revoked else 0)
+
+
+async def test_a_box_revoke_that_fails_never_stops_a_purge(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The revoke is extra care: if it fails, the purge goes on as before,
+    and the workspace's rows, the credential among them, still go later."""
+    import dataclasses
+    import logging
+
+    from tests.switch_core.hosted_machine_helpers import link_controller
+
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    alice = await _person(session_factory, "alice", [workspace], organization_id)
+    async with tenant_session(session_factory, workspace) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=alice,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=3,
+        )
+        machine.backend = "box"
+        await link_controller(session, machine)
+        await session.commit()
+        machine_id = machine.id
+
+    async def revoke(*_args: Any) -> None:
+        raise RuntimeError("token tok-secret broke")
+
+    purge, _installer, signals = _purge(session_factory)
+    purge = dataclasses.replace(purge, revoke_box_controller=revoke)
+    caplog.set_level(logging.ERROR, logger="switch_core.accounts.organization_purge")
+
+    first = await purge.run(await purge.plan(organization_id), "TICKET-5")
+
+    assert not first.finished  # waits on the teardown, as before
+    assert any(machine_id in waiting for waiting in first.waiting)
+    assert not [n for n, _ in signals.published if n == "controller.revoked"]
+    (line,) = [r for r in caplog.records if "box controllers" in r.getMessage()]
+    assert "secret" not in line.getMessage() and "(RuntimeError)" in line.getMessage()
+
+
+@pytest.mark.parametrize("backend", ["box", "vm"])
+async def test_a_purge_with_a_box_machine_finishes_once_its_box_is_at_zero(
+    session_factory: async_sessionmaker[AsyncSession], backend: str
+) -> None:
+    """A box is never deleted by the scaler, only scaled to 0 and reported
+    `stopped`, which Core counts as deleted: the purge then finishes, and a
+    durable entry naming the box's disk for removal outlives it. A v1
+    machine's `stopped` is not its deletion, and it writes no entry."""
+    from switch_core.db.audit import ServerAuditAction
+    from switch_core.db.models import ServerAuditEvent
+    from switch_core.gateway.hosted_controller import Observation, observe
+
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    alice = await _person(session_factory, "alice", [workspace], organization_id)
+    async with tenant_session(session_factory, workspace) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=alice,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=3,
+        )
+        machine.backend = backend
+        await session.commit()
+        machine_id = machine.id
+    purge, _installer, _ = _purge(session_factory)
+
+    first = await purge.run(await purge.plan(organization_id), "TICKET-4")
+    assert not first.finished
+    # The controller's `stopped` report, as the box scaler sends it at 0.
+    async with session_factory() as session:
+        wanted = await session.get(CloudMachine, machine_id)
+        assert wanted is not None and wanted.desired_state == "deleted"
+        revision = wanted.revision
+    async with session_factory() as session:
+        await observe(
+            machine_id, Observation(state="stopped", revision=revision), session
+        )
+
+    second = await purge.run(await purge.plan(organization_id), "TICKET-4")
+    entries = await _count(
+        session_factory,
+        ServerAuditEvent,
+        ServerAuditEvent.action == ServerAuditAction.HOSTED_BOX_TO_REMOVE,
+    )
+    purged = [
+        details
+        for action, details in (await _server_audit(session_factory)).values()
+        if action == ServerAuditAction.ORGANIZATION_PURGED
+    ]
+    if backend == "box":
+        assert second.finished
+        assert await _count(session_factory, Tenant, Tenant.id == workspace) == 0
+        assert entries == 1  # once for the box, and it outlives the purge
+        # Finished, but never silently: the disk left behind is counted.
+        assert second.warnings == [
+            "1 box disk(s) await manual removal, listed in the operator audit "
+            "log as hosted.box_to_remove."
+        ]
+        [details] = purged
+        assert details["boxes_awaiting_removal"] == 1
+    else:
+        assert not second.finished  # waits for its real `deleted` report
+        assert entries == 0
+        assert purged == []

@@ -123,3 +123,14 @@ regexTarget = "line"
 regexes = [
   '''^\s*"source": "cluster OpenAPI v3, v1\.37\.0-eks-b9510e3",\s*$''',
 ]
+
+[[allowlists]]
+description = "Test fixture in test_read_views_routes.py"
+# A made-up keyed id ("k1-" plus hex): an id format, not a credential.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^core/tests/switch_core/visibility/test_read_views_routes\.py$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*keyed = "k1-0123456789abcdef"\s*$''',
+]

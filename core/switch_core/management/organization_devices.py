@@ -10,7 +10,9 @@ be one of the organization's: one elsewhere is answered 404, as one that
 does not exist.
 
 Mounted with the rest of agent management (`wiring.mount_gateway_routes`),
-so only where it is on.
+so only where it is on. With hosted agents v2 on and the hosted config's
+`management_tenant_ids` set, a workspace agent management doesn't serve is
+left out of the listing and refused for removals, as its own routes refuse it.
 """
 
 from __future__ import annotations
@@ -38,7 +40,8 @@ from switch_core.gateway.organization_workspaces import (
     acting_org_admin,
     in_organization_workspace,
 )
-from switch_core.management.dependencies import get_management
+from switch_core.management.auth import ManagementAuthenticator, workspace_not_enabled
+from switch_core.management.dependencies import get_authenticator, get_management
 from switch_core.management.errors import ManagementRoute
 from switch_core.management.gateway_routes import revoke_controller_tokens
 from switch_core.management.service import ManagementService
@@ -55,6 +58,12 @@ Users = Annotated[UserStore, Depends(get_user_store)]
 Organizations = Annotated[OrganizationStore, Depends(get_organization_store)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 Broker = Annotated[ServiceBroker, Depends(get_service_broker)]
+Authenticator = Annotated[ManagementAuthenticator, Depends(get_authenticator)]
+
+
+def _require_served(authenticator: ManagementAuthenticator, workspace_id: str) -> None:
+    if not authenticator.workspace_allowed(workspace_id):
+        raise workspace_not_enabled()
 
 
 @router.get("/organizations/current/devices")
@@ -64,6 +73,7 @@ async def list_organization_devices(
     user_store: Users,
     organization_store: Organizations,
     management: Management,
+    authenticator: Authenticator,
     user: CurrentUser,
 ) -> dict[str, list[dict[str, Any]]]:
     """`{devices, managed_agents}` in every workspace of the organization,
@@ -76,6 +86,8 @@ async def list_organization_devices(
     for tenant in await organization_workspaces(
         session_factory, user.id, acting.access.organization_id
     ):
+        if not authenticator.workspace_allowed(tenant.id):
+            continue
         async with tenant_session(session_factory, tenant.id) as bound:
             found = await workspace_devices(
                 bound, management, user_store, tenant.id, viewer
@@ -96,6 +108,7 @@ async def remove_organization_device(
     organization_store: Organizations,
     management: Management,
     broker: Broker,
+    authenticator: Authenticator,
     user: CurrentUser,
 ) -> dict[str, bool]:
     """Remove a device in one of the organization's workspaces, as an admin
@@ -105,6 +118,7 @@ async def remove_organization_device(
         bound,
         _,
     ):
+        _require_served(authenticator, workspace_id)
         await management.remove_controller(
             bound, workspace_id, controller_id, owner_id=None
         )
@@ -124,6 +138,7 @@ async def stop_managing_organization_agent(
     organization_store: Organizations,
     management: Management,
     broker: Broker,
+    authenticator: Authenticator,
     user: CurrentUser,
 ) -> dict[str, bool]:
     """Stop managing an agent in one of the organization's workspaces, as an
@@ -134,6 +149,7 @@ async def stop_managing_organization_agent(
         bound,
         _,
     ):
+        _require_served(authenticator, workspace_id)
         await management.delete_managed_agent(
             bound, workspace_id, agent_id, owner_id=None
         )
