@@ -41,5 +41,19 @@ export const cloudMachineSchema = z.object({
   memory: machineCapacitySchema,
   agents: z.array(z.string()),
   controller_id: z.string().nullable(),
+  /** Sent only with hosted agents v2 on: `vm` (v1) or `box` (v2). */
+  backend: z.enum(['vm', 'box']).optional(),
+  /**
+   * Sent only with hosted agents v2 on: a box on its way up, whether it is a
+   * first start or a wake, and when Core was asked for it (`since`, null when
+   * Core has no start time). Null when the box is not starting.
+   */
+  start: z
+    .object({
+      kind: z.enum(['first', 'wake']),
+      since: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
 });
 export type CloudMachine = z.infer<typeof cloudMachineSchema>;

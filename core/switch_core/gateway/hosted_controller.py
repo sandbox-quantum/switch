@@ -44,6 +44,7 @@ from switch_core.gateway.cloud_controllers import (
     enrollment_code,
     forget_missing_box,
     live_controller,
+    note_start_click,
     ready_if_both_signals,
 )
 from switch_core.gateway.dependencies import (
@@ -992,6 +993,8 @@ async def _box_missing(
     machine.error = None
     machine.error_code = None
     machine.updated_at = now
+    # The new box's start is timed, and shown as starting, from now.
+    note_start_click(machine, now)
     return True
 
 

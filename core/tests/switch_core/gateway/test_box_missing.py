@@ -286,7 +286,10 @@ async def test_a_missing_box_is_asked_for_again_once(
         machine = await _state(harness, box)
         assert machine.state == "queued" and machine.error_code is None
         assert machine.revision == revision
-        assert machine.running_observed_at is None and machine.heartbeat is None
+        assert machine.running_observed_at is None
+        # The old box's facts are gone; only the new start's clock is kept.
+        assert set(machine.heartbeat or {}) <= {"first_click", "start"}
+        assert (machine.heartbeat or {})["start"]["revision"] == machine.revision
         assert (await _listed(hosted, box.machine_id))["box_expected"] is False
         assert (await _controller(harness, box)).revoked_at is not None
         async with tenant_session(
