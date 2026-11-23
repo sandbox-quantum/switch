@@ -33,4 +33,7 @@ properties:
       lapsed and is then renewed reads offline elsewhere until the next
       re-check (`RECHECK_SECONDS`), since the lease watch only drops copies. A
       lapse is a process that stopped renewing for a whole `LEASE_TTL`, so
-      that is a delay after an outage, not a wrong answer.
+      that is a delay after an outage, not a wrong answer. The re-check skips
+      a tenant whose rows and live processes are unchanged, so for a
+      controller it reads the tenant again only because the controllers held
+      elsewhere there are not what its last full read left.

@@ -132,6 +132,14 @@ class Target:
         default_factory=lambda: {number: set() for number in PROCESSES}
     )
 
+    def connected(self, holder: int) -> None:
+        """A new connection: what was owed about the one before is moot, and
+        every other process owes the signal of this one."""
+        self.holder, self.open = holder, True
+        for owed in self.owed.values():
+            owed.clear()
+        self.owe(SIGNAL)
+
     def owe(self, what: str) -> None:
         for number in PROCESSES:
             if number != self.holder:
@@ -157,7 +165,16 @@ class LeasePresence(RuleBasedStateMachine):
             raise
 
     def run(self, coroutine: Any) -> Any:
-        return self.loop.run_until_complete(coroutine)
+        return self.loop.run_until_complete(self._kept(coroutine))
+
+    async def _kept(self, coroutine: Any) -> Any:
+        """Renew every lease the model holds first: the database's clock runs
+        on, and a lease left unrenewed for `LEASE_TTL` lapses there whatever
+        the steps say."""
+        for process in self.processes:
+            if process.lease == "held":
+                await process.harness.management.lease.renew()
+        return await coroutine
 
     async def _set_up(self) -> None:
         await empty_the_database(self.engine)
@@ -306,12 +323,16 @@ class LeasePresence(RuleBasedStateMachine):
                     COVERAGE[
                         f"{target.kind} copy stale before checking the leases"
                     ] += 1
-                assert owed, (
+                # Online wrongly only until it hears a closing or checks a
+                # lease that went down; offline wrongly only until it hears
+                # an opening or re-reads after a renewal.
+                excuses = {SIGNAL, LEASE_DOWN} if copy else {SIGNAL, LEASE_UP}
+                assert owed & excuses, (
                     f"process {number} reads the {target.kind}'s connection "
                     f"{'online' if copy else 'offline'}, held by process "
                     f"{target.holder} whose lease is {self._lease_of(target)}, "
-                    f"{'open' if target.open else 'closed'}, with nothing "
-                    f"left to catch up with"
+                    f"{'open' if target.open else 'closed'}, owing "
+                    f"{sorted(owed) or 'nothing'}, none of which explains it"
                 )
 
     def _lease_of(self, target: Target) -> str:
@@ -346,8 +367,7 @@ class LeasePresence(RuleBasedStateMachine):
                     )
 
         target.handle = self.run(go())
-        target.holder, target.open = through, True
-        target.owe(SIGNAL)
+        target.connected(through)
         self._judge()
 
     @precondition(lambda self: self.targets["agent"].open)
@@ -383,8 +403,7 @@ class LeasePresence(RuleBasedStateMachine):
             return conn, token
 
         target.handle = self.run(go())
-        target.holder, target.open = through, True
-        target.owe(SIGNAL)
+        target.connected(through)
         self._judge()
 
     @precondition(lambda self: self.targets["controller"].open)

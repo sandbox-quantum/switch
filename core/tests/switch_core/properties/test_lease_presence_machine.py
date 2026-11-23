@@ -66,6 +66,27 @@ def test_a_holder_that_shuts_down_reads_offline_before_its_sockets_go(
         machine.teardown()
 
 
+@pytest.mark.property("presence.online-iff-lease")
+def test_a_controller_held_again_after_a_lapse_reads_online_on_the_recheck(
+    postgres_schema: str,
+) -> None:
+    """The other process read every controller's connection, so its re-check
+    skips a workspace whose rows and live processes are unchanged. The lease
+    watch dropped the copy meanwhile: once the holder renews, the re-check
+    must still read the workspace again."""
+    machine = machine_on(postgres_schema)()
+    try:
+        machine.connect_controller(0)
+        machine.hear()
+        machine.reread(1)
+        machine.lapse(_drawing(machine.processes[0]))
+        machine.check_the_leases(1)
+        machine.renew(_drawing(machine.processes[0]))
+        machine.reread(1)
+    finally:
+        machine.teardown()
+
+
 class _drawing:
     """A stand-in for `st.data()` that draws `value` whatever is asked."""
 
