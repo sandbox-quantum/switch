@@ -1,0 +1,80 @@
+slug: snowflake
+name: Snowflake
+category: Data
+description: Query Snowflake through an MCP server your administrator set up, with your programmatic access token.
+enabled: true
+publisher: Snowflake
+links:
+  documentation: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp
+  support: https://docs.snowflake.com/en/user-guide/contacting-support
+  privacy: https://www.snowflake.com/privacy-policy/
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: account
+        label: Account
+        secret: false
+        help: The part of your Snowflake address before .snowflakecomputing.com, as orgname-accountname. Write any underscore as a hyphen. Addresses with a region or privatelink in them are not supported.
+        # One DNS label: only ever the host label of https://{account}.snowflakecomputing.com.
+        pattern: "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+      - name: database
+        label: Database
+        secret: false
+        help: The database that holds the MCP server.
+        # Unquoted Snowflake identifiers, each one whole path segment.
+        pattern: "[A-Za-z_][A-Za-z0-9_]{0,254}"
+      - name: schema
+        label: Schema
+        secret: false
+        help: The schema that holds the MCP server.
+        pattern: "[A-Za-z_][A-Za-z0-9_]{0,254}"
+      - name: server
+        label: MCP server
+        secret: false
+        help: The MCP server's name, from CREATE MCP SERVER.
+        pattern: "[A-Za-z_][A-Za-z0-9_]{0,254}"
+      - name: pat
+        label: Programmatic access token
+        secret: true
+        help: Settings, Authentication, Programmatic access tokens. Restrict it to a read-only role unless agents should change data.
+    # Lists the server's tools, the call a session makes first, so a wrong
+    # token, server name or grant is caught before anything is stored.
+    # Measured against a Snowflake account: a wrong token is 401 ("Programmatic
+    # access token is invalid."), but a server that does not exist, or that the
+    # token's role may not use, is 200 with a JSON-RPC error, so the answer must
+    # hold result.tools. The X-Snowflake-Authorization-Token-Type header was not
+    # needed, and lowercase names work.
+    identity:
+      method: POST
+      url: "https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}/mcp-servers/{server}"
+      headers: { Authorization: "Bearer {pat}" }
+      body: { jsonrpc: "2.0", id: 1, method: tools/list, params: {} }
+      requires: result.tools
+    help_url: https://docs.snowflake.com/en/user-guide/programmatic-access-tokens
+# Unavailable until Core can use a key for the agent: a token lasts 15 days by
+# default and up to 365, only Snowflake can revoke it, and Switch never hands a
+# key that long-lived to an agent. The broker reports key_never_expires.
+#
+# What a Snowflake administrator sets up: the MCP server (CREATE MCP SERVER,
+# https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp),
+# a role with USAGE on it, its database, schema and warehouse, and on each
+# object its tools reach, and a network policy covering the user, or an
+# authentication policy with PAT_POLICY NETWORK_POLICY_EVALUATION =
+# ENFORCED_NOT_REQUIRED, without which Snowflake refuses the token.
+#
+# There is one level. The tools are whatever the administrator put on the
+# server, so Switch cannot tell reading from writing; Snowflake's role does.
+# A token restricted to a role with only SELECT cannot write (measured: an
+# INSERT is refused "Insufficient privileges"), and one without that
+# restriction acts with all of its user's roles. Trial accounts cannot call
+# the SQL execution tool (measured: "Access denied for trial accounts").
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: snowflake
+      url: "https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}/mcp-servers/{server}"
+      headers: { Authorization: "Bearer {pat}" }
+tools: { mode: pass_through }
