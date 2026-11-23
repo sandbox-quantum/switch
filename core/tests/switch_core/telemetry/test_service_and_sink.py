@@ -399,6 +399,19 @@ class TestTheWireFormat:
         assert resource["switch_trust.env"] == {"stringValue": "dev"}
         assert resource["switch_trust.internal"] == {"stringValue": "false"}
 
+    async def test_the_relay_s_earlier_names_carry_the_same_values(self) -> None:
+        """A relay that reads only the earlier names files an event without
+        `flint_env` under its default project, so they go beside the new ones."""
+        body = await self._capture(lambda r: httpx.Response(200))
+        resource = {
+            a["key"]: a["value"]
+            for a in body["resourceLogs"][0]["resource"]["attributes"]
+        }
+
+        assert resource["flint.client_id"] == {"stringValue": "deployment-uuid"}
+        assert resource["flint_env"] == {"stringValue": "dev"}
+        assert resource["flint_internal"] == {"stringValue": "false"}
+
     async def test_the_sink_sends_no_service_or_environment_name_a_record_carries(
         self,
     ) -> None:

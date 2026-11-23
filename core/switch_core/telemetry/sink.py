@@ -344,16 +344,31 @@ def _resource_from(record: TelemetryRecord) -> OtlpResource:
     )
 
 
+# The relay's earlier names for the client id, environment and staff flag,
+# sent beside the `switch_trust.*` ones until every relay in service reads
+# those: one that does not files an event without `flint_env` under its
+# default project, whatever environment it came from. A relay that reads both
+# keeps the earlier name, and the values are the same.
+_EARLIER_RELAY_NAMES = {
+    "switch_trust.client_id": "flint.client_id",
+    "switch_trust.env": "flint_env",
+    "switch_trust.internal": "flint_internal",
+}
+
+
 def _add_relay_context(payload: dict[str, Any], resource: Mapping[str, str]) -> None:
     """Add `switch_trust.env` and `switch_trust.internal` to the resource,
     which the shared encoder's resource has no fields for: it describes the
     process to an operator's own collector, where they mean nothing. The relay
     sends each event to the Amplitude project `switch_trust.env` names, and
     drops one it cannot place; `switch_trust.internal` tells staff usage from
-    adoption."""
+    adoption. Each also goes under its earlier name (`_EARLIER_RELAY_NAMES`)."""
     context = {
         key: resource[key] for key in ("switch_trust.env", "switch_trust.internal")
     }
+    context.update(
+        {earlier: resource[key] for key, earlier in _EARLIER_RELAY_NAMES.items()}
+    )
     for resource_log in payload["resourceLogs"]:
         resource_log["resource"]["attributes"].extend(otlp_attributes(context))
 

@@ -92,6 +92,7 @@ from switch_core.chats.service import ChatError
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
+    SAID_FOR_AGENT_FLAG,
     AdminMessageType,
     platform_on_behalf_of,
     platform_replies_in_channel,
@@ -1797,7 +1798,12 @@ class AgentCore:
         bridges — the resource manager isn't a bridge participant, so its own
         notices wouldn't reach Slack/Mattermost."""
         try:
-            await client.send_message(transport_room_id, body, metered=False)
+            await client.send_message(
+                transport_room_id,
+                body,
+                metered=False,
+                extra_content={SAID_FOR_AGENT_FLAG: True},
+            )
         except Exception:
             logger.exception(
                 "Failed to post agent activity notice to %s", transport_room_id
