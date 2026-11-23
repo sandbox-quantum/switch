@@ -1082,3 +1082,97 @@ def test_any_other_mount_of_the_login_secret_is_refused(change):  # type: ignore
     from switch_hosted_controller.egress_lists import check_box_pod_spec
 
     assert check_box_pod_spec(_starter_pod(c=change), split=True) != []
+
+
+# ---- step 5: a box-keyed box takes its owner's settings (box-owners) ----
+
+BK = "agents-box-k1-00000000000000aa"
+OWNER = "k1-0123456789abcdef"
+BOXES_BK = {"22222222-2222-2222-2222-222222222222": BK}
+
+
+def test_an_owner_with_saved_settings_gives_their_settings():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    settings = json.dumps(
+        {f"agents-user-{OWNER}": {"parts": [], "extras": ["example.org"], "split": True}}
+    )
+    (box,) = parse_egress(settings, BOXES_BK, ("github",), True, owners={BK: OWNER})
+    assert box.namespace == BK and box.parts == () and box.extras == ("example.org",) and box.split
+
+
+def test_an_owner_without_saved_settings_gets_the_defaults():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    (box,) = parse_egress("{}", BOXES_BK, ("github",), True, owners={BK: OWNER})
+    assert box.parts == ("github",) and box.split
+
+
+def test_no_box_owners_entry_gives_no_login():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    assert parse_egress("{}", BOXES_BK, ("github",), True, owners={}) == []
+    assert parse_egress("{}", BOXES_BK, ("github",), True, owners={BK: "not-a-keyed-id"}) == []
+
+
+def test_a_person_keyed_box_keeps_its_namespace_keyed_settings_never_the_defaults():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    person = f"agents-user-{OWNER}"
+    boxes = {"11111111-1111-1111-1111-111111111111": person, **BOXES_BK}
+    settings = json.dumps({person: {"parts": [], "split": True}})
+    listed = {
+        b.namespace: b for b in parse_egress(settings, boxes, ("github",), True, owners={BK: OWNER})
+    }
+    assert (
+        listed[person].parts == () and listed[BK].parts == ()
+    )  # the same person's setting, on both boxes
+
+
+def test_settings_for_someone_with_no_box_at_all_are_still_refused():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    with pytest.raises(EgressConfigError):
+        parse_egress(
+            json.dumps({"agents-user-k1-ffffffffffffffff": {"parts": []}}),
+            BOXES_BK,
+            (),
+            True,
+            owners={BK: OWNER},
+        )
+
+
+def test_a_box_keyed_boxs_squid_id_is_the_box_never_the_person():
+    box = BoxEgress(BK, ())
+    assert box.box_id == "box-k1-00000000000000aa"
+    assert OWNER not in box.box_id and OWNER not in box.user
+    person = BoxEgress(f"agents-user-{OWNER}", ())
+    assert person.box_id == OWNER  # unchanged for a person-keyed box
+    assert box.user != person.user
+
+
+def test_box_owners_is_read_by_name_and_refused_whole_if_off():
+    from switch_hosted_controller.egress_lists import EgressKubeApi
+
+    good = FakeCall(
+        {
+            ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-owners"): {
+                "data": {BK: _b64(OWNER)}
+            }
+        }
+    )
+    assert EgressKubeApi(good).box_owners() == {BK: OWNER}
+    for data in ({"agents-user-ada": _b64(OWNER)}, {BK: _b64("someone")}):
+        bad = FakeCall(
+            {("GET", "/api/v1/namespaces/switch-hosted/secrets/box-owners"): {"data": data}}
+        )
+        with pytest.raises(EgressConfigError):
+            EgressKubeApi(bad).box_owners()
+
+
+def test_with_the_open_web_an_owned_box_keyed_box_is_open_and_an_unowned_one_gets_nothing():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    (box,) = parse_egress("{}", BOXES_BK, ("github",), True, open_web=True, owners={BK: OWNER})
+    assert box.open_web and box.namespace == BK
+    assert parse_egress("{}", BOXES_BK, ("github",), True, open_web=True, owners={}) == []

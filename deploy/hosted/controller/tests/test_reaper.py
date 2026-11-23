@@ -105,7 +105,9 @@ def test_an_error_after_the_delete_carries_on_and_reports_gone_on_the_next_pass(
     def crash(step):  # type: ignore[no-untyped-def]
         raise RuntimeError(step)
 
-    reap_once(core, kube, stop_after=crash)  # this box stops right after its delete; the pass carries on
+    reap_once(
+        core, kube, stop_after=crash
+    )  # this box stops right after its delete; the pass carries on
     assert core.gone_calls == []
     assert reap_once(core, kube)["gone"] == 1 and core.gone_calls == [P1]
 

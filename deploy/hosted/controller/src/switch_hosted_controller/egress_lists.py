@@ -35,7 +35,7 @@ from typing import Protocol
 from urllib.error import HTTPError
 from uuid import UUID
 
-from .box_names import is_box_keyed
+from .box_names import KEYED_ID_RE, identity, is_box_keyed, user_namespace
 from .box_scaler import NAMESPACE_RE, ScalerConfigError
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,9 @@ LOGIN_SECRET = "switch-proxy-login"  # in each box namespace; created empty by t
 URL_KEY, CTL_URL_KEY = "https_proxy", "ctl_https_proxy"
 BOX_MAP_SECRET = (
     "box-map"  # in switch-hosted: one key per machine id, the value the box's namespace
+)
+BOX_OWNERS_SECRET = (
+    "box-owners"  # in switch-hosted: box-keyed namespace -> owner's keyed id (add-only)
 )
 SETTINGS_SECRET = "egress-settings"  # in the generator's own namespace
 SETTINGS_KEY = "egress.json"
@@ -94,11 +97,13 @@ class BoxEgress:
 
     @property
     def box_id(self) -> str:
-        return (
-            GATE_ID
-            if self.namespace == GATE_NAMESPACE
-            else self.namespace.removeprefix("agents-user-")
-        )
+        """The box's id in squid (its users and files): `k1-…` for a person-keyed box, as before, and the box's own
+        identity, `box-k1-…`, for a box-keyed one, so a person's id never appears in squid for a new box."""
+        if self.namespace == GATE_NAMESPACE:
+            return GATE_ID
+        if is_box_keyed(self.namespace):
+            return identity(self.namespace)
+        return self.namespace.removeprefix("agents-user-")
 
     @property
     def user(self) -> str:
@@ -138,6 +143,7 @@ def parse_egress(
     default_parts: tuple[str, ...],
     default_split: bool = False,
     open_web: bool = False,
+    owners: Mapping[str, str] | None = None,
 ) -> list[BoxEgress]:
     """The operator's egress settings: `{namespace: {"parts": [...], "extras": [...], "split": bool}}`.
 
@@ -148,7 +154,15 @@ def parse_egress(
     `open_web` (`SWITCH_EGRESS_OPEN`): every box with a login gets the open web (`BoxEgress.open_web`). Its parts are
     still parsed and checked, so nothing that's valid today breaks, but don't limit its agents. The gate never gets
     it: it keeps exactly its listed hosts.
+
+    A box-keyed box (`agents-box-…`) takes its owner's settings, from `owners` (`box-owners`, namespace to person):
+    the entry named after the person (`agents-user-<their keyed id>`), the same one their person-keyed box would
+    use, so a setting follows the person across boxes. An owner with no entry gets the defaults. **A box-keyed box
+    with no owner gets no login at all** (so no egress): never the defaults, which can include optional parts.
+    With `open_web`, a box-keyed box that has an owner gets the open web like every other box with a login; with no
+    owner it still gets no login.
     """
+    owners = owners or {}
     try:
         raw = json.loads(text)
     except ValueError:
@@ -172,16 +186,23 @@ def parse_egress(
         result[GATE_NAMESPACE] = BoxEgress(
             GATE_NAMESPACE, (), fixed_hosts=tuple(sorted(set(hosts)))
         )
+    # The person-named keys a box-keyed box's owner can have: settings may be keyed by these too.
+    owner_keys = {
+        user_namespace(owner)
+        for namespace, owner in owners.items()
+        if namespace in known and is_box_keyed(namespace) and KEYED_ID_RE.fullmatch(owner)
+    }
+    parsed: dict[str, tuple[tuple[str, ...], tuple[str, ...], bool]] = {}
     for namespace, settings in raw.items():
+        if is_box_keyed(str(namespace)):
+            # A box-keyed box's settings follow its owner (`box-owners`), never its name.
+            raise EgressConfigError(f"settings for a box-keyed box go by its owner: {namespace!r}")
         if (
             not isinstance(namespace, str)
             or not NAMESPACE_RE.fullmatch(namespace)
-            or namespace not in known
+            or (namespace not in known and namespace not in owner_keys)
         ):
             raise EgressConfigError(f"not a box in the box map: {namespace!r}")
-        if is_box_keyed(namespace):
-            # A box-keyed box's settings follow its owner (`box-owners`), never its name: not taken here yet.
-            raise EgressConfigError(f"settings for a box-keyed box go by its owner: {namespace!r}")
         if not BOX_ID_RE.fullmatch(namespace.removeprefix("agents-user-")):
             raise EgressConfigError(f"box id too long or malformed: {namespace!r}")
         if not isinstance(settings, dict) or set(settings) - {"parts", "extras", "split"}:
@@ -201,13 +222,22 @@ def parse_egress(
             raise EgressConfigError(f"{namespace}: an extra is not a host name")
         if not isinstance(split, bool):
             raise EgressConfigError(f"{namespace}: split must be true or false")
-        result[namespace] = BoxEgress(
-            namespace, tuple(sorted(set(parts))), tuple(sorted(set(extras))), split
-        )
+        parsed[namespace] = (tuple(sorted(set(parts))), tuple(sorted(set(extras))), split)
+    for namespace, (parts_, extras_, split_) in parsed.items():
+        if namespace in known:
+            result[namespace] = BoxEgress(namespace, parts_, extras_, split_)
     for namespace in known - set(result) - {GATE_NAMESPACE}:
         if is_box_keyed(namespace):
-            # Fail closed: a box-keyed box gets no login (so no egress at all) until its owner's settings are read
-            # from `box-owners`. Never the defaults, which can include optional parts such as GitHub.
+            owner = owners.get(namespace)
+            if owner is None or not KEYED_ID_RE.fullmatch(owner):
+                continue  # fail closed: no owner, no login (a box isn't the person's until its owner entry)
+            mine = parsed.get(user_namespace(owner))
+            if mine is None:
+                result[namespace] = BoxEgress(
+                    namespace, tuple(sorted(set(default_parts))), split=default_split
+                )
+            else:
+                result[namespace] = BoxEgress(namespace, *mine)
             continue
         if BOX_ID_RE.fullmatch(namespace.removeprefix("agents-user-")):
             result[namespace] = BoxEgress(
@@ -539,6 +569,19 @@ class EgressKubeApi:
             raise EgressConfigError("box-map: a namespace is listed more than once")
         return boxes
 
+    def box_owners(self) -> dict[str, str]:
+        """`box-owners`, read by name (the generator's `get` on that one name): box-keyed namespace to its owner's
+        keyed id. Refused whole if any entry is off."""
+        owners: dict[str, str] = {}
+        for key, value in self._secret_data(self._hosted_ns, BOX_OWNERS_SECRET).items():
+            owner = value.strip()
+            if not is_box_keyed(key) or not KEYED_ID_RE.fullmatch(owner):
+                raise EgressConfigError(
+                    "box-owners: an entry is not a box-keyed namespace and a keyed id"
+                )
+            owners[key] = owner
+        return owners
+
     def settings(self) -> str:
         """The operator's egress settings, as the text of `egress-settings`' one key."""
         data = self._secret_data(self._own_ns, SETTINGS_SECRET)
@@ -810,7 +853,9 @@ def main(env: Mapping[str, str] | None = None, sa_dir: Path = SA_DIR) -> int:
     signal.signal(signal.SIGTERM, lambda *_: stopping.__setitem__("now", True))
     run(
         api,
-        lambda: parse_egress(api.settings(), api.box_map(), parts, split, open_web),
+        lambda: parse_egress(
+            api.settings(), api.box_map(), parts, split, open_web, api.box_owners()
+        ),
         proxy,
         stop=lambda: stopping["now"],
     )

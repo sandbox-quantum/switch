@@ -124,6 +124,27 @@ class FakeKube:
     def box_map(self):  # type: ignore[no-untyped-def]
         return dict(self.boxes), str(self.version)
 
+    # The two add-only lists (`pool-map`, `box-owners`) and a namespace read, as the real client has them.
+    def read_list(self, name):  # type: ignore[no-untyped-def]
+        lists = self.__dict__.setdefault("lists", {"pool-map": {}, "box-owners": {}})
+        if name == "box-map":
+            return dict(self.boxes), str(self.version)
+        return dict(lists[name]), "1"
+
+    def write_list(self, name, data, resource_version):  # type: ignore[no-untyped-def]
+        lists = self.__dict__.setdefault("lists", {"pool-map": {}, "box-owners": {}})
+        current = self.boxes if name == "box-map" else lists[name]
+        for key, value in current.items():  # what the cluster's add-only policy enforces
+            assert data.get(key) == value, "an existing entry changed or went"
+        self.__dict__.setdefault("list_writes", []).append(name)
+        if name == "box-map":
+            self.boxes = dict(data)
+        else:
+            lists[name] = dict(data)
+
+    def get_namespace(self, name):  # type: ignore[no-untyped-def]
+        return copy.deepcopy(self.objects.get(("Namespace", "", name)))
+
     def write_box_map(self, boxes, resource_version):  # type: ignore[no-untyped-def]
         if self.conflicts:
             self.conflicts -= 1
@@ -1618,15 +1639,15 @@ class ProbeKube(FakeKube):
         return answer
 
 
-def test_box_keyed_names_are_never_listed_before_egress_reads_box_owners():
-    """In this build a box-keyed box gets no egress login, so even a passing dry run lists nothing: otherwise every
-    new box would be made box-keyed and have no egress."""
+def test_box_keyed_names_need_the_dry_run_as_well_as_this_builds_egress():
+    """This build's egress gives a box-keyed box its owner's settings, so `box_keyed_names` is listed, but still
+    only once the cluster admits the name."""
     from switch_hosted_controller import box_operator
 
-    assert box_operator.BOX_KEYED_EGRESS_READY is False
+    assert box_operator.BOX_KEYED_EGRESS_READY is True
     core = FakeCore()
-    BoxOperator(core, ProbeKube([True]), cfg()).run_once()
-    assert core.reports[0]["capabilities"] == []
+    BoxOperator(core, ProbeKube([False]), cfg()).run_once()
+    assert "box_keyed_names" not in core.reports[0]["capabilities"]
 
 
 def test_box_keyed_names_are_listed_only_while_the_cluster_admits_them(monkeypatch):  # type: ignore[no-untyped-def]
@@ -1642,7 +1663,7 @@ def test_box_keyed_names_are_listed_only_while_the_cluster_admits_them(monkeypat
     seen = []
     for step in range(6):
         op.run_once()
-        seen.append(core.reports[-1]["capabilities"])
+        seen.append([c for c in core.reports[-1]["capabilities"] if c == "box_keyed_names"])
         clock["now"] += 3600.0 if step != 2 else 10.0  # one claim within the hour: no new probe
     assert seen == [
         [],
@@ -1848,9 +1869,9 @@ def test_t2_admitted_makes_t2_and_lists_pool_and_bind(monkeypatch):  # type: ign
     assert op.report()["capabilities"] == ["pool", "bind"]
 
 
-def test_pool_and_bind_are_not_listed_in_this_build():
+def test_pool_and_bind_are_listed_in_this_build_while_t2_is_admitted():
     op = BoxOperator(FakeCore(), ProbeKube([False]), cfg())
-    assert "pool" not in op.report()["capabilities"] and "bind" not in op.report()["capabilities"]
+    assert {"pool", "bind"} <= set(op.report()["capabilities"])
 
 
 def test_a_network_error_on_t2_is_a_failure_to_retry_never_a_fallback():
@@ -2061,9 +2082,25 @@ def test_the_claim_token_never_reaches_a_log_on_any_bind_path(caplog):  # type: 
     assert TOKEN not in repr(bind_action())
 
 
-def test_pool_and_bind_wait_for_the_build_whose_egress_reads_box_owners():
-    """A bound pool box is box-keyed, and a box-keyed box gets no egress login until egress reads `box-owners`: so
-    pool and bind are listed in the same build as box-keyed names, never before."""
+def test_pool_and_bind_come_in_the_same_build_as_egress_by_owner():
+    """A bound pool box is box-keyed, and a box-keyed box only gets egress through its owner: so pool and bind are
+    switched on in the same build as box-keyed egress, never one without the other."""
     from switch_hosted_controller import box_operator
 
-    assert box_operator.POOL_BIND_READY is False and box_operator.BOX_KEYED_EGRESS_READY is False
+    assert box_operator.POOL_BIND_READY is box_operator.BOX_KEYED_EGRESS_READY is True
+
+
+def test_a_box_keyed_fallback_box_gets_its_owner_before_its_box_map_entry():
+    """A box-keyed `provision` (a new box when no pool box was free) writes `box-owners` before the box map, as a
+    bind's B2 before B4, so it's never live without the owner its egress needs."""
+    kube, core = FakeKube(), FakeCore()
+    BoxOperator(core, kube, cfg()).provision(box_action())
+    assert kube.lists["box-owners"] == {BOX_NS: USER}
+    assert kube.list_writes == ["box-owners"] and kube.boxes == {MACHINE: BOX_NS}
+    assert result(core)[2:] == ("done", BOX_NS, None)
+
+
+def test_a_person_keyed_box_writes_no_owner_entry():
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    assert kube.__dict__.get("lists", {}).get("box-owners", {}) == {}

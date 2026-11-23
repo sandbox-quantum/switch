@@ -26,7 +26,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .box_names import BOX_NAMESPACE_RE, USER_LABEL, box_namespace, name_label, user_namespace
+from .box_names import (
+    BOX_NAMESPACE_RE,
+    USER_LABEL,
+    box_namespace,
+    is_box_keyed,
+    name_label,
+    user_namespace,
+)
 from .egress_lists import LOGIN_SECRET, check_box_pod_spec
 
 logger = logging.getLogger(__name__)
@@ -421,9 +428,9 @@ BOX_KEYED_NAMES = "box_keyed_names"
 # Also required before `box_keyed_names` is listed: this build's egress lists give a box-keyed box its owner's settings
 # (`box-owners`). Until they do, a box-keyed box gets no login (fail closed), so listing it would leave every new box,
 # fallback included, with no egress. True only in the build whose egress reads `box-owners`.
-BOX_KEYED_EGRESS_READY = False
+BOX_KEYED_EGRESS_READY = True
 # This build makes no pool boxes and binds none yet; True only in the build with the pool create and bind steps.
-POOL_BIND_READY = False
+POOL_BIND_READY = True
 # A pool box needs the starter (template t2). If the cluster's admission refuses a t2 box (P4 not updated yet), the
 # operator makes the box as template t1 in the same step, and for an hour neither tries t2 nor lists pool or bind.
 T2_REFUSED_RETRY_S = 3600.0
@@ -1491,6 +1498,10 @@ class BoxOperator:
             namespace = action.namespace or namespace_for(action.user)
             for step, obj in box_objects(action, self._config):
                 self._make(step, obj)
+            if is_box_keyed(namespace):
+                # A box-keyed box's owner entry comes before its box-map entry, as a bind's B2 before B4: its egress
+                # follows the owner, so it's never live without one.
+                self._add_owner(namespace, action.user)
             self._add_to_box_map(action.machine_id, namespace)
             self._core.result(action.action_id, action.claim_token, "done", namespace, None)
             logger.info(
