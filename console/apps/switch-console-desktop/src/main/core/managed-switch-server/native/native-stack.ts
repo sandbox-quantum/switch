@@ -70,6 +70,10 @@ import {
   installSwitchCore,
   pruneSwitchCoreInstalls,
 } from './switch-core-install';
+import {
+  removeServerCommandWrappers,
+  writeServerCommandWrappers,
+} from './server-command-wrappers';
 import { resolveUv } from './uv';
 
 /** What was last started here: the version the database has been (or is
@@ -321,6 +325,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
     onMessage('Starting switch-core…');
     const record = await startCore(layout, install, settings);
     log.info(`local-switch-server: started switch-core ${install.version} (pid ${record.pid})`);
+    await writeServerCommandWrappers(layout, install.version);
 
     onMessage('Waiting for the server to become healthy…');
     const healthy = await waitForCoreHealth(layout, apiUrl, signal);
@@ -422,9 +427,10 @@ export async function resetNativeStack(
   bundleRoot: string | null
 ): Promise<void> {
   await stopNativeStack(layout, bundleRoot);
-  for (const dir of [layout.pgdata, `${layout.pgdata}.init`, layout.run, layout.logs]) {
+  for (const dir of [layout.pgdata, `${layout.pgdata}.init`, layout.run, layout.logs, layout.bin]) {
     await rm(dir, { recursive: true, force: true });
   }
+  await removeServerCommandWrappers(layout);
   await clearSecrets(host);
   await clearPorts(host);
   await finishUpgrade(host);
@@ -440,9 +446,10 @@ export async function discardNativeData(
   bundleRoot: string | null
 ): Promise<void> {
   await stopNativeStack(layout, bundleRoot);
-  for (const dir of [layout.pgdata, `${layout.pgdata}.init`, layout.run]) {
+  for (const dir of [layout.pgdata, `${layout.pgdata}.init`, layout.run, layout.bin]) {
     await rm(dir, { recursive: true, force: true });
   }
+  await removeServerCommandWrappers(layout);
 }
 
 export async function nativeStackRunning(layout: NativeLayout): Promise<boolean> {

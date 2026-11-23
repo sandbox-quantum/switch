@@ -8,6 +8,8 @@ import path from 'node:path';
  */
 export type NativeLayout = {
   root: string;
+  /** Stable platform operator command wrappers: `switch-accounts`, etc. */
+  bin: string;
   /** Downloaded tools: `postgres-<version>/`, `uv-<version>/`. */
   toolchain: string;
   /** Temporary downloads, removed once unpacked. */
@@ -31,6 +33,7 @@ export function nativeLayout(localServerDir: string): NativeLayout {
   const root = path.join(localServerDir, 'native');
   return {
     root,
+    bin: path.join(localServerDir, 'bin'),
     toolchain: path.join(root, 'toolchain'),
     downloads: path.join(root, 'downloads'),
     uvCache: path.join(root, 'toolchain', 'uv-cache'),
