@@ -533,6 +533,11 @@ function SessionRow({ session }: { session: AgentSessionDetail }) {
           {meta.label}
         </Typography>
       )}
+      {session.created_at && (
+        <Typography variant="caption" color="text.secondary">
+          started {formatDateTime(session.created_at)}
+        </Typography>
+      )}
       <Typography variant="caption" color="text.secondary">
         last seen {formatDateTime(session.last_seen_at)}
       </Typography>
