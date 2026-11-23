@@ -1523,7 +1523,8 @@
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
       "team:switch",
-      "tier:now"
+      "tier:now",
+      "category:ops"
     ],
     "options": {
       "notify_no_data": false,
