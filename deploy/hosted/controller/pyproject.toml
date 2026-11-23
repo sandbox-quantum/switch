@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = ["boto3>=1.35,<2"]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<9"]
+test = ["pytest>=8,<10"]
 
 [project.scripts]
 switch-hosted-controller = "switch_hosted_controller.cli:main"
