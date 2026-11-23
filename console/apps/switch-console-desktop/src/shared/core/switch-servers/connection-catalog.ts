@@ -136,6 +136,12 @@ export const connectionCatalogEntrySchema = z.object({
    * vendor that matches the port registered; null for any port.
    */
   loopback_ports: z.array(z.number().int()).nullable(),
+  /**
+   * The path this Console's listener takes a sign-in back on, in place of
+   * `SERVICE_CALLBACK_PATH`, for a vendor that insists on its own; null for
+   * the default.
+   */
+  loopback_callback_path: z.string().nullable(),
   /** The fields a person pastes to connect it, for a service connected with a key; else null. */
   key: serviceKeyFormSchema.nullable(),
   /**
@@ -196,6 +202,7 @@ export const connectionCatalogSchema = z.object({
         token_lifetime: true,
         agent_access_note: true,
         loopback_ports: true,
+        loopback_callback_path: true,
         key: true,
         sign_in_choices: true,
         paste: true,
@@ -232,6 +239,8 @@ export const serviceConnectionsSchema = z.object({
       token_lifetime: z.number().nullable().default(null),
       agent_access_note: z.string().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),
+      // Absent from a Switch that predates it.
+      loopback_callback_path: z.string().nullable().default(null),
       key: serviceKeyFormSchema.nullable().default(null),
       /** What a person picks before signing in (a vendor's site); null when nothing. */
       sign_in_choices: z.array(serviceKeyFieldSchema).nullable().default(null),

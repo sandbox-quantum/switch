@@ -139,6 +139,7 @@ class TestConnections:
         assert github["connectable"] is True
         assert (github["pass_through"], github["token_lifetime"]) == (False, 3600)
         assert github["loopback_ports"] is None
+        assert github["loopback_callback_path"] is None
         assert github["publisher"] == "GitHub"
         assert github["links"]["support"] == "https://support.github.com"
         # GitHub's tool is its CLI; Atlassian's is the vendor's MCP server.
@@ -160,6 +161,7 @@ class TestConnections:
             28800,
         )
         assert atlassian["loopback_ports"] == [39231, 39232, 39233, 39234, 39235]
+        assert atlassian["loopback_callback_path"] is None
         # Their own connection is theirs to disconnect; there is nothing to
         # disconnect where they have none.
         assert (github["can_revoke"], asana["can_revoke"]) == (True, False)

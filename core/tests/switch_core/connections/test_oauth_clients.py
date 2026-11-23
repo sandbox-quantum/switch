@@ -439,6 +439,15 @@ def test_registers_cores_callback_only_where_sign_ins_use_it() -> None:
     # Alone, it is registered wherever the server has a public URL.
     assert redirect_uris("example", ["core"], None, PUBLIC, None) == [core]
     assert redirect_uris("example", ["core"], None, None, None) == []
+    assert redirect_uris("example", ["loopback"], None, None, None, "/callback") == [
+        "http://127.0.0.1/callback"
+    ]
+    assert redirect_uris(
+        "example", ["loopback"], None, None, [43123, 43124], "/callback"
+    ) == [
+        "http://127.0.0.1:43123/callback",
+        "http://127.0.0.1:43124/callback",
+    ]
     assert core_callback(PUBLIC + "/", "example") == core
 
 
