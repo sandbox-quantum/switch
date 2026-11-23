@@ -128,8 +128,7 @@ version of their own to them without also giving them a release of their own.
   waits holding no connection. The new rows of a room are read and rendered once
   and handed to every stream its message woke, so each stream reads only what
   its own person may see. A stream woken by its rooms passes at most every
-  200 ms, sending what came in meanwhile together. The activity stream's
-  reads share the same slots.
+  200 ms, sending what came in meanwhile together.
 - **A request that names a backend with a fallback now races it.** Before,
   only a request on the default backend raced its fallback;
   `DECISION_FALLBACK_BACKEND` now means the default backend's fallback

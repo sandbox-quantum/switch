@@ -859,14 +859,24 @@ class _ChatStream:
         was rung (`take_rung`); None reads all, and first brings the caller's
         agent-owner memberships up to date.
         """
+        service = self.service
+        # A first catch-up is not held to the slots: it pages through every
+        # room that moved, so after a deploy reconnects every Console the
+        # catch-ups would take every slot and hold up the open streams' wakes.
+        slot: contextlib.AbstractAsyncContextManager[None] = (
+            contextlib.nullcontext() if initial else service.stream_reads.slot()
+        )
+        async with slot:
+            if read is None:
+                await service.sync_owned_rooms(self.tenant_id, self.user.id)
+            return await self._refresh(read, initial)
+
+    async def _refresh(
+        self, read: dict[str, float] | None, initial: bool
+    ) -> tuple[list[bytes], bool]:
         frames: list[bytes] = []
         service = self.service
-        if read is None:
-            await service.sync_owned_rooms(self.tenant_id, self.user.id)
-        async with (
-            service.stream_reads.slot(),
-            tenant_session(service.session_factory, self.tenant_id) as session,
-        ):
+        async with tenant_session(service.session_factory, self.tenant_id) as session:
             # Taken once the pass has its slot, so whatever woke the stream
             # while it waited for one is answered by this pass rather than by
             # another right after it.
@@ -1099,10 +1109,11 @@ async def chat_activity_events(
     leaving a room stops its frames at once. `resync` means changes may have
     been missed (the listener reconnected, this connection fell behind, or the
     caller joined a room): reload snapshots. Each re-read first ends the
-    stream if the caller's session no longer `session_current`. Every read
-    holds its connection in a slot shared with the chat streams
-    (`ChatService.stream_reads`), so a burst of steps in a busy room queues
-    rather than taking the pool.
+    stream if the caller's session no longer `session_current`. The re-reads
+    after the first hold their connection in a slot shared with the chat
+    streams (`ChatService.stream_reads`). A change's own read does not: steps
+    posted quickly would queue past `queue_max` behind the chat streams' wakes,
+    and the resync that follows costs more than the reads it saved.
     """
     queue: asyncio.Queue[object] = asyncio.Queue(maxsize=queue_max)
     # Whether a re-read of the caller's rooms is already queued: however many
@@ -1168,7 +1179,9 @@ async def chat_activity_events(
                     return
                 next_recheck = now + recheck_seconds
             if recheck or item is _RESYNC or item is _MEMBERSHIPS:
-                current = await _readable_room_ids(service, tenant_id, user)
+                current = await _readable_room_ids(
+                    service, tenant_id, user, slotted=True
+                )
                 if current is None:
                     return
                 subscription.set_rooms(current)
@@ -1193,12 +1206,16 @@ async def chat_activity_events(
 
 
 async def _readable_room_ids(
-    service: ChatService, tenant_id: str, user: User
+    service: ChatService, tenant_id: str, user: User, *, slotted: bool = False
 ) -> set[str] | None:
     """The rooms the caller may read now; None once the caller has no tenant
-    role, which ends the stream."""
+    role, which ends the stream. In a slot when `slotted`: a stream's first
+    read is not, as a chat stream's first catch-up is not."""
+    slot: contextlib.AbstractAsyncContextManager[None] = (
+        service.stream_reads.slot() if slotted else contextlib.nullcontext()
+    )
     async with (
-        service.stream_reads.slot(),
+        slot,
         tenant_session(service.session_factory, tenant_id) as session,
     ):
         if not await service.has_tenant_role(session, tenant_id, user.id):
@@ -1224,10 +1241,7 @@ async def _activity_frames(
         key = (change.agent_id, change.session_id, change.key, change.item_id)
         if change.revision is not None and sent.get(key, -1) >= change.revision:
             return []
-    async with (
-        service.stream_reads.slot(),
-        tenant_session(service.session_factory, tenant_id) as session,
-    ):
+    async with tenant_session(service.session_factory, tenant_id) as session:
         member, reads = await service.reads_room(
             session, tenant_id, user.id, change.room_id
         )

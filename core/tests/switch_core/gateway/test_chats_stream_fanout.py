@@ -188,3 +188,22 @@ async def test_a_read_that_fails_leaves_the_waiting_streams_to_read_for_themselv
     except RuntimeError:
         pass
     assert await follower == Page(frames=(b"x",), last_seq=7, full=False)
+
+
+async def test_a_first_catch_up_does_not_wait_for_a_slot(chats: _Harness) -> None:
+    """After a deploy every Console reconnects at once: their catch-ups must
+    not take the slots the open streams' wakes wait for, nor wait on them."""
+    await _room(chats)
+    chats.service.stream_reads = StreamReads(1)
+    async with chats.service.stream_reads.slot():
+        stream = _ChatStream(chats.service, TENANT, chats.alice, {})
+        _, alive = await asyncio.wait_for(stream.refresh(None, initial=True), 5)
+        assert alive
+
+        # A later pass, a recheck included, waits its turn.
+        later = asyncio.create_task(stream.refresh(None, initial=False))
+        await asyncio.sleep(0.2)
+        assert not later.done()
+    _, alive = await asyncio.wait_for(later, 5)
+    assert alive
+    stream.close()
