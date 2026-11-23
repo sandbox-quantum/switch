@@ -37,6 +37,22 @@ CHANNEL = "C1"
 ASKER = "U0ASKER"
 
 
+def _state(text: str, *, live: bool = True) -> dict[str, Any]:
+    """A work message's line of state: a plan of one card, for Slack's own
+    spinner while the turn runs and its tick once it has ended."""
+    return {
+        "type": "plan",
+        "title": text,
+        "tasks": [
+            {
+                "task_id": "switch-work-thread",
+                "title": "The steps are in this message's thread",
+                "status": "in_progress" if live else "complete",
+            }
+        ],
+    }
+
+
 def _adapter(client: FakeWebClient) -> SlackAdapter:
     adapter = SlackAdapter(
         config=SlackConnectionConfig(
@@ -127,12 +143,7 @@ async def test_a_work_message_is_a_line_with_a_session_for_the_asker() -> None:
     assert ref == f"{CHANNEL}:{client._ts}.0"
     assert posted["channel"] == CHANNEL
     assert "thread_ts" not in posted, "the work message is at the channel root"
-    assert posted["blocks"] == [
-        {
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": "Working…"}],
-        }
-    ]
+    assert posted["blocks"] == [_state("Working…")]
     assert posted["text"] == "Agent is working on this"
     [session] = _sessions(client)
     assert session["channel_id"] == CHANNEL
@@ -173,9 +184,7 @@ async def test_settling_edits_in_the_last_line_and_ends_the_session() -> None:
     [edit] = client.updated
     assert (edit["channel"], edit["ts"]) == (CHANNEL, "5.0")
     assert edit["text"] == line
-    assert edit["blocks"] == [
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": line}]}
-    ]
+    assert edit["blocks"] == [_state(line, live=False)]
     calls = [
         (method, kwargs["json"])
         for method, kwargs in client.api_calls
@@ -256,12 +265,7 @@ async def test_how_far_a_turn_has_got_is_edited_into_its_work_message() -> None:
     ref = await adapter.post_rich(CHANNEL, "Agent", _work([_tool()]), work)
     assert _notes(client, work) == ["Working… · step 1"]
     note = [e for e in client.updated if e["text"].startswith("Working")][0]
-    assert note["blocks"] == [
-        {
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": "Working… · step 1"}],
-        }
-    ]
+    assert note["blocks"] == [_state("Working… · step 1")]
 
     # Nothing changed in the line: no edit, whatever else is redrawn.
     await adapter.update_rich(CHANNEL, "Agent", ref, _work([_done_tool()]), work)
@@ -714,7 +718,7 @@ async def test_a_work_message_links_back_to_the_question_it_answers() -> None:
     [posted] = client.posted
     assert posted["blocks"] == [
         _pointer(f"↩ <{LINK}|“how many PRs?”>"),
-        _pointer("Working…"),
+        _state("Working…"),
     ]
     assert "<@" not in str(posted["blocks"])
     [session] = _sessions(client)
@@ -740,7 +744,7 @@ async def test_the_link_back_survives_the_step_count_and_the_ending() -> None:
     settled = client.updated[-1]
     assert settled["blocks"] == [
         _pointer(f"↩ <{LINK}|“how many PRs?”>"),
-        _pointer("Worked for 3s. 1 tool call."),
+        _state("Worked for 3s. 1 tool call.", live=False),
     ]
     assert all(m != "agents.sessions.rename" for m, _ in client.api_calls)
 

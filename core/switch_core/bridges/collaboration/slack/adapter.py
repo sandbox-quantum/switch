@@ -619,6 +619,9 @@ _NO_STOP_SUBSCRIPTION = "missing_agent_session_stopped_event_subscription"
 #: is the agent, so the agent's name is already beside it.
 WORKING_NOTE = "Working…"
 
+#: Slack's limit on a plan block's title.
+_MAX_PLAN_TITLE = 150
+
 #: A section's text is capped at 3,000 characters; an answer longer than one
 #: is drawn across several, and one too long for this many is left as it was.
 _MAX_SECTION_TEXT = 3000
@@ -637,11 +640,25 @@ def _work_line(items: Sequence[Any]) -> str:
     return f"{WORKING_NOTE} · step {steps}" if steps else WORKING_NOTE
 
 
-def _work_note(text: str) -> dict[str, Any]:
-    """A work message's one block: a line of small text."""
+def _work_note(text: str, *, live: bool = True) -> dict[str, Any]:
+    """A work message's line of state, as a plan block of one card.
+
+    A plan block because it is the one place Slack draws its own spinner,
+    beside its title, while a card in it is in progress, and a tick once
+    none is: an animation that costs no edit per frame. Its title is the
+    line itself. Its one card says where the steps are, which is the
+    thread under this message, not inside the plan.
+    """
     return {
-        "type": "context",
-        "elements": [{"type": "mrkdwn", "text": escape_mrkdwn(text)}],
+        "type": "plan",
+        "title": text[:_MAX_PLAN_TITLE],
+        "tasks": [
+            {
+                "task_id": "switch-work-thread",
+                "title": "The steps are in this message's thread",
+                "status": "in_progress" if live else "complete",
+            }
+        ],
     }
 
 
@@ -2009,7 +2026,7 @@ class SlackAdapter(PlatformAdapter):
                 channel=channel_id,
                 ts=ts,
                 text=summary,
-                blocks=self._work_blocks(summary, asked),
+                blocks=self._work_blocks(summary, asked, live=False),
             )
         except SlackApiError as error:
             logger.warning(
@@ -2291,11 +2308,13 @@ class SlackAdapter(PlatformAdapter):
         return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
 
     def _work_blocks(
-        self, line: str, asked: AskedQuestion | None
+        self, line: str, asked: AskedQuestion | None, *, live: bool = True
     ) -> list[dict[str, Any]]:
-        """A work message's blocks: what it answers, then how far it has got."""
+        """A work message's blocks: what it answers, then how far it has got,
+        spinning while `live`."""
+        note = _work_note(line, live=live)
         pointer = self._asked_block(asked)
-        return [pointer, _work_note(line)] if pointer else [_work_note(line)]
+        return [pointer, note] if pointer else [note]
 
     async def _set_session_status(self, arguments: dict[str, Any]) -> None:
         """`agents.sessions.setStatus`, learning from opening a session whether
