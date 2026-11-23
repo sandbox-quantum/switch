@@ -368,3 +368,137 @@ def test_any_other_refusal_is_not_sent_again_and_stays_with_that_box(caplog):
         _observe(core, M, "stopped", 3, None, 2, {}, None, None)
     assert core.calls == [["evictions"]]
     assert "Core did not take its observation (CoreRefused)" in caplog.text
+
+
+# ---- waiting for room: Pending and unschedulable doesn't count against the start limit ----
+
+from switch_hosted_controller.box_scaler import (  # noqa: E402
+    NO_ROOM_ERROR,
+    ROOM_LIMIT_S,
+    START_LIMIT_S,
+    START_TIMEOUT_ERROR,
+    RoomSignal,
+    unschedulable,
+)
+
+
+def _pending(reason="Unschedulable"):  # type: ignore[no-untyped-def]
+    return {
+        "metadata": {"name": "box-0"},
+        "status": {
+            "phase": "Pending",
+            "conditions": [{"type": "PodScheduled", "status": "False", "reason": reason}],
+        },
+    }
+
+
+SCHEDULED = {
+    "metadata": {"name": "box-0"},
+    "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "True"}]},
+}
+
+
+class PodKube(FakeKube):
+    def __init__(self, pods):  # type: ignore[no-untyped-def]
+        super().__init__(1, 0)
+        self.pods = pods
+
+    def box_pods(self, ns):  # type: ignore[no-untyped-def]
+        return self.pods
+
+
+class RoomCore(FakeCore):
+    def __init__(self, machines, refuse_field=False):  # type: ignore[no-untyped-def]
+        super().__init__(machines)
+        self.refuse_field = refuse_field
+        self.fields: list = []
+
+    def observe(self, machine_id, state, revision, error=None, **v2):  # type: ignore[no-untyped-def]
+        self.fields.append(dict(v2))
+        if v2.get("waiting_for_room") and self.refuse_field:
+            raise CoreRefused("/observation", 422, "unknown field")
+        super().observe(machine_id, state, revision, error)
+
+
+def test_unschedulable_means_pending_and_refused_by_the_scheduler():
+    assert unschedulable([_pending()])
+    assert not unschedulable([_pending("SchedulingGated")])
+    assert not unschedulable([SCHEDULED])
+    assert not unschedulable([])
+
+
+def _passes(kube, core, clock, steps):  # type: ignore[no-untyped-def]
+    waiting, room_since, room = {}, {}, RoomSignal(clock=lambda: clock["now"])
+    for advance, pods in steps:
+        clock["now"] += advance
+        if pods is not None:
+            kube.pods = pods
+        reconcile_once(
+            core, kube, BOXES, waiting, now=lambda: clock["now"], room_since=room_since, room=room
+        )
+
+
+def test_five_minutes_waiting_for_room_then_ready_two_after_placing_is_never_an_error():
+    clock = {"now": 0.0}
+    kube, core = PodKube([_pending()]), RoomCore([m("running")])
+    steps = [(0, None)] + [(30, None)] * 10  # 5 minutes unschedulable
+    steps += [(1, [SCHEDULED])] + [(30, None)] * 4  # placed, 2 minutes starting
+    _passes(kube, core, clock, steps)
+    assert all(s[1] == "provisioning" for s in core.seen)
+    assert {"waiting_for_room": True} in core.fields  # Core was told while it waited
+    assert core.fields[-1] == {}  # and not once it was placed
+
+
+def test_placed_but_not_ready_after_three_minutes_is_an_error_as_before():
+    clock = {"now": 0.0}
+    kube, core = PodKube([_pending()]), RoomCore([m("running")])
+    steps = [(0, None), (60, None), (1, [SCHEDULED]), (START_LIMIT_S + 1, None)]
+    _passes(kube, core, clock, steps)
+    assert core.seen[-1] == (M, "error", 3, START_TIMEOUT_ERROR)
+
+
+def test_waiting_for_room_past_the_room_cap_is_an_error_with_its_own_text():
+    clock = {"now": 0.0}
+    kube, core = PodKube([_pending()]), RoomCore([m("running")])
+    _passes(kube, core, clock, [(0, None), (ROOM_LIMIT_S + 1, None)])
+    assert core.seen[-1] == (M, "error", 3, NO_ROOM_ERROR)
+
+
+def test_a_core_without_the_field_gets_provisioning_and_isnt_asked_again_for_an_hour():
+    clock = {"now": 0.0}
+    kube, core = PodKube([_pending()]), RoomCore([m("running")], refuse_field=True)
+    _passes(kube, core, clock, [(0, None), (30, None), (30, None)])
+    assert [f.get("waiting_for_room") for f in core.fields] == [True, None, None, None]
+    assert all(s[1] == "provisioning" for s in core.seen)
+    _passes_more = RoomSignal(clock=lambda: clock["now"])
+    _passes_more.refused()
+    clock["now"] += 3601
+    assert _passes_more.allowed()
+
+
+def test_the_core_client_sends_waiting_for_room_only_when_true():
+    from switch_hosted_controller.box_scaler import CoreApi
+
+    sent = []
+    api = CoreApi("https://core.example.invalid", "t")
+    api._call = lambda path, body=None: sent.append(body)  # type: ignore[method-assign,assignment,misc,return-value]
+    api.observe(M, "provisioning", 3, waiting_for_room=True)
+    api.observe(M, "provisioning", 3)
+    assert sent[0]["waiting_for_room"] is True and "waiting_for_room" not in sent[1]
+    assert sent[0]["state"] == "provisioning"
+
+
+def test_the_room_cap_stays_under_the_box_code_lifetime():
+    """A box that waited for room must still hold a live code once it's placed, so it can't trip the dead-code
+    restart on its way up."""
+    from switch_hosted_controller.registration_codes import BOX_CODE_LIFETIME_S
+
+    assert ROOM_LIMIT_S < BOX_CODE_LIFETIME_S
+
+
+def test_room_then_start_fits_inside_cores_connect_timeout():
+    """Waiting for room, then the start limit, must end before Core gives up on the machine (10 minutes): else Core
+    would time the box out while the scaler still waits."""
+    from switch_hosted_controller.box_scaler import CORE_CONNECT_TIMEOUT_S
+
+    assert ROOM_LIMIT_S + START_LIMIT_S <= CORE_CONNECT_TIMEOUT_S

@@ -27,6 +27,10 @@ from typing import Any, Protocol
 logger = logging.getLogger(__name__)
 
 ASK_INTERVAL_S = 300.0  # at most one `prepare` per box per 5 minutes
+# Core's box code lifetime (`MACHINE_ENROLLMENT_CODE_LIFETIME`, 15 minutes with hosted agents v2 on). Not used to
+# decide anything here; the scaler's waits are tested against it (`box_scaler.ROOM_LIMIT_S`), so a box that waited
+# for room is still on the code it was given when it's placed.
+BOX_CODE_LIFETIME_S = 900.0
 WAIT_BEFORE_RESTART_S = (
     90.0  # a box just started has this long to register before it counts as stuck
 )

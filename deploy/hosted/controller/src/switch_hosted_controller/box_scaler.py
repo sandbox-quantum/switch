@@ -189,6 +189,12 @@ class Step:
     ready: int
     action: str | None  # "scale_up", "scale_down" or None
     observed: str
+    waiting_for_room: bool = False
+
+    @property
+    def reported(self) -> str:
+        """What Core was told, as `last_observed` keeps it: the state, and whether it's waiting for room."""
+        return self.observed + (":room" if self.waiting_for_room else "")
 
 
 def decide(desired: str, replicas: int, ready: int) -> tuple[str | None, str]:
@@ -211,6 +217,48 @@ START_LIMIT_S = 180.0
 BOX_MISSING = "box_missing"
 BOX_MISSING_ERROR = "This machine's box is missing from the cluster."
 START_TIMEOUT_ERROR = "The box did not become ready within 3 minutes of starting."
+# Waiting for room: the box's pod is Pending and the scheduler can't place it (no node with room yet; the autoscaler
+# adds one in 1½ to 3 minutes). That time doesn't count against the start limit, which starts once the pod is placed.
+# It has its own cap: with the start limit after it, the whole wait stays within Core's connect timeout.
+ROOM_LIMIT_S = 360.0
+NO_ROOM_ERROR = "There was no room in the cluster for the box within 6 minutes."
+# Core's machine connect timeout (10 minutes; `_connect_timed_out` in Core's hosted controller sweep). Not used to
+# decide anything here: room plus start must fit inside it, which a test checks, and Core pins its side too.
+CORE_CONNECT_TIMEOUT_S = 600.0
+ROOM_FIELD_RETRY_S = 3600.0
+
+
+class RoomSignal:
+    """Whether to send `waiting_for_room` to Core. A Core without hosted agents v2's field refuses it (422); the
+    observation then goes without it, and it isn't sent again for an hour (or until a restart), so no pass sends a
+    request that's bound to be refused."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic):
+        self._clock = clock
+        self._refused_until = 0.0
+
+    def allowed(self) -> bool:
+        return self._clock() >= self._refused_until
+
+    def refused(self) -> None:
+        self._refused_until = self._clock() + ROOM_FIELD_RETRY_S
+
+
+def unschedulable(pods: list[dict[str, Any]]) -> bool:
+    """The box's pod is Pending and the scheduler has said it can't be placed (`PodScheduled` False, reason
+    `Unschedulable`)."""
+    for pod in pods:
+        status = pod.get("status") or {}
+        if status.get("phase") != "Pending":
+            continue
+        for condition in status.get("conditions") or []:
+            if (
+                condition.get("type") == "PodScheduled"
+                and condition.get("status") == "False"
+                and condition.get("reason") == "Unschedulable"
+            ):
+                return True
+    return False
 
 
 def _observe(
@@ -223,12 +271,15 @@ def _observe(
     facts: dict[str, Any],
     watch: Any,
     box_facts: Any,
+    waiting_for_room: bool = False,
+    room: RoomSignal | None = None,
 ) -> None:
     """Tell Core what the box is doing. With hosted agents v2 off, Core refuses v2's fields (`evictions`, `restarts`,
     `node`) with a 422, as upstream refuses any unknown field: the observation then goes again with upstream's fields
     only, and those facts stay owed. Any other failure is logged by type and goes no further than this box."""
+    room_field = waiting_for_room and (room is None or room.allowed())
     try:
-        if evictions is None and not facts:
+        if evictions is None and not facts and not room_field:
             core.observe(machine_id, observed, revision, error)
             return
         try:
@@ -239,10 +290,13 @@ def _observe(
                 error,
                 **({"evictions": evictions} if evictions is not None else {}),
                 **facts,
+                **({"waiting_for_room": True} if room_field else {}),
             )
         except CoreRefused as refused:
             if refused.status != 422:
                 raise
+            if room_field and room is not None:
+                room.refused()
             core.observe(machine_id, observed, revision, error)
             return
         # Accepted (a refused call raises): only what came after is still owed.
@@ -275,6 +329,8 @@ def reconcile_once(
     map_read: bool = True,
     reported_missing: dict[str, int] | None = None,
     still_unmapped: Callable[[str], bool] | None = None,
+    room_since: dict[str, float] | None = None,
+    room: RoomSignal | None = None,
 ) -> list[Step]:
     """One pass over the machines Core lists that map to a box namespace.
 
@@ -402,9 +458,32 @@ def reconcile_once(
                     box_facts.see(machine_id, pods)
                     facts = {"restarts": box_facts.unreported(machine_id), "node": box_node(pods)}
             error = None
+            waiting_for_room = False
             if desired == RUNNING and observed != RUNNING:
                 since = waiting.setdefault(machine_id, now())
-                if (
+                pods = None
+                if room_since is not None and replicas >= 1:
+                    if watch is not None and machine_id in watch.last_pods:
+                        pods = watch.last_pods[machine_id]
+                    elif hasattr(kube, "box_pods"):
+                        pods = kube.box_pods(namespace)
+                if pods is not None and unschedulable(pods):
+                    # Waiting for room: not counted against the start limit, which starts once it's placed.
+                    assert room_since is not None
+                    room_started = room_since.setdefault(machine_id, now())
+                    if now() - room_started > ROOM_LIMIT_S:
+                        observed, error = "error", NO_ROOM_ERROR
+                        logger.warning(
+                            "Machine %s: no room for its box within 6 minutes.", machine_id
+                        )
+                    else:
+                        waiting[machine_id] = since = now()
+                        waiting_for_room = True
+                elif room_since is not None:
+                    room_since.pop(machine_id, None)
+                if error is not None or waiting_for_room:
+                    pass
+                elif (
                     codes is not None
                     and action is None
                     and replicas >= 1
@@ -426,22 +505,46 @@ def reconcile_once(
                     logger.warning("Machine %s: not ready 3 minutes after starting.", machine_id)
             else:
                 waiting.pop(machine_id, None)
+                if room_since is not None:
+                    room_since.pop(machine_id, None)
                 if codes is not None and desired == RUNNING and observed == RUNNING:
                     codes.ready(machine_id, namespace)
+            seen = observed + (":room" if waiting_for_room else "")
             unchanged = (
                 last_observed is not None
-                and last_observed.get(machine_id) == observed
+                and last_observed.get(machine_id) == seen
                 and error is None
                 and evictions is None
                 and not facts
             )
             if not unchanged:
                 _observe(
-                    core, machine_id, observed, revision, error, evictions, facts, watch, box_facts
+                    core,
+                    machine_id,
+                    observed,
+                    revision,
+                    error,
+                    evictions,
+                    facts,
+                    watch,
+                    box_facts,
+                    waiting_for_room,
+                    room,
                 )
             if last_observed is not None:
-                last_observed[machine_id] = observed
-            steps.append(Step(machine_id, namespace, desired, replicas, ready, action, observed))
+                last_observed[machine_id] = seen
+            steps.append(
+                Step(
+                    machine_id,
+                    namespace,
+                    desired,
+                    replicas,
+                    ready,
+                    action,
+                    observed,
+                    waiting_for_room,
+                )
+            )
         except Exception as exc:
             failed += 1
             logger.warning(
@@ -699,6 +802,7 @@ class CoreApi:
         restarts: int | None = None,
         node: str | None = None,
         error_code: str | None = None,
+        waiting_for_room: bool = False,
     ) -> None:
         self._call(
             f"/machines/{machine_id}/observation",
@@ -707,6 +811,7 @@ class CoreApi:
                 **({"evictions": evictions} if evictions is not None else {}),
                 **({"restarts": restarts} if restarts is not None else {}),
                 **({"node": node} if node is not None else {}),
+                **({"waiting_for_room": True} if waiting_for_room else {}),
                 "state": state,
                 "revision": revision,
                 "error": error,

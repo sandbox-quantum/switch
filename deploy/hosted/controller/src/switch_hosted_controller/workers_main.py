@@ -73,6 +73,7 @@ from .box_scaler import (
     START_LIMIT_S,
     CoreApi,
     KubeApi,
+    RoomSignal,
     boxes_from_secret,
     load_boxes,
     reconcile_once,
@@ -290,6 +291,9 @@ class Workers:
         self._observed: dict[str, str] = {}
         self._map_read = False  # whether this round's box map read succeeded (box_missing needs it)
         self._reported_missing: dict[str, int] = {}
+        # Waiting for room: since when each box's pod has been unschedulable, and whether Core takes the field.
+        self._room_since: dict[str, float] = {}
+        self._room = RoomSignal()
         self._check_wait = CHECK_S
         self._next_check = 0.0
         self._interval = MAX_INTERVAL_S
@@ -362,9 +366,11 @@ class Workers:
             map_read=self._map_read,
             reported_missing=self._reported_missing,
             still_unmapped=self._still_unmapped_once_per_pass(),
+            room_since=self._room_since,
+            room=self._room,
         )
         self._scaled = sum(1 for step in steps if step.action)
-        self._observed.update({step.machine_id: step.observed for step in steps})
+        self._observed.update({step.machine_id: step.reported for step in steps})
 
     def _look_at_the_rest(self) -> None:
         assert self.watch is not None
@@ -499,6 +505,8 @@ class Workers:
             only=targets,
             last_observed=self._observed,
             reported_missing=self._reported_missing,
+            room_since=self._room_since,
+            room=self._room,
         )
         acted = sum(1 for step in steps if step.action)
         if acted:
