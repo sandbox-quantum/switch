@@ -246,8 +246,11 @@ class ControllerPresence:
         # can tell which controllers changed under it (`connection_mark`).
         self._connection_changes = 0
         self._connection_changed_at: dict[str, int] = {}
+        # Per agent and room, the stamp of the newest read or change that
+        # settled whether the agent is a member, and what it said
+        # (`room_mark`).
         self._room_stamps = 0
-        self._room_stamped: dict[tuple[str, str], int] = {}
+        self._room_stamped: dict[str, dict[str, tuple[int, bool]]] = {}
 
     def connection_mark(self) -> int:
         """Where the connection changes stand now. Taken before reading the
@@ -270,13 +273,14 @@ class ControllerPresence:
         self._room_stamps += 1
         return self._room_stamps
 
-    def _newer(self, agent_id: str, room_id: str, mark: int) -> bool:
-        """Whether a read or change stamped `mark` is newer than what is kept
-        for the room came from, recording it as the source if so."""
-        key = (agent_id, room_id)
-        if mark < self._room_stamped.get(key, 0):
+    def _settle(self, agent_id: str, room_id: str, mark: int, member: bool) -> bool:
+        """Whether a read or change stamped `mark` is newer than what settled
+        the agent's membership of the room, recording it and what it found as
+        what settles it now if so."""
+        stamped = self._room_stamped.setdefault(agent_id, {})
+        if mark < stamped.get(room_id, (0, False))[0]:
             return False
-        self._room_stamped[key] = mark
+        stamped[room_id] = (mark, member)
         return True
 
     def use_auth_cache(self, cache: ControllerAuthCache) -> None:
@@ -663,7 +667,7 @@ class ControllerPresence:
     ) -> None:
         """Whether the agent is a member of the room, as a read stamped
         `mark` found it; kept unless a newer read or change settled it."""
-        if not self._newer(agent_id, room_id, mark):
+        if not self._settle(agent_id, room_id, mark, member):
             return
         binding = self._bindings.get(agent_id)
         rooms = self._rooms.get(agent_id)
@@ -893,20 +897,18 @@ class ControllerPresence:
 
     def rooms_read(self, agent_id: str, rooms: set[str], mark: int) -> None:
         """Keep `rooms` for the agent, as a read of its memberships stamped
-        `mark` found them. A room a newer read or change settled keeps what
-        that made it; where that came before the agent's rooms were kept
-        here at all, the room is left out, for the re-check to settle."""
+        `mark` found them. A room a newer read or change settled, even one
+        made before the agent's rooms were kept here, keeps what that found."""
         if agent_id not in self._bindings:
             return
-        kept = self._rooms.get(agent_id)
-        current = set() if kept is None else kept
+        stamped = self._room_stamped.setdefault(agent_id, {})
         self._rooms[agent_id] = {
             room_id
-            for room_id in rooms | current
+            for room_id in rooms | self._rooms.get(agent_id, set()) | set(stamped)
             if (
                 room_id in rooms
-                if self._newer(agent_id, room_id, mark)
-                else room_id in current
+                if self._settle(agent_id, room_id, mark, room_id in rooms)
+                else stamped[room_id][1]
             )
         }
 

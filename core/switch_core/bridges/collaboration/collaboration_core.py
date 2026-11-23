@@ -4371,6 +4371,9 @@ class CollaborationCore:
         tenant_id: str,
     ) -> None:
         key = (room_id, transport_room_id)
+        previous = self._room_to_channel.get(key)
+        if previous is not None and self._channel_to_room.get(previous) == key:
+            del self._channel_to_room[previous]
         self._channel_to_room[external_channel_id] = key
         self._room_to_channel[key] = external_channel_id
         self._room_tenants[room_id] = tenant_id
@@ -4382,6 +4385,6 @@ class CollaborationCore:
     def _unmap(self, room_id: str, transport_room_id: str) -> None:
         key = (room_id, transport_room_id)
         channel_id = self._room_to_channel.pop(key, None)
-        if channel_id is not None:
-            self._channel_to_room.pop(channel_id, None)
+        if channel_id is not None and self._channel_to_room.get(channel_id) == key:
+            del self._channel_to_room[channel_id]
         self._room_tenants.pop(room_id, None)

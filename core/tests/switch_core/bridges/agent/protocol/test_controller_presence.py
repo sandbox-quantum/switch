@@ -802,6 +802,24 @@ class TestMembership:
 
             assert presence.rooms("agent") == set(), older_first
 
+    def test_a_join_or_leave_while_the_rooms_are_read_at_attach_is_kept(
+        self,
+    ) -> None:
+        """The attach reads the agent's rooms before any are kept for it. A
+        join and a leave committed here meanwhile are newer than that read,
+        and settle their rooms whether or not the read saw them."""
+        registry = AgentConnectionRegistry()
+        presence = registry.controllers
+        _bind(registry, "agent")
+        mark = presence.room_mark()
+        presence.room_joined("agent", ROOM)
+        presence.room_joined("agent", "unread")
+        presence.room_left("agent", ELSEWHERE)
+
+        presence.rooms_read("agent", {ROOM, ELSEWHERE, "third"}, mark)
+
+        assert presence.rooms("agent") == {ROOM, "unread", "third"}
+
     def test_lapse_detach_and_revoke_take_it_out_of_every_room(self) -> None:
         registry = AgentConnectionRegistry()
         presence = registry.controllers
