@@ -178,6 +178,11 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A machine whose server came back after an outage reads as connected again
+  everywhere.** When a switch-core process stopped renewing its lease for a
+  while and then recovered, the other processes kept showing the machines it
+  held, and their agents, as offline until something about those machines
+  changed. They now read them again on their next periodic check.
 - **A full database pool no longer makes a pod drop everything it holds.**
   Each switch-core process renews its lease on a database connection of its
   own, outside the shared pool. Before, the renewal borrowed from the same

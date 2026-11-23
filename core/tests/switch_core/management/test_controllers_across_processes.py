@@ -280,6 +280,33 @@ class TestPresence:
 
         assert not presence.is_live(agent_id)
 
+    async def test_a_holder_back_after_a_lapse_counts_again_on_the_recheck(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        """The other process read every connection, then its lease watch
+        dropped the holder while the holder's lease had lapsed. Once the
+        holder renews, the rows and the live processes are what that read
+        found, and the re-check must still read them again."""
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+            await connect(client, controller)
+        presence = there.protocol.connections.controllers
+        await _eventually(lambda: presence.is_live(agent_id))
+        signals = there.management.service.signals
+        await signals.read_connections()
+
+        there.protocol.connections.drop_copies_held_by(
+            {here.management.lease.process_id}
+        )
+        assert not presence.is_live(agent_id)
+        await here.management.lease.renew()
+        await signals.read_connections(check_first=True)
+
+        assert presence.is_live(agent_id)
+
     async def test_a_session_command_reaches_the_controller_on_the_other_process(
         self, processes: tuple[Harness, Harness]
     ) -> None:
