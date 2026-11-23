@@ -155,7 +155,7 @@ def test_unscoped_access_is_only_valid_for_oauth(adapter):
     body = {
         "slug": "example",
         "name": "Example",
-        "category": "Example",
+        "category": "Observability",
         "description": "Example service.",
         "enabled": False,
         "adapter": adapter,
