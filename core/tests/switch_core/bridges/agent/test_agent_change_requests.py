@@ -192,6 +192,65 @@ class TestWhatWaitsForTheOwner:
             == ()
         )
 
+    @pytest.mark.parametrize(
+        "bypassing",
+        [
+            {"auto_approve": True},
+            {"advanced_config": {"permissionMode": "bypassPermissions"}},
+        ],
+    )
+    def test_new_instructions_for_an_agent_with_bypass_wait(
+        self, bypassing: dict[str, Any]
+    ) -> None:
+        """What an agent with no permission checks is told to do, it does
+        with nobody asked."""
+        current = {**CURRENT, **bypassing}
+
+        assert fields_to_confirm(_changes(instructions="Do it."), current) == (
+            "instructions",
+        )
+        assert fields_to_confirm(
+            _changes(instructions="Do it.", model="opus"), current
+        ) == ("instructions",)
+
+    @pytest.mark.parametrize(
+        ("given", "held"),
+        [
+            ({"auto_approve": True}, ("auto_approve", "instructions")),
+            (
+                {"advanced_config": {"permissionMode": "bypassPermissions"}},
+                ("advanced_config", "instructions"),
+            ),
+        ],
+    )
+    def test_new_instructions_that_come_with_bypass_wait_for_both(
+        self, given: dict[str, Any], held: tuple[str, ...]
+    ) -> None:
+        assert fields_to_confirm(_changes(instructions="Do it.", **given), CURRENT) == (
+            held
+        )
+
+    def test_new_instructions_that_come_with_bypass_off_apply_at_once(self) -> None:
+        """They land with the agent asking again, so they steer nothing
+        unchecked."""
+        bypassing = {
+            **CURRENT,
+            "auto_approve": True,
+            "advanced_config": {"permissionMode": "bypassPermissions"},
+        }
+
+        assert (
+            fields_to_confirm(
+                _changes(instructions="Do it.", auto_approve=False, advanced_config={}),
+                bypassing,
+            )
+            == ()
+        )
+        # Bypass still on by the provider's own permission mode.
+        assert fields_to_confirm(
+            _changes(instructions="Do it.", auto_approve=False), bypassing
+        ) == ("instructions",)
+
     def test_placing_an_unplaced_agent_waits(self) -> None:
         unplaced = {**CURRENT, "machine": None}
 

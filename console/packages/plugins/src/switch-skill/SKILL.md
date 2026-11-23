@@ -633,9 +633,11 @@ change it. A refusal says which of these it was; relay it rather than retrying.
   **Your owner confirms a change that widens what an agent may do on its
   own, or who may reach it**: turning `auto_approve` or `auto_mode` on,
   `permissionMode: "bypassPermissions"` or `"auto"` in `advanced_config`, a new
-  `directory` (other than `""`), `machine` or `provider`, or `addressing`
+  `directory` (other than `""`), `machine` or `provider`, `addressing`
   wider than it is now (`"anyone"`, or `"owner_and_owner_agents"` for an agent
-  your owner's agents cannot address yet). That is not made by the call:
+  your owner's agents cannot address yet), or `instructions` for an agent that
+  has bypass on (`auto_approve`, or `permissionMode: "bypassPermissions"`)
+  once the call is made. That is not made by the call:
   Switch posts it in your connected room (connect to one first), with the
   other managed fields of the same call, and it waits for your owner to send
   `!agent-change <name> confirm` there within two minutes (or
@@ -1460,7 +1462,7 @@ Every Switch tool you call in normal operation, one line each.
 - `list_agents` — every agent on the instance, with optional filters.
 - `get_agent_detail`: one agent's config, capabilities, sessions and who may
   address it.
-- `update_agent_detail` — change an agent you own; turning bypass or auto mode on, a new folder, machine or provider, or wider addressing waits for your owner to confirm.
+- `update_agent_detail` — change an agent you own; turning bypass or auto mode on, a new folder, machine or provider, wider addressing, or new instructions for an agent with bypass waits for your owner to confirm.
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
 - `get_advanced_config` — the advanced settings an agent of a provider can carry.

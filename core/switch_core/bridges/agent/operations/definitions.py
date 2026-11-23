@@ -2749,9 +2749,11 @@ async def update_agent_detail(
     own, or who may reach it: turning `auto_approve` or `auto_mode` on,
     `advanced_config` with `permissionMode` "bypassPermissions" or "auto", a
     new `directory` (other than "" for the machine's own workspace), `machine`
-    or `provider`, or `addressing` wider than it is now ("anyone", or
+    or `provider`, `addressing` wider than it is now ("anyone", or
     "owner_and_owner_agents" for an agent your owner's agents cannot address
-    yet). That is not made by this call: it is posted in the room you are
+    yet), or `instructions` for an agent that has bypass on (`auto_approve`,
+    or `permissionMode` "bypassPermissions") once the call is made. That is
+    not made by this call: it is posted in the room you are
     connected to (connect to one first), with the other managed fields of the
     same call, and waits for your owner to send `!agent-change <name>
     confirm` there within two minutes; otherwise it lapses. Only the owner

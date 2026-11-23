@@ -114,24 +114,26 @@ version of their own to them without also giving them a release of their own.
 - **An agent's change that widens what another agent may do on its own, or who
   may reach it, waits for the owner.** When an agent turns another agent's
   bypass mode or auto mode on, sets its Claude Code permission mode to bypass
-  or to auto, moves its working folder, machine or provider, or opens who may
+  or to auto, moves its working folder, machine or provider, opens who may
   address it (to anyone, or to the owner's agents when they could not reach it
-  before), or creates an agent with bypass on or a folder of its own, nothing
-  changes yet. Switch checks the request, posts it in the room the agent is
-  connected to, and makes it only when the agent's owner, in person, sends
-  `!agent-change <name> confirm` there within two minutes; `!agent-change
-  <name> drop` throws it away, and anyone in the room can see it with
-  `!agent-change <name>`. The agent is told it is waiting and what to send.
-  Only one change per agent waits at a time, so what the owner confirms is
-  what they were shown. Nothing is held in a frozen or archived room, where
-  the owner couldn't confirm it, and a confirmation drops the request instead
-  of making it while the owner, the agent that asked or the agent it changes
-  is suspended. Waiting requests are kept in memory, as an agent's
-  request to delete another agent is: a restart drops them, and the request
-  and its confirmation must reach the same server process. A change in the
-  safer direction (bypass or auto mode off, a narrower addressing policy)
-  applies at once, as do a person's own changes in Switch Console or the
-  dashboard and an agent's other changes. A new agent waits for its owner
+  before), gives new instructions to an agent that has bypass on once the
+  change is made, or creates an agent with bypass on or with a working folder
+  other than the one its machine makes for it, nothing changes yet. Switch
+  checks the request, posts it in the room the agent is connected to, and
+  makes it only when the agent's owner, in person, sends `!agent-change <name>
+  confirm` there within two minutes; `!agent-change <name> drop` throws it
+  away, and anyone in the room can see it with `!agent-change <name>`. The
+  agent is told it is waiting and what to send. Only one change per agent
+  waits at a time, so what the owner confirms is what they were shown. Nothing
+  is held in a frozen or archived room, where the owner couldn't confirm it,
+  and a confirmation drops the request instead of making it while the owner,
+  the agent that asked or the agent it changes is suspended. Waiting requests
+  are kept in memory, as an agent's request to delete another agent is: a
+  restart drops them, and the request and its confirmation must reach the same
+  server process. A change in the safer direction (bypass or auto mode off, a
+  narrower addressing policy) applies at once, as do new instructions that
+  come with bypass turned off, a person's own changes in Switch Console or the
+  dashboard, and an agent's other changes. A new agent waits for its owner
   whichever of these it asks for, including only `permissionMode:
   bypassPermissions` in its advanced settings. Setting `permissionMode: auto`
   on an existing agent waits as turning auto mode on does; turning it off, or

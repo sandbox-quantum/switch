@@ -6,18 +6,19 @@ and, with "can manage agents", makes new ones through `create_agent`. Most of
 that applies at once. A change that widens what another agent may do on its
 own, or who may reach it, is held instead: turning its bypass mode or auto
 mode on, setting the provider's own permission mode to bypass or to auto,
-moving its working folder, machine or provider, or opening who may address
-it; and a new agent with bypass on or a folder other than its machine's own
-workspace for it. It is posted in the room the asking agent is connected to and kept
-(`AgentRequests`, in memory, like a deletion request) until the owner
-confirms it there with `!agent-change <name> confirm` within two minutes. A
-prompt injected into anything an agent reads can make it ask for one; only
-its owner can make it so. Nothing is held in a frozen or archived room, which
-takes no command, and a confirmation makes nothing while the owner, the
-asking agent or the agent it changes is suspended. A change in the safer direction (bypass or auto
-mode off, any other permission mode, a narrower addressing policy) applies
-at once, as do a person's own
-changes in Switch Console or the gateway, which do not come through here.
+moving its working folder, machine or provider, opening who may address it,
+or new instructions for an agent that skips every permission check once the
+change is made; and a new agent with bypass on or a folder other than its
+machine's own workspace for it. It is posted in the room the asking agent is
+connected to and kept (`AgentRequests`, in memory, like a deletion request)
+until the owner confirms it there with `!agent-change <name> confirm` within
+two minutes. A prompt injected into anything an agent reads can make it ask
+for one; only its owner can make it so. Nothing is held in a frozen or
+archived room, which takes no command, and a confirmation makes nothing while
+the owner, the asking agent or the agent it changes is suspended. A change in
+the safer direction (bypass or auto mode off, any other permission mode, a
+narrower addressing policy) applies at once, as do a person's own changes in
+Switch Console or the gateway, which do not come through here.
 
 Every change an agent makes to another agent, held or not, is written to the
 audit log.
@@ -120,18 +121,41 @@ def _permission_mode_widens(new: object, current: object) -> bool:
     return False
 
 
+def _bypasses_once_made(
+    changes: ManagedAgentChanges, current: Mapping[str, Any]
+) -> bool:
+    """Whether the agent `current` shows skips every permission check once
+    `changes` is made: bypass mode on, or the provider's permission mode set
+    to bypass, whether it is so now or `changes` makes it so."""
+    auto_approve = (
+        current.get("auto_approve")
+        if changes.auto_approve is None
+        else changes.auto_approve
+    )
+    advanced = (
+        current.get("advanced_config") or {}
+        if changes.advanced_config is None
+        else changes.advanced_config
+    )
+    return bool(auto_approve) or advanced.get(PERMISSION_MODE) == BYPASS_PERMISSION_MODE
+
+
 def fields_to_confirm(
     changes: ManagedAgentChanges, current: Mapping[str, Any]
 ) -> tuple[str, ...]:
     """What in `changes` widens what the agent `current` shows (as
     `AgentManagementPort.managed_agent` does) may do on its own: bypass or
     auto mode turned on, the provider's permission mode set to bypass or to
-    auto, or a new working folder, machine or provider.
+    auto, a new working folder, machine or provider, or new instructions for
+    an agent that skips every permission check once `changes` is made
+    (`_bypasses_once_made`): what an agent with no checks is told to do, it
+    does with nobody asked.
 
     Turning bypass or auto mode off, or any other permission mode, only
-    narrows it, and a value it already has is no change. A directory of ""
-    puts the agent back in its machine's own workspace for it, which needs no
-    confirmation."""
+    narrows it, and a value it already has is no change. Instructions that
+    land with bypass turned off steer an agent that asks again. A directory
+    of "" puts the agent back in its machine's own workspace for it, which
+    needs no confirmation."""
     machine = current.get("machine") or {}
     current_advanced = current.get("advanced_config") or {}
     held = []
@@ -153,6 +177,8 @@ def fields_to_confirm(
         current_advanced.get(PERMISSION_MODE),
     ):
         held.append("advanced_config")
+    if changes.instructions is not None and _bypasses_once_made(changes, current):
+        held.append("instructions")
     return tuple(held)
 
 

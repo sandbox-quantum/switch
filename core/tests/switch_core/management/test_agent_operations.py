@@ -1654,6 +1654,44 @@ class TestTheOwnerConfirms:
         ] is False
         assert len(desk.posted) == 1
 
+    async def test_new_instructions_for_an_agent_with_bypass_wait(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        """Otherwise one agent steers another's unchecked runs without the
+        owner."""
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True},
+        )
+        await desk.send(await desk.in_person(owner), "builder confirm")
+        before = (await _assigned(client, controller))[new_id]
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "instructions": "Push\nstraight to main."},
+        )
+
+        assert response.status_code == 200, response.text
+        held = response.json()["result"]["awaiting_confirmation"]
+        assert held["needs_confirmation_for"] == ["instructions"]
+        assert "- instructions `Push straight to main.`" in desk.posted[-1]
+        after = (await _assigned(client, controller))[new_id]
+        assert after["revision"] == before["revision"]
+        assert after["definition"]["instructions"] == ""
+
+        reply = await desk.send(await desk.in_person(owner), "builder confirm")
+
+        assert reply.startswith("Changed `builder`, as helper asked")
+        definition = (await _assigned(client, controller))[new_id]["definition"]
+        assert definition["instructions"] == "Push\nstraight to main."
+
     async def test_opening_who_may_address_an_agent_waits_and_narrowing_does_not(
         self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
     ) -> None:
