@@ -83,6 +83,42 @@ version of their own to them without also giving them a release of their own.
   (4000) of every kind together, past which a new one is refused 503 with a
   `Retry-After` of 2 to 10 seconds. `switch.http.gateway_streams.*` counts
   them, on the dashboard beside the requests turned away.
+- **The Helm chart runs every pod unprivileged.** switch-core, the gateway,
+  Postgres and the migration and runtime-role Jobs used to run as root. They
+  now run as their image's own user: 10001 for switch-core, 101 for nginx and
+  70 for Postgres. Each also gets no privilege escalation, no capabilities,
+  the runtime's default seccomp profile and a read-only root filesystem, with
+  emptyDirs where it writes. No pod mounts a ServiceAccount token any more.
+  Each component's `podSecurityContext` and `securityContext` are values. A
+  Postgres volume that an earlier release started as root keeps working: it
+  already belongs to the `postgres` user. If `postgresql.image` is the Debian
+  image, set its user, group and fsGroup to 999.
+- **The in-cluster Postgres admits only Switch.** With `networkPolicy.enabled`
+  (on by default), a NetworkPolicy admits only the release's switch-core and
+  migration Jobs to port 5432. switch-core and the gateway get policies too
+  once `networkPolicy.ingressFrom` names your ingress controller or load
+  balancer. Each then admits those peers and the release's own pods that call
+  it, and nothing else.
+- **The switch-core, setup and gateway images no longer run as root.**
+  switch-core and setup run as 10001, and the gateway's nginx runs as 101,
+  with its pid file in `/tmp`.
+- **`SWITCH_BIND_ADDR` opens only Switch's own ports.** In the standalone
+  compose, setting it publishes the API (8000) and the dashboard (3000).
+  Postgres now stays on loopback, and `POSTGRES_BIND_ADDR` moves it. Before
+  this, Postgres was published with the schema owner's login. In the
+  development compose, Postgres takes the same variable, and the mail catcher
+  and decision service stay on loopback.
+- **The gateway container sends the dashboard with security headers.** Its
+  nginx, and the chart's copy of the same config, now send the dashboard's
+  own files with switch-core's Content-Security-Policy, `X-Frame-Options:
+  DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`,
+  and no longer name the nginx version in the `Server` header.
+- **Images Switch does not build are pinned by digest.** The switch-core and
+  setup images build from `python:3.12.16-slim-trixie` (what `3.12-slim` is
+  today), and switch-core's uv is 0.13.1, no longer `latest`. The gateway
+  image builds from `nginx:1.31.8-alpine`. The chart's and the compose files'
+  Postgres and busybox images now carry a digest, as do the gitleaks image CI
+  runs. Renovate keeps the digests current.
 
 #### Added
 - **The decision service can use open-weights models on Amazon Bedrock.**
@@ -4830,6 +4866,13 @@ version of their own to them without also giving them a release of their own.
   field shows the one that applies when left blank. When the server can't
   read its decision service, the page says so and keeps the saved choice.
   "Self-hosted endpoint" is now "Your own endpoint".
+
+#### Changed
+- **The bundled standalone compose follows switch-core's.** Its Postgres
+  image is pinned by digest, and Postgres binds to loopback through
+  `POSTGRES_BIND_ADDR`, which the local server's `.env` now sets to loopback.
+  The helper image that reaches the stack's state volume is the same
+  digest-pinned Postgres image.
 
 #### Fixed
 

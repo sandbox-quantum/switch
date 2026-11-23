@@ -171,6 +171,10 @@ never has the switcher.
 | `http://localhost:8081` | switch-core's collaboration callback listener — where Mattermost delivers a button press. Bound only once a bridge asks to be called back, so it is often not there at all. | `just run` |
 | `http://localhost:5432` | PostgreSQL. | `just up` |
 
+Every port `just up` publishes is on loopback only. `POSTGRES_BIND_ADDR` in
+`.env` moves Postgres to another interface; `SWITCH_BIND_ADDR` does not, as it
+opens only Switch's own ports in the standalone stack.
+
 `FRONTEND_BASE_URL` in `.env` (default `http://localhost:5173`) tells
 switch-core where to send the browser back to after a flow that leaves the
 dashboard, such as the OIDC login redirect — it should match wherever
@@ -305,3 +309,12 @@ out, not for judging its latency. Another model is `DECISION_MODEL_URL`,
 | `just migration "message"` | Autogenerate a new Alembic migration |
 | `just gateway-build` | Build the gateway frontend's production bundle |
 | `just seed-dev-roles` | Create the test accounts the dashboard's dev role switcher signs in as (see above) |
+
+## Reading a database error
+
+switch-core's engines are built with SQLAlchemy's `hide_parameters=True`, so
+a logged database error shows the SQL statement and
+`[SQL parameters hidden due to hide_parameters=True]` instead of the values
+bound into it. That keeps emails, message text and tokens out of the logs. When
+you need the values while debugging, they are still on the exception object as
+`error.params`, next to `error.statement`.

@@ -3,7 +3,26 @@
   // Socket (language packages); Renovate owns only the infra ecosystems below.
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", ":dependencyDashboard"],
-  "enabledManagers": ["dockerfile", "docker-compose", "github-actions"],
+  "enabledManagers": ["dockerfile", "docker-compose", "github-actions", "custom.regex"],
+  // Images pinned by tag and digest outside a Dockerfile or a compose file: the
+  // Helm chart's third-party images (its values and templates) and the ones CI
+  // runs with `docker run`. Only a reference that already carries a digest
+  // matches, so the chart's first-party placeholders (`switch-core:latest`),
+  // which the release pins, are left alone.
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^deploy/remote/helm/switch/values\\.yaml$/",
+        "/^deploy/remote/helm/switch/templates/.+\\.(yaml|tpl)$/",
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "(?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9][A-Za-z0-9._-]*)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
   "minimumReleaseAge": "7 days",
   "internalChecksFilter": "strict",
   // NEVER downgrade. Renovate only ever proposes versions ABOVE the installed one; the sole
@@ -31,7 +50,7 @@
     },
     {
       "description": "Containers: pin digests + digest refresh + patch tags only.",
-      "matchManagers": ["dockerfile", "docker-compose"],
+      "matchManagers": ["dockerfile", "docker-compose", "custom.regex"],
       "matchUpdateTypes": ["pin", "digest", "patch"],
       "enabled": true,
       "pinDigests": true
@@ -51,7 +70,7 @@
     },
     {
       "description": "One PR per directory + ecosystem.",
-      "matchManagers": ["dockerfile", "docker-compose", "github-actions"],
+      "matchManagers": ["dockerfile", "docker-compose", "github-actions", "custom.regex"],
       "additionalBranchPrefix": "{{packageFileDir}}-",
       "groupName": "{{manager}} {{packageFileDir}}"
     }

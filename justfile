@@ -25,7 +25,7 @@ init-env:
     deploy/local/generate-env-secrets.sh .env local
     echo "✅ Wrote .env with freshly generated secrets."
     echo "   Gateway admin login: $(grep '^GATEWAY_ADMIN_EMAIL=' .env | cut -d= -f2-) / $(grep '^GATEWAY_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
-    echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose it)."
+    echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose Switch; Postgres stays on loopback)."
 
 # ── Dev infrastructure ─────────────────────────────────────────────────────────
 # Refuses an `.env` written before the two-role split, rather than starting a
