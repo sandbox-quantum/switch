@@ -90,6 +90,9 @@ describe('the record that gets built', () => {
       'switch_trust.client_id': CONTEXT.clientId,
       'switch_trust.env': 'prod',
       'switch_trust.internal': 'false',
+      'flint.client_id': CONTEXT.clientId,
+      flint_env: 'prod',
+      flint_internal: 'false',
       'os.type': 'darwin',
       'os.version': '24.3.0',
     });

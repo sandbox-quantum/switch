@@ -7,6 +7,7 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
+import { log } from '@renderer/utils/logger';
 
 /** How often to look for the new connection while the user is in the browser. */
 export const INSTALL_POLL_INTERVAL_MS = 3000;
@@ -52,8 +53,15 @@ export function InstallMessagingAppPanel({ workspaceId, platform, onInstalled }:
     const installed = bridgesQuery.data.find(
       (b) => b.type === platform && !phase.knownBridgeIds.has(b.id)
     );
-    if (installed) onInstalled({ bridgeId: installed.id, displayName: installed.displayName });
-  }, [phase, bridgesQuery.data, platform, onInstalled]);
+    if (!installed) return;
+    // Counted here: the install finished in the browser, and this is the first sign of it.
+    void rpc.workspaces
+      .messagingAppInstalled({ workspaceId, bridgeId: installed.id })
+      .catch((cause: unknown) =>
+        log.warn('Could not report a messaging app install', { error: String(cause) })
+      );
+    onInstalled({ bridgeId: installed.id, displayName: installed.displayName });
+  }, [phase, bridgesQuery.data, platform, onInstalled, workspaceId]);
 
   const start = async () => {
     setPhase({ kind: 'starting' });

@@ -4833,6 +4833,26 @@ version of their own to them without also giving them a release of their own.
 
 #### Fixed
 
+- **Usage data is filed under the right build again.** Since 0.41.0 every
+  event reached the analytics relay without the field it files events by, so
+  canary and development builds were counted with stable ones. The routing
+  fields are now sent under their earlier names as well, until the relay reads
+  the new ones.
+- **Connecting a messaging app through its own install is counted.**
+  `bridge_connected` gains `method` (`credentials` or `app_install`): an
+  install that started and failed is reported, and one that finished is
+  reported when its connection shows up. Before, only pasted-in tokens were
+  counted, though disconnecting either kind was.
+- **Failures on the way to the server are counted.** Connecting a messaging
+  app while the server's host is known to be down reports `unreachable`; an
+  account link the server refuses by throwing, a single sign-on whose
+  settings can't be read, and a chat action whose workspace session can't be
+  had report a failure instead of nothing.
+- **A Switch server started by Switch Console run from source no longer
+  shares usage data**, matching the app, which sends nothing from source.
+- **An installation updated from before the first-run pages is told about
+  usage data.** It never saw those pages, so it is shown the notice over the
+  app, with the switch to turn sharing off, until it is answered.
 - **Creating an agent no longer flashes "An agent called … already exists
   on this server".** The form checked the name against the server's agent
   list, which picks up the new agent before the dialog closes, so for a moment

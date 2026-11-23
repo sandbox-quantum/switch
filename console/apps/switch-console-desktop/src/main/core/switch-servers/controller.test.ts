@@ -264,6 +264,20 @@ describe('an action a server whose host has gone down cannot take', () => {
     });
   });
 
+  it('reports a single sign-on whose sign-in settings could not be read', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    fetchAuthConfig.mockRejectedValue(new Error('502 from the server'));
+
+    await expect(switchServersController.oidcLogin('srv', null)).rejects.toThrow('502');
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'oidc',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'failed',
+    });
+  });
+
   it('reports the sign-up that never left this machine', async () => {
     await expect(
       switchServersController.signup({

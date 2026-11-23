@@ -189,7 +189,23 @@ export type TelemetryBridgePlatform =
   | 'unknown'
   | (string & { readonly [platformKeyBrand]: true });
 
-export type TelemetryBridgeFailure = 'none' | 'unauthenticated' | 'forbidden' | 'invalid' | 'error';
+/**
+ * Why connecting a messaging app failed. `unreachable` is the server's host
+ * known to be down before anything was asked of it.
+ */
+export type TelemetryBridgeFailure =
+  | 'none'
+  | 'unauthenticated'
+  | 'forbidden'
+  | 'invalid'
+  | 'unreachable'
+  | 'error';
+
+/**
+ * How a messaging app was connected: `credentials`, its own app's tokens
+ * pasted in; `app_install`, the server's own app approved in the browser.
+ */
+export type TelemetryBridgeMethod = 'credentials' | 'app_install';
 
 /**
  * How linking a messaging account came out. `pending` is a link the server is
@@ -547,9 +563,14 @@ export type TelemetryEventMap = {
   update_install_started: {
     outcome: 'failure';
   };
-  /** A messaging platform was connected to a server. */
+  /**
+   * A messaging platform was connected to a server. An app install finishes in
+   * the browser, so its success is reported when the new connection shows up
+   * while Switch Console waits for it; one never finished reports nothing.
+   */
   bridge_connected: {
     bridge_platform: TelemetryBridgePlatform;
+    method: TelemetryBridgeMethod;
     outcome: TelemetryOutcome;
     failure_reason: TelemetryBridgeFailure;
   };
@@ -898,7 +919,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   update_download_started: [],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],
-  bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
+  bridge_connected: ['bridge_platform', 'method', 'outcome', 'failure_reason'],
   bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
   bridge_identity_confirmed: ['bridge_platform', 'link_kind'],

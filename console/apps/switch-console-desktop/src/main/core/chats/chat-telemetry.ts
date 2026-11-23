@@ -123,3 +123,43 @@ export async function reportingChatCall<T>(
   }
   return result;
 }
+
+/** How a chat call reaches its server: the session that selects the workspace, and the server's row. */
+export type ChatServerAccess = {
+  onServer: <R>(serverId: string, fn: (server: SwitchServer) => Promise<R>) => Promise<R>;
+  getServer: (serverId: string) => Promise<SwitchServer | null>;
+};
+
+/**
+ * {@link reportingChatCall} on the server's workspace session. A call that
+ * fails on the way to the server (no workspace, or a session that cannot
+ * select it) is reported as a failure too, though it never ran; one that ran
+ * is reported by {@link reportingChatCall} alone.
+ */
+export async function reportingChatCallOn<T>(
+  access: ChatServerAccess,
+  serverId: string,
+  requestId: string | null,
+  run: (server: SwitchServer) => Promise<T>,
+  emit: ChatCallEmit<T>
+): Promise<T> {
+  let started = false;
+  try {
+    return await access.onServer(serverId, (server) => {
+      started = true;
+      return reportingChatCall(server, requestId, () => run(server), emit);
+    });
+  } catch (error) {
+    if (!started) {
+      const server = await access.getServer(serverId).catch(() => null);
+      if (server)
+        emitSafely(
+          server,
+          emit,
+          { outcome: 'failure', failure_reason: chatFailureReason(error) },
+          null
+        );
+    }
+    throw error;
+  }
+}

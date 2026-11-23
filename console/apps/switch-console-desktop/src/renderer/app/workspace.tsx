@@ -4,6 +4,7 @@ import { shouldCatchUpIntro } from '@renderer/features/onboarding/intro-catch-up
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { OnboardingIntro } from '@renderer/features/onboarding/onboarding-intro';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
+import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
 import { WorkspaceTopBar } from '@renderer/features/sidebar/workspace-top-bar';
 import { BuddyIntroDialog } from '@renderer/features/switch-buddy/buddy-intro-dialog';
@@ -15,6 +16,8 @@ import {
 } from '@renderer/features/switch-servers/gateway-compatibility-banner';
 import { FROZEN } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { TelemetryConsentGate } from '@renderer/features/telemetry/TelemetryConsentGate';
+import { usageNoticeOwed } from '@renderer/features/telemetry/usage-notice';
 import { CommandShortcutBinder } from '@renderer/lib/commands/command-shortcut-binder';
 import { AppKeyboardShortcuts } from '@renderer/lib/components/app-keyboard-shortcuts';
 import { MonacoKeyboardBridge } from '@renderer/lib/components/monaco-keyboard-bridge';
@@ -99,6 +102,7 @@ function useFlagsReady(): boolean {
 const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode }) {
   const currentViewId = useCurrentViewId();
   const flagsReady = useFlagsReady();
+  const { value: telemetry } = useAppSettingsKey('telemetry');
   const shape = shellShape({
     loaded: switchServersStore.loaded,
     listError: switchServersStore.listError,
@@ -157,7 +161,12 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
             }
             contentClassName={frozen ? FROZEN : undefined}
           />
-          {!frozen && <BuddyIntroDialog />}
+          {/* Builds without the first-run pages show it from App. An install that
+              had servers before them never saw the notice those pages carry. */}
+          {BUILD_FEATURE_FLAGS.onboarding && <TelemetryConsentGate />}
+          {!frozen && !(BUILD_FEATURE_FLAGS.onboarding && usageNoticeOwed(telemetry)) && (
+            <BuddyIntroDialog />
+          )}
         </>
       );
     }

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as TelemetryConfig from '../telemetry/config';
 import type { ServerHost } from './host/types';
 
 /**
@@ -13,12 +14,25 @@ import type { ServerHost } from './host/types';
 
 const runningServiceEnvMock = vi.hoisted(() => vi.fn());
 
+const buildShares = vi.hoisted(() => ({ current: true }));
+const settingsGet = vi.hoisted(() => vi.fn());
+
 vi.mock('./compose', () => ({ runningServiceEnv: runningServiceEnvMock }));
 vi.mock('@main/core/settings/settings-service', () => ({
-  appSettingsService: { get: vi.fn() },
+  appSettingsService: { get: settingsGet },
+}));
+vi.mock('../telemetry/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof TelemetryConfig>()),
+  resolveTelemetryConfig: () =>
+    buildShares.current
+      ? {
+          enabled: true,
+          config: { endpoint: 'https://relay.example', build: 'stable', telemetryEnv: 'prod' },
+        }
+      : { enabled: false, reason: 'dev_build' },
 }));
 
-const { readDeployedTelemetry } = await import('./telemetry-consent');
+const { readDeployedTelemetry, telemetryConsent } = await import('./telemetry-consent');
 const { TELEMETRY_RELAY_ORIGIN } = await import('../telemetry/config');
 
 function host(readFile: () => Promise<string | null>): ServerHost {
@@ -29,6 +43,22 @@ const noEnvFile = () => Promise.resolve(null);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  buildShares.current = true;
+});
+
+describe('telemetryConsent', () => {
+  it('is the toggle on a build that reports', async () => {
+    settingsGet.mockResolvedValue({ enabled: true });
+    expect(await telemetryConsent()).toBe(true);
+    settingsGet.mockResolvedValue({ enabled: false });
+    expect(await telemetryConsent()).toBe(false);
+  });
+
+  it('is no from a build run from source, which sends nothing itself', async () => {
+    buildShares.current = false;
+    settingsGet.mockResolvedValue({ enabled: true });
+    expect(await telemetryConsent()).toBe(false);
+  });
 });
 
 describe('readDeployedTelemetry', () => {
@@ -39,6 +69,7 @@ describe('readDeployedTelemetry', () => {
       known: true,
       enabled: true,
       endpointCurrent: false,
+      buildShares: true,
     });
   });
 
@@ -52,7 +83,12 @@ describe('readDeployedTelemetry', () => {
       host(() => Promise.resolve('TELEMETRY_ENABLED=false\n'))
     );
 
-    expect(result).toEqual({ known: true, enabled: true, endpointCurrent: false });
+    expect(result).toEqual({
+      known: true,
+      enabled: true,
+      endpointCurrent: false,
+      buildShares: true,
+    });
   });
 
   it('treats a container without the variable as not sharing', async () => {
@@ -64,6 +100,7 @@ describe('readDeployedTelemetry', () => {
       known: true,
       enabled: false,
       endpointCurrent: false,
+      buildShares: true,
     });
   });
 
@@ -74,6 +111,7 @@ describe('readDeployedTelemetry', () => {
       known: true,
       enabled: true,
       endpointCurrent: false,
+      buildShares: true,
     });
   });
 
@@ -84,7 +122,23 @@ describe('readDeployedTelemetry', () => {
       host(() => Promise.resolve('SWITCH_VERSION=0.11.0\nTELEMETRY_ENABLED=true\n'))
     );
 
-    expect(result).toEqual({ known: true, enabled: true, endpointCurrent: false });
+    expect(result).toEqual({
+      known: true,
+      enabled: true,
+      endpointCurrent: false,
+      buildShares: true,
+    });
+  });
+
+  it('says when this build lets no server it starts share', async () => {
+    buildShares.current = false;
+    runningServiceEnvMock.mockResolvedValue(new Map([['TELEMETRY_ENABLED', 'false']]));
+
+    expect(await readDeployedTelemetry(host(noEnvFile))).toMatchObject({
+      known: true,
+      enabled: false,
+      buildShares: false,
+    });
   });
 
   it('reads whether a Docker or SSH server sends to the relay', async () => {
@@ -99,6 +153,7 @@ describe('readDeployedTelemetry', () => {
       known: true,
       enabled: true,
       endpointCurrent: true,
+      buildShares: true,
     });
   });
 
@@ -112,6 +167,7 @@ describe('readDeployedTelemetry', () => {
       );
       expect(await readDeployedTelemetry(host(noEnvFile))).toMatchObject({
         endpointCurrent: false,
+        buildShares: true,
       });
     }
   });

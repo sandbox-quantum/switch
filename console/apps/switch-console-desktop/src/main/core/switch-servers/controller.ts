@@ -704,8 +704,15 @@ export const switchServersController = createRPCController({
       reportSignIn('oidc', server, 'unreachable');
       throw unreachable;
     }
-    const config = await fetchAuthConfig(server);
-    const result = await oidcLogin(server, provider, config.oidcBrowserHandoff);
+    let result: Result<true, LoginError>;
+    try {
+      const config = await fetchAuthConfig(server);
+      result = await oidcLogin(server, provider, config.oidcBrowserHandoff);
+    } catch (error) {
+      // The server's sign-in settings could not be read, or the sign-in threw.
+      reportSignIn('oidc', server, 'failed');
+      throw error;
+    }
     reportSignIn('oidc', server, signInFailureReason(result));
     if (result.success) await adoptWorkspaces(server);
     return result;

@@ -39,6 +39,9 @@ name and body). Nothing else is sent with it:
     "switch_trust.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
     "switch_trust.env": "prod",
     "switch_trust.internal": "false",
+    "flint.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
+    "flint_env": "prod",
+    "flint_internal": "false",
     "os.type": "darwin",
     "os.version": "23.6.0"
   },
@@ -82,6 +85,7 @@ machine, in what repository, or what the prompt said.
 | `os.type` | OS family | `darwin`, `windows`, `linux`, `other` |
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
 | `switch_trust.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
+| `flint.client_id`, `flint_env`, `flint_internal` | the same three values as `switch_trust.client_id`, `switch_trust.env` and `switch_trust.internal`, sent again under the names they replaced, which the relay still files events by. Nothing more is disclosed by them | as above |
 | `flint.insert_id` | a random UUID made for this one event, so that two events alike in every field and sent in the same millisecond are not taken for one. A new one every event; kept nowhere | `9d0c5e7a-41b2-4f3e-8a6d-2b7c1e94f0a3` |
 | `flint.session_id` | which visit to the app the event belongs to: the time, in milliseconds, of the first thing someone did in it. A visit ends after 30 minutes with nothing done, and is kept only in memory. `-1` on the events that are not someone using the app — `session_discovered`, `session_reopened`, `subagent_adopted`, `agent_pruned`, `update_checked`, `update_install_started`, `renderer_crashed`, a `telemetry_consent_changed` from the first-run notice, and a `session_ended` for a session that went because the app removed its agent by itself — which neither start nor prolong a visit | `1789571950042`, `-1` |
 | `event.name` | the event, prefixed with the product | `switch_console.session_started` |
@@ -176,7 +180,7 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 
 | Event | Fields, with example values |
 |---|---|
-| `bridge_connected` | `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
+| `bridge_connected` | `bridge_platform`: `slack` · `method`: `credentials` (its own app's tokens pasted in) / `app_install` (the server's own app approved in the browser; its success is counted when the new connection shows up while the app waits for it, and an install never finished is not reported) · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `unreachable` (the server's host known to be down) / `error` |
 | `bridge_disconnected` | `bridge_platform`: `mattermost` · `outcome` |
 | `bridge_identity_claimed` | `bridge_platform` · `outcome`: `success` (linked) / `pending` (waiting for a one-time code to be posted from the account, which is what confirms the link) / `failure` |
 | `bridge_identity_confirmed` | `bridge_platform` · `link_kind`: `new` (a link that was waiting on its code) / `existing` (a link made before links had to be confirmed, which worked all along) / `unknown` — sent when the code is posted and the link confirmed, after asking the server that it is |
@@ -269,11 +273,15 @@ document and a Turn off link beside it; the page that starts a Switch server on
 this machine carries the same switch, and the toggle lives in Settings →
 Preferences. Because the default is on, events are sent from the first launch,
 before anyone has read that line, and the line records sharing as on as soon as
-it is shown. The setting is re-read before every single event rather than
+it is shown. An installation that already had servers when it updated to a
+version with those first-run pages never sees them, so it is shown the notice
+as a prompt over the app instead, with the same switch, until it is answered.
+The setting is re-read before every single event rather than
 cached, so turning it off stops transmission immediately, with no further
 requests and no queued backlog. Running the app from source sends nothing
 whatever the setting, unless a developer opts that run in to test what it
-sends (it is then filed as `local`); a packaged build that is not a release
+sends (it is then filed as `local`), and a Switch server such a run starts
+does not share either; a packaged build that is not a release
 does send, filed as `dev` (§3.1). Opting out is itself not reported — the one thing we do not measure is
 someone asking not to be measured.
 

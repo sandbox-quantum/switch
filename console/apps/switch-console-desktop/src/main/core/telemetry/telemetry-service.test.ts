@@ -310,6 +310,9 @@ describe('the payload', () => {
     });
 
     expect(Object.keys(sentResource()).sort()).toEqual([
+      'flint.client_id',
+      'flint_env',
+      'flint_internal',
       'os.type',
       'os.version',
       'service.name',
