@@ -10,7 +10,12 @@ import pytest
 from switch_decision import app as app_module
 from switch_decision import backends
 from switch_decision.backends import InvalidChoiceError, ModelAnswer, ModelServerError
-from switch_decision.config import Settings, fallback_settings, load_settings
+from switch_decision.config import (
+    Settings,
+    default_settings,
+    fallback_settings,
+    load_settings,
+)
 from switch_decision.fallback import BothFailed, race
 from tests.helpers import BODY, GEMINI_KEY, SECRETS, settings_for
 
@@ -180,7 +185,7 @@ def gemini_env(monkeypatch):
 
 def test_no_fallback_by_default(gemini_env):
     s = load_settings()
-    assert s.fallback_backend is None and fallback_settings(s) is None
+    assert s.fallbacks == {} and fallback_settings(s, default_settings(s)) is None
 
 
 def test_bedrock_fallback_needs_no_bedrock_override_flag(gemini_env):
@@ -188,8 +193,8 @@ def test_bedrock_fallback_needs_no_bedrock_override_flag(gemini_env):
     gemini_env.setenv("DECISION_BEDROCK_MODEL", HAIKU_MODEL)
     gemini_env.setenv("AWS_REGION", "eu-west-3")
     s = load_settings()
-    assert (s.fallback_backend, s.fallback_after_s, s.bedrock_enabled) == (
-        "bedrock",
+    assert (s.fallbacks, s.fallback_after_s, s.bedrock_enabled) == (
+        {"gemini_decision": "bedrock"},
         2.0,
         False,
     )
@@ -198,7 +203,7 @@ def test_bedrock_fallback_needs_no_bedrock_override_flag(gemini_env):
         "anthropic",
         "gemini_decision",
     ]
-    fb = fallback_settings(s)
+    fb = fallback_settings(s, default_settings(s))
     assert fb is not None
     assert (fb.backend, fb.model, fb.aws_region) == (
         "bedrock",
@@ -239,7 +244,7 @@ def test_fallback_delay_out_of_range_refused(gemini_env, value):
 
 def test_fallback_delay_is_not_read_without_a_fallback(gemini_env):
     gemini_env.setenv("DECISION_FALLBACK_AFTER_S", "0")
-    assert load_settings().fallback_backend is None
+    assert load_settings().fallbacks == {}
 
 
 # ── through /decide and /health ─────────────────────────────────────────────
@@ -254,7 +259,7 @@ def _settings(**kw) -> Settings:
         confidence_threshold=0.8,
         bedrock_model=HAIKU_MODEL,
         aws_region="eu-west-3",
-        fallback_backend="bedrock",
+        fallbacks={"gemini_decision": "bedrock"},
         fallback_after_s=0.05,
     )
     base.update(kw)
@@ -448,11 +453,11 @@ def test_fallback_naming_no_candidate_is_nobody(make_client, backends_by_name, c
     assert "fallback=won fallback_reason=slow" in line.getMessage()
 
 
-def test_a_request_that_chose_its_backend_gets_no_fallback(
+def test_a_request_naming_the_primary_gets_its_fallback(
     make_client, backends_by_name, caplog
 ):
     plan, calls = backends_by_name
-    plan["gemini_decision"] = (0.2, GEMINI)
+    plan["gemini_decision"] = (1.0, GEMINI)
     plan["bedrock"] = (0.0, HAIKU)
     with caplog.at_level(logging.INFO, logger="switch_decision"):
         body = (
@@ -464,8 +469,28 @@ def test_a_request_that_chose_its_backend_gets_no_fallback(
             )
             .json()
         )
-    assert body["backend"] == "gemini_decision"
-    assert calls == [("gemini_decision", "gemini-decision-1")]
+    assert body["backend"] == "bedrock"
+    assert calls == [
+        ("gemini_decision", "gemini-decision-1"),
+        ("bedrock", HAIKU_MODEL),
+    ]
+    [line] = _decide_lines(caplog)
+    assert "fallback=won fallback_reason=slow" in line.getMessage()
+
+
+def test_a_request_naming_a_backend_without_a_fallback_gets_it_alone(
+    make_client, backends_by_name, caplog
+):
+    plan, calls = backends_by_name
+    plan["bedrock"] = (0.2, HAIKU)
+    with caplog.at_level(logging.INFO, logger="switch_decision"):
+        body = (
+            make_client(_settings(bedrock_enabled=True))
+            .post("/decide", json=BODY, headers={"X-Decision-Backend": "bedrock"})
+            .json()
+        )
+    assert body["backend"] == "bedrock"
+    assert calls == [("bedrock", HAIKU_MODEL)]
     [line] = _decide_lines(caplog)
     assert "fallback" not in line.getMessage()
 
@@ -474,11 +499,7 @@ def test_no_fallback_fields_when_it_is_off(make_client, backends_by_name, caplog
     plan, calls = backends_by_name
     plan["gemini_decision"] = (0.1, GEMINI)
     with caplog.at_level(logging.INFO, logger="switch_decision"):
-        body = (
-            make_client(_settings(fallback_backend=None))
-            .post("/decide", json=BODY)
-            .json()
-        )
+        body = make_client(_settings(fallbacks={})).post("/decide", json=BODY).json()
     assert body["backend"] == "gemini_decision" and len(calls) == 1
     [line] = _decide_lines(caplog)
     assert "fallback" not in line.getMessage()
@@ -494,7 +515,7 @@ def test_health_reports_the_fallback(make_client):
         body["fallback_after_s"],
     ) == ("bedrock", HAIKU_MODEL, 2.0)
     assert (body["backend"], body["model"]) == ("gemini_decision", "gemini-decision-1")
-    off = make_client(_settings(fallback_backend=None)).get("/health").json()
+    off = make_client(_settings(fallbacks={})).get("/health").json()
     assert (
         off["fallback_backend"],
         off["fallback_model"],
@@ -548,7 +569,7 @@ def test_fallback_threshold_setting(gemini_env):
     gemini_env.setenv("DECISION_MIN_LEAD", "0.1")
     s = load_settings()
     assert s.fallback_confidence_threshold == 0.65
-    fb = fallback_settings(s)
+    fb = fallback_settings(s, default_settings(s))
     assert fb is not None
     assert (fb.confidence_threshold, fb.min_lead) == (0.65, None)
     assert (s.confidence_threshold, s.min_lead) == (0.6, 0.1)
@@ -558,7 +579,8 @@ def test_without_a_fallback_threshold_the_fallback_keeps_the_primary_rule(gemini
     gemini_env.setenv("DECISION_FALLBACK_BACKEND", "bedrock")
     gemini_env.setenv("DECISION_CONFIDENCE_THRESHOLD", "0.8")
     gemini_env.setenv("DECISION_MIN_LEAD", "0.1")
-    fb = fallback_settings(load_settings())
+    s = load_settings()
+    fb = fallback_settings(s, default_settings(s))
     assert fb is not None and (fb.confidence_threshold, fb.min_lead) == (0.8, 0.1)
 
 
@@ -661,7 +683,5 @@ def test_health_reports_the_fallback_threshold(make_client):
         make_client(_settings()).get("/health").json()["fallback_confidence_threshold"]
         is None
     )
-    off = make_client(
-        _settings(fallback_backend=None, fallback_confidence_threshold=0.65)
-    )
+    off = make_client(_settings(fallbacks={}, fallback_confidence_threshold=0.65))
     assert off.get("/health").json()["fallback_confidence_threshold"] is None
