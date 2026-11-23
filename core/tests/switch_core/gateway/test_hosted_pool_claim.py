@@ -19,12 +19,23 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores import hosted_pool_store
-from switch_core.db.stores.hosted_machine_store import CloudMachineStore, lock_claims
+from switch_core.db.stores.hosted_machine_store import (
+    BIND_FAILED,
+    CloudMachineStore,
+    lock_claims,
+)
 from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.hosted_controller import sweep_hosted_machines
 from switch_core.visibility.box_provision import (
+    ProvisionRefused,
     box_namespace_for,
     claim_provision,
+    expire_binds,
     pool_pick_for,
+    record_pool_box_gone,
+    record_provision_result,
+    record_provision_step,
+    removal_pending,
 )
 from switch_core.visibility.keyed_id import KeyedIdKind
 from tests.switch_core.gateway.test_hosted_provisioner import (  # noqa: F401
@@ -301,3 +312,171 @@ async def test_an_owner_with_a_machine_never_takes_a_box(
     answer = await _ensure(app, app.owner)
     assert answer.json()["machine_id"] == app.machine_id
     assert (await _pool_row(app.factory, box_id)).state == "waiting"
+
+
+# ── the bind's result, and its 30 seconds ──
+
+
+async def _claimed_bind(app, email: str = "new@example.com"):
+    """A person who took the waiting box, and the operator's claim of the
+    bind: (person, box id, the claimed bind)."""
+    _pooled(app)
+    await _operator(app.factory)
+    box_id = await _waiting_box(app.factory)
+    person = await _person(app.factory, email)
+    assert (await _ensure(app, person)).json()["machine_id"] == box_id
+    async with app.factory() as session:
+        handed = await claim_provision(
+            session, datetime.now(UTC), capabilities=frozenset(CAPABLE)
+        )
+        await session.commit()
+    assert handed is not None and handed.kind == "bind"
+    return person, box_id, handed
+
+
+async def _result(app, handed, result: str, failed_at: str | None = None, now=None):
+    async with app.factory() as session:
+        await record_provision_result(
+            session,
+            action_id=handed.action_id,
+            result=result,
+            namespace=handed.namespace,
+            failed_at=failed_at,
+            claim_token=handed.claim_token,
+            now=now or datetime.now(UTC),
+        )
+        await session.commit()
+
+
+async def _owner_writing(app, handed, now=None) -> None:
+    async with app.factory() as session:
+        await record_provision_step(
+            session,
+            action_id=handed.action_id,
+            step="owner_writing",
+            claim_token=handed.claim_token,
+            now=now or datetime.now(UTC),
+        )
+        await session.commit()
+
+
+async def _machine(app, machine_id: str) -> CloudMachine:
+    async with app.factory() as session:
+        machine = await session.get(CloudMachine, machine_id)
+    assert machine is not None
+    return machine
+
+
+async def _to_remove(app, machine_id: str) -> bool:
+    async with app.factory() as session:
+        return await removal_pending(session, machine_id)
+
+
+async def _reapable(app) -> list[str]:
+    async with app.factory() as session:
+        return [row.id for row in await hosted_pool_store.retiring(session)]
+
+
+async def test_a_bind_done_leaves_the_box_the_persons(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    person, box_id, handed = await _claimed_bind(app)
+    await _owner_writing(app, handed)
+    await _result(app, handed, "done")
+    machine = await _machine(app, box_id)
+    assert (machine.owner_id, machine.state) == (person.id, "queued")
+    assert (await _pool_row(app.factory, box_id)).state == "claimed"
+    assert await _reapable(app) == []
+
+
+async def test_a_bind_failed_before_its_owner_is_reaped_and_the_person_starts_afresh(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    person, box_id, handed = await _claimed_bind(app)
+    await _result(app, handed, "failed", "bind_machine_mismatch")
+    row = await _pool_row(app.factory, box_id)
+    assert (row.state, row.retire_reason) == ("retiring", "failed_before_owner")
+    assert await _reapable(app) == [box_id]
+    machine = await _machine(app, box_id)
+    assert (machine.state, machine.error_code) == ("deleted", BIND_FAILED)
+    assert not await _to_remove(app, box_id)
+    # The next click: a new machine, never the failed one brought back.
+    again = (await _ensure(app, person)).json()["machine_id"]
+    assert again != box_id
+
+
+async def test_a_bind_failed_after_its_owner_is_the_persons_box_to_remove(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    person, box_id, handed = await _claimed_bind(app)
+    await _owner_writing(app, handed)
+    await _result(app, handed, "failed", "bind_closed")
+    assert (await _pool_row(app.factory, box_id)).state == "claimed"
+    assert await _reapable(app) == []
+    assert await _to_remove(app, box_id)
+    assert (await _machine(app, box_id)).state == "deleted"
+    assert (await _ensure(app, person)).json()["machine_id"] != box_id
+
+
+async def test_a_bind_not_done_in_30_seconds_fails_and_a_late_one_is_refused(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    _person_, box_id, handed = await _claimed_bind(app)
+    async with app.factory() as session:
+        assert await expire_binds(session, datetime.now(UTC)) == 0  # not yet
+        assert (
+            await expire_binds(session, datetime.now(UTC) + timedelta(seconds=31)) == 1
+        )
+        await session.commit()
+    assert await _reapable(app) == [box_id]
+    # Too late to write the owner, or to report it done.
+    with pytest.raises(ProvisionRefused) as refused:
+        await _owner_writing(app, handed)
+    assert refused.value.status == 409
+    with pytest.raises(ProvisionRefused) as late:
+        await _result(app, handed, "done")
+    assert late.value.status == 409
+    assert (await _machine(app, box_id)).state == "deleted"
+
+
+async def test_a_bind_timed_out_after_its_owner_is_never_reaped(
+    provisioner_app,  # noqa: F811
+) -> None:
+    """The owner was written before the 30 seconds ran out: whatever comes
+    after, the box is the person's. A late `done` changes nothing."""
+    app = provisioner_app
+    _person_, box_id, handed = await _claimed_bind(app)
+    await _owner_writing(app, handed)
+    async with app.factory() as session:
+        await expire_binds(session, datetime.now(UTC) + timedelta(seconds=31))
+        await session.commit()
+    assert await _reapable(app) == []
+    assert await _to_remove(app, box_id)
+    with pytest.raises(ProvisionRefused):
+        await _result(app, handed, "done")
+    assert await _reapable(app) == []
+    async with app.factory() as session:
+        with pytest.raises(ProvisionRefused):
+            await record_pool_box_gone(session, box_id, datetime.now(UTC))
+        await session.rollback()
+
+
+async def test_the_sweep_fails_a_bind_past_its_30_seconds(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    _person_, box_id, _handed = await _claimed_bind(app)
+    async with app.factory() as session:
+        await sweep_hosted_machines(
+            session,
+            app.factory,
+            app.config,
+            app.settings,
+            datetime.now(UTC) + timedelta(seconds=31),
+        )
+        await session.commit()
+    assert await _reapable(app) == [box_id]

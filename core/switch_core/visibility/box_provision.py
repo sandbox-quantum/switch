@@ -884,6 +884,9 @@ async def record_provision_result(
         },
     )
     machine_id = details.get("machine_id")
+    if kind == "bind" and isinstance(machine_id, str) and result == "failed":
+        await fail_bind(session, machine_id, linked, now)
+        return
     if kind == "pool" and isinstance(machine_id, str):
         # A pool box: made, it's waiting, at the revision its claim recorded;
         # not made, it retires (reapable: no person ever had it).
@@ -1105,6 +1108,101 @@ async def refill_after_claim(
 
 # A bind that reached this step is the person's: never reaped, never pooled.
 OWNER_WRITING = "owner_writing"
+# How long Core gives a bind to finish before it fails the claim.
+BIND_TIMEOUT = timedelta(seconds=30)
+BIND_TIMED_OUT = "bind_timeout"
+
+
+async def fail_bind(
+    session: AsyncSession,
+    machine_id: str,
+    linked: Collection[ServerAuditEvent],
+    now: datetime,
+) -> None:
+    """A claim whose bind failed, reported by the operator or timed out by
+    Core. It never goes back to the pool, and the person's next click gets a
+    new machine (the row is deleted at once and never revived, `BIND_FAILED`).
+
+    Before `owner_writing` nothing of the person's reached the box: the pool
+    row retires as `failed_before_owner`, which the reaper destroys. From
+    `owner_writing` on, the box is the person's: a `hosted.box_to_remove`
+    entry names it for the removal step, and the reaper never touches it. The
+    caller holds the action's lock (so `owner_writing` can't land meanwhile)
+    and commits."""
+    from switch_core.db.stores import hosted_pool_store
+    from switch_core.db.stores.hosted_machine_store import (
+        BIND_FAILED,
+        _box_removal_entry,
+    )
+
+    await lock_machine(session, machine_id)
+    machine = await session.get(CloudMachine, machine_id, populate_existing=True)
+    reached = reached_owner(linked)
+    if not reached:
+        await hosted_pool_store.retire(
+            session,
+            machine_id,
+            "failed_before_owner",
+            now,
+            from_states=("claimed",),
+        )
+    if machine is None or machine.state == "deleted":
+        return
+    if reached:
+        await _box_removal_entry(
+            session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE
+        )
+    record_machine_event(session, "failed", "launch_refused", machine.backend)
+    machine.state = "deleted"
+    machine.desired_state = "deleted"
+    machine.error_code = BIND_FAILED
+    machine.error = None
+    bump_revision(machine, now)
+
+
+async def expire_binds(session: AsyncSession, now: datetime) -> int:
+    """Fail each bind still open `BIND_TIMEOUT` after Core asked for it, as
+    `failed` at `bind_timeout`, and its claim with it (`fail_bind`). A `done`
+    that arrives later is refused (the action has its result); by then Core
+    has already treated the box as the person's if its owner was written.
+    Returns how many. The caller commits."""
+    rows = await session.execute(
+        select(ServerAuditEvent)
+        .where(
+            ServerAuditEvent.action == ACTION,
+            ServerAuditEvent.details["phase"].astext == "requested",
+            ServerAuditEvent.details["kind"].astext == "bind",
+            ServerAuditEvent.occurred_at <= now - BIND_TIMEOUT,
+            ServerAuditEvent.occurred_at > now - TTL - timedelta(days=1),
+        )
+        .order_by(ServerAuditEvent.id)
+    )
+    failed = 0
+    for request in rows.scalars().all():
+        await _advisory_lock(session, f"box-provision:{request.id}")
+        linked = await _linked(session, request.id)
+        if _result_of(linked) is not None:
+            continue
+        machine_id = (request.details or {}).get("machine_id")
+        await record_server_audit_event(
+            session,
+            actor_user_id=None,
+            action=ServerAuditAction.HOSTED_BOX_PROVISION,
+            target_type="box",
+            target_id=request.target_id,
+            details={
+                "phase": "result",
+                "result": "failed",
+                "step": BIND_TIMED_OUT,
+                "by": "core",
+                "linked_to": request.id,
+                "machine_id": machine_id,
+            },
+        )
+        failed += 1
+        if isinstance(machine_id, str):
+            await fail_bind(session, machine_id, linked, now)
+    return failed
 
 
 async def _current_claim(

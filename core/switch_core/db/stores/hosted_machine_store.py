@@ -89,6 +89,11 @@ class Claimed:
     from_pool: bool = False
 
 
+# A machine whose warm pool bind failed (`box_provision.fail_bind`): deleted at
+# once, never revived, so the person's next click gets a new machine.
+BIND_FAILED = "bind_failed"
+
+
 # The warm pool's pick inside a claim (`box_provision.claim_pool_box`): given
 # the claim's session, the owner and the time, the id of a pool box it claimed
 # for them (the new machine's id), or None for a box made from scratch.
@@ -655,7 +660,13 @@ class CloudMachineStore:
         """
         candidate = await session.scalar(
             select(CloudMachine)
-            .where(CloudMachine.owner_id == owner_id, CloudMachine.state == "deleted")
+            .where(
+                CloudMachine.owner_id == owner_id,
+                CloudMachine.state == "deleted",
+                # A warm pool claim whose bind failed is never brought back:
+                # its box is reaped or removed, and the person starts afresh.
+                CloudMachine.error_code.is_distinct_from(BIND_FAILED),
+            )
             .order_by(CloudMachine.updated_at.desc())
             .limit(1)
         )

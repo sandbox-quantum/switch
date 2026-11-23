@@ -85,6 +85,7 @@ from switch_core.visibility.box_provision import (
     box_missing_error,
     box_provisioning_on,
     boxes_expected,
+    expire_binds,
     expire_provisions,
     missing_at_revision,
     open_provision_machines,
@@ -511,6 +512,9 @@ async def sweep_hosted_machines(
         # the lifecycle sweep could time it out as never scheduled: the same
         # outcome whether Core's loop or the controller's poll gets there.
         await expire_provisions(session, now)
+        await session.commit()
+        # A warm pool bind gets 30 seconds; then its claim fails.
+        await expire_binds(session, now)
         await session.commit()
     # A machine whose box is still being made is left alone: its start
     # clocks run from the box's existence, not the claim.
