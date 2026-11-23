@@ -52,6 +52,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **`ORGANIZATION_DIRECTORY=workos` now works with `GATEWAY_SIGNUP_MODE=open`.**
+  Someone signing in with no workspace may then create an organization of
+  their own. It is kept in Switch, not in WorkOS, and follows WorkOS only
+  once an operator links it with `switch-link-workos`. `default_tenant` is
+  still refused with the WorkOS directory, by the server and by the Helm
+  chart.
+
 #### Security
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
@@ -65,8 +73,59 @@ version of their own to them without also giving them a release of their own.
   statement timeout stops is answered 503. Requests turned away are counted in
   `switch.http.gateway_turned_away`, on the dashboard beside the other
   refusals.
+- **One person can no longer hold unbounded live streams.** The chats feed,
+  the activity feed and the change-notice socket stay open for as long as
+  Console or a tab runs, and nothing bounded how many one caller opened. One
+  signed-in person in one workspace (else one address) now holds at most
+  `GATEWAY_STREAMS_PER_CALLER` (16) of each kind per process: a newer one
+  closes their oldest of that kind, or is refused 429 while that oldest is
+  under 30 seconds old. A process holds at most `GATEWAY_STREAMS_PER_PROCESS`
+  (4000) of every kind together, past which a new one is refused 503 with a
+  `Retry-After` of 2 to 10 seconds. `switch.http.gateway_streams.*` counts
+  them, on the dashboard beside the requests turned away.
 
 #### Added
+- **The decision service can use open-weights models on Amazon Bedrock.**
+  `DECISION_BACKEND=bedrock_openai` (or a request's `X-Decision-Backend:
+  bedrock_openai` with `DECISION_BEDROCK_OPENAI_ENABLED=1`) asks Qwen3 235B
+  A22B Instruct 2507 (`DECISION_BEDROCK_OPENAI_MODEL`) in
+  `DECISION_BEDROCK_OPENAI_REGION` (eu-central-1), scoring every option from
+  the first token's letter probabilities. On 260 labelled real decisions it
+  scored 0.962 at a threshold of 0.89, answering in 0.23 s at the median.
+- **A request can choose the service's own model server.** With
+  `DECISION_SYSTEMONE_ENABLED=1`, `SYSTEMONE_URL` and
+  `DECISION_SYSTEMONE_MODEL`, `X-Decision-Backend: systemone` asks it, for
+  example vllm-sr d3-mini on vLLM.
+- **Each decision backend can have a threshold of its own**
+  (`DECISION_THRESHOLD_<BACKEND>`), applied to the backend that answered; a
+  workspace's own threshold still wins.
+- **Fallbacks per backend.** `DECISION_FALLBACKS=gemini_decision:bedrock`
+  races Haiku against Gemini whenever Gemini is used, as the default or
+  because a workspace chose it; `bedrock_openai` can be a fallback too.
+- **The decision service's `/health` lists what each choice gets**
+  (`backends`: model, a label for people, threshold and fallback), so
+  Switch Console can offer only what the service has.
+- **Workspaces can choose the decision service's self-hosted model, or
+  Gemini with its fallback, and Settings → Message routing names every choice
+  by its model.** Two more choices a workspace admin can save: `self_hosted`
+  (the model the server's decision service runs on its own model server, asked
+  as `X-Decision-Backend: systemone`) and `gemini` (Gemini in that service, as
+  `gemini_decision`, which applies whatever fallback its operator configured).
+  Which of the choices that run in the decision service are offered now comes
+  from the backends the service lists in its `/health`, read when an admin
+  opens, saves or tests the page and kept for 15 seconds; the gateway's
+  `GET /decision-settings` returns how the service describes the server
+  default and each choice (label, model, default threshold, fallback). A
+  service that lists no backends (one older than this release) is offered as
+  before: Haiku with a workspace's key, and Haiku on Bedrock only with
+  `DECISION_BEDROCK_ENABLED`. One that can't be read offers only what is saved,
+  and the page says why. Migration `c18f5ebeef66` widens the check on
+  `decision_settings.backend` (expand only). A saved choice a release doesn't
+  know, written by a newer one, turns auto-route off in that workspace with a
+  warning rather than failing. `switch.decision.*` and the `decision_made` /
+  `decision_failed` events gain the backend labels `self_hosted` and `gemini`,
+  and the `Decision routing:` record names the service's own backend that
+  answered (`answered_by`), so a fallback's answer can be told apart.
 - **The WorkOS directory mirror reports whether it is keeping up.** With
   `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
   `switch.workos.cursor_age` (seconds since it last read WorkOS's events
@@ -94,6 +153,17 @@ version of their own to them without also giving them a release of their own.
   workspace that chose its backend gets that backend alone. Off unless set.
 
 #### Changed
+- **A message in a busy chat no longer costs every member's Console stream a
+  database pass of its own at the same instant.** Chat stream passes hold at
+  most a quarter of the process's database pool at once, and a pass over that
+  waits holding no connection. The new rows of a room are read and rendered once
+  and handed to every stream its message woke, so each stream reads only what
+  its own person may see. A stream woken by its rooms passes at most every
+  200 ms, sending what came in meanwhile together.
+- **A request that names a backend with a fallback now races it.** Before,
+  only a request on the default backend raced its fallback;
+  `DECISION_FALLBACK_BACKEND` now means the default backend's fallback
+  however it is chosen.
 - **Member changes that also apply in Switch Trust ask first.** On an
   organization whose members come from WorkOS and whose changes are sent
   there, making someone Org Admin, making an Org Admin a Viewer, and removing
@@ -108,6 +178,16 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A full database pool no longer makes a pod drop everything it holds.**
+  Each switch-core process renews its lease on a database connection of its
+  own, outside the shared pool. Before, the renewal borrowed from the same
+  pool as requests and streams, so when they filled it the renewal timed out,
+  the lease lapsed, and the pod stopped its owned work and put every agent
+  and controller it held offline. Each process now holds one more
+  connection, which the boot-time connection budget counts.
+- **The decision service is ready behind vLLM.** A model server whose
+  `/health` answers 200 with an empty body counts as healthy; before, the
+  service reported 503 while `/decide` worked.
 - **The decision service's default Bedrock model is a valid id:**
   `us.anthropic.claude-haiku-5-5` (EU regions need
   `eu.anthropic.claude-haiku-5-5` in `DECISION_BEDROCK_MODEL`). The old
@@ -4736,6 +4816,20 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Added
+
+- **Settings → Message routing names the server default and each choice by
+  its model, and offers the server's self-hosted model and Gemini.** The
+  server default reads, for instance, "Server default: Qwen3 235B (Bedrock)";
+  the choices are the server's self-hosted model, Gemini (with the model it
+  falls back to when slow, and after how long), Claude Haiku on Bedrock,
+  Claude Haiku with your Anthropic key, your own endpoint and none, each
+  offered where the server's decision service runs it. Each choice shows its
+  model and the confidence threshold it uses by default, and the threshold
+  field shows the one that applies when left blank. When the server can't
+  read its decision service, the page says so and keeps the saved choice.
+  "Self-hosted endpoint" is now "Your own endpoint".
 
 #### Fixed
 

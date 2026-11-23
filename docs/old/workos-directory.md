@@ -21,14 +21,17 @@ off by default; this page says what works today and what does not yet.
   tokens name, trailing slash included: Switch looks people's WorkOS
   identities up under it, so a sign-in whose token names another issuer is
   refused, and the log says which one it named.
-- `GATEWAY_SIGNUP_MODE=invite_only`. Organizations cannot be created in WorkOS
-  from Switch yet, so nobody but the operator creates one; the server refuses
-  to start with any other mode.
+- `GATEWAY_SIGNUP_MODE=invite_only` or `open`; the server refuses to start
+  with `default_tenant`. Under `invite_only` nobody but the operator creates
+  an organization. Under `open` someone with no workspace may create one
+  (up to `GATEWAY_MAX_WORKSPACES_PER_USER`), and it is Switch's own: nothing
+  is created in WorkOS, its members are managed in Switch, and it follows
+  WorkOS only once an operator links it (below).
 
 With the Helm chart (`deploy/remote/helm/switch`), set
 `switchCore.organizationDirectory.mode: workos` and `secrets.workosApiKey`
 (or `WORKOS_API_KEY` in `secrets.existingSecret`), next to `switchCore.oidc`
-and `switchCore.signup.mode: invite_only`; the settings for changes made from
+and `switchCore.signup.mode` (`invite_only` or `open`); the settings for changes made from
 Switch (below) are under `switchCore.organizationDirectory` too. The render
 fails on a combination the server would refuse.
 
@@ -242,4 +245,6 @@ anyone new to it.
   WorkOS (above), making someone Org Admin is refused too, and a removal or
   demotion changes only Switch; whatever WorkOS still grants comes back at
   the next sign-in or check.
-- A new organization created on the server is Switch's own until it is linked.
+- A new organization created on the server, by an operator or by someone
+  signing up under `open`, is Switch's own until it is linked. Creating it in
+  WorkOS too is not built.

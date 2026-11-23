@@ -1,5 +1,7 @@
 import type {
   DecisionBackend,
+  DecisionBackendInfo,
+  DecisionServiceChoice,
   DecisionSettings,
   DecisionSettingsInput,
   DecisionTestInput,
@@ -21,13 +23,115 @@ export type DecisionForm = {
   threshold: string;
 };
 
+/** Each choice's name when the server's decision service doesn't describe
+ * it (`choiceLabel` prefers the service's own label). */
 export const CHOICE_LABELS = {
   server_default: 'Use server default',
   none: 'None',
-  endpoint: 'Self-hosted endpoint',
-  haiku_anthropic: 'Haiku (Anthropic API)',
-  haiku_bedrock: 'Haiku on Bedrock',
+  endpoint: 'Your own endpoint',
+  haiku_anthropic: 'Claude Haiku with your Anthropic key',
+  haiku_bedrock: 'Claude Haiku (Bedrock)',
+  self_hosted: 'Self-hosted model',
+  gemini: 'Gemini',
 } as const satisfies Record<DecisionChoice, string>;
+
+/** The order the choices that run in the server's decision service are offered in. */
+const SERVICE_CHOICES = [
+  'self_hosted',
+  'gemini',
+  'haiku_bedrock',
+  'haiku_anthropic',
+] as const satisfies readonly DecisionServiceChoice[];
+
+function isServiceChoice(choice: DecisionChoice): choice is DecisionServiceChoice {
+  return (SERVICE_CHOICES as readonly string[]).includes(choice);
+}
+
+/** How the server's decision service describes a choice, when it does. */
+export function choiceInfo(
+  choice: DecisionChoice,
+  settings: DecisionSettings
+): DecisionBackendInfo | null {
+  if (choice === 'server_default') return settings.serverDefault.info;
+  if (!isServiceChoice(choice)) return null;
+  return settings.options.details[choice] ?? null;
+}
+
+/** "Claude Haiku (Bedrock)" → "Claude Haiku": a label without its trailing
+ * parenthesis, for a sentence that names two models. */
+function shortLabel(label: string): string {
+  return label.replace(/\s*\([^)]*\)\s*$/, '') || label;
+}
+
+/** A described backend in a few words: its label, or with a fallback
+ * "Gemini, with Claude Haiku if slow". */
+function describedLabel(info: DecisionBackendInfo): string {
+  if (info.fallback === null) return info.label;
+  return `${shortLabel(info.label)}, with ${shortLabel(info.fallback.label)} if slow`;
+}
+
+/** "1.5 s" */
+function secondsText(seconds: number): string {
+  return `${Number(seconds.toFixed(2))} s`;
+}
+
+/** A choice's name in the form: the decision service's own label where it
+ * gives one ("Server default: Qwen3 235B (Bedrock)"), else `CHOICE_LABELS`. */
+export function choiceLabel(choice: DecisionChoice, settings: DecisionSettings): string {
+  const info = choiceInfo(choice, settings);
+  if (choice === 'server_default') {
+    return info === null ? CHOICE_LABELS.server_default : `Server default: ${describedLabel(info)}`;
+  }
+  // Haiku with a workspace's key is named for the key, not the model's label.
+  if (info === null || choice === 'haiku_anthropic') return CHOICE_LABELS[choice];
+  return describedLabel(info);
+}
+
+const CHOICE_HINTS: Record<Exclude<DecisionChoice, 'server_default'>, string> = {
+  none: 'Auto-route is off in this workspace’s rooms, whatever the server default.',
+  endpoint: 'A decision service you run. Room messages are sent to it.',
+  haiku_anthropic: 'Claude Haiku through the Anthropic API. Room messages are sent to Anthropic.',
+  haiku_bedrock:
+    'Claude Haiku through Amazon Bedrock, on this server’s AWS account. No key needed.',
+  self_hosted:
+    'A model this server’s decision service runs on its own hardware. Room messages stay with this server.',
+  gemini:
+    'Google’s Gemini, through this server’s decision service. Room messages are sent to Google.',
+};
+
+/** The line under a choice: what it is, what it falls back to, and the model
+ * and threshold it uses by default, where the decision service says. */
+export function choiceHint(choice: DecisionChoice, settings: DecisionSettings): string {
+  const info = choiceInfo(choice, settings);
+  const parts =
+    choice === 'server_default'
+      ? info === null
+        ? [`Currently ${serverDefaultText(settings)}.`]
+        : ['Whatever this server uses for every workspace that hasn’t chosen.']
+      : [CHOICE_HINTS[choice]];
+  if (info !== null) {
+    if (info.fallback !== null) {
+      parts.push(
+        `Falls back to ${info.fallback.label} after ${secondsText(info.fallback.afterS)}.`
+      );
+    }
+    parts.push(
+      info.threshold === null
+        ? `Model ${info.model}.`
+        : `Model ${info.model}, threshold ${info.threshold} by default.`
+    );
+  }
+  return parts.join(' ');
+}
+
+/** The threshold a choice applies when the workspace leaves it blank, where
+ * the decision service says. */
+export function defaultThreshold(
+  choice: DecisionChoice,
+  settings: DecisionSettings
+): number | null {
+  return choiceInfo(choice, settings)?.threshold ?? null;
+}
 
 export function formFor(settings: DecisionSettings): DecisionForm {
   const own = settings.workspace;
@@ -40,35 +144,46 @@ export function formFor(settings: DecisionSettings): DecisionForm {
   };
 }
 
+function offered(choice: DecisionServiceChoice, settings: DecisionSettings): boolean {
+  const { options } = settings;
+  switch (choice) {
+    case 'haiku_anthropic':
+      return options.haikuAnthropic;
+    case 'haiku_bedrock':
+      return options.haikuBedrock;
+    case 'self_hosted':
+      return options.selfHosted;
+    case 'gemini':
+      return options.gemini;
+  }
+}
+
 /**
- * The choices the form offers, in order. Haiku runs inside the server's
- * decision service, so neither Haiku choice is offered without one; Bedrock
- * spends the server's AWS credentials, so it is offered only where the
- * operator allows it. A workspace already saved on a choice the server no
- * longer offers still sees it, so the form shows what is stored.
+ * The choices the form offers, in order. The ones that run inside the
+ * server's decision service are offered as that service says (its list of
+ * backends; for an older service, the server's configuration). A workspace
+ * already saved on a choice the server no longer offers still sees it, so
+ * the form shows what is stored.
  */
 export function offeredChoices(settings: DecisionSettings): DecisionChoice[] {
   const saved = settings.workspace?.backend;
   return [
     'server_default',
-    'none',
+    ...SERVICE_CHOICES.filter((choice) => offered(choice, settings) || saved === choice),
     'endpoint',
-    ...(settings.options.haikuAnthropic || saved === 'haiku_anthropic'
-      ? (['haiku_anthropic'] as const)
-      : []),
-    ...(settings.options.haikuBedrock || saved === 'haiku_bedrock'
-      ? (['haiku_bedrock'] as const)
-      : []),
+    'none',
   ];
 }
 
-/** Why a Haiku choice is missing, or null when both are offered. */
-export function haikuNote(settings: DecisionSettings): string | null {
-  if (!settings.options.haikuAnthropic) {
-    return 'Haiku isn’t offered: it runs inside this server’s decision service, and this server has none configured. Its operator can add one.';
+/** Why choices are missing from the form, or null when there is nothing to say. */
+export function choicesNote(settings: DecisionSettings): string | null {
+  const { options } = settings;
+  if (options.note !== null) return options.note;
+  if (options.source === 'none') {
+    return 'Models run by this server aren’t offered: they run inside its decision service, and this server has none configured. Its operator can add one.';
   }
-  if (!settings.options.haikuBedrock) {
-    return 'Haiku on Bedrock isn’t offered: it uses this server’s own AWS credentials, so its operator has to turn it on.';
+  if (options.source === 'configuration' && !options.haikuBedrock) {
+    return 'Claude Haiku on Bedrock isn’t offered: it uses this server’s own AWS credentials, so its operator has to turn it on.';
   }
   return null;
 }
@@ -77,9 +192,10 @@ export function haikuNote(settings: DecisionSettings): string | null {
 export function serverDefaultText(settings: DecisionSettings): string {
   const { serverDefault } = settings;
   if (!serverDefault.configured) return 'none — this server has no decision service configured';
+  if (serverDefault.info !== null) return describedLabel(serverDefault.info);
   return serverDefault.endpoint
-    ? `self-hosted decision service (${serverDefault.endpoint})`
-    : 'self-hosted decision service';
+    ? `this server’s decision service (${serverDefault.endpoint})`
+    : 'this server’s decision service';
 }
 
 /** Which setting applies to the workspace's rooms, and what it comes to. */
@@ -90,7 +206,7 @@ export function appliesText(settings: DecisionSettings): string {
   const own = settings.workspace;
   const backend = own?.backend ?? settings.effective.backend;
   const where = backend === 'endpoint' && own?.endpoint ? ` (${own.endpoint})` : '';
-  return `This workspace’s own setting applies: ${CHOICE_LABELS[backend]}${where}. The server default is ${serverDefaultText(settings)}.`;
+  return `This workspace’s own setting applies: ${choiceLabel(backend, settings)}${where}. The server default is ${serverDefaultText(settings)}.`;
 }
 
 /** The stored key, in words: never the key itself. */
@@ -112,7 +228,7 @@ export function choiceFields(choice: DecisionChoice): {
   return {
     endpoint: choice === 'endpoint',
     key: choice === 'endpoint' || choice === 'haiku_anthropic',
-    threshold: choice === 'endpoint' || choice === 'haiku_anthropic' || choice === 'haiku_bedrock',
+    threshold: choice === 'endpoint' || isServiceChoice(choice),
   };
 }
 

@@ -973,7 +973,7 @@ failures by reason and latency percentiles can be read per backend.
 
 | Property | Type |
 |---|---|
-| `backend` | `server_default` \| `endpoint` \| `haiku_anthropic` \| `haiku_bedrock` — the server's own decision service as a workspace's default, a workspace's own endpoint, or Haiku |
+| `backend` | `server_default` \| `endpoint` \| `haiku_anthropic` \| `haiku_bedrock` \| `self_hosted` \| `gemini` — the server's own decision service as a workspace's default, a workspace's own endpoint, or a choice that service runs: Haiku, its self-hosted model, or Gemini |
 | `outcome` | `agent` \| `none` |
 | `confidence` | `none` \| `lt_0.5` \| `0.5_0.6` \| `0.6_0.7` \| `0.7_0.8` \| `0.8_0.9` \| `0.9_1.0` — the service's confidence in its choice, in tenths above one half; `none` when it gave none |
 | `latency_ms` | number — measured by Switch around the whole request |

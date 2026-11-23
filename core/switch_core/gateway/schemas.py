@@ -95,6 +95,8 @@ class RoomSummary(BaseModel):
     last_message_at: str | None = None
     # True when the room is archived (hidden from the default active list).
     archived: bool = False
+    # Frozen by a workspace admin: read-only until they unfreeze it.
+    frozen: bool = False
     # The caller owns the room, is in it (in Switch Console or through a
     # platform account they claimed), or owns an agent in it.
     viewer_is_member: bool = False
@@ -187,6 +189,22 @@ class RoomAdminEntry(BaseModel):
     granted_at: str
 
 
+class RoomFreezeState(BaseModel):
+    """Since when a room has been frozen. Who froze it and why are filled
+    only for a workspace admin."""
+
+    frozen_at: str
+    frozen_by: str | None
+    reason: str | None
+
+
+class RoomFreezeRequest(BaseModel):
+    """`POST /rooms/{id}/freeze`. The reason is kept for admins and in the
+    audit log; the room is only told it was frozen."""
+
+    reason: str
+
+
 class RoomDetail(RoomSummary):
     transport_room_id: str
     # Deprecated alias of `transport_room_id`, sent for the compatibility
@@ -203,7 +221,6 @@ class RoomDetail(RoomSummary):
     room_admin_candidates: list[RoomPerson] = []
     external_channel_id: str | None
     instructions: str | None
-    protection_config: dict[str, Any] | None
     observe_config: dict[str, Any] | None
     agent_ids: list[str]
     agent_statuses: dict[str, str]
@@ -212,6 +229,8 @@ class RoomDetail(RoomSummary):
     join_event_listeners: list[str] = []
     # ISO timestamp of when the room was archived, or null if active.
     archived_at: str | None = None
+    # Set while the room is frozen.
+    freeze: RoomFreezeState | None = None
     # What deleting the room will do to its platform channel ("archived",
     # "deleted", "left", "kept"), or null when the room has no channel.
     channel_on_delete: ChannelRetirement | None = None
@@ -307,10 +326,6 @@ class RoomUsersRemoved(BaseModel):
     platform_refused: list[str] = []
 
 
-class RoomProtectionRequest(BaseModel):
-    protection_config: dict[str, Any]
-
-
 class RoomObserveRequest(BaseModel):
     observe_config: dict[str, Any]
 
@@ -403,7 +418,21 @@ class RoomGroupUpdateRequest(BaseModel):
 # ── Agents ────────────────────────────────────────────────────────────────────
 
 
+class AgentSuspension(BaseModel):
+    """An agent's suspension (`accounts/suspension.py`). `by_role` is who
+    made it (`owner`, `admin` or `operator`), which decides who may lift it;
+    `with_owner` says it came from suspending the agent's owner, and is lifted
+    with theirs."""
+
+    suspended_at: datetime
+    reason: str | None
+    by_role: str
+    with_owner: bool
+
+
 class AgentSummary(BaseModel):
+    # Null unless the agent is suspended.
+    suspension: AgentSuspension | None
     id: str
     name: str
     description: str
@@ -2523,7 +2552,9 @@ class BudgetResponse(BaseModel):
 # ── Switch Trust ──────────────────────────────────────────────────────────────
 
 
-DecisionBackendName = Literal["none", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+DecisionBackendName = Literal[
+    "none", "endpoint", "haiku_anthropic", "haiku_bedrock", "self_hosted", "gemini"
+]
 
 
 class DecisionEffective(BaseModel):
@@ -2540,9 +2571,12 @@ class DecisionEffective(BaseModel):
 class DecisionWorkspaceSettings(BaseModel):
     """The workspace's saved choice. The key is never returned: only whether
     one is set, its last four characters, and whether this server can still
-    decrypt it."""
+    decrypt it. A saved choice this release does not know (a newer release
+    wrote it) reads as `none`, which is what applies, with the saved value in
+    `unrecognized_backend`."""
 
     backend: DecisionBackendName
+    unrecognized_backend: str | None
     endpoint: str | None
     threshold: float | None
     has_api_key: bool
@@ -2551,18 +2585,56 @@ class DecisionWorkspaceSettings(BaseModel):
     updated_at: str
 
 
+class DecisionFallback(BaseModel):
+    """What a backend switches to when it has not answered after `after_s`
+    seconds: `label` is that backend's own label, or its model id."""
+
+    backend: str
+    model: str
+    label: str
+    after_s: float
+
+
+class DecisionBackendInfo(BaseModel):
+    """A backend as the server's decision service describes it in `/health`:
+    the model, the label people see, the confidence threshold it applies when
+    the workspace sets none, and its fallback."""
+
+    label: str
+    model: str
+    threshold: float | None
+    fallback: DecisionFallback | None
+
+
 class DecisionServerDefault(BaseModel):
+    """`info` is the default backend as the decision service describes it;
+    null when there is none, or it could not be read (`options.note`)."""
+
     configured: bool
     endpoint: str | None
     has_api_key: bool
+    info: DecisionBackendInfo | None
 
 
 class DecisionOptions(BaseModel):
-    """Which Haiku backends the server offers: both need the server's
-    decision service, and Bedrock also `DECISION_BEDROCK_ENABLED`."""
+    """Which choices that run in the server's decision service a workspace
+    may newly save, and each one's description (`details`, keyed by choice,
+    for those the service lists).
+
+    `source` is where that came from: `service` (the backends its `/health`
+    lists), `configuration` (a service that lists none: Haiku on the
+    Anthropic API, and Haiku on Bedrock iff `DECISION_BEDROCK_ENABLED`),
+    `unavailable` (it could not be read: nothing new is offered, a saved
+    choice can be kept, and `note` says why) or `none` (no server default,
+    so none of them can run)."""
 
     haiku_anthropic: bool
     haiku_bedrock: bool
+    self_hosted: bool
+    gemini: bool
+    details: dict[str, DecisionBackendInfo]
+    source: Literal["service", "configuration", "unavailable", "none"]
+    note: str | None
 
 
 class DecisionSettingsResponse(BaseModel):
@@ -2869,3 +2941,43 @@ class ErasureDetail(BaseModel):
     requested_by_user_id: str | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class RoomFreezeResult(BaseModel):
+    room: RoomDetail
+    # Why the room could not be told it was frozen or unfrozen, or null when
+    # it was. The change holds either way.
+    notice_error: str | None
+
+
+# ── Suspension and key rotation ──────────────────────────────────────────────
+
+
+class SuspendRequest(BaseModel):
+    """Why the agent or person is suspended, kept on it and in the audit log."""
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class AgentSuspensionResponse(BaseModel):
+    agent_id: str
+    # Null once the agent is no longer suspended.
+    suspension: AgentSuspension | None
+
+
+class PersonSuspensionResponse(BaseModel):
+    user_id: str
+    suspended: bool
+    suspended_at: datetime | None
+    reason: str | None
+    by_role: str | None
+    # The agents suspended, or let back in, with the person, by workspace.
+    agents: dict[str, list[str]]
+
+
+class RotateAgentKeyResponse(BaseModel):
+    """The agent's new key, shown this once as when the agent was registered.
+    Every connection made with the old key has been closed."""
+
+    agent_id: str
+    api_key: str

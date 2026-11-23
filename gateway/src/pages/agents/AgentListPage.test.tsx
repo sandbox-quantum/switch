@@ -69,6 +69,7 @@ function agent(id: string, ownerId: string, extra: Partial<AgentListEntry> = {})
     can_edit_options: false,
     can_transfer: true,
     transfer_blocked_reason: null,
+    suspension: null,
     status: "online",
     device: null,
     ...extra,

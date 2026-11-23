@@ -39,13 +39,21 @@ def test_workos_without_the_sign_in_is_refused() -> None:
         )
 
 
-@pytest.mark.parametrize("mode", ["open", "default_tenant"])
-def test_workos_with_self_service_sign_up_is_refused(mode: str) -> None:
-    with pytest.raises(ValidationError, match="invite_only"):
+def test_workos_with_open_sign_up_is_accepted() -> None:
+    config: SwitchConfig = _config(
+        organization_directory="workos",
+        workos_api_key="sk_test_example",  # gitleaks:allow
+        **{**OIDC, "gateway_signup_mode": "open"},
+    )
+    assert config.gateway_signup_mode == "open"
+
+
+def test_workos_with_the_default_tenant_is_refused() -> None:
+    with pytest.raises(ValidationError, match="default_tenant"):
         _config(
             organization_directory="workos",
             workos_api_key="sk_test_example",  # gitleaks:allow
-            **{**OIDC, "gateway_signup_mode": mode},
+            **{**OIDC, "gateway_signup_mode": "default_tenant"},
         )
 
 

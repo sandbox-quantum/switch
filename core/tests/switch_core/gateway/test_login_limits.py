@@ -102,7 +102,7 @@ class World(SimpleNamespace):
     async def wait_out(self) -> None:
         """Let time pass until no wait refuses an attempt: the short waits
         between failures, never a lock-out."""
-        now = datetime.now(UTC)
+        now = login_limits.datetime.now(UTC)
         async with self.factory() as session:
             last = await session.scalar(
                 select(AuthAttempt.locked_until)
@@ -114,7 +114,9 @@ class World(SimpleNamespace):
                 .limit(1)
             )
         if last is not None:
-            await self.later(last - datetime.now(UTC) + timedelta(milliseconds=10))
+            await self.later(
+                last - login_limits.datetime.now(UTC) + timedelta(milliseconds=10)
+            )
 
     async def rows(self, kind: str) -> list[AuthAttempt]:
         async with self.factory() as session:
@@ -143,6 +145,18 @@ async def _user(
             await UserStore().create(session, user)
             await session.commit()
             return user
+
+
+def _stopped_clock() -> type[datetime]:
+    """`datetime` for `login_limits` whose `now` stays where it was called."""
+    at = datetime.now(UTC)
+
+    class Stopped(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return at.astimezone(tz) if tz is not None else at.replace(tzinfo=None)
+
+    return Stopped
 
 
 @pytest.fixture
@@ -232,9 +246,16 @@ class TestPerEmail:
         assert waits == ["1", "2", "4", "8"]
 
     async def test_an_email_with_no_account_locks_out_exactly_as_one_with_an_account(
-        self, world: World
+        self, world: World, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Otherwise the lock would say which emails have accounts."""
+        """Otherwise the lock would say which emails have accounts.
+
+        The clock stands still, so only `wait_out` moves time: a wait is
+        counted from the start of the attempt that set it, and a password
+        check slow enough on a busy machine would otherwise round the next
+        refusal's `Retry-After` down a second for one email and not the other.
+        """
+        monkeypatch.setattr(login_limits, "datetime", _stopped_clock())
         answers = {}
         for email in (ADA, NOBODY):
             seen = []
@@ -394,7 +415,11 @@ class TestUnlockCommand:
         assert unlocked.id == ada.id
         assert (await world.sign_in(ADA, PASSWORD)).status_code == 200
         async with world.factory() as session:
-            [event] = await session.scalars(select(ServerAuditEvent))
+            [event] = await session.scalars(
+                select(ServerAuditEvent).where(
+                    ServerAuditEvent.action == "user.sign_in_lock_cleared"
+                )
+            )
         assert (event.action, event.actor_user_id, event.target_id) == (
             "user.sign_in_lock_cleared",
             None,
@@ -545,7 +570,7 @@ class TestTheLockLeavesOtherWaysIn:
         with tenant_scope(TENANT_ZERO_ID):
             async with world.factory() as session:
                 response = await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
                     config=oidc_config(),
                     session=session,
                     session_factory=world.factory,

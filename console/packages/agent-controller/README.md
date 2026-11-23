@@ -629,6 +629,12 @@ session hosts it launches with `process.execPath` run as Node too.
 - On `credential.revoked`, or on any request refused as `controller_revoked`: it
   turns every agent off, stops accepting their tokens, deletes their credentials
   files and the controller credential, and exits with code `3`.
+- On any refusal, or an `evicted` frame, saying `account_suspended` (the account
+  the controller belongs to is suspended): it stops every agent by holding, and
+  saving, its assignment with each agent stopped, so a restart starts nothing
+  either. It keeps its credential and the agents' credentials files, does not
+  exit, and asks Switch again every minute. Once Switch lets it in, the
+  assignment it pulls starts the agents again.
 
 ## What it does not do
 
