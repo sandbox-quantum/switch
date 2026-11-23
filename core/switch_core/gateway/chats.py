@@ -18,6 +18,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
+from functools import partial
 from typing import Annotated, Any, Literal
 
 from fastapi import (
@@ -41,6 +42,7 @@ from switch_core.chats.service import (
     RemovalReason,
     RoomControl,
 )
+from switch_core.chats.stream_reads import Page
 from switch_core.chats.views import (
     CamelModel,
     ChatMember,
@@ -77,6 +79,11 @@ router = APIRouter()
 PING_SECONDS = 20.0
 ACTIVITY_QUEUE_MAX = 256
 RECHECK_SECONDS = 30.0
+# The least time between two passes of one chat stream woken by its rooms. A
+# room's first message after a quiet spell is sent at once; the rows that
+# follow it within this are sent together, in one pass, rather than one pass
+# each: an agent that posts as it works rings its rooms many times a second.
+COALESCE_SECONDS = 0.2
 _CATCH_UP_PAGE = 200
 # Revisions one activity stream remembers before forgetting them all.
 _ACTIVITY_SENT_MAX = 10_000
@@ -812,7 +819,10 @@ class _ChatStream:
 
     Every wake-up re-reads what the caller may see before reading anything
     else, so a removal from a room or from the tenant ends that room's events
-    at once. Database sessions are opened per pass and closed before waiting.
+    at once. Database sessions are opened per pass and closed before waiting,
+    and a pass holds one only in a slot of the process's
+    (`ChatService.stream_reads`). The rows of a room that woke many streams
+    are read once and shared between them.
     """
 
     def __init__(
@@ -827,12 +837,21 @@ class _ChatStream:
         self.sent: dict[str, dict[str, Any]] = {}
         self.resummarize = False
         self.resummarize_rooms: set[str] = set()
-        self.dirty: set[str] = set()
+        # The rooms rung since the last pass took them, each with when it was
+        # last rung, on the monotonic clock: a row shared from another
+        # stream's read is taken only from a read that began after it.
+        self.dirty: dict[str, float] = {}
         self.wake = asyncio.Event()
 
     async def on_room(self, room_id: str) -> None:
-        self.dirty.add(room_id)
+        self.dirty[room_id] = time.monotonic()
         self.wake.set()
+
+    def take_rung(self) -> dict[str, float]:
+        """The rooms rung since this was last called, and clear the wake-up."""
+        rung, self.dirty = self.dirty, {}
+        self.wake.clear()
+        return rung
 
     def on_memberships(self, room_ids: list[str] | None) -> None:
         if room_ids is None:
@@ -853,31 +872,40 @@ class _ChatStream:
         return _removed(room_id, reason)
 
     async def refresh(
-        self, read: set[str] | None, initial: bool
+        self, read: dict[str, float] | None, initial: bool
     ) -> tuple[list[bytes], bool]:
         """Frames for what changed, and whether the stream may continue.
 
-        `read` names the rooms to read new messages from; None reads all,
-        and first brings the caller's agent-owner memberships up to date.
+        `read` names the rooms to read new messages from, each with when it
+        was rung (`take_rung`); None reads all, and first brings the caller's
+        agent-owner memberships up to date.
         """
-        if initial:
-            # Not held to the cap: a catch-up is the stream's start, and pages
-            # through every room that moved, so after a deploy reconnects every
-            # Console, held catch-ups would stall every other stream's wakes.
-            return await self._refresh(read, initial)
-        async with self.service.stream_reads:
+        service = self.service
+        # A first catch-up is not held to the slots: it pages through every
+        # room that moved, so after a deploy reconnects every Console the
+        # catch-ups would take every slot and hold up the open streams' wakes.
+        slot: contextlib.AbstractAsyncContextManager[None] = (
+            contextlib.nullcontext() if initial else service.stream_reads.slot()
+        )
+        async with slot:
+            if read is None:
+                await service.sync_owned_rooms(self.tenant_id, self.user.id)
             return await self._refresh(read, initial)
 
     async def _refresh(
-        self, read: set[str] | None, initial: bool
+        self, read: dict[str, float] | None, initial: bool
     ) -> tuple[list[bytes], bool]:
         frames: list[bytes] = []
         service = self.service
-        resummarize, self.resummarize = self.resummarize, False
-        resummarize_rooms, self.resummarize_rooms = self.resummarize_rooms, set()
-        if read is None:
-            await service.sync_owned_rooms(self.tenant_id, self.user.id)
         async with tenant_session(service.session_factory, self.tenant_id) as session:
+            # Taken once the pass has its slot, so whatever woke the stream
+            # while it waited for one is answered by this pass rather than by
+            # another right after it.
+            rung = self.take_rung()
+            if read is not None:
+                read = {**read, **rung}
+            resummarize, self.resummarize = self.resummarize, False
+            resummarize_rooms, self.resummarize_rooms = self.resummarize_rooms, set()
             if not await service.has_tenant_role(session, self.tenant_id, self.user.id):
                 frames.extend(
                     self._untrack(room_id, "access") for room_id in list(self.cursors)
@@ -951,7 +979,13 @@ class _ChatStream:
             )
             for room_id in to_read:
                 if room_id in moved:
-                    frames.extend(await self._read(session, readable[room_id]))
+                    frames.extend(
+                        await self._read(
+                            session,
+                            readable[room_id],
+                            read.get(room_id) if read is not None else None,
+                        )
+                    )
         return frames, True
 
     async def _announce(self, session: AsyncSession, rooms: list[Room]) -> list[bytes]:
@@ -969,21 +1003,46 @@ class _ChatStream:
             frames.append(_frame("chat", dump))
         return frames
 
-    async def _read(self, session: AsyncSession, room: Room) -> list[bytes]:
+    async def _read(
+        self, session: AsyncSession, room: Room, rung_at: float | None
+    ) -> list[bytes]:
+        """The room's rows past this stream's cursor, as frames. Pages read for
+        another stream are taken when they were read after the room was rung
+        here (`rung_at`); a room read for any other reason is read here."""
         frames: list[bytes] = []
         while True:
-            rows = await self.service.messages_after(
-                session, room.id, self.cursors[room.id], _CATCH_UP_PAGE
+            after = self.cursors[room.id]
+            page = await self.service.stream_reads.page(
+                self.tenant_id,
+                room.id,
+                after,
+                rung_at,
+                partial(_page, self.service, session, room, after),
             )
-            if not rows:
+            if page.last_seq is None:
                 return frames
-            self.cursors[room.id] = rows[-1].seq
-            frames.extend(
-                _frame("message", message.model_dump(by_alias=True))
-                for message in await chat_messages(session, room, rows)
-            )
-            if len(rows) < _CATCH_UP_PAGE:
+            self.cursors[room.id] = page.last_seq
+            frames.extend(page.frames)
+            if not page.full:
                 return frames
+
+
+async def _page(
+    service: ChatService, session: AsyncSession, room: Room, after_seq: int
+) -> Page:
+    """The room's rows after `after_seq`, rendered as every member's stream
+    sends them: what a member sees of a row does not depend on who they are."""
+    rows = await service.messages_after(session, room.id, after_seq, _CATCH_UP_PAGE)
+    if not rows:
+        return Page(frames=(), last_seq=None, full=False)
+    return Page(
+        frames=tuple(
+            _frame("message", message.model_dump(by_alias=True))
+            for message in await chat_messages(session, room, rows)
+        ),
+        last_seq=rows[-1].seq,
+        full=len(rows) >= _CATCH_UP_PAGE,
+    )
 
 
 async def chat_events(
@@ -1018,6 +1077,7 @@ async def chat_events(
         now = time.monotonic()
         next_ping = now + ping_seconds
         next_recheck = now + recheck_seconds
+        last_pass = now
         while True:
             timeout = max(0.0, min(next_ping, next_recheck) - time.monotonic())
             try:
@@ -1028,19 +1088,20 @@ async def chat_events(
             if now >= next_ping:
                 next_ping = now + ping_seconds
                 yield b": ping\n\n"
-            read: set[str] | None
+            read: dict[str, float] | None
             if now >= next_recheck:
                 if not await session_current():
                     return
                 next_recheck = now + recheck_seconds
                 read = None
             elif stream.wake.is_set():
-                read = set(stream.dirty)
+                # Whatever rings in the meantime is read in the same pass.
+                await asyncio.sleep(max(0.0, last_pass + COALESCE_SECONDS - now))
+                read = stream.take_rung()
             else:
                 continue
-            stream.wake.clear()
-            stream.dirty.clear()
             frames, alive = await stream.refresh(read, initial=False)
+            last_pass = time.monotonic()
             for frame in frames:
                 yield frame
             if not alive:
@@ -1069,7 +1130,11 @@ async def chat_activity_events(
     leaving a room stops its frames at once. `resync` means changes may have
     been missed (the listener reconnected, this connection fell behind, or the
     caller joined a room): reload snapshots. Each re-read first ends the
-    stream if the caller's session no longer `session_current`.
+    stream if the caller's session no longer `session_current`. The re-reads
+    after the first hold their connection in a slot shared with the chat
+    streams (`ChatService.stream_reads`). A change's own read does not: steps
+    posted quickly would queue past `queue_max` behind the chat streams' wakes,
+    and the resync that follows costs more than the reads it saved.
     """
     queue: asyncio.Queue[object] = asyncio.Queue(maxsize=queue_max)
     # Whether a re-read of the caller's rooms is already queued: however many
@@ -1135,8 +1200,9 @@ async def chat_activity_events(
                     return
                 next_recheck = now + recheck_seconds
             if recheck or item is _RESYNC or item is _MEMBERSHIPS:
-                async with service.stream_reads:
-                    current = await _readable_room_ids(service, tenant_id, user)
+                current = await _readable_room_ids(
+                    service, tenant_id, user, slotted=True
+                )
                 if current is None:
                     return
                 subscription.set_rooms(current)
@@ -1161,11 +1227,18 @@ async def chat_activity_events(
 
 
 async def _readable_room_ids(
-    service: ChatService, tenant_id: str, user: User
+    service: ChatService, tenant_id: str, user: User, *, slotted: bool = False
 ) -> set[str] | None:
     """The rooms the caller may read now; None once the caller has no tenant
-    role, which ends the stream."""
-    async with tenant_session(service.session_factory, tenant_id) as session:
+    role, which ends the stream. In a slot when `slotted`: a stream's first
+    read is not, as a chat stream's first catch-up is not."""
+    slot: contextlib.AbstractAsyncContextManager[None] = (
+        service.stream_reads.slot() if slotted else contextlib.nullcontext()
+    )
+    async with (
+        slot,
+        tenant_session(service.session_factory, tenant_id) as session,
+    ):
         if not await service.has_tenant_role(session, tenant_id, user.id):
             return None
         return {room.id for room in await service.readable_rooms(session, user.id)}

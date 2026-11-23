@@ -56,6 +56,7 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.chats import MEMBER_CLIENT_TYPE, is_console_chat
+from switch_core.chats.stream_reads import StreamReads
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
     MESSAGE_EVENT_TYPE,
@@ -140,9 +141,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How many open chat streams of this process re-read at once after a wake.
-STREAM_READS_AT_ONCE = 16
-
 # Told the rooms whose part in a person's chats changed, or None for any.
 MembershipWatcher = Callable[[list[str] | None], None]
 
@@ -211,8 +209,13 @@ class ChatService:
         trust_client: TrustClient,
         message_observer: ParticipantMessageObserver,
         telemetry: TelemetryService | None,
+        stream_slots: int | None = None,
     ) -> None:
         self.session_factory = session_factory
+        # What this process's Console streams share: the slots their passes
+        # hold a connection in (`stream_slots`, None for no limit) and the
+        # pages of rooms' new rows they read (`chats/stream_reads.py`).
+        self.stream_reads = StreamReads(stream_slots)
         self._trust_client = trust_client
         # A post is stored straight through the router rather than sent by a
         # transport, so it is told to the observer here, as the transport
@@ -242,10 +245,6 @@ class ChatService:
         self._membership_watchers: dict[tuple[str, str], set[MembershipWatcher]] = {}
         self._agent_room_listeners: tuple[Callable[[str, list[str]], None], ...] = ()
         self._tasks: set[asyncio.Task[None]] = set()
-        # Held by an open chat stream while it re-reads after a wake
-        # (`gateway/chats.py`): a change to a room wakes the stream of
-        # everyone in it at once, and each re-read holds a session.
-        self.stream_reads = asyncio.Semaphore(STREAM_READS_AT_ONCE)
         # Rooms whose people's streams are still to be woken, per tenant, and
         # the one task per tenant waking them (`rooms_changed`).
         self._changed_rooms: dict[str, dict[str, None]] = {}

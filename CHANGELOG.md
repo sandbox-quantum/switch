@@ -132,6 +132,13 @@ version of their own to them without also giving them a release of their own.
   workspace that chose its backend gets that backend alone. Off unless set.
 
 #### Changed
+- **A message in a busy chat no longer costs every member's Console stream a
+  database pass of its own at the same instant.** Chat stream passes hold at
+  most a quarter of the process's database pool at once, and a pass over that
+  waits holding no connection. The new rows of a room are read and rendered once
+  and handed to every stream its message woke, so each stream reads only what
+  its own person may see. A stream woken by its rooms passes at most every
+  200 ms, sending what came in meanwhile together.
 - **A request that names a backend with a fallback now races it.** Before,
   only a request on the default backend raced its fallback;
   `DECISION_FALLBACK_BACKEND` now means the default backend's fallback
