@@ -30,8 +30,19 @@ SLACK_CREATE_APP = "https://api.slack.com/apps"
 #: What the app is called in Slack; Slack allows 35 characters.
 SLACK_APP_NAME = "Agent Switch"
 
-#: The message events Switch reads, in every kind of conversation the bot is in.
-SLACK_BOT_EVENTS = ("message.channels", "message.groups", "message.im", "message.mpim")
+#: The message and lifecycle events Switch reads, in every kind of conversation the bot is in.
+SLACK_BOT_EVENTS = (
+    "message.channels",
+    "message.groups",
+    "message.im",
+    "message.mpim",
+    "channel_deleted",
+    "channel_archive",
+    "channel_unarchive",
+    "group_deleted",
+    "group_archive",
+    "group_unarchive",
+)
 
 #: Slack refuses a slash command description longer than this.
 _SLACK_DESCRIPTION_MAX = 100

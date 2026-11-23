@@ -33,6 +33,8 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
     CardRejectedError,
+    ChannelArchivedError,
+    ChannelNotFoundError,
     MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
@@ -62,7 +64,7 @@ from switch_core.chat_account_links import (
     confirm_with_code,
     unlink_account,
 )
-from switch_core.clients.actor import Actor, ClientConfig
+from switch_core.clients.actor import Actor, ClientConfig, SystemActor
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
@@ -71,7 +73,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
-from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
+from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser, Room
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -438,6 +440,8 @@ class CollaborationCore:
         # `_outbound_groups`, so a late file of one starts a group of its own,
         # and still holding the room's progress back until posted.
         self._flushing_outbound_groups: list[_PendingOutboundGroup] = []
+        self._archived_channels: set[str] = set()
+        self._deleted_channels: set[str] = set()
         # Room-event -> external-post anchors written synchronously right after
         # room_send, before the durable _record_message_map commit, so a fast
         # command reply relayed during that DB await still resolves the command's
@@ -662,6 +666,9 @@ class CollaborationCore:
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_channel_type_handler(self._record_channel_type)
         self._adapter.set_channel_rename_handler(self._handle_channel_named)
+        self._adapter.set_channel_archived_handler(self._handle_channel_archived)
+        self._adapter.set_channel_unarchived_handler(self._handle_channel_unarchived)
+        self._adapter.set_channel_deleted_handler(self._handle_channel_deleted)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         # A bridge on a shared connection that started before the connection
         # was up is attached later (when it comes up, or on its first event).
@@ -1362,6 +1369,177 @@ class CollaborationCore:
                 return
             if (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY) != new_name:
                 await self._room_service.record_channel_name(room.id, new_name)
+
+    async def _resolve_channel_display_name(
+        self, channel_id: str, room: Room | None = None
+    ) -> str:
+        if hasattr(self._adapter, "_channel_name_cache"):
+            cached = getattr(self._adapter, "_channel_name_cache", {}).get(channel_id)
+            if cached:
+                return str(cached)
+        if room and room.metadata_:
+            name = room.metadata_.get(LINKED_CHANNEL_NAME_KEY)
+            if name:
+                return str(name)
+        return channel_id
+
+    async def _find_room_for_channel(
+        self, channel_id: str
+    ) -> tuple[Room | None, str | None, str | None, str | None]:
+        room_key = self._channel_to_room.get(channel_id)
+        room_id = room_key[0] if room_key else None
+        transport_room_id = room_key[1] if room_key else None
+        tenant_id = self._room_tenants.get(room_id) if room_id else None
+        room: Room | None = None
+        session_factory = getattr(self, "_session_factory", None)
+        if room_id is None and session_factory is not None:
+            with tenant_scope(self._bridge_tenant_id):
+                async with tenant_session(
+                    session_factory, self._bridge_tenant_id
+                ) as session:
+                    room = await self._room_store.get_by_external_channel(
+                        session,
+                        bridge_id=self._bridge_id,
+                        external_channel_id=channel_id,
+                    )
+            if room is not None:
+                room_id = room.id
+                transport_room_id = room.transport_room_id
+                tenant_id = room.tenant_id
+        elif tenant_id and room_id and session_factory is not None:
+            with tenant_scope(tenant_id):
+                async with tenant_session(session_factory, tenant_id) as session:
+                    room = await self._room_store.get(session, room_id)
+        return room, room_id, transport_room_id, tenant_id
+
+    async def _send_room_system_notice(
+        self,
+        room_id: str,
+        transport_room_id: str,
+        tenant_id: str,
+        body: str,
+    ) -> None:
+        admin = next(
+            (
+                c
+                for c in self._client_lifecycle.get_by_type("admin", tenant_id)
+                if isinstance(c, SystemActor)
+            ),
+            None,
+        )
+        if admin is not None:
+            try:
+                await admin.send_admin(
+                    transport_room_id,
+                    body,
+                    message_type=AdminMessageType.ROOM_SETTINGS_NOTICE,
+                    thread_root_id=None,
+                )
+            except Exception:
+                logger.exception("Failed to post system notice to room %s", room_id)
+        else:
+            logger.warning(
+                "No admin client is running to post system notice to room %s: %s",
+                room_id,
+                body,
+            )
+
+    @property
+    def _archived_channels_set(self) -> set[str]:
+        if not hasattr(self, "_archived_channels"):
+            self._archived_channels = set()
+        return self._archived_channels
+
+    @property
+    def _deleted_channels_set(self) -> set[str]:
+        if not hasattr(self, "_deleted_channels"):
+            self._deleted_channels = set()
+        return self._deleted_channels
+
+    async def _handle_channel_archived(self, channel_id: str) -> None:
+        if channel_id in self._archived_channels_set:
+            return
+        self._archived_channels_set.add(channel_id)
+        metrics().increment(
+            BRIDGE_ERRORS,
+            {
+                "bridge": "collaboration",
+                "platform": self._bridge_type,
+                "direction": "inbound",
+            },
+        )
+        room, room_id, transport_room_id, tenant_id = await self._find_room_for_channel(
+            channel_id
+        )
+        if (
+            room_id is not None
+            and transport_room_id is not None
+            and tenant_id is not None
+        ):
+            name = await self._resolve_channel_display_name(channel_id, room)
+            formatted_name = name if name.startswith("#") else f"#{name}"
+            body = (
+                f"The bridged Slack channel {formatted_name} was archived. "
+                "Messages will not be relayed to Slack while it is archived."
+            )
+            await self._send_room_system_notice(
+                room_id, transport_room_id, tenant_id, body
+            )
+
+    async def _handle_channel_unarchived(self, channel_id: str) -> None:
+        if channel_id not in self._archived_channels_set:
+            return
+        self._archived_channels_set.discard(channel_id)
+        room, room_id, transport_room_id, tenant_id = await self._find_room_for_channel(
+            channel_id
+        )
+        if (
+            room_id is not None
+            and transport_room_id is not None
+            and tenant_id is not None
+        ):
+            name = await self._resolve_channel_display_name(channel_id, room)
+            formatted_name = name if name.startswith("#") else f"#{name}"
+            body = f"The bridged Slack channel {formatted_name} was unarchived. Relay resumed."
+            await self._send_room_system_notice(
+                room_id, transport_room_id, tenant_id, body
+            )
+
+    async def _handle_channel_deleted(self, channel_id: str) -> None:
+        if channel_id in self._deleted_channels_set:
+            return
+        self._deleted_channels_set.add(channel_id)
+        self._archived_channels_set.discard(channel_id)
+        metrics().increment(
+            BRIDGE_ERRORS,
+            {
+                "bridge": "collaboration",
+                "platform": self._bridge_type,
+                "direction": "inbound",
+            },
+        )
+        room, room_id, transport_room_id, tenant_id = await self._find_room_for_channel(
+            channel_id
+        )
+        if (
+            room_id is not None
+            and transport_room_id is not None
+            and tenant_id is not None
+        ):
+            name = await self._resolve_channel_display_name(channel_id, room)
+            formatted_name = name if name.startswith("#") else f"#{name}"
+            body = (
+                f"The bridged Slack channel {formatted_name} was deleted. "
+                "This room is no longer bridged to Slack."
+            )
+            await self._send_room_system_notice(
+                room_id, transport_room_id, tenant_id, body
+            )
+            with tenant_scope(tenant_id):
+                await self._room_service.unlink_bridge_channel(
+                    self._bridge_id, channel_id
+                )
+            self.remove_room_mapping(room_id, transport_room_id)
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
 
@@ -3682,6 +3860,17 @@ class CollaborationCore:
             platform_marker is not None,
         )
 
+        if (
+            channel_id in self._archived_channels_set
+            or channel_id in self._deleted_channels_set
+        ):
+            logger.debug(
+                "[BRIDGE-OUT] channel %s is archived/deleted; skipping relay for event %s",
+                channel_id,
+                event.event_id,
+            )
+            return
+
         thread_root_ref = await self._outbound_thread_root_ref(
             event_content, channel_id
         )
@@ -3699,6 +3888,30 @@ class CollaborationCore:
             )
         except MessagePartlySent as partial:
             message_ref = self._partly_posted(event.event_id, channel_id, partial)
+        except ChannelArchivedError:
+            metrics().increment(
+                BRIDGE_ERRORS,
+                {
+                    "bridge": "collaboration",
+                    "platform": self._bridge_type,
+                    "direction": "outbound",
+                },
+            )
+            await self._handle_channel_archived(channel_id)
+            await asyncio.shield(self._release_outbound(event.event_id))
+            return
+        except ChannelNotFoundError:
+            metrics().increment(
+                BRIDGE_ERRORS,
+                {
+                    "bridge": "collaboration",
+                    "platform": self._bridge_type,
+                    "direction": "outbound",
+                },
+            )
+            await self._handle_channel_deleted(channel_id)
+            await asyncio.shield(self._release_outbound(event.event_id))
+            return
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise

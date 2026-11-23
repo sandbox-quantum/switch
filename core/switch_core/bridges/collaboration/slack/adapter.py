@@ -28,6 +28,8 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     AgentIdentity,
     AgentIdentityConflict,
+    ChannelArchivedError,
+    ChannelNotFoundError,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -904,10 +906,19 @@ class SlackAdapter(PlatformAdapter):
             ts = result.get("ts", "")
             return f"{channel_id}:{ts}" if ts else None
         except SlackApiError as e:
+            self._check_terminal_channel_error(channel_id, e)
             logger.error(
                 "Failed to send message to Slack channel %s: %s", channel_id, e
             )
             return None
+
+    @staticmethod
+    def _check_terminal_channel_error(channel_id: str, exc: SlackApiError) -> None:
+        error = exc.response.get("error") if exc.response else None
+        if error == "is_archived":
+            raise ChannelArchivedError(channel_id, "is_archived") from exc
+        if error == "channel_not_found":
+            raise ChannelNotFoundError(channel_id, "channel_not_found") from exc
 
     def _reply_thread_ts(
         self, channel_id: str, thread_root_id: str | None, room_wide_mention: bool
@@ -1062,6 +1073,7 @@ class SlackAdapter(PlatformAdapter):
                 )
             return f"{channel_id}:{ts}"
         except SlackApiError as e:
+            self._check_terminal_channel_error(channel_id, e)
             logger.error("Failed to post blocks to Slack channel %s: %s", channel_id, e)
             if e.response.get("error") in {
                 "internal_error",
@@ -2333,6 +2345,7 @@ class SlackAdapter(PlatformAdapter):
             ts = result.get("ts", "")
             return f"{channel_id}:{ts}" if ts else None
         except SlackApiError as e:
+            self._check_terminal_channel_error(channel_id, e)
             logger.error(
                 "Failed to post admin message to Slack channel %s: %s", channel_id, e
             )
@@ -2386,6 +2399,7 @@ class SlackAdapter(PlatformAdapter):
                 thread_ts=thread_ts,
             )
         except SlackApiError as e:
+            self._check_terminal_channel_error(channel_id, e)
             logger.error(
                 "Failed to upload attachment '%s' to Slack channel %s: %s",
                 filename,
@@ -2458,6 +2472,7 @@ class SlackAdapter(PlatformAdapter):
                 thread_ts=thread_ts,
             )
         except SlackApiError as e:
+            self._check_terminal_channel_error(channel_id, e)
             logger.error(
                 "Failed to upload %d attachments to Slack channel %s: %s",
                 len(files),
@@ -4057,14 +4072,47 @@ class SlackAdapter(PlatformAdapter):
                 await self._handle_channel_renamed(event)
             elif event_subtype in ("channel_leave", "group_leave"):
                 await self._handle_member_left_channel(event)
+            elif event_subtype in ("channel_archive", "group_archive"):
+                await self._handle_channel_archived(event)
+            elif event_subtype in ("channel_unarchive", "group_unarchive"):
+                await self._handle_channel_unarchived(event)
             else:
                 await self._handle_message_event(event)
+        elif event_type in ("channel_archive", "group_archive"):
+            await self._handle_channel_archived(event)
+        elif event_type in ("channel_unarchive", "group_unarchive"):
+            await self._handle_channel_unarchived(event)
+        elif event_type in ("channel_deleted", "group_deleted"):
+            await self._handle_channel_deleted(event)
         elif event_type == "member_joined_channel":
             await self._handle_member_joined_channel(event)
         elif event_type == "member_left_channel":
             await self._handle_member_left_channel(event)
         elif event_type == "subteam_updated":
             await self._handle_subteam_updated(event.get("subteam") or {})
+
+    async def _handle_channel_archived(self, event: dict[str, object]) -> None:
+        channel_id = str(event.get("channel") or "")
+        if not channel_id:
+            return
+        if self._on_channel_archived is not None:
+            await self._on_channel_archived(channel_id)
+
+    async def _handle_channel_unarchived(self, event: dict[str, object]) -> None:
+        channel_id = str(event.get("channel") or "")
+        if not channel_id:
+            return
+        if self._on_channel_unarchived is not None:
+            await self._on_channel_unarchived(channel_id)
+
+    async def _handle_channel_deleted(self, event: dict[str, object]) -> None:
+        channel_id = str(event.get("channel") or "")
+        if not channel_id:
+            return
+        self._channel_name_cache.pop(channel_id, None)
+        self._channel_type_cache.pop(channel_id, None)
+        if self._on_channel_deleted is not None:
+            await self._on_channel_deleted(channel_id)
 
     async def _handle_interactive(self, payload: dict[str, Any]) -> None:
         """Someone operated a Block Kit control on one of our messages.

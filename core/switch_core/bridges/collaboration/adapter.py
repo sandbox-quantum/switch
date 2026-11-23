@@ -305,6 +305,23 @@ class CardRejectedError(Exception):
     failure leaves it unknown whether the card landed."""
 
 
+class ChannelTerminalError(Exception):
+    """The external channel cannot receive messages permanently or until unarchived."""
+
+    def __init__(self, channel_id: str, reason: str) -> None:
+        super().__init__(f"Channel {channel_id} cannot receive messages: {reason}")
+        self.channel_id = channel_id
+        self.reason = reason
+
+
+class ChannelNotFoundError(ChannelTerminalError):
+    """The channel was deleted or is no longer found."""
+
+
+class ChannelArchivedError(ChannelTerminalError):
+    """The channel was archived."""
+
+
 class ChannelNotBindable(ValueError):
     """A room was asked to bind to a channel that is not this bridge's to bind.
 
@@ -788,6 +805,15 @@ class PlatformAdapter(ABC):
         # new_name) when the platform reports a change to a channel (the two
         # names are the same when it was not a rename).
         self._on_channel_named: Callable[[str, str, str], Awaitable[None]] | None = None
+        # Set by set_channel_archived_handler. Called with (channel_id) when
+        # the platform reports the channel was archived.
+        self._on_channel_archived: Callable[[str], Awaitable[None]] | None = None
+        # Set by set_channel_unarchived_handler. Called with (channel_id) when
+        # the platform reports the channel was unarchived.
+        self._on_channel_unarchived: Callable[[str], Awaitable[None]] | None = None
+        # Set by set_channel_deleted_handler. Called with (channel_id) when
+        # the platform reports the channel was deleted.
+        self._on_channel_deleted: Callable[[str], Awaitable[None]] | None = None
         # Set by set_channel_type_handler. Called with (channel_id, type) when
         # the adapter learns a channel's type from the platform.
         self._on_channel_type_learned: (
@@ -2352,6 +2378,24 @@ class PlatformAdapter(ABC):
         Called with an empty old name when the platform did not say, and with
         both names the same when the bridge is only reporting what it sees."""
         self._on_channel_named = handler
+
+    def set_channel_archived_handler(
+        self, handler: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """Install the callback called when the platform reports a channel was archived."""
+        self._on_channel_archived = handler
+
+    def set_channel_unarchived_handler(
+        self, handler: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """Install the callback called when the platform reports a channel was unarchived."""
+        self._on_channel_unarchived = handler
+
+    def set_channel_deleted_handler(
+        self, handler: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """Install the callback called when the platform reports a channel was deleted."""
+        self._on_channel_deleted = handler
 
     def set_channel_type_handler(
         self, handler: Callable[[str, ChannelType], Awaitable[None]]
