@@ -6,42 +6,74 @@ import { isBuddy } from './buddy-identity';
 
 type OwnAgent = Pick<ManagedAgentView, 'agentId' | 'name' | 'template'>;
 
+/** The chats opened as a buddy's own, by server and room: the buddy each was opened with. */
+const openedWithBuddy = new Map<string, string>();
+
+const roomKey = (serverId: string, roomId: string) => `${serverId}\u0000${roomId}`;
+
 /**
- * Whether a chat is with the person's own switch-buddy: its one agent is
- * their buddy, whoever else is in it. Their managed agent decides when their
- * list holds it, by the template run that made it (`isBuddy`). Without it,
- * the chat's own record of the agent does: one of theirs, named as buddies
- * are. A chat not known yet, or with no agent or several, is not.
+ * Notes that this chat was found or made as the buddy's own, with the buddy
+ * alone in it, so a message sent there counts as one to the buddy even where
+ * the chats list does not hold the chat (another server than the one it
+ * follows, or before it has caught up).
+ */
+export function rememberBuddyChat(serverId: string, roomId: string, buddyId: string): void {
+  openedWithBuddy.set(roomKey(serverId, roomId), buddyId);
+}
+
+/** The buddy a chat was opened with (`rememberBuddyChat`), or null. */
+export function rememberedBuddy(serverId: string, roomId: string): string | null {
+  return openedWithBuddy.get(roomKey(serverId, roomId)) ?? null;
+}
+
+/**
+ * Whether a message in this chat goes to the person's own switch-buddy: the
+ * chat is a direct one, its one agent their buddy, and no other person in
+ * it. A group chat does not count, even with the buddy its only agent.
+ *
+ * `chat` is the chat as the chats list holds it, when it does. Its agent is
+ * the buddy when it is the one the chat was opened with (`remembered`); else
+ * when the person's managed agents (`ownAgents`, null when their list is not
+ * read yet) name it as one by the template run that made it; else, with no
+ * list to go by, when it is one of theirs named as buddies are. A chat the
+ * list does not hold counts only when it was opened with the buddy.
  */
 export function isBuddyChat(
-  chat: Pick<ChatSummary, 'agents'> | undefined,
-  ownAgents: readonly OwnAgent[]
+  chat: Pick<ChatSummary, 'agents' | 'channelType'> | undefined,
+  ownAgents: readonly OwnAgent[] | null,
+  remembered: string | null
 ): boolean {
-  if (chat?.agents.length !== 1) return false;
-  const [agent] = chat.agents;
+  if (!chat) return remembered !== null;
+  const agent = chat.channelType === 'direct' && chat.agents.length === 1 ? chat.agents[0] : null;
   if (!agent) return false;
-  const own = ownAgents.find((candidate) => candidate.agentId === agent.id);
-  if (own) return isBuddy(own);
+  if (agent.id === remembered) return true;
+  if (ownAgents) {
+    const own = ownAgents.find((candidate) => candidate.agentId === agent.id);
+    return own !== undefined && isBuddy(own);
+  }
   return agent.ownedByViewer && isBuddy({ name: agent.name });
 }
 
 /**
- * The person's own managed agents on a server, as already read for this user,
- * from every workspace's list: nothing is fetched. Another user's list, kept
- * from before signing in as someone else, is left out, so their agents are
- * never taken for this person's.
+ * The person's managed agents as the shared list last read them, from the
+ * cache only: the key `useManagedAgents` reads (server, the workspace in
+ * scope there, the signed-in user), so another account's or workspace's list
+ * left in the cache, or the machines kept under the same prefix, is not.
+ * Null when that list has not been read, or the server has no agent
+ * management.
  */
 export function cachedOwnAgents(
   queryClient: QueryClient,
   serverId: string,
+  workspaceId: string | null,
   userId: string | null
-): OwnAgent[] {
-  if (userId === null) return [];
-  return (
-    queryClient
-      .getQueriesData<unknown>({ queryKey: [MANAGED_AGENTS_KEY, serverId] })
-      .filter(([key]) => key[3] === userId)
-      // Other queries share the prefix (a machine's recheck); only lists are agents.
-      .flatMap(([, data]) => (Array.isArray(data) ? (data as OwnAgent[]) : []))
-  );
+): OwnAgent[] | null {
+  if (workspaceId === null || userId === null) return null;
+  const agents = queryClient.getQueryData<unknown>([
+    MANAGED_AGENTS_KEY,
+    serverId,
+    workspaceId,
+    userId,
+  ]);
+  return Array.isArray(agents) ? (agents as OwnAgent[]) : null;
 }

@@ -209,8 +209,9 @@ export type ChatSendInput = {
   mentionUserIds?: string[];
   mentionSpans?: ChatMentionSpan[];
   /**
-   * The chat is with the person's own switch-buddy (`isBuddyChat`). Reported
-   * with the message's usage event, never sent to the server.
+   * The message goes to the person's own switch-buddy, in a direct chat
+   * (`isBuddyChat`). Reported with the message's usage event, never sent to
+   * the server.
    */
   toBuddy: boolean;
 };

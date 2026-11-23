@@ -1,5 +1,9 @@
 import { reaction } from 'mobx';
-import { cachedOwnAgents, isBuddyChat } from '@renderer/features/switch-buddy/buddy-chat';
+import {
+  cachedOwnAgents,
+  isBuddyChat,
+  rememberedBuddy,
+} from '@renderer/features/switch-buddy/buddy-chat';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
@@ -9,6 +13,23 @@ import { agentActivities } from './activities';
 import { agentChatsFlag } from './agent-chats-flag';
 import { ChatTitler } from './chat-titler';
 import { ChatsStore, chatsEventsFrom } from './chats-store';
+
+/**
+ * Whether a message sent in this chat goes to the person's own switch-buddy,
+ * for its usage event. The chats list holds only the server it follows.
+ */
+function sentToBuddy(serverId: string, roomId: string): boolean {
+  return isBuddyChat(
+    chatsStore.serverId === serverId ? chatsStore.chat(roomId) : undefined,
+    cachedOwnAgents(
+      queryClient,
+      serverId,
+      workspacesStore.idOnServerInScope(serverId),
+      switchServersStore.statusFor(serverId)?.user?.id ?? null
+    ),
+    rememberedBuddy(serverId, roomId)
+  );
+}
 
 /** The app's chats store, following the workspace the window is scoped to. */
 export const chatsStore = new ChatsStore(
@@ -34,14 +55,7 @@ export const chatsStore = new ChatsStore(
           serverId,
           roomId,
           ...input,
-          toBuddy: isBuddyChat(
-            chatsStore.chat(roomId),
-            cachedOwnAgents(
-              queryClient,
-              serverId,
-              switchServersStore.statusFor(serverId)?.user?.id ?? null
-            )
-          ),
+          toBuddy: sentToBuddy(serverId, roomId),
         }),
       newId: () => crypto.randomUUID(),
     }),

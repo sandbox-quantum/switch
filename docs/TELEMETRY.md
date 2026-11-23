@@ -213,9 +213,11 @@ made is not known.
 A message sent tells us *"someone sent a message in a thread, with a file, that
 named an agent"*. It does not tell us the text, the file, the chat, or which
 agent or person was named. `mentions` is the kind of who was named, never who.
-`to_buddy` says the chat's one agent is the person's own switch-buddy, whoever
-else is in it: a message from its chat, from the box on Home, or from one of
-the cards it shows in the first run. It is how a message to switch-buddy is
+`to_buddy` says the message went to the person's own switch-buddy: the chat is
+a direct one with their buddy as its one agent and no other person in it,
+whether the message was typed there, in the box on Home, or picked from one of
+the cards it shows in the first run. A group chat never counts, even with the
+buddy its only agent. It is how a message to switch-buddy is
 counted, as the last step of the first run's funnel after `agent_created` with
 `entry_point` `switch_buddy`: both come from this install, so Amplitude can put
 them in one funnel, which it cannot do with the Switch server's own

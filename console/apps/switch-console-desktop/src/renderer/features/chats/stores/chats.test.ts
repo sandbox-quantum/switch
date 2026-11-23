@@ -1,6 +1,7 @@
 import { QueryClient } from '@tanstack/react-query';
 import { runInAction } from 'mobx';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChatSummary } from '@shared/core/chats/chats';
 import { chatSummarySchema } from '@shared/core/chats/chats';
 
 const calls = vi.hoisted(() => new Map<string, ReturnType<typeof vi.fn>>());
@@ -29,13 +30,17 @@ vi.mock('@renderer/lib/query-client', () => ({
 }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
-    statusFor: (serverId: string) => (serverId === 'server-1' ? { user: { id: 'user-1' } } : null),
+    statusFor: () => ({ user: { id: 'user-1' } }),
     isConnected: () => true,
     refreshStatus: async () => {},
   },
 }));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { activeServerId: null, active: null },
+  workspacesStore: {
+    activeServerId: null,
+    active: null,
+    idOnServerInScope: (serverId: string | null) => (serverId ? `${serverId}-ws` : null),
+  },
 }));
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: { refreshRoomState: async () => {} },
@@ -48,24 +53,36 @@ client.current = new QueryClient();
 const { chatsStore } = await import('./chats');
 const { MANAGED_AGENTS_KEY } =
   await import('@renderer/features/managed-agents/use-managed-agents-key');
+const { rememberBuddyChat } = await import('@renderer/features/switch-buddy/buddy-chat');
 
-function chat(roomId: string, agents: { id: string; name: string; ownedByViewer: boolean }[]) {
+const BUDDY_RUN = { id: 'official:switch-buddy', key: 'buddy', revision: 1 };
+
+function chat(
+  roomId: string,
+  channelType: ChatSummary['channelType'],
+  agents: { id: string; name: string }[]
+): ChatSummary {
   return chatSummarySchema.parse({
     roomId,
     name: 'Welcome',
-    channelType: 'direct',
+    channelType,
     bridgeType: null,
     channelName: null,
-    agents: agents.map((agent) => ({ displayName: null, iconUrl: null, provider: null, ...agent })),
+    agents: agents.map((agent) => ({
+      displayName: null,
+      iconUrl: null,
+      provider: null,
+      ownedByViewer: true,
+      ...agent,
+    })),
     canManage: true,
     lastMessage: null,
   });
 }
 
-async function sendIn(roomId: string): Promise<Record<string, unknown>> {
-  const send = calls.get('chats.send');
-  send?.mockClear();
-  chatsStore.timelines.get('server-1', roomId).send({
+async function sendIn(serverId: string, roomId: string): Promise<Record<string, unknown>> {
+  calls.get('chats.send')?.mockClear();
+  chatsStore.timelines.get(serverId, roomId).send({
     body: 'hello',
     threadRootId: null,
     mentionAgentIds: [],
@@ -79,27 +96,22 @@ async function sendIn(roomId: string): Promise<Record<string, unknown>> {
 }
 
 describe('the chats store’s send', () => {
-  runInAction(() => {
-    chatsStore.serverId = 'server-1';
-  });
-  (client.current as QueryClient).setQueryData(
-    [MANAGED_AGENTS_KEY, 'server-1', 'ws-1', 'user-1'],
-    [
-      {
-        agentId: 'buddy',
-        name: 'helper',
-        template: { id: 'official:switch-buddy', key: 'buddy', revision: 1 },
-      },
-    ]
-  );
-
-  it('says a message in a chat with the person’s own buddy is to their buddy', async () => {
-    chatsStore.add(
-      'server-1',
-      chat('room-buddy', [{ id: 'buddy', name: 'helper', ownedByViewer: true }])
+  beforeEach(() => {
+    runInAction(() => {
+      chatsStore.serverId = 'server-1';
+    });
+    const queryClient = client.current as QueryClient;
+    queryClient.clear();
+    queryClient.setQueryData(
+      [MANAGED_AGENTS_KEY, 'server-1', 'server-1-ws', 'user-1'],
+      [{ agentId: 'buddy', name: 'helper', template: BUDDY_RUN }]
     );
+  });
 
-    expect(await sendIn('room-buddy')).toMatchObject({
+  it('says a message in the person’s direct chat with their buddy is to their buddy', async () => {
+    chatsStore.add('server-1', chat('room-buddy', 'direct', [{ id: 'buddy', name: 'helper' }]));
+
+    expect(await sendIn('server-1', 'room-buddy')).toMatchObject({
       serverId: 'server-1',
       roomId: 'room-buddy',
       body: 'hello',
@@ -107,13 +119,23 @@ describe('the chats store’s send', () => {
     });
   });
 
-  it('says any other chat is not, and so is one it does not know', async () => {
-    chatsStore.add(
-      'server-1',
-      chat('room-other', [{ id: 'other', name: 'reviewer', ownedByViewer: true }])
-    );
+  it('says a group chat, another agent’s chat or a chat it does not know is not', async () => {
+    chatsStore.add('server-1', chat('room-group', 'group', [{ id: 'buddy', name: 'helper' }]));
+    chatsStore.add('server-1', chat('room-other', 'direct', [{ id: 'other', name: 'reviewer' }]));
 
-    expect(await sendIn('room-other')).toMatchObject({ roomId: 'room-other', toBuddy: false });
-    expect(await sendIn('room-unknown')).toMatchObject({ roomId: 'room-unknown', toBuddy: false });
+    expect(await sendIn('server-1', 'room-group')).toMatchObject({ toBuddy: false });
+    expect(await sendIn('server-1', 'room-other')).toMatchObject({ toBuddy: false });
+    expect(await sendIn('server-1', 'room-unknown')).toMatchObject({ toBuddy: false });
+  });
+
+  it('counts the buddy’s chat on a server the chats list does not follow', async () => {
+    rememberBuddyChat('server-2', 'room-elsewhere', 'buddy-2');
+
+    expect(await sendIn('server-2', 'room-elsewhere')).toMatchObject({
+      serverId: 'server-2',
+      toBuddy: true,
+    });
+    // The same room id on the followed server is another chat.
+    expect(await sendIn('server-1', 'room-elsewhere')).toMatchObject({ toBuddy: false });
   });
 });

@@ -62,7 +62,7 @@ export function chatMentions(
 /**
  * What `chat_message_sent` says of a message, from what the composer sent:
  * whether it carried files, was a thread reply, whom it named, and whether
- * the chat is with the person's own switch-buddy. Nothing of the message.
+ * it went to the person's own switch-buddy. Nothing of the message.
  */
 export function chatMessageShape(
   input: Pick<

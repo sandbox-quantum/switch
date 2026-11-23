@@ -746,8 +746,9 @@ export type TelemetryEventMap = {
   /**
    * A message was sent in a chat. Nothing of the message: whether it carried
    * files, whether it was a thread reply, whether it named an agent or a
-   * person — never which — and whether the chat is with the person's own
-   * switch-buddy (`to_buddy`), the last step of the first run's funnel.
+   * person — never which — and whether it went to the person's own
+   * switch-buddy in a direct chat (`to_buddy`), the last step of the first
+   * run's funnel.
    */
   chat_message_sent: {
     server_kind: TelemetryServerKind;

@@ -4831,8 +4831,9 @@ version of their own to them without also giving them a release of their own.
   read its decision service, the page says so and keeps the saved choice.
   "Self-hosted endpoint" is now "Your own endpoint".
 - **A message to switch-buddy can be counted again.** `chat_message_sent`
-  carries `to_buddy`: whether the chat's one agent is the person's own
-  switch-buddy, from its chat, the box on Home or the first run's cards. It is
+  carries `to_buddy`: whether the message went to the person's own
+  switch-buddy, in a direct chat with it alone, from that chat, the box on
+  Home or the first run's cards. It is
   the last step of the first run's funnel, after `agent_created` with
   `entry_point` `switch_buddy`. 0.41.0 dropped `buddy_message_sent` saying the
   Switch server's `message_sent` would count these, but a server event belongs
