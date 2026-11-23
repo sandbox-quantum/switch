@@ -2512,6 +2512,7 @@ class CollaborationCore:
         content = self._adapter.translate_inbound(event.content)
         check = await check_message(
             self._trust_client,
+            self._session_factory,
             tenant_id=tenant_id,
             role="user",
             content=content,
