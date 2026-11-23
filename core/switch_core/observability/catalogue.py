@@ -99,6 +99,40 @@ GATEWAY_TURNED_AWAY = _spec(
     "reason",
 )
 
+# The long-lived gateway streams this process holds, by `kind` (`chat_events`,
+# `chat_activity`, `changes`), counted from when each is accepted
+# (`gateway/stream_caps.py`).
+GATEWAY_STREAMS_OPEN = _spec(
+    "switch.http.gateway_streams.open",
+    "gauge",
+    "{stream}",
+    "Long-lived gateway streams (chats feed, activity feed, change notices) "
+    "this process holds, by kind.",
+    "kind",
+)
+# A long-lived gateway stream refused: its caller already held as many of that
+# `kind` as it may, all opened too recently to close (`caller`, 429), or the
+# process held as many streams as it may (`process`, 503).
+GATEWAY_STREAMS_TURNED_AWAY = _spec(
+    "switch.http.gateway_streams.turned_away",
+    "sum",
+    "{stream}",
+    "Long-lived gateway streams refused, because their caller (`caller`) or "
+    "the process (`process`) already held as many as it may.",
+    "kind",
+    "reason",
+)
+# A caller's oldest stream of a `kind`, closed to make room for a newer one of
+# theirs past `GATEWAY_STREAMS_PER_CALLER`.
+GATEWAY_STREAMS_CLOSED_FOR_NEWER = _spec(
+    "switch.http.gateway_streams.closed_for_newer",
+    "sum",
+    "{stream}",
+    "Long-lived gateway streams closed because their caller opened a newer one "
+    "of the same kind past the limit.",
+    "kind",
+)
+
 # A caller that kept repeating a refused request, answered 429 from memory
 # (`refusal_breaker.py`). `route` is the template of the route that refused it.
 HTTP_REFUSALS_THROTTLED = _spec(
@@ -1065,6 +1099,9 @@ CATALOGUE: dict[str, MetricSpec] = {
         HTTP_REQUEST_DURATION,
         HTTP_REFUSALS_THROTTLED,
         GATEWAY_TURNED_AWAY,
+        GATEWAY_STREAMS_OPEN,
+        GATEWAY_STREAMS_TURNED_AWAY,
+        GATEWAY_STREAMS_CLOSED_FOR_NEWER,
         DB_POOL_IN_USE,
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,
