@@ -41,6 +41,7 @@ export const MARK_COLOR: Readonly<Record<string, { light: string; dark: string }
   supabase: { light: "#3FCF8E", dark: "#3FCF8E" },
   cloudflare: { light: "#F38020", dark: "#F38020" },
   stripe: { light: "#635BFF", dark: "#635BFF" },
+  shopify: { light: "#7AB55C", dark: "#7AB55C" },
   hubspot: { light: "#FF7A59", dark: "#FF7A59" },
   clickup: { light: "#7B68EE", dark: "#7B68EE" },
   trello: { light: "#0052CC", dark: FOREGROUND },

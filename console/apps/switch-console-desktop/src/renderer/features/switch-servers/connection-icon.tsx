@@ -44,6 +44,7 @@ const MARK_COLOR: Record<string, string> = {
   supabase: 'text-[#3FCF8E]',
   cloudflare: 'text-[#F38020]',
   stripe: 'text-[#635BFF]',
+  shopify: 'text-[#7AB55C]',
   hubspot: 'text-[#FF7A59]',
   clickup: 'text-[#7B68EE]',
   trello: 'text-[#0052CC] emdark:text-foreground',

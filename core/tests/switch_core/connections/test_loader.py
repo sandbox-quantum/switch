@@ -40,6 +40,7 @@ PLACEHOLDERS = {
     "pendo",
     "salesforce",
     "servicenow",
+    "shopify",
     "snowflake",
     "stripe",
     "supabase",

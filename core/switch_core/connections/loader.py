@@ -88,6 +88,7 @@ Category = Literal[
     "Meetings",
     "Marketing",
     "Analytics",
+    "E-commerce",
 ]
 
 

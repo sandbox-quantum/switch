@@ -17,7 +17,8 @@ the colour would not stand out from the tile.
 All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and
 `atlassian.svg` and `google-workspace.svg`, fetched 2026-11-10, and the
 Simple Icons files added for the coming soon connectors (`pagerduty.svg`
-through `miro.svg` in the table), fetched 2026-11-14.
+through `miro.svg` in the table), fetched 2026-11-14, and `shopify.svg`,
+fetched 2026-11-23.
 
 | File | Brand | Source | License / terms | Colour |
 |---|---|---|---|---|
@@ -50,6 +51,7 @@ through `miro.svg` in the table), fetched 2026-11-14.
 | `calendly.svg` | Calendly | Simple Icons 16.33.0, `calendly` | CC0-1.0; guidelines https://calendly.com/newsroom | `#006BFF`, white in dark theme |
 | `zoom.svg` | Zoom | Simple Icons 16.33.0, `zoom` | CC0-1.0; guidelines https://brand.zoom.us/usage-legal/ | `#0B5CFF`, white in dark theme |
 | `miro.svg` | Miro | Simple Icons 16.33.0, `miro` | CC0-1.0 | `#050038`, white in dark theme |
+| `shopify.svg` | Shopify | Simple Icons 16.33.0, `shopify` | CC0-1.0; guidelines https://www.shopify.com/brand-assets | `#7AB55C` |
 
 Simple Icons' CC0 dedication covers the drawings; it does not grant any
 trademark rights, which remain with the owners.
