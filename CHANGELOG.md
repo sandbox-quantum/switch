@@ -178,6 +178,27 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **Usage telemetry is filed under the right environment again.** The server
+  now also sends its client id, environment and staff flag under the relay's
+  earlier names (`flint.client_id`, `flint_env`, `flint_internal`). A relay
+  that reads only those filed every event from a newer server under
+  production, a development or internal deployment's included.
+- **What Switch says under an agent's name no longer counts as the agent
+  talking.** An agent's join greeting, a Switch Console chat's opening line,
+  notices of something done on its behalf and its answers to room commands
+  are marked as Switch's, and the usage snapshot and period counts leave
+  them out, as they do Switch's admin notices and the platform's own
+  messages (template kickoffs, scheduled messages). An agent added to a room
+  and never run is no longer active for a week, and `message_count` matches
+  `message_sent` again.
+- **Usage telemetry names every agent runtime Switch offers.**
+  `known_agent_type` was `other` for every runtime but Claude Code, Codex and
+  OpenCode; Antigravity, Cursor, DeepSeek Harness, Pi, Copilot, Kiro, Mistral
+  Vibe, Goose, Qwen, Droid, Cline and Junie are now reported by name.
+- **A command typed in a Switch Console chat is no longer a message.** A
+  `!reset` or other command sent from Console was reported as `message_sent`
+  and metered as a message toward the workspace's message usage; one typed on
+  a messaging platform never was.
 - **A full database pool no longer makes a pod drop everything it holds.**
   Each switch-core process renews its lease on a database connection of its
   own, outside the shared pool. Before, the renewal borrowed from the same

@@ -14,10 +14,17 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
+from switch_core.bridges.agent.commands import AGENT_GREETING_KEY
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    AUTO_REPLY_FLAG,
+    PLATFORM_MARKER,
+    SAID_FOR_AGENT_FLAG,
+)
 from switch_core.clients.consumer import Consumer
 from switch_core.db.models import (
     Agent,
@@ -577,6 +584,89 @@ class TestOnlyWhatSomeoneSaidCounts:
         assert counts.message_from_agent_1d == 0
         assert counts.agent_active_7d == 0
         assert counts.turn_human_to_agent_1d == 0
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            {
+                "body": "Hey there! Tag @agent if you need me.",
+                SAID_FOR_AGENT_FLAG: True,
+                AGENT_GREETING_KEY: True,
+            },
+            {"body": "Hi! I'm agent — how can I help?", SAID_FOR_AGENT_FLAG: True},
+            {"body": "Welcome! Ask me anything.", SAID_FOR_AGENT_FLAG: True},
+            {"body": "🎭 Took the reviewer role.", SAID_FOR_AGENT_FLAG: True},
+            {"body": "Reset: a fresh conversation.", SAID_FOR_AGENT_FLAG: True},
+        ],
+        ids=[
+            "greeting",
+            "direct-room greeting",
+            "opening message",
+            "notice",
+            "command",
+        ],
+    )
+    async def test_what_switch_says_under_an_agents_name_is_not_the_agent_talking(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        content: dict[str, object],
+    ) -> None:
+        """An agent added to a room greets it whether or not it ever runs.
+        Counted, it reads as active for a week, and as answering whoever spoke
+        before it."""
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _say(session, room, human, seq=1)
+            await _stored(
+                session,
+                room,
+                agent,
+                seq=2,
+                event_type="m.room.message",
+                content={"msgtype": "m.text", **content},
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_count_1d == 1
+        assert counts.message_from_agent_1d == 0
+        assert counts.agent_active_7d == 0
+        assert counts.turn_human_to_agent_1d == 0
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            {ADMIN_MARKER: {"type": "command_result"}},
+            {PLATFORM_MARKER: {"on_behalf_of": {"user_id": "u1", "name": "Ada"}}},
+        ],
+        ids=["admin notice", "template kickoff"],
+    )
+    async def test_what_switch_posts_as_itself_is_not_a_message(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        marker: dict[str, object],
+    ) -> None:
+        """`message_sent` counts neither, and `message_count` is the check on
+        it: counted here, the gap would read as messages lost."""
+        async with session_factory() as session:
+            room = await _room(session)
+            system = await _client(session, "system")
+            human = await _client(session, "user")
+            await _say(session, room, human, seq=1)
+            await _stored(
+                session,
+                room,
+                system,
+                seq=2,
+                event_type="m.room.message",
+                content={"msgtype": "m.text", "body": "notice", **marker},
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_count_1d == 1
 
     async def test_a_person_added_to_a_room_does_not_activate_it(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1253,6 +1343,8 @@ class TestNormalising:
 
     def test_a_runtime_switch_does_not_know_becomes_other(self) -> None:
         assert normalise_known_agent_type({"known_agent_type": "codex"}) == "codex"
+        assert normalise_known_agent_type({"known_agent_type": "cursor"}) == "cursor"
+        assert normalise_known_agent_type({"known_agent_type": "junie"}) == "junie"
         assert normalise_known_agent_type({"known_agent_type": "zed"}) == "other"
         assert normalise_known_agent_type({}) == "none"
         assert normalise_known_agent_type(None) == "none"

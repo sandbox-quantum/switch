@@ -100,6 +100,10 @@ async def test_the_configured_environment_is_sent_as_switch_trust_env(
 
     assert resource["switch_trust.env"] == {"stringValue": environment}
     assert resource["switch_trust.internal"] == {"stringValue": "false"}
+    # Under the relay's earlier names too, for a relay that reads only those.
+    assert resource["flint_env"] == {"stringValue": environment}
+    assert resource["flint_internal"] == {"stringValue": "false"}
+    assert resource["flint.client_id"] == resource["switch_trust.client_id"]
 
 
 async def test_operator_chosen_names_never_reach_the_relay(

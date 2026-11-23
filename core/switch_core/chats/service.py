@@ -180,6 +180,14 @@ def _hash(payload: dict[str, object]) -> str:
     ).hexdigest()
 
 
+def _sent_kind(command: tuple[str, str] | None, content: dict[str, object]) -> str:
+    """What a post was, as `MESSAGES_SENT` labels it. A command is an event,
+    as the transport labels one a platform's bridge writes."""
+    if command is not None:
+        return "event"
+    return "media" if "url" in content else "message"
+
+
 def _upload_key(upload_id: str) -> str:
     # Uploads share the per-user key space with requests; the prefix keeps a
     # client's upload id from ever colliding with one of its request ids.
@@ -2206,14 +2214,17 @@ class ChatService:
                     )
                 )
                 posted.append(message)
-            await self._usage_store.record(
-                session,
-                tenant_id=tenant_id,
-                metric=UsageMetric.MESSAGES,
-                client_id=client.id,
-                model="",
-                amount=len(posted),
-            )
+            # A command is not something said, so it is neither metered nor
+            # reported as a message, as one typed on a platform is not.
+            if command is None:
+                await self._usage_store.record(
+                    session,
+                    tenant_id=tenant_id,
+                    metric=UsageMetric.MESSAGES,
+                    client_id=client.id,
+                    model="",
+                    amount=len(posted),
+                )
             await session.execute(
                 update(ChatOperation)
                 .where(
@@ -2228,11 +2239,12 @@ class ChatService:
             self._room_service.room_changed(tenant_id, room.id)
         for each in routed:
             each.committed()
-        self._observe(tenant_id, room.id, client.id, uploads, root)
+        if command is None:
+            self._observe(tenant_id, room.id, client.id, uploads, root)
         for content in contents:
             metrics().increment(
                 MESSAGES_SENT,
-                {"kind": "media" if "url" in content else "message", "actor": "human"},
+                {"kind": _sent_kind(command, content), "actor": "human"},
             )
         return room, posted
 
