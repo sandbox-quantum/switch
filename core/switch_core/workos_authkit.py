@@ -90,13 +90,6 @@ class AuthKitSignIn:
     impersonator: str | None
 
 
-@dataclass(frozen=True)
-class AuthKitUser:
-    id: str
-    email: str
-    email_verified: bool
-
-
 ChooseOrganization = Callable[[list[AuthKitOrganization]], Awaitable[str | None]]
 
 
@@ -371,26 +364,6 @@ class AuthKit:
         if response.status_code in (200, 201, 204, 404):
             return
         raise self._refusal(response, path)
-
-    async def get_user(self, user_id: str) -> AuthKitUser | None:
-        """The WorkOS user with this id, or None when this environment has no
-        such user (or it is not a WorkOS user id at all)."""
-        path = f"/user_management/users/{user_id}"
-        response = await self._request("GET", path, authorized=True)
-        if response.status_code in (400, 404, 422):
-            return None
-        if response.status_code != 200:
-            raise self._refusal(response, path)
-        body = _body(response)
-        if not isinstance(body.get("id"), str) or not isinstance(
-            body.get("email"), str
-        ):
-            raise AuthKitUnavailable(f"WorkOS answered {path} with an unreadable user.")
-        return AuthKitUser(
-            id=body["id"],
-            email=body["email"],
-            email_verified=body.get("email_verified") is True,
-        )
 
 
 def _sign_in_from(body: Mapping[str, Any]) -> AuthKitSignIn:

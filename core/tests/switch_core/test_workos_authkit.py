@@ -390,31 +390,3 @@ async def test_a_refused_revoke_is_raised() -> None:
         await _authkit(
             lambda request: httpx.Response(403, json={"code": "forbidden"})
         ).revoke_session("session_A")
-
-
-@pytest.mark.parametrize("status", [400, 404, 422])
-async def test_a_user_this_environment_does_not_have_is_none(status: int) -> None:
-    assert (
-        await _authkit(lambda request: httpx.Response(status)).get_user("user_X")
-        is None
-    )
-
-
-async def test_a_user_is_read_with_whether_their_address_is_verified() -> None:
-    user = await _authkit(
-        lambda request: httpx.Response(
-            200,
-            json={"id": "user_A", "email": "ada@example.test", "email_verified": False},
-        )
-    ).get_user("user_A")
-    assert user is not None
-    assert (user.id, user.email, user.email_verified) == (
-        "user_A",
-        "ada@example.test",
-        False,
-    )
-
-
-async def test_reading_a_user_when_workos_fails_is_unavailable() -> None:
-    with pytest.raises(AuthKitUnavailable):
-        await _authkit(lambda request: httpx.Response(502)).get_user("user_A")
