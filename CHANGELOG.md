@@ -52,6 +52,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **`ORGANIZATION_DIRECTORY=workos` now works with `GATEWAY_SIGNUP_MODE=open`.**
+  Someone signing in with no workspace may then create an organization of
+  their own. It is kept in Switch, not in WorkOS, and follows WorkOS only
+  once an operator links it with `switch-link-workos`. `default_tenant` is
+  still refused with the WorkOS directory, by the server and by the Helm
+  chart.
+
 #### Security
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
@@ -67,6 +75,42 @@ version of their own to them without also giving them a release of their own.
   refusals.
 
 #### Added
+- **The decision service can use open-weights models on Amazon Bedrock.**
+  `DECISION_BACKEND=bedrock_openai` (or a request's `X-Decision-Backend:
+  bedrock_openai` with `DECISION_BEDROCK_OPENAI_ENABLED=1`) asks Qwen3 235B
+  A22B Instruct 2507 (`DECISION_BEDROCK_OPENAI_MODEL`) in
+  `DECISION_BEDROCK_OPENAI_REGION` (eu-central-1), scoring every option from
+  the first token's letter probabilities. On 260 labelled real decisions it
+  scored 0.962 at a threshold of 0.89, answering in 0.23 s at the median.
+- **A request can choose the service's own model server.** With
+  `DECISION_SYSTEMONE_ENABLED=1`, `SYSTEMONE_URL` and
+  `DECISION_SYSTEMONE_MODEL`, `X-Decision-Backend: systemone` asks it, for
+  example vllm-sr d3-mini on vLLM.
+- **Each decision backend can have a threshold of its own**
+  (`DECISION_THRESHOLD_<BACKEND>`), applied to the backend that answered; a
+  workspace's own threshold still wins.
+- **Fallbacks per backend.** `DECISION_FALLBACKS=gemini_decision:bedrock`
+  races Haiku against Gemini whenever Gemini is used, as the default or
+  because a workspace chose it; `bedrock_openai` can be a fallback too.
+- **The decision service's `/health` lists what each choice gets**
+  (`backends`: model, a label for people, threshold and fallback), so
+  Switch Console can offer only what the service has.
+- **The WorkOS directory mirror reports whether it is keeping up.** With
+  `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
+  `switch.workos.cursor_age` (seconds since it last read WorkOS's events
+  through), `switch.workos.recheck.oldest_age` (how long an organization has
+  been waiting for a full recheck) and `switch.workos.full_check.age`
+  (seconds since every linked organization was last checked in full).
+  `deploy/observability/` adds three monitors on them, imported with
+  `WORKOS_DIRECTORY=1`, and a dashboard section. A removal made in WorkOS
+  that isn't reaching Switch now raises an alert instead of going unnoticed.
+- **A WorkOS organization deleted while Switch follows it is counted and
+  alerted on, and no longer checked.** `switch.workos.organization_deleted`
+  counts each one, with a monitor of its own, and the mirror stops checking
+  that organization against WorkOS, where it used to retry it on every pass.
+  The Switch organization keeps its members, rooms and agents, and its
+  admins still see the "organization deleted" notice. Delete it with
+  `switch-purge-organization`, as `docs/old/workos-directory.md` describes.
 - **The decision service can race a fallback backend.** With
   `DECISION_FALLBACK_BACKEND=bedrock`, a decision on the service's default
   backend that has no answer after `DECISION_FALLBACK_AFTER_S` (2 s), or that
@@ -77,7 +121,28 @@ version of their own to them without also giving them a release of their own.
   coarser confidences); a workspace's own threshold still holds for both. A
   workspace that chose its backend gets that backend alone. Off unless set.
 
+#### Changed
+- **A request that names a backend with a fallback now races it.** Before,
+  only a request on the default backend raced its fallback;
+  `DECISION_FALLBACK_BACKEND` now means the default backend's fallback
+  however it is chosen.
+- **Member changes that also apply in Switch Trust ask first.** On an
+  organization whose members come from WorkOS and whose changes are sent
+  there, making someone Org Admin, making an Org Admin a Viewer, and removing
+  someone each open a confirmation that says what the change also does in
+  Switch Trust, which reads the same membership: an Org Admin there has
+  billing permissions, a demotion makes the person a Viewer there and drops
+  the role they had, and a removal takes them out of the organization there
+  and revokes their API keys. Cancelling sends nothing. A change made again
+  after the sign-in it waited on is not asked about twice. On such an
+  organization the lower organization role is shown as Viewer, the name
+  Switch Trust uses, and Org admin as Org Admin; the stored role is unchanged.
+  Organizations kept in Switch are unaffected.
+
 #### Fixed
+- **The decision service is ready behind vLLM.** A model server whose
+  `/health` answers 200 with an empty body counts as healthy; before, the
+  service reported 503 while `/decide` worked.
 - **The decision service's default Bedrock model is a valid id:**
   `us.anthropic.claude-haiku-5-5` (EU regions need
   `eu.anthropic.claude-haiku-5-5` in `DECISION_BEDROCK_MODEL`). The old
