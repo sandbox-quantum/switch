@@ -360,6 +360,10 @@ _HOSTED_BOARD_ORDER = [
     "Hosted box starts: seconds to ready from the person's first request, p50 / p90, by case (first_start target 20 / 30 s, wake 10 / 20 s). Needs distribution mapping, see README",
     "Hosted box start stages: p50 seconds each, by case and stage (they add up to the total). Needs distribution mapping, see README",
     "Cloud machine claims refused at a limit, by reason (workspace_full: the per-workspace cap, hosted agents v2)",
+    "Warm pool: boxes by state against the pool's size (hosted agents v2)",
+    "Warm pool: new boxes by path (pool: a waiting box taken; fallback: made from scratch)",
+    "Warm pool: boxes retired by reason, and reaper reports refused (should be 0)",
+    "Warm pool: time to make a pool box (p50, p90)",
 ]
 
 
@@ -420,7 +424,7 @@ def test_the_hosted_alerts_panel_lists_every_alert_on_its_charts() -> None:
     query = alerts["query"]
     assert query.startswith('tag:"service:REPLACE-WITH-SERVICE" (')
     assert set(re.findall(r'"([^"]+)"', query.split(" ", 1)[1])) == expected
-    assert len(expected) == 17
+    assert len(expected) == 19
 
 
 def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:

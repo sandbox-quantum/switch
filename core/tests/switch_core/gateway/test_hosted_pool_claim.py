@@ -27,6 +27,8 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.hosted_controller import sweep_hosted_machines
+from switch_core.observability.catalogue import HOSTED_POOL_CLAIMS, HOSTED_POOL_RETIRED
+from switch_core.observability.metrics import MetricsRegistry
 from switch_core.visibility.box_provision import (
     ProvisionRefused,
     box_namespace_for,
@@ -41,6 +43,10 @@ from switch_core.visibility.box_provision import (
     sweep_pool,
 )
 from switch_core.visibility.keyed_id import KeyedIdKind
+from tests.switch_core.gateway.test_cloud_controller_machines import (
+    _metric_points,
+    hosted_metrics,  # noqa: F401  (fixture)
+)
 from tests.switch_core.gateway.test_hosted_provisioner import (  # noqa: F401
     KEY,
     provisioner_app,
@@ -629,3 +635,32 @@ def test_core_refuses_a_pool_that_leaves_fewer_than_two_for_people(
             _config(**overrides)
     else:
         assert _config(**overrides).hosted_pool_size == size
+
+
+# ── metrics ──
+
+
+def _points(registry: MetricsRegistry, name: str, key: str) -> dict[str, float]:
+    found: dict[str, float] = {}
+    for attributes, value in _metric_points(registry, name):
+        found[attributes[key]] = found.get(attributes[key], 0) + value
+    return found
+
+
+async def test_new_boxes_are_counted_by_path_and_retired_ones_by_reason(
+    provisioner_app,  # noqa: F811
+    hosted_metrics: MetricsRegistry,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    _pooled(app)
+    await _operator(app.factory)
+    await _waiting_box(app.factory)
+    await _ensure(app, await _person(app.factory, "first@example.com"))
+    await _ensure(app, await _person(app.factory, "second@example.com"))
+    assert _points(hosted_metrics, HOSTED_POOL_CLAIMS.name, "path") == {
+        "pool": 1,
+        "fallback": 1,
+    }
+    _pooled(app, 0)
+    await sweep_pool(app.factory, app.config, datetime.now(UTC))  # the refill
+    assert _points(hosted_metrics, HOSTED_POOL_RETIRED.name, "reason") == {"size": 1}

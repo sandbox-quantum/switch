@@ -3754,6 +3754,94 @@
         "width": 6,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: boxes by state against the pool's size (hosted agents v2)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.pool.boxes{$service,$flint_env,$version,!version:0.27.0} by {state}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.pool.size{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 236,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: new boxes by path (pool: a waiting box taken; fallback: made from scratch)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.pool.claims{$service,$flint_env,$version,!version:0.27.0} by {path}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 236,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: boxes retired by reason, and reaper reports refused (should be 0)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.pool.retired{$service,$flint_env,$version,!version:0.27.0} by {reason}.as_count()",
+            "display_type": "bars"
+          },
+          {
+            "q": "sum:switch.hosted.pool.reap_refused{$service,$flint_env,$version,!version:0.27.0}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 240,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: time to make a pool box (p50, p90)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.hosted.pool.refill_seconds{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          },
+          {
+            "q": "p90:switch.hosted.pool.refill_seconds{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 240,
+        "width": 6,
+        "height": 4
+      }
     }
   ]
 }

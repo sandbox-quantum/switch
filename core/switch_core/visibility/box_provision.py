@@ -58,7 +58,12 @@ from switch_core.db.stores.hosted_machine_store import (
     lock_machine,
     workspaces_on,
 )
-from switch_core.observability.hosted import record_machine_event
+from switch_core.observability.hosted import (
+    record_machine_event,
+    record_pool_reap_refused,
+    record_pool_refill_seconds,
+    record_pool_retired,
+)
 from switch_core.providers.hosted import (
     HostedControllerSettings,
     machines_tenant_allowed,
@@ -914,15 +919,20 @@ async def record_provision_result(
         from switch_core.db.stores import hosted_pool_store
 
         if result == "done":
-            await hosted_pool_store.mark_waiting(
+            if await hosted_pool_store.mark_waiting(
                 session,
                 machine_id,
                 namespace=namespace,
                 template_revision=claimed[-1].get("template_revision"),
                 now=now,
-            )
-        else:
-            await hosted_pool_store.retire(session, machine_id, "make_failed", now)
+            ):
+                row = await hosted_pool_store.get(session, machine_id)
+                if row is not None:
+                    record_pool_refill_seconds(
+                        session, (now - row.requested_at).total_seconds()
+                    )
+        elif await hosted_pool_store.retire(session, machine_id, "make_failed", now):
+            record_pool_retired(session, "make_failed")
         return
     if isinstance(machine_id, str):
         await lock_machine(session, machine_id)
@@ -1140,6 +1150,7 @@ async def retire_stale_pool_boxes(
                     kept.append(box)
                 elif await hosted_pool_store.retire(session, box.id, reason, now):
                     retired[reason] += 1
+                    record_pool_retired(session, reason)
             # Over the size: requested first, then the newest waiting.
             extra = len(kept) - size
             if extra > 0:
@@ -1153,6 +1164,7 @@ async def retire_stale_pool_boxes(
                 for box in ordered[:extra]:
                     if await hosted_pool_store.retire(session, box.id, "size", now):
                         retired["size"] += 1
+                        record_pool_retired(session, "size")
             await session.commit()
     return retired
 
@@ -1229,14 +1241,14 @@ async def fail_bind(
     await lock_machine(session, machine_id)
     machine = await session.get(CloudMachine, machine_id, populate_existing=True)
     reached = reached_owner(linked)
-    if not reached:
-        await hosted_pool_store.retire(
-            session,
-            machine_id,
-            "failed_before_owner",
-            now,
-            from_states=("claimed",),
-        )
+    if not reached and await hosted_pool_store.retire(
+        session,
+        machine_id,
+        "failed_before_owner",
+        now,
+        from_states=("claimed",),
+    ):
+        record_pool_retired(session, "failed_before_owner")
     if machine is None or machine.state == "deleted":
         return
     if reached:
@@ -1430,7 +1442,8 @@ async def record_pool_box_gone(
             None if row is None else row.retire_reason,
             reached,
         )
-        await _pool_alert(session, now)
+        # Counted for the `pool_reap_refused` monitor (always 0 when well).
+        record_pool_reap_refused()
         raise ProvisionRefused(409, "This pool box isn't Core's to reap.")
     await hosted_pool_store.mark_gone(session, pool_box_id, now)
     await record_server_audit_event(
@@ -1446,12 +1459,6 @@ async def record_pool_box_gone(
 def _keyed_box_id(box_id: str) -> str | None:
     key = process_keyed_id_key()
     return None if key is None else key.keyed_id(KeyedIdKind.BOX, box_id)
-
-
-async def _pool_alert(session: AsyncSession, now: datetime) -> None:
-    """Placeholder for the pool's alert (`pool_reap_refused`), wired with the
-    pool's alerts; logged at error meanwhile."""
-    return None
 
 
 def _box_not_made(session: AsyncSession, machine: CloudMachine, now: datetime) -> None:
@@ -1517,7 +1524,8 @@ async def expire_provisions(session: AsyncSession, now: datetime) -> int:
             # A pool box never made in time retires, reapable.
             from switch_core.db.stores import hosted_pool_store
 
-            await hosted_pool_store.retire(session, machine_id, "make_failed", now)
+            if await hosted_pool_store.retire(session, machine_id, "make_failed", now):
+                record_pool_retired(session, "make_failed")
             continue
         # Nothing made the box in time: the machine is marked as not made,
         # as a failed result marks it, so its owner sees an error rather than

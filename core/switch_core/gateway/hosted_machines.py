@@ -44,7 +44,7 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
 )
 from switch_core.hosted_v2 import process_hosted_v2
-from switch_core.observability.hosted import record_machine_event
+from switch_core.observability.hosted import record_machine_event, record_pool_claim
 from switch_core.providers.hosted import (
     NOT_AVAILABLE,
     HostedControllerSettings,
@@ -347,6 +347,12 @@ async def ensure_machine(
         record_machine_event(
             session, "requested", claimed.change, claimed.machine.backend
         )
+    if (
+        claimed.change == "new"
+        and claimed.machine.backend == "box"
+        and getattr(config, "hosted_pool_size", 0) > 0
+    ):
+        record_pool_claim(session, "pool" if claimed.from_pool else "fallback")
     return claimed.machine, claimed.workspace
 
 

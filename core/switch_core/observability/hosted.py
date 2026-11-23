@@ -66,6 +66,12 @@ from switch_core.observability.catalogue import (
     HOSTED_GATEWAY,
     HOSTED_GUARD_STOPS,
     HOSTED_MACHINE_EVENTS,
+    HOSTED_POOL_BOXES,
+    HOSTED_POOL_CLAIMS,
+    HOSTED_POOL_REAP_REFUSED,
+    HOSTED_POOL_REFILL_SECONDS,
+    HOSTED_POOL_RETIRED,
+    HOSTED_POOL_SIZE,
     HOSTED_PROVIDER_LOGIN_PROBLEMS,
     HOSTED_PROVISION_SECONDS,
     HOSTED_RECONCILER_SILENCE,
@@ -561,6 +567,9 @@ class HostedSnapshot:
     sessions_max: dict[str, int] = field(default_factory=_per_backend)
     boxes_reporting: dict[str, int] = field(default_factory=_per_backend)
     boxes_expected: dict[str, int] = field(default_factory=_per_backend)
+    # The warm pool: its configured size and its boxes by state.
+    pool_size: int = 0
+    pool_boxes: dict[str, int] = field(default_factory=dict)
     login_problems: dict[tuple[str, str, str], int] = field(default_factory=dict)
     restarts_10m: int = 0
     oom_kills: int = 0
@@ -717,6 +726,11 @@ def snapshot_readings(snap: HostedSnapshot) -> Iterator[GaugeReading]:
                     float(snap.login_problems.get((backend, provider, reason), 0)),
                     {"provider": provider, "reason": reason, "backend": backend},
                 )
+    yield GaugeReading(HOSTED_POOL_SIZE, float(snap.pool_size), {})
+    for state in POOL_STATES:
+        yield GaugeReading(
+            HOSTED_POOL_BOXES, float(snap.pool_boxes.get(state, 0)), {"state": state}
+        )
     yield GaugeReading(HOSTED_AGENT_RESTARTS_10M, float(snap.restarts_10m), {})
     yield GaugeReading(HOSTED_AGENT_OOM_KILLS, float(snap.oom_kills), {})
     yield GaugeReading(HOSTED_WAITING_FOR_ROOM, float(snap.waiting_for_room), {})
@@ -745,6 +759,7 @@ _MACHINES = text(
     "SELECT id, state, desired_state, heartbeat, heartbeat_at, backend "
     "FROM cloud_machines WHERE state <> 'deleted'"
 )
+_POOL = text("SELECT state, count(*) AS boxes FROM hosted_pool_boxes GROUP BY state")
 _TRY_LOCK = text("SELECT pg_try_advisory_lock(hashtext(:name))")
 
 
@@ -764,8 +779,11 @@ class HostedSampler:
         interval_seconds: float = SAMPLE_INTERVAL_SECONDS,
         timeout_seconds: float = SAMPLE_TIMEOUT_SECONDS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        pool_size: int = 0,
     ) -> None:
         self._engine_factory = engine_factory
+        self._pool_size = pool_size
+        self._pool_boxes: dict[str, int] = {}
         self._interval = interval_seconds
         self._timeout = timeout_seconds
         self._clock = clock
@@ -811,6 +829,8 @@ class HostedSampler:
             self._lost()
             return None
         snap = snapshot_of(rows, self._clock())
+        snap.pool_size = self._pool_size
+        snap.pool_boxes = dict(self._pool_boxes)
         self._record_rises(snap.box_counts)
         self._latest = snap
         return snap
@@ -851,6 +871,8 @@ class HostedSampler:
                 return None
             self._holds_lock = True
             logger.info("This process now reports the hosted machines' gauges.")
+        pool = await conn.execute(_POOL)
+        self._pool_boxes = {str(row.state): int(row.boxes) for row in pool}
         result = await conn.execute(_MACHINES)
         return [
             MachineRow(
@@ -907,6 +929,48 @@ class HostedSampler:
 
 # Why a cloud machine claim was refused at a limit: fixed words only.
 CLAIM_REFUSALS = ("workspace_full",)
+
+
+POOL_PATHS = ("pool", "fallback")
+POOL_STATES = ("requested", "waiting", "retiring")
+POOL_RETIRED = ("image", "age", "size", "make_failed", "failed_claim")
+
+
+def record_pool_claim(session: AsyncSession, path: str) -> None:
+    """Count one new box with the warm pool on, by `path`, once `session`
+    commits. Only a fixed word, never who."""
+    if path not in POOL_PATHS:
+        return
+    after_commit(
+        session, lambda: metrics().increment(HOSTED_POOL_CLAIMS, {"path": path})
+    )
+
+
+def record_pool_retired(session: AsyncSession, reason: str) -> None:
+    """Count one pool box retired, by a fixed `reason`, once `session`
+    commits (`failed_before_owner` reads as `failed_claim`)."""
+    word = "failed_claim" if reason == "failed_before_owner" else reason
+    if word not in POOL_RETIRED:
+        return
+    after_commit(
+        session, lambda: metrics().increment(HOSTED_POOL_RETIRED, {"reason": word})
+    )
+
+
+def record_pool_refill_seconds(session: AsyncSession, seconds: float) -> None:
+    """Time one pool box from Core asking to the operator reporting it made,
+    once `session` commits."""
+    if seconds < 0:
+        return
+    after_commit(
+        session, lambda: metrics().observe(HOSTED_POOL_REFILL_SECONDS, {}, seconds)
+    )
+
+
+def record_pool_reap_refused() -> None:
+    """Count one reaper report Core refused, at once (the refusal commits
+    nothing)."""
+    metrics().increment(HOSTED_POOL_REAP_REFUSED, {})
 
 
 def record_claim_refused(reason: str) -> None:

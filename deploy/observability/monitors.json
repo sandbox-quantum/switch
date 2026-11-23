@@ -1537,5 +1537,53 @@
       }
     },
     "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted warm pool empty",
+    "type": "query alert",
+    "query": "min(last_10m):max:switch.hosted.pool.size{service:REPLACE-WITH-SERVICE} - max:switch.hosted.pool.boxes{service:REPLACE-WITH-SERVICE,state:waiting} >= 1",
+    "message": "{{#is_alert}}For 10 minutes the warm pool has had fewer waiting boxes than its size, so new people's first starts are made from scratch (the slower fallback) rather than taken from the pool.\n\n**Check:** whether the box operator is polling and reports the `pool` capability and a current template revision, whether pool boxes are failing to be made (`switch.hosted.pool.retired` by reason), and whether a ceiling or the per-minute limit is holding refills back.{{/is_alert}}{{#is_recovery}}Recovered: the warm pool is back to its size.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:ops"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 1
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted warm pool reap refused",
+    "type": "query alert",
+    "query": "sum(last_10m):sum:switch.hosted.pool.reap_refused{service:REPLACE-WITH-SERVICE}.as_count() > 0",
+    "message": "{{#is_alert}}Core refused {{value}} report(s) from the warm pool's reaper of a box it never agreed to reap: not retiring, not reapable, or a box whose bind had reached its owner.\n\n**Check:** the reaper's logs and Core's error log for the box, and that the cluster's reaper policy refused the delete. A person's box must never be reaped.{{/is_alert}}{{#is_recovery}}Recovered: no refused reaper reports in the last 10 minutes.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:security"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 0
+      }
+    },
+    "priority": 1
   }
 ]

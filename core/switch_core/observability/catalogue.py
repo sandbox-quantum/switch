@@ -1045,6 +1045,55 @@ HOSTED_CLAIM_REFUSED = _spec(
     "hosted agents v2 only). Never which workspace or person.",
     "reason",
 )
+HOSTED_POOL_SIZE = _spec(
+    "switch.hosted.pool.size",
+    "gauge",
+    "{box}",
+    "The warm pool's configured size (`HOSTED_POOL_SIZE`), as this Core "
+    "process reads it: 0 is no pool.",
+)
+HOSTED_POOL_BOXES = _spec(
+    "switch.hosted.pool.boxes",
+    "gauge",
+    "{box}",
+    "Warm pool boxes by `state`: `requested` (being made), `waiting` (ready "
+    "for the next person's first start) and `retiring` (for the reaper). "
+    "Never which box.",
+    "state",
+)
+HOSTED_POOL_CLAIMS = _spec(
+    "switch.hosted.pool.claims",
+    "sum",
+    "{claim}",
+    "New boxes with the warm pool on, by `path`: `pool` (a waiting box was "
+    "taken) or `fallback` (none was, so one was made from scratch).",
+    "path",
+)
+HOSTED_POOL_REFILL_SECONDS = _spec(
+    "switch.hosted.pool.refill_seconds",
+    "histogram",
+    "s",
+    "How long a warm pool box took from Core asking for it to the operator "
+    "reporting it made.",
+    bounds=(10.0, 15.0, 20.0, 30.0, 45.0, 60.0, 90.0, 120.0, 300.0, 900.0),
+)
+HOSTED_POOL_RETIRED = _spec(
+    "switch.hosted.pool.retired",
+    "sum",
+    "{box}",
+    "Warm pool boxes retired for the reaper, by `reason`: `image`, `age`, "
+    "`size`, `make_failed` or `failed_claim` (a bind that failed before its "
+    "owner was written).",
+    "reason",
+)
+HOSTED_POOL_REAP_REFUSED = _spec(
+    "switch.hosted.pool.reap_refused",
+    "sum",
+    "{report}",
+    "Reaper reports Core refused: a box reported gone that Core never agreed "
+    "to reap (not retiring, not reapable, or its bind reached its owner). "
+    "Should always be 0.",
+)
 HOSTED_RECONCILER_SILENCE = _spec(
     "switch.hosted.reconciler_silence",
     "gauge",
@@ -1305,6 +1354,12 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_BOXES_EXPECTED,
         HOSTED_MACHINE_EVENTS,
         HOSTED_CLAIM_REFUSED,
+        HOSTED_POOL_SIZE,
+        HOSTED_POOL_BOXES,
+        HOSTED_POOL_CLAIMS,
+        HOSTED_POOL_REFILL_SECONDS,
+        HOSTED_POOL_RETIRED,
+        HOSTED_POOL_REAP_REFUSED,
         HOSTED_RECONCILER_SILENCE,
         HOSTED_ALERTS_OPEN,
         HOSTED_PROVIDER_LOGIN_PROBLEMS,

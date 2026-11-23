@@ -47,7 +47,7 @@
         "title": "Hosted alerts: status",
         "title_align": "left",
         "summary_type": "monitors",
-        "query": "tag:\"service:REPLACE-WITH-SERVICE\" (\"Hosted machines expected but not reporting\" OR \"Hosted controller service silent\" OR \"Hosted machine launches failing\" OR \"Cloud calls failing for hosted machines\" OR \"Cloud capacity short for hosted machines\" OR \"Hosted controller service hitting errors\" OR \"Controller credential refusals rising\" OR \"Controller token exchanges and enrolments refused\" OR \"Controller credential lockouts starting\" OR \"AI provider logins missing or expired on cloud machines\" OR \"Cloud machines slow to start\" OR \"Cloud machine memory nearly full\" OR \"Cloud machine disk nearly full\" OR \"Hosted metrics sampler failing\" OR \"Hosted boxes: memory guard stopping agents\" OR \"Hosted boxes pushed off their nodes\" OR \"Hosted box first starts slow\")",
+        "query": "tag:\"service:REPLACE-WITH-SERVICE\" (\"Hosted machines expected but not reporting\" OR \"Hosted controller service silent\" OR \"Hosted machine launches failing\" OR \"Cloud calls failing for hosted machines\" OR \"Cloud capacity short for hosted machines\" OR \"Hosted controller service hitting errors\" OR \"Controller credential refusals rising\" OR \"Controller token exchanges and enrolments refused\" OR \"Controller credential lockouts starting\" OR \"AI provider logins missing or expired on cloud machines\" OR \"Cloud machines slow to start\" OR \"Cloud machine memory nearly full\" OR \"Cloud machine disk nearly full\" OR \"Hosted metrics sampler failing\" OR \"Hosted boxes: memory guard stopping agents\" OR \"Hosted boxes pushed off their nodes\" OR \"Hosted box first starts slow\" OR \"Hosted warm pool empty\" OR \"Hosted warm pool reap refused\")",
         "sort": "status,asc",
         "display_format": "countsAndList",
         "color_preference": "text",
@@ -575,6 +575,94 @@
       "layout": {
         "x": 0,
         "y": 56,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: boxes by state against the pool's size (hosted agents v2)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.pool.boxes{$service,$flint_env,$version,!version:0.27.0} by {state}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.pool.size{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 60,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: new boxes by path (pool: a waiting box taken; fallback: made from scratch)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.pool.claims{$service,$flint_env,$version,!version:0.27.0} by {path}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 60,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: boxes retired by reason, and reaper reports refused (should be 0)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.pool.retired{$service,$flint_env,$version,!version:0.27.0} by {reason}.as_count()",
+            "display_type": "bars"
+          },
+          {
+            "q": "sum:switch.hosted.pool.reap_refused{$service,$flint_env,$version,!version:0.27.0}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 64,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: time to make a pool box (p50, p90)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.hosted.pool.refill_seconds{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          },
+          {
+            "q": "p90:switch.hosted.pool.refill_seconds{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 64,
         "width": 6,
         "height": 4
       }
