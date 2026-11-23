@@ -27,6 +27,7 @@ from switch_core.bridges.agent.agent_change_requests import (
     CONFIRM_COMMAND,
     confirm_with,
     record_confirmed,
+    suspension_refusal,
 )
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
@@ -2350,7 +2351,8 @@ async def _cmd_agent_change(
 ) -> None:
     """See, confirm or drop a change an agent asked to make to one of its
     owner's agents (`agent_change_requests`). Anyone in the room may see it;
-    only the owner may confirm or drop it."""
+    only the owner may confirm or drop it. Confirming drops it instead while
+    the owner, the agent that asked or the agent it changes is suspended."""
     host = cast("CommandConsumer", client)
     parts = (event.args or "").split()
     if not parts:
@@ -2386,6 +2388,11 @@ async def _cmd_agent_change(
         return
     async with host.session_factory() as session:
         refusal = await _owner_refusal(host, session, event, waiting.owner_id)
+        suspended = (
+            await suspension_refusal(session, waiting)
+            if refusal is None and action == "confirm"
+            else None
+        )
     if refusal is not None:
         await _reply(host, room, event, f"⚠️ {refusal} Nothing was changed.")
         return
@@ -2394,6 +2401,21 @@ async def _cmd_agent_change(
     if request is not waiting:
         await _reply(
             host, room, event, f"The change to `{name}` was already dealt with."
+        )
+        return
+    if suspended is not None:
+        logger.warning(
+            "Dropped the change %s asked for to %s at its confirmation: %s",
+            request.requested_by,
+            request.agent_name,
+            suspended,
+        )
+        await _reply(
+            host,
+            room,
+            event,
+            f"⚠️ {suspended}, so the change {request.requested_by} asked for "
+            "was dropped. Nothing was changed.",
         )
         return
     if action == "drop":

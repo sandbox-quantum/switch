@@ -123,7 +123,10 @@ version of their own to them without also giving them a release of their own.
   <name> drop` throws it away, and anyone in the room can see it with
   `!agent-change <name>`. The agent is told it is waiting and what to send.
   Only one change per agent waits at a time, so what the owner confirms is
-  what they were shown. Waiting requests are kept in memory, as an agent's
+  what they were shown. Nothing is held in a frozen or archived room, where
+  the owner couldn't confirm it, and a confirmation drops the request instead
+  of making it while the owner, the agent that asked or the agent it changes
+  is suspended. Waiting requests are kept in memory, as an agent's
   request to delete another agent is: a restart drops them, and the request
   and its confirmation must reach the same server process. A change in the
   safer direction (bypass or auto mode off, a narrower addressing policy)

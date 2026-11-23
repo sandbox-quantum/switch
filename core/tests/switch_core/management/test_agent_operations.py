@@ -14,6 +14,7 @@ import hashlib
 import secrets
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1449,6 +1450,82 @@ class TestTheOwnerConfirms:
             "auto_approve"
         ] is False
         assert desk.host._agent_requests.waiting_change(desk.room_id, "builder")
+
+    @pytest.mark.parametrize(
+        ("suspended", "told"),
+        [
+            ("owner", "Your account is suspended"),
+            ("helper", "`helper`, which asked for it, is suspended"),
+            ("builder", "`builder` is suspended"),
+        ],
+    )
+    async def test_nothing_is_made_once_someone_in_it_is_suspended(
+        self,
+        harness: Harness,
+        client: httpx.AsyncClient,
+        desk: OwnersDesk,
+        suspended: str,
+        told: str,
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True},
+        )
+        async with harness.session_factory() as session:
+            table, row_id = {
+                "owner": (User, owner.id),
+                "helper": (Agent, helper_id),
+                "builder": (Agent, new_id),
+            }[suspended]
+            await session.execute(
+                update(table)
+                .where(table.id == row_id)
+                .values(suspended_at=datetime.now(UTC), suspended_by_role="admin")
+            )
+            await session.commit()
+
+        reply = await desk.send(await desk.in_person(owner), "builder confirm")
+
+        assert reply == (
+            f"⚠️ {told}, so the change helper asked for was dropped. Nothing was "
+            "changed."
+        )
+        assert desk.host._agent_requests.waiting_change(desk.room_id, "builder") is None
+        assert (await _assigned(client, controller))[new_id]["definition"][
+            "auto_approve"
+        ] is False
+        assert await _audited(harness, "agent.change_confirmed") == []
+
+    async def test_nothing_waits_in_a_room_that_takes_no_commands(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        """A frozen room takes no `!agent-change`, so nothing is held there
+        for the owner to confirm."""
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        async with harness.session_factory() as session:
+            await session.execute(
+                update(Room)
+                .where(Room.id == desk.room_id)
+                .values(frozen_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True},
+        )
+
+        assert response.status_code == 403, response.text
+        assert "is frozen" in response.json()["detail"]
+        assert desk.posted == []
+        assert desk.host._agent_requests.waiting_change(desk.room_id, "builder") is None
 
     async def test_the_owner_may_drop_it(
         self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk

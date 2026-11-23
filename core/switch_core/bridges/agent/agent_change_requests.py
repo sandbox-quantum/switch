@@ -12,7 +12,9 @@ workspace for it. It is posted in the room the asking agent is connected to and 
 (`AgentRequests`, in memory, like a deletion request) until the owner
 confirms it there with `!agent-change <name> confirm` within two minutes. A
 prompt injected into anything an agent reads can make it ask for one; only
-its owner can make it so. A change in the safer direction (bypass or auto
+its owner can make it so. Nothing is held in a frozen or archived room, which
+takes no command, and a confirmation makes nothing while the owner, the
+asking agent or the agent it changes is suspended. A change in the safer direction (bypass or auto
 mode off, any other permission mode, a narrower addressing policy) applies
 at once, as do a person's own
 changes in Switch Console or the gateway, which do not come through here.
@@ -28,8 +30,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.suspension import owner_is_suspended
 from switch_core.addressing import ANY, AddressingPolicy, parse_policy
 from switch_core.agent_display_name import agent_label_with_identifier
 from switch_core.bridges.agent.protocol.agent_core import VALID_AGENT_NAME_RE
@@ -49,6 +53,7 @@ from switch_core.clients.agent_admin import (
 )
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import Agent, User, require_tenant_id
+from switch_core.room_read_only import require_postable
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -302,7 +307,10 @@ def _requests(protocol: AgentCore) -> AgentRequests:
 async def _caller_and_room(
     protocol: AgentCore, caller_id: str, room_id: str
 ) -> tuple[Agent, str]:
-    """The asking agent, and the transport id of the room it asks in."""
+    """The asking agent, and the transport id of the room it asks in.
+
+    Raises `RoomReadOnly` for a frozen or archived room: it takes no
+    command, so the owner could never confirm a request held there."""
     async with protocol.session_factory() as session:
         caller = await protocol.agent_store.get(session, caller_id)
         room = await protocol.room_store.get(session, room_id)
@@ -310,7 +318,34 @@ async def _caller_and_room(
         raise ValueError(f"Unknown agent: {caller_id}")
     if room is None:
         raise ValueError(f"Room not found: {room_id}")
+    require_postable(room)
     return caller, room.transport_room_id
+
+
+async def suspension_refusal(
+    session: AsyncSession, request: ChangeRequest
+) -> str | None:
+    """Why `request` can no longer be made, or None: the owner confirming
+    it, the agent that asked for it, or the agent it changes is suspended
+    (`accounts/suspension.py`)."""
+    if await owner_is_suspended(session, request.owner_id):
+        return "Your account is suspended"
+    if (
+        await session.scalar(
+            select(Agent.suspended_at).where(Agent.id == request.requested_by_id)
+        )
+        is not None
+    ):
+        return f"{_code(request.requested_by)}, which asked for it, is suspended"
+    if (
+        request.agent_id is not None
+        and await session.scalar(
+            select(Agent.suspended_at).where(Agent.id == request.agent_id)
+        )
+        is not None
+    ):
+        return f"{_code(request.agent_name)} is suspended"
+    return None
 
 
 async def owner_of(protocol: AgentCore, agent_id: str) -> User:
