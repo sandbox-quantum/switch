@@ -65,11 +65,6 @@ RECONNECT_BACKOFF_CAP = 15.0
 # How long a key whose re-read failed waits before it is tried again.
 RETRY_SECONDS = 2.0
 
-# How long one key's re-read may take before it counts as failed. Without a
-# bound, a re-read stuck on the pool or the database holds up every key behind
-# it, and how long a change takes to reach this process has no limit.
-REREAD_TIMEOUT_SECONDS = 15.0
-
 # How often every family's re-check runs, so that a signal missed for any
 # reason costs at most this long rather than lasting until a restart.
 RECHECK_SECONDS = 30.0
@@ -85,9 +80,8 @@ class PendingWork[K: Hashable]:
 
     A key added again before its turn is still one piece of work, which is
     what lets a burst of signals about one thing cost one read. A key whose
-    work raises, or takes longer than `REREAD_TIMEOUT_SECONDS`, is kept and
-    tried again after `RETRY_SECONDS`, so a database error on the receiving
-    side delays a change rather than dropping it.
+    work raises is kept and tried again after `RETRY_SECONDS`, so a database
+    error on the receiving side delays a change rather than dropping it.
     """
 
     def __init__(self, name: str, work: Callable[[K], Awaitable[None]]) -> None:
@@ -129,19 +123,10 @@ class PendingWork[K: Hashable]:
             key = next(iter(self._pending))
             del self._pending[key]
             try:
-                async with asyncio.timeout(REREAD_TIMEOUT_SECONDS):
-                    await self._work(key)
+                await self._work(key)
             except asyncio.CancelledError:
                 self._pending.setdefault(key, None)
                 raise
-            except TimeoutError:
-                logger.warning(
-                    "Re-reading %s %r took more than %.0fs",
-                    self.name,
-                    key,
-                    REREAD_TIMEOUT_SECONDS,
-                )
-                failed.append(key)
             except Exception:
                 logger.warning("Re-reading %s %r failed", self.name, key, exc_info=True)
                 failed.append(key)

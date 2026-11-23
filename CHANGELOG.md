@@ -220,6 +220,7 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+
   could likewise map a room again that was just unbridged. Neither now acts
   over a newer change or a re-read that began after it.
 - **A change made in one process reaches the others within a bound.** A

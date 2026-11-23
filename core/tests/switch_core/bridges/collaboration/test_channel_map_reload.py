@@ -133,3 +133,38 @@ async def test_the_reload_that_began_last_wins_whichever_finishes_first() -> Non
     await asyncio.wait_for(newer, 5)
 
     assert bridge._find_channel(room_id=ROOM.id) is None
+
+
+async def test_a_channel_moved_to_another_room_stays_mapped() -> None:
+    """Another process moved C1 from one room to another, the new room's key
+    sorting first: unmapping the old room must not take C1 from the new."""
+    moved_from = SimpleNamespace(
+        id="room-2",
+        transport_room_id="!room-2:switch.local",
+        external_channel_id="C1",
+        tenant_id="tenant-1",
+    )
+    store = _RoomStore([ROOM])
+    store.release.set()
+    bridge = _bridge(store)
+    bridge.add_room_mapping(
+        moved_from.id, moved_from.transport_room_id, "C1", "tenant-1"
+    )
+
+    await bridge.reload_channel_map()
+
+    assert bridge._find_channel(room_id=ROOM.id) == "C1"
+    assert bridge._find_channel(room_id=moved_from.id) is None
+    assert bridge._channel_to_room["C1"] == (ROOM.id, ROOM.transport_room_id)
+
+
+async def test_a_room_moved_to_another_channel_no_longer_hears_the_old_one() -> None:
+    store = _RoomStore([ROOM])
+    store.release.set()
+    bridge = _bridge(store)
+    bridge.add_room_mapping(ROOM.id, ROOM.transport_room_id, "C0", ROOM.tenant_id)
+
+    await bridge.reload_channel_map()
+
+    assert bridge._find_channel(room_id=ROOM.id) == "C1"
+    assert "C0" not in bridge._channel_to_room
