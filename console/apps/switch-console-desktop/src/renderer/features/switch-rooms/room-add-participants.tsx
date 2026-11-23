@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { workspaceRosterQuery } from '@renderer/features/chats/chat-people';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -133,7 +134,11 @@ export const ChatAddParticipantPanel = observer(function ChatAddParticipantPanel
   const [refused, setRefused] = useState<string[]>([]);
   const candidates = [
     ...addableAgents(agents.data ?? [], allowed.data ?? []).map((agent) =>
-      agentParticipant(agent, knownAgentTypeDisplayName(agent.knownAgentType) ?? 'Agent')
+      agentParticipant(
+        agent,
+        knownAgentTypeDisplayName(agent.knownAgentType) ?? 'Agent',
+        isOwnBuddy(serverId, agent.id)
+      )
     ),
     ...addablePeople(roster.data ?? [], memberIds).map(personParticipant),
   ];

@@ -5,7 +5,7 @@ import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { useAvatarSettings } from '@renderer/lib/stores/use-avatar-settings';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials, resolveAgentAvatarSrc } from '@shared/core/agents/agent-avatar';
-import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
+import { isBuddyIconUrl } from '@shared/core/agents/switch-buddy';
 
 /**
  * The image an agent's avatar shows, or null for its initials. `buddy` says
@@ -21,7 +21,7 @@ export function agentAvatarSrc(
   // network and no avatar setting. Any agent can carry its URL, and one that
   // did would pass for the person's buddy, so any other is drawn as if it had
   // chosen no picture.
-  if (iconUrl === BUDDY_ICON_URL)
+  if (isBuddyIconUrl(iconUrl))
     return buddy ? buddyAvatar : resolveAgentAvatarSrc(null, name, thirdPartyAvatarsEnabled);
   return resolveAgentAvatarSrc(iconUrl, name, thirdPartyAvatarsEnabled);
 }

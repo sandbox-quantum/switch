@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chatAgentNaming } from './chats';
+import { chatAgentNameText, chatAgentNaming } from './chats';
 
 describe('chatAgentNaming', () => {
   it('names an agent without a display name by its unique name alone', () => {
@@ -37,6 +37,7 @@ describe('chatAgentNaming', () => {
       'Your switch-buddy',
       'swítch-buddy',
       'switch-buddy @switch-buddy-ada',
+      'Swіtch Buddy', // a Cyrillic і
     ])
       expect(chatAgentNaming({ name: 'helper', displayName }, false)).toEqual({
         label: 'helper',
@@ -48,5 +49,17 @@ describe('chatAgentNaming', () => {
     expect(
       chatAgentNaming({ name: 'switch-buddy-ada', displayName: 'Switch Buddy' }, true)
     ).toEqual({ label: 'Switch Buddy', uniqueName: 'switch-buddy-ada' });
+  });
+});
+
+describe('chatAgentNameText', () => {
+  it('puts the unique name in brackets after a display name that differs', () => {
+    expect(chatAgentNameText({ name: 'deploy-bot', displayName: 'Helper' }, false)).toBe(
+      'Helper (@deploy-bot)'
+    );
+    expect(chatAgentNameText({ name: 'helper', displayName: null }, false)).toBe('helper');
+    expect(chatAgentNameText({ name: 'impostor', displayName: 'Swіtch Buddy' }, false)).toBe(
+      'impostor'
+    );
   });
 });

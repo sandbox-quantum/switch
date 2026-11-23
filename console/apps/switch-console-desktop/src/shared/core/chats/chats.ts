@@ -243,6 +243,18 @@ export function chatAgentNaming(
   return { label: shown, uniqueName: agent.name };
 }
 
+/**
+ * `chatAgentNaming` in running text, such as a placeholder or a notice: the
+ * label, then the unique name in brackets when it differs.
+ */
+export function chatAgentNameText(
+  agent: Pick<ChatAgent, 'name' | 'displayName'>,
+  ownBuddy: boolean
+): string {
+  const { label, uniqueName } = chatAgentNaming(agent, ownBuddy);
+  return uniqueName === null ? label : `${label} (@${uniqueName})`;
+}
+
 /** The `clientTxn` a Console send's parts carry: `{requestId}:{index}`. */
 export function requestIdOfClientTxn(clientTxn: string | null): string | null {
   if (clientTxn === null) return null;

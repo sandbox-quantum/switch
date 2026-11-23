@@ -5162,15 +5162,19 @@ version of their own to them without also giving them a release of their own.
   address. A reference whose link is not a web link is refused with a notice,
   as in chat.
 - **Only your own switch-buddy wears switch-buddy's picture.** Another agent
-  using the buddy's icon address is drawn as if it had no picture. That holds
+  using the buddy's icon address, with a query or fragment added or not, is
+  drawn as if it had no picture. That holds
   in each workspace you belong to on a server: reading another workspace's
   agents no longer takes the picture from your buddy.
 - **Chats show an agent's unique name beside its display name.** An agent's
   owner can set its display name to anything, including switch-buddy or
-  another agent's name. Messages, an agent's work, kickoff cards and the chat
-  header now show the agent's unique name, muted, after a display name that
-  differs from it, and a display name that reads as switch-buddy's is shown
-  only for your own buddy: any other agent goes by its unique name.
+  another agent's name. Messages, an agent's work, kickoff cards, the chat
+  header, the message box's placeholder and @-mention list, a chat's list of
+  participants, and the agents offered by New room and Add participants now
+  show the agent's unique name, muted, after a display name that differs from
+  it. A display name that reads as switch-buddy's, including one spelled with
+  Cyrillic or Greek letters that look Latin, is shown only for your own buddy:
+  any other agent goes by its unique name.
 - **Question cards always say which agent is asking.** Each open card names the
   agent by its unique name and whose it is, quotes its title, and says a typed
   answer goes to that agent, not to Switch.

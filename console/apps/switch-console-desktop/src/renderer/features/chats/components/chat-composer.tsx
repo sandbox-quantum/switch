@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, SquareIcon, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
@@ -18,7 +19,8 @@ import {
   type ChatAgent,
   type ChatCommand,
   type ChatMessage,
-  chatAgentLabel,
+  chatAgentNameText,
+  chatAgentNaming,
   requestIdOfClientTxn,
 } from '@shared/core/chats/chats';
 import { personColour } from '@shared/core/people/person-colour';
@@ -123,6 +125,25 @@ const CONTROL_LABEL: Record<ControlRequest['command'], string> = {
 };
 
 const CONTEXT_BLOCKED = 'Waiting for the previous command to be sent.';
+
+/** An agent in the mention list, named as the chat's rows name it (`chatAgentNaming`). */
+const MentionAgentName = observer(function MentionAgentName({
+  agent,
+  serverId,
+}: {
+  agent: ChatAgent;
+  serverId: string;
+}) {
+  const { label, uniqueName } = chatAgentNaming(agent, isOwnBuddy(serverId, agent.id));
+  return (
+    <>
+      <span className="truncate">{label}</span>
+      {uniqueName !== null && (
+        <span className="truncate text-xs text-foreground-passive">@{uniqueName}</span>
+      )}
+    </>
+  );
+});
 
 /**
  * Where each Stop, Reset or Compact sent from here stands: being posted,
@@ -397,10 +418,11 @@ export const ChatComposer = observer(function ChatComposer({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, []);
   const agent = agents[0] ?? null;
-  const recipient = groupName ?? (agent ? chatAgentLabel(agent) : 'the agent');
+  const nameOf = (each: ChatAgent) => chatAgentNameText(each, isOwnBuddy(serverId, each.id));
+  const recipient = groupName ?? (agent ? nameOf(agent) : 'the agent');
   const labelOf = (activity: AgentActivity) => {
     const owner = agents.find((each) => each.id === activity.agentId);
-    return owner ? chatAgentLabel(owner) : 'the agent';
+    return owner ? nameOf(owner) : 'the agent';
   };
   const group = activities.length > 1;
   const stopActivities = activities.filter((activity) => activity.runningTurn);
@@ -695,7 +717,7 @@ export const ChatComposer = observer(function ChatComposer({
                             serverId={serverId}
                             size={20}
                           />
-                          <span className="truncate">{chatAgentLabel(each.agent)}</span>
+                          <MentionAgentName agent={each.agent} serverId={serverId} />
                           {each.agent.alias && (
                             <span className="truncate text-xs text-foreground-muted">
                               @{each.agent.alias}

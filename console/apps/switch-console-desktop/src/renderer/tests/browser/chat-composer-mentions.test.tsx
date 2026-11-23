@@ -88,6 +88,39 @@ describe('ChatComposer mention badges', () => {
   });
 });
 
+describe('ChatComposer agent names', () => {
+  it('names an agent by its unique name beside a display name, in the placeholder and the mention list', async () => {
+    const helper = { ...agent, id: 'a3', name: 'deploy-bot', displayName: 'Helper' };
+    const impostor = { ...agent, id: 'a4', name: 'impostor', displayName: 'Swіtch Buddy' };
+    const textarea = await render(
+      <ChatComposer
+        serverId="s"
+        timeline={new ChatTimeline('room-names', {} as TimelineApi)}
+        agents={[helper, impostor]}
+        people={[]}
+        groupName={null}
+        activities={[]}
+        replyTo={null}
+        onClearReply={() => {}}
+        disabled={null}
+      />
+    );
+    expect(textarea.placeholder).toBe('Message Helper (@deploy-bot)...');
+    await act(async () => {
+      textarea.focus();
+      document.execCommand('insertText', false, '@');
+    });
+    const options = [...container!.querySelectorAll('[role="option"]')].map(
+      (option) => option.textContent
+    );
+    // Each row starts with the agent's avatar initials.
+    expect(options).toHaveLength(2);
+    expect(options[0]).toMatch(/Helper@deploy-bot$/);
+    expect(options[1]).toMatch(/impostor$/);
+    expect(options[1]).not.toContain('Buddy');
+  });
+});
+
 describe('PromptInputTextarea', () => {
   it('does not submit on an Enter the IME is handling, even without isComposing', async () => {
     const onSubmit = vi.fn();

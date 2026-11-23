@@ -107,4 +107,13 @@ describe('agentAvatarSrc', () => {
     );
     expect(agentAvatarSrc(BUDDY_ICON_URL, 'helper', false, false)).toBeNull();
   });
+
+  it('knows the buddy’s URL with a query or fragment added', () => {
+    for (const url of [`${BUDDY_ICON_URL}?v=1`, `${BUDDY_ICON_URL}#face`]) {
+      expect(agentAvatarSrc(url, 'helper', true, true)).toBe(buddyAvatar);
+      expect(agentAvatarSrc(url, 'helper', true, false)).toBe(
+        agentAvatarSrc(null, 'helper', true, false)
+      );
+    }
+  });
 });

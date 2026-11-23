@@ -15,6 +15,7 @@ import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redire
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -42,7 +43,7 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { cn } from '@renderer/utils/utils';
-import { chatAgentLabel } from '@shared/core/chats/chats';
+import { chatAgentNaming } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import {
   AddAgentPanel,
@@ -155,7 +156,12 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   // A room that could not be read is not an empty one: say so, rather than "no agents yet".
   const unreadable = !consoleChat && detail.isError;
   const agentIds = chat ? chat.agents.map((agent) => agent.id) : (room?.agentIds ?? []);
-  const chatNames = new Map((chat?.agents ?? []).map((agent) => [agent.id, chatAgentLabel(agent)]));
+  const chatNames = new Map(
+    (chat?.agents ?? []).map((agent) => [
+      agent.id,
+      chatAgentNaming(agent, isOwnBuddy(serverId, agent.id)),
+    ])
+  );
   const people = consoleChat
     ? (members.data ?? []).map((member) => ({
         key: member.userId,
@@ -326,7 +332,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
               roomId={roomId}
               workspaceId={workspaceId}
               serverId={serverId}
-              name={chatNames.get(agentId) ?? null}
+              naming={chatNames.get(agentId) ?? null}
               status={room?.agentStatuses[agentId]}
               roles={room?.roles ?? []}
               controls={controls}
@@ -516,7 +522,7 @@ const AgentRow = observer(function AgentRow({
   roomId,
   workspaceId,
   serverId,
-  name,
+  naming,
   status,
   roles,
   controls,
@@ -526,7 +532,8 @@ const AgentRow = observer(function AgentRow({
   roomId: string;
   workspaceId: string | null;
   serverId: string | null;
-  name: string | null;
+  /** How the chat names the agent (`chatAgentNaming`); null outside a chat, where it goes by its name. */
+  naming: { label: string; uniqueName: string | null } | null;
   status: string | undefined;
   /** The room's roles; those this agent holds are shown beside its status. */
   roles: RemoteRoomDetail['roles'];
@@ -539,7 +546,7 @@ const AgentRow = observer(function AgentRow({
   const managed = useManagedAgents(serverId);
   const own = (managed.data ?? []).find((agent) => agent.agentId === agentId) ?? null;
   const [busy, setBusy] = useState(false);
-  const label = name ?? agentNameFor(agentId, workspaceId, remoteById);
+  const label = naming?.label ?? agentNameFor(agentId, workspaceId, remoteById);
   const held = rolesHeldBy(roles, remoteById.get(agentId)?.name ?? null);
   const presence = roomAgentPresence(status);
   const detail = [status === undefined ? null : presence.label, ...held]
@@ -561,7 +568,12 @@ const AgentRow = observer(function AgentRow({
         )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-[13px] text-foreground">{label}</span>
+        <span className="truncate text-[13px] text-foreground">
+          {label}
+          {naming?.uniqueName && (
+            <span className="text-foreground-passive"> @{naming.uniqueName}</span>
+          )}
+        </span>
         {detail && <span className="truncate text-xs text-foreground-muted">{detail}</span>}
       </span>
     </>
