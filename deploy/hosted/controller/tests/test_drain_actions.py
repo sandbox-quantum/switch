@@ -913,6 +913,7 @@ def assert_policy_shape(body, zone):
         "serviceAccount",
         "nodeSelector",
         "automountServiceAccountToken",
+        "runtimeClassName",
     }
     assert set(c) <= {
         "name",
@@ -943,10 +944,9 @@ def assert_policy_shape(body, zone):
     assert spec["automountServiceAccountToken"] is False and "volumes" not in spec
     for host in ("hostNetwork", "hostPID", "hostIPC"):
         assert not spec.get(host, False)
-    assert spec["nodeSelector"] == {
-        "switch.dev/pool": "agents",
-        "topology.kubernetes.io/zone": zone,
-    }
+    # Under gVisor, as everything on an agent node: the class adds the pool selector and the agents toleration.
+    assert spec["runtimeClassName"] == "gvisor"
+    assert spec["nodeSelector"] == {"topology.kubernetes.io/zone": zone}
     assert "nodeName" not in spec
     # restricted pod security
     assert c["securityContext"]["allowPrivilegeEscalation"] is False
@@ -1195,3 +1195,8 @@ def test_another_node_is_drained_as_usual_with_own_node_set():
     core.add()
     run_until(worker, core, cluster)
     assert core.finished()
+
+
+def test_a_drain_placeholder_holds_room_on_agent_nodes_only():
+    with pytest.raises(ValueError):
+        da.placeholder_body("drain-room-x", "pause@sha256:" + "a" * 64, "other-pool", "eu-west-3a")

@@ -133,10 +133,18 @@ def placeholder_name(action_id: str) -> str:
     return PLACEHOLDER_PREFIX + UUID(action_id).hex[:20]
 
 
+AGENTS_POOL = "agents"
+PLACEHOLDER_RUNTIME_CLASS = "gvisor"
+
+
 def placeholder_body(name: str, image: str, pool: str, zone: str) -> dict[str, Any]:
     """The one placeholder shape `switch-operator-placeholder-shape` allows: the pinned pause image, one box in size,
-    no token, volumes, env or host access, the placer's low priority class, asking only for an agents machine in the
-    zone and never naming a node. Restricted pod security on `switch-drain-room` is met too."""
+    no token, volumes, env or host access, the placer's low priority class, and never naming a node. It runs under
+    gVisor, like everything on an agent node: the `gvisor` RuntimeClass adds the agents node selector and the
+    agent nodes' toleration, so it holds room on an agent node in the box's zone, sandboxed, with no toleration
+    written by hand. Restricted pod security on `switch-drain-room` is met too."""
+    if pool != AGENTS_POOL:
+        raise ValueError("drain placeholders hold room on agent nodes only")
     size = {"cpu": PLACEHOLDER_CPU, "memory": PLACEHOLDER_MEMORY}
     return {
         "apiVersion": "v1",
@@ -168,7 +176,9 @@ def placeholder_body(name: str, image: str, pool: str, zone: str) -> dict[str, A
             "priorityClassName": PLACEHOLDER_PRIORITY_CLASS,
             "automountServiceAccountToken": False,
             "enableServiceLinks": False,
-            "nodeSelector": {POOL_LABEL: pool, ZONE_KEY: zone},
+            "runtimeClassName": PLACEHOLDER_RUNTIME_CLASS,
+            # The pool comes from the class (`switch.dev/pool: agents`); the zone is the box's.
+            "nodeSelector": {ZONE_KEY: zone},
         },
     }
 
