@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -482,6 +484,40 @@ class TestTheProcessLease:
         assert harness.management.lease.process_id in ids
 
 
+class _ArrivesDuringAFailure(AgentControllerStore):
+    """Records the connections written connected, in order. The first write
+    runs `arrive` and fails, as a transition queued while a write is in
+    flight and that write failing."""
+
+    def __init__(self) -> None:
+        self.arrive: Callable[[], None] | None = None
+        self.written: list[str] = []
+
+    async def record_connected(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        connection_id: str,
+        process_id: str,
+        connected_at: datetime,
+    ) -> bool:
+        if self.arrive is not None:
+            arrive, self.arrive = self.arrive, None
+            arrive()
+            raise ConnectionError("the database went away")
+        self.written.append(connection_id)
+        return await super().record_connected(
+            session,
+            tenant_id,
+            controller_id,
+            connection_id=connection_id,
+            process_id=process_id,
+            connected_at=connected_at,
+        )
+
+
 class TestTheLedger:
     async def test_a_late_closing_of_a_replaced_connection_leaves_the_new_one(
         self, harness: Harness
@@ -555,6 +591,33 @@ class TestTheLedger:
         assert row.connection_id == first.id
         assert row.disconnect_reason == "taken_over"
         assert listed["state"] == "offline"
+
+    async def test_a_failed_write_is_retried_before_what_arrived_meanwhile(
+        self, harness: Harness
+    ) -> None:
+        """A connection's write fails while its replacement attaches: the
+        retry writes them in the order they happened, so on a row that names
+        no opened connection the replacement is the one left standing."""
+        store = _ArrivesDuringAFailure()
+        ledger = ControllerConnectionLedger(
+            process_id=harness.management.lease.process_id,
+            session_factory=harness.session_factory,
+            controllers=store,
+            clock=harness.clock,
+            announce=lambda tenant_id, controller_id: None,
+        )
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await connect(client, controller)
+            first = _current(harness, controller)
+        replacement = replace(first, id=str(uuid.uuid4()))
+        store.arrive = lambda: ledger.connected(replacement)
+        ledger.connected(first)
+        with pytest.raises(ConnectionError):
+            await ledger.flush_all()
+        await ledger.flush_all()
+        assert store.written == [first.id, replacement.id]
 
     async def test_a_failed_write_is_kept_for_the_next_flush(
         self, harness: Harness
