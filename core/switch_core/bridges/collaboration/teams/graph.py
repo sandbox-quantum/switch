@@ -306,7 +306,7 @@ class GraphClient:
         resp = await self._send(
             "GET",
             f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{_segment(channel_id)}",
-            params={"$select": "id,displayName,description,membershipType,layoutType"},
+            params={"$select": "id,displayName,membershipType,layoutType"},
         )
         if resp.status_code >= 300:
             raise _graph_error(f"get channel {channel_id}", resp)

@@ -24,6 +24,7 @@ from switch_core.accounts_admin import (
     read_password,
     revoke_operator,
     run_delete,
+    set_password,
     sign_out,
 )
 from switch_core.bridges.agent.registration_bootstrap import (
@@ -45,6 +46,7 @@ from switch_core.db.models import (
     TenantMember,
     User,
 )
+from switch_core.gateway.auth import password_matches_off_loop
 from switch_core.gateway.invite_mail import AdminChangeEmail
 from switch_core.operator_commands import CommandRefused
 from switch_core.tenant_context import tenant_scope
@@ -252,6 +254,75 @@ class TestSignOut:
     async def test_an_unknown_email_is_refused(self, rls_harness: RLSHarness) -> None:
         with pytest.raises(CommandRefused, match="No account"):
             await sign_out(rls_harness.restricted, "nobody@example.invalid")
+
+
+class TestSetPassword:
+    async def test_setting_a_password_lets_the_account_sign_in(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        user = await _account(rls_harness, "forgotten")
+
+        await set_password(
+            rls_harness.restricted,
+            user.email,
+            "correct-horse-battery-staple",
+        )
+
+        stored = await _user(rls_harness, user.id)
+        assert stored is not None
+        assert await password_matches_off_loop(
+            stored, "correct-horse-battery-staple"
+        )
+        [event] = await _server_events(rls_harness)
+        assert (event.action, event.target_id, event.actor_user_id) == (
+            "user.password_changed",
+            user.id,
+            None,
+        )
+        assert event.details == {"from": "forgotten", **COMMAND}
+
+    async def test_an_unknown_email_is_refused(self, rls_harness: RLSHarness) -> None:
+        with pytest.raises(CommandRefused, match="No account"):
+            await set_password(
+                rls_harness.restricted,
+                "nobody@example.invalid",
+                "correct-horse-battery-staple",
+            )
+
+        assert await _server_events(rls_harness) == []
+
+    async def test_a_short_password_is_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        user = await _account(rls_harness, "forgotten")
+
+        with pytest.raises(CommandRefused, match="That password won't do"):
+            await set_password(rls_harness.restricted, user.email, "short")
+
+        assert await _server_events(rls_harness) == []
+
+    async def test_the_administrator_password_can_be_set(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        user = await _account(rls_harness, "admin", role="admin", email=ADMIN_EMAIL)
+
+        await set_password(
+            rls_harness.restricted,
+            ADMIN_EMAIL,
+            "new-admin-password-1234",
+        )
+
+        stored = await _user(rls_harness, user.id)
+        assert stored is not None
+        assert await password_matches_off_loop(
+            stored, "new-admin-password-1234"
+        )
+        [event] = await _server_events(rls_harness)
+        assert (event.action, event.target_id, event.actor_user_id) == (
+            "user.password_changed",
+            user.id,
+            None,
+        )
 
 
 class TestOperators:

@@ -2046,6 +2046,13 @@ async def _seed_admin_user(
                     "GATEWAY_ADMIN_PASSWORD.",
                     existing.id,
                 )
+            elif config.gateway_admin_password and config.gateway_password_login_enabled:
+                logger.warning(
+                    "Admin user %s already has a password; GATEWAY_ADMIN_PASSWORD "
+                    "was ignored. Change it with `switch-accounts set-password`, "
+                    "or reset the account.",
+                    existing.id,
+                )
             return
 
         admin = User(

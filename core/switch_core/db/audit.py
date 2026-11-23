@@ -219,6 +219,8 @@ class ServerAuditAction(StrEnum):
     # a regular account (`switch-accounts grant-operator`, `revoke-operator`).
     USER_PROMOTED = "user.promoted"
     USER_DEMOTED = "user.demoted"
+    # An operator set an account's password (`switch-accounts set-password`).
+    USER_PASSWORD_CHANGED = "user.password_changed"
     USER_DELETED = "user.deleted"
     USER_DELETION_REFUSED = "user.deletion_refused"
     USER_DELETION_FAILED = "user.deletion_failed"

@@ -18,6 +18,10 @@
 - `unlock EMAIL` lifts the lock failed password sign-ins put on the account's
   email at once, rather than waiting it out (`gateway/login_limits.py`). A
   lock on the address someone signs in from stays until it runs out.
+- `set-password EMAIL [--password-file FILE]` replaces an account's password,
+  as the operator would for a forgotten one. The new password is read from
+  `--password-file` or standard input, asked for twice on a terminal, never
+  from the command line.
 - `grant-operator EMAIL` and `revoke-operator EMAIL` make an account a
   platform operator, or a regular account again. The account at
   GATEWAY_ADMIN_EMAIL stays an operator, and the server keeps at least one.
@@ -255,6 +259,43 @@ async def unlock(session_factory: async_sessionmaker[AsyncSession], email: str) 
                 target_type="user",
                 target_id=user.id,
                 details=_by_command(),
+            )
+            await session.commit()
+            return user
+
+
+# ── set-password ──────────────────────────────────────────────────────────────
+
+
+async def set_password(
+    session_factory: async_sessionmaker[AsyncSession],
+    email: str,
+    password: str,
+) -> User:
+    """Give `email`'s account a new password, leaving everything else alone."""
+    try:
+        password = TypeAdapter(Password).validate_python(password)
+    except ValidationError as error:
+        problems = "; ".join(
+            str(problem["msg"]) for problem in error.errors(include_input=False)
+        )
+        raise CommandRefused(f"That password won't do: {problems}") from None
+
+    user_store = UserStore()
+    with no_tenant():
+        async with session_factory() as session:
+            user = await user_store.get_by_email(session, email)
+            if user is None:
+                raise CommandRefused(f"No account has the email {email}.")
+            user.password_hash = await hash_password_off_loop(password)
+            await clear_login_failures(session, user.email)
+            await record_server_audit_event(
+                session,
+                actor_user_id=None,
+                action=ServerAuditAction.USER_PASSWORD_CHANGED,
+                target_type="user",
+                target_id=user.id,
+                details={"from": "forgotten", **_by_command()},
             )
             await session.commit()
             return user
@@ -825,6 +866,22 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="a file holding the password (one trailing line ending is dropped)",
     )
+    set_password_command = commands.add_parser(
+        "set-password",
+        help="set an account's password",
+        description=(
+            "Replace an account's password, as the operator would set a "
+            "forgotten one. The new password is read from `--password-file` "
+            "or standard input (asked for twice on a terminal), never from "
+            "the command line."
+        ),
+    )
+    set_password_command.add_argument("email")
+    set_password_command.add_argument(
+        "--password-file",
+        type=Path,
+        help="a file holding the new password (one trailing line ending is dropped)",
+    )
     delete = commands.add_parser(
         "delete",
         help="delete an account (shows what would happen unless --execute)",
@@ -940,6 +997,12 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
             elif command == "grant-operator":
                 user = await grant_operator(session_factory, arguments.email)
                 print(f"{user.email} ({user.id}) is now a platform operator.")
+            elif command == "set-password":
+                password = read_password(arguments.password_file)
+                user = await set_password(
+                    session_factory, arguments.email, password
+                )
+                print(f"Password set for {user.email} ({user.id}).")
             else:
                 user = await revoke_operator(
                     session_factory, arguments.email, config.gateway_admin_email
