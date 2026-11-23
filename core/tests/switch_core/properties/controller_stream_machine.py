@@ -145,6 +145,11 @@ class ControllerStreams(RuleBasedStateMachine):
         self.attached = {agent: False for agent in AGENTS}
         self.expired = {agent: 0 for agent in AGENTS}
         self.gap_owed: dict[str, int | None] = {agent: None for agent in AGENTS}
+        # The heads when the stream last ran, so the most it can have read;
+        # and, per agent, the events retention deleted after the stream may
+        # already have read them, which it may still send before its gap.
+        self.ran_through = {agent: 0 for agent in AGENTS}
+        self.read_before_expiry = {agent: 0 for agent in AGENTS}
         self.opened: dict[str, Any] | None = None
         # Every event the machine has read.
         self.taken = 0
@@ -247,6 +252,7 @@ class ControllerStreams(RuleBasedStateMachine):
             assert self.gap_owed[agent] is None, f"{agent} was detached before its gap"
             self.attached[agent] = False
             self.confirmed[agent] = None
+            self.read_before_expiry[agent] = 0
             return 0
         if name == "agent.gap":
             assert self.attached[agent], f"{agent} was told a gap, but not attached"
@@ -281,15 +287,23 @@ class ControllerStreams(RuleBasedStateMachine):
             assert data["seq"] == self.position[agent] + 1, (
                 f"{agent} was sent event {data['seq']} after {self.position[agent]}"
             )
-            assert data["seq"] > self.expired[agent], (
-                f"{agent} was sent event {data['seq']}, which retention deleted"
+            deleted = data["seq"] <= self.expired[agent]
+            assert not deleted or data["seq"] <= self.read_before_expiry[agent], (
+                f"{agent} was sent event {data['seq']}, which retention deleted "
+                f"before the stream could read it"
             )
             self.position[agent] = data["seq"]
+            if deleted:
+                # Not one the steps count as owed.
+                COVERAGE["sent an event read before retention"] += 1
+                return 0
             return 1
         return 0
 
     async def _pump(self, done: Any, what: str) -> None:
         """Take frames until `done()`, judging each."""
+
+        self.ran_through = dict(self.head)
 
         async def pump() -> None:
             while not done():
@@ -333,6 +347,7 @@ class ControllerStreams(RuleBasedStateMachine):
             self.stream = None
         for agent in AGENTS:
             self.attached[agent] = False
+            self.read_before_expiry[agent] = 0
 
     # ── Steps ────────────────────────────────────────────────────────────────
 
@@ -490,6 +505,9 @@ class ControllerStreams(RuleBasedStateMachine):
                 )
                 COVERAGE["attached an agent mid-stream"] += 1
             else:
+                # A pass detaches before it reads, and sends what an earlier
+                # pass read before it starts, so no event of the agent's
+                # follows its detach.
                 await self._pump(
                     lambda: not self.attached[agent], f"{agent} to be detached"
                 )
@@ -511,6 +529,8 @@ class ControllerStreams(RuleBasedStateMachine):
 
         self.run(go())
         self.expired[agent] = self.head[agent]
+        if self.attached[agent]:
+            self.read_before_expiry[agent] = self.ran_through[agent]
 
     @precondition(lambda self: self.opened is not None)
     @rule(times=st.integers(min_value=1, max_value=2))

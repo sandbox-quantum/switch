@@ -105,6 +105,48 @@ def test_agents_moved_and_events_deleted_under_an_open_stream(
     assert not unreached, f"never reached {unreached}; reached {dict(COVERAGE)}"
 
 
+@pytest.mark.property("controller.stream-complete")
+def test_events_read_before_retention_deleted_them_still_arrive(
+    postgres_schema: str,
+) -> None:
+    """A stream that read two events and sent one has the other in hand when
+    retention deletes both: it sends it, and only then tells the gap."""
+    machine = machine_on(postgres_schema)()
+    try:
+        machine.open_connection()
+        machine.ask("one")
+        machine.ask("one")
+        machine.ask("one")
+        machine.read(1)
+        machine.ask("one")
+        machine.expire(_drawing("one"))
+        machine.ask("one")
+        machine.drain()
+        machine.ask("one")
+        machine.drain()
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.property("controller.stream-complete")
+def test_events_in_hand_when_an_agent_is_moved_away_come_before_its_detach(
+    postgres_schema: str,
+) -> None:
+    machine = machine_on(postgres_schema)()
+    try:
+        machine.open_connection()
+        machine.ask("one")
+        machine.ask("one")
+        machine.read(1)
+        machine.move("one")
+        machine.ask("one")
+        machine.drain()
+        machine.move("one")
+        machine.drain()
+    finally:
+        machine.teardown()
+
+
 class _drawing:
     """A stand-in for `st.data()` that draws `value` whatever is asked."""
 
