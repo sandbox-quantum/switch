@@ -28,7 +28,7 @@ stood when this migration was written.
 Expand only: a release from before this revision never calls the function.
 
 Revision ID: f2c8a4d17e93
-Revises: f3a9c1d7e2b4
+Revises: e223eae63078
 Create Date: 2026-11-12 12:00:00.000000
 
 """
@@ -38,7 +38,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "f2c8a4d17e93"
-down_revision: str | None = "f3a9c1d7e2b4"
+down_revision: str | None = "e223eae63078"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
