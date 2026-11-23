@@ -23,6 +23,7 @@ What these pin, each the reason the router exists:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import uuid
 from typing import Any
 
@@ -277,7 +278,7 @@ class TestTwoProcesses:
                 running=True,
             )
         )
-        presence.set_rooms(agent.id, {first.id})
+        presence.rooms_read(agent.id, {first.id}, presence.room_mark())
 
         await here.provisioning.invite_to_room(
             second.transport_room_id, client.transport_user_id
@@ -288,6 +289,64 @@ class TestTwoProcesses:
         await add_member(session_factory, third, client, agent=agent)
         await there.router.recheck_agent_rooms(TENANT_ZERO_ID)
         assert presence.rooms(agent.id) == {first.id, second.id, third.id}
+
+    async def test_a_recheck_that_read_before_a_leave_does_not_undo_it(
+        self, session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The re-check reads the agent's memberships; the agent leaves a
+        room and this process takes the room off its controller; then the
+        re-check applies what it read, which still has the room. The room
+        must stay off: no signal would come to take it off again."""
+        there = process_on(session_factory)
+        kept = await make_room(session_factory, "kept")
+        left = await make_room(session_factory, "left")
+        agent, client = await make_agent(session_factory, "managed")
+        for room in (kept, left):
+            await add_member(session_factory, room, client, agent=agent)
+        presence = there.connections.controllers
+        presence.bind(
+            Binding(
+                agent_id=agent.id,
+                controller_id="controller-1",
+                tenant_id=TENANT_ZERO_ID,
+                controller_name="machine",
+                running=True,
+            )
+        )
+        presence.rooms_read(agent.id, {kept.id, left.id}, presence.room_mark())
+        services = there.router.services
+        leaving: list[bool] = []
+
+        def read_then_leave() -> AsyncSession:
+            session = services.session_factory()
+            execute = session.execute
+
+            async def executed(*args: Any, **kwargs: Any) -> Any:
+                result = await execute(*args, **kwargs)
+                if not leaving:
+                    leaving.append(True)
+                    # As a removal here does once it has committed.
+                    async with tenant_session(
+                        services.session_factory, TENANT_ZERO_ID
+                    ) as other:
+                        await RoomStore().remove_client(other, client.id, left.id)
+                        await other.commit()
+                    presence.room_left(agent.id, left.id)
+                return result
+
+            session.execute = executed  # type: ignore[method-assign]
+            return session
+
+        monkeypatch.setattr(
+            there.router,
+            "services",
+            dataclasses.replace(services, session_factory=read_then_leave),
+        )
+
+        await there.router.recheck_agent_rooms(TENANT_ZERO_ID)
+
+        assert leaving
+        assert presence.rooms(agent.id) == {kept.id}
 
     async def test_a_missed_signal_is_made_up_by_the_recheck(
         self, session_factory: SessionFactory

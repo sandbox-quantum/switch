@@ -246,6 +246,8 @@ class ControllerPresence:
         # can tell which controllers changed under it (`connection_mark`).
         self._connection_changes = 0
         self._connection_changed_at: dict[str, int] = {}
+        self._room_changes = 0
+        self._room_changed_at: dict[tuple[str, str], int] = {}
 
     def connection_mark(self) -> int:
         """Where the connection changes stand now. Taken before reading the
@@ -259,6 +261,19 @@ class ControllerPresence:
     def _note_connection_change(self, controller_id: str) -> None:
         self._connection_changes += 1
         self._connection_changed_at[controller_id] = self._connection_changes
+
+    def room_mark(self) -> int:
+        """Where the agents' room changes stand now. Taken before reading
+        memberships, so what is read is not applied over a join or a leave
+        made here since (`room_changed_since`)."""
+        return self._room_changes
+
+    def room_changed_since(self, agent_id: str, room_id: str, mark: int) -> bool:
+        return self._room_changed_at.get((agent_id, room_id), 0) > mark
+
+    def _note_room_change(self, agent_id: str, room_id: str) -> None:
+        self._room_changes += 1
+        self._room_changed_at[(agent_id, room_id)] = self._room_changes
 
     def use_auth_cache(self, cache: ControllerAuthCache) -> None:
         """The cache of controller-token reads to keep in step with the
@@ -638,6 +653,7 @@ class ControllerPresence:
         self._rooms_changed(agent_id, room_id, joined=False)
 
     def _rooms_changed(self, agent_id: str, room_id: str, *, joined: bool) -> None:
+        self._note_room_change(agent_id, room_id)
         binding = self._bindings.get(agent_id)
         rooms = self._rooms.get(agent_id)
         if binding is None or rooms is None:
@@ -864,9 +880,25 @@ class ControllerPresence:
             self._close(conn, HEARTBEAT_LAPSED)
         return lapsed
 
-    def set_rooms(self, agent_id: str, rooms: set[str]) -> None:
-        if agent_id in self._bindings:
-            self._rooms[agent_id] = set(rooms)
+    def rooms_read(self, agent_id: str, rooms: set[str], mark: int) -> None:
+        """Keep `rooms` for the agent, as read from its memberships after
+        `room_mark` returned `mark`. A room joined or left here since keeps
+        what that made it, since the read may be older; one whose change
+        came before the agent's rooms were kept here at all is left out,
+        for the re-check to settle."""
+        if agent_id not in self._bindings:
+            return
+        kept = self._rooms.get(agent_id)
+        current = set() if kept is None else kept
+        self._rooms[agent_id] = {
+            room_id
+            for room_id in rooms | current
+            if (
+                room_id in current
+                if self.room_changed_since(agent_id, room_id, mark)
+                else room_id in rooms
+            )
+        }
 
     def take_detached(self, conn: ControllerConnection) -> dict[str, str]:
         owed = dict(conn.detached)

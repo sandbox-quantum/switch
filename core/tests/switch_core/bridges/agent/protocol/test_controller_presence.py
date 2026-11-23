@@ -109,7 +109,7 @@ def _go_live(
     )
     presence.attach_stream(conn)
     for agent_id, rooms in agent_rooms:
-        presence.set_rooms(agent_id, rooms)
+        presence.rooms_read(agent_id, rooms, presence.room_mark())
     return conn
 
 
@@ -767,6 +767,21 @@ class TestMembership:
         presence.unbind("agent", "unassigned")
         assert presence.rooms("agent") == set()
         assert presence.live_rooms("agent") == set()
+
+    def test_rooms_read_keep_what_a_join_or_leave_since_made_them(self) -> None:
+        """Rooms read from the memberships before a join or a leave here
+        are older than it: the room it changed keeps what it made it."""
+        registry = AgentConnectionRegistry()
+        presence = registry.controllers
+        _bind(registry, "agent")
+        _go_live(registry, ("agent", {ROOM}))
+        mark = presence.room_mark()
+        presence.room_left("agent", ROOM)
+        presence.room_joined("agent", ELSEWHERE)
+
+        presence.rooms_read("agent", {ROOM, "third"}, mark)
+
+        assert presence.rooms("agent") == {ELSEWHERE, "third"}
 
     def test_lapse_detach_and_revoke_take_it_out_of_every_room(self) -> None:
         registry = AgentConnectionRegistry()
