@@ -461,7 +461,7 @@ async def test_no_re_ask_for_an_owner_off_the_lists_and_a_retry_starts_afresh(
         assert len(await _entries(harness, box.machine_id, phase="requested")) == 1
         assert _box_missing_events(hosted_metrics) == 1
 
-        _set_users(hosted, None)
+        _set_users(hosted, ["*"])  # back on the list: everyone, as at the start
         retried = await hosted.post(
             f"/hosted-machines/{box.machine_id}/lifecycle",
             json={"action": "retry", "revision": machine.revision},

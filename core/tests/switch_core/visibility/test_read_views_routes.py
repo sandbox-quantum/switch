@@ -768,13 +768,14 @@ async def test_a_person_the_server_doesn_t_admit_has_no_switch(views) -> None:
         views.base.owner_id
     ]
     assert row["switchable"] is True
+    listed = views.base.settings.allowed_user_ids
     views.base.settings.allowed_user_ids = ["someone-else"]
     try:
         row = {
             r["user_id"]: r for r in (await views.client.get(route)).json()["people"]
         }[views.base.owner_id]
     finally:
-        views.base.settings.allowed_user_ids = None
+        views.base.settings.allowed_user_ids = listed
     assert (row["switchable"], row["hosted"]) == (False, "off")
 
 
