@@ -69,6 +69,7 @@ def test_a_controller_revoked_while_a_process_was_severed(
     """The process read the controller while listening, lost its connection,
     missed the revocation, and connected again: it may answer from memory
     until the TTL, and not after."""
+    COVERAGE.clear()
     machine = machine_on(postgres_schema, ControllerAccess, clock)()
     try:
         machine.check(1)
@@ -131,6 +132,24 @@ def test_an_entry_read_while_not_listening_lasts_the_ttl(
         machine.check(1)
         machine.revoke()
         machine.tick(TTL)
+        machine.check(1)
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.property("revocation.takes-effect-everywhere")
+def test_revoking_again_does_not_move_the_bound(
+    postgres_schema: str, clock: Clock
+) -> None:
+    """A resource revoked twice was revoked from the first: an entry read
+    before it lasts the TTL from then, not from the second."""
+    machine = machine_on(postgres_schema, ControllerAccess, clock)()
+    try:
+        machine.check(1)
+        machine.sever(_drawing(1))
+        machine.revoke()
+        machine.tick(TTL)
+        machine.revoke()
         machine.check(1)
     finally:
         machine.teardown()

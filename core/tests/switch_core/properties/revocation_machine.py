@@ -286,8 +286,11 @@ class Revocations(RuleBasedStateMachine):
 
     async def _revoke(self) -> None:
         await self.resource.revoke(self.session_factory)
+        if self.granted:
+            # Revoked again, the resource was revoked all along: the bound
+            # runs from the first.
+            self.revoked_at = self.clock.now
         self.granted = False
-        self.revoked_at = self.clock.now
         # Signals reach a listener in the order their transactions committed,
         # so once a process has handled a barrier sent after the revocation,
         # it has handled the revocation's signal too.
@@ -312,8 +315,10 @@ class Revocations(RuleBasedStateMachine):
 
     @rule(number=st.sampled_from(PROCESSES))
     def check(self, number: int) -> None:
-        process = self.processes[number]
-        allowed = self.run(self.resource.allowed(process))
+        self._judge(number, self.run(self.resource.allowed(self.processes[number])))
+
+    def _judge(self, number: int, allowed: bool) -> None:
+        """Whether process `number` may answer `allowed` now."""
         if self.granted:
             assert allowed, f"process {number} refused a granted resource"
             return
@@ -412,9 +417,9 @@ class Revocations(RuleBasedStateMachine):
 
         task = self.run(begin())
         if task.done():
-            # Answered from memory, without reading.
+            # Answered from memory, without reading: a check like any other.
             process.gate = process.gated = None
-            task.result()
+            self._judge(number, task.result())
             return
         self.slow[number] = task
 
