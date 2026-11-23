@@ -462,7 +462,9 @@ async def box_deleted(
     commits."""
     machine.state = "deleted"
     machine.error = None
-    machine.error_code = None
+    # A failed warm pool bind's mark stays, so the row is never revived.
+    if machine.error_code != BIND_FAILED:
+        machine.error_code = None
     machine.updated_at = now
     await _box_removal_entry(session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE)
 

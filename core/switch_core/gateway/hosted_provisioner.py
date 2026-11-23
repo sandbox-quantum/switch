@@ -36,7 +36,7 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import CloudMachine
 from switch_core.db.stores import hosted_pool_store
 from switch_core.gateway.dependencies import get_config, get_session_factory
-from switch_core.gateway.hosted_controller import _refuse
+from switch_core.gateway.hosted_controller import _refuse, revoke_owned_box_controllers
 from switch_core.gateway.hosted_machines import controller_settings
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import no_tenant
@@ -226,9 +226,10 @@ async def result(
     action_id: Annotated[str, PathParam(pattern=r"^[A-Za-z0-9-]{1,64}$")],
     body: ProvisionResult,
     session: Annotated[AsyncSession, Depends(provisioner_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
 ) -> Response:
     try:
-        await record_provision_result(
+        owned = await record_provision_result(
             session,
             action_id=action_id,
             result=body.result,
@@ -241,6 +242,10 @@ async def result(
         await session.rollback()
         raise HTTPException(refused.status, str(refused)) from None
     await session.commit()
+    if owned is not None:
+        # A bind that failed after its owner was written: the box is the
+        # person's, removed through the normal path, controllers revoked.
+        await revoke_owned_box_controllers(factory, [owned])
     return Response(status_code=204)
 
 

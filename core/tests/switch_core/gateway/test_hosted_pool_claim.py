@@ -47,6 +47,7 @@ from tests.switch_core.gateway.test_cloud_controller_machines import (
     _metric_points,
     hosted_metrics,  # noqa: F401  (fixture)
 )
+from tests.switch_core.gateway.test_hosted_controller import list_machines, observe
 from tests.switch_core.gateway.test_hosted_provisioner import (  # noqa: F401
     KEY,
     provisioner_app,
@@ -417,17 +418,31 @@ async def test_a_bind_failed_before_its_owner_is_reaped_and_the_person_starts_af
     assert again != box_id
 
 
-async def test_a_bind_failed_after_its_owner_is_the_persons_box_to_remove(
+async def _removed_through_the_normal_path(app, machine_id: str) -> None:
+    """The box is tracked until it's gone: listed to the box scaler as wanted
+    deleted, and named for removal once the scaler reports it at 0."""
+    listed = {m["machine_id"]: m for m in await list_machines(app.client)}
+    assert listed[machine_id]["desired_state"] == "deleted"
+    assert not await _to_remove(app, machine_id)
+    machine = await _machine(app, machine_id)
+    await observe(app.client, machine_id, state="stopped", revision=machine.revision)
+    assert (await _machine(app, machine_id)).state == "deleted"
+    assert await _to_remove(app, machine_id)
+
+
+async def test_a_bind_failed_after_its_owner_leaves_no_box_untracked(
     provisioner_app,  # noqa: F811
 ) -> None:
+    """From `owner_writing` the box is the person's: never reaped, and not
+    simply forgotten either. Its machine goes down the normal removal path,
+    and the person's next click, once it's gone, gets a new machine."""
     app = provisioner_app
     person, box_id, handed = await _claimed_bind(app)
     await _owner_writing(app, handed)
     await _result(app, handed, "failed", "bind_closed")
     assert (await _pool_row(app.factory, box_id)).state == "claimed"
     assert await _reapable(app) == []
-    assert await _to_remove(app, box_id)
-    assert (await _machine(app, box_id)).state == "deleted"
+    await _removed_through_the_normal_path(app, box_id)
     assert (await _ensure(app, person)).json()["machine_id"] != box_id
 
 
@@ -465,7 +480,6 @@ async def test_a_bind_timed_out_after_its_owner_is_never_reaped(
         await expire_binds(session, datetime.now(UTC) + timedelta(seconds=31))
         await session.commit()
     assert await _reapable(app) == []
-    assert await _to_remove(app, box_id)
     with pytest.raises(ProvisionRefused):
         await _result(app, handed, "done")
     assert await _reapable(app) == []
@@ -473,6 +487,7 @@ async def test_a_bind_timed_out_after_its_owner_is_never_reaped(
         with pytest.raises(ProvisionRefused):
             await record_pool_box_gone(session, box_id, datetime.now(UTC))
         await session.rollback()
+    await _removed_through_the_normal_path(app, box_id)
 
 
 async def test_the_sweep_fails_a_bind_past_its_30_seconds(

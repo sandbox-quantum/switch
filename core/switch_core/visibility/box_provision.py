@@ -857,9 +857,11 @@ async def record_provision_result(
     failed_at: str | None,
     claim_token: str,
     now: datetime,
-) -> None:
+) -> str | None:
     """The provisioner's result for one request, checked strictly. The caller
-    commits. Raises `ProvisionRefused` with a fixed phrase otherwise."""
+    commits, then revokes the controllers of the machine returned, if any (a
+    bind that failed after its owner was written). Raises `ProvisionRefused`
+    with a fixed phrase otherwise."""
     if result not in ("done", "failed"):
         raise ProvisionRefused(422, "Unknown result.")
     if result == "failed" and failed_at not in FAILED_AT | BIND_FAILED_AT:
@@ -911,8 +913,9 @@ async def record_provision_result(
     )
     machine_id = details.get("machine_id")
     if kind == "bind" and isinstance(machine_id, str) and result == "failed":
-        await fail_bind(session, machine_id, linked, now)
-        return
+        if await fail_bind(session, machine_id, linked, now):
+            return machine_id
+        return None
     if kind == "pool" and isinstance(machine_id, str):
         # A pool box: made, it's waiting, at the revision its claim recorded;
         # not made, it retires (reapable: no person ever had it).
@@ -933,7 +936,7 @@ async def record_provision_result(
                     )
         elif await hosted_pool_store.retire(session, machine_id, "make_failed", now):
             record_pool_retired(session, "make_failed")
-        return
+        return None
     if isinstance(machine_id, str):
         await lock_machine(session, machine_id)
         machine = await session.get(CloudMachine, machine_id, populate_existing=True)
@@ -942,6 +945,7 @@ async def record_provision_result(
             machine.updated_at = now
         elif machine is not None and machine.state != "deleted":
             _box_not_made(session, machine, now)
+    return None
 
 
 # A capable operator must have polled within this for refill to run: a Core
@@ -1221,22 +1225,22 @@ async def fail_bind(
     machine_id: str,
     linked: Collection[ServerAuditEvent],
     now: datetime,
-) -> None:
+) -> bool:
     """A claim whose bind failed, reported by the operator or timed out by
-    Core. It never goes back to the pool, and the person's next click gets a
-    new machine (the row is deleted at once and never revived, `BIND_FAILED`).
+    Core. It never goes back to the pool, its machine is never revived
+    (`BIND_FAILED`), and the person's next click gets a new machine.
 
     Before `owner_writing` nothing of the person's reached the box: the pool
-    row retires as `failed_before_owner`, which the reaper destroys. From
-    `owner_writing` on, the box is the person's: a `hosted.box_to_remove`
-    entry names it for the removal step, and the reaper never touches it. The
+    row retires as `failed_before_owner`, which the reaper destroys, and the
+    machine row is deleted at once. From `owner_writing` on, the box is the
+    person's, which the reaper never touches: the machine is wanted deleted,
+    so it goes down the normal removal path (the box scaler takes it to 0,
+    then `box_deleted` names it for removal) and its controllers are revoked
+    by the caller, after it commits. Returns whether they must be. The
     caller holds the action's lock (so `owner_writing` can't land meanwhile)
     and commits."""
     from switch_core.db.stores import hosted_pool_store
-    from switch_core.db.stores.hosted_machine_store import (
-        BIND_FAILED,
-        _box_removal_entry,
-    )
+    from switch_core.db.stores.hosted_machine_store import BIND_FAILED
 
     await lock_machine(session, machine_id)
     machine = await session.get(CloudMachine, machine_id, populate_existing=True)
@@ -1246,29 +1250,30 @@ async def fail_bind(
         machine_id,
         "failed_before_owner",
         now,
-        from_states=("claimed",),
+        from_states=["claimed"],
     ):
         record_pool_retired(session, "failed_before_owner")
     if machine is None or machine.state == "deleted":
-        return
-    if reached:
-        await _box_removal_entry(
-            session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE
-        )
+        return False
     record_machine_event(session, "failed", "launch_refused", machine.backend)
-    machine.state = "deleted"
-    machine.desired_state = "deleted"
     machine.error_code = BIND_FAILED
     machine.error = None
+    machine.desired_state = "deleted"
+    if not reached:
+        machine.state = "deleted"
     bump_revision(machine, now)
+    return reached
 
 
-async def expire_binds(session: AsyncSession, now: datetime) -> int:
+async def expire_binds(
+    session: AsyncSession, now: datetime, owned: list[str] | None = None
+) -> int:
     """Fail each bind still open `BIND_TIMEOUT` after Core asked for it, as
     `failed` at `bind_timeout`, and its claim with it (`fail_bind`). A `done`
     that arrives later is refused (the action has its result); by then Core
     has already treated the box as the person's if its owner was written.
-    Returns how many. The caller commits."""
+    Returns how many; `owned` collects the machines whose controllers the
+    caller revokes after it commits. The caller commits."""
     rows = await session.execute(
         select(ServerAuditEvent)
         .where(
@@ -1303,8 +1308,11 @@ async def expire_binds(session: AsyncSession, now: datetime) -> int:
             },
         )
         failed += 1
-        if isinstance(machine_id, str):
-            await fail_bind(session, machine_id, linked, now)
+        if isinstance(machine_id, str) and await fail_bind(
+            session, machine_id, linked, now
+        ):
+            if owned is not None:
+                owned.append(machine_id)
     return failed
 
 

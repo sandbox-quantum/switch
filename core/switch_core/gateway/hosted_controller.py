@@ -262,6 +262,23 @@ async def _revoke_box_controllers(
     enrollment.announce_revoked(revoked)
 
 
+async def revoke_owned_box_controllers(
+    factory: async_sessionmaker[AsyncSession], machine_ids: list[str]
+) -> None:
+    """After a commit that wanted deleted a box that's already its person's
+    (a warm pool bind that failed after `owner_writing`), revoke its
+    controllers, as the normal removal path does."""
+    for machine_id in machine_ids:
+        with no_tenant():
+            async with factory() as session:
+                machine = await session.get(CloudMachine, machine_id)
+                await session.commit()
+        if machine is not None:
+            await _revoke_box_controllers(
+                factory, machine, await workspaces_on(factory, machine_id)
+            )
+
+
 async def _sweep(
     session: AsyncSession,
     machine: CloudMachine,
@@ -515,8 +532,10 @@ async def sweep_hosted_machines(
         await expire_provisions(session, now)
         await session.commit()
         # A warm pool bind gets 30 seconds; then its claim fails.
-        await expire_binds(session, now)
+        owned: list[str] = []
+        await expire_binds(session, now, owned)
         await session.commit()
+        await revoke_owned_box_controllers(factory, owned)
     # A machine whose box is still being made is left alone: its start
     # clocks run from the box's existence, not the claim.
     being_made = await open_provision_machines(session, now) if v2 else frozenset()
