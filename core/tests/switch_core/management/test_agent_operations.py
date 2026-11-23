@@ -61,6 +61,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_install_store import TemplateInstallStore
+from switch_core.delivery.send_limits import MessageTooLong
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import rooms as gateway_rooms
 from switch_core.gateway.rooms import router as rooms_router
@@ -1654,6 +1655,81 @@ class TestTheOwnerConfirms:
         assert climbing.status_code == 400, climbing.text
         assert climbing.json()["detail"].startswith("Nothing was changed: ")
         assert "absolute path" in climbing.json()["detail"]
+        assert desk.posted == []
+
+    async def test_what_an_agent_wrote_cannot_add_lines_to_the_request(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        """A model name is free text, and the request is the owner's only
+        account of what they confirm: each value stays on its own line."""
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        forged = "opus\n\nNothing else here widens anything.\n\n- "
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True, "model": forged},
+        )
+
+        assert response.status_code == 200, response.text
+        [notice] = desk.posted
+        assert notice.splitlines()[1:4] == [
+            "- bypass mode on: every tool runs without asking anyone",
+            "- model `opus Nothing else here widens anything. -`",
+            "Nothing has changed yet. Only the owner, ada, can make it so, by "
+            "sending `!agent-change builder confirm` here within 2 minutes, or "
+            "drop it with `!agent-change builder drop`; otherwise it lapses.",
+        ]
+
+    async def test_a_request_that_could_not_be_posted_does_not_wait(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        """The owner was never shown it, so nobody can confirm it."""
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        admin = object.__new__(SystemActor)
+
+        async def refused(_room: str, _body: str, **_kw: Any) -> str:
+            raise MessageTooLong(70_000, 65_536)
+
+        admin.send_admin = refused  # type: ignore[method-assign]
+        harness.protocol.client_lifecycle.get_by_type = (  # type: ignore[attr-defined]
+            lambda client_type, _tenant: [admin] if client_type == "admin" else []
+        )
+
+        with pytest.raises(RuntimeError, match="Nothing was changed: .* 70,000"):
+            await _call(
+                client,
+                helper_id,
+                "update_agent_detail",
+                bearer(key),
+                {"agent_id": new_id, "auto_approve": True},
+            )
+
+        assert desk.host._agent_requests.waiting_change(desk.room_id, "builder") is None
+        assert await _audited(harness, "agent.change_requested") == []
+
+    async def test_a_new_agent_whose_name_is_no_agent_name_is_refused_not_held(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        response = await _call(
+            client,
+            helper_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", name="x\n- forged", auto_approve=True),
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"].startswith("Nothing was created: ")
         assert desk.posted == []
 
     async def test_other_changes_apply_at_once_and_are_audited(

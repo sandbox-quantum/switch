@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import ANY, AddressingPolicy, parse_policy
 from switch_core.agent_display_name import agent_label_with_identifier
+from switch_core.bridges.agent.protocol.agent_core import VALID_AGENT_NAME_RE
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.bridges.agent.protocol.agent_management import (
     AgentManagementPort,
@@ -85,10 +86,12 @@ def _on_off(value: bool) -> str:
     return "on" if value else "off"
 
 
-def _shown(text: str) -> str:
-    """`text` on one line, cut to what a request shows of it."""
-    line = " ".join(text.split())
-    return line if len(line) <= _SHOWN_CHARS else line[: _SHOWN_CHARS - 1] + "…"
+def _shown(text: object) -> str:
+    """`text` on one line, cut to what a request shows of it, as a code span:
+    how every value an agent supplied is written into a request, so none of
+    it can add a line the owner reads as Switch's."""
+    line = " ".join(str(text).split())
+    return _code(line if len(line) <= _SHOWN_CHARS else line[: _SHOWN_CHARS - 1] + "…")
 
 
 def changed_fields(changes: ManagedAgentChanges) -> tuple[str, ...]:
@@ -220,7 +223,7 @@ def _advanced_line(config: Mapping[str, Any]) -> str:
     if not config:
         return "advanced settings cleared"
     settings = ", ".join(f"{key}={value}" for key, value in config.items())
-    return f"advanced settings {_code(_shown(settings))}"
+    return f"advanced settings {_shown(settings)}"
 
 
 _ADDRESSING_LINES = {
@@ -246,28 +249,28 @@ def _change_lines(changes: ManagedAgentChanges) -> tuple[str, ...]:
         lines.append(f"auto mode {_on_off(changes.auto_mode)}")
     if changes.directory is not None:
         lines.append(
-            f"working folder {_code(changes.directory)}"
+            f"working folder {_shown(changes.directory)}"
             if changes.directory
             else "working folder: its machine's own workspace for it"
         )
     if changes.machine is not None:
-        lines.append(f"move to machine {_code(changes.machine)}")
+        lines.append(f"move to machine {_shown(changes.machine)}")
     if changes.provider is not None:
-        lines.append(f"provider {_code(changes.provider)}")
+        lines.append(f"provider {_shown(changes.provider)}")
     if changes.model is not None:
         lines.append(
-            f"model {_code(changes.model)}"
+            f"model {_shown(changes.model)}"
             if changes.model
             else "model: the provider's default"
         )
     if changes.advanced_config is not None:
         lines.append(_advanced_line(changes.advanced_config))
     if changes.instructions is not None:
-        lines.append(f"instructions {_code(_shown(changes.instructions))}")
+        lines.append(f"instructions {_shown(changes.instructions)}")
     if changes.isolation is not None:
-        lines.append(f"isolation {_code(changes.isolation)}")
+        lines.append(f"isolation {_shown(changes.isolation)}")
     if changes.desired_state is not None:
-        lines.append(f"run state {_code(changes.desired_state)}")
+        lines.append(f"run state {_shown(changes.desired_state)}")
     return tuple(lines)
 
 
@@ -275,12 +278,12 @@ def _new_agent_lines(
     spec: NewManagedAgent, placement: CheckedPlacement
 ) -> tuple[str, ...]:
     lines = [
-        f"on machine {_code(placement.machine_name)}, run by {_code(spec.provider)}",
+        f"on machine {_shown(placement.machine_name)}, run by {_shown(spec.provider)}",
     ]
     if spec.auto_approve:
         lines.append("bypass mode on: every tool runs without asking anyone")
     if spec.directory is not None:
-        lines.append(f"working folder {_code(spec.directory)}")
+        lines.append(f"working folder {_shown(spec.directory)}")
     if spec.advanced_config:
         lines.append(_advanced_line(spec.advanced_config))
     lines.append("started at once" if spec.start else "created stopped")
@@ -420,6 +423,12 @@ async def hold_new_agent(
     """Hold a new agent for its owner to confirm in `room_id`, on the machine
     `placement` checked, and return what the asking agent is told."""
     tenant_id = require_tenant_id()
+    if not VALID_AGENT_NAME_RE.match(spec.name):
+        raise ValueError(
+            f"Nothing was created: {spec.name!r} is not an agent name: use "
+            "lowercase letters, digits, '.', '-' and '_', starting with a "
+            "letter or digit."
+        )
     caller, transport_room_id = await _caller_and_room(protocol, caller_id, room_id)
     async with protocol.session_factory() as session:
         if await protocol.agent_store.get_by_name_insensitive(session, spec.name):
@@ -439,7 +448,7 @@ async def hold_new_agent(
         caller=caller,
         owner=owner,
         confirming=confirming,
-        asks_to=f"create the agent {_code(spec.name)}",
+        asks_to=f"create the agent {_shown(spec.name)}",
         request=ChangeRequest(
             requested_by_id=caller.id,
             requested_by=caller.name,
@@ -481,22 +490,30 @@ async def _hold(
         None,
     )
     command = confirm_with(request.agent_name)
-    posted = (
-        await admin.send_admin(
-            transport_room_id,
-            f"🛠️ **{agent_label_with_identifier(caller.display_name, caller.name)}** "
-            f"asks to {asks_to}:\n"
-            + "".join(f"- {line}\n" for line in request.summary)
-            + f"Nothing has changed yet. Only the owner, {owner.name}, can make "
-            f"it so, by sending `{command}` here within {_CONFIRM_MINUTES} "
-            f"minutes, or drop it with `!{CONFIRM_COMMAND} {request.agent_name} "
-            "drop`; otherwise it lapses.",
-            message_type=AdminMessageType.AGENT_LIFECYCLE,
-            thread_root_id=None,
+    try:
+        posted = (
+            await admin.send_admin(
+                transport_room_id,
+                f"🛠️ **{agent_label_with_identifier(caller.display_name, caller.name)}** "
+                f"asks to {asks_to}:\n"
+                + "".join(f"- {line}\n" for line in request.summary)
+                + f"Nothing has changed yet. Only the owner, {owner.name}, can make "
+                f"it so, by sending `{command}` here within {_CONFIRM_MINUTES} "
+                f"minutes, or drop it with `!{CONFIRM_COMMAND} {request.agent_name} "
+                "drop`; otherwise it lapses.",
+                message_type=AdminMessageType.AGENT_LIFECYCLE,
+                thread_root_id=None,
+            )
+            if admin is not None
+            else None
         )
-        if admin is not None
-        else None
-    )
+    except Exception as exc:
+        # The owner was never shown it, so it must not stay confirmable.
+        requests.take_change(room_id, request.agent_name)
+        raise RuntimeError(
+            "Nothing was changed: the request for your owner to confirm could "
+            f"not be posted in the room: {exc}"
+        ) from exc
     if posted is None:
         requests.take_change(room_id, request.agent_name)
         raise RuntimeError(
