@@ -17,9 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import IdentitySession
 
-#: How long a row is kept: past the longest a session cookie can stand on it
-#: (`gateway/auth.py`'s `SESSION_MAX_AGE`, 14 days) and then retention's
-#: 30-day grace, so an operator asking about a sign-in can still see it.
+#: How long a row is kept after it ends, or after the latest sign-in on it
+#: (`signed_in_at`): past the longest a session cookie can stand on it
+#: (`gateway/auth.py`'s `SESSION_MAX_AGE`, 14 days from that sign-in) and then
+#: retention's 30-day grace, so an operator asking about a sign-in can still
+#: see it.
 IDENTITY_SESSION_HORIZON = timedelta(days=44)
 
 
@@ -68,7 +70,9 @@ class IdentitySessionStore:
 
         A live row for the same provider session is reused when it is the same
         person's: the provider has just said the session is alive, so it is
-        checked as of now, and followed once a cookie stands on it. A live row
+        checked as of now, signed in on as of now (which keeps it from
+        retention while the new cookie can stand on it), and followed once a
+        cookie stands on it. A live row
         for someone else is refused: one provider session is one person. An
         ended row is never brought back, so a cookie from before a sign-out
         stays ended even when the provider hands the same session out again;
@@ -91,6 +95,7 @@ class IdentitySessionStore:
                         f"({provider_user_id})"
                     )
                 live.checked_at = now
+                live.signed_in_at = now
                 live.followed = live.followed or followed
                 await session.flush()
                 return live.id
@@ -101,6 +106,7 @@ class IdentitySessionStore:
                 session_id=session_id,
                 followed=followed,
                 created_at=now,
+                signed_in_at=now,
                 checked_at=now,
             )
             try:
@@ -181,7 +187,9 @@ class IdentitySessionStore:
 
     async def prune(self, session: AsyncSession, now: datetime) -> int:
         """Delete the rows past `IDENTITY_SESSION_HORIZON`: ended that long
-        ago, or made that long ago, when no cookie can stand on them."""
+        ago, or last signed in on that long ago, when no cookie can stand on
+        them. Not by when a row was made: a sign-in that reuses a live row
+        mints a cookie that stands on it for another 14 days."""
         horizon = now - IDENTITY_SESSION_HORIZON
         result = cast(
             CursorResult[Any],
@@ -189,7 +197,7 @@ class IdentitySessionStore:
                 delete(IdentitySession).where(
                     or_(
                         IdentitySession.ended_at < horizon,
-                        IdentitySession.created_at < horizon,
+                        IdentitySession.signed_in_at < horizon,
                     )
                 )
             ),

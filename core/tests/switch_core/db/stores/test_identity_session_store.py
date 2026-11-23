@@ -208,6 +208,15 @@ async def test_retention_prunes_only_what_no_cookie_can_stand_on(
     recent = await _record(
         session_factory, user_id, "session_H3", now=NOW - timedelta(days=13)
     )
+    # Made long ago, but signed in on again a day ago: its new cookie stands
+    # on it for 13 more days.
+    reused = await _record(session_factory, user_id, "session_H4", now=old)
+    assert (
+        await _record(
+            session_factory, user_id, "session_H4", now=NOW - timedelta(days=1)
+        )
+        == reused
+    )
     async with session_factory() as session:
         await IdentitySessionStore().end(session, [long_ended], old)
         await session.commit()
@@ -218,8 +227,8 @@ async def test_retention_prunes_only_what_no_cookie_can_stand_on(
         remaining = set(
             await session.scalars(
                 select(IdentitySession.id).where(
-                    IdentitySession.id.in_([stale, long_ended, recent])
+                    IdentitySession.id.in_([stale, long_ended, recent, reused])
                 )
             )
         )
-    assert remaining == {recent}
+    assert remaining == {recent, reused}

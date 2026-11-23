@@ -90,9 +90,12 @@ After a 30-day grace period, every pass also deletes:
   refused whether or not the row exists.
 
 Once a pass has been through every workspace, it also deletes the records of
-people's sessions at WorkOS AuthKit (`identity_sessions`) that ended, or began,
-more than 44 days ago: the 14 days a sign-in can last, then the same 30-day
-grace. They hold an account id, its WorkOS user id and WorkOS's session id,
+people's sessions at WorkOS AuthKit (`identity_sessions`) that ended, or were
+last signed in on, more than 44 days ago: the 14 days a sign-in can last, then
+the same 30-day grace. A sign-in that joins a session already recorded (the
+same browser signing in again while its AuthKit session lives) counts as
+the latest, so a row is never pruned under a cookie that can still stand on
+it. They hold an account id, its WorkOS user id and WorkOS's session id,
 nothing else.
 
 ### What is deliberately not touched

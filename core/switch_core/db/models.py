@@ -530,7 +530,10 @@ class IdentitySession(Base):
     `followed` is false for the sessions an admin's member-change sign-in
     makes (`gateway/workos_sign_in_routes.py`), which no cookie stands on: they
     are kept only so that ending all of someone's sessions reaches them.
-    `checked_at` is when the provider last said the session was alive.
+    `signed_in_at` is the latest sign-in that made or reused the row, which a
+    session cookie can stand on for at most 14 days after, so retention
+    prunes on it (`IdentitySessionStore.prune`); `checked_at` is when the
+    provider last said the session was alive.
     """
 
     __tablename__ = "identity_sessions"
@@ -556,6 +559,9 @@ class IdentitySession(Base):
     session_id: Mapped[str] = mapped_column(Text, nullable=False)
     followed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    signed_in_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     checked_at: Mapped[datetime] = mapped_column(

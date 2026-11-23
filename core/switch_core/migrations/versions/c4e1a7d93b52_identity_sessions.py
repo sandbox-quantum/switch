@@ -53,6 +53,12 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column(
+            "signed_in_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.Column(
             "checked_at",
             sa.DateTime(timezone=True),
             server_default=sa.func.now(),
