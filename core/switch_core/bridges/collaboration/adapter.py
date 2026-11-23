@@ -168,6 +168,18 @@ class AskedQuestion:
 
 
 @dataclass(frozen=True)
+class WorkEnding:
+    """How a work message names its turn's end (`!work-threads`): what leads
+    the line ("Worked on", "Stopped:"), the words after the question
+    ("56s · 3 steps"), and whether it ended badly, for a platform that marks
+    that."""
+
+    lead: str
+    details: str
+    failed: bool
+
+
+@dataclass(frozen=True)
 class TurnActivity:
     """A turn's items and its own status, as `post_rich` / `update_rich` draw it.
 
@@ -1916,10 +1928,10 @@ class PlatformAdapter(ABC):
         summary: str,
         asked: AskedQuestion | None = None,
         *,
-        failed: bool = False,
+        ending: WorkEnding | None = None,
     ) -> None:
-        """Rewrite a work message, in place, as the one line its turn ended on,
-        marked as failed where it was stopped or failed.
+        """Rewrite a work message, in place, as the one line its turn ended on:
+        `summary` in sentences, `ending` in the line's own few words.
         Best effort: a refusal is the adapter's to log."""
         raise NotImplementedError
 

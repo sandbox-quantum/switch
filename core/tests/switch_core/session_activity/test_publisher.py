@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentFailed,
     RichContentThrottled,
     TurnActivity,
+    WorkEnding,
 )
 from switch_core.db.models import (
     Agent,
@@ -1389,8 +1390,8 @@ class WorkThreadPlatform(RecordingPlatform):
     asked: list[AskedQuestion | None] = field(default_factory=list)
     # Where each removal was told the turn's session is.
     session_refs: list[str | None] = field(default_factory=list)
-    # Whether each ending was told its turn was stopped or failed.
-    failed: list[bool] = field(default_factory=list)
+    # How each ending was told to name the turn's end.
+    endings: list[WorkEnding | None] = field(default_factory=list)
     sessions_ended: list[bool] = field(default_factory=list)
 
     async def hosts_work_threads(self, channel_id: str) -> bool:
@@ -1417,10 +1418,10 @@ class WorkThreadPlatform(RecordingPlatform):
         summary: str,
         asked: AskedQuestion | None = None,
         *,
-        failed: bool = False,
+        ending: WorkEnding | None = None,
     ) -> None:
         self.asked.append(asked)
-        self.failed.append(failed)
+        self.endings.append(ending)
         self.drawn.append(
             Drawn("settle_work_message", channel_id, message_ref, None, summary)
         )
@@ -1799,7 +1800,9 @@ async def test_an_interrupted_turn_keeps_the_work_message_even_with_an_answer(
     await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
     assert platform.of("attach_activity") == []
     assert platform.of("settle_work_message")[0].content.startswith("Turn interrupted.")
-    assert platform.failed == [True], "drawn with an error mark"
+    [ending] = platform.endings
+    assert ending is not None and ending.failed, "drawn with an error mark"
+    assert ending.lead == "Stopped:"
 
 
 async def test_a_turn_carried_on_in_a_new_stream_is_drawn_there_and_kept(

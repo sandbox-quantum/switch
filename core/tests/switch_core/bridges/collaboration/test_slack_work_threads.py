@@ -18,11 +18,13 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentFailed,
     RichContentThrottled,
     TurnActivity,
+    WorkEnding,
 )
 from switch_core.bridges.collaboration.own_app_setup import SLACK_BOT_EVENTS
 from switch_core.bridges.collaboration.session.renderers import (
     SESSION_STOP_ACTION,
     turn_state,
+    work_ending,
 )
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -187,11 +189,17 @@ async def test_settling_edits_in_the_last_line_and_ends_the_session() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
     line = "Worked for 30s. 2 tool calls."
-    await adapter.settle_work_message(CHANNEL, "Agent", f"{CHANNEL}:5.0", line)
+    await adapter.settle_work_message(
+        CHANNEL,
+        "Agent",
+        f"{CHANNEL}:5.0",
+        line,
+        ending=WorkEnding("Worked on", "30s · 2 steps", failed=False),
+    )
     [edit] = client.updated
     assert (edit["channel"], edit["ts"]) == (CHANNEL, "5.0")
-    assert edit["text"] == line
-    assert edit["blocks"] == [_state(line, status="complete")]
+    assert edit["text"] == line, "notifications and screen readers get the sentence"
+    assert edit["blocks"] == [_state("Worked · 30s · 2 steps", status="complete")]
     calls = [
         (method, kwargs["json"])
         for method, kwargs in client.api_calls
@@ -643,7 +651,7 @@ async def test_a_work_message_is_one_line_naming_its_question() -> None:
     )
     [posted] = client.posted
     assert posted["blocks"] == [
-        _state("↩ “how many PRs?” · Working…", link=(LINK, "“how many PRs?”"))
+        _state("Working on “how many PRs?”", link=(LINK, "“how many PRs?”"))
     ]
     assert "<@" not in str(posted["blocks"])
     [session] = _sessions(client)
@@ -666,12 +674,17 @@ async def test_the_line_is_edited_once_when_the_turn_ends() -> None:
     assert client.updated == [], "no edit of the line while the turn runs"
 
     await adapter.settle_work_message(
-        CHANNEL, "Agent", work, "Stopped by Person.", asked=ASKED, failed=True
+        CHANNEL,
+        "Agent",
+        work,
+        "Stopped by Person.",
+        asked=ASKED,
+        ending=WorkEnding("Stopped:", "by Person · 40s", failed=True),
     )
     [settled] = client.updated
     assert settled["blocks"] == [
         _state(
-            "↩ “how many PRs?” · Stopped by Person.",
+            "Stopped: “how many PRs?” · by Person · 40s",
             status="error",
             link=(LINK, "“how many PRs?”"),
         )
@@ -733,7 +746,7 @@ async def test_without_the_workspace_address_the_question_is_named_unlinked() ->
     await _adapter(client).open_work_message(
         CHANNEL, "Agent", "working", ASKER, asked=ASKED
     )
-    assert client.posted[0]["blocks"] == [_state("↩ “how many PRs?” · Working…")]
+    assert client.posted[0]["blocks"] == [_state("Working on “how many PRs?”")]
 
 
 async def test_a_question_that_was_only_a_mention_is_still_linked() -> None:
@@ -845,3 +858,28 @@ async def test_a_turn_in_the_askers_thread_keeps_naming_its_step() -> None:
     )
     [plan] = [b for b in client.posted[0]["blocks"] if b["type"] == "plan"]
     assert plan["title"].endswith("Running: Ran pytest")
+
+
+@pytest.mark.parametrize(
+    ("status", "stopped_by", "items", "expected"),
+    [
+        ("completed", None, "two", ("Worked on", "1m 12s · 2 steps")),
+        ("completed", None, "one", ("Worked on", "1m 12s · 1 step")),
+        ("completed", None, "none", ("Worked on", "1m 12s")),
+        ("interrupted", "Simon", "one", ("Stopped:", "by Simon · 1m 12s")),
+        ("interrupted", None, "one", ("Stopped:", "1m 12s")),
+        ("error", None, "one", ("Failed:", "1m 12s")),
+    ],
+)
+def test_a_work_message_names_its_turns_end_in_a_few_words(
+    status: str, stopped_by: str | None, items: str, expected: tuple[str, str]
+) -> None:
+    tools = {
+        "none": [],
+        "one": [_done_tool()],
+        "two": [_done_tool(), _done_tool("i2")],
+    }[items]
+    assert (
+        work_ending(tools, _turn(status), elapsed_seconds=72, stopped_by=stopped_by)
+        == expected
+    )

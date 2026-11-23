@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottledAfterPost,
     RichContentWedged,
     TurnActivity,
+    WorkEnding,
 )
 from switch_core.bridges.collaboration.cooldown import Cooldown
 from switch_core.bridges.collaboration.models import (
@@ -1954,7 +1955,7 @@ class SlackAdapter(PlatformAdapter):
             result = await client.chat_postMessage(
                 channel=channel_id,
                 text=text,
-                blocks=self._work_blocks(WORKING_NOTE, asked),
+                blocks=self._work_blocks(asked),
                 username=agent.field_label,
                 icon_url=icon_url,
                 unfurl_links=False,
@@ -1992,7 +1993,7 @@ class SlackAdapter(PlatformAdapter):
         summary: str,
         asked: AskedQuestion | None = None,
         *,
-        failed: bool = False,
+        ending: WorkEnding | None = None,
     ) -> None:
         """Edit the line into how the turn ended, and end the session.
 
@@ -2014,7 +2015,8 @@ class SlackAdapter(PlatformAdapter):
                 ts=ts,
                 text=summary,
                 blocks=self._work_blocks(
-                    summary, asked, status="error" if failed else "complete"
+                    asked,
+                    ending or WorkEnding(lead="Ended", details=summary, failed=False),
                 ),
             )
         except SlackApiError as error:
@@ -2247,30 +2249,43 @@ class SlackAdapter(PlatformAdapter):
         return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
 
     def _work_blocks(
-        self,
-        state: str,
-        asked: AskedQuestion | None,
-        *,
-        status: str = "in_progress",
+        self, asked: AskedQuestion | None, ending: WorkEnding | None = None
     ) -> list[dict[str, Any]]:
-        """A work message's one line: ↩ "the question" · its state, with the
-        question's link in the plan's card. A question that said nothing but
-        a mention is not named in the line, and is still linked."""
+        """A work message's one line, with the question's link in the plan's
+        card: "Working on "the question"" while its turn runs (`ending`
+        None), then "Worked on "the question" · 56s · 3 steps" or
+        "Stopped: "the question" · by Simon". A question that said nothing
+        but a mention is not named in the line, and is still linked."""
         url = (
             self._permalink(asked.message_ref, asked.thread_ref)
             if asked is not None
             else None
         )
         question = asked.text if asked is not None else ""
+        status = (
+            "in_progress"
+            if ending is None
+            else "error"
+            if ending.failed
+            else "complete"
+        )
+        tail = f" · {ending.details}" if ending is not None and ending.details else ""
         if not question:
+            # With no question to name: "Worked · 56s", "Stopped · by Simon".
+            lead = (
+                WORKING_NOTE
+                if ending is None
+                else ending.lead.removesuffix(" on").rstrip(":")
+            )
             link = (url, "The message this answers") if url else None
-            return [_work_plan(state, status, link)]
-        room = _MAX_PLAN_TITLE - len(state) - len(" ↩ “” · ")
+            return [_work_plan(f"{lead}{tail}", status, link)]
+        lead = "Working on" if ending is None else ending.lead
+        room = _MAX_PLAN_TITLE - len(lead) - len(tail) - len(" “”")
         if len(question) > room:
             question = question[: max(room - 1, 0)].rstrip() + "…"
         label = f"“{question}”"
         return [
-            _work_plan(f"↩ {label} · {state}", status, (url, label) if url else None)
+            _work_plan(f"{lead} {label}{tail}", status, (url, label) if url else None)
         ]
 
     async def _set_session_status(self, arguments: dict[str, Any]) -> None:

@@ -68,10 +68,12 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentWedged,
     ThreadUnavailable,
     TurnActivity,
+    WorkEnding,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     RUNNING_CLOCK_SECONDS,
     turn_state,
+    work_ending,
 )
 from switch_core.bridges.collaboration.session.renderers.subagents import (
     is_tool_call,
@@ -1627,7 +1629,15 @@ class AgentSessionActivityPublisher:
                 work_ref,
                 summary,
                 asked=content.asked,
-                failed=view.turn.status != "completed",
+                ending=WorkEnding(
+                    *work_ending(
+                        worked,
+                        view.turn,
+                        elapsed_seconds=content.elapsed_seconds,
+                        stopped_by=post.stopped_by,
+                    ),
+                    failed=view.turn.status != "completed",
+                ),
             )
         except Exception:
             logger.exception(

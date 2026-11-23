@@ -130,6 +130,29 @@ def turn_state(
     return state
 
 
+def work_ending(
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    elapsed_seconds: float | None = None,
+    stopped_by: str | None = None,
+) -> tuple[str, str]:
+    """How a work message's one line names a turn's end: what leads the
+    question ("Worked on", "Stopped:", "Failed:"), and the few words after
+    it ("56s · 3 steps", "by Simon · 40s"). Short, where `turn_state` says
+    it in sentences, because the line also names the question.
+    """
+    duration = _format_duration(elapsed_seconds) if elapsed_seconds is not None else ""
+    if turn.status == "completed":
+        calls = sum(1 for item in items if is_tool_call(item))
+        steps = f"{calls} step" + ("" if calls == 1 else "s") if calls else ""
+        return "Worked on", " · ".join(part for part in (duration, steps) if part)
+    if turn.status == "interrupted":
+        who = f"by {stopped_by}" if stopped_by else ""
+        return "Stopped:", " · ".join(part for part in (who, duration) if part)
+    return "Failed:", duration
+
+
 def is_steered(item: Item) -> bool:
     """A person's message that joined this turn while it ran, rather than
     waiting for a turn of its own."""
