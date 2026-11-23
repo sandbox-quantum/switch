@@ -1,12 +1,16 @@
 import json
+import logging
 
+import pytest
 from starlette.types import Message, Receive, Scope, Send
 
+from switch_core.logging_context import structured_fields
 from switch_core.refusal_breaker import (
     INITIAL_COOLDOWN_S,
     REFUSALS_TO_TRIP,
     RefusalBreaker,
 )
+from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 
 
 class _App:
@@ -126,3 +130,24 @@ async def test_a_controller_token_exchange_is_told_apart_by_its_credential() -> 
     assert (await _request(breaker, path, bearer=None, method="POST", body=fresh))[
         0
     ] == 200
+
+
+async def test_a_trip_is_a_security_event_naming_no_credential(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+    app, clock = _App(401), _Clock()
+    breaker = RefusalBreaker(app, clock=clock)
+    for _ in range(REFUSALS_TO_TRIP):
+        await _request(breaker, "/agents/a1/events", bearer="secret-token")
+
+    [record] = [r for r in caplog.records if r.name == SECURITY_LOGGER_NAME]
+    fields = structured_fields(record)
+    assert fields["switch"]["event"] == "security.refusal_breaker.tripped"
+    details = fields["security_details"]
+    assert details["status"] == 401
+    assert details["refusals"] == REFUSALS_TO_TRIP
+    assert details["path"] == "/agents/a1/events"
+    caller = details["caller"]
+    assert isinstance(caller, str) and len(caller) == 12
+    assert "secret-token" not in json.dumps(fields)

@@ -73,6 +73,16 @@ version of their own to them without also giving them a release of their own.
   statement timeout stops is answered 503. Requests turned away are counted in
   `switch.http.gateway_turned_away`, on the dashboard beside the other
   refusals.
+- **One person can no longer hold unbounded live streams.** The chats feed,
+  the activity feed and the change-notice socket stay open for as long as
+  Console or a tab runs, and nothing bounded how many one caller opened. One
+  signed-in person in one workspace (else one address) now holds at most
+  `GATEWAY_STREAMS_PER_CALLER` (16) of each kind per process: a newer one
+  closes their oldest of that kind, or is refused 429 while that oldest is
+  under 30 seconds old. A process holds at most `GATEWAY_STREAMS_PER_PROCESS`
+  (4000) of every kind together, past which a new one is refused 503 with a
+  `Retry-After` of 2 to 10 seconds. `switch.http.gateway_streams.*` counts
+  them, on the dashboard beside the requests turned away.
 
 #### Added
 - **The decision service can use open-weights models on Amazon Bedrock.**
@@ -143,6 +153,13 @@ version of their own to them without also giving them a release of their own.
   workspace that chose its backend gets that backend alone. Off unless set.
 
 #### Changed
+- **A message in a busy chat no longer costs every member's Console stream a
+  database pass of its own at the same instant.** Chat stream passes hold at
+  most a quarter of the process's database pool at once, and a pass over that
+  waits holding no connection. The new rows of a room are read and rendered once
+  and handed to every stream its message woke, so each stream reads only what
+  its own person may see. A stream woken by its rooms passes at most every
+  200 ms, sending what came in meanwhile together.
 - **A request that names a backend with a fallback now races it.** Before,
   only a request on the default backend raced its fallback;
   `DECISION_FALLBACK_BACKEND` now means the default backend's fallback
@@ -161,6 +178,13 @@ version of their own to them without also giving them a release of their own.
   Organizations kept in Switch are unaffected.
 
 #### Fixed
+- **A full database pool no longer makes a pod drop everything it holds.**
+  Each switch-core process renews its lease on a database connection of its
+  own, outside the shared pool. Before, the renewal borrowed from the same
+  pool as requests and streams, so when they filled it the renewal timed out,
+  the lease lapsed, and the pod stopped its owned work and put every agent
+  and controller it held offline. Each process now holds one more
+  connection, which the boot-time connection budget counts.
 - **The decision service is ready behind vLLM.** A model server whose
   `/health` answers 200 with an empty body counts as healthy; before, the
   service reported 503 while `/decide` worked.

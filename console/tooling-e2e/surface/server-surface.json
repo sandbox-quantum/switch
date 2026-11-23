@@ -1221,6 +1221,21 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/agents/{agent_id}/key/rotate",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/agents/{agent_id}/suspend",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/agents/{agent_id}/unsuspend",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/api-keys",
       "auth": "session",
       "flags": []
@@ -1458,6 +1473,16 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/moderation/agents/{agent_id}/remove-from-all-rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/moderation/people/{user_id}/remove-from-all-rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/organizations",
       "auth": "session",
       "flags": []
@@ -1596,6 +1621,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/rooms/{room_id}/freeze",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/rooms/{room_id}/linked-rooms",
       "auth": "session",
       "flags": []
@@ -1627,6 +1657,11 @@
     },
     {
       "route": "POST /gateway/rooms/{room_id}/unarchive",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/unfreeze",
       "auth": "session",
       "flags": []
     },
@@ -1730,6 +1765,16 @@
     },
     {
       "route": "POST /gateway/tenants/{tenant_id}/switch",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/users/{user_id}/suspend",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/users/{user_id}/unsuspend",
       "auth": "session",
       "flags": []
     },
@@ -1866,11 +1911,6 @@
     },
     {
       "route": "PUT /gateway/rooms/{room_id}/observe",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "PUT /gateway/rooms/{room_id}/protection",
       "auth": "session",
       "flags": []
     },

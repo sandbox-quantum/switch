@@ -115,7 +115,8 @@ jobs:
             decision:
               - *shared
               - 'decision/**'
-            # The morning report, tested with its own dependencies, not core's.
+            # The morning report, tested with its own dependencies, not core's,
+            # and the monitors' checks, which apply.sh relies on.
             observability:
               - *shared
               - 'deploy/observability/**'
@@ -317,7 +318,15 @@ jobs:
           python-version: '3.12'
           enable-cache: true
 
-      # The script's own dependencies, read from its header, plus pytest.
+      # Needs no secrets: priorities, tags, security routing and placeholders.
+      # A deployment's own tooling applies the same file with apply.sh.
+      - name: Check monitors.json
+        working-directory: deploy/observability
+        run: python3 check_monitors.py monitors.json
+
+      # The script's own dependencies, read from its header, plus pytest. This
+      # also runs test_monitors.py, which drives apply.sh in DRY_RUN to check
+      # its routing and that it refuses missing handles and placeholders.
       - name: pytest
         working-directory: deploy/observability
         run: uv run --no-project --with-requirements daily_report.py --with pytest pytest -q

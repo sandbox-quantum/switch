@@ -19,11 +19,14 @@ from typing import Any, Literal, Protocol
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.organization_trust_settings_store import (
     OrganizationTrustSettingsStore,
 )
 from switch_core.keys import Keyring
+from switch_core.logging_context import current_log_context
+from switch_core.security_events import SecuritySignal, log_security_event
 
 logger = logging.getLogger(__name__)
 
@@ -449,15 +452,26 @@ def trust_redaction_notice(result: TrustCheckResult) -> str | None:
 
 
 async def check_message(
-    client: TrustClient, *, tenant_id: str, role: Role, content: str, room_id: str
+    client: TrustClient,
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    tenant_id: str,
+    role: Role,
+    content: str,
+    room_id: str,
 ) -> TrustCheckResult:
     """`client.check`, failing open: a Switch Trust outage degrades to
     unchecked messages rather than to no messaging at all. Logged loudly
     either way, since this is the one place that gap is visible. Reported as
     `outcome="errored"` rather than `"ok"`, so callers give it the same
-    quiet in-chat annotation as an engine-side error."""
+    quiet in-chat annotation as an engine-side error.
+
+    A verdict other than `ok` is a security event (`record_verdict`). A
+    blocked or redacted one is written to the audit log on `sessions` before
+    this returns, so before the caller can deliver anything; if that write
+    fails, its error propagates and nothing is delivered."""
     try:
-        return await client.check(
+        result = await client.check(
             tenant_id=tenant_id, role=role, content=content, room_id=room_id
         )
     except GuardrailsCheckError:
@@ -465,7 +479,79 @@ async def check_message(
             "Switch Trust check failed; message allowed through unchecked",
             exc_info=True,
         )
-        return TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+        result = TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+    if result.outcome != "ok":
+        await record_verdict(
+            sessions, result, tenant_id=tenant_id, role=role, room_id=room_id
+        )
+    return result
+
+
+# Verdicts that change what reaches the room, kept as audit rows. An alert
+# or an error changes nothing, and during an outage every message is an
+# error, so those are written to the log only.
+_AUDITED_VERDICTS = {
+    "blocked": AuditAction.TRUST_MESSAGE_BLOCKED,
+    "redacted": AuditAction.TRUST_MESSAGE_REDACTED,
+}
+
+
+async def record_verdict(
+    sessions: async_sessionmaker[AsyncSession],
+    result: TrustCheckResult,
+    *,
+    tenant_id: str,
+    role: Role,
+    room_id: str,
+) -> None:
+    """A verdict other than `ok` as a security event: the policy, the room,
+    the outcome, the sender's role and what each finding was, never the text
+    it found or the message. The sender is whoever the request is for, from
+    the log context.
+
+    Blocked and redacted verdicts go to the workspace audit log, on a short
+    session of their own: the check runs before the send's transaction
+    opens, a block has no send at all, and the row is of the verdict, which
+    stands whether or not the send that follows succeeds."""
+    context = current_log_context()
+    details = {
+        "outcome": result.outcome,
+        "policy_id": result.policy_id,
+        "policy_name": result.policy_name,
+        "role": role,
+        "findings": [
+            {
+                "category": finding.category,
+                "detector_name": finding.detector_name,
+                "severity": finding.severity,
+            }
+            for finding in result.findings
+        ],
+    }
+    action = _AUDITED_VERDICTS.get(result.outcome)
+    if action is None:
+        log_security_event(
+            SecuritySignal.TRUST_VERDICT,
+            tenant_id=tenant_id,
+            actor_user_id=context.user_id,
+            target_type="room",
+            target_id=room_id,
+            agent_id=context.agent_id,
+            room_id=room_id,
+            details=details,
+        )
+        return
+    async with tenant_session(sessions, tenant_id) as session:
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=context.user_id,
+            action=action,
+            target_type="room",
+            target_id=room_id,
+            details={**details, "agent_id": context.agent_id},
+        )
+        await session.commit()
 
 
 async def trust_is_active(client: TrustClient, tenant_id: str) -> bool:
