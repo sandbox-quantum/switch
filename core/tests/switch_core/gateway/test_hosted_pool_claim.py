@@ -21,6 +21,7 @@ from switch_core.db.models import (
 from switch_core.db.stores import hosted_pool_store
 from switch_core.db.stores.hosted_machine_store import (
     BIND_FAILED,
+    CloudMachineConflict,
     CloudMachineStore,
     lock_claims,
 )
@@ -29,6 +30,7 @@ from switch_core.gateway.hosted_controller import sweep_hosted_machines
 from switch_core.visibility.box_provision import (
     ProvisionRefused,
     box_namespace_for,
+    boxes_made,
     claim_provision,
     expire_binds,
     pool_pick_for,
@@ -43,6 +45,7 @@ from tests.switch_core.gateway.test_hosted_provisioner import (  # noqa: F401
     KEY,
     provisioner_app,
 )
+from tests.switch_core.test_config_gateway_admission import _config
 
 pytestmark = pytest.mark.usefixtures("hosted_v2_on")
 
@@ -552,3 +555,77 @@ async def test_the_full_sweep_runs_the_pool_pass(
         await session.commit()
     async with app.factory() as session:
         assert (await hosted_pool_store.counts(session))["requested"] == 1
+
+
+# ── the pool counts towards both ceilings ──
+
+
+async def _claim_new(app, person: User, capacity: int, *, revoke=None):
+    async with app.factory() as session:
+        await lock_claims(session)
+        claimed = await CloudMachineStore().claim(
+            session,
+            app.factory,
+            owner_id=person.id,
+            capacity=capacity,
+            now=datetime.now(UTC),
+            backend="box",
+            revoke=revoke,
+            pool_pick=pool_pick_for(app.config, app.settings),  # type: ignore[arg-type]
+        )
+        await session.commit()
+        return claimed
+
+
+async def test_pool_boxes_count_towards_the_capacity_but_a_full_server_still_hands_one_out(
+    provisioner_app,  # noqa: F811
+) -> None:
+    """With one machine (the fixture's) and one waiting pool box, a capacity
+    of 2 is full: a new person still takes the pool box (counted already), but
+    once none waits, nobody gets a new one."""
+    app = provisioner_app
+    _pooled(app)
+    await _operator(app.factory)
+    box_id = await _waiting_box(app.factory)
+    first = await _person(app.factory, "first@example.com")
+    claimed = await _claim_new(app, first, capacity=2)
+    assert claimed.from_pool and claimed.machine.id == box_id
+
+    async with app.factory() as session:
+        await hosted_pool_store.request_boxes(session, 1, datetime.now(UTC))
+        await session.commit()
+    second = await _person(app.factory, "second@example.com")
+    with pytest.raises(CloudMachineConflict, match="in use"):
+        await _claim_new(app, second, capacity=3)  # 2 machines + 1 requested
+
+
+async def test_pool_boxes_count_towards_the_box_ceiling(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    async with app.factory() as session:
+        before = await boxes_made(session)
+    await _waiting_box(app.factory)
+    async with app.factory() as session:
+        await hosted_pool_store.request_boxes(session, 1, datetime.now(UTC))
+        await session.commit()
+        assert await boxes_made(session) == before + 2
+
+
+@pytest.mark.parametrize(
+    ("size", "capacity", "ceiling", "refused"),
+    [(1, 3, 50, False), (2, 3, 50, True), (2, 10, 3, True), (0, 0, 1, False)],
+)
+def test_core_refuses_a_pool_that_leaves_fewer_than_two_for_people(
+    size: int, capacity: int, ceiling: int, refused: bool
+) -> None:
+    overrides = {
+        "hosted_pool_size": size,
+        "hosted_launch_capacity": capacity,
+        "hosted_box_ceiling": ceiling,
+    }
+    if refused:
+        with pytest.raises(ValueError, match="HOSTED_POOL_SIZE"):
+            _config(**overrides)
+    else:
+        assert _config(**overrides).hosted_pool_size == size

@@ -16,6 +16,7 @@ from switch_core.db.models import (
     AgentDefinition,
     CloudMachine,
     HostedMigration,
+    HostedPoolBox,
     MachineWorkspace,
     TenantMember,
     User,
@@ -229,6 +230,17 @@ async def owner_paused(session: AsyncSession, owner_id: str) -> bool:
         select(User.hosted_paused_at).where(User.id == owner_id)
     )
     return paused_at is not None
+
+
+async def _pool_boxes_counted(session: AsyncSession) -> int:
+    """The warm pool's boxes that count towards the launch capacity and the
+    box ceiling: requested and waiting (a claimed one is its machine's)."""
+    counted = await session.scalar(
+        select(func.count())
+        .select_from(HostedPoolBox)
+        .where(HostedPoolBox.state.in_(["requested", "waiting"]))
+    )
+    return counted or 0
 
 
 async def _refuse_if_workspace_full(session: AsyncSession, per_workspace: int) -> None:
@@ -600,20 +612,36 @@ class CloudMachineStore:
             .select_from(CloudMachine)
             .where(CloudMachine.state != "deleted")
         )
-        if (live or 0) >= capacity:
-            raise CloudMachineConflict(MACHINES_FULL)
-        await _refuse_if_workspace_full(session, per_workspace)
-        if revoke is not None:
-            revived = await self._revive(session, factory, owner_id, revoke, now)
-            if revived is not None:
-                # A new box for an owner with no live machine, as a new row is.
-                machine, workspace = revived
-                return Claimed(machine=machine, workspace=workspace, change="new")
-        picked = (
-            await pool_pick(session, owner_id, now)
-            if pool_pick is not None and backend == "box"
-            else None
-        )
+        # The warm pool's waiting and requested boxes count towards the
+        # capacity too: they're machines made, or being made, for people.
+        pooled = await _pool_boxes_counted(session)
+        full = (live or 0) + pooled >= capacity
+        picked: str | None = None
+        if full:
+            # Taking a waiting pool box adds nothing (it's counted already),
+            # so a full server can still give one to someone who would get a
+            # new row; never to an owner whose row would be revived.
+            if (
+                pool_pick is None
+                or backend != "box"
+                or (revoke is not None and await self._revivable(session, owner_id))
+            ):
+                raise CloudMachineConflict(MACHINES_FULL)
+            await _refuse_if_workspace_full(session, per_workspace)
+            picked = await pool_pick(session, owner_id, now)
+            if picked is None:
+                raise CloudMachineConflict(MACHINES_FULL)
+        else:
+            await _refuse_if_workspace_full(session, per_workspace)
+            if revoke is not None:
+                revived = await self._revive(session, factory, owner_id, revoke, now)
+                if revived is not None:
+                    # A new box for an owner with no live machine, as a new
+                    # row is.
+                    machine, workspace = revived
+                    return Claimed(machine=machine, workspace=workspace, change="new")
+        if picked is None and pool_pick is not None and backend == "box":
+            picked = await pool_pick(session, owner_id, now)
         machine_id = picked or str(uuid4())
         await lock_machine(session, machine_id)
         machine = CloudMachine(
@@ -636,6 +664,19 @@ class CloudMachineStore:
             change="new",
             from_pool=picked is not None,
         )
+
+    async def _revivable(self, session: AsyncSession, owner_id: str) -> bool:
+        """Whether the owner has a cleaned-up row `_revive` would bring back."""
+        found = await session.scalar(
+            select(CloudMachine.id)
+            .where(
+                CloudMachine.owner_id == owner_id,
+                CloudMachine.state == "deleted",
+                CloudMachine.error_code.is_distinct_from(BIND_FAILED),
+            )
+            .limit(1)
+        )
+        return found is not None
 
     async def _revive(
         self,

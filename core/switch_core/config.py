@@ -1506,6 +1506,22 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_hosted_pool_size(self) -> "SwitchConfig":
+        # The warm pool's boxes count towards both ceilings, so a pool must
+        # leave at least 2 of each for people's boxes. 0 is always fine.
+        size = self.hosted_pool_size
+        if size > 0 and (
+            size > self.hosted_launch_capacity - 2 or size > self.hosted_box_ceiling - 2
+        ):
+            raise ValueError(
+                f"HOSTED_POOL_SIZE {size} would leave fewer than 2 machines for "
+                "people: it must be at most HOSTED_LAUNCH_CAPACITY "
+                f"({self.hosted_launch_capacity}) and HOSTED_BOX_CEILING "
+                f"({self.hosted_box_ceiling}) less 2 each."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_max_workspaces_per_user(self) -> "SwitchConfig":
         if self.gateway_max_workspaces_per_user < 0:
             raise ValueError(

@@ -567,7 +567,7 @@ async def _cap_reached(
 
 async def boxes_made(session: AsyncSession) -> int:
     """The boxes counted against `hosted_box_ceiling`: machines a provision
-    made and that aren't deleted. The one count both the ceiling check and the
+    made and that aren't deleted, and the warm pool's boxes. The one count both the ceiling check and the
     operator overview use, so the page never disagrees with a refusal.
 
     A revived machine still counts from its old box until its new one is
@@ -582,7 +582,23 @@ async def boxes_made(session: AsyncSession) -> int:
         .select_from(CloudMachine)
         .where(CloudMachine.state != "deleted", CloudMachine.id.in_(made_ids))
     )
-    return made or 0
+    # The warm pool's boxes count too: requested and waiting ones, and a
+    # claimed one until its bind is done (then it's its machine's, above).
+    pooled = await session.scalar(
+        select(func.count())
+        .select_from(HostedPoolBox)
+        .where(
+            (HostedPoolBox.state.in_(["requested", "waiting"]))
+            | (
+                (HostedPoolBox.state == "claimed")
+                & HostedPoolBox.id.not_in(made_ids)
+                & HostedPoolBox.id.in_(
+                    select(CloudMachine.id).where(CloudMachine.state != "deleted")
+                )
+            )
+        )
+    )
+    return (made or 0) + (pooled or 0)
 
 
 async def box_allowed(
