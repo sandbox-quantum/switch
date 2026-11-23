@@ -1034,16 +1034,21 @@ export interface ApiKeyDetail {
   expires_at: string | null;
   owner_id: string;
   owner_name: string;
-  /** The agent that signs in with it, by its name now; null for any other
-   *  key, and for an agent key whose agent is gone. */
+  /** The agent that holds it, by its name now: its own key, or one retired
+   *  while the agent stays. Null for any other key, and once the agent is
+   *  gone. */
   agent_id: string | null;
   agent_name: string | null;
-  // Copying the key, its owner's alone; and deleting it, its owner's or an
-  // admin's for a key that adds agents, and never one an agent still signs
-  // in with, though one a deleted agent left behind can go.
+  // Copying the key, its owner's alone and never a retired one; and deleting
+  // it, its owner's or an admin's for a key that adds agents or a retired one,
+  // and never one an agent still holds, though one a deleted agent left
+  // behind can go.
   can_reveal: boolean;
   can_delete: boolean;
 }
+
+/** A key that no longer authenticates, kept for a person to see and remove. */
+export const RETIRED_KEY_TYPE = "retired";
 
 export interface CreateApiKeyResult {
   id: string;

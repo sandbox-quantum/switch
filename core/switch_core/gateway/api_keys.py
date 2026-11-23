@@ -7,13 +7,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import Principal, can_delete_api_key, owns
+from switch_core.bridges.agent.registration_bootstrap import RETIRED_KEY_TYPE
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import HASH_ONLY_KEY_TYPES, Agent, ApiKey, User
+from switch_core.db.models import HASH_ONLY_KEY_TYPES, ApiKey, User
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -23,6 +24,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.dependencies import (
     current_telemetry,
+    get_agent_store,
     get_api_key_store,
     get_config,
     get_protocol,
@@ -47,38 +49,31 @@ def _key_type(value: str) -> str:
     The label an operator gave the key never goes anywhere near this — only
     what the key is *for*, which is a fixed set the code chooses.
     """
-    return value if value in ("agent", "registration", "bootstrap") else "other"
+    return (
+        value
+        if value in ("agent", "registration", "bootstrap", RETIRED_KEY_TYPE)
+        else "other"
+    )
 
 
 router = APIRouter()
 
 
-async def _signing_in(session: AsyncSession, keys: list[ApiKey]) -> dict[str, Agent]:
-    """The agent that still signs in with each of `keys`, by key id: its own
-    key, which goes with it (`authz.can_delete_api_key`)."""
-    agent_keys = [k.id for k in keys if k.type == "agent"]
-    if not agent_keys:
-        return {}
-    agents = await session.scalars(
-        select(Agent).where(Agent.api_key_id.in_(agent_keys))
-    )
-    return {agent.api_key_id: agent for agent in agents if agent.api_key_id is not None}
-
-
 async def _details(
     session: AsyncSession,
     user_store: UserStore,
+    agent_store: AgentStore,
     keys: list[ApiKey],
     principal: Principal,
 ) -> list[ApiKeyDetail]:
     # Controller credentials and enrollment codes are managed through agent
     # management and hold only a hash; they are nobody's keys to see here.
     keys = [k for k in keys if k.type not in HASH_ONLY_KEY_TYPES]
-    signing_in = await _signing_in(session, keys)
+    holders = await agent_store.holders_of_keys(session, [k.id for k in keys])
     owners = await user_store.names_by_id(session, {k.user_id for k in keys})
     details = []
     for k in keys:
-        agent = signing_in.get(k.id)
+        agent = holders.get(k.id)
         details.append(
             ApiKeyDetail(
                 id=k.id,
@@ -92,12 +87,10 @@ async def _details(
                 owner_name=owners[k.user_id],
                 agent_id=None if agent is None else agent.id,
                 agent_name=None if agent is None else agent.name,
-                can_reveal=owns(principal, k.user_id),
+                # A retired key authenticates as nothing: nothing to copy.
+                can_reveal=owns(principal, k.user_id) and k.type != RETIRED_KEY_TYPE,
                 can_delete=can_delete_api_key(
-                    principal,
-                    k.user_id,
-                    k.type,
-                    an_agent_signs_in_with_it=agent is not None,
+                    principal, k.user_id, k.type, an_agent_holds_it=agent is not None
                 ),
             )
         )
@@ -109,6 +102,7 @@ async def list_api_keys(
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[ApiKeyDetail]:
     """The caller's own keys, whatever their role. Console reads this as the
@@ -118,6 +112,7 @@ async def list_api_keys(
     return await _details(
         session,
         user_store,
+        agent_store,
         await api_key_store.get_by_user(session, user.id),
         Principal(user.id, False),
     )
@@ -128,6 +123,7 @@ async def list_workspace_api_keys(
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
 ) -> list[ApiKeyDetail]:
     """Every key in the workspace, for its admins: each with its owner, and
@@ -136,6 +132,7 @@ async def list_workspace_api_keys(
     return await _details(
         session,
         user_store,
+        agent_store,
         await api_key_store.list_for_tenant(session),
         Principal(user.id, True),
     )
@@ -207,6 +204,12 @@ async def reveal_api_key(
         raise HTTPException(status_code=404, detail="API key not found")
     if key.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to reveal this key")
+    if key.type == RETIRED_KEY_TYPE:
+        raise HTTPException(
+            status_code=409,
+            detail="This key is retired and authenticates as nothing, so there is "
+            "nothing to reveal.",
+        )
 
     plaintext = config.keyring.decrypt(key.encrypted_key)
     await record_audit_event(
@@ -227,6 +230,7 @@ async def delete_api_key(
     key_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
@@ -237,15 +241,18 @@ async def delete_api_key(
         Principal(user.id, is_admin),
         key.user_id,
         key.type,
-        an_agent_signs_in_with_it=False,
+        an_agent_holds_it=False,
     ):
         raise HTTPException(status_code=403, detail="Not authorized to delete this key")
-    if await _signing_in(session, [key]):
+    if await agent_store.holders_of_keys(session, [key.id]):
         # The agent row refers to it, so deleting it would fail anyway.
         raise HTTPException(
             status_code=409,
             detail=(
-                "This is an agent's own key, which it still signs in with. "
+                "This key still belongs to an agent. Delete the agent, and the "
+                "key can go after it."
+                if key.type == RETIRED_KEY_TYPE
+                else "This is an agent's own key, which it still signs in with. "
                 "Delete the agent to retire it."
             ),
         )
