@@ -10,7 +10,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -2404,6 +2404,33 @@ async def test_a_thread_session_stays_working_while_another_turn_there_runs(
     await _thread_turn(service, bridged.room_id, "completed", 5)
     await platform.wait_until(lambda: len(platform.of("remove_work_thread")) == 2)
     assert platform.sessions_ended == [False, True], "the last one ends it"
+
+
+async def test_a_turn_that_lost_its_ending_does_not_keep_the_session_working(
+    service, inline_publisher, inline_platform, bridged, session_factory
+):
+    """A turn that is over but whose ending was never recorded (dropped after
+    repeated failures, say) is not one the thread's session waits for."""
+    platform = inline_platform
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    await _thread_turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
+    async with session_factory() as db, db.begin():
+        await db.execute(update(TurnStatusPost).values(work_finished_at=None))
+    for status, revision in (("running", 1), ("completed", 3)):
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="turn",
+            kind="turn",
+            status=status,
+            revision=revision,
+            turn_id="turn-2",
+            message_id="sw_reply",
+        )
+    await platform.wait_until(lambda: len(platform.of("remove_work_thread")) == 2)
+    assert platform.sessions_ended[-1] is True, "turn-1 is over: turn-2 ends it"
 
 
 async def test_a_bare_mention_after_a_message_with_files_names_its_text(
