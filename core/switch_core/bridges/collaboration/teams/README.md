@@ -82,11 +82,25 @@ Environment/tenant setup owned by an administrator — track as a separate ops t
    proactively. A ready-made one ships at
    [`docs/old/bridges/teams-app/`](../../../../../docs/old/bridges/teams-app/).
 4. **Graph API permissions** with admin consent, for channel capture +
-   provisioning: `ChannelMessage.Read.Group` (RSC, preferred) *or* tenant-wide
-   `ChannelMessage.Read.All`; plus `Channel.Create`, `Channel.ReadBasic.All`,
-   `User.ReadBasic.All`, and `TeamMember.ReadWrite.All` /
-   `ChannelMember.ReadWrite.All`. Resource-data subscriptions count against a
-   shared per-tenant Teams subscription quota.
+   provisioning (see `REQUIRED_GRAPH_ROLES` in `identity.py` as the code authority):
+   - **Distributed Switch Teams app** — all eight roles in `REQUIRED_GRAPH_ROLES`,
+     enforced at install time (`install.py`), with no alternatives and nothing
+     optional: `ChannelMessage.Read.All`, `Channel.Create`,
+     `Channel.ReadBasic.All`, `TeamMember.ReadWriteNonOwnerRole.All`,
+     `ChannelMember.ReadWrite.All`, `User.ReadBasic.All`, `Team.ReadBasic.All`,
+     and `TeamsAppInstallation.ReadWriteSelfForTeam.All`. Consent requires a
+     Microsoft Global Administrator or Privileged Role Administrator.
+   - **Self-registered Azure AD app** — administrator's choice, described by
+     consequence: `ChannelMessage.Read.Group` (RSC) *or* tenant-wide
+     `ChannelMessage.Read.All` for capture (RSC does not cover private or shared
+     channels); `Channel.Create` for provisioning; `Channel.ReadBasic.All`;
+     `User.ReadBasic.All`; `TeamMember.ReadWriteNonOwnerRole.All` (for standard
+     channels) and `ChannelMember.ReadWrite.All` (for private channels) for
+     adding people; `Team.ReadBasic.All` and
+     `TeamsAppInstallation.ReadWriteSelfForTeam.All` for team metadata and app
+     installation.
+   Resource-data subscriptions count against a shared per-tenant Teams
+   subscription quota.
 5. *(nothing to do)* The X.509 keypair Graph resource data is encrypted to is
    generated on bridge creation. Listed only so its absence is not mistaken for
    an omission; a supplied set still wins if all three fields are given.

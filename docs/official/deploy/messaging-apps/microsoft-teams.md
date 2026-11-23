@@ -38,7 +38,7 @@ In Azure and the Microsoft 365 admin center, you'll need:
 - **A Teams app package that includes the bot:** Installed into the target team, so the bot can be added to channels and post without being spoken to first. Switch ships one. See [Set up the Teams app](#set-up-the-teams-app).
 - **Admin-consented Graph permissions:**
   - `ChannelMessage.Read.Group` (resource-specific, and preferred) or tenant-wide `ChannelMessage.Read.All`. Resource-specific consent can't capture messages in private or shared channels, so choose tenant-wide if you'll use those.
-  - For provisioning: `Channel.Create`, `Channel.ReadBasic.All`, `User.ReadBasic.All`, `TeamMember.ReadWrite.All` for standard channels, and `ChannelMember.ReadWrite.All` for private channels. Grant all of them.
+  - For provisioning: `Channel.Create`, `Channel.ReadBasic.All`, `User.ReadBasic.All`, `TeamMember.ReadWriteNonOwnerRole.All` for standard channels, and `ChannelMember.ReadWrite.All` for private channels. Grant all of them.
 - **Public HTTPS ingress:** Routing `https://<your-public-host>/api/messages` and `https://<your-public-host>/api/teams/notifications` to the Switch server's Teams listener, which listens on port 3978 unless an admin has set another. Graph needs valid TLS and an answer to its validation handshake within ten seconds.
 
 In Switch, you'll need:
