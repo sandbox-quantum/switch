@@ -27,9 +27,12 @@ from switch_core.db.stores.hosted_machine_store import (
     managed_agent_ids,
     owner_stopped,
     workspace_on,
+    workspaces_on,
 )
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import (
+    forget_missing_box,
+    note_start_click,
     revoke_machine_controller,
     workspace_reported,
 )
@@ -47,7 +50,11 @@ from switch_core.providers.hosted import (
     tenant_allowed,
 )
 from switch_core.telemetry import emit_after_commit
-from switch_core.visibility.box_provision import ask_for_box, box_provisioning_on
+from switch_core.visibility.box_provision import (
+    BOX_MISSING,
+    ask_for_box,
+    box_provisioning_on,
+)
 from switch_core.visibility.hosted_access import block_reason_in
 from switch_core.visibility.reason_codes import StopReason
 
@@ -159,7 +166,10 @@ WORKSPACE_CONNECT_TIMEOUT = (
 
 
 def workspace_state(
-    machine: CloudMachine, workspace: MachineWorkspace, now: datetime
+    machine: CloudMachine,
+    workspace: MachineWorkspace,
+    now: datetime,
+    controller: AgentController | None = None,
 ) -> tuple[str, str | None]:
     """The machine's state as the bound workspace sees it, and why it is in
     error: a ready machine is still starting here until this workspace's
@@ -168,7 +178,7 @@ def workspace_state(
     if (
         machine.state != "ready"
         or machine.desired_state != "running"
-        or workspace_reported(machine, workspace.id)
+        or workspace_reported(machine, workspace.id, controller)
     ):
         return machine.state, machine.error
     if (
@@ -186,14 +196,16 @@ async def machine_summary(
     the workspace's managed agents placed on the controller the machine
     enrolled as here, `controller_id` (null until it has)."""
     now = datetime.now(UTC)
-    state, error = workspace_state(machine, workspace, now)
     # The v1/v2 switch: with v2 off, the summary is exactly as before v2.
     v2 = process_hosted_v2()
     controller = (
         None
         if not v2 or workspace.controller_id is None
-        else await session.get(AgentController, workspace.controller_id)
+        else await session.get(
+            AgentController, workspace.controller_id, populate_existing=True
+        )
     )
+    state, error = workspace_state(machine, workspace, now, controller)
     return {
         "machine_id": machine.id,
         "state": state,
@@ -367,6 +379,8 @@ async def ensure(
         raise HTTPException(503, str(error)) from None
     except CloudMachineConflict as error:
         raise HTTPException(409, str(error)) from None
+    # The person opening hosted agents starts a v2 box start's clock.
+    note_start_click(machine, datetime.now(UTC))
     await session.commit()
     # A new user's machine asks for its box, just after the claim commits.
     await ask_for_box(
@@ -401,6 +415,7 @@ async def lifecycle(
     body: MachineLifecycleRequest,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
 ) -> dict:
     machines = CloudMachineStore()
     _machine, workspace = await _owned(session, machine_id, user.id)
@@ -451,9 +466,18 @@ async def lifecycle(
             )
             record_machine_event(session, "woken", "owner", machine.backend)
         machines.start(machine, now)
+        note_start_click(machine, now)
     else:
         if machine.state != "error":
             raise HTTPException(409, "Only a machine in error can be retried.")
+        if machine.error_code == BOX_MISSING and machine.backend == "box":
+            # Its box is gone: the new one enrols afresh, as on Core's re-ask.
+            await forget_missing_box(
+                factory, machine, await workspaces_on(factory, machine.id), by="retry"
+            )
+            machine.heartbeat = None
+            machine.heartbeat_at = None
+            machine.running_observed_at = None
         machines.retry(machine, now)
     await session.commit()
     return {"machine": await machine_summary(session, machine, workspace)}

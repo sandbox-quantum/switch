@@ -69,6 +69,7 @@ from switch_core.observability.catalogue import (
     HOSTED_PROVISION_SECONDS,
     HOSTED_RECONCILER_SILENCE,
     HOSTED_SESSIONS,
+    HOSTED_START_SECONDS,
     HOSTED_VALVE_PARKS,
     HOSTED_WAITING_FOR_ROOM,
     OBSERVABILITY_SAMPLE_FAILURES,
@@ -164,6 +165,9 @@ MACHINE_EVENTS: dict[str, frozenset[str]] = {
             # An error observed while the machine is wanted stopped, retained
             # or deleted.
             "stop_failed",
+            # A v2 box the scaler found missing from the cluster after it was
+            # made, that Core didn't ask for again (`box_provision.box_missing`).
+            "box_missing",
         }
     ),
     "woken": frozenset({"message", "agent_placed", "owner"}),
@@ -336,6 +340,30 @@ def record_evictions(evictions: int | None) -> None:
     """Boxes the operator says were pushed off their machine."""
     if evictions:
         metrics().increment(HOSTED_BOX_EVICTIONS, {}, float(_count(evictions)))
+
+
+# A hosted agents v2 box start's cases (the requirement's A and B; a new agent
+# or a resumed session on an awake box isn't a box start) and its stages, in
+# the order they happen: the one place these words are defined, which the
+# dashboard and the monitor read (`test_datadog_artifacts`).
+START_CASES = ("first_start", "wake")
+START_STAGES = (
+    "box_requested",  # the click to the box request (0 when asked for earlier)
+    "box_claimed",  # to the operator claiming the request (first start)
+    "box_provisioned",  # to the operator's result (first start)
+    "box_running",  # to the scaler seeing the box running
+    "controller_reported",  # to the box's controller reporting
+    "ready",  # to Core marking the box ready
+    "total",  # the click to ready: the stages above, added up
+    "since_box_request",  # a first start's box request to ready
+)
+
+
+def record_start_stage(case: str, stage: str, seconds: float) -> None:
+    """One stage of a box start. Only the fixed words are ever recorded; a
+    negative or absurd figure (a clock change) is not."""
+    if case in START_CASES and stage in START_STAGES and 0 <= seconds <= 86_400:
+        metrics().observe(HOSTED_START_SECONDS, {"case": case, "stage": stage}, seconds)
 
 
 def record_provisioned(seconds: float, backend: str = V1_BACKEND) -> None:

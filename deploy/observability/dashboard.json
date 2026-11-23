@@ -3693,6 +3693,48 @@
         "width": 6,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted box starts: seconds to ready from the person's first request, p50 / p90, by case (first_start target 20 / 30 s, wake 10 / 20 s). Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.hosted.start_seconds{$service,$flint_env,$version,!version:0.27.0,stage:total} by {case}",
+            "display_type": "line"
+          },
+          {
+            "q": "p90:switch.hosted.start_seconds{$service,$flint_env,$version,!version:0.27.0,stage:total} by {case}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 228,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted box start stages: p50 seconds each, by case and stage (they add up to the total). Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.hosted.start_seconds{$service,$flint_env,$version,!version:0.27.0,stage IN (box_requested,box_claimed,box_provisioned,box_running,controller_reported,ready)} by {case,stage}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 228,
+        "width": 6,
+        "height": 4
+      }
     }
   ]
 }

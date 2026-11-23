@@ -282,6 +282,10 @@ class ServerAuditAction(StrEnum):
     # Its revival withdraws that: the revived box reuses the namespace and
     # disk, so the runbook skips an entry with a later cancel for the box.
     HOSTED_BOX_TO_REMOVE_CANCELLED = "hosted.box_to_remove_cancelled"
+    # A box the box scaler found missing had its workspace controllers
+    # revoked, so a new box enrols afresh: Core's one re-ask, or the owner's
+    # Retry. Written and committed before the revokes, so none is unrecorded.
+    HOSTED_BOX_CONTROLLERS_REVOKED = "hosted.box_controllers_revoked"
     # Operator alerts: one row per raise and per clear, with no actor.
     # `alert.` is one of the operators' log's prefixes; it leaves them out
     # unless asked for.

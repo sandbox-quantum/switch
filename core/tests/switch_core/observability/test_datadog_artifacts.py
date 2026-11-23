@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from switch_core.observability.catalogue import CATALOGUE
+from switch_core.observability.hosted import START_CASES, START_STAGES
 
 _ARTIFACTS = Path(__file__).resolve().parents[4] / "deploy" / "observability"
 
@@ -356,6 +357,8 @@ _HOSTED_BOARD_ORDER = [
     "Hosted boxes: agents the memory guard stopped, and sessions the valve parked",
     "Provider gateway on hosted boxes, by kind; boxes with a valve memory problem, by state",
     "Hosted box anonymous memory (bytes), p95 / max. Needs distribution mapping, see README",
+    "Hosted box starts: seconds to ready from the person's first request, p50 / p90, by case (first_start target 20 / 30 s, wake 10 / 20 s). Needs distribution mapping, see README",
+    "Hosted box start stages: p50 seconds each, by case and stage (they add up to the total). Needs distribution mapping, see README",
 ]
 
 
@@ -416,7 +419,7 @@ def test_the_hosted_alerts_panel_lists_every_alert_on_its_charts() -> None:
     query = alerts["query"]
     assert query.startswith('tag:"service:REPLACE-WITH-SERVICE" (')
     assert set(re.findall(r'"([^"]+)"', query.split(" ", 1)[1])) == expected
-    assert len(expected) == 16
+    assert len(expected) == 17
 
 
 def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:
@@ -447,3 +450,38 @@ def test_monitors_on_the_workos_mirror_are_imported_only_where_it_runs() -> None
         reads_mirror = "switch.workos." in monitor["query"]
         tagged = "requires:workos-directory" in monitor["tags"]
         assert reads_mirror == tagged, monitor["name"]
+
+
+_START_METRIC = "switch.hosted.start_seconds"
+
+
+def _queries(document: object) -> list[str]:
+    """Every query string (`q` or `query`) anywhere in a JSON document."""
+    if isinstance(document, dict):
+        found = [
+            v for k, v in document.items() if k in ("q", "query") and isinstance(v, str)
+        ]
+        return found + [q for v in document.values() for q in _queries(v)]
+    if isinstance(document, list):
+        return [q for v in document for q in _queries(v)]
+    return []
+
+
+@pytest.mark.parametrize(
+    "filename", ["dashboard.json", "hosted-dashboard.json", "monitors.json"]
+)
+def test_box_start_charts_and_alerts_read_the_recorded_names(filename: str) -> None:
+    """Every case and stage a box start query names is one Core records, from
+    the one list in observability/hosted.py: a misspelt stage draws nothing and
+    an alert over it never fires."""
+    queries = [q for q in _queries(_load(filename)) if _START_METRIC in q]
+    assert queries, f"{filename} has no box start query"
+    for query in queries:
+        scope = query.split(_START_METRIC + "{", 1)[1].split("}", 1)[0]
+        stages = re.findall(r"stage:([a-z_]+)", scope)
+        for listed in re.findall(r"stage IN \(([^)]*)\)", scope):
+            stages += [s.strip() for s in listed.split(",")]
+        cases = re.findall(r"case:([a-z_]+)", scope)
+        assert stages, f"{query!r} names no stage"
+        assert set(stages) <= set(START_STAGES), query
+        assert set(cases) <= set(START_CASES), query

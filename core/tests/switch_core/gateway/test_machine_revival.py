@@ -537,7 +537,13 @@ async def _report_stopped(
         revision = machine.revision
     async with factory() as session:
         await observe(
-            machine_id, Observation(state="stopped", revision=revision), session
+            machine_id,
+            Observation(state="stopped", revision=revision),
+            session,
+            factory,
+            # Read only for a missing box, never on a `stopped` report.
+            config=None,  # type: ignore[arg-type]
+            settings=None,  # type: ignore[arg-type]
         )
 
 

@@ -16,7 +16,8 @@ from switch_core.bridges.agent.refusals import (
     refusal_guard,
 )
 from switch_core.config import SwitchConfig
-from switch_core.db.models import CloudMachine
+from switch_core.db.models import AgentController, CloudMachine
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.standing import stands_in
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
@@ -41,7 +42,9 @@ from switch_core.gateway.cloud_controllers import (
     controller_machine_idle,
     controller_reports,
     enrollment_code,
+    forget_missing_box,
     live_controller,
+    ready_if_both_signals,
 )
 from switch_core.gateway.dependencies import (
     current_telemetry,
@@ -73,11 +76,18 @@ from switch_core.visibility.alerts import (
 )
 from switch_core.visibility.box_facts import with_box_facts
 from switch_core.visibility.box_provision import (
+    BOX_MISSING,
     BOX_NOT_MADE,
     ask_for_box,
+    box_allowed,
+    box_missing_error,
     box_provisioning_on,
+    boxes_expected,
     expire_provisions,
+    missing_at_revision,
     open_provision_machines,
+    record_box_missing,
+    removal_pending,
 )
 from switch_core.visibility.cluster_report import (
     NODE_NAME,
@@ -555,7 +565,15 @@ async def machines(
         .order_by(CloudMachine.created_at)
         .execution_options(populate_existing=True)
     )
-    response: dict = {"machines": [machine_item(machine) for machine in rows]}
+    listed = list(rows)
+    response: dict = {"machines": [machine_item(machine) for machine in listed]}
+    if process_hosted_v2():
+        # Which boxes the box scaler may report missing: on a v2 box's entry
+        # only, so a v1 machine's entry (and a v1 listing) stays upstream's.
+        expected = await boxes_expected(session, listed)
+        for item in response["machines"]:
+            if item.get("backend") == "box":
+                item["box_expected"] = item["machine_id"] in expected
     # For the operator only (this route takes the controller's token): the
     # server lets every workspace and account claim a machine. Absent when
     # either list narrows it; owners' routes never carry it.
@@ -739,6 +757,9 @@ class _UpstreamObservation(BaseModel):
 
 
 class Observation(_UpstreamObservation):
+    # v2 adds `box_missing`: the box scaler found a made box gone from the
+    # cluster (`_box_missing`).
+    error_code: Literal["machine_needs_attention", "box_missing"] | None = None  # type: ignore[assignment]
     # Boxes pushed off their machine since the operator's last accepted
     # observation (its eviction watch). Logged, counted, and kept as times in
     # the heartbeat's `box` key for the hosted alerts; the agents view's `box_moved` for 15 minutes.
@@ -758,7 +779,10 @@ class Observation(_UpstreamObservation):
         if (
             not process_hosted_v2()
             and isinstance(data, dict)
-            and any(name in _V2_OBSERVATION_FIELDS for name in data)
+            and (
+                any(name in _V2_OBSERVATION_FIELDS for name in data)
+                or data.get("error_code") == BOX_MISSING
+            )
         ):
             _UpstreamObservation.model_validate(data)
         return handler(data)
@@ -781,6 +805,9 @@ async def observe(
     machine_id: str,
     body: Observation,
     session: Annotated[AsyncSession, Depends(controller_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
 ) -> dict:
     reconciler_heard()
     machine = await _locked_machine(session, machine_id)
@@ -830,6 +857,8 @@ async def observe(
             )
         elif (
             (body.state == "error" or body.error is not None)
+            # A missing box is judged at its own revision only.
+            and body.error_code != BOX_MISSING
             and machine.state not in STALE_ERROR_IGNORED_STATES
             and not _box_not_made(machine)
         ):
@@ -845,6 +874,15 @@ async def observe(
         # Commits even with nothing changed, so the error counts above count,
         # and box facts are kept whichever branch ran, an ignored observation too.
         await session.commit()
+        return machine_item(machine)
+    if body.error_code == BOX_MISSING and machine.backend == "box":
+        # Only a v2 Core gets this code: with v2 off the model refuses it.
+        ask_again = await _box_missing(session, factory, config, settings, machine, now)
+        await session.commit()
+        if ask_again:
+            await _ask_again_for_missing_box(factory, machine.id, config, settings, now)
+            machine = await _locked_machine(session, machine_id)
+            await session.commit()
         return machine_item(machine)
     if (
         body.state == "stopped"
@@ -873,6 +911,11 @@ async def observe(
             machine.state = "provisioning"
             if machine.running_observed_at is None:
                 machine.running_observed_at = now
+            # A v2 box whose controller already reported at this revision
+            # is ready now, not at its next report.
+            await ready_if_both_signals(
+                session, machine, now, reported_now=False, factory=factory
+            )
     elif body.state == "provisioning":
         if machine.state != "ready":
             machine.state = "provisioning"
@@ -896,6 +939,106 @@ async def observe(
         machine.updated_at = now
     await session.commit()
     return machine_item(machine)
+
+
+async def _box_missing(
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    config: SwitchConfig,
+    settings: HostedControllerSettings,
+    machine: CloudMachine,
+    now: datetime,
+) -> bool:
+    """The box scaler found the machine's made box missing from the cluster,
+    at its current revision. Returns whether to ask for a new box, once this
+    transaction commits. The caller holds the machine's lock and commits.
+
+    - **Counted only for a box Core counts as made** (`box_expected`), still
+      wanted running and not in error: a late or repeated report, or one for
+      a box still being made, changes nothing.
+    - **Recorded** as a `missing` result on its provision.
+    - **Asked for again at most once per revision**, and never for a box
+      whose disk is named for removal, one with a controller someone
+      revoked, or an owner who may no longer have a box (off the lists,
+      paused or turned off). Otherwise the machine goes to error, counted
+      once as `failed`/`box_missing`, and the owner's Retry asks again.
+    - **Only on that one re-ask** (and a Retry) are its controllers revoked
+      and its codes forgotten (`forget_missing_box`)."""
+    if machine.desired_state != "running" or machine.state in ("deleted", "error"):
+        return False
+    already = await missing_at_revision(session, machine.id, machine.revision)
+    if not await record_box_missing(session, machine):
+        return False
+    logger.warning(
+        "Cloud machine %s: the box scaler reports its box missing from the cluster.",
+        machine.id,
+    )
+    workspaces = await workspaces_on(factory, machine.id)
+    ask_again = (
+        not already
+        and not await removal_pending(session, machine.id)
+        and not await _a_box_controller_revoked(factory, workspaces)
+        # The owner still may have a box: the lists, pause and turn-off.
+        and await box_allowed(factory, config, settings, machine)
+    )
+    machine.running_observed_at = None
+    if not ask_again:
+        box_missing_error(session, machine, now)
+        return False
+    await forget_missing_box(factory, machine, workspaces, by="re_ask")
+    machine.heartbeat = None
+    machine.heartbeat_at = None
+    machine.state = "queued"
+    machine.error = None
+    machine.error_code = None
+    machine.updated_at = now
+    return True
+
+
+async def _ask_again_for_missing_box(
+    factory: async_sessionmaker[AsyncSession],
+    machine_id: str,
+    config: SwitchConfig,
+    settings: HostedControllerSettings,
+    now: datetime,
+) -> None:
+    """Ask for a new box through every gate (`ask_for_box`). When a gate
+    closed since `_box_missing` checked it, the machine goes to error as
+    `box_missing`. A cap only delays it: the sweep asks again."""
+    asked = await ask_for_box(
+        factory, machine_id=machine_id, config=config, settings=settings, now=now
+    )
+    if asked is not None:
+        return
+    with no_tenant():
+        async with factory() as session:
+            machine = await CloudMachineStore().locked(session, machine_id)
+            # Still waiting: not since moved on, or marked not made for want
+            # of a keyed-id key.
+            if machine is not None and machine.state == "queued":
+                box_missing_error(session, machine, now)
+            await session.commit()
+
+
+async def _a_box_controller_revoked(
+    factory: async_sessionmaker[AsyncSession], workspaces: list[WorkspaceOnMachine]
+) -> bool:
+    """Whether any of the machine's workspace controllers has been revoked
+    (or is gone), each read with its workspace bound."""
+    for workspace in workspaces:
+        if workspace.controller_id is None:
+            continue
+        async with tenant_session(factory, workspace.tenant_id) as scoped:
+            controller = await scoped.scalar(
+                select(AgentController).where(
+                    AgentController.tenant_id == workspace.tenant_id,
+                    AgentController.id == workspace.controller_id,
+                )
+            )
+            await scoped.commit()
+        if controller is None or controller.revoked_at is not None:
+            return True
+    return False
 
 
 def _box_not_made(machine: CloudMachine) -> bool:

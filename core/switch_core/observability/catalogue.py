@@ -1073,6 +1073,35 @@ HOSTED_PROVISION_SECONDS = _spec(
     "backend",
     bounds=(60.0, 120.0, 180.0, 240.0, 300.0, 420.0, 600.0, 900.0, 1200.0, 1800.0),
 )
+HOSTED_START_SECONDS = _spec(
+    "switch.hosted.start_seconds",
+    "histogram",
+    "s",
+    "A hosted agents v2 box start, timed from the person's first request that "
+    "needs it (the start clock), in stages that add up to `total`: by `case` "
+    "(first_start or wake) and `stage` only, both fixed words "
+    "(`observability.hosted.START_CASES` and `START_STAGES`). `since_box_request` "
+    "times a first start from its box request instead, which may predate the "
+    "click (a sign-up). Never a user, workspace or machine.",
+    "case",
+    "stage",
+    bounds=(
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        15.0,
+        20.0,
+        30.0,
+        45.0,
+        60.0,
+        90.0,
+        120.0,
+        180.0,
+        300.0,
+        600.0,
+    ),
+)
 HOSTED_DISK_USED = _spec(
     "switch.hosted.disk_used",
     "histogram",
@@ -1270,6 +1299,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_ALERTS_OPEN,
         HOSTED_PROVIDER_LOGIN_PROBLEMS,
         HOSTED_PROVISION_SECONDS,
+        HOSTED_START_SECONDS,
         HOSTED_DISK_USED,
         OBSERVABILITY_SAMPLE_FAILURES,
         HOSTED_CLOUD_ERRORS,

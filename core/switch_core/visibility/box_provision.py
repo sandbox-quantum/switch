@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
@@ -145,6 +145,242 @@ async def _linked(session: AsyncSession, request_id: str) -> list[ServerAuditEve
         .order_by(ServerAuditEvent.occurred_at, ServerAuditEvent.id)
     )
     return list(rows.scalars().all())
+
+
+async def provision_times(
+    session: AsyncSession, machine_id: str, since: datetime | None
+) -> tuple[datetime | None, datetime | None, datetime | None]:
+    """When the machine's latest box request (after `since`, a revival, when
+    given) was asked for, claimed by the operator, and answered `done`: for
+    timing a first start (`switch.hosted.start_seconds`). Nones where a step
+    isn't recorded."""
+    query = select(ServerAuditEvent).where(
+        ServerAuditEvent.action == ACTION,
+        ServerAuditEvent.details["phase"].astext == "requested",
+        ServerAuditEvent.details["machine_id"].astext == machine_id,
+    )
+    if since is not None:
+        query = query.where(ServerAuditEvent.occurred_at > since)
+    request = await session.scalar(
+        query.order_by(
+            ServerAuditEvent.occurred_at.desc(), ServerAuditEvent.id.desc()
+        ).limit(1)
+    )
+    if request is None:
+        return None, None, None
+    linked = await _linked(session, request.id)
+    claimed = next(
+        (e.occurred_at for e in linked if (e.details or {}).get("step") == "claimed"),
+        None,
+    )
+    done = next(
+        (
+            e.occurred_at
+            for e in linked
+            if (e.details or {}).get("phase") == "result"
+            and (e.details or {}).get("result") == "done"
+        ),
+        None,
+    )
+    return request.occurred_at, claimed, done
+
+
+# A made box the box scaler reported missing from the cluster: a further
+# result on its `done` request, with the machine's revision.
+MISSING = "missing"
+BOX_MISSING = "box_missing"
+BOX_MISSING_MESSAGE = (
+    "Your cloud box is missing from the cluster. Retry it in Switch Console, or "
+    "contact your administrator if it still cannot start."
+)
+
+
+async def _latest_by_machine(
+    session: AsyncSession,
+    machine_ids: Collection[str],
+    *conditions: ColumnElement[bool],
+) -> dict[str, datetime]:
+    """Per machine id, the latest box provision entry matching `conditions`."""
+    if not machine_ids:
+        return {}
+    machine_id = ServerAuditEvent.details["machine_id"].astext
+    rows = await session.execute(
+        select(machine_id, func.max(ServerAuditEvent.occurred_at))
+        .where(
+            ServerAuditEvent.action == ACTION,
+            machine_id.in_(list(machine_ids)),
+            *conditions,
+        )
+        .group_by(machine_id)
+    )
+    return {str(found): at for found, at in rows.all()}
+
+
+def _result_is(result: str) -> list[ColumnElement[bool]]:
+    return [
+        ServerAuditEvent.details["phase"].astext == "result",
+        ServerAuditEvent.details["result"].astext == result,
+    ]
+
+
+async def boxes_expected(
+    session: AsyncSession, machines: Collection[CloudMachine]
+) -> frozenset[str]:
+    """The box machines whose box Core counts as made, so the box scaler may
+    report it missing (`box_expected`): a provision result `done` since the
+    machine's latest revival, and no `missing` result after it. A box still
+    being made, or made by hand before box provisioning, is never expected."""
+    ids = [m.id for m in machines if m.backend == "box"]
+    if not ids:
+        return frozenset()
+    done = await _latest_by_machine(session, ids, *_result_is("done"))
+    missing = await _latest_by_machine(session, ids, *_result_is(MISSING))
+    revived: dict[str, datetime] = {}
+    if done:
+        machine_id = ServerAuditEvent.details["machine_id"].astext
+        rows = await session.execute(
+            select(machine_id, func.max(ServerAuditEvent.occurred_at))
+            .where(
+                ServerAuditEvent.action == ServerAuditAction.HOSTED_BOX_REVIVED.value,
+                machine_id.in_(list(done)),
+            )
+            .group_by(machine_id)
+        )
+        revived = {str(found): at for found, at in rows.all()}
+    return frozenset(
+        machine
+        for machine, done_at in done.items()
+        if (machine not in revived or done_at > revived[machine])
+        and (machine not in missing or done_at > missing[machine])
+    )
+
+
+async def last_missing_at(session: AsyncSession, machine_id: str) -> datetime | None:
+    """When the machine's box was last reported missing, if ever."""
+    return (await _latest_by_machine(session, [machine_id], *_result_is(MISSING))).get(
+        machine_id
+    )
+
+
+async def missing_at_revision(
+    session: AsyncSession, machine_id: str, revision: int
+) -> bool:
+    """Whether the machine's box was already reported missing at `revision`."""
+    found = await session.scalar(
+        select(func.count())
+        .select_from(ServerAuditEvent)
+        .where(
+            ServerAuditEvent.action == ACTION,
+            ServerAuditEvent.details["machine_id"].astext == machine_id,
+            *_result_is(MISSING),
+            ServerAuditEvent.details["revision"].astext == str(revision),
+        )
+    )
+    return bool(found)
+
+
+async def record_box_missing(session: AsyncSession, machine: CloudMachine) -> bool:
+    """Record the box scaler's finding that the machine's made box is missing:
+    a `missing` result on the request whose result was `done`, with the
+    machine's revision. False, recording nothing, when Core doesn't count
+    its box as made (still being made, already reported missing, or never
+    made by a provision): a late or repeated report. The caller holds the
+    machine's lock and commits."""
+    if machine.id not in await boxes_expected(session, [machine]):
+        return False
+    done = await session.scalar(
+        select(ServerAuditEvent)
+        .where(
+            ServerAuditEvent.action == ACTION,
+            ServerAuditEvent.details["machine_id"].astext == machine.id,
+            *_result_is("done"),
+        )
+        .order_by(ServerAuditEvent.occurred_at.desc(), ServerAuditEvent.id.desc())
+        .limit(1)
+    )
+    assert done is not None
+    await record_server_audit_event(
+        session,
+        actor_user_id=None,
+        action=ServerAuditAction.HOSTED_BOX_PROVISION,
+        target_type="box",
+        target_id=done.target_id,
+        details={
+            "phase": "result",
+            "result": MISSING,
+            "linked_to": (done.details or {}).get("linked_to"),
+            "machine_id": machine.id,
+            "revision": machine.revision,
+        },
+    )
+    return True
+
+
+async def removal_pending(session: AsyncSession, machine_id: str) -> bool:
+    """Whether the machine's box disk is named for removal
+    (`hosted.box_to_remove`) and that hasn't been cancelled since."""
+    latest = await session.scalar(
+        select(ServerAuditEvent.action)
+        .where(
+            ServerAuditEvent.action.in_(
+                [
+                    ServerAuditAction.HOSTED_BOX_TO_REMOVE.value,
+                    ServerAuditAction.HOSTED_BOX_TO_REMOVE_CANCELLED.value,
+                ]
+            ),
+            ServerAuditEvent.details["machine_id"].astext == machine_id,
+        )
+        .order_by(ServerAuditEvent.occurred_at.desc(), ServerAuditEvent.id.desc())
+        .limit(1)
+    )
+    return latest == ServerAuditAction.HOSTED_BOX_TO_REMOVE.value
+
+
+async def record_controllers_revoked(
+    session_factory: async_sessionmaker[AsyncSession],
+    machine: CloudMachine,
+    *,
+    by: Literal["re_ask", "retry"],
+    controllers: int,
+) -> None:
+    """Write and commit, in a transaction of its own, the
+    `hosted.box_controllers_revoked` entry for a missing box whose workspace
+    controllers are about to be revoked (`cloud_controllers.forget_missing_box`):
+    the machine, the reason, re-ask or Retry, its revision and how many. Called
+    before any revoke, so none is ever unrecorded. `server_audit_events`
+    carries no tenant, so nothing is bound."""
+    with no_tenant():
+        async with session_factory() as session:
+            await record_server_audit_event(
+                session,
+                actor_user_id=None,
+                action=ServerAuditAction.HOSTED_BOX_CONTROLLERS_REVOKED,
+                target_type="cloud_machine",
+                target_id=machine.id,
+                details={
+                    "machine_id": machine.id,
+                    "reason": BOX_MISSING,
+                    "by": by,
+                    "revision": machine.revision,
+                    "controllers": controllers,
+                },
+            )
+            await session.commit()
+
+
+def box_missing_error(
+    session: AsyncSession, machine: CloudMachine, now: datetime
+) -> None:
+    """A missing box Core won't ask for again: the machine goes to error,
+    counted once as `failed`/`box_missing`. The owner's Retry asks for a new
+    box (`request_box_if_needed` counts only provisions since the missing
+    report). The caller holds the machine's lock."""
+    if machine.state != "error":
+        record_machine_event(session, "failed", BOX_MISSING, machine.backend)
+    machine.state = "error"
+    machine.error_code = BOX_MISSING
+    machine.error = BOX_MISSING_MESSAGE
+    machine.updated_at = now
 
 
 def _result_of(linked: list[ServerAuditEvent]) -> str | None:
@@ -297,13 +533,19 @@ async def request_box_if_needed(
                 await session.commit()
                 return None
             revived = await revived_at(session, machine.id)
-            if revived is None and ever_hosted(workspaces):
+            missing = await last_missing_at(session, machine.id)
+            if revived is None and missing is None and ever_hosted(workspaces):
                 # Run before, by hand or by an earlier provision, and never cleaned
-                # up and revived: it has its box.
+                # up and revived or reported missing: it has its box.
                 await session.commit()
                 return None
+            # Only provisions since the old box went count: a revival, or the
+            # box scaler finding the made box missing.
+            since = max(
+                (at for at in (revived, missing) if at is not None), default=None
+            )
             box_keyed = key.keyed_id(KeyedIdKind.BOX, machine.id)
-            if await _box_state(session, box_keyed, now, revived) != "none":
+            if await _box_state(session, box_keyed, now, since) != "none":
                 await session.commit()
                 return None
             waiting = await _cap_reached(
