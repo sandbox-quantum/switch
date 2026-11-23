@@ -51,6 +51,7 @@ from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.gateway.invite_mail import AdminChangeEmail
 from switch_core.operator_commands import CommandRefused
 from switch_core.tenant_context import tenant_scope
+from switch_core.workos_authkit import AuthKitUnavailable
 from tests.conftest import RLSHarness
 from tests.switch_core.accounts.test_account_deletion import (
     ADMIN_EMAIL,
@@ -291,7 +292,7 @@ class TestSignOut:
     ) -> None:
         user = await _account(rls_harness, "authkit-out")
         row_id = await _identity_session(rls_harness, user.id, "s-cli-laptop")
-        workos = _AuthKitSignOut()
+        workos = _AuthKitSignOut({"s-cli-laptop"})
 
         await sign_out(
             rls_harness.restricted,
@@ -307,7 +308,7 @@ class TestSignOut:
     ) -> None:
         user = await _account(rls_harness, "authkit-stuck")
         stuck = await _identity_session(rls_harness, user.id, "s-cli-stuck")
-        workos = _AuthKitSignOut()
+        workos = _AuthKitSignOut({"s-cli-stuck"})
         workos.refuse = {"s-cli-stuck"}
 
         with pytest.raises(CommandRefused, match="1 of its sign-ins at WorkOS"):
@@ -321,6 +322,24 @@ class TestSignOut:
         stored = await _user(rls_harness, user.id)
         assert stored is not None and stored.session_version == 1
         assert await _identity_live(rls_harness, stuck)
+
+    async def test_sign_ins_workos_cannot_list_are_refused_not_taken_as_ended(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        user = await _account(rls_harness, "authkit-unlisted")
+        row_id = await _identity_session(rls_harness, user.id, "s-cli-unlisted")
+        workos = _AuthKitSignOut({"s-cli-unlisted"})
+        workos.fail = AuthKitUnavailable("WorkOS answered 503.")
+
+        with pytest.raises(CommandRefused, match="1 of its sign-ins at WorkOS"):
+            await sign_out(
+                rls_harness.restricted,
+                IdentitySessions(rls_harness.restricted, workos),  # type: ignore[arg-type]
+                user.email,
+            )
+
+        assert workos.revoked == []
+        assert await _identity_live(rls_harness, row_id)
 
     async def test_an_unknown_email_is_refused(self, rls_harness: RLSHarness) -> None:
         with pytest.raises(CommandRefused, match="No account"):
@@ -399,7 +418,7 @@ class TestDelete:
             rls_harness, "leaving-authkit", workspace_role="member"
         )
         await _identity_session(rls_harness, leaving.id, "s-cli-delete")
-        workos = _AuthKitSignOut()
+        workos = _AuthKitSignOut({"s-cli-delete"})
         workos.refuse = {"s-cli-delete"}
         deletion, _, _ = _deletion(rls_harness.restricted)
         plan = await plan_deletion(deletion, rls_harness.restricted, leaving.email)
@@ -414,6 +433,30 @@ class TestDelete:
 
         assert await _user(rls_harness, leaving.id) is not None
 
+    async def test_sign_ins_workos_cannot_list_stop_it_before_anything_changes(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        await _account(rls_harness, "keeper-unlisted", workspace_role="admin")
+        leaving = await _account(
+            rls_harness, "leaving-unlisted", workspace_role="member"
+        )
+        row_id = await _identity_session(rls_harness, leaving.id, "s-cli-unlisted-2")
+        workos = _AuthKitSignOut({"s-cli-unlisted-2"})
+        workos.fail = AuthKitUnavailable("WorkOS answered 503.")
+        deletion, _, _ = _deletion(rls_harness.restricted)
+        plan = await plan_deletion(deletion, rls_harness.restricted, leaving.email)
+
+        with pytest.raises(CommandRefused, match="could not be ended at WorkOS"):
+            await delete_account(
+                deletion,
+                rls_harness.restricted,
+                IdentitySessions(rls_harness.restricted, workos),  # type: ignore[arg-type]
+                plan,
+            )
+
+        assert await _user(rls_harness, leaving.id) is not None
+        assert await _identity_live(rls_harness, row_id)
+
     async def test_its_sign_ins_at_workos_end_before_it_is_deleted(
         self, rls_harness: RLSHarness
     ) -> None:
@@ -422,7 +465,7 @@ class TestDelete:
             rls_harness, "leaving-authkit-2", workspace_role="member"
         )
         await _identity_session(rls_harness, leaving.id, "s-cli-gone")
-        workos = _AuthKitSignOut()
+        workos = _AuthKitSignOut({"s-cli-gone"})
         deletion, _, _ = _deletion(rls_harness.restricted)
         plan = await plan_deletion(deletion, rls_harness.restricted, leaving.email)
 

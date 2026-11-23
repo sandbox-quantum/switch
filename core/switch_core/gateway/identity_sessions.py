@@ -226,48 +226,90 @@ class IdentitySessions:
         self, user_id: str, rows: list[IdentitySessionRow]
     ) -> None:
         """Revoke these sessions at WorkOS, for an account already gone (its
-        rows went with it). One that could not be revoked is logged as an
-        error: the account cannot be put back to try again."""
-        if self._authkit is None:
+        rows went with it), as `_revoke_active` does. One that could not be
+        revoked is logged as an error: the account cannot be put back to try
+        again."""
+        if self._authkit is None or not rows:
             return
-        for row in rows:
-            try:
-                await self._authkit.revoke_session(row.session_id)
-            except AuthKitError as error:
-                logger.error(
-                    "Could not revoke WorkOS session %s of deleted user %s: %s",
-                    row.session_id,
-                    user_id,
-                    error.message,
-                )
+        _, failed = await self._revoke_active(rows)
+        for row in failed:
+            logger.error(
+                "Could not revoke WorkOS session %s of deleted user %s",
+                row.session_id,
+                user_id,
+            )
 
     async def end_all(self, user_id: str, *, keep: str | None) -> int:
         """End every live identity session of this person but `keep` (the one
-        this browser signs out of through `end_here`): revoked at WorkOS, then
-        marked ended. One WorkOS no longer has counts as ended. Answers how
-        many could not be revoked, which are left live, so the caller can say
-        so; with no AuthKit they are only marked ended here."""
+        this browser signs out of through `end_here`): those WorkOS still
+        lists as active are revoked there (`_revoke_active`), and all of them
+        are marked ended. Answers how many could not be ended at WorkOS,
+        because listing the person's sessions or revoking one failed; those
+        are left live, so the caller can say so and try again. With no
+        AuthKit they are only marked ended here."""
         async with self._session_factory() as db:
-            rows = await self._store.live_for_user(db, user_id)
-        failed = 0
+            rows = [
+                row
+                for row in await self._store.live_for_user(db, user_id)
+                if row.id != keep
+            ]
+        if not rows:
+            return 0
+        ended: list[IdentitySessionRow]
+        failed: list[IdentitySessionRow]
+        if self._authkit is None:
+            ended, failed = rows, []
+        else:
+            ended, failed = await self._revoke_active(rows)
+        if ended:
+            async with self._session_factory() as db, db.begin():
+                await self._store.end(db, [row.id for row in ended], datetime.now(UTC))
+        return len(failed)
+
+    async def _revoke_active(
+        self, rows: list[IdentitySessionRow]
+    ) -> tuple[list[IdentitySessionRow], list[IdentitySessionRow]]:
+        """Revoke at WorkOS the sessions among `rows` it still lists as
+        active, asking once per WorkOS user rather than once per row: most of
+        a person's rows are sessions that ran out there long ago. Answers the
+        rows ended at WorkOS (revoked, or no longer listed) and those that
+        could not be: their listing failed, which says nothing about them, or
+        their revoke did."""
+        authkit = self._authkit
+        assert authkit is not None
+        by_user: dict[str, list[IdentitySessionRow]] = {}
         for row in rows:
-            if row.id == keep:
+            by_user.setdefault(row.provider_user_id, []).append(row)
+        ended: list[IdentitySessionRow] = []
+        failed: list[IdentitySessionRow] = []
+        for provider_user_id, theirs in by_user.items():
+            try:
+                active = await authkit.active_session_ids(provider_user_id)
+            except AuthKitError as error:
+                logger.warning(
+                    "Could not list WorkOS user %s's sessions to end %d of them: %s",
+                    provider_user_id,
+                    len(theirs),
+                    error.message,
+                )
+                failed.extend(theirs)
                 continue
-            if self._authkit is not None:
+            for row in theirs:
+                if row.session_id not in active:
+                    ended.append(row)
+                    continue
                 try:
-                    await self._authkit.revoke_session(row.session_id)
+                    await authkit.revoke_session(row.session_id)
                 except AuthKitError as error:
                     logger.warning(
-                        "Could not revoke identity session %s of user %s at WorkOS: %s",
+                        "Could not revoke identity session %s at WorkOS: %s",
                         row.id,
-                        user_id,
                         error.message,
                     )
-                    failed += 1
+                    failed.append(row)
                     continue
-            async with self._session_factory() as db, db.begin():
-                await self._store.end(db, [row.id], datetime.now(UTC))
-        return failed
+                ended.append(row)
+        return ended, failed
 
     async def aclose(self) -> None:
         """Cancel the checks under way, at shutdown."""

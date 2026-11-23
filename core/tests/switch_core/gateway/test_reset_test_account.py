@@ -299,7 +299,7 @@ async def test_its_sign_ins_at_workos_end_with_it(
             now=datetime.now(UTC),
         )
         await session.commit()
-    workos = _AuthKitSignOut()
+    workos = _AuthKitSignOut({"s-reset-here", "s-reset-laptop"})
     app, _, _ = _app(session_factory, enabled=True)
     follower = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
     app.state.identity_sessions = follower
