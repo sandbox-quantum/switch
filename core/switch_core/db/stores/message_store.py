@@ -576,6 +576,26 @@ class MessageStore:
         )
         return list(result.scalars().all())
 
+    async def attachment_group_parts(
+        self, session: AsyncSession, room_id: str, group_ids: Collection[str]
+    ) -> list[Message]:
+        """Every row of these multi-file messages within one room.
+
+        A message carrying several files is one row per file sharing a group
+        marker, and the first carries the text. A page of history that cut
+        the group reads the rest from here, so the text is not lost to the
+        page's edge.
+        """
+        if not group_ids:
+            return []
+        result = await session.execute(
+            select(Message).where(
+                Message.room_id == room_id,
+                Message.content[ATTACHMENT_GROUP_KEY]["id"].astext.in_(list(group_ids)),
+            )
+        )
+        return list(result.scalars().all())
+
     async def attachments_for(
         self, session: AsyncSession, message_ids: Collection[str]
     ) -> dict[str, list[MessageAttachment]]:

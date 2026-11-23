@@ -264,6 +264,17 @@ def _from_epoch_ms(when: int | None) -> datetime | None:
     return datetime.fromtimestamp(when / 1000, tz=UTC)
 
 
+def _groups_missing_their_start(rows: list[Message]) -> set[str]:
+    """Multi-file messages a page holds without their first part, which
+    carries the message's text."""
+    lowest: dict[str, int] = {}
+    for row in rows:
+        group = parse_attachment_group(row.content or {})
+        if group is not None:
+            lowest[group[0]] = min(group[1], lowest.get(group[0], group[1]))
+    return {group_id for group_id, index in lowest.items() if index > 0}
+
+
 def _coalesce_attachment_groups(
     rows: list[Message], attachments: dict[str, list[MessageAttachment]]
 ) -> tuple[list[Message], dict[str, list[MessageAttachment]]]:
@@ -2973,6 +2984,41 @@ class AgentCore:
             return message.transport_event_id
         return message.thread_root_event_id or message.transport_event_id
 
+    async def _with_cut_attachment_groups(
+        self, session: AsyncSession, room_id: str, rows: list[Message]
+    ) -> list[Message]:
+        """`rows` (newest first) with the parts of any multi-file message the
+        page's edge cut before its first part, which carries its text.
+
+        Without them the message reads back led by a later part, captioned
+        with that file's name. The parts go just after the oldest part the
+        page holds, where they were posted, and are folded into one entry by
+        `_coalesce_attachment_groups` like any other group.
+        """
+        cut = _groups_missing_their_start(rows)
+        if not cut:
+            return rows
+        held = {row.id for row in rows}
+        earlier: dict[str, list[Message]] = {}
+        for part in await self.message_store.attachment_group_parts(
+            session, room_id, cut
+        ):
+            group = parse_attachment_group(part.content or {})
+            if group is not None and part.id not in held:
+                earlier.setdefault(group[0], []).append(part)
+        oldest_held: dict[str, str] = {}
+        for row in rows:
+            group = parse_attachment_group(row.content or {})
+            if group is not None and group[0] in earlier:
+                oldest_held[group[0]] = row.id
+        result: list[Message] = []
+        for row in rows:
+            result.append(row)
+            group = parse_attachment_group(row.content or {})
+            if group is not None and oldest_held.get(group[0]) == row.id:
+                result.extend(sorted(earlier[group[0]], key=lambda m: -m.seq))
+        return result
+
     async def read_context(
         self,
         agent_id: str,
@@ -3036,6 +3082,7 @@ class AgentCore:
             roots = await self.message_store.list_by_transport_event_ids(
                 session, room_id, orphan_roots
             )
+            rows = await self._with_cut_attachment_groups(session, room_id, rows)
             attachments = await self.message_store.attachments_for(
                 session, [row.id for row in rows + roots]
             )

@@ -253,6 +253,45 @@ class TestEntries:
         assert root["id"] == "$part1"
         assert [a["filename"] for a in root["attachments"]] == ["two.pdf"]
 
+    async def test_a_group_the_window_cut_is_read_with_its_text(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A page whose edge falls between a two-file message's parts still
+        returns it led by its first part, which carries the text, rather
+        than captioned with the second file's name."""
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            for index, (event_id, body, name) in enumerate(
+                [("$part0", "two files", "one.pdf"), ("$part1", "two.pdf", "two.pdf")]
+            ):
+                await _write(
+                    session,
+                    room_id,
+                    client_id,
+                    event_id,
+                    body=body,
+                    at=index,
+                    msgtype="m.file",
+                    attachments=[
+                        MessageAttachment(uri=f"mxc://s/{name}", filename=name)
+                    ],
+                    content={
+                        "body": body,
+                        ATTACHMENT_GROUP_KEY: {"id": "g1", "index": index, "total": 2},
+                    },
+                )
+            await session.commit()
+
+        result = await _service(session_factory).read_context(
+            "agent-1", room_id, limit=1
+        )
+
+        [thread] = result["threads"]
+        root = thread["root"]
+        assert root["id"] == "$part0"
+        assert root["body"] == "two files"
+        assert [a["filename"] for a in root["attachments"]] == ["one.pdf", "two.pdf"]
+
     async def test_an_arrival_is_labelled_and_phrased_on_read(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
