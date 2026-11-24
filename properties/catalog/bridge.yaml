@@ -6,6 +6,24 @@ properties:
       agent's reply appears on the platform once.
     kind: safety
     formality: semi-formal
-    levels: [system]
+    levels: [code, system]
     owner: platform
     status: proposed
+    gaps:
+      system: waits on the two-replica lane
+    notes: >
+      `bridges/collaboration/collaboration_core.py` (`_post_source` for posts
+      coming in, `_claim_outbound` for messages going out) and
+      `clients/workspace_consumer.py` (trying a failed post again). Checked at
+      the code level by `bridge_machine.py`: one bridge on two processes
+      sharing Postgres, one holding it and one running a quiet copy, as `main`
+      runs them. People post on the platform, and the platform delivers a post
+      again, to the holder or as a webhook reaching the quiet copy. Messages
+      written in Switch are posted out; the platform refuses some, or takes
+      one and then fails. The bridge is handed over as a deploy replaces the
+      process holding it. Each post must be in the room once, each message
+      written in Switch on the platform once (a refused one after it is tried
+      again, by the holder or the next), and nothing the platform said posted
+      back to it. A message the platform took and then failed on is expected
+      twice, since the bridge cannot tell it went out. An agent's retried
+      `post_message` is outside this property: it takes no idempotency key.

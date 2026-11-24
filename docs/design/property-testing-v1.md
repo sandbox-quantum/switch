@@ -603,6 +603,16 @@ to track them.
 - **The history check cannot see a platform person's messages once they are
   erased**, because the erasure deletes the identity row they are found by, and
   the fast lane erases only a member client. The erasure sweep above replaces it.
+- **An agent's retried `post_message` posts twice**, in the room and on the
+  platform: the operation takes no idempotency key, so an agent that retries
+  after a timeout cannot say it is the same message. Step 6 listed "an agent's
+  retried write posting once"; it is left out of
+  `bridge.roundtrip-exactly-once` until there is a key to check, which is a
+  product decision of its own.
+- **A message the platform takes and then fails on shows twice.** The bridge
+  lets its claim go and tries it again, since it cannot tell the post went
+  out. `bridge_machine.py` expects the second copy; a platform that returns
+  the post's ref with its error would let the bridge settle it instead.
 
 ## Open questions
 
