@@ -31,8 +31,7 @@ const {
   chatMessageShape,
   reportingChatCall,
   reportingChatCallOn,
-} =
-  await import('./chat-telemetry');
+} = await import('./chat-telemetry');
 const { ChatApiError } = await import('./gateway');
 
 const server = { id: 'server' } as SwitchServer;

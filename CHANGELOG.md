@@ -226,6 +226,10 @@ version of their own to them without also giving them a release of their own.
   `room_users_added`.
 - **Taking someone out of a Switch Console chat is a `room_users_removed`**,
   as adding them was already a `room_users_added`.
+- **A person or agent added to or taken out of a chat is reported once**, even
+  when two requests for the same change overlap: only the one that made the
+  change reports it, and `room_agents_added` counts the agents actually put
+  in.
 - **The room-moderation command no longer touches the server's reporting
   start.** It set up telemetry as the server does at boot, so run without
   telemetry switched on it cleared when reporting began, and the server's

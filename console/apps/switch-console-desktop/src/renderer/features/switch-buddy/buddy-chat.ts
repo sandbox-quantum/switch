@@ -83,6 +83,12 @@ export const CHAT_LOOKUP_TIMEOUT_MS = 2_000;
 /** Chats read from the server for a send the chats list couldn't place, by server and room. */
 const lookedUp = new Map<string, { chat: ChatSummary; at: number }>();
 
+/**
+ * Reads under way, by server and room. Two messages sent quickly into one
+ * chat wait on the same read, and so go out in the order they were sent.
+ */
+const reading = new Map<string, Promise<ChatSummary | undefined>>();
+
 export type ChatReads = {
   list: (serverId: string) => Promise<ChatSummary[] | null>;
   listArchived: (serverId: string) => Promise<ChatSummary[] | null>;
@@ -96,14 +102,28 @@ export type ChatReads = {
  * doesn't list it: then nobody can say whether the message went to the
  * buddy, and it is reported as unknown rather than as not.
  */
-export async function lookUpChat(
+export function lookUpChat(
   reads: ChatReads,
   serverId: string,
   roomId: string,
   now: number
 ): Promise<ChatSummary | undefined> {
-  const cached = lookedUp.get(roomKey(serverId, roomId));
-  if (cached && now - cached.at <= LOOKED_UP_CHAT_MS) return cached.chat;
+  const key = roomKey(serverId, roomId);
+  const cached = lookedUp.get(key);
+  if (cached && now - cached.at <= LOOKED_UP_CHAT_MS) return Promise.resolve(cached.chat);
+  const running = reading.get(key);
+  if (running) return running;
+  const read = readChat(reads, serverId, roomId, now).finally(() => reading.delete(key));
+  reading.set(key, read);
+  return read;
+}
+
+async function readChat(
+  reads: ChatReads,
+  serverId: string,
+  roomId: string,
+  now: number
+): Promise<ChatSummary | undefined> {
   const remember = (chats: ChatSummary[]) => {
     for (const chat of chats) lookedUp.set(roomKey(serverId, chat.roomId), { chat, at: now });
     return chats.find((chat) => chat.roomId === roomId);

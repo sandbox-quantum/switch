@@ -219,7 +219,8 @@ in it, whether the message was typed there, in the box on Home, or picked from
 one of the cards it shows in the first run. A group chat is `no`, even with
 the buddy its only agent. When the app does not have the chat to hand (on a
 server it isn't showing, or just after launch) it reads it from the server
-first; `unknown` means that read failed or took too long, so nobody can say.
+first; `unknown` means that read failed, took too long, or the server didn't
+list the chat, so nobody can say.
 It is how a message to switch-buddy is counted, as the last step of the first
 run's funnel after `agent_created` with `entry_point` `switch_buddy`: both
 come from this install, so Amplitude can put them in one funnel, which it
