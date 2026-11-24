@@ -77,11 +77,12 @@ const SECRET_PATTERNS: Array<[RegExp, RedactionReplacement]> = [
   // Telegram bot token: numeric bot id : 35-char hmac. Also unprefixed, so it
   // is matched structurally. The colon keeps it clear of the Discord rule.
   [/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, '[REDACTED_TELEGRAM_TOKEN]'],
+  // URL credentials: any scheme://user:pass@ — covers postgres, mongodb, redis, mysql, amqp, https…
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s:/?#@]+:[^\s@/?#]+@/gi, '$1[REDACTED_CREDENTIALS]@'],
 ];
 
 const PII_PATTERNS: Array<[RegExp, RedactionReplacement]> = [
-  // Any scheme://user:pass@ — covers postgres, mongodb, redis, mysql, amqp, https…
-  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s:/?#@]+:[^\s@/?#]+@/gi, '$1[REDACTED_CREDENTIALS]@'],
+  // Personal data: home directories, IP and MAC addresses, emails
   [/\b(git|hg|svn)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g, '$1@[REDACTED_HOST]'],
   [/\b(?:[A-F0-9]{2}:){5}[A-F0-9]{2}\b/gi, '[REDACTED_MAC]'],
   [/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '[REDACTED_EMAIL]'],
