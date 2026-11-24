@@ -2036,7 +2036,7 @@ class CollaborationBridgeLifecycleService:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 rows.update(
                     (bridge.id, bridge)
-                    for bridge in await self._bridge_store.get_active(session)
+                    for bridge in await self._serving(session, tenant_id)
                 )
         # `_started` too: a bridge that crashed is out of `_bridges` but still
         # counted as expected (`crashed`, `running_count`), so once its row is
@@ -2055,6 +2055,12 @@ class CollaborationBridgeLifecycleService:
                     bridge_id,
                     exc_info=True,
                 )
+
+    async def _serving(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[CollaborationBridge]:
+        """The tenant's active bridges."""
+        return await self._bridge_store.get_active(session)
 
     async def _reconcile_row(
         self, bridge_id: str, bridge: CollaborationBridge | None, stamp: int
