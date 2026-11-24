@@ -53,6 +53,17 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Changed
+- **The distributed Teams app is called "Switch Rooms" unless
+  `TEAMS_APP_NAME` names it otherwise** (it was "Agent Switch"). Its package
+  is version 1.1.0, so an organisation that approved the old one is given it
+  when its admin approves again. Its publisher is now SandboxAQ, the company
+  Partner Center verifies, its website is the Switch docs rather than the
+  GitHub repository, and its description calls the app by the name this
+  deployment gave it.
+- **`TEAMS_APP_PARTNER_ID`** (chart: `switchCore.teamsApp.partnerId`) names the
+  publisher's Microsoft partner ID in the distributed Teams app's package, once
+  publisher verification is done in Partner Center. Optional; anything but up
+  to 10 digits is refused at startup, and the chart refuses an unquoted value.
 - **`ORGANIZATION_DIRECTORY=workos` now works with `GATEWAY_SIGNUP_MODE=open`.**
   Someone signing in with no workspace may then create an organization of
   their own. It is kept in Switch, not in WorkOS, and follows WorkOS only

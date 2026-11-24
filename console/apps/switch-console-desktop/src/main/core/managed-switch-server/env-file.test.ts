@@ -206,6 +206,7 @@ describe('buildEnvFile', () => {
       'TEAMS_APP_PRIVACY_URL',
       'TEAMS_APP_TERMS_URL',
       'TEAMS_APP_NAME',
+      'TEAMS_APP_PARTNER_ID',
     ]);
 
     const missing = [...interpolated]
