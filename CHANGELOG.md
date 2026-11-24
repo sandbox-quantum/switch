@@ -61,6 +61,15 @@ version of their own to them without also giving them a release of their own.
   chart.
 
 #### Security
+- **The pre-tool-call mediation route is removed.** `POST
+  /agents/{agent_id}/mediation/pre-tool-call` answered `proceed` for any tool
+  attached to the agent, judging by its name alone, and the retired Claude
+  Code connector plugin turned that into skipping Claude Code's own permission
+  prompt. Bash, Edit and Write are attached by default, so in a session
+  connected to a room, text from anyone who could post there could lead to
+  commands nobody approved. Copies of that plugin still installed now get a
+  404, which they treat as no decision, so Claude Code asks as it normally
+  would. Claude Code agents no longer advertise tool-call mediation.
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
   at once, leaving the rest to its own work, such as renewing its lease,
@@ -190,6 +199,13 @@ version of their own to them without also giving them a release of their own.
   transferred to another owner now, and no longer stop a workspace being
   deleted. Dropping the table briefly locks `api_keys` and `tenants`, for at
   most `DB_MIGRATION_LOCK_TIMEOUT`, so upgrade at a quiet time.
+- **The rest of the mediation routes.** `POST
+  /agents/{agent_id}/mediation/pre-llm-request`, `post-tool-result` and
+  `post-llm-response` are gone and answer 404. No client called them: the
+  first checked a model against the agent's attached models, and the other
+  two always answered `ok`. A connector plugin copy still installed that calls
+  `post-tool-result` treats the 404 as no change to the tool's output, as it
+  did any failed call.
 
 #### Fixed
 - **What Switch says under an agent's name no longer counts as the agent
@@ -841,6 +857,14 @@ version of their own to them without also giving them a release of their own.
   you're left in with no workspace.**
 
 #### Changed
+- **The dashboard's Connectors page lists coming soon services in their own
+  section**, under the ones people can use, with a count for each, and
+  the catalog lists 24 more of them. Its All tab is now Discover, where the
+  page always opens, as in Switch Console. Yours ends with a card that opens
+  Discover, and a search there that matches nothing connected offers to search
+  Discover instead, keeping the search.
+  Discover ends with a link to request a connector on GitHub. A connector's category must now be
+  one of a fixed list.
 - **The dashboard has one layout: the one built behind `gateway_v2`.**
   Home, Agents, Rooms, Templates, Connectors and Resources on the rail, and
   Workspace and Organization settings as their own areas, on every server. The earlier layout's
@@ -5168,6 +5192,12 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Connectors page lists coming soon services in their own section**,
+  under the ones people can use, with a count for each. Yours ends with a
+  "Browse all connectors" card that opens Discover, and a search there that
+  matches nothing connected offers to search Discover instead, keeping the
+  search, rather than saying "No connector matches". Discover ends with a
+  link to request a connector on GitHub.
 - **Set up for a connector's app goes to whoever may set it up.** Console
   asks the server who may set up its connector apps, whichever layout its
   dashboard uses. Set up opens Organization settings › Connector apps in the
