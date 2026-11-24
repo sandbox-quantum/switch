@@ -127,6 +127,8 @@ export interface AgentRuntime extends AgentRunner, WarmsRooms {
   readCredentials(agentId: string): Promise<RelayCredentials | null>;
   writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void>;
   deleteCredentials(agentId: string): Promise<void>;
+  /** Sweeps expired released agent directories or temporary state, when supported. */
+  sweep?(): Promise<void>;
   /**
    * `directory` from the definition, or a workspace of the agent's own when it
    * names none. A directory inside the workspaces folder is made when
@@ -411,6 +413,8 @@ export class InProcessRuntime implements AgentRuntime {
   async deleteCredentials(agentId: string): Promise<void> {
     await removeOptional(this.credentialsPath(agentId));
   }
+
+  async sweep(): Promise<void> {}
 
   async workingDirectory(
     _agentId: string,

@@ -72,6 +72,10 @@ export class AgentRuntimes implements AgentRuntime {
     return this.shared.deleteCredentials(agentId);
   }
 
+  sweep(): Promise<void> {
+    return this.shared.sweep?.() ?? Promise.resolve();
+  }
+
   workingDirectory(agentId: string, name: string, directory: string | null): Promise<string> {
     return this.shared.workingDirectory(agentId, name, directory);
   }

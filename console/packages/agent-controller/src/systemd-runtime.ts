@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, open, rename, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -40,6 +40,7 @@ import type { Provider } from './schemas';
 import type { GivenLogin } from './sealed-logins';
 import {
   agentRoot,
+  DEFAULT_RELEASED_RETENTION_DAYS,
   homeRootOf,
   type SeparateUsersConfig,
   separateUserNames,
@@ -75,6 +76,8 @@ const AGENT_DIR_MODE = 0o770;
 const SHARED_FILE_MODE = 0o640;
 /** In each agent's directory: which agent it holds, so a reused agent user never runs in another's. */
 const AGENT_MARKER = '.switch-agent-id';
+/** In a released directory: when it was released, so retention sweeps can prune it. */
+const RELEASED_MARKER = '.switch-released-at';
 /** Under the agents' directory: the directories of agents this controller no longer runs. */
 const RELEASED = 'released';
 /** Provider settings naming a path in the controller user's home, which an agent could not reach. */
@@ -157,6 +160,14 @@ export class SystemdRuntime implements AgentRuntime {
     await writeAtomic(join(directory, 'relay.json'), relayCredentialsBody(agentId, credentials));
   }
 
+  private get retentionDays(): number {
+    const fromEnv = this.deps.env.SWITCH_RELEASED_RETENTION_DAYS;
+    if (fromEnv !== undefined && /^\d+$/.test(fromEnv)) {
+      return Number(fromEnv);
+    }
+    return this.deps.config.releasedRetentionDays ?? DEFAULT_RELEASED_RETENTION_DAYS;
+  }
+
   /**
    * Forgets an agent: its unit is stopped, the files it loaded removed, its
    * directory set aside under `released/` (to come back if the agent is given
@@ -171,7 +182,17 @@ export class SystemdRuntime implements AgentRuntime {
       await this.deps.systemctl(['reset-failed', unit]);
     await rm(unitFilesDir(this.deps.config, slot), { recursive: true, force: true });
     const root = agentRoot(this.deps.config, slot);
-    if (await isDirectory(root)) await this.setAside(root, agentId);
+    if (await isDirectory(root)) {
+      if (this.retentionDays === 0) {
+        await rm(root, { recursive: true, force: true });
+        this.deps.log.info('Removed an agent’s directory immediately (retention 0)', {
+          agentId,
+          directory: root,
+        });
+      } else {
+        await this.setAside(root, agentId);
+      }
+    }
     this.deps.store.releaseAgentUser(agentId);
   }
 
@@ -231,10 +252,10 @@ export class SystemdRuntime implements AgentRuntime {
     await mkdir(probeHome, { recursive: true, mode: 0o700 });
     const given = login
       ? await loginProbeEnvironment(
-          join(this.deps.config.dataDir, 'login-check', provider),
-          login,
-          binaryPath
-        )
+        join(this.deps.config.dataDir, 'login-check', provider),
+        login,
+        binaryPath
+      )
       : {};
     return probeProvider(this.deps.config.bundle, provider, binaryPath, cwd, {
       ...this.agentEnvironment(),
@@ -342,7 +363,7 @@ export class SystemdRuntime implements AgentRuntime {
   }
 
   /** Agent units outlive the controller. */
-  async close(): Promise<void> {}
+  async close(): Promise<void> { }
 
   /**
    * The agent's directory, ready for its unit: the one it had under
@@ -354,12 +375,19 @@ export class SystemdRuntime implements AgentRuntime {
     const root = agentRoot(this.deps.config, slot);
     if (await isDirectory(root)) {
       const holder = (await readOptional(join(root, AGENT_MARKER)))?.trim() ?? '';
-      if (holder !== agentId) await this.setAside(root, holder || `unknown-${this.deps.now()}`);
+      if (holder !== agentId) {
+        if (this.retentionDays === 0) {
+          await rm(root, { recursive: true, force: true });
+        } else {
+          await this.setAside(root, holder || `unknown-${this.deps.now()}`);
+        }
+      }
     }
     if (!(await isDirectory(root))) {
       const released = join(this.deps.config.agentsDir, RELEASED, agentId);
       if (await isDirectory(released)) {
         await rename(released, root);
+        await removeOptional(join(root, RELEASED_MARKER));
         this.deps.log.info('Gave an agent back the directory it had here before', {
           agentId,
           directory: root,
@@ -380,8 +408,63 @@ export class SystemdRuntime implements AgentRuntime {
     await mkdir(released, { recursive: true, mode: 0o700 });
     const target = join(released, agentId);
     if (await isDirectory(target)) await rename(target, `${target}.${this.deps.now()}`);
+    await writeFile(join(root, RELEASED_MARKER), `${this.deps.now()}\n`, 'utf8');
     await rename(root, target);
     this.deps.log.info('Set an agent’s directory aside', { agentId, directory: target });
+    await this.sweep();
+  }
+
+  /** Sweeps released agent directories older than the retention window. */
+  async sweep(): Promise<void> {
+    const released = join(this.deps.config.agentsDir, RELEASED);
+    if (!(await isDirectory(released))) return;
+    const maxAgeMs = this.retentionDays * 24 * 60 * 60 * 1000;
+    const now = this.deps.now();
+    try {
+      const entries = await readdir(released, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const entryPath = join(released, entry.name);
+        try {
+          const releasedAt = await this.readReleasedAt(entryPath, entry.name);
+          if (releasedAt !== null && now - releasedAt >= maxAgeMs) {
+            await rm(entryPath, { recursive: true, force: true });
+            this.deps.log.info('Swept expired released agent directory', {
+              entry: entry.name,
+              ageDays: Math.floor((now - releasedAt) / (24 * 60 * 60 * 1000)),
+            });
+          }
+        } catch (entryError) {
+          this.deps.log.error('Could not sweep released agent entry', {
+            entry: entry.name,
+            error: (entryError as Error).message,
+          });
+        }
+      }
+    } catch (error) {
+      this.deps.log.error('Could not sweep released agent directories', {
+        error: (error as Error).message,
+      });
+    }
+  }
+
+  private async readReleasedAt(path: string, name: string): Promise<number | null> {
+    const marker = await readOptional(join(path, RELEASED_MARKER));
+    if (marker !== null) {
+      const parsed = Number(marker.trim());
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    const match = /\.([0-9]{10,})$/.exec(name);
+    if (match) {
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    try {
+      const info = await lstat(path);
+      return info.mtimeMs;
+    } catch {
+      return null;
+    }
   }
 
   /**
