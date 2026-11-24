@@ -20,11 +20,12 @@ cluster files never go in git or in chat.**
 5. **A container registry** the box nodes pull from, with push access for whoever builds the images.
 6. **Secrets, made in the cluster and the secret store, never sent over chat:**
    - in `switch-hosted`: `switch-hosted-provisioner-core` (`token`), `switch-hosted-controller-core` (`token`),
-     `switch-operator-actions-bearer` (`bearer`), and `box-map`, created empty;
+     `switch-operator-actions-bearer` (`bearer`), `switch-hosted-reaper-core` (`token`, the reaper's own Core
+     credential), and `box-map`, `pool-map` and `box-owners`, each created empty (the three add-only lists);
    - in the Switch server's namespace: three Secrets, their names given to the chart as
      `hostedControllerSecret`, `visibilityKeyedIdKeySecret` and `visibilityOperatorsSecret`, holding the keys
      `controller.json` (the hosted controller config), `keyed-id.key` and `operators.json` (the operator list). The three tokens in `controller.json` equal the
-     three token Secrets above.
+     three token Secrets above, and its `reaper_token` equals `switch-hosted-reaper-core`.
    - **Who gives what:** platform generates the three tokens and the keyed-id key. We give them the operator user
      ids for `operators.json`, and `controller.json`'s `allowed_tenant_ids` and `agent_api_endpoint`.
 7. **The cluster's `kubernetes` Service address** (`kubectl get svc kubernetes -n default`), which the cluster

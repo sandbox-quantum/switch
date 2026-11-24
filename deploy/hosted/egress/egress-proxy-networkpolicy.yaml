@@ -46,6 +46,12 @@ spec:
             matchExpressions:
               - key: "switch.dev/user"
                 operator: "Exists"
+        # A box-keyed box (agents-box-k1-…, the warm pool's and every box made with box-keyed names) carries
+        # switch.dev/box instead. Only the operator labels a namespace either way (P1).
+        - namespaceSelector:
+            matchExpressions:
+              - key: "switch.dev/box"
+                operator: "Exists"
       ports:
         - port: 3128
           protocol: "TCP"

@@ -83,7 +83,7 @@ POLICY_ZONE_PATTERN = "'^eu-west-3[abc]$'"
 CA_LINE = "  box-ca.crt: __BOX_CA_CERT__\n"
 # The cluster services' NetworkPolicies allow the test cluster's `kubernetes` Service address.
 KUBERNETES_SERVICE = "cidr: 172.20.0.1/32"
-KUBERNETES_SERVICE_COUNT = {"40-switch-hosted.yaml": 4, "51-egress-lists.yaml": 1}
+KUBERNETES_SERVICE_COUNT = {"40-switch-hosted.yaml": 4, "45-switch-hosted-reaper.yaml": 1, "51-egress-lists.yaml": 1}
 REPO = HERE.parents[1]
 
 

@@ -146,9 +146,11 @@ def test_the_scope_rule_leaves_pods_without_a_gvisor_class_alone(runtime_class):
 
 
 def test_the_scope_rule_box_pattern_is_p1s():
+    """P1 accepts exactly the two shapes the scope rule lets use gVisor, and no third."""
     p1 = doc(POLICIES, "ValidatingAdmissionPolicy", "switch-v0-p1-namespaces")
-    assert "matches('^agents-user-k1-[0-9a-f]{16}$')" in p1
+    assert "matches('^agents-(user|box)-k1-[0-9a-f]{16}$')" in p1
     assert "matches('^agents-user-k1-[0-9a-f]{16}$')" in SCOPE_CEL
+    assert "matches('^agents-box-k1-[0-9a-f]{16}$')" in SCOPE_CEL
 
 
 def test_the_scope_rule_allows_the_warm_pools_box_namespaces_exactly():

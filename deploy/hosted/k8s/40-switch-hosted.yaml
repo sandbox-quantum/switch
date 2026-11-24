@@ -704,6 +704,7 @@ rules:
   - ''
   resourceNames:
   - box-map
+  - box-owners
   resources:
   - secrets
   verbs:
@@ -749,6 +750,8 @@ rules:
   - ''
   resourceNames:
   - box-map
+  - pool-map
+  - box-owners
   resources:
   - secrets
   verbs:
