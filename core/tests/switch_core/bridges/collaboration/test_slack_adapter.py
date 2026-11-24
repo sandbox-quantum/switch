@@ -5,6 +5,7 @@ import re
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from slack_sdk.errors import SlackApiError
 from slack_sdk.socket_mode.request import SocketModeRequest
@@ -17,6 +18,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundMessageDeleted,
     InboundMessageEdited,
+    OutboundAttachment,
 )
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -1646,6 +1648,77 @@ class _FakeUploadWebClient(_FakeWebClient):
         if self._upload_error:
             raise SlackApiError(self._upload_error, {"error": self._upload_error})
         return self._upload_response
+
+
+class _FakeBatchUploadWebClient(_FakeUploadWebClient):
+    """The three upload steps one post of several files takes, counting how
+    many files are between asking for a URL and sending their bytes."""
+
+    def __init__(self, *, upload_status: int) -> None:
+        super().__init__()
+        self.upload_status = upload_status
+        self.in_flight = 0
+        self.most_in_flight = 0
+        self.completed: list[dict[str, Any]] = []
+
+    async def files_getUploadURLExternal(self, **kwargs: Any) -> dict[str, Any]:
+        self.in_flight += 1
+        self.most_in_flight = max(self.most_in_flight, self.in_flight)
+        await asyncio.sleep(0.01)
+        name = kwargs["filename"]
+        return {
+            "file_id": f"F-{name}",
+            "upload_url": f"https://files.example.com/{name}",
+        }
+
+    def upload_bytes(self, request: httpx.Request) -> httpx.Response:
+        self.in_flight -= 1
+        return httpx.Response(self.upload_status)
+
+    async def files_completeUploadExternal(self, **kwargs: Any) -> dict[str, Any]:
+        self.completed.append(kwargs)
+        return {"files": [{"shares": {"public": {"C123": [{"ts": "42.1"}]}}}]}
+
+
+def _batch_adapter(fake: _FakeBatchUploadWebClient) -> SlackAdapter:
+    adapter = _adapter()
+    adapter._web_client = fake  # type: ignore[assignment]
+    adapter._upload_http = lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(fake.upload_bytes)
+    )
+    return adapter
+
+
+def _files(count: int) -> list[OutboundAttachment]:
+    return [
+        OutboundAttachment(filename=f"{i}.png", mimetype="image/png", data=b"x")
+        for i in range(count)
+    ]
+
+
+def test_many_files_upload_several_at_a_time_as_one_post() -> None:
+    fake = _FakeBatchUploadWebClient(upload_status=200)
+    adapter = _batch_adapter(fake)
+
+    ref = _run(adapter.send_attachments("C123", "agent-a", _files(16), None, None))
+
+    assert 1 < fake.most_in_flight <= 8
+    assert len(fake.completed) == 1
+    post = fake.completed[0]
+    assert [f["id"] for f in post["files"]] == [f"F-{i}.png" for i in range(16)]
+    assert post["channel_id"] == "C123"
+    assert fake.uploads == []
+    assert ref == "C123:42.1"
+
+
+def test_a_failed_byte_upload_falls_back_to_one_post_per_file() -> None:
+    fake = _FakeBatchUploadWebClient(upload_status=500)
+    adapter = _batch_adapter(fake)
+
+    _run(adapter.send_attachments("C123", "agent-a", _files(3), None, None))
+
+    assert fake.completed == []
+    assert [up["filename"] for up in fake.uploads] == ["0.png", "1.png", "2.png"]
 
 
 def test_send_attachment_uploads_file_with_sender_and_caption() -> None:

@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from slack_sdk.errors import SlackApiError
 
@@ -46,6 +47,7 @@ GOLDEN_DIR = Path(__file__).parent / "golden" / "slack"
 UPDATE_ENV = "SWITCH_UPDATE_GOLDEN"
 
 CHANNEL = "C0GENERAL"
+UPLOAD_HOST = "https://files.example.com/upload"
 DM_CHANNEL = "D0DIRECT"
 THREAD_TS = "1700000000.000100"
 TURN = "turn-1"
@@ -102,6 +104,22 @@ class _RecordingWebClient:
         self._record("chat.stopStream", kwargs)
         return FakeResponse({"ok": True})
 
+    async def files_getUploadURLExternal(self, **kwargs: Any) -> FakeResponse:
+        self._record("files.getUploadURLExternal", kwargs)
+        file_id = f"F{kwargs['filename']}"
+        return FakeResponse(
+            {"ok": True, "file_id": file_id, "upload_url": f"{UPLOAD_HOST}/{file_id}"}
+        )
+
+    def upload_bytes(self, request: httpx.Request) -> httpx.Response:
+        self._record("upload", {"url": str(request.url), "content": request.content})
+        return httpx.Response(200)
+
+    async def files_completeUploadExternal(self, **kwargs: Any) -> FakeResponse:
+        self._record("files.completeUploadExternal", kwargs)
+        share = {kwargs["channel_id"]: [{"ts": self._next_ts()}]}
+        return FakeResponse({"ok": True, "files": [{"shares": {"public": share}}]})
+
     async def files_upload_v2(self, **kwargs: Any) -> FakeResponse:
         self._record("files.upload_v2", kwargs)
         if self._upload_error is not None:
@@ -132,6 +150,9 @@ def _adapter(
     adapter.set_agent_presentation_resolver(_presentation)
     client = _RecordingWebClient(upload_error=upload_error)
     adapter._web_client = client  # type: ignore[assignment]
+    adapter._upload_http = lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(client.upload_bytes)
+    )
     adapter._team_id = "T0TEAM"
     adapter._channel_type_cache[CHANNEL] = "channel"
     return adapter, client
