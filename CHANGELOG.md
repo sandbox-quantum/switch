@@ -122,6 +122,14 @@ version of their own to them without also giving them a release of their own.
   them, on the dashboard beside the requests turned away.
 
 #### Added
+- **An Org Admin can add a workspace to an organization by its ID, with none
+  selected.** `POST /organizations/{organization_id}/workspaces` does what
+  `POST /organizations/current/workspaces` does, for an organization with no
+  workspace as well, which the latter cannot reach. It counts against
+  `GATEWAY_MAX_WORKSPACES_PER_USER` as every workspace does. `GET
+  /auth/session` reports `organization_directory`, and under
+  `ORGANIZATION_DIRECTORY=workos` lists the linked organizations of someone in
+  no workspace, with their role and whether each has a workspace.
 - **The decision service can use open-weights models on Amazon Bedrock.**
   `DECISION_BACKEND=bedrock_openai` (or a request's `X-Decision-Backend:
   bedrock_openai` with `DECISION_BEDROCK_OPENAI_ENABLED=1`) asks Qwen3 235B

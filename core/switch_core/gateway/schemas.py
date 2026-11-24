@@ -1604,6 +1604,16 @@ class SessionStateUser(BaseModel):
     is_operator: bool
 
 
+class SessionOrganization(BaseModel):
+    """An organization the caller belongs to, for a session in no workspace.
+    `role` is the stored one (`org_admin` or `member`)."""
+
+    id: str
+    name: str
+    role: str
+    has_workspace: bool
+
+
 class SessionStateResponse(BaseModel):
     """Where this session stands with respect to workspaces — the body of
     `GET /auth/session`, readable before any workspace is selected.
@@ -1618,12 +1628,21 @@ class SessionStateResponse(BaseModel):
       (`POST /tenants/{id}/switch`) fixes it.
     - "needs_workspace": no memberships at all. Creating a workspace (when
       `can_create_workspace`) or accepting an invitation fixes it.
+
+    `organization_directory` is where organizations come from, as configured.
+    Under `workos`, a `needs_workspace` session also lists the linked
+    organizations the caller belongs to, so that the page can offer an
+    `org_admin` one with no workspace its first
+    (`POST /organizations/{id}/workspaces`); `organizations` is empty in every
+    other case.
     """
 
     user: SessionStateUser
     tenant: TenantMembershipResponse | None
     tenants: list[TenantMembershipResponse]
     state: Literal["ready", "needs_selection", "needs_workspace"]
+    organization_directory: Literal["local", "workos"]
+    organizations: list[SessionOrganization] = []
     # Whether the caller may create a new organization with its first
     # workspace (`POST /organizations`, and `POST /tenants` before it).
     can_create_workspace: bool

@@ -142,6 +142,9 @@ class World:
     async def tenant(self) -> str:
         return TENANT
 
+    async def organization(self) -> str:
+        return ORGANIZATION
+
     async def self_id(self) -> str:
         """The asking persona's own id."""
         return self.id_of(Persona(self.tag))

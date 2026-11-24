@@ -960,6 +960,215 @@ class TestCreatingAWorkspace:
         assert second.status_code == 403
 
 
+async def _organization_without_workspace(
+    session_factory: async_sessionmaker[AsyncSession], members: dict[str, str]
+) -> str:
+    """An organization with no workspace, as sign-in under a directory can
+    leave one, with `members` (user id -> organization role)."""
+    organization_id = _name("org")
+    async with session_factory() as session:
+        session.add(Organization(id=organization_id, slug=organization_id, name="Acme"))
+        for user_id in members:
+            if await session.get(User, user_id) is None:
+                session.add(
+                    User(
+                        id=user_id,
+                        name=user_id,
+                        email=f"{user_id}@example.invalid",
+                        role="user",
+                    )
+                )
+        await session.flush()
+        for user_id, role in members.items():
+            session.add(
+                OrganizationMember(
+                    organization_id=organization_id, user_id=user_id, role=role
+                )
+            )
+        await session.commit()
+    return organization_id
+
+
+async def _workspaces_of(
+    session_factory: async_sessionmaker[AsyncSession], organization_id: str
+) -> list[Tenant]:
+    async with session_factory() as session:
+        return list(
+            await session.scalars(
+                select(Tenant).where(Tenant.organization_id == organization_id)
+            )
+        )
+
+
+class TestCreatingAWorkspaceByOrganization:
+    async def test_an_org_admin_makes_the_first_one_with_none_selected(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        organization_id = await _organization_without_workspace(
+            session_factory, {ada: "org_admin"}
+        )
+
+        async with _client(_app(session_factory), ada, None) as client:
+            response = await client.post(
+                f"/organizations/{organization_id}/workspaces", json={"name": "Acme"}
+            )
+
+        assert response.status_code == 201, response.text
+        workspace = response.json()
+        assert workspace["organization_id"] == organization_id
+        assert workspace["role"] == "admin"
+        [tenant] = await _workspaces_of(session_factory, organization_id)
+        assert tenant.id == workspace["id"]
+        # The session stays where it was.
+        assert response.cookies.get("switch_auth") is None
+        assert await _workspaces_created(session_factory, ada) == 1
+        async with tenant_session(session_factory, tenant.id) as session:
+            membership = await session.get(TenantMember, (tenant.id, ada))
+        assert membership is not None and membership.role == "admin"
+        [created] = await _events(
+            session_factory, tenant.id, AuditAction.TENANT_CREATED
+        )
+        assert created.actor_user_id == ada
+        [added] = await _organization_events(
+            session_factory, tenant.id, OrganizationAuditAction.WORKSPACE_CREATED
+        )
+        assert (added.actor_user_id, added.target_id) == (ada, tenant.id)
+
+    async def test_it_adds_another_to_an_organization_that_has_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert organization_id is not None
+
+        async with _client(_app(session_factory), ada, None) as client:
+            response = await client.post(
+                f"/organizations/{organization_id}/workspaces", json={"name": "Second"}
+            )
+
+        assert response.status_code == 201, response.text
+        assert len(await _workspaces_of(session_factory, organization_id)) == 2
+
+    async def test_a_viewer_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        organization_id = await _organization_without_workspace(
+            session_factory, {ada: "org_admin", bob: "member"}
+        )
+
+        async with _client(_app(session_factory), bob, None) as client:
+            response = await client.post(
+                f"/organizations/{organization_id}/workspaces", json={"name": "Acme"}
+            )
+
+        assert response.status_code == 403
+        assert await _workspaces_of(session_factory, organization_id) == []
+        assert await _workspaces_created(session_factory, bob) == 0
+
+    async def test_someone_outside_the_organization_gets_the_same_refusal_as_for_none(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        organization_id = await _organization_without_workspace(
+            session_factory, {ada: "org_admin"}
+        )
+        outsider = await _user(session_factory, "user")
+
+        async with _client(_app(session_factory), outsider, None) as client:
+            theirs = await client.post(
+                f"/organizations/{organization_id}/workspaces", json={"name": "Acme"}
+            )
+            none = await client.post(
+                "/organizations/no-such-organization/workspaces", json={"name": "Acme"}
+            )
+
+        assert (theirs.status_code, theirs.json()) == (none.status_code, none.json())
+        assert theirs.status_code == 403
+        assert await _workspaces_of(session_factory, organization_id) == []
+
+    async def test_a_name_the_organization_uses_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert organization_id is not None
+
+        async with _client(_app(session_factory), ada, None) as client:
+            response = await client.post(
+                f"/organizations/{organization_id}/workspaces", json={"name": "acme"}
+            )
+
+        assert response.status_code == 409
+        assert len(await _workspaces_of(session_factory, organization_id)) == 1
+
+    async def test_it_counts_against_the_creator_allowance(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        organization_id = await _organization_without_workspace(
+            session_factory, {ada: "org_admin"}
+        )
+
+        app = _app(session_factory, max_workspaces_per_user=1)
+        async with _client(app, ada, None) as client:
+            first = await client.post(
+                f"/organizations/{organization_id}/workspaces", json={"name": "One"}
+            )
+            second = await client.post(
+                f"/organizations/{organization_id}/workspaces", json={"name": "Two"}
+            )
+
+        assert first.status_code == 201, first.text
+        assert second.status_code == 403
+        assert len(await _workspaces_of(session_factory, organization_id)) == 1
+
+    async def test_the_operator_is_exempt_from_the_allowance(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        operator_id = await _operator(session_factory)
+        organization_id = await _organization_without_workspace(
+            session_factory, {operator_id: "org_admin"}
+        )
+
+        app = _app(session_factory, max_workspaces_per_user=0)
+        async with _client(app, operator_id, None) as client:
+            response = await client.post(
+                f"/organizations/{organization_id}/workspaces", json={"name": "Acme"}
+            )
+
+        assert response.status_code == 201, response.text
+        assert await _workspaces_created(session_factory, operator_id) == 0
+
+    async def test_a_burst_from_one_person_makes_only_what_the_allowance_lets(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        organization_id = await _organization_without_workspace(
+            session_factory, {ada: "org_admin"}
+        )
+
+        app = _app(session_factory, max_workspaces_per_user=1)
+        async with _client(app, ada, None) as client:
+            responses = await asyncio.gather(
+                *(
+                    client.post(
+                        f"/organizations/{organization_id}/workspaces",
+                        json={"name": f"Burst {i}"},
+                    )
+                    for i in range(5)
+                )
+            )
+
+        codes = sorted(r.status_code for r in responses)
+        assert codes.count(201) == 1
+        assert set(codes) - {201} <= {403, 409}
+        assert len(await _workspaces_of(session_factory, organization_id)) == 1
+
+
 class TestListingOrganizationsAndWorkspaces:
     async def test_an_org_admin_sees_every_workspace_and_a_member_their_own(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -125,11 +125,9 @@ from switch_core.gateway.workos_sign_in_routes import (
 )
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
+    add_workspace,
     create_organization_for,
-    create_workspace,
     directory_failed,
-    lock_workspace_allowance,
-    refuse_a_workspace_name_taken,
 )
 from switch_core.invitation_revocation import revoke_invitations_made_by
 from switch_core.organization_access import (
@@ -707,40 +705,58 @@ async def create_organization_workspace(
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
-    organization_id = access.organization_id
-    await refuse_a_workspace_name_taken(
-        session, session_factory, organization_id, req.name, renaming=None
-    )
-    allowance = (
-        None
-        if user.role == "admin"
-        else await lock_workspace_allowance(
-            session, user.id, config, new_organization=False
-        )
-    )
-    if allowance is None:
-        # Not held across provisioning, which opens a session per tenant.
-        await session.commit()
-    tenant = await create_workspace(
+    return await add_workspace(
+        session,
         session_factory,
         user_store,
         client_lifecycle,
-        organization_id,
-        user.id,
-        req.name,
+        config,
+        organization_id=access.organization_id,
+        creator_id=user.id,
+        is_operator=user.role == "admin",
+        name=req.name,
     )
-    if allowance is not None:
-        allowance.workspaces_created += 1
-        await session.commit()
-    return TenantMembershipResponse(
-        id=tenant.id,
-        slug=tenant.slug,
-        name=tenant.name,
-        role="admin",
-        organization_role=ORGANIZATION_ADMIN_ROLE,
-        organization_id=organization_id,
-        archived_at=None,
-    )
+
+
+@router.post("/organizations/{organization_id}/workspaces", status_code=201)
+async def create_workspace_in_organization(
+    organization_id: str,
+    req: WorkspaceCreateRequest,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> TenantMembershipResponse:
+    """Add a workspace to an organization, by id. `org_admin` only; the
+    creator becomes its `admin`. As `POST /organizations/current/workspaces`,
+    but needs no workspace selected, so it is how an `org_admin` of an
+    organization with none (as sign-in under a directory can leave one) makes
+    its first. The session is not moved.
+
+    403 unless the caller is the organization's `org_admin`, as when there is
+    no such organization.
+    """
+    async with organization_session(session_factory, organization_id) as session:
+        role = await organization_store.role(session, organization_id, caller.id)
+        if role != ORGANIZATION_ADMIN_ROLE:
+            raise HTTPException(
+                status_code=403, detail="Only an organization admin may do this"
+            )
+        return await add_workspace(
+            session,
+            session_factory,
+            user_store,
+            client_lifecycle,
+            config,
+            organization_id=organization_id,
+            creator_id=caller.id,
+            is_operator=caller.is_operator,
+            name=req.name,
+        )
 
 
 def made_from(access: OrganizationAccess) -> dict[str, object]:

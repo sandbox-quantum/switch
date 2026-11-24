@@ -435,6 +435,11 @@ ROUTES: dict[str, Case] = {
     "POST /gateway/organizations/current/workspaces": post(
         f"{G}/organizations/current/workspaces", org_admin(), json={"name": "{tag}-ws"}
     ),
+    "POST /gateway/organizations/{organization_id}/workspaces": post(
+        f"{G}/organizations/{{organization}}/workspaces",
+        org_admin(),
+        json={"name": "{tag}-ws-by-id"},
+    ),
     "PATCH /gateway/organizations/current": patch(
         f"{G}/organizations/current", org_admin(), json={"name": "{tag}-org"}
     ),

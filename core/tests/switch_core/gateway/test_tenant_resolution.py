@@ -54,6 +54,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    Organization,
     OrganizationMember,
     Tenant,
     TenantMember,
@@ -158,6 +159,7 @@ def _session_app(
     signup_mode: str,
     invite_email_enabled: bool = False,
     tenants_isolated: bool = True,
+    organization_directory: str = "local",
 ) -> FastAPI:
     """A route-scoped app for `GET /auth/session`, stubbed as `_app` is."""
 
@@ -178,6 +180,7 @@ def _session_app(
         gateway_signup_mode=signup_mode,
         gateway_max_workspaces_per_user=3,
         invite_email_enabled=invite_email_enabled,
+        organization_directory=organization_directory,
     )
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: SimpleNamespace(
         tenants_isolated=tenants_isolated
@@ -246,6 +249,60 @@ async def _make_user(
         session.add(TenantMember(tenant_id=tenant_id, user_id=user.id, role="member"))
         await session.commit()
         return user.id
+
+
+def _token(user_id: str, email: str) -> str:
+    return create_jwt(
+        user_id,
+        email,
+        "user",
+        _KEYRING,
+        None,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
+    )
+
+
+async def _make_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    name: str,
+    role: str,
+    *,
+    linked: bool = True,
+    workspace: bool = False,
+) -> str:
+    """An organization `user_id` holds `role` in, optionally linked to the
+    directory and with a workspace they hold no membership in."""
+    organization_id = f"org-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        session.add(
+            Organization(
+                id=organization_id,
+                slug=organization_id,
+                name=name,
+                workos_organization_id=f"{organization_id}-workos" if linked else None,
+            )
+        )
+        await session.flush()
+        session.add(
+            OrganizationMember(
+                organization_id=organization_id, user_id=user_id, role=role
+            )
+        )
+        if workspace:
+            tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+            session.add(
+                Tenant(
+                    id=tenant_id,
+                    slug=tenant_id,
+                    name=name,
+                    organization_id=organization_id,
+                )
+            )
+        await session.commit()
+    return organization_id
 
 
 async def _make_user_with_memberships(
@@ -415,6 +472,7 @@ class TestSessionStateEndpoint:
         signup_mode: str,
         invite_email_enabled: bool = False,
         tenants_isolated: bool = True,
+        organization_directory: str = "local",
     ) -> httpx.Response:
         async with _client(
             _session_app(
@@ -422,6 +480,7 @@ class TestSessionStateEndpoint:
                 signup_mode=signup_mode,
                 invite_email_enabled=invite_email_enabled,
                 tenants_isolated=tenants_isolated,
+                organization_directory=organization_directory,
             ),
             token,
         ) as client:
@@ -617,6 +676,102 @@ class TestSessionStateEndpoint:
         assert body["state"] == "needs_workspace"
         assert body["tenants"] == []
         assert body["can_create_workspace"] is True
+
+    async def test_a_session_in_no_workspace_lists_its_linked_organizations(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_user_with_memberships(
+            session_factory, name="between", tenant_ids=[]
+        )
+        admin_of = await _make_organization(
+            session_factory, user_id, "Beta", "org_admin", linked=True
+        )
+        viewer_of = await _make_organization(
+            session_factory, user_id, "alpha", "member", linked=True, workspace=True
+        )
+        await _make_organization(
+            session_factory, user_id, "Unlinked", "member", linked=False
+        )
+        token = _token(user_id, "between@example.invalid")
+
+        body = (
+            await self._get(
+                session_factory,
+                token,
+                signup_mode="open",
+                organization_directory="workos",
+            )
+        ).json()
+
+        assert body["state"] == "needs_workspace"
+        assert body["organization_directory"] == "workos"
+        assert body["organizations"] == [
+            {"id": viewer_of, "name": "alpha", "role": "member", "has_workspace": True},
+            {
+                "id": admin_of,
+                "name": "Beta",
+                "role": "org_admin",
+                "has_workspace": False,
+            },
+        ]
+
+    async def test_another_persons_organizations_are_not_listed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_user_with_memberships(
+            session_factory, name="alone", tenant_ids=[]
+        )
+        other_id = await _make_user_with_memberships(
+            session_factory, name="someone-else", tenant_ids=[]
+        )
+        await _make_organization(session_factory, other_id, "Theirs", "org_admin")
+        token = _token(user_id, "alone@example.invalid")
+
+        body = (
+            await self._get(
+                session_factory,
+                token,
+                signup_mode="open",
+                organization_directory="workos",
+            )
+        ).json()
+
+        assert body["organizations"] == []
+
+    async def test_the_local_directory_lists_no_organizations(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_user_with_memberships(
+            session_factory, name="local", tenant_ids=[]
+        )
+        await _make_organization(session_factory, user_id, "Acme", "org_admin")
+        token = _token(user_id, "local@example.invalid")
+
+        body = (await self._get(session_factory, token, signup_mode="open")).json()
+
+        assert body["organization_directory"] == "local"
+        assert body["organizations"] == []
+
+    async def test_a_session_in_a_workspace_lists_no_organizations(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_user(
+            session_factory, name="settled", tenant_id=TENANT_ZERO_ID
+        )
+        await _make_organization(session_factory, user_id, "Acme", "org_admin")
+        token = _token(user_id, "settled@example.invalid")
+
+        body = (
+            await self._get(
+                session_factory,
+                token,
+                signup_mode="open",
+                organization_directory="workos",
+            )
+        ).json()
+
+        assert body["state"] == "ready"
+        assert body["organizations"] == []
 
     async def test_invite_only_still_lets_an_org_admin_add_a_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]

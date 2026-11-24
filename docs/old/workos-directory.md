@@ -74,6 +74,22 @@ or Switch's rows cannot be written, the sign-in goes ahead with Switch's rows
 as they were, and the failure is logged. A sign-in never takes anything away;
 the mirror does.
 
+## First workspace
+
+An organization can have no workspace, and then its people have nowhere to
+go. Its Org Admin adds the first one with
+`POST /organizations/{organization_id}/workspaces`, which needs no workspace
+selected; no operator step is needed.
+
+- Only an Org Admin of the organization may, by the organization's own
+  membership; anyone else is refused.
+- It counts against `GATEWAY_MAX_WORKSPACES_PER_USER`, as every workspace
+  does. The platform operator is exempt.
+- The creator becomes the workspace's admin.
+
+An organization whose workspaces are all archived is not empty: its Org Admin
+can still enter one and restore it.
+
 ## Roles
 
 Switch reads the WorkOS role `org_admin` as Org Admin and every other role as

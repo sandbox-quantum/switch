@@ -1,10 +1,12 @@
 """Creating organizations and the workspaces in them.
 
 Two routes create: `POST /organizations` makes an organization and its first
-workspace for anyone signed in, and `POST /organizations/current/workspaces`
-adds a workspace to an organization its `org_admin` is in. `POST /tenants` is
-the first of those under its old name, kept for one release. What they share
-is here: the per-person allowance, slugs, and the provisioning itself.
+workspace for anyone signed in, and `POST /organizations/{id}/workspaces`
+adds a workspace to an organization its `org_admin` is in, as does
+`POST /organizations/current/workspaces` for the bound workspace's
+organization. `POST /tenants` is the first of those under its old name, kept
+for one release. What they share is here: the per-person allowance, slugs,
+and the provisioning itself.
 """
 
 from __future__ import annotations
@@ -300,6 +302,60 @@ async def create_organization_for(
             organization_id=organization.id,
             archived_at=None,
         ),
+    )
+
+
+async def add_workspace(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    client_lifecycle: ClientLifecycleService,
+    config: SwitchConfig,
+    *,
+    organization_id: str,
+    creator_id: str,
+    is_operator: bool,
+    name: str,
+) -> TenantMembershipResponse:
+    """Add a workspace named `name` to `organization_id` for `creator_id`, its
+    `org_admin`, who becomes the workspace's `admin`. The caller has checked
+    that they are the `org_admin`.
+
+    Counts against the creator's allowance, and is refused where the
+    deployment allows none, but not by `invite_only` sign-up, which governs
+    who comes onto the server rather than what an organization adds. The
+    platform operator is exempt, as everywhere.
+
+    `session` is the request's, unbound or bound to one of the organization's
+    workspaces: it holds the allowance's row lock until the workspace is made.
+    """
+    await refuse_a_workspace_name_taken(
+        session, session_factory, organization_id, name, renaming=None
+    )
+    allowance = (
+        None
+        if is_operator
+        else await lock_workspace_allowance(
+            session, creator_id, config, new_organization=False
+        )
+    )
+    if allowance is None:
+        # Not held across provisioning, which opens a session per tenant.
+        await session.commit()
+    tenant = await create_workspace(
+        session_factory, user_store, client_lifecycle, organization_id, creator_id, name
+    )
+    if allowance is not None:
+        allowance.workspaces_created += 1
+        await session.commit()
+    return TenantMembershipResponse(
+        id=tenant.id,
+        slug=tenant.slug,
+        name=tenant.name,
+        role="admin",
+        organization_role=ORGANIZATION_ADMIN_ROLE,
+        organization_id=organization_id,
+        archived_at=None,
     )
 
 

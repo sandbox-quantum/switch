@@ -153,6 +153,10 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # `organization_session` of its own — see `leave_organization`.
     ("GET", "/organizations/without-workspace"),
     ("POST", "/organizations/{organization_id}/leave"),
+    # A workspace for an organization the caller may have none of: there may
+    # be no workspace of theirs to bind. It opens an `organization_session`
+    # of its own — see `create_workspace_in_organization`.
+    ("POST", "/organizations/{organization_id}/workspaces"),
     # Accepting an invitation binds the tenant the *token* names, which is
     # neither the one on the caller's session nor one they belong to yet. It
     # opens its own `tenant_session` around that id — see `accept_invitation`.

@@ -44,6 +44,7 @@ from switch_core.db.stores.revoked_session_store import RevokedSessionStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import (
+    directory_organizations_of_user,
     only_organization_id,
     tenant_of_invitation,
     tenants_bindable_by_user,
@@ -60,6 +61,7 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.schemas import (
     OrganizationSummary,
+    SessionOrganization,
     SessionStateResponse,
     SessionStateUser,
     TenantMembershipResponse,
@@ -1326,6 +1328,41 @@ async def rebind_if_left(
     )
 
 
+async def linked_organizations_of(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> list[SessionOrganization]:
+    """The organizations linked to the directory that `user_id` is a member
+    of, and their role in each, sorted by name: what a user in no workspace
+    may still act on. Each is read on a short session of its own, scoped to
+    it, since an organization's row is readable nowhere else."""
+    found = []
+    # No WorkOS IDs: only the linked organizations the user is already in.
+    for organization_id in await directory_organizations_of_user(
+        session_factory, user_id, []
+    ):
+        async with organization_session(session_factory, organization_id) as session:
+            organization = await session.get(Organization, organization_id)
+            member = await session.get(OrganizationMember, (organization_id, user_id))
+        if organization is None or member is None:
+            logger.warning(
+                "Organization %s or %s's membership in it is gone; skipping",
+                organization_id,
+                user_id,
+            )
+            continue
+        found.append(
+            SessionOrganization(
+                id=organization.id,
+                name=organization.name,
+                role=member.role,
+                has_workspace=bool(
+                    await tenants_of_organization(session_factory, organization_id)
+                ),
+            )
+        )
+    return sorted(found, key=lambda o: (o.name.casefold(), o.id))
+
+
 def workspace_creation_refusal(
     config: SwitchConfig,
     *,
@@ -1414,6 +1451,7 @@ def describe_session_state(
         tenant=tenant,
         tenants=tenants,
         state=state,
+        organization_directory=config.organization_directory,
         # A deployment that is not isolating tenants keeps to the one it has,
         # for operators too: creating would refuse any name.
         can_create_workspace=tenants_isolated and refusal(True) is None,

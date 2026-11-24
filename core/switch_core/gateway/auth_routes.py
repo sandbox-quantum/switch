@@ -60,6 +60,7 @@ from switch_core.gateway.auth import (
     get_current_user,
     hash_password_off_loop,
     initial_tenant_claim,
+    linked_organizations_of,
     list_held_memberships,
     list_tenant_memberships,
     operator_entered_workspace,
@@ -498,7 +499,7 @@ async def session_state(
     entered = await operator_entered_workspace(
         session_factory, user, auth.tenant_claim, tenants
     )
-    return describe_session_state(
+    state = describe_session_state(
         config,
         user,
         auth.tenant_claim,
@@ -508,6 +509,13 @@ async def session_state(
         can_manage_connector_apps=await deployment_manager(session_factory, user)
         is not None,
         connector_apps_in_dashboard=await connector_apps_in_dashboard(session_factory),
+    )
+    if state.state != "needs_workspace" or config.organization_directory != "workos":
+        return state
+    return state.model_copy(
+        update={
+            "organizations": await linked_organizations_of(session_factory, user.id)
+        }
     )
 
 
