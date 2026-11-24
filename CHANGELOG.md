@@ -60,6 +60,15 @@ version of their own to them without also giving them a release of their own.
   still refused with the WorkOS directory, by the server and by the Helm
   chart.
 
+#### Fixed
+- **A message the platform refuses is tried again instead of being lost.** When
+  Slack, Mattermost or another platform answered a message from Switch with an
+  error, the bridge logged it and never posted it, even after a deploy handed
+  the bridge to another process. It is now tried again after 2, 10 and 60
+  seconds, and if the bridge is handed over meanwhile the next process posts
+  it. A message that still fails after that is given up on, with an error in
+  the log.
+
 #### Security
 - **The pre-tool-call mediation route is removed.** `POST
   /agents/{agent_id}/mediation/pre-tool-call` answered `proceed` for any tool
