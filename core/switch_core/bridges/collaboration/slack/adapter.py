@@ -445,6 +445,14 @@ _SLACK_AUTH_ERROR_CODES = frozenset(
 )
 
 
+# An `&` that does not start one of the three entities Slack decodes.
+_SLACK_BARE_AMPERSAND = re.compile(r"&(?!(?:amp|lt|gt);)")
+
+# A Markdown link's destination: no space, and parentheses only in balanced
+# pairs, as in an encyclopedia's `Mercury_(planet)`.
+_LINK_DESTINATION = r"(?:[^()\s]|\([^()\s]*\))+"
+
+
 def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     """`auth_failed` for a rejected token, `platform_error` for everything else
     Slack refuses a call for (rate limits, a missing scope, an outage). Both
@@ -3398,7 +3406,16 @@ class SlackAdapter(PlatformAdapter):
     # ── Translation ──────────────────────────────────────────────────────────
 
     def _render_outbound(self, content: str) -> str:
-        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
+        """`content` as mrkdwn, its `<` and `&` escaped first so that only
+        what the translation writes can mention or link.
+
+        An entity already in `content` is left as it is: a label escaped by
+        `escape_label_for_body` is inlined into bodies this translates, and
+        escaping it again would show the entity. So a body that writes
+        `&amp;` itself shows `&` on Slack. `>` is left alone, so a quote
+        stays a quote; without a `<` it opens nothing."""
+        escaped = _SLACK_BARE_AMPERSAND.sub("&amp;", content).replace("<", "&lt;")
+        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(escaped))
 
     def defuse_mass_mentions(self, text: str) -> str:
         """Escape Slack's own channel-wide syntax; defuse the words as prose.
@@ -3547,13 +3564,26 @@ class SlackAdapter(PlatformAdapter):
         pick the agent from autocomplete. The group is empty, so rendering the
         mention notifies nobody. Unknown names are left as plain text."""
 
-        def _replace(match: re.Match[str]) -> str:
-            username = match.group(1)
+        def _mention(username: str) -> str | None:
             user_id = self._username_to_id.get(username.casefold())
             if user_id:
                 return f"<@{user_id}>"
             group_id = self._agent_group_ids.get(username.casefold())
-            return f"<!subteam^{group_id}>" if group_id else match.group(0)
+            return f"<!subteam^{group_id}>" if group_id else None
+
+        def _replace(match: re.Match[str]) -> str:
+            # A name may hold `.`, `-` and `_`, but one ending a sentence is
+            # punctuation: "thanks @alice." mentions alice.
+            username = match.group(1)
+            trailing = ""
+            while username:
+                mention = _mention(username)
+                if mention is not None:
+                    return mention + trailing
+                if username[-1] not in "._-":
+                    break
+                username, trailing = username[:-1], username[-1] + trailing
+            return match.group(0)
 
         return re.sub(r"@([A-Za-z0-9][A-Za-z0-9._-]*)", _replace, content)
 
@@ -4267,7 +4297,8 @@ class SlackAdapter(PlatformAdapter):
         # command escapes its text — as `<@U123|username>`. Accept the optional
         # `|label` so escaped slash-command mentions (including the bridge bot's
         # own id, used as its room alias) resolve the same as message mentions.
-        message = re.sub(r"<@(U[A-Z0-9]+)(?:\|[^>]+)?>", _replace_mention, message)
+        # `U…` ids, and `W…` ones on an Enterprise Grid org.
+        message = re.sub(r"<@([UW][A-Z0-9]+)(?:\|[^>]+)?>", _replace_mention, message)
         return self._translate_usergroup_mentions(message)
 
     def _translate_usergroup_mentions(self, message: str) -> str:
@@ -4334,8 +4365,8 @@ class SlackAdapter(PlatformAdapter):
         text = re.sub(r"^#{1,6}\s+(.+)$", _convert_heading, text, flags=re.MULTILINE)
         text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
         text = re.sub(r"~~(.+?)~~", r"~\1~", text)
-        text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"<\2|\1>", text)
-        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)
+        text = re.sub(rf"!\[([^\]]*)\]\(({_LINK_DESTINATION})\)", r"<\2|\1>", text)
+        text = re.sub(rf"\[([^\]]+)\]\(({_LINK_DESTINATION})\)", r"<\2|\1>", text)
         text = re.sub(r"^[-*_]{3,}\s*$", "───", text, flags=re.MULTILINE)
 
         for i, block in enumerate(code_blocks):

@@ -1518,3 +1518,55 @@ def test_backtick_wrapped_command_from_bot_is_not_run() -> None:
 
     # An agent posting a `!command` reference must never trigger it.
     assert commands == []
+
+
+# ── Text translation ─────────────────────────────────────────────────────────
+
+
+def test_an_enterprise_grid_mention_from_slack_reads_as_the_name() -> None:
+    adapter = _adapter()
+    adapter._user_cache["W0CAROL"] = SlackUser(name="carol", display_name="carol")
+
+    assert adapter.translate_inbound("hi <@W0CAROL>") == "hi @carol"
+
+
+@pytest.mark.parametrize("ending", [".", "...", "-", "_"])
+def test_a_mention_ending_a_sentence_is_still_a_mention(ending: str) -> None:
+    adapter = _adapter()
+    adapter._remember_mention_target("alice", "U0ALICE")
+
+    assert adapter.translate_outbound(f"thanks @alice{ending}") == (
+        f"thanks <@U0ALICE>{ending}"
+    )
+
+
+def test_a_name_with_a_dot_inside_is_mentioned_whole() -> None:
+    adapter = _adapter()
+    adapter._remember_mention_target("bob.smith", "U0BOB")
+    adapter._remember_mention_target("bob", "U0OTHER")
+
+    assert adapter.translate_outbound("cc @bob.smith.") == "cc <@U0BOB>."
+
+
+def test_a_link_with_parentheses_in_its_url_is_one_slack_link() -> None:
+    adapter = _adapter()
+
+    assert (
+        adapter.translate_outbound(
+            "see [Mercury](https://en.example.org/wiki/Mercury_(planet))"
+        )
+        == "see <https://en.example.org/wiki/Mercury_(planet)|Mercury>"
+    )
+
+
+def test_slack_markup_written_in_a_body_is_shown_not_parsed() -> None:
+    """Only the translation writes Slack markup: a body that spells out a
+    mention or a link shows it as text."""
+    adapter = _adapter()
+
+    sent = adapter.translate_outbound("try <@U0JANE> or <https://a.example|b> & c")
+
+    assert sent == "try &lt;@U0JANE> or &lt;https://a.example|b> &amp; c"
+    assert adapter.translate_inbound(sent) == (
+        "try <@U0JANE> or <https://a.example|b> & c"
+    )
