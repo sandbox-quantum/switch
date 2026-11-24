@@ -618,6 +618,12 @@ to track them.
   lets its claim go and tries it again, since it cannot tell the post went
   out. `bridge_machine.py` expects the second copy; a platform that returns
   the post's ref with its error would let the bridge settle it instead.
+- **An entity a message spells out shows decoded on Slack.** A body that
+  writes `&amp;` (a message about HTML, say) shows `&`. The translation keeps
+  entities because labels escaped for Slack are inlined into the bodies it
+  translates; telling the two apart would let it escape every `&`.
+  `bridge.slack-markup-roundtrip` leaves spelled-out entities out of its
+  bodies until then.
 
 ## Open questions
 

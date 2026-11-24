@@ -27,3 +27,44 @@ properties:
       back to it. A message the platform took and then failed on is expected
       twice, since the bridge cannot tell it went out. An agent's retried
       `post_message` is outside this property: it takes no idempotency key.
+  - id: bridge.split-preserves-content
+    title: A message split to fit a platform keeps what it said
+    statement: >
+      A message longer than a platform's limit is posted as parts that each
+      fit the limit, say what the message said in order, and leave no code
+      block open that the message closed.
+    kind: safety
+    formality: semi-formal
+    levels: [code]
+    owner: platform
+    status: proposed
+    notes: >
+      `bridges/collaboration/chunking.py` (`split_markdown`). Checked by
+      `test_bridge_formats.py` on generated Markdown (prose, words longer than
+      the limit, fenced blocks closed and left open, lines that start with
+      backticks and are not fences): every part fits, the text without
+      whitespace and fence lines is the original's, and a fence a split
+      cuts is closed at the end of one part and reopened in the next. A split
+      with no fence and no over-long line is the original cut between lines.
+  - id: bridge.slack-markup-roundtrip
+    title: A message sent to Slack reads as written
+    statement: >
+      A message sent to Slack shows what it said: the people it names are
+      Slack mentions, its links are Slack links to the same address, and any
+      Slack syntax it spells out shows as text rather than mentioning,
+      linking or broadcasting.
+    kind: safety
+    formality: semi-formal
+    levels: [code]
+    owner: platform
+    status: proposed
+    notes: >
+      `bridges/collaboration/slack/adapter.py` (`translate_outbound`,
+      `translate_inbound`). Checked by `test_bridge_formats.py`: a body of
+      text, mentions of known people (some ending a sentence), Markdown links
+      (some with parentheses in the address) and spelled-out Slack syntax
+      (`<@U…>`, `<!here>`, `<url|label>`, `<`, `&`) goes out and is read back
+      the way Slack shows it, and must read as written. Only the translation
+      may write Slack markup, and no `&` goes out unescaped. An entity a body
+      spells out (`&amp;`) is left out: it shows decoded on Slack, a known
+      issue.
