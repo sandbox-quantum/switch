@@ -199,7 +199,7 @@ DOCUMENT_SCOPE = one_of("library", "room")
 # What a key is for. `agent` authenticates a registered agent, `registration`
 # mints new ones, `bootstrap` is the deployment-wide key, `other` is anything
 # a later type introduces.
-API_KEY_TYPE = one_of("agent", "registration", "bootstrap", "other")
+API_KEY_TYPE = one_of("agent", "registration", "bootstrap", "retired", "other")
 
 VISIBILITY = one_of("private", "public")
 

@@ -891,7 +891,7 @@ class ApiKeyDetail(BaseModel):
     agent_name: str | None
     # What the caller may do with it: reveal and copy it, their own only; and
     # delete it, their own, or as an admin anyone's key for adding agents,
-    # unless an agent still signs in with it (`authz.can_delete_api_key`).
+    # unless an agent still holds it (`authz.can_delete_api_key`).
     can_reveal: bool
     can_delete: bool
 
