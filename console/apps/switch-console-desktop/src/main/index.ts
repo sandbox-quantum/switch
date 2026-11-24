@@ -150,9 +150,20 @@ app.on('window-all-closed', () => {
   }
 });
 
+function createWorkspaceWindow(): BrowserWindow {
+  const window = createMainWindow();
+  const stopUsage = () => providerUsageService.setActive(false);
+  window.webContents.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+    if (isMainFrame && !isSameDocument) stopUsage();
+  });
+  window.webContents.on('render-process-gone', stopUsage);
+  window.once('closed', stopUsage);
+  return window;
+}
+
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
-    createMainWindow();
+    createWorkspaceWindow();
   }
 });
 
@@ -363,11 +374,11 @@ void app.whenReady().then(async () => {
   setupAppProtocol(join(app.getAppPath(), 'out', 'renderer'));
   if (import.meta.env.DEV) setupDevRendererCsp(process.env.ELECTRON_RENDERER_URL!);
   setupApplicationMenu();
-  createMainWindow();
+  const window = createWorkspaceWindow();
   // A deeplink that launched the app (cold start) is buffered until the
   // renderer has loaded its event subscribers, then delivered. The short delay
   // lets React mount and attach the listener after the page finishes loading.
-  getMainWindow()?.webContents.on('did-finish-load', () => {
+  window.webContents.on('did-finish-load', () => {
     setTimeout(() => flushPendingDeeplink(), 1000);
   });
 
