@@ -20,6 +20,23 @@ spec:
       labels:
         app: switch-egress-lists
     spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - preference:
+              matchExpressions:
+              - key: switch.dev/pool
+                operator: In
+                values:
+                - system
+            weight: 100
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: switch-box
+            namespaceSelector: {}
+            topologyKey: kubernetes.io/hostname
       automountServiceAccountToken: false
       containers:
       - command:
@@ -61,8 +78,6 @@ spec:
           name: tmp
       dnsPolicy: ClusterFirst
       enableServiceLinks: false
-      nodeSelector:
-        switch.dev/pool: agents
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext:

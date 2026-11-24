@@ -21,17 +21,22 @@ spec:
         app: switch-drain
     spec:
       affinity:
-        podAntiAffinity:
+        nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
-          - podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  app: switch-box
-              namespaceSelector:
-                matchLabels:
-                  app.kubernetes.io/managed-by: switch-hosted
-              topologyKey: kubernetes.io/hostname
+          - preference:
+              matchExpressions:
+              - key: switch.dev/pool
+                operator: In
+                values:
+                - system
             weight: 100
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: switch-box
+            namespaceSelector: {}
+            topologyKey: kubernetes.io/hostname
       automountServiceAccountToken: false
       containers:
       - command:
@@ -100,8 +105,6 @@ spec:
           readOnly: true
       dnsPolicy: ClusterFirst
       enableServiceLinks: false
-      nodeSelector:
-        switch.dev/pool: agents
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext:
@@ -170,6 +173,23 @@ spec:
       labels:
         app: switch-hosted-controller
     spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - preference:
+              matchExpressions:
+              - key: switch.dev/pool
+                operator: In
+                values:
+                - system
+            weight: 100
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: switch-box
+            namespaceSelector: {}
+            topologyKey: kubernetes.io/hostname
       automountServiceAccountToken: false
       containers:
       - command:
@@ -246,8 +266,6 @@ spec:
           name: tmp
       dnsPolicy: ClusterFirst
       enableServiceLinks: false
-      nodeSelector:
-        switch.dev/pool: agents
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext:
@@ -315,6 +333,23 @@ spec:
       labels:
         app: switch-hosted-operator
     spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - preference:
+              matchExpressions:
+              - key: switch.dev/pool
+                operator: In
+                values:
+                - system
+            weight: 100
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: switch-box
+            namespaceSelector: {}
+            topologyKey: kubernetes.io/hostname
       automountServiceAccountToken: false
       containers:
       - command:
@@ -368,8 +403,6 @@ spec:
           name: tmp
       dnsPolicy: ClusterFirst
       enableServiceLinks: false
-      nodeSelector:
-        switch.dev/pool: agents
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext:
@@ -438,6 +471,23 @@ spec:
       labels:
         app: switch-hosted-provisioner
     spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - preference:
+              matchExpressions:
+              - key: switch.dev/pool
+                operator: In
+                values:
+                - system
+            weight: 100
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: switch-box
+            namespaceSelector: {}
+            topologyKey: kubernetes.io/hostname
       automountServiceAccountToken: false
       containers:
       - command:
@@ -490,8 +540,6 @@ spec:
           name: tmp
       dnsPolicy: ClusterFirst
       enableServiceLinks: false
-      nodeSelector:
-        switch.dev/pool: agents
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext:
