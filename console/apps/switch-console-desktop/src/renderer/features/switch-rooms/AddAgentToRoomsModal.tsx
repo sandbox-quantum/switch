@@ -92,13 +92,13 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
             chat: (roomId) => chatsStore.chat(roomId),
             addChatAgent: (input) => rpc.chats.addAgent(input),
             addRoomAgents: (input) => rpc.workspaces.addRoomAgents(input),
-            chatChanged: (id, chat) => {
-              forgetBuddyChat(id, chat.roomId);
-              chatsStore.add(id, chat);
-            },
+            chatChanged: (id, chat) => chatsStore.add(id, chat),
           },
           { serverId, workspaceId, roomId: room.id, agentId: switchAgentId }
         );
+        // A direct chat takes the agent through addRoomAgents, which reports no
+        // changed chat: whichever way it went, it is no longer the buddy's alone.
+        forgetBuddyChat(serverId, room.id);
       }
       await Promise.all([
         switchRoomsStore.fetchAgentRooms(workspaceId, switchAgentId, { force: true }),

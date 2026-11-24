@@ -257,6 +257,13 @@ export type TelemetryChatKind = 'direct' | 'group' | 'unknown';
 /** Whom a message named: nobody, an agent, a person, or both. Never which. */
 export type TelemetryChatMentions = 'none' | 'agent' | 'person' | 'both';
 
+/**
+ * Whether a message went to the person's own switch-buddy, in a direct chat.
+ * `unknown` when the chat could not be read to say: the chats list does not
+ * hold it and the server's own list could not be read in time.
+ */
+export type TelemetryToBuddy = 'yes' | 'no' | 'unknown';
+
 /** How a room came to be made: the Create room dialog, or a template run. */
 export type TelemetryRoomCreateSource = 'dialog' | 'template';
 
@@ -755,7 +762,7 @@ export type TelemetryEventMap = {
     has_attachment: boolean;
     in_thread: boolean;
     mentions: TelemetryChatMentions;
-    to_buddy: boolean;
+    to_buddy: TelemetryToBuddy;
     outcome: TelemetryOutcome;
     failure_reason: TelemetryChatFailure;
   };

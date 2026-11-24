@@ -75,33 +75,34 @@ describe('chatMessageShape', () => {
     mentionAgentIds: [],
     mentionUserIds: [],
     mentionSpans: [],
-    toBuddy: false,
+    toBuddy: 'no' as const,
   };
 
-  it('says whether the chat is with the person’s own buddy, and nothing of the message', () => {
-    expect(chatMessageShape({ ...base, toBuddy: true })).toEqual({
+  it('says whether the message went to the person’s own buddy, and nothing of the message', () => {
+    expect(chatMessageShape({ ...base, toBuddy: 'yes' })).toEqual({
       has_attachment: false,
       in_thread: false,
       mentions: 'none',
-      to_buddy: true,
+      to_buddy: 'yes',
     });
     expect(chatMessageShape({ ...base, uploadIds: ['u1'], threadRootId: 'm1' })).toEqual({
       has_attachment: true,
       in_thread: true,
       mentions: 'none',
-      to_buddy: false,
+      to_buddy: 'no',
     });
+    expect(chatMessageShape({ ...base, toBuddy: 'unknown' }).to_buddy).toBe('unknown');
   });
 
-  it('takes only a real true as a buddy chat, since the input crosses IPC unvalidated', () => {
+  it('reads anything but a known value as unknown, since the input crosses IPC unvalidated', () => {
     const unvalidated = (toBuddy: unknown) =>
       chatMessageShape({ ...base, toBuddy } as unknown as Parameters<typeof chatMessageShape>[0]);
-    expect(unvalidated('true').to_buddy).toBe(false);
-    expect(unvalidated(1).to_buddy).toBe(false);
-    expect(unvalidated(undefined).to_buddy).toBe(false);
+    expect(unvalidated(true).to_buddy).toBe('unknown');
+    expect(unvalidated('YES').to_buddy).toBe('unknown');
+    expect(unvalidated(undefined).to_buddy).toBe('unknown');
     expect(
       chatMessageShape({ threadRootId: null } as unknown as Parameters<typeof chatMessageShape>[0])
-    ).toEqual({ has_attachment: false, in_thread: false, mentions: 'none', to_buddy: false });
+    ).toEqual({ has_attachment: false, in_thread: false, mentions: 'none', to_buddy: 'unknown' });
   });
 });
 

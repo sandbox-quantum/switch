@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents-key';
+import { log } from '@renderer/utils/logger';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { isBuddy } from './buddy-identity';
@@ -37,6 +38,7 @@ export function rememberBuddyChat(
 /** Someone else was added to the chat: it is no longer the buddy's alone. */
 export function forgetBuddyChat(serverId: string, roomId: string): void {
   openedWithBuddy.delete(roomKey(serverId, roomId));
+  lookedUp.delete(roomKey(serverId, roomId));
 }
 
 /** The buddy a chat was opened with (`rememberBuddyChat`) if that was recent enough, or null. */
@@ -51,19 +53,17 @@ export function rememberedBuddy(serverId: string, roomId: string, now: number): 
  * chat is a direct one, its one agent their buddy, and no other person in
  * it. A group chat does not count, even with the buddy its only agent.
  *
- * `chat` is the chat as the chats list holds it, when it does. Its agent is
- * the buddy when it is the one the chat was opened with (`remembered`); else
- * when the person's managed agents (`ownAgents`, null when their list is not
- * read yet) name it as one by the template run that made it; else, with no
- * list to go by, when it is one of theirs named as buddies are. A chat the
- * list does not hold counts only when it was opened with the buddy.
+ * Its agent is the buddy when it is the one the chat was opened with
+ * (`remembered`); else when the person's managed agents (`ownAgents`, null
+ * when their list is not read yet) name it as one by the template run that
+ * made it; else, with no list to go by, when it is one of theirs named as
+ * buddies are.
  */
 export function isBuddyChat(
-  chat: Pick<ChatSummary, 'agents' | 'channelType'> | undefined,
+  chat: Pick<ChatSummary, 'agents' | 'channelType'>,
   ownAgents: readonly OwnAgent[] | null,
   remembered: string | null
 ): boolean {
-  if (!chat) return remembered !== null;
   const agent = chat.channelType === 'direct' && chat.agents.length === 1 ? chat.agents[0] : null;
   if (!agent) return false;
   if (agent.id === remembered) return true;
@@ -72,6 +72,71 @@ export function isBuddyChat(
     return own !== undefined && isBuddy(own);
   }
   return agent.ownedByViewer && isBuddy({ name: agent.name });
+}
+
+/** How long a chat read from the server stands in for the chats list. */
+export const LOOKED_UP_CHAT_MS = 60_000;
+
+/** How long a send waits to read a chat it doesn't hold before it says it couldn't tell. */
+export const CHAT_LOOKUP_TIMEOUT_MS = 2_000;
+
+/** Chats read from the server for a send the chats list couldn't place, by server and room. */
+const lookedUp = new Map<string, { chat: ChatSummary; at: number }>();
+
+export type ChatReads = {
+  list: (serverId: string) => Promise<ChatSummary[] | null>;
+  listArchived: (serverId: string) => Promise<ChatSummary[] | null>;
+};
+
+/**
+ * A chat the chats list doesn't hold (on a server it doesn't follow, or not
+ * loaded yet after a launch), read from the server's own list of the
+ * person's chats, archived ones after. Kept a minute, with every other chat
+ * that list held. Undefined when it can't be read in time, or the server
+ * doesn't list it: then nobody can say whether the message went to the
+ * buddy, and it is reported as unknown rather than as not.
+ */
+export async function lookUpChat(
+  reads: ChatReads,
+  serverId: string,
+  roomId: string,
+  now: number
+): Promise<ChatSummary | undefined> {
+  const cached = lookedUp.get(roomKey(serverId, roomId));
+  if (cached && now - cached.at <= LOOKED_UP_CHAT_MS) return cached.chat;
+  const remember = (chats: ChatSummary[]) => {
+    for (const chat of chats) lookedUp.set(roomKey(serverId, chat.roomId), { chat, at: now });
+    return chats.find((chat) => chat.roomId === roomId);
+  };
+  const read = async () =>
+    remember((await reads.list(serverId)) ?? []) ??
+    remember((await reads.listArchived(serverId)) ?? []);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((settle) => {
+    timer = setTimeout(() => settle('timeout'), CHAT_LOOKUP_TIMEOUT_MS);
+  });
+  try {
+    const found = await Promise.race([read(), timeout]);
+    if (found === 'timeout') {
+      log.warn('Could not read a chat in time to say whether a message went to switch-buddy', {
+        serverId,
+        roomId,
+      });
+      return undefined;
+    }
+    if (found === undefined)
+      log.warn('The server does not list the chat a message went to', { serverId, roomId });
+    return found;
+  } catch (error) {
+    log.warn('Could not read the chat a message went to', {
+      serverId,
+      roomId,
+      error: String(error),
+    });
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

@@ -1,6 +1,6 @@
 import { QueryClient } from '@tanstack/react-query';
 import { runInAction } from 'mobx';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import { chatSummarySchema } from '@shared/core/chats/chats';
 
@@ -53,9 +53,18 @@ client.current = new QueryClient();
 const { chatsStore } = await import('./chats');
 const { MANAGED_AGENTS_KEY } =
   await import('@renderer/features/managed-agents/use-managed-agents-key');
-const { rememberBuddyChat } = await import('@renderer/features/switch-buddy/buddy-chat');
 
 const BUDDY_RUN = { id: 'official:switch-buddy', key: 'buddy', revision: 1 };
+
+/** The mocked RPC method, made on first use like the mock itself does. */
+function method(name: string): Mock<(...args: string[]) => Promise<unknown>> {
+  if (!calls.has(name))
+    calls.set(
+      name,
+      vi.fn(async () => null)
+    );
+  return calls.get(name) as Mock<(...args: string[]) => Promise<unknown>>;
+}
 
 function chat(
   roomId: string,
@@ -115,27 +124,39 @@ describe('the chats store’s send', () => {
       serverId: 'server-1',
       roomId: 'room-buddy',
       body: 'hello',
-      toBuddy: true,
+      toBuddy: 'yes',
     });
   });
 
-  it('says a group chat, another agent’s chat or a chat it does not know is not', async () => {
+  it('says a group chat or another agent’s chat is not', async () => {
     chatsStore.add('server-1', chat('room-group', 'group', [{ id: 'buddy', name: 'helper' }]));
     chatsStore.add('server-1', chat('room-other', 'direct', [{ id: 'other', name: 'reviewer' }]));
 
-    expect(await sendIn('server-1', 'room-group')).toMatchObject({ toBuddy: false });
-    expect(await sendIn('server-1', 'room-other')).toMatchObject({ toBuddy: false });
-    expect(await sendIn('server-1', 'room-unknown')).toMatchObject({ toBuddy: false });
+    expect(await sendIn('server-1', 'room-group')).toMatchObject({ toBuddy: 'no' });
+    expect(await sendIn('server-1', 'room-other')).toMatchObject({ toBuddy: 'no' });
   });
 
-  it('counts the buddy’s chat on a server the chats list does not follow', async () => {
-    rememberBuddyChat('server-2', 'room-elsewhere', 'buddy-2', Date.now());
+  it('reads a chat the list does not hold from the server, on any server', async () => {
+    calls.get('chats.list')?.mockReset();
+    method('chats.list').mockImplementation(async (serverId: string) =>
+      serverId === 'server-2'
+        ? [chat('room-elsewhere', 'direct', [{ id: 'buddy-2', name: 'switch-buddy-max' }])]
+        : []
+    );
+    method('chats.listArchived').mockResolvedValue([]);
 
+    // Another server: its own list says it is a direct chat with someone's buddy.
     expect(await sendIn('server-2', 'room-elsewhere')).toMatchObject({
       serverId: 'server-2',
-      toBuddy: true,
+      toBuddy: 'yes',
     });
-    // The same room id on the followed server is another chat.
-    expect(await sendIn('server-1', 'room-elsewhere')).toMatchObject({ toBuddy: false });
+    expect(method('chats.list')).toHaveBeenCalledWith('server-2');
+  });
+
+  it('says unknown, not no, when the chat cannot be read', async () => {
+    method('chats.list').mockRejectedValue(new Error('offline'));
+    method('chats.listArchived').mockResolvedValue([]);
+
+    expect(await sendIn('server-1', 'room-unreadable')).toMatchObject({ toBuddy: 'unknown' });
   });
 });

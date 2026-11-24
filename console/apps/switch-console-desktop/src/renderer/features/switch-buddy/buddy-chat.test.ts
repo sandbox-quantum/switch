@@ -1,12 +1,16 @@
 import { QueryClient } from '@tanstack/react-query';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents-key';
 import type { ChatAgent, ChatSummary } from '@shared/core/chats/chats';
+import { chatSummarySchema } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import {
   cachedOwnAgents,
+  CHAT_LOOKUP_TIMEOUT_MS,
   forgetBuddyChat,
   isBuddyChat,
+  LOOKED_UP_CHAT_MS,
+  lookUpChat,
   REMEMBERED_BUDDY_CHAT_MS,
   rememberBuddyChat,
   rememberedBuddy,
@@ -91,9 +95,6 @@ describe('isBuddyChat', () => {
 
   it('counts the chat it was opened as, even before the list knows the new buddy', () => {
     expect(isBuddyChat(direct(chatAgent({ id: 'new', name: 'helper' })), [], 'new')).toBe(true);
-    // Not held by the chats list (another server, or not caught up): what it was opened as decides.
-    expect(isBuddyChat(undefined, null, 'new')).toBe(true);
-    expect(isBuddyChat(undefined, [own('a1', 'helper', BUDDY_RUN)], null)).toBe(false);
   });
 
   it('is never a group chat, or a chat with no agent or several', () => {
@@ -155,5 +156,79 @@ describe('cachedOwnAgents', () => {
     const client = new QueryClient();
     client.setQueryData([MANAGED_AGENTS_KEY, 'server-1', 'ws-1', 'user-1'], null);
     expect(cachedOwnAgents(client, 'server-1', 'ws-1', 'user-1')).toBeNull();
+  });
+});
+
+describe('lookUpChat', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const summary = (roomId: string): ChatSummary =>
+    chatSummarySchema.parse({
+      roomId,
+      name: 'Welcome',
+      channelType: 'direct',
+      bridgeType: null,
+      channelName: null,
+      agents: [chatAgent({ id: 'buddy', name: 'switch-buddy-max' })],
+      canManage: true,
+      lastMessage: null,
+    });
+
+  it('reads a chat the list does not hold from the server, and keeps it a minute', async () => {
+    const reads = {
+      list: vi.fn(async () => [summary('look-1'), summary('look-2')]),
+      listArchived: vi.fn(async () => []),
+    };
+
+    expect((await lookUpChat(reads, 's', 'look-1', 1000))?.roomId).toBe('look-1');
+    // The rest of that list is kept too.
+    expect((await lookUpChat(reads, 's', 'look-2', 2000))?.roomId).toBe('look-2');
+    expect(reads.list).toHaveBeenCalledTimes(1);
+    await lookUpChat(reads, 's', 'look-1', 1001 + LOOKED_UP_CHAT_MS);
+    expect(reads.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('looks among archived chats when the live list does not have it', async () => {
+    const reads = {
+      list: vi.fn(async () => []),
+      listArchived: vi.fn(async () => [summary('look-archived')]),
+    };
+
+    expect((await lookUpChat(reads, 's', 'look-archived', 1000))?.roomId).toBe('look-archived');
+  });
+
+  it('cannot say when the server fails, does not list it, or is too slow', async () => {
+    const failing = {
+      list: vi.fn(async () => {
+        throw new Error('offline');
+      }),
+      listArchived: vi.fn(async () => []),
+    };
+    expect(await lookUpChat(failing, 's', 'look-fail', 1000)).toBeUndefined();
+
+    const empty = { list: vi.fn(async () => null), listArchived: vi.fn(async () => null) };
+    expect(await lookUpChat(empty, 's', 'look-missing', 1000)).toBeUndefined();
+
+    vi.useFakeTimers();
+    const slow = {
+      list: vi.fn(() => new Promise<ChatSummary[]>(() => {})),
+      listArchived: vi.fn(async () => []),
+    };
+    const pending = lookUpChat(slow, 's', 'look-slow', 1000);
+    await vi.advanceTimersByTimeAsync(CHAT_LOOKUP_TIMEOUT_MS);
+    expect(await pending).toBeUndefined();
+  });
+
+  it('forgets a looked-up chat someone was added to', async () => {
+    const reads = {
+      list: vi.fn(async () => [summary('look-forget')]),
+      listArchived: vi.fn(async () => []),
+    };
+    await lookUpChat(reads, 's', 'look-forget', 1000);
+    forgetBuddyChat('s', 'look-forget');
+    await lookUpChat(reads, 's', 'look-forget', 1001);
+    expect(reads.list).toHaveBeenCalledTimes(2);
   });
 });

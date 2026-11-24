@@ -213,7 +213,7 @@ export type ChatSendInput = {
    * (`isBuddyChat`). Reported with the message's usage event, never sent to
    * the server.
    */
-  toBuddy: boolean;
+  toBuddy: 'yes' | 'no' | 'unknown';
 };
 
 export type ChatUploadInput = {

@@ -205,7 +205,7 @@ made is not known.
 | Event | Fields, with example values |
 |---|---|
 | `chat_created` | `server_kind` · `kind`: `direct` / `group` (as the server made it) / `unknown` (the create failed) · `agent_count`: `1` · `person_count`: `0` · `on_messaging_app`: `false` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `refused` (the server turned the request down) / `rate_limited` (the server asked the app to slow down) / `request_reused` (the request's id was already used for a different request) / `network` (no answer, or the request timed out) / `server_error` / `error` |
-| `chat_message_sent` | `server_kind` · `has_attachment`: `true` · `in_thread`: `false` · `mentions`: `none` / `agent` / `person` / `both` · `to_buddy`: `true` (**a boolean — the agent is never sent**) · `outcome` · `failure_reason` |
+| `chat_message_sent` | `server_kind` · `has_attachment`: `true` · `in_thread`: `false` · `mentions`: `none` / `agent` / `person` / `both` · `to_buddy`: `yes` / `no` / `unknown` (**the agent is never sent**) · `outcome` · `failure_reason` |
 | `chat_member_changed` | `server_kind` · `change`: `added` / `removed` · `member_kind`: `person` / `agent` · `outcome` · `failure_reason` |
 | `chat_control_sent` | `server_kind` · `command`: `interrupt` / `reset` / `compact` / `retry` · `outcome` · `failure_reason` |
 | `chat_approval_answered` | `server_kind` · `outcome` · `failure_reason` |
@@ -213,18 +213,20 @@ made is not known.
 A message sent tells us *"someone sent a message in a thread, with a file, that
 named an agent"*. It does not tell us the text, the file, the chat, or which
 agent or person was named. `mentions` is the kind of who was named, never who.
-`to_buddy` says the message went to the person's own switch-buddy: the chat is
-a direct one with their buddy as its one agent and no other person in it,
-whether the message was typed there, in the box on Home, or picked from one of
-the cards it shows in the first run. A group chat never counts, even with the
-buddy its only agent. It is how a message to switch-buddy is
-counted, as the last step of the first run's funnel after `agent_created` with
-`entry_point` `switch_buddy`: both come from this install, so Amplitude can put
-them in one funnel, which it cannot do with the Switch server's own
-`message_sent` (the server is a different Amplitude user). Count only
-`outcome` `success`: a send that failed and was retried is reported for each
-attempt. How many messages someone sent their buddy is Amplitude's to count
-from these events.
+`to_buddy` is `yes` when the message went to the person's own switch-buddy:
+the chat is a direct one with their buddy as its one agent and no other person
+in it, whether the message was typed there, in the box on Home, or picked from
+one of the cards it shows in the first run. A group chat is `no`, even with
+the buddy its only agent. When the app does not have the chat to hand (on a
+server it isn't showing, or just after launch) it reads it from the server
+first; `unknown` means that read failed or took too long, so nobody can say.
+It is how a message to switch-buddy is counted, as the last step of the first
+run's funnel after `agent_created` with `entry_point` `switch_buddy`: both
+come from this install, so Amplitude can put them in one funnel, which it
+cannot do with the Switch server's own `message_sent` (the server is a
+different Amplitude user). Count only `outcome` `success`: a send that failed
+and was retried is reported for each attempt. How many messages someone sent
+their buddy is Amplitude's to count from these events.
 A refusal is reported as `refused`, not with the server's code or message.
 Reopening a chat that already exists is not reported as a new one, and a retry
 of something already reported as done is not counted twice.
