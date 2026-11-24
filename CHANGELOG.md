@@ -66,8 +66,10 @@ version of their own to them without also giving them a release of their own.
   error, the bridge logged it and never posted it, even after a deploy handed
   the bridge to another process. It is now tried again after 2, 10 and 60
   seconds, and if the bridge is handed over meanwhile the next process posts
-  it. A message that still fails after that is given up on, with an error in
-  the log.
+  it. Later messages in the same room wait behind it, so a reply is not posted
+  before the message it answers. A message that still fails after that, or
+  that the platform refuses for good, is given up on, with an error in the
+  log.
 
 #### Security
 - **The pre-tool-call mediation route is removed.** `POST

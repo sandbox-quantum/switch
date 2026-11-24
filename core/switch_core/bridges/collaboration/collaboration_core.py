@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.adapter import (
     MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
+    RefusalKind,
     SupportsSharedConnection,
     agent_identity,
 )
@@ -71,6 +72,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.clients.workspace_consumer import RelayFailed
 from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -3980,9 +3982,17 @@ class CollaborationCore:
                     return
                 self._cancel_outbound_group_flush(group_id)
                 self._outbound_groups.pop(group_id, None)
-                await self._relay_outbound_group(
-                    pending, channel_id, sender_name, thread_root_ref
-                )
+                try:
+                    await self._relay_outbound_group(
+                        pending, channel_id, sender_name, thread_root_ref
+                    )
+                except Exception as error:
+                    raise RelayFailed(
+                        pending.from_seq,
+                        lambda: self._relay_outbound_group_again(
+                            pending, channel_id, sender_name, thread_root_ref
+                        ),
+                    ) from error
                 return
 
         if not await self._claim_outbound(channel_id, event.event_id):
@@ -4022,6 +4032,30 @@ class CollaborationCore:
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
         await self._settle_outbound(event.event_id, message_ref)
+
+    async def _relay_outbound_group_again(
+        self,
+        pending: _PendingOutboundGroup,
+        channel_id: str,
+        sender_name: str,
+        thread_root_ref: str | None,
+    ) -> None:
+        """Post a multi-file message whose post failed (`RelayFailed`), from
+        the workspace consumer trying it again."""
+        room_id, _ = self._channel_to_room[channel_id]
+        with tenant_scope(await self._room_tenant(room_id)):
+            with self._counted_outbound("media"):
+                await self._relay_outbound_group(
+                    pending, channel_id, sender_name, thread_root_ref
+                )
+
+    def refusal_kind(self, error: BaseException) -> RefusalKind:
+        """How the platform refused a relay, for the workspace consumer
+        deciding whether to try it again (`PlatformAdapter.classify_refusal`).
+        A failed multi-file post is judged by what failed it."""
+        if isinstance(error, RelayFailed) and error.__cause__ is not None:
+            error = error.__cause__
+        return self._adapter.classify_refusal(error)
 
     def held_from(self, room_id: str) -> int | None:
         """The first file of a multi-file message in this room still waiting

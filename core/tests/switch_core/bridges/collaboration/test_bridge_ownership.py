@@ -705,7 +705,7 @@ class TestHandingOver:
         await _say(session_factory, bridge, "one")
         await _say(session_factory, bridge, "two")
 
-        assert sorted(await _posted(platform, 2)) == ["one", "two"]
+        assert await _posted(platform, 2) == ["one", "two"]
 
     async def test_a_refused_post_still_being_tried_is_posted_by_the_next_holder(
         self,
@@ -724,12 +724,13 @@ class TestHandingOver:
         platform.refusing = 1
         await _say(session_factory, bridge, "one")
         await _say(session_factory, bridge, "two")
-        assert await _posted(platform, 1) == ["two"]
+        await asyncio.sleep(0.5)
+        assert platform.posted() == []
 
         await holder.stop()
         await other.ownership.balance()
 
-        assert await _posted(platform, 2) == ["two", "one"]
+        assert await _posted(platform, 2) == ["one", "two"]
 
     async def test_a_bridge_that_fails_to_stop_still_closes_its_connection(
         self,
