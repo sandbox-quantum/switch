@@ -1,12 +1,52 @@
 import { reaction } from 'mobx';
+import {
+  cachedOwnAgents,
+  isBuddyChat,
+  lookUpChat,
+  rememberedBuddy,
+} from '@renderer/features/switch-buddy/buddy-chat';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
+import { queryClient } from '@renderer/lib/query-client';
 import { log } from '@renderer/utils/logger';
 import { agentActivities } from './activities';
 import { agentChatsFlag } from './agent-chats-flag';
 import { ChatTitler } from './chat-titler';
 import { ChatsStore, chatsEventsFrom } from './chats-store';
+
+/**
+ * Whether a message sent in this chat goes to the person's own switch-buddy,
+ * for its usage event. The chats list holds only the server it follows, and
+ * nothing until it has loaded; a chat it doesn't hold is read from the server
+ * (`lookUpChat`), and one that can't be read is `unknown`.
+ */
+async function sentToBuddy(serverId: string, roomId: string): Promise<'yes' | 'no' | 'unknown'> {
+  const now = Date.now();
+  const chat =
+    (chatsStore.serverId === serverId ? chatsStore.chat(roomId) : undefined) ??
+    (await lookUpChat(
+      {
+        list: (id) => rpc.chats.list(id),
+        listArchived: (id) => rpc.chats.listArchived(id),
+      },
+      serverId,
+      roomId,
+      now
+    ));
+  if (!chat) return 'unknown';
+  const buddy = isBuddyChat(
+    chat,
+    cachedOwnAgents(
+      queryClient,
+      serverId,
+      workspacesStore.idOnServerInScope(serverId),
+      switchServersStore.statusFor(serverId)?.user?.id ?? null
+    ),
+    rememberedBuddy(serverId, roomId, now)
+  );
+  return buddy ? 'yes' : 'no';
+}
 
 /** The app's chats store, following the workspace the window is scoped to. */
 export const chatsStore = new ChatsStore(
@@ -27,7 +67,13 @@ export const chatsStore = new ChatsStore(
       threadMessages: (roomId, rootId, beforeSeq, limit) =>
         rpc.chats.threadMessages({ serverId, roomId, rootId, beforeSeq, limit }),
       upload: (roomId, file) => rpc.chats.upload({ serverId, roomId, ...file }),
-      send: (roomId, input) => rpc.chats.send({ serverId, roomId, ...input }),
+      send: async (roomId, input) =>
+        rpc.chats.send({
+          serverId,
+          roomId,
+          ...input,
+          toBuddy: await sentToBuddy(serverId, roomId),
+        }),
       newId: () => crypto.randomUUID(),
     }),
     archive: (serverId, roomId) => rpc.chats.archive(serverId, roomId),

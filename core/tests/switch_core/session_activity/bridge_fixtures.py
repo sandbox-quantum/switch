@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -257,3 +257,27 @@ class RecordingPlatform:
     async def wait_for(self, count: int) -> list[Drawn]:
         await self.wait_until(lambda: len(self.drawn) >= count)
         return self.drawn
+
+
+async def wait_until_not_none[T](
+    get: Callable[[], Awaitable[T | None]], *, within: float = 5
+) -> T:
+    """Poll an async read until it answers, not None.
+
+    `RecordingPlatform.drawn` records a post the moment `post_rich` returns,
+    the same instant the real platform would first show the message to
+    someone to press a control on — but the row behind it (what a press on
+    that message looks up) is written just after, in its own transaction, not
+    that one. A fixed sleep after `wait_for` can only guess how long that gap
+    is; this polls the actual read a press would make instead, so a slower
+    machine gets more time rather than a flaky answer.
+    """
+    deadline = asyncio.get_running_loop().time() + within
+    while True:
+        value = await get()
+        if value is not None:
+            return value
+        assert asyncio.get_running_loop().time() < deadline, (
+            "timed out waiting for a value"
+        )
+        await asyncio.sleep(0.02)

@@ -17,6 +17,7 @@ import {
   type SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
 import { consoleIdentityHeaders } from './console-identity';
+import { describeNetworkFailure } from './network-failure';
 import { keepSeparateDashboard } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 
@@ -120,7 +121,7 @@ async function postCredentials(
   } catch (cause) {
     return err({
       kind: 'failed',
-      message: `Could not reach ${server.url}. Check that the address is right and that the server is running. (${cause instanceof Error ? cause.message : String(cause)})`,
+      message: describeNetworkFailure(server.url, cause),
     });
   }
 }

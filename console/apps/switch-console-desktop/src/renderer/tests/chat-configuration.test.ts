@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chatMembersQueryKey } from '@renderer/features/chats/chat-people';
+import { rememberBuddyChat, rememberedBuddy } from '@renderer/features/switch-buddy/buddy-chat';
 import {
   addAllToChat,
   addLabel,
@@ -274,6 +275,33 @@ describe('addToChat', () => {
       members: [{ userId: 'u2', name: 'Bob', isOwner: false }],
     });
     expect(api.addMember).toHaveBeenCalledWith({ serverId: 's', roomId: 'r', userId: 'u2' });
+  });
+
+  it('stops counting a chat opened as the buddy’s as one once anyone is added', async () => {
+    const api = {
+      addAgent: vi.fn(async () => chat.current!),
+      addMember: vi.fn(async () => [{ userId: 'u2', name: 'Bob', isOwner: false }]),
+    };
+    const now = Date.now();
+    rememberBuddyChat('s', 'buddy-room', 'buddy', now);
+    rememberBuddyChat('s', 'buddy-room-2', 'buddy', now);
+
+    await addToChat(api, 's', 'buddy-room', {
+      kind: 'person',
+      id: 'u2',
+      name: 'Bob',
+      detail: 'bob@example.com',
+    });
+    await addToChat(api, 's', 'buddy-room-2', {
+      kind: 'agent',
+      id: 'a1',
+      name: 'helper',
+      iconUrl: null,
+      detail: 'Agent · Claude Code',
+    });
+
+    expect(rememberedBuddy('s', 'buddy-room', now)).toBeNull();
+    expect(rememberedBuddy('s', 'buddy-room-2', now)).toBeNull();
   });
 });
 
