@@ -647,9 +647,19 @@ export const workspacesController = createRPCController({
     withReachableWorkspaceSession(params.workspaceId, async (server) => {
       const key = `${params.workspaceId}\u0000${params.bridgeId}`;
       if (reportedInstalls.has(key)) return;
-      const bridge = (await fetchBridges(server)).find((b) => b.id === params.bridgeId);
-      if (!bridge || reportedInstalls.has(key)) return;
+      // Claimed before the read, so a second call while it is under way stops here.
       reportedInstalls.add(key);
+      let bridge: { type: string } | undefined;
+      try {
+        bridge = (await fetchBridges(server)).find((b) => b.id === params.bridgeId);
+      } catch (error) {
+        reportedInstalls.delete(key);
+        throw error;
+      }
+      if (!bridge) {
+        reportedInstalls.delete(key);
+        return;
+      }
       trackEvent('bridge_connected', {
         bridge_platform: bridgePlatformOfType(bridge.type),
         method: 'app_install',

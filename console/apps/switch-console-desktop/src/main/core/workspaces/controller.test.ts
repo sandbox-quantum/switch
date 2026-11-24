@@ -329,6 +329,31 @@ describe('connecting a messaging app', () => {
     });
   });
 
+  it('reports an install once when two calls for it overlap', async () => {
+    let answer: (bridges: unknown[]) => void = () => {};
+    fetchBridges.mockImplementationOnce(
+      () =>
+        new Promise((settle) => {
+          answer = settle;
+        })
+    );
+
+    const first = workspacesController.messagingAppInstalled({
+      workspaceId: 'ws',
+      bridgeId: 'b-overlap',
+    });
+    const second = workspacesController.messagingAppInstalled({
+      workspaceId: 'ws',
+      bridgeId: 'b-overlap',
+    });
+    await vi.waitFor(() => expect(fetchBridges).toHaveBeenCalled());
+    answer([{ id: 'b-overlap', type: 'slack' }]);
+    await Promise.all([first, second]);
+
+    expect(fetchBridges).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+  });
+
   it('reports no install for a connection the server does not list', async () => {
     await workspacesController.messagingAppInstalled({ workspaceId: 'ws', bridgeId: 'b-made-up' });
 
