@@ -1,6 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { forgetBuddyChat } from '@renderer/features/switch-buddy/buddy-chat';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useReadableRoomsInWorkspace } from '@renderer/features/switch-servers/use-listed-rooms';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -95,6 +96,9 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
           },
           { serverId, workspaceId, roomId: room.id, agentId: switchAgentId }
         );
+        // A direct chat takes the agent through addRoomAgents, which reports no
+        // changed chat: whichever way it went, it is no longer the buddy's alone.
+        forgetBuddyChat(serverId, room.id);
       }
       await Promise.all([
         switchRoomsStore.fetchAgentRooms(workspaceId, switchAgentId, { force: true }),
