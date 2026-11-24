@@ -132,6 +132,19 @@ A sign-in check must never be what changes its answer. Don't call
 open a browser on the machine. The check runs whenever Console or the agent
 controller asks about the provider, including on remote and headless machines.
 
+### Subscription usage
+
+Set the optional `readSubscriptionUsage` hook when the provider's local CLI can
+report subscription quotas without an interactive sign-in or a model turn.
+Console discovers the hook from the runtime and invokes it when the local usage
+bar is enabled. Honor its abort signal and return sanitized results. A
+workspace account fingerprint lets Console retain a previous reading on a
+temporary error when the current account still matches.
+
+Antigravity's reader requires `agy` 1.5.13 or newer. The `/usage` report was
+verified on Windows with 1.5.13. Console checks sign-in first and disables usage
+reads for a binary that reports model or conversation activity.
+
 ## 2. The plugin
 
 The plugin is what Console shows and how it finds the CLI. Copy

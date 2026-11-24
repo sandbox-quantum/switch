@@ -84,6 +84,34 @@ it('reports an individual monthly spend limit when there are no rate windows', a
   });
 });
 
+it('uses the workspace account ID from the rate limit response for the same email', async () => {
+  const emailOnly = {
+    account: { type: 'chatgpt', email: 'same@example.test' },
+    requiresOpenaiAuth: true,
+  };
+  cli.request
+    .mockReset()
+    .mockResolvedValueOnce({})
+    .mockResolvedValueOnce(emailOnly)
+    .mockResolvedValueOnce({ accountId: 'workspace-first', rateLimits: {} })
+    .mockResolvedValueOnce({})
+    .mockResolvedValueOnce(emailOnly)
+    .mockResolvedValueOnce({ accountId: 'workspace-second', rateLimits: {} })
+    .mockResolvedValueOnce({})
+    .mockResolvedValueOnce(emailOnly)
+    .mockRejectedValueOnce(new JsonRpcError(-32603, 'Temporarily unavailable'));
+
+  const first = await read();
+  const second = await read();
+  expect(first.accountFingerprint).toBe(
+    createHash('sha256').update('workspace-first').digest('hex').slice(0, 16)
+  );
+  expect(second.accountFingerprint).toBe(
+    createHash('sha256').update('workspace-second').digest('hex').slice(0, 16)
+  );
+  await expect(read()).resolves.toMatchObject({ status: 'error', accountFingerprint: null });
+});
+
 it.each([
   [{ type: 'apiKey' }, true, 'unavailable'],
   [null, true, 'unauthenticated'],

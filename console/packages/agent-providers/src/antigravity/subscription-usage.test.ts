@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { readiness } from '../readiness';
 import { readAntigravitySubscriptionUsage } from './subscription-usage';
 
@@ -49,14 +49,14 @@ const report = (num_turns = 0, total_tokens = 0) =>
     },
   });
 
-function childOutput(stdout: string) {
+function childOutput(stdout: string, code = 0) {
   const child = Object.assign(new EventEmitter(), {
     stdout: new PassThrough(),
     stderr: new PassThrough(),
   });
   queueMicrotask(() => {
     child.stdout.write(stdout);
-    child.emit('close', 0);
+    child.emit('close', code);
   });
   return child;
 }
@@ -69,6 +69,7 @@ beforeEach(() => {
   );
   checkSignIn.mockResolvedValue(readiness('authenticated', 'Signed in'));
 });
+afterEach(() => vi.useRealTimers());
 
 it('checks auth before a zero-turn probe and summarizes the most constrained windows', async () => {
   const result = await readAntigravitySubscriptionUsage(input('/local/current/agy'), checkSignIn);
@@ -113,7 +114,7 @@ it('refuses an old CLI and checks again when the executable changes at the same 
   const path = '/local/replaced/agy';
   await readAntigravitySubscriptionUsage(input(path), checkSignIn);
   cli.stat.mockResolvedValue({ ino: 5, size: 2, mtimeMs: 6, ctimeMs: 7 });
-  cli.spawn.mockImplementationOnce(() => childOutput('1.1.10'));
+  cli.spawn.mockImplementationOnce(() => childOutput('1.5.12'));
   await expect(readAntigravitySubscriptionUsage(input(path), checkSignIn)).resolves.toMatchObject({
     status: 'unavailable',
   });
@@ -152,7 +153,28 @@ it.each([
   expect(cli.spawn).toHaveBeenCalledTimes(2);
 });
 
-it('stops the usage command when cancelled', async () => {
+it.each([
+  { num_turns: 1 },
+  { usage: { total_tokens: 4 } },
+  { conversation_id: 'started-conversation' },
+  { command: { name: 'other' } },
+])('latches unexpected activity on a nonzero process exit (%j)', async (activity) => {
+  const path = `/local/nonzero-${Object.keys(activity)[0]}/agy`;
+  cli.spawn.mockImplementation((_command, args: string[]) =>
+    args[0] === '--version' ? childOutput('1.5.13') : childOutput(JSON.stringify(activity), 1)
+  );
+  for (let attempt = 0; attempt < 2; attempt++)
+    await expect(readAntigravitySubscriptionUsage(input(path), checkSignIn)).resolves.toMatchObject(
+      {
+        status: 'unavailable',
+      }
+    );
+  expect(cli.spawn).toHaveBeenCalledTimes(2);
+  expect(checkSignIn).toHaveBeenCalledOnce();
+});
+
+it.each(['abort', 'timeout'])('stops on %s when the child never emits close', async (reason) => {
+  vi.useFakeTimers();
   const running = Object.assign(new EventEmitter(), {
     stdout: new PassThrough(),
     stderr: new PassThrough(),
@@ -161,15 +183,21 @@ it('stops the usage command when cancelled', async () => {
     if (args[0] === '--version') return childOutput('1.5.13');
     return running;
   });
-  cli.stop.mockImplementation(() => running.emit('close', null));
   const abort = new AbortController();
   const result = readAntigravitySubscriptionUsage(
-    input('/local/abort/agy', {}, abort.signal),
+    input(`/local/${reason}/agy`, {}, abort.signal),
     checkSignIn
   );
-  const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
-  await vi.waitFor(() => expect(cli.spawn).toHaveBeenCalledTimes(2));
-  abort.abort();
-  await rejected;
+  const settled =
+    reason === 'abort'
+      ? expect(result).rejects.toMatchObject({ name: 'AbortError' })
+      : expect(result).resolves.toMatchObject({ status: 'error' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(cli.spawn).toHaveBeenCalledTimes(2);
+  if (reason === 'abort') abort.abort();
+  else await vi.advanceTimersByTimeAsync(25_000);
+  await settled;
   expect(cli.stop).toHaveBeenCalledWith(running, 'SIGKILL');
+  expect(running.stdout.destroyed).toBe(true);
+  expect(running.stderr.destroyed).toBe(true);
 });

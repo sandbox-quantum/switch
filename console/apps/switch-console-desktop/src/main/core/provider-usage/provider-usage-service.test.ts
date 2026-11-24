@@ -86,22 +86,33 @@ it('caps concurrency at three and shares the in-flight manual and automatic refr
   expect(reads.map((fn) => fn.mock.calls.length)).toEqual([1, 1, 1, 1]);
 });
 
-it('backs off all triggers and bypasses backoff after a successful sign-in', async () => {
+it('honors the 429 deadline after sign-in and discards the prior reading', async () => {
   const { service, fetch } = setup();
-  fetch.mockResolvedValueOnce(failure('error', { retryAt: Date.now() + 600_000 }));
+  const retryAt = Date.now() + 600_000;
   service.setEnabled(true);
   service.setActive(true);
   await service.refresh();
+  fetch.mockResolvedValueOnce(failure('error', { accountFingerprint: 'account-a', retryAt }));
+  expect((await service.refresh('a')).snapshots[0]).toMatchObject({ stale: true, retryAt });
   service.handleSystemResume();
   service.handleSystemResume();
   await vi.advanceTimersByTimeAsync(300_000);
   await service.refresh('a');
   service.handleLoginExit({ providerId: 'a', exitCode: 1, error: null });
-  expect(fetch).toHaveBeenCalledOnce();
+  expect(fetch).toHaveBeenCalledTimes(2);
 
   service.handleLoginExit({ providerId: 'a', exitCode: 0, error: null });
-  await service.refresh('a');
+  expect((await service.refresh('a')).snapshots[0]).toMatchObject({
+    status: 'idle',
+    windows: [],
+    updatedAt: null,
+    retryAt,
+  });
   expect(fetch).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(299_999);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(fetch).toHaveBeenCalledTimes(3);
   expect(service.getSnapshots().snapshots[0]?.status).toBe('ok');
 });
 
@@ -183,6 +194,23 @@ it('clears the previous plan and quota when signed out, then refreshes on login'
   service.handleLoginExit({ providerId: 'a', exitCode: 0, error: null });
   expect((await service.refresh('a')).snapshots[0]?.status).toBe('ok');
 });
+
+it.each(['account-a', null])(
+  'clears the last reading when the attempted refresh cannot establish identity (%s)',
+  async (accountFingerprint) => {
+    const { service, fetch } = setup();
+    fetch.mockResolvedValueOnce({ ...read(), accountFingerprint });
+    service.setEnabled(true);
+    service.setActive(true);
+    await service.refresh();
+
+    fetch.mockResolvedValueOnce(failure('error', { accountFingerprint: null }));
+    const next = (await service.refresh('a')).snapshots[0];
+    expect(next).toMatchObject({ status: 'error', windows: [], updatedAt: null });
+    expect(next).not.toHaveProperty('stale');
+    expect(next).not.toHaveProperty('planLabel');
+  }
+);
 
 it('reconciles changed CLIs immediately and lists an installed provider without a reader', async () => {
   const fetch = vi.fn(async () => read());

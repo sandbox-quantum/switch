@@ -16,33 +16,35 @@ const accountSchema = z.object({
     .object({
       type: z.string(),
       accountId: z.string().nullish(),
-      email: z.string().nullish(),
       planType: z.string().nullish(),
     })
     .nullable(),
   requiresOpenaiAuth: z.boolean(),
+  workspaceRouting: z.object({ chatgptAccountId: z.string().nullish() }).nullish(),
 });
 const windowSchema = z.object({
   usedPercent: z.number(),
   windowDurationMins: z.number().int().positive().nullish(),
   resetsAt: z.number().nullish(),
 });
+const rateLimitsResponseSchema = z.object({
+  accountId: z.string().nullish(),
+  rateLimits: z.unknown(),
+});
 const rateLimitsSchema = z.object({
-  rateLimits: z.object({
-    primary: windowSchema.nullish(),
-    secondary: windowSchema.nullish(),
-    planType: z.string().nullish(),
-    individualLimit: z
-      .object({ remainingPercent: z.number(), resetsAt: z.number().nullish() })
-      .nullish(),
-    credits: z
-      .object({
-        hasCredits: z.boolean(),
-        unlimited: z.boolean(),
-        balance: z.union([z.number(), z.string()]).nullish(),
-      })
-      .nullish(),
-  }),
+  primary: windowSchema.nullish(),
+  secondary: windowSchema.nullish(),
+  planType: z.string().nullish(),
+  individualLimit: z
+    .object({ remainingPercent: z.number(), resetsAt: z.number().nullish() })
+    .nullish(),
+  credits: z
+    .object({
+      hasCredits: z.boolean(),
+      unlimited: z.boolean(),
+      balance: z.union([z.number(), z.string()]).nullish(),
+    })
+    .nullish(),
 });
 const planLabels: Readonly<Record<string, string>> = {
   free: 'Free',
@@ -55,6 +57,10 @@ const planLabels: Readonly<Record<string, string>> = {
   enterprise: 'Enterprise',
   edu: 'Edu',
 };
+
+function fingerprint(accountId: string | null | undefined): string | null {
+  return accountId ? createHash('sha256').update(accountId).digest('hex').slice(0, 16) : null;
+}
 
 function toWindow(value: z.infer<typeof windowSchema>, id: string): SubscriptionUsageWindow {
   const minutes = value.windowDurationMins ?? null;
@@ -125,7 +131,7 @@ export const readCodexSubscriptionUsage: ReadSubscriptionUsage = async (input) =
   let accountFingerprint: string | null = null;
   try {
     return await withCodexAppServer(input, [], Date.now() + 15_000, async (client) => {
-      const { account, requiresOpenaiAuth } = accountSchema.parse(
+      const { account, requiresOpenaiAuth, workspaceRouting } = accountSchema.parse(
         await client.request('account/read', { refreshToken: false })
       );
       const base = {
@@ -146,14 +152,14 @@ export const readCodexSubscriptionUsage: ReadSubscriptionUsage = async (input) =
           status: 'unavailable',
           message: 'A ChatGPT subscription sign-in is required for Codex usage.',
         };
-      // Older app servers identify a ChatGPT account only by email. Hash either
-      // identifier locally and keep the digest out of renderer snapshots.
-      const identity = account.accountId || account.email;
-      if (identity)
-        accountFingerprint = createHash('sha256').update(identity).digest('hex').slice(0, 16);
-      const { rateLimits } = rateLimitsSchema.parse(
+      // Workspace identity is sometimes missing from account/read. Email is
+      // shared by the user's workspaces and cannot identify their quota.
+      accountFingerprint = fingerprint(workspaceRouting?.chatgptAccountId ?? account.accountId);
+      const usage = rateLimitsResponseSchema.parse(
         await client.request('account/rateLimits/read', {})
       );
+      accountFingerprint = fingerprint(usage.accountId) ?? accountFingerprint;
+      const rateLimits = rateLimitsSchema.parse(usage.rateLimits);
       const windows = [
         ...(rateLimits.primary ? [toWindow(rateLimits.primary, 'primary')] : []),
         ...(rateLimits.secondary ? [toWindow(rateLimits.secondary, 'secondary')] : []),

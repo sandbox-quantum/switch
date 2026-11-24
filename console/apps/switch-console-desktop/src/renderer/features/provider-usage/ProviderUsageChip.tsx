@@ -55,9 +55,11 @@ export function ProviderUsageChip({
       ? 'Sign in'
       : snapshot.status === 'error'
         ? 'Usage unavailable'
-        : snapshot.status === 'fetching' || snapshot.status === 'idle'
-          ? 'Loading'
-          : 'Usage';
+        : snapshot.status === 'idle' && snapshot.retryAt != null
+          ? 'Retry pending'
+          : snapshot.status === 'fetching' || snapshot.status === 'idle'
+            ? 'Loading'
+            : 'Usage';
   const updatedAt =
     snapshot.stale && snapshot.updatedAt !== null
       ? new Date(snapshot.updatedAt).toLocaleString()

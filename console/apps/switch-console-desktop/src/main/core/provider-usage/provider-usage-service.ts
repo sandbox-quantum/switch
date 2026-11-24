@@ -169,7 +169,6 @@ export class ProviderUsageService {
   }): void {
     if (exitCode !== 0 || error) return;
     this.invalidate(providerId);
-    this.retry.delete(providerId);
     this.manual.delete(providerId);
     if (this.watching) void this.requestRefresh(providerId);
   }
@@ -303,11 +302,10 @@ export class ProviderUsageService {
     else this.retry.delete(id);
 
     const previous = this.readings.get(id);
-    const changedAccount =
-      result.accountFingerprint != null &&
+    const sameAccount =
       previous?.accountFingerprint != null &&
-      result.accountFingerprint !== previous.accountFingerprint;
-    if (snapshot.status === 'error' && previous?.snapshot.status === 'ok' && !changedAccount) {
+      result.accountFingerprint === previous.accountFingerprint;
+    if (snapshot.status === 'error' && previous?.snapshot.status === 'ok' && sameAccount) {
       this.readings.set(id, {
         accountFingerprint: previous.accountFingerprint,
         snapshot: {
