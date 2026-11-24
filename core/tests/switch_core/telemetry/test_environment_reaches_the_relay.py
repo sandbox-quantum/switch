@@ -75,7 +75,7 @@ async def _send_one(
     )
 
     service, _, http = await telemetry_setup.build_telemetry(
-        config, session_factory, "1.0.0"
+        config, session_factory, "1.0.0", keeps_deployment_state=True
     )
     service.emit("deployment_started", tenant_count=1)
     await service.aclose()

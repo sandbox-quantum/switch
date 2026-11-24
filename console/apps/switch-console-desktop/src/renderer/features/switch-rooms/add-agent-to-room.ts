@@ -1,3 +1,4 @@
+import { forgetBuddyChat } from '@renderer/features/switch-buddy/buddy-chat';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import type { ChatSummary } from '@shared/core/chats/chats';
 
@@ -21,8 +22,9 @@ export type AddAgentToRoomApi = {
 
 /**
  * Puts an agent in a room through the API that owns it: the chats API for a
- * Switch Console group chat, the rooms API for any other room. Throws the
- * server's refusal.
+ * Switch Console group chat, the rooms API for any other room (a direct chat
+ * with switch-buddy among them). Throws the server's refusal. Either way the
+ * room is no longer one the buddy has alone, for its usage reports.
  */
 export async function addAgentToRoom(
   api: AddAgentToRoomApi,
@@ -38,14 +40,15 @@ export async function addAgentToRoom(
         agentId: input.agentId,
       })
     );
-    return;
+  } else {
+    await api.addRoomAgents({
+      workspaceId: input.workspaceId,
+      roomId: input.roomId,
+      agentIds: [input.agentId],
+      direction: 'room_to_agents',
+    });
   }
-  await api.addRoomAgents({
-    workspaceId: input.workspaceId,
-    roomId: input.roomId,
-    agentIds: [input.agentId],
-    direction: 'room_to_agents',
-  });
+  forgetBuddyChat(input.serverId, input.roomId);
 }
 
 /** Whether the user may add to a room: a chat they manage, or a room they own or administer. */

@@ -29,7 +29,7 @@ vi.mock('@main/lib/events', () => ({ events: { emit: m.emit } }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock('@main/core/telemetry/managed-server', () => ({
   reportManagedServerOutcome: telemetry.outcome,
-  reportManagedServerStart: vi.fn(),
+  reportManagedServerStart: telemetry.start,
   reportManagedServerStartThrew: vi.fn(),
 }));
 vi.mock('@main/core/switch-servers/delete-server-agents', () => ({
@@ -78,7 +78,7 @@ vi.mock('./start-at-launch', () => ({
   readStartAtLaunch: launch.read,
   writeStartAtLaunch: launch.write,
 }));
-const telemetry = vi.hoisted(() => ({ outcome: vi.fn() }));
+const telemetry = vi.hoisted(() => ({ outcome: vi.fn(), start: vi.fn() }));
 vi.mock('./managed-upgrade', async (importOriginal) => ({
   ...(await importOriginal<typeof ManagedUpgrade>()),
   readUpgradeJournal: m.journal,
@@ -196,6 +196,8 @@ it('starts a server the last quit stopped when the app opens, without switching 
   expect(m.start).toHaveBeenCalledWith(expect.objectContaining({ activate: false }));
   expect(service.getStatus()).toMatchObject({ phase: 'running', upgrade: null });
   await expect(service.ensureReady('Local')).resolves.toBeUndefined();
+  // Nobody pressed Start: counted apart from one someone asked for.
+  expect(telemetry.start).toHaveBeenCalledWith('local', 'automatic', expect.anything());
 });
 
 it('leaves a server stopped from the app stopped when the app opens', async () => {
@@ -237,6 +239,7 @@ it('remembers a Stop across launches, and the next start undoes it', async () =>
 
   await service.start();
   expect(launch.write).toHaveBeenLastCalledWith('/data/local-switch-server', true);
+  expect(telemetry.start).toHaveBeenLastCalledWith('local', 'user', started);
 });
 
 it('stops the server at quit, to start again at the next launch, without counting it as a stop', async () => {

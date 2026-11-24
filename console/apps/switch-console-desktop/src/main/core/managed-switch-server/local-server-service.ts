@@ -657,7 +657,7 @@ export class LocalServerService {
           for (const listener of this.upgradeListeners) listener(result.serverId);
         }
       }
-      reportManagedServerStart('local', result);
+      reportManagedServerStart('local', activate ? 'user' : 'automatic', result);
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -665,7 +665,7 @@ export class LocalServerService {
       this.setStatus({ phase: 'error', error: message });
       this.failUpgrade(message);
       await recordLocalActivity('start-failed', message);
-      reportManagedServerStartThrew('local');
+      reportManagedServerStartThrew('local', activate ? 'user' : 'automatic');
       return { kind: 'error', message, failure: 'unexpected' };
     } finally {
       host.dispose();

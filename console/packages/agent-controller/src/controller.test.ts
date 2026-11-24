@@ -199,7 +199,10 @@ afterEach(async () => {
   await running?.catch(() => {});
   await core.stop();
   store.close();
-  rmSync(dir, { recursive: true, force: true });
+  // maxRetries/retryDelay: Windows can hold a just-closed database or watcher
+  // handle open for a little while after this process believes it is done
+  // with it, so an immediate removal can answer EBUSY or ENOTEMPTY briefly.
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 describe('runController', () => {

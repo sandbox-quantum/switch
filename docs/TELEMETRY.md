@@ -171,7 +171,7 @@ machine from another.
 | `server_removed` | `server_kind`: `external` |
 | `server_sign_in` | `auth_method`: `password` / `oidc` / `signup` · `server_kind` · `outcome` · `failure_reason`: `none` / `invalid_credentials` / `cancelled` / `failed` / `unreachable` / `email_taken` / `invalid` / `disabled` / `rate_limited` |
 | `server_sign_out` | `server_kind`: `local` |
-| `managed_server_action` | `action`: `start` / `stop` / `reset` · `target`: `local` / `remote` · `outcome` · `failure_reason`: `none` / `docker_not_installed` / `docker_daemon_down` / `version_downgrade` / `matrix_migration_failed` / `start_refused` (the stack already on the host cannot be started from here, such as another account's) / `health_timeout` (it started but did not become healthy in time) / `core_exited` (the server process exited while starting) / `running_as_root` / `operation_in_progress` (another start, stop or reset was running) / `error` · `docker_available`: `available` / `unavailable` / `unknown` |
+| `managed_server_action` | `action`: `start` / `stop` / `reset` · `target`: `local` / `remote` · `trigger`: `user` (someone asked for it) / `automatic` (the app did it by itself: starting a server that was running when it last quit, or bringing one up to date at launch) · `outcome` · `failure_reason`: `none` / `docker_not_installed` / `docker_daemon_down` / `version_downgrade` / `matrix_migration_failed` / `start_refused` (the stack already on the host cannot be started from here, such as another account's) / `health_timeout` (it started but did not become healthy in time) / `core_exited` (the server process exited while starting) / `running_as_root` / `operation_in_progress` (another start, stop or reset was running) / `error` · `docker_available`: `available` / `unavailable` / `unknown` |
 
 No server name, URL, hostname or username appears in any of these. A failed
 sign-in records `invalid_credentials` — not the username tried, not the server.
@@ -180,7 +180,7 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 
 | Event | Fields, with example values |
 |---|---|
-| `bridge_connected` | `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
+| `bridge_connected` | `bridge_platform`: `slack` · `method`: `credentials` (its own app's tokens pasted in) / `app_install` (the server's own app approved in the browser; its success is counted when the new connection shows up while the app waits for it, and an install never finished is not reported) · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `unreachable` (the server's host known to be down) / `error` |
 | `bridge_disconnected` | `bridge_platform`: `mattermost` · `outcome` |
 | `bridge_identity_claimed` | `bridge_platform` · `outcome`: `success` (linked) / `pending` (waiting for a one-time code to be posted from the account, which is what confirms the link) / `failure` |
 | `bridge_identity_confirmed` | `bridge_platform` · `link_kind`: `new` (a link that was waiting on its code) / `existing` (a link made before links had to be confirmed, which worked all along) / `unknown` — sent when the code is posted and the link confirmed, after asking the server that it is |
@@ -223,7 +223,8 @@ in it, whether the message was typed there, in the box on Home, or picked from
 one of the cards it shows in the first run. A group chat is `no`, even with
 the buddy its only agent. When the app does not have the chat to hand (on a
 server it isn't showing, or just after launch) it reads it from the server
-first; `unknown` means that read failed or took too long, so nobody can say.
+first; `unknown` means that read failed, took too long, or the server didn't
+list the chat, so nobody can say.
 It is how a message to switch-buddy is counted, as the last step of the first
 run's funnel after `agent_created` with `entry_point` `switch_buddy`: both
 come from this install, so Amplitude can put them in one funnel, which it
@@ -287,18 +288,21 @@ shared, with a link to this document and a Turn off link beside it; the page
 that starts a Switch server on this machine carries the same switch, and the
 toggle lives in Settings → Preferences. Because the default is on, events are
 sent from the first launch, before anyone has read that line, and the line
-records sharing as on as soon as it is shown. The setting is re-read before
-every single event rather than cached — and read again immediately before the
-request goes out, so an event already being prepared when the toggle is turned
-off is not sent either. Turning it off stops transmission immediately, with no
-further requests and no queued backlog: nothing is queued, persisted or
-retried, so nothing refused while sharing was off is sent when it is turned
-back on. Turning it off also deletes the identifier (§5). Running the app from
-source sends nothing whatever the setting, unless a developer opts that run in
-to test what it sends (it is then filed as `local`); a packaged build that is
-not a release does send, filed as `dev` (§3.1). Opting out is itself not
-reported — the one thing we do not measure is someone asking not to be
-measured.
+records sharing as on as soon as it is shown. An installation that already had
+servers when it updated to a version with those first-run pages never sees
+them, so it is shown the notice as a prompt over the app instead, with the same
+switch, until it is answered. The setting is re-read before every single event
+rather than cached — and read again immediately before the request goes out,
+so an event already being prepared when the toggle is turned off is not sent
+either. Turning it off stops transmission immediately, with no further requests
+and no queued backlog: nothing is queued, persisted or retried, so nothing
+refused while sharing was off is sent when it is turned back on. Turning it off
+also deletes the identifier (§5). Running the app from source sends nothing
+whatever the setting, unless a developer opts that run in to test what it sends
+(it is then filed as `local`), and a Switch server such a run starts does not
+share either; a packaged build that is not a release does send, filed as `dev`
+(§3.1). Opting out is itself not reported — the one thing we do not measure is
+someone asking not to be measured.
 
 ### 4.1 The same answer governs a server the Console runs
 
