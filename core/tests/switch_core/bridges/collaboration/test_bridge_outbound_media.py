@@ -6,6 +6,7 @@ from typing import Any
 
 from switch_core.bridges.collaboration.adapter import MessagePartlySent
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
+from switch_core.clients.workspace_consumer import RelayFailed
 from switch_core.transport import (
     DownloadResult,
     InboundMedia,
@@ -28,6 +29,7 @@ def _media_event(
     group: dict[str, Any] | None = None,
     mimetype: str = "image/png",
     event_id: str = "$media-event",
+    seq: int = 0,
 ) -> InboundMedia:
     content: dict[str, Any] = {
         "msgtype": msgtype,
@@ -48,6 +50,7 @@ def _media_event(
         event_id=event_id,
         sender=sender,
         timestamp=1700000000000,
+        seq=seq,
         content=content,
         body=body,
         sender_name=sender_name,
@@ -162,6 +165,9 @@ def _fake_bridge(
         CollaborationCore._cancel_outbound_group_flush.__get__(ns)
     )
     ns._relay_outbound_group = CollaborationCore._relay_outbound_group.__get__(ns)
+    ns._relay_outbound_group_again = (
+        CollaborationCore._relay_outbound_group_again.__get__(ns)
+    )
     ns._relay_outbound_media = CollaborationCore._relay_outbound_media.__get__(ns)
     ns._counted_outbound = CollaborationCore._counted_outbound.__get__(ns)
     ns._flush_incomplete_outbound_group = (
@@ -349,6 +355,48 @@ async def test_grouped_attachments_relay_as_one_platform_post() -> None:
     assert bridge.recorded[0]["transport_event_id"] == "$part-0"
     assert bridge.recorded[0]["external_post_id"] == "ext-ref-3"
     assert bridge._outbound_groups == {}
+
+
+async def test_a_group_whose_post_failed_is_posted_whole_when_tried_again() -> None:
+    """The last file posts the group, so its failure names the group's first
+    row for the workspace consumer to hold from, and a retry that posts every
+    file, not the last one alone."""
+    bridge = _fake_bridge()
+    posting = bridge._adapter.send_attachments
+    refusals = [RuntimeError("the platform refused the post")]
+
+    async def refuse_once(*args: Any, **kwargs: Any) -> Any:
+        if refusals:
+            raise refusals.pop()
+        return await posting(*args, **kwargs)
+
+    bridge._adapter.send_attachments = refuse_once
+    names = ["cat.png", "notes.md", "data.csv"]
+    failed: RelayFailed | None = None
+    for index, name in enumerate(names):
+        try:
+            await CollaborationCore.handle_outbound_media(
+                bridge,
+                _room(),
+                _media_event(
+                    body="three files" if index == 0 else name,
+                    filename=name if index == 0 else None,
+                    event_id=f"$part-{index}",
+                    group={"id": "grp-1", "index": index, "total": 3},
+                    seq=10 + index,
+                ),
+                bridge.client,
+            )
+        except RelayFailed as error:
+            failed = error
+
+    assert failed is not None and failed.hold_from == 10
+    assert bridge._adapter.batches == []
+
+    await failed.retry()
+
+    (batch,) = bridge._adapter.batches
+    assert [f.filename for f in batch["files"]] == names
 
 
 async def test_incomplete_group_is_flushed_with_a_disclosed_notice() -> None:
