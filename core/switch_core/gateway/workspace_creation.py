@@ -142,14 +142,19 @@ async def refuse_a_workspace_name_taken(
     made or renamed at the same moment could still share one, which nothing
     breaks.
 
-    `session` is the request's, bound to one of the organization's
-    workspaces. It is committed first, so the request holds no connection
-    while each workspace is read on a short session of its own."""
+    `session` is the request's, bound or not. It is committed first, so the
+    request holds no connection while the workspaces and the organization are
+    read on short sessions of their own."""
     await session.commit()
     wanted = name.strip().casefold()
     for tenant in await every_workspace_of(session_factory, organization_id):
         if tenant.id != renaming and tenant.name.strip().casefold() == wanted:
-            organization = await session.get(Organization, organization_id)
+            async with organization_session(
+                session_factory, organization_id
+            ) as organization_scoped:
+                organization = await organization_scoped.get(
+                    Organization, organization_id
+                )
             if organization is None:
                 raise RuntimeError(
                     f"Organization {organization_id} is not visible here"

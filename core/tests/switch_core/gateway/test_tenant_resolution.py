@@ -270,7 +270,7 @@ async def _make_organization(
     name: str,
     role: str,
     *,
-    linked: bool = True,
+    linked: bool,
     workspace: bool = False,
 ) -> str:
     """An organization `user_id` holds `role` in, optionally linked to the
@@ -724,7 +724,9 @@ class TestSessionStateEndpoint:
         other_id = await _make_user_with_memberships(
             session_factory, name="someone-else", tenant_ids=[]
         )
-        await _make_organization(session_factory, other_id, "Theirs", "org_admin")
+        await _make_organization(
+            session_factory, other_id, "Theirs", "org_admin", linked=True
+        )
         token = _token(user_id, "alone@example.invalid")
 
         body = (
@@ -744,7 +746,9 @@ class TestSessionStateEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="local", tenant_ids=[]
         )
-        await _make_organization(session_factory, user_id, "Acme", "org_admin")
+        await _make_organization(
+            session_factory, user_id, "Acme", "org_admin", linked=True
+        )
         token = _token(user_id, "local@example.invalid")
 
         body = (await self._get(session_factory, token, signup_mode="open")).json()
@@ -758,7 +762,9 @@ class TestSessionStateEndpoint:
         user_id = await _make_user(
             session_factory, name="settled", tenant_id=TENANT_ZERO_ID
         )
-        await _make_organization(session_factory, user_id, "Acme", "org_admin")
+        await _make_organization(
+            session_factory, user_id, "Acme", "org_admin", linked=True
+        )
         token = _token(user_id, "settled@example.invalid")
 
         body = (

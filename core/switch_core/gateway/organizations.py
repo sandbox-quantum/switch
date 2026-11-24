@@ -723,6 +723,7 @@ async def create_workspace_in_organization(
     organization_id: str,
     req: WorkspaceCreateRequest,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
@@ -737,26 +738,32 @@ async def create_workspace_in_organization(
     organization with none (as sign-in under a directory can leave one) makes
     its first. The session is not moved.
 
+    Provisioning visits every tenant, so it runs with no organization bound.
+
     403 unless the caller is the organization's `org_admin`, as when there is
     no such organization.
     """
-    async with organization_session(session_factory, organization_id) as session:
-        role = await organization_store.role(session, organization_id, caller.id)
-        if role != ORGANIZATION_ADMIN_ROLE:
-            raise HTTPException(
-                status_code=403, detail="Only an organization admin may do this"
-            )
-        return await add_workspace(
-            session,
-            session_factory,
-            user_store,
-            client_lifecycle,
-            config,
-            organization_id=organization_id,
-            creator_id=caller.id,
-            is_operator=caller.is_operator,
-            name=req.name,
+    async with organization_session(
+        session_factory, organization_id
+    ) as organization_scoped:
+        role = await organization_store.role(
+            organization_scoped, organization_id, caller.id
         )
+    if role != ORGANIZATION_ADMIN_ROLE:
+        raise HTTPException(
+            status_code=403, detail="Only an organization admin may do this"
+        )
+    return await add_workspace(
+        session,
+        session_factory,
+        user_store,
+        client_lifecycle,
+        config,
+        organization_id=organization_id,
+        creator_id=caller.id,
+        is_operator=caller.is_operator,
+        name=req.name,
+    )
 
 
 def made_from(access: OrganizationAccess) -> dict[str, object]:

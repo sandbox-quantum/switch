@@ -1642,7 +1642,7 @@ class SessionStateResponse(BaseModel):
     tenants: list[TenantMembershipResponse]
     state: Literal["ready", "needs_selection", "needs_workspace"]
     organization_directory: Literal["local", "workos"]
-    organizations: list[SessionOrganization] = []
+    organizations: list[SessionOrganization]
     # Whether the caller may create a new organization with its first
     # workspace (`POST /organizations`, and `POST /tenants` before it).
     can_create_workspace: bool

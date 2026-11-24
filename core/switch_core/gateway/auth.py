@@ -1408,8 +1408,11 @@ def describe_session_state(
     tenants_isolated: bool,
     can_manage_connector_apps: bool,
     connector_apps_in_dashboard: bool,
+    organizations: list[SessionOrganization],
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
+
+    `organizations` is kept only for a `needs_workspace` session.
 
     Follows its order exactly — a claim is honoured only if it names one of
     `tenants`, or is the workspace the platform operator entered
@@ -1452,6 +1455,7 @@ def describe_session_state(
         tenants=tenants,
         state=state,
         organization_directory=config.organization_directory,
+        organizations=organizations if state == "needs_workspace" else [],
         # A deployment that is not isolating tenants keeps to the one it has,
         # for operators too: creating would refuse any name.
         can_create_workspace=tenants_isolated and refusal(True) is None,

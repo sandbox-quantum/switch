@@ -499,7 +499,13 @@ async def session_state(
     entered = await operator_entered_workspace(
         session_factory, user, auth.tenant_claim, tenants
     )
-    state = describe_session_state(
+    # Only a session in no workspace reports them; `describe_session_state` decides.
+    organizations = (
+        await linked_organizations_of(session_factory, user.id)
+        if config.organization_directory == "workos" and not tenants
+        else []
+    )
+    return describe_session_state(
         config,
         user,
         auth.tenant_claim,
@@ -509,13 +515,7 @@ async def session_state(
         can_manage_connector_apps=await deployment_manager(session_factory, user)
         is not None,
         connector_apps_in_dashboard=await connector_apps_in_dashboard(session_factory),
-    )
-    if state.state != "needs_workspace" or config.organization_directory != "workos":
-        return state
-    return state.model_copy(
-        update={
-            "organizations": await linked_organizations_of(session_factory, user.id)
-        }
+        organizations=organizations,
     )
 
 

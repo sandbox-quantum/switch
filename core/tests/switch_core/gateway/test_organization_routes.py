@@ -66,6 +66,7 @@ from switch_core.gateway.workos_sign_in_routes import (
 from switch_core.keys import Keyring
 from switch_core.organization_admin_notices import OrganizationAdminNotices
 from switch_core.organization_directory import LocalDirectory
+from switch_core.tenant_context import current_organization_id
 from tests.telemetry_records import recording_telemetry
 
 # Where the organization admins' e-mails link to.
@@ -1035,6 +1036,33 @@ class TestCreatingAWorkspaceByOrganization:
         )
         assert (added.actor_user_id, added.target_id) == (ada, tenant.id)
 
+    async def test_the_workspace_is_made_with_no_organization_bound(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ada = _name("ada")
+        organization_id = await _organization_without_workspace(
+            session_factory, {ada: "org_admin"}
+        )
+        bound: list[str | None] = []
+        create_workspace = workspace_creation.create_workspace
+
+        async def recording(*args: Any, **kwargs: Any) -> Tenant:
+            bound.append(current_organization_id())
+            return await create_workspace(*args, **kwargs)
+
+        monkeypatch.setattr(workspace_creation, "create_workspace", recording)
+
+        async with _client(_app(session_factory), ada, None) as client:
+            response = await client.post(
+                f"/organizations/{organization_id}/workspaces", json={"name": "Acme"}
+            )
+
+        assert response.status_code == 201, response.text
+        # Provisioning visits every tenant: none may inherit this organization.
+        assert bound == [None]
+
     async def test_it_adds_another_to_an_organization_that_has_one(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -1103,6 +1131,8 @@ class TestCreatingAWorkspaceByOrganization:
             )
 
         assert response.status_code == 409
+        # Worded from the organization's row, read with no workspace bound.
+        assert "already has a workspace" in response.json()["detail"]
         assert len(await _workspaces_of(session_factory, organization_id)) == 1
 
     async def test_it_counts_against_the_creator_allowance(
