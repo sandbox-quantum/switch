@@ -12,7 +12,7 @@ connection to Switch, so you never talk to the Switch server directly. If the
 Switch tools are missing entirely, say so rather than guessing.
 
 Hosts show the tools under the server's name rather than bare: Claude Code as
-`mcp__switch__<tool>` (as does DeepSeek Harness), Codex and OpenCode under the
+`mcp__switch__<tool>` (as do DeepSeek Harness and Kimi Code), Codex and OpenCode under the
 `switch` server. Antigravity and Junie show them as `mcp_switch_<tool>`; call
 them directly. Antigravity is given only the opening summary of each tool's
 description, so this skill is where the rest is. The names in this skill are
@@ -437,6 +437,8 @@ Wait for the tool to return before acting on the answers.
 Approvals reach the room on every host. Native question forms do not: Claude
 Code, OpenCode, Antigravity and Mistral Vibe have them, while Codex, Cursor, DeepSeek
 Harness, Pi and Junie sessions generally do not. Without one, when you genuinely need a decision, ask in the
+Code, OpenCode, Antigravity, Mistral Vibe and Kimi Code have them, while Codex, Cursor, DeepSeek
+Harness and Pi sessions generally do not. Without one, when you genuinely need a decision, ask in the
 room with `send_targeted_message` and wait for the reply as an ordinary event.
 
 Request cards (your session's questions and approvals) use server authorization.
@@ -1045,8 +1047,8 @@ does not manage agents, so say so rather than looking for another way.
   machines: `name`, `description`, `machine` (its id, or its exact name),
   `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`, and,
   on a server that offers them, `deepseek-harness`, `pi`, `copilot`, `kiro`,
-  `mistral-vibe`, `goose`, `qwen`, `droid`, `cline` and `junie`; a server that
-  does not refuses them, naming the feature flag they need), and
+  `mistral-vibe`, `goose`, `qwen`, `droid`, `cline`, `junie` and `kimi`; a
+  server that does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
   default where the provider supports automatic review), `auto_approve` (bypass:

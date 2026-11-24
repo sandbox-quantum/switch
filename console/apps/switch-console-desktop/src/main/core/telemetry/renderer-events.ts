@@ -93,6 +93,7 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'droid',
       'cline',
       'junie',
+      'kimi',
       'none',
     ]),
   }),

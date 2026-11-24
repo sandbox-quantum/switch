@@ -2,6 +2,7 @@
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
 Antigravity, Cursor, DeepSeek Harness, Pi, Kiro CLI and Junie. Local sessions and sessions reached through SSH run
+Antigravity, Cursor, DeepSeek Harness, Pi, Kiro CLI and Kimi Code. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -290,6 +291,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity ad
 | Kiro CLI | Yes | ACP model catalog (a `model` config option on its V3 engine) | Unavailable | Images as bytes; embedded file resources where advertised |
 | Mistral Vibe | Yes | ACP model config option | Unavailable | Images as bytes; embedded file resources |
 | Junie | Yes | ACP model catalog | Unavailable | Images as bytes where advertised; staged file references |
+| Kimi Code | Yes | ACP model catalog (the models configured in Kimi) | Unavailable | Images as bytes; embedded file resources |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
@@ -353,6 +355,18 @@ needs bubblewrap or Landlock, and without either every command asks to run
 unconfined. A user's own `$DSH_HOME/cordis.patch.yml` outranks Switch's settings
 and can change the sandbox or approval policy, as Codex's `config.toml` can. It
 is not offered on Windows until verified there.
+Kimi Code runs `kimi acp` (`npm install -g @moonshot-ai/kimi-code`) with the
+providers configured in its own data directory (`~/.kimi-code`, or
+`KIMI_CODE_HOME`): sign in with `kimi login` on the execution host, or configure
+a provider with an API key in Kimi. A model defined entirely by `KIMI_MODEL_NAME`
+and `KIMI_MODEL_API_KEY` in the environment is used as well. The sign-in check
+reads `kimi provider list --json` and never signs in, and Kimi's update check is
+turned off for the sessions Switch starts. Approval-required and auto-accept-edits
+sessions run in Kimi's Default mode; auto mode and full access run in its Ask
+When Needed mode, where routine edits and commands run and sensitive ones ask.
+Its Never Ask mode is not used, because it also stops the agent asking the room
+questions. Kimi sends its questions as permission requests, which reach the room
+as questions.
 Other capability limits remain explicit
 in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
 are the only session runtime. Lifecycle scripts use noninteractive commands.
@@ -440,6 +454,7 @@ resumes or attaches, including ones started automatically:
   before commands. DeepSeek Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
   Junie uses its Auto brave mode, and Kiro applies its own trust policy and safety check before anything reaches
   Console, which asks about the rest.
+  Kimi Code runs routine edits and commands and asks before sensitive ones.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 

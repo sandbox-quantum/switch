@@ -94,6 +94,7 @@ export type RendererTelemetryEvents = {
       | 'droid'
       | 'cline'
       | 'junie'
+      | 'kimi'
       | 'none';
   };
   /**

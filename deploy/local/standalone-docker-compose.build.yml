@@ -21,4 +21,3 @@ services:
     build:
       context: .
       dockerfile: deploy/shared_resources/images/Dockerfile.gateway
-
