@@ -197,8 +197,12 @@ async def record_operator(
     template_revision: str | None,
     capabilities: Collection[str],
     now: datetime,
+    boxes_live: int | None = None,
+    box_ceiling: int | None = None,
 ) -> None:
-    """Keep the operator's last report: its revision and its capabilities."""
+    """Keep the operator's last report: its revision, its capabilities, and
+    its live boxes and ceiling (None from an operator that doesn't send
+    them)."""
     row = await session.get(HostedOperatorReport, OPERATOR_ROW, populate_existing=True)
     words = sorted(known_capabilities(list(capabilities)))
     if row is None:
@@ -208,12 +212,16 @@ async def record_operator(
                 template_revision=template_revision,
                 capabilities=words,
                 seen_at=now,
+                boxes_live=boxes_live,
+                box_ceiling=box_ceiling,
             )
         )
     else:
         row.template_revision = template_revision
         row.capabilities = words
         row.seen_at = now
+        row.boxes_live = boxes_live
+        row.box_ceiling = box_ceiling
     await session.flush()
 
 

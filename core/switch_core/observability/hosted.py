@@ -55,6 +55,7 @@ from switch_core.observability.catalogue import (
     HOSTED_BOX_ANON_MEMORY,
     HOSTED_BOX_EVICTIONS,
     HOSTED_BOX_MEMORY_USED,
+    HOSTED_BOX_REMOVALS,
     HOSTED_BOXES_EXPECTED,
     HOSTED_BOXES_REPORTING,
     HOSTED_BOXES_VALVE_MEMORY,
@@ -66,6 +67,8 @@ from switch_core.observability.catalogue import (
     HOSTED_GATEWAY,
     HOSTED_GUARD_STOPS,
     HOSTED_MACHINE_EVENTS,
+    HOSTED_OPERATOR_BOXES_LIVE,
+    HOSTED_OPERATOR_CEILING,
     HOSTED_POOL_BOXES,
     HOSTED_POOL_CLAIMS,
     HOSTED_POOL_REAP_REFUSED,
@@ -570,6 +573,9 @@ class HostedSnapshot:
     # The warm pool: its configured size and its boxes by state.
     pool_size: int = 0
     pool_boxes: dict[str, int] = field(default_factory=dict)
+    # The box operator's last report: its live boxes and its ceiling.
+    operator_boxes_live: int | None = None
+    operator_ceiling: int | None = None
     login_problems: dict[tuple[str, str, str], int] = field(default_factory=dict)
     restarts_10m: int = 0
     oom_kills: int = 0
@@ -727,6 +733,12 @@ def snapshot_readings(snap: HostedSnapshot) -> Iterator[GaugeReading]:
                     {"provider": provider, "reason": reason, "backend": backend},
                 )
     yield GaugeReading(HOSTED_POOL_SIZE, float(snap.pool_size), {})
+    if snap.operator_boxes_live is not None:
+        yield GaugeReading(
+            HOSTED_OPERATOR_BOXES_LIVE, float(snap.operator_boxes_live), {}
+        )
+    if snap.operator_ceiling is not None:
+        yield GaugeReading(HOSTED_OPERATOR_CEILING, float(snap.operator_ceiling), {})
     for state in POOL_STATES:
         yield GaugeReading(
             HOSTED_POOL_BOXES, float(snap.pool_boxes.get(state, 0)), {"state": state}
@@ -760,6 +772,7 @@ _MACHINES = text(
     "FROM cloud_machines WHERE state <> 'deleted'"
 )
 _POOL = text("SELECT state, count(*) AS boxes FROM hosted_pool_boxes GROUP BY state")
+_OPERATOR = text("SELECT boxes_live, box_ceiling FROM hosted_operator_reports LIMIT 1")
 _TRY_LOCK = text("SELECT pg_try_advisory_lock(hashtext(:name))")
 
 
@@ -784,6 +797,7 @@ class HostedSampler:
         self._engine_factory = engine_factory
         self._pool_size = pool_size
         self._pool_boxes: dict[str, int] = {}
+        self._operator: tuple[int | None, int | None] = (None, None)
         self._interval = interval_seconds
         self._timeout = timeout_seconds
         self._clock = clock
@@ -831,6 +845,7 @@ class HostedSampler:
         snap = snapshot_of(rows, self._clock())
         snap.pool_size = self._pool_size
         snap.pool_boxes = dict(self._pool_boxes)
+        snap.operator_boxes_live, snap.operator_ceiling = self._operator
         self._record_rises(snap.box_counts)
         self._latest = snap
         return snap
@@ -873,6 +888,10 @@ class HostedSampler:
             logger.info("This process now reports the hosted machines' gauges.")
         pool = await conn.execute(_POOL)
         self._pool_boxes = {str(row.state): int(row.boxes) for row in pool}
+        operator = (await conn.execute(_OPERATOR)).first()
+        self._operator = (
+            (None, None) if operator is None else (operator[0], operator[1])
+        )
         result = await conn.execute(_MACHINES)
         return [
             MachineRow(
@@ -971,6 +990,16 @@ def record_pool_reap_refused() -> None:
     """Count one reaper report Core refused, at once (the refusal commits
     nothing)."""
     metrics().increment(HOSTED_POOL_REAP_REFUSED, {})
+
+
+REMOVAL_OUTCOMES = ("claimed", "removed", "refused", "unjustified")
+
+
+def record_box_removal(outcome: str, count: int = 1) -> None:
+    """Count box removals by a fixed `outcome`, at once. Never which box."""
+    if outcome not in REMOVAL_OUTCOMES or count <= 0:
+        return
+    metrics().increment(HOSTED_BOX_REMOVALS, {"outcome": outcome}, float(count))
 
 
 def record_claim_refused(reason: str) -> None:

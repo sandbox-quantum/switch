@@ -364,6 +364,8 @@ _HOSTED_BOARD_ORDER = [
     "Warm pool: new boxes by path (pool: a waiting box taken; fallback: made from scratch)",
     "Warm pool: boxes retired by reason, and reaper reports refused (should be 0)",
     "Warm pool: time to make a pool box (p50, p90)",
+    "Box removals by outcome (refused and unjustified should be 0)",
+    "Box operator: live boxes against its ceiling (alerts at 80% and 95%)",
 ]
 
 

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Literal, cast
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, literal_column, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
@@ -18,6 +18,7 @@ from switch_core.db.models import (
     HostedMigration,
     HostedPoolBox,
     MachineWorkspace,
+    ServerAuditEvent,
     TenantMember,
     User,
     require_tenant_id,
@@ -88,6 +89,25 @@ class Claimed:
     change: ClaimChange | None
     # A new machine that took a warm pool box (its id is the pool box's).
     from_pool: bool = False
+
+
+# No box removal was ever claimed for the machine (`visibility.box_removal`).
+_NO_REMOVAL_CLAIMED = ~(
+    select(ServerAuditEvent.id)
+    .where(
+        ServerAuditEvent.action == ServerAuditAction.HOSTED_BOX_REMOVAL_CLAIMED.value,
+        # Written as the removal index's own expression, so it's used.
+        ServerAuditEvent.details.op("->>")(literal_column("'machine_id'"))
+        == CloudMachine.id,
+    )
+    .exists()
+)
+
+
+def _not_removed() -> tuple:
+    """The revival filter for a box removal: hosted agents v2's only, so a v1
+    claim reads the audit table no more than before."""
+    return (_NO_REMOVAL_CLAIMED,) if process_hosted_v2() else ()
 
 
 # A machine whose warm pool bind failed (`box_provision.fail_bind`): deleted at
@@ -675,6 +695,7 @@ class CloudMachineStore:
                 CloudMachine.owner_id == owner_id,
                 CloudMachine.state == "deleted",
                 CloudMachine.error_code.is_distinct_from(BIND_FAILED),
+                *_not_removed(),
             )
             .limit(1)
         )
@@ -709,6 +730,9 @@ class CloudMachineStore:
                 # A warm pool claim whose bind failed is never brought back:
                 # its box is reaped or removed, and the person starts afresh.
                 CloudMachine.error_code.is_distinct_from(BIND_FAILED),
+                # Nor is a box whose removal was claimed: its namespace may
+                # already be listed for the remover, or gone.
+                *_not_removed(),
             )
             .order_by(CloudMachine.updated_at.desc())
             .limit(1)
@@ -721,6 +745,12 @@ class CloudMachineStore:
             or machine.state != "deleted"
             or machine.owner_id != owner_id
         ):
+            return None
+        # Again under the machine's lock, which a removal claim also takes: a
+        # claim that won the race keeps the row deleted.
+        from switch_core.visibility.box_removal import removal_claimed
+
+        if process_hosted_v2() and await removal_claimed(session, machine.id):
             return None
         if machine.backend == "box":
             # Its disk is in use again: withdraw `box_deleted`'s entry, in

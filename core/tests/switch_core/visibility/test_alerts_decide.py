@@ -267,6 +267,9 @@ class TestWords:
             Condition.CLUSTER_REPORT_LATE: CLUSTER_REPORT_TARGET,
             Condition.PAUSE_FAILED: KEY.keyed_id(KeyedIdKind.USER, "user-1"),
             Condition.BOX_CAP_REACHED: "rate",
+            Condition.BOX_REMOVAL_UNJUSTIFIED: KEY.keyed_id(KeyedIdKind.BOX, MACHINE),
+            Condition.BOX_REMOVAL_STUCK: KEY.keyed_id(KeyedIdKind.BOX, MACHINE),
+            Condition.BOX_MAP_NEAR_CEILING: "box_map_80",
             Condition.OPERATOR_BULK_ACTIONS: KEY.keyed_id(
                 KeyedIdKind.USER, "operator-1"
             ),

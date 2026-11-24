@@ -1617,4 +1617,16 @@ UNAUTHENTICATED: dict[str, str] = {
     "GET /gateway/hosted-controller/pool": (
         "The hosted controller's, with its own token; no session reaches it."
     ),
+    "POST /gateway/hosted-provisioner/removals/claim": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/removals/{machine_id}/gone": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "GET /gateway/hosted-provisioner/removals/{machine_id}": (
+        "Box removal's remover's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/removals/listed": (
+        "Box removal's remover's, with its own token; no session reaches it."
+    ),
 }

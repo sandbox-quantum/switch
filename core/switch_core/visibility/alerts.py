@@ -97,6 +97,16 @@ class Condition(StrEnum):
     # the evaluator. Its target is the operator's keyed id. It alerts and
     # doesn't block; the hourly limit is what blocks.
     OPERATOR_BULK_ACTIONS = "operator_bulk_actions"  # A11
+    # Box removal: a `box-removals` entry or a removal confirmation Core
+    # doesn't back (no claim, a cancelled removal, a machine not deleted, or
+    # another namespace). Raised by box removal only; its target is the box.
+    BOX_REMOVAL_UNJUSTIFIED = "box_removal_unjustified"  # A12
+    # A box named for removal more than a day ago and not yet confirmed gone.
+    # Raised and cleared by box removal only.
+    BOX_REMOVAL_STUCK = "box_removal_stuck"  # A13
+    # The box operator's live boxes passed 80% (`box_map_80`) or 95%
+    # (`box_map_95`) of its ceiling, from its report with each claim.
+    BOX_MAP_NEAR_CEILING = "box_map_near_ceiling"  # A14
 
 
 class TargetType(StrEnum):
@@ -121,6 +131,9 @@ SEVERITY: Mapping[Condition, str] = {
     Condition.TURN_OFF_FAILED: "critical",
     Condition.BOX_CAP_REACHED: "warning",
     Condition.OPERATOR_BULK_ACTIONS: "critical",
+    Condition.BOX_REMOVAL_UNJUSTIFIED: "critical",
+    Condition.BOX_REMOVAL_STUCK: "warning",
+    Condition.BOX_MAP_NEAR_CEILING: "warning",
 }
 
 TARGET_OF: Mapping[Condition, TargetType] = {
@@ -135,6 +148,9 @@ TARGET_OF: Mapping[Condition, TargetType] = {
     Condition.TURN_OFF_FAILED: TargetType.MEMBER,
     Condition.BOX_CAP_REACHED: TargetType.CAP,
     Condition.OPERATOR_BULK_ACTIONS: TargetType.USER,
+    Condition.BOX_REMOVAL_UNJUSTIFIED: TargetType.BOX,
+    Condition.BOX_REMOVAL_STUCK: TargetType.BOX,
+    Condition.BOX_MAP_NEAR_CEILING: TargetType.CAP,
 }
 
 BOX_CONDITIONS = frozenset(
@@ -146,6 +162,8 @@ CLUSTER_CONDITIONS = frozenset(
 
 # A10's two targets: the per-minute provisioning cap and the total ceiling.
 CAP_TARGETS = frozenset({"rate", "ceiling"})
+# A14's two targets: the operator's live boxes at 80% and at 95% of its ceiling.
+BOX_MAP_TARGETS = frozenset({"box_map_80", "box_map_95"})
 
 # The one target A7 has: the operator's cluster report as a whole.
 CLUSTER_REPORT_TARGET = "cluster-report"
@@ -208,6 +226,8 @@ def _valid_target(condition: Condition, target_id: str) -> bool:
     if kind in (TargetType.BOX, TargetType.USER):
         return is_keyed_id(target_id)
     if kind is TargetType.CAP:
+        if condition is Condition.BOX_MAP_NEAR_CEILING:
+            return target_id in BOX_MAP_TARGETS
         return target_id in CAP_TARGETS
     if kind is TargetType.MEMBER:
         user, sep, workspace = target_id.partition(":")
@@ -574,6 +594,13 @@ def alert_title(condition: Condition, target_id: str, figure: float | None) -> s
             which = "per-minute" if target_id == "rate" else "total"
             limit = "" if figure is None else f" of {n}"
             return f"New boxes are waiting: the {which} provisioning cap{limit} was reached"
+        case Condition.BOX_REMOVAL_UNJUSTIFIED:
+            return f"Box {t} is listed for removal without Core's claim"
+        case Condition.BOX_REMOVAL_STUCK:
+            return f"Box {t} has waited over a day to be removed"
+        case Condition.BOX_MAP_NEAR_CEILING:
+            level = "95%" if target_id == "box_map_95" else "80%"
+            return f"The box operator's live boxes passed {level} of its ceiling ({n}%)"
         case Condition.TURN_OFF_FAILED:
             user, _, workspace = target_id.partition(":")
             return (
@@ -595,6 +622,9 @@ DETAIL: Mapping[Condition, str] = {
     Condition.TURN_OFF_FAILED: "The turn-off's action record says failed. Check it in the Audit log; the admin can try again.",
     Condition.BOX_CAP_REACHED: "New users wait for room until provisioning drops back under the cap. The cap is a Core setting.",
     Condition.OPERATOR_BULK_ACTIONS: "Check the Audit log for this operator's recent actions. Nothing is blocked until the hourly limit.",
+    Condition.BOX_REMOVAL_UNJUSTIFIED: "Nothing is deleted for it. If the box is a person's live box, an admin must repair its entry (DEPLOY.md).",
+    Condition.BOX_REMOVAL_STUCK: "Check the box provisioner's and the reaper's logs for this box. Its disk is still in the cluster.",
+    Condition.BOX_MAP_NEAR_CEILING: "New boxes are refused at the ceiling. Check that removals are going through, or raise the operator's ceiling.",
 }
 
 

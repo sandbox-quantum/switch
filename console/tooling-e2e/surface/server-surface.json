@@ -666,6 +666,13 @@
       ]
     },
     {
+      "route": "GET /gateway/hosted-provisioner/removals/{machine_id}",
+      "auth": "none",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
       "route": "GET /gateway/invitations/mine",
       "auth": "session",
       "flags": []
@@ -1508,6 +1515,27 @@
     },
     {
       "route": "POST /gateway/hosted-provisioner/pool/{pool_box_id}/gone",
+      "auth": "none",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "POST /gateway/hosted-provisioner/removals/claim",
+      "auth": "none",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "POST /gateway/hosted-provisioner/removals/listed",
+      "auth": "none",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "POST /gateway/hosted-provisioner/removals/{machine_id}/gone",
       "auth": "none",
       "flags": [
         "hosted_v2"

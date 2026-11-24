@@ -78,6 +78,11 @@ class HostedControllerSettings(BaseModel):
     # on the two reaper routes (`/hosted-provisioner/pool/retiring` and
     # `…/pool/{id}/gone`). Unset, those routes refuse every call.
     reaper_token: SecretStr | None = Field(default=None, min_length=32)
+    # Box removal's remover (hosted agents v2): its own bearer, separate from
+    # the reaper's, accepted only on the remover's two routes
+    # (`/hosted-provisioner/removals/{id}` and `…/removals/listed`). Unset,
+    # those routes refuse every call.
+    remover_token: SecretStr | None = Field(default=None, min_length=32)
     # The move-over from the controller bearer: until this time (UTC) the two
     # operator routes also take the controller's `token`. Only with
     # `operator_token` set.
@@ -121,6 +126,7 @@ class HostedControllerSettings(BaseModel):
                 ("operator_token", self.operator_token),
                 ("operator_token_previous", self.operator_token_previous),
                 ("reaper_token", self.reaper_token),
+                ("remover_token", self.remover_token),
             )
             if value is not None
         ]
@@ -313,6 +319,7 @@ def load_hosted_settings(
             "operator_token",
             "operator_token_previous",
             "reaper_token",
+            "remover_token",
         )
         if getattr(settings, name) is not None
     ]

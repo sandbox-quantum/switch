@@ -641,6 +641,11 @@ class HostedOperatorReport(Base):
     template_revision: Mapped[str | None] = mapped_column(Text)
     capabilities: Mapped[list] = mapped_column(JSONB, nullable=False)
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # From the same report: the operator's live boxes (box map entries not in
+    # `box-removals`) and the ceiling it refuses new boxes at. None from an
+    # operator that doesn't send them.
+    boxes_live: Mapped[int | None] = mapped_column(Integer)
+    box_ceiling: Mapped[int | None] = mapped_column(Integer)
 
 
 class CloudMachine(Base):
@@ -5551,6 +5556,19 @@ class ServerAuditEvent(Base):
     """
 
     __tablename__ = "server_audit_events"
+    __table_args__ = (
+        # Box removal reads a machine's removal entries on every pass; partial,
+        # so it covers those four actions only.
+        Index(
+            "ix_server_audit_events_box_removal",
+            "action",
+            text("(details ->> 'machine_id')"),
+            postgresql_where=text(
+                "action IN ('hosted.box_to_remove', 'hosted.box_to_remove_cancelled', "
+                "'hosted.box_removal_claimed', 'hosted.box_removed')"
+            ),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     occurred_at: Mapped[datetime] = mapped_column(

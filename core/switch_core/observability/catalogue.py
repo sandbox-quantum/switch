@@ -1094,6 +1094,30 @@ HOSTED_POOL_REAP_REFUSED = _spec(
     "to reap (not retiring, not reapable, or its bind reached its owner). "
     "Should always be 0.",
 )
+HOSTED_OPERATOR_BOXES_LIVE = _spec(
+    "switch.hosted.operator_boxes_live",
+    "gauge",
+    "{box}",
+    "The box operator's live boxes (its box map entries not listed for "
+    "removal), from its report with each claim. Absent until it sends one.",
+)
+HOSTED_OPERATOR_CEILING = _spec(
+    "switch.hosted.operator_ceiling",
+    "gauge",
+    "{box}",
+    "The ceiling the box operator refuses new boxes at, from its report with "
+    "each claim. Absent until it sends one.",
+)
+HOSTED_BOX_REMOVALS = _spec(
+    "switch.hosted.box_removals",
+    "sum",
+    "{removal}",
+    "Box removals by `outcome`: `claimed` (the provisioner took one), "
+    "`removed` (confirmed gone), `refused` (a confirmation or a reaper check "
+    "Core didn't back) and `unjustified` (a `box-removals` entry with no "
+    "claim). The last two should always be 0. Never which box.",
+    "outcome",
+)
 HOSTED_RECONCILER_SILENCE = _spec(
     "switch.hosted.reconciler_silence",
     "gauge",
@@ -1360,6 +1384,9 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_POOL_REFILL_SECONDS,
         HOSTED_POOL_RETIRED,
         HOSTED_POOL_REAP_REFUSED,
+        HOSTED_BOX_REMOVALS,
+        HOSTED_OPERATOR_BOXES_LIVE,
+        HOSTED_OPERATOR_CEILING,
         HOSTED_RECONCILER_SILENCE,
         HOSTED_ALERTS_OPEN,
         HOSTED_PROVIDER_LOGIN_PROBLEMS,

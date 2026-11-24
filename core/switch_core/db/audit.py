@@ -297,6 +297,11 @@ class ServerAuditAction(StrEnum):
     # reaper destroyed after Core retired it (never a person's).
     HOSTED_POOL_BOX_CLAIMED = "hosted.pool_box_claimed"
     HOSTED_POOL_BOX_RETIRED = "hosted.pool_box_retired"
+    # Box removal: the provisioner claimed a box named for removal (its
+    # namespace and a lease; the claim's token only as a hash), and its
+    # confirmation that the namespace and its volumes are gone.
+    HOSTED_BOX_REMOVAL_CLAIMED = "hosted.box_removal_claimed"
+    HOSTED_BOX_REMOVED = "hosted.box_removed"
     # Operator alerts: one row per raise and per clear, with no actor.
     # `alert.` is one of the operators' log's prefixes; it leaves them out
     # unless asked for.

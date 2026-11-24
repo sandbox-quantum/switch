@@ -215,11 +215,16 @@ async def _namespace_to_issue(
     session: AsyncSession,
     request: ServerAuditEvent,
     capabilities: frozenset[str],
-) -> str:
+) -> str | None:
     """The namespace this action names, decided when it's first handed out:
     the one an earlier claim fixed; for a box from before box-keyed names,
     the person-keyed one; otherwise box-keyed if the claiming operator can
-    make it (`box_keyed_names`), else person-keyed, as before."""
+    make it (`box_keyed_names`), else person-keyed, as before.
+
+    A person-keyed name whose earlier box has a removal claimed or confirmed
+    is never issued again (it's in, or about to be in, `box-removals`, which
+    the reaper may delete): box-keyed instead, or None, so an operator that
+    can't make box-keyed names is handed nothing for this action."""
     details = request.details or {}
     machine_id = str(details.get("machine_id"))
     recorded = await _recorded_namespace(session, machine_id)
@@ -232,7 +237,14 @@ async def _namespace_to_issue(
         session, machine_id, request.id
     ):
         return box_namespace_for(str(request.target_id))
-    return namespace_for(str(details.get("user")))
+    person_keyed = namespace_for(str(details.get("user")))
+    from switch_core.visibility.box_removal import person_name_retired
+
+    if await person_name_retired(session, person_keyed):
+        if "box_keyed_names" in capabilities:
+            return box_namespace_for(str(request.target_id))
+        return None
+    return person_keyed
 
 
 def _size_of(machine: CloudMachine) -> str | None:
@@ -806,6 +818,8 @@ async def claim_provision(
             )
             continue
         namespace = await _namespace_to_issue(session, request, capabilities)
+        if namespace is None:
+            continue  # its old name is retired: only a box-keyed name will do
         if namespace.startswith(BOX_NAMESPACE_PREFIX) and (
             "box_keyed_names" not in capabilities
         ):

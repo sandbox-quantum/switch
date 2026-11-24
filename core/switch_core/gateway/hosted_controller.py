@@ -73,8 +73,12 @@ from switch_core.telemetry import emit_after_commit
 from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.visibility.alerts import (
     CLUSTER_CONDITIONS,
+    Condition,
+    Verdict,
+    apply_alert,
     apply_verdicts,
     cluster_verdicts,
+    open_alerts,
 )
 from switch_core.visibility.box_facts import with_box_facts
 from switch_core.visibility.box_provision import (
@@ -94,13 +98,16 @@ from switch_core.visibility.box_provision import (
     removal_pending,
     sweep_pool,
 )
+from switch_core.visibility.box_removal import stuck_removals
 from switch_core.visibility.cluster_report import (
     NODE_NAME,
     SHARED_SERVICES,
     ClusterReport,
     keep_cluster_report,
 )
+from switch_core.visibility.dependencies import process_keyed_id_key
 from switch_core.visibility.hosted_access import block_reason_in
+from switch_core.visibility.keyed_id import KeyedIdKind
 from switch_core.visibility.reason_codes import StopReason
 from switch_core.visibility.recent_moves import recent_moves
 
@@ -575,7 +582,39 @@ async def sweep_hosted_machines(
         )
         # The warm pool: retire what no claim should take, then refill.
         await sweep_pool(factory, config, now)
+        # Boxes named for removal over a day ago and still not gone.
+        await _stuck_removal_alerts(session, factory, now)
     return candidates
+
+
+async def _stuck_removal_alerts(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession], now: datetime
+) -> None:
+    """Raise A13 for each box named for removal over a day ago and still not
+    confirmed gone, and clear it for any no longer stuck. An alert that fails
+    is logged and the sweep carries on."""
+    key = process_keyed_id_key()
+    if key is None:
+        return
+    stuck = {
+        key.keyed_id(KeyedIdKind.BOX, machine_id)
+        for machine_id in await stuck_removals(session, now)
+    }
+    raised = {
+        alert.target_id
+        for alert in await open_alerts(session, (Condition.BOX_REMOVAL_STUCK,))
+    }
+    await session.commit()
+    changes = [(target, True) for target in stuck - raised] + [
+        (target, False) for target in raised - stuck
+    ]
+    for target, on in changes:
+        try:
+            await apply_alert(
+                factory, Verdict(Condition.BOX_REMOVAL_STUCK, target, on, None), now
+            )
+        except Exception:  # noqa: BLE001 -- the sweep carries on
+            logger.exception("Could not update a stuck box removal alert")
 
 
 @router.get("/machines")

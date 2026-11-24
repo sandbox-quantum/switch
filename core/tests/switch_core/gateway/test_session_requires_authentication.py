@@ -195,6 +195,13 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # and states cross.
     ("GET", "/hosted-provisioner/pool/retiring"),
     ("POST", "/hosted-provisioner/pool/{pool_box_id}/gone"),
+    # Box removal: the provisioner's claim and confirmation, and the remover's
+    # check and list report, each on its own bearer and the global
+    # `cloud_machines` and `server_audit_events`; ids and namespaces only.
+    ("POST", "/hosted-provisioner/removals/claim"),
+    ("POST", "/hosted-provisioner/removals/{machine_id}/gone"),
+    ("GET", "/hosted-provisioner/removals/{machine_id}"),
+    ("POST", "/hosted-provisioner/removals/listed"),
 }
 
 
