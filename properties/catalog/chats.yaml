@@ -51,3 +51,21 @@ properties:
     levels: [system, ui]
     owner: platform
     status: proposed
+    gaps:
+      ui: >
+        the explore lane drives only the gateway app, which opens none of these
+        streams (Switch Console's main process does), and it cannot sign out
+    notes: >
+      "Sessions end" means every session minted before the account's session
+      version was bumped: signing out of every device, the operator ending
+      someone's sessions, a password change, or deleting the account. Signing
+      out of one browser (`/auth/logout`) only drops that browser's cookie and
+      is outside this. The streams re-check their session on a timer: the
+      change socket (`gateway/changes.py`) at each 25-second ping, closing with
+      4401, and the chat event and activity streams (`gateway/chats.py`) every
+      30 seconds, ending the response. So "close" is bounded, not immediate.
+      An ended session reopening any of them gets a 401, at the handshake for
+      the socket. The fast-lane scenario `streams-close-on-sign-out` holds all
+      three open on two devices, ends the sessions both ways, waits for each
+      to be ended by the server, checks the reopen is refused, and checks
+      someone else's socket stays open.

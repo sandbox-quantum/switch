@@ -3,6 +3,8 @@ import {
   SwitchHttpError,
   errorDetail,
   sleep,
+  type OpenStream,
+  type StreamEnd,
   type SwitchClient,
 } from "../clients/switch-client.ts";
 import type { NameScope } from "../core/run.ts";
@@ -259,5 +261,109 @@ export const endSessions: FastScenario = {
 
     const [nobody] = await status(() => switchClient.endUserSessions(crypto.randomUUID()));
     expect(nobody, "ending the sessions of no such user").toBe(404);
+  },
+};
+
+const CHAT_EVENTS = "/gateway/chats/events";
+const CHAT_ACTIVITY = "/gateway/chats/activity/events";
+const CHANGE_SOCKET = "/gateway/changes/ws";
+/** The change socket re-checks its session every 25s and the chat streams every 30s. */
+const STREAM_CLOSE_DEADLINE_MS = 60_000;
+const SOCKET_SESSION_ENDED = 4401;
+
+async function endsWithin(what: string, stream: OpenStream): Promise<StreamEnd> {
+  const deadline = sleep(STREAM_CLOSE_DEADLINE_MS).then((): never => {
+    throw new Error(
+      `${what} was still open ${STREAM_CLOSE_DEADLINE_MS / 1000}s after the sessions ended`,
+    );
+  });
+  return Promise.race([stream.ended, deadline]);
+}
+
+async function streamsOf(client: SwitchClient): Promise<Record<string, OpenStream>> {
+  return {
+    [CHAT_EVENTS]: await client.openEventStream(CHAT_EVENTS),
+    [CHAT_ACTIVITY]: await client.openEventStream(CHAT_ACTIVITY),
+    [CHANGE_SOCKET]: await client.openChangeSocket(),
+  };
+}
+
+async function expectAllClosed(
+  device: string,
+  client: SwitchClient,
+  streams: Record<string, OpenStream>,
+): Promise<void> {
+  const ends = await Promise.all(
+    Object.entries(streams).map(
+      async ([path, stream]) => [path, await endsWithin(`${device}'s ${path}`, stream)] as const,
+    ),
+  );
+  for (const [path, end] of ends) {
+    expect(end.by, `who ended ${device}'s ${path}`).toBe("server");
+    if (path === CHANGE_SOCKET) {
+      expect(end.code, `${device}'s ${path} close code`).toBe(SOCKET_SESSION_ENDED);
+    }
+  }
+  const reopen = [
+    ["GET", CHAT_EVENTS],
+    ["GET", CHAT_ACTIVITY],
+    ["WS", CHANGE_SOCKET],
+  ] as const;
+  for (const [method, path] of reopen) {
+    const { status: reopened } = await client.statusWithSession(method, path);
+    expect(reopened, `${device} reopening ${path} with the ended session`).toBe(401);
+  }
+}
+
+/**
+ * Ending a person's sessions closes the streams those sessions hold open:
+ * the chat event and activity streams and the change socket, on every
+ * device, and reopening one with an ended session is refused. The streams
+ * re-check their session on a timer, so each closes within one period of the
+ * sessions ending. Someone else's socket stays open throughout. Covers both
+ * ways sessions are ended on purpose: a person signing out of every device,
+ * and the operator doing it for them.
+ *
+ * @property chats.streams-close-on-sign-out
+ */
+export const streamsCloseOnSignOut: FastScenario = {
+  header: {
+    id: "streams-close-on-sign-out",
+    covers: [
+      `GET ${CHAT_EVENTS}`,
+      `GET ${CHAT_ACTIVITY}`,
+      `WS ${CHANGE_SOCKET}`,
+      "POST /gateway/auth/sessions/revoke",
+      "POST /gateway/users/{user_id}/sessions/revoke",
+    ],
+    lane: "fast",
+    environments: ["ephemeral"],
+    owner: "platform",
+    requires: [],
+  },
+  async run({ names, switchClient, fixtures }) {
+    const person = await colleague("streamer", names, switchClient, fixtures);
+    const bystander = await colleague("onlooker", names, switchClient, fixtures);
+    const onlooking = await bystander.client.openChangeSocket();
+
+    const laptop = person.client;
+    const phone = switchClient.as(person.email, person.password);
+    const laptopStreams = await streamsOf(laptop);
+    const phoneStreams = await streamsOf(phone);
+    await laptop.endMySessions();
+    await Promise.all([
+      expectAllClosed("the laptop", laptop, laptopStreams),
+      expectAllClosed("the other device", phone, phoneStreams),
+    ]);
+
+    const again = switchClient.as(person.email, person.password);
+    const againStreams = await streamsOf(again);
+    await switchClient.endUserSessions(person.id);
+    await expectAllClosed("a device the operator signed out", again, againStreams);
+
+    const early = await Promise.race([onlooking.ended, sleep(0).then(() => null)]);
+    expect(early, "how someone else's change socket ended, while it should be open").toBeNull();
+    onlooking.close();
+    expect((await onlooking.ended).by, "who ended someone else's change socket").toBe("client");
   },
 };
