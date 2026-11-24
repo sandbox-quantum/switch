@@ -37,6 +37,7 @@ from switch_core.db.stores.hosted_machine_store import (
     workspaces_on,
 )
 from switch_core.gateway.cloud_controllers import (
+    LATE_GRACE,
     CloudEnrollmentUnavailable,
     clear_spent_codes,
     cloud_enrollment,
@@ -44,9 +45,11 @@ from switch_core.gateway.cloud_controllers import (
     controller_reports,
     enrollment_code,
     forget_missing_box,
+    given_up,
     live_controller,
     note_start_click,
     ready_if_both_signals,
+    recover_late_start,
 )
 from switch_core.gateway.dependencies import (
     current_telemetry,
@@ -196,6 +199,17 @@ def machine_item(machine: CloudMachine) -> dict:
     # box's still says `box`, so `serve` leaves it alone.
     if process_hosted_v2() or machine.backend == "box":
         item["backend"] = machine.backend
+    if process_hosted_v2() and machine.backend == "box":
+        # Whether the box may keep its proxy login: not while it's in error or
+        # being deleted, except a start given up on that's still within the
+        # grace period (a box waiting in its starter needs its login to come
+        # up and be taken back). The egress lists drop the login on false.
+        in_grace = (
+            given_up(machine) and datetime.now(UTC) - machine.updated_at <= LATE_GRACE
+        )
+        item["egress"] = machine.desired_state != "deleted" and (
+            machine.state != "error" or in_grace
+        )
     return item
 
 
@@ -241,6 +255,11 @@ def _needs_sweep(machine: CloudMachine, now: datetime, idle_minutes: int) -> boo
         (machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT)
         or _connect_timed_out(machine, now)
         or _start_timed_out(machine, now)
+        or (
+            process_hosted_v2()
+            and given_up(machine)
+            and now - machine.updated_at > LATE_GRACE
+        )
         or (machine.state in {"retained", "error"} and retention_expired(machine, now))
         or _errored_unclaimed(machine, now, idle_minutes)
         or idle_sleeping(machine)
@@ -325,6 +344,23 @@ async def _sweep(
         machine.error = "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
         _report_failure(session, machine, "never_started")
+    elif (
+        process_hosted_v2()
+        and given_up(machine)
+        and now - machine.updated_at > LATE_GRACE
+    ):
+        # A start given up on and not taken back within the grace period: the
+        # box scaler takes the box to 0, so it never runs on, unwatched, with
+        # its login. Still `error`, so the person sees why; Retry wants it
+        # running again.
+        machine.desired_state = "stopped"
+        bump_revision(machine, now)
+        record_machine_event(session, "stopped", "gave_up", machine.backend)
+        logger.info(
+            "Cloud machine %s: its box is stopped, its start given up (%s).",
+            machine.id,
+            machine.error_code,
+        )
     elif machine.state in {"retained", "error"} and retention_expired(machine, now):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
@@ -999,6 +1035,10 @@ async def observe(
         await box_deleted(session, machine, now)
         await session.commit()
         return machine_item(machine)
+    if body.state == "running":
+        # A box whose start was given up on but that came up anyway, within
+        # the grace period: its start after all (`recover_late_start`).
+        recover_late_start(machine, now)
     if machine.state == "deleted" or (
         machine.state == "error" and body.state not in ERROR_REPLACING_STATES
     ):

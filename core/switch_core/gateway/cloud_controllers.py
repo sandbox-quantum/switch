@@ -447,6 +447,8 @@ async def record_controller_status(
             # Its first report at this revision, for the start's stages.
             "at": _first_report_at(machine.heartbeat, machine.revision, now),
         }
+        # A box whose start was given up on but that reports in anyway.
+        recover_late_start(machine, now)
     await ready_if_both_signals(session, machine, now, reported_now=True)
 
 
@@ -579,6 +581,49 @@ def _when(value: Any) -> datetime | None:
     except ValueError:
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+# A v2 box start Core or the box scaler gave up on: in `error` with one of
+# these codes, while still wanted running. Not `box_not_made` (Core already
+# stopped it) and not `box_missing` (its own path).
+GIVEN_UP = frozenset({"machine_needs_attention", "machine_connect_timeout"})
+# How long after giving up a box that comes up anyway is still taken as the
+# person's start (`recover_late_start`); after that the sweep stops it.
+LATE_GRACE = timedelta(minutes=15)
+
+
+def given_up(machine: CloudMachine) -> bool:
+    """Whether this is a v2 box start that was given up on but not stopped:
+    its box may still come up, and nothing else would ever stop it."""
+    return (
+        machine.backend == "box"
+        and machine.state == "error"
+        and machine.desired_state == "running"
+        and machine.error_code in GIVEN_UP
+    )
+
+
+def recover_late_start(machine: CloudMachine, now: datetime) -> bool:
+    """A given-up box that comes up within `LATE_GRACE` (the scaler's
+    `running`, or a report from its controller) is the person's start after
+    all: back to `provisioning`, error cleared, so the usual both-signals rule
+    makes it ready. Hosted agents v2 only. Returns whether it did; the caller
+    holds the machine's lock and commits."""
+    if not (process_hosted_v2() and given_up(machine)):
+        return False
+    if now - machine.updated_at > LATE_GRACE:
+        return False
+    logger.info(
+        "Cloud machine %s: its box came up after the start was given up (%s); "
+        "taken as its start.",
+        machine.id,
+        machine.error_code,
+    )
+    machine.state = "provisioning"
+    machine.error = None
+    machine.error_code = None
+    machine.updated_at = now
+    return True
 
 
 async def ready_if_both_signals(

@@ -1117,11 +1117,18 @@ class CloudMachineStore:
             self.retry(machine, now)
 
     def retry(self, machine: CloudMachine, now: datetime) -> None:
-        # A box Core marked as not made was stopped by Core, not by anyone
-        # (no stop reason): Retry wants it running again. A stop someone made
+        # A box Core marked as not made, or whose start Core gave up on and
+        # stopped, was stopped by Core, not by anyone (no stop reason): Retry
+        # wants it running again. A stop someone made
         # (owner, idle, admin, pause, turn-off) is left as it is.
+        stopped_by_core = ("box_not_made",) + (
+            # The late-start stop (hosted agents v2's boxes only).
+            ("machine_needs_attention", "machine_connect_timeout")
+            if machine.backend == "box"
+            else ()
+        )
         if (
-            machine.error_code == "box_not_made"
+            machine.error_code in stopped_by_core
             and machine.desired_state == "stopped"
             and machine.stop_reason is None
         ):
