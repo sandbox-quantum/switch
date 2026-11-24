@@ -22,8 +22,9 @@ merge with main's five revisions to `e2c7a94f1b38`; the tenth, `efd7dfbd0bb7`,
 joins that ninth merge with main's seven revisions to `e5b2c8d4f1a7`; the
 eleventh, `850587725db3`, joins that tenth merge with main's `f3a9c1d7e2b4`; the
 twelfth, `d9e4b7a2c615`, joins the eleventh with main's three revisions to
-`c18f5ebeef66`. Our hosted migrations (`c118ea00053c`) follow the twelfth
-merge, and are the head.
+`c18f5ebeef66`. Our hosted migrations (`c118ea00053c` to `b3e9a4c71d52`)
+follow the twelfth merge, and the thirteenth, `f7c2a5e9d304`, joins them with
+main's `e223eae63078`; it is the head.
 The test server's database is stamped `a90e3df4fe3f`, inside our chain,
 so its next upgrade must run our remaining revision (`e11b7c3d9a2f`) and all 12
 of upstream's, then the merge. This builds a database of its own (never the
@@ -60,13 +61,17 @@ _ELEVENTH_MAIN_HEAD = "f3a9c1d7e2b4"
 _NINTH_MERGE = "651ee78b6cbc"
 _TENTH_MAIN_HEAD = "e5b2c8d4f1a7"
 _TENTH_MERGE = "efd7dfbd0bb7"
-# Our revisions after the twelfth merge, in order; the last is the head.
+# Our revisions after the twelfth merge, in order.
 _AFTER_MERGE = (
     "c118ea00053c",  # hosted migrations
     "e5c1a8f3b294",  # a box stopped because its owner is suspended
     "b3e9a4c71d52",  # the warm pool tables
 )
-_HEAD = _AFTER_MERGE[-1]
+# Main's one revision after `c18f5ebeef66` (drop server connectors), and the
+# thirteenth merge, joining it with ours: the head.
+_MAIN_THIRTEENTH = "e223eae63078"
+_THIRTEENTH_MERGE = "f7c2a5e9d304"
+_HEAD = _THIRTEENTH_MERGE
 _EIGHTH_MAIN_MERGE = "97c1c62e3ca3"
 _MAIN_ARCHIVE_HEAD = "e2c7a94f1b38"
 _SEVENTH_MAIN_MERGE = "0c3b39b59766"
@@ -341,10 +346,17 @@ async def _missing(engine: AsyncEngine) -> list[str]:
 
 
 def test_there_is_exactly_one_head_and_it_is_the_merge() -> None:
-    """One head, our hosted migrations, after the twelfth merge, which joins
-    the eleventh with main's three."""
+    """One head, the thirteenth merge, joining our hosted migrations (after the
+    twelfth merge, which joins the eleventh with main's three) with main's
+    next."""
     script = _script()
     assert script.get_heads() == [_HEAD]
+    thirteenth = script.get_revision(_THIRTEENTH_MERGE)
+    assert thirteenth is not None
+    assert set(thirteenth._all_down_revisions) == {_AFTER_MERGE[-1], _MAIN_THIRTEENTH}
+    main_thirteenth = script.get_revision(_MAIN_THIRTEENTH)
+    assert main_thirteenth is not None
+    assert main_thirteenth.down_revision == _MAIN_TWELFTH[-1]
     after = script.get_revision(_AFTER_MERGE[0])
     assert after is not None and after.down_revision == _TWELFTH_MERGE
     suspended = script.get_revision(_AFTER_MERGE[1])

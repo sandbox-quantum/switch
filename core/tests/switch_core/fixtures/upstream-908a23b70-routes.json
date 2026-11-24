@@ -1,5 +1,5 @@
 {
- "source": "upstream main 3b503b563: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
+ "source": "upstream main 908a23b70: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
  "gateway": [
   [
    "DELETE",
@@ -1434,22 +1434,6 @@
   [
    "POST",
    "/agents/{agent_id}/leases/renew"
-  ],
-  [
-   "POST",
-   "/agents/{agent_id}/mediation/post-llm-response"
-  ],
-  [
-   "POST",
-   "/agents/{agent_id}/mediation/post-tool-result"
-  ],
-  [
-   "POST",
-   "/agents/{agent_id}/mediation/pre-llm-request"
-  ],
-  [
-   "POST",
-   "/agents/{agent_id}/mediation/pre-tool-call"
   ],
   [
    "POST",
