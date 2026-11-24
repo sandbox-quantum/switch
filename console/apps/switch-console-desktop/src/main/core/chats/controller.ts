@@ -37,7 +37,7 @@ import {
   resetChatStream,
   resyncChatStream,
 } from './chat-streams';
-import { type ChatCallEmit, chatMentions, reportingChatCallOn } from './chat-telemetry';
+import { type ChatCallEmit, chatMessageShape, reportingChatCallOn } from './chat-telemetry';
 import { generateChatTitle } from './chat-title';
 import {
   addChatAgent,
@@ -292,11 +292,7 @@ export const chatsController = createRPCController({
     ),
   send: (input: ChatSendInput): Promise<ChatMessage[]> => {
     // The input crosses IPC unvalidated, so absent fields must not throw here.
-    const shape = {
-      has_attachment: (input.uploadIds?.length ?? 0) > 0,
-      in_thread: input.threadRootId != null,
-      mentions: chatMentions(input),
-    };
+    const shape = chatMessageShape(input);
     return reported(
       input.serverId,
       input.requestId,
