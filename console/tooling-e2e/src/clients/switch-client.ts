@@ -129,6 +129,19 @@ export function eventText(event: AgentEvent): string {
 }
 
 /** What a route answered to a probe: its status, and what it said its body was. */
+/** How a held-open stream ended: the server ended it, or this client did. */
+export interface StreamEnd {
+  by: "server" | "client";
+  /** A socket's close code; absent for a server-sent-events stream. */
+  code?: number;
+}
+
+/** A stream or socket held open by the harness. */
+export interface OpenStream {
+  ended: Promise<StreamEnd>;
+  close(): void;
+}
+
 export interface RouteProbe {
   status: number;
   contentType: string;
@@ -382,6 +395,90 @@ export class SwitchClient {
    */
   async statusWithSession(method: string, path: string): Promise<RouteProbe> {
     return this.probe(method, path, await this.gatewayLogin());
+  }
+
+  /**
+   * A gateway server-sent-events stream, opened with this client's session
+   * and held open until the server ends it or `close` is called. Resolves
+   * once the stream says `ready`, so it is known to be serving.
+   */
+  async openEventStream(path: string): Promise<OpenStream> {
+    assertAllowed(this.environment, "GET", path);
+    const abort = new AbortController();
+    const response = await fetch(`${this.apiUrl}${path}`, {
+      headers: {
+        Accept: "text/event-stream",
+        Cookie: await this.gatewayLogin(),
+        ...this.requestId(),
+      },
+      redirect: "manual",
+      signal: abort.signal,
+    });
+    if (!response.ok || response.body === null) {
+      throw new SwitchHttpError("GET", path, response.status, await response.text());
+    }
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let read = "";
+    while (!/^event: ready$/m.test(read)) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error(`${path} ended before it said it was ready`);
+      read += value;
+    }
+    const ended = (async (): Promise<StreamEnd> => {
+      try {
+        while (!(await reader.read()).done) {
+          // Frames after `ready` are not read: only the end matters here.
+        }
+        return { by: "server" };
+      } catch (error) {
+        if (abort.signal.aborted) return { by: "client" };
+        throw error;
+      }
+    })();
+    return { ended, close: () => abort.abort() };
+  }
+
+  /**
+   * The change socket (`WS /gateway/changes/ws`), opened with this client's
+   * session and answering its pings, so only the server ends it. Resolves
+   * once the socket says `hello`.
+   */
+  async openChangeSocket(): Promise<OpenStream> {
+    const path = "/gateway/changes/ws";
+    assertAllowed(this.environment, "GET", path);
+    const url = new URL(`${this.apiUrl}${path}`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    // Node's WebSocket (undici) takes request headers, which the DOM type
+    // does not declare: a cookie is how the gateway authenticates a socket.
+    const Socket = WebSocket as unknown as new (
+      url: string,
+      init: { headers: Record<string, string> },
+    ) => WebSocket;
+    const socket = new Socket(url.toString(), {
+      headers: { Cookie: await this.gatewayLogin(), ...this.requestId() },
+    });
+    let closedByClient = false;
+    const ended = new Promise<StreamEnd>((resolve) => {
+      socket.addEventListener("close", (event) =>
+        resolve({ by: closedByClient ? "client" : "server", code: event.code }),
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data)) as { event: string };
+        if (frame.event === "hello") resolve();
+        if (frame.event === "ping") socket.send(JSON.stringify({ type: "pong" }));
+      });
+      socket.addEventListener("error", () => reject(new Error(`${path} would not open`)));
+      void ended.then((end) => reject(new Error(`${path} closed (${end.code}) before hello`)));
+    });
+    return {
+      ended,
+      close: () => {
+        closedByClient = true;
+        socket.close();
+      },
+    };
   }
 
   private async probe(
