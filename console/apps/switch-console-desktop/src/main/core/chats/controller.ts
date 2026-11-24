@@ -5,6 +5,7 @@ import { agentPlacements } from '@main/core/sdk-host/connection-health';
 import { localWatcherControl } from '@main/core/sdk-host/local-host';
 import { withSidecar } from '@main/core/sdk-host/sidecar-control';
 import { deleteRoom, fetchMe } from '@main/core/switch-servers/gateway-client';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
@@ -36,7 +37,7 @@ import {
   resetChatStream,
   resyncChatStream,
 } from './chat-streams';
-import { type ChatCallEmit, chatMessageShape, reportingChatCall } from './chat-telemetry';
+import { type ChatCallEmit, chatMessageShape, reportingChatCallOn } from './chat-telemetry';
 import { generateChatTitle } from './chat-title';
 import {
   addChatAgent,
@@ -145,9 +146,7 @@ function reported<T>(
   run: (server: SwitchServer) => Promise<T>,
   emit: ChatCallEmit<T>
 ): Promise<T> {
-  return onServer(serverId, (server) =>
-    reportingChatCall(server, requestId, () => run(server), emit)
-  );
+  return reportingChatCallOn({ onServer, getServer }, serverId, requestId, run, emit);
 }
 
 /**

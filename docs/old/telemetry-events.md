@@ -411,7 +411,7 @@ never invisible.
 | `agent_claude_code_count` | number | agents by runtime |
 | `agent_codex_count` | number | |
 | `agent_opencode_count` | number | |
-| `agent_other_count` | number | including agents with no known runtime |
+| `agent_other_count` | number | every other runtime, `known_agent_type` `other` and `none` included: the snapshot keeps the three runtimes it has counted since it began, and `agent_registered` breaks the rest down |
 | `session_live_count` | number | connections open at snapshot time |
 | `connector_<platform>_count` | number | **configured** bridges by platform: one property per platform this build registers (`connector_slack_count`, `connector_teams_count`, …), so a new platform adds its own |
 | `connector_configured_count` | number | configured, whether or not connected |
@@ -460,8 +460,19 @@ arrivals, tool- and LLM-call reports and task transitions sit beside the
 conversation. The message counts, the turn counts and every "interacted" figure
 above (`user_active_*`, `room_active_*`, `agent_active_7d`) read only what a
 participant *said*: chat messages, and commands a person typed on a platform.
-The automatic notice Switch posts under an agent's name when it cannot take a
-request is excluded as well — the agent did not say it.
+What Switch writes itself is excluded, whoever it is posted as:
+
+- under an agent's name: the automatic notice when it cannot take a request,
+  its join greeting (a Switch Console chat's opening line included), notices
+  of something done on its behalf (a role taken, a room document changed),
+  and its answer to a room command. The agent did not say any of them, so an
+  agent added to a room and never run is not active, and its greeting is no
+  turn;
+- Switch's admin notices, and the platform's own messages: a template's
+  kickoff, a scheduled message, a run notice.
+
+`message_sent` counts none of these either, so `message_count` stays the check
+on it.
 
 **Tiers of activity.** `chat_identity_in_room_count`,
 `chat_identity_posted_7d` and `chat_identity_active_7d` nest: everyone Switch
@@ -783,7 +794,7 @@ that as `false` would misfile a lookup failure as a failed setup.
 | Property | Type |
 |---|---|
 | `agent_type` | `always_on` \| `session_addressable` \| `session_passive` \| `auto_session` |
-| `known_agent_type` | `claude-code` \| `codex` \| `opencode` \| `other` \| `none` |
+| `known_agent_type` | the runtime Switch offers it as: `claude-code` \| `codex` \| `opencode` \| `antigravity` \| `cursor` \| `deepseek-harness` \| `pi` \| `copilot` \| `kiro` \| `mistral-vibe` \| `goose` \| `qwen` \| `droid` \| `cline` \| `junie`; `other` for a runtime Switch does not offer, `none` when it declared none. The same values wherever `known_agent_type` appears |
 | `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
 

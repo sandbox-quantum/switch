@@ -37,7 +37,7 @@ def _protocol(chats: _Harness) -> SimpleNamespace:
         room_group_store=RoomGroupStore(),
         room_service=chats.room_service,
         client_lifecycle=chats.lifecycle,
-        _member_adder=chats.service.add_member,
+        _member_adder=chats.service.admit_member,
         _member_join_check=chats.service.require_can_join,
     )
     for name in ("run_service", "_resolve_acting_identity", "_resolve_group_name"):
@@ -120,7 +120,7 @@ async def test_an_owner_refused_after_the_room_is_made_takes_the_room_with_it(
     async def refusing(*args: Any) -> None:
         raise ChatError(422, "NOT_A_TENANT_MEMBER", "Left the workspace.")
 
-    monkeypatch.setattr(chats.service, "add_member", refusing)
+    monkeypatch.setattr(chats.service, "admit_member", refusing)
     with pytest.raises(ValueError, match="Left the workspace"):
         await _create(chats, agent)
 
@@ -136,7 +136,7 @@ async def test_any_failure_adding_the_owner_takes_the_room_with_it_and_surfaces(
     async def crashing(*args: Any) -> None:
         raise RuntimeError("join failed")
 
-    monkeypatch.setattr(chats.service, "add_member", crashing)
+    monkeypatch.setattr(chats.service, "admit_member", crashing)
     with pytest.raises(RuntimeError, match="^join failed$"):
         await _create(chats, agent)
 

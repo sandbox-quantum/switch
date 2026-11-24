@@ -208,6 +208,38 @@ version of their own to them without also giving them a release of their own.
   did any failed call.
 
 #### Fixed
+- **What Switch says under an agent's name no longer counts as the agent
+  talking.** An agent's join greeting, a Switch Console chat's opening line,
+  notices of something done on its behalf and its answers to room commands
+  are marked as Switch's, and the usage snapshot and period counts leave
+  them out, as they do Switch's admin notices and the platform's own
+  messages (template kickoffs, scheduled messages). An agent added to a room
+  and never run is no longer active for a week, and `message_count` matches
+  `message_sent` again.
+- **Usage telemetry names every agent runtime Switch offers.**
+  `known_agent_type` was `other` for every runtime but Claude Code, Codex and
+  OpenCode; Antigravity, Cursor, DeepSeek Harness, Pi, Copilot, Kiro, Mistral
+  Vibe, Goose, Qwen, Droid, Cline and Junie are now reported by name.
+- **`console_member_added` counts only people added from Switch Console.**
+  People named when a room is made from the dashboard, a template or an
+  agent's tool were counted as Console adds too; they are still a
+  `room_users_added`.
+- **Taking someone out of a Switch Console chat is a `room_users_removed`**,
+  as adding them was already a `room_users_added`.
+- **A person or agent added to or taken out of a chat is reported once**, even
+  when two requests for the same change overlap: only the one that made the
+  change reports it, and `room_agents_added` counts the agents actually put
+  in.
+- **The room-moderation command no longer touches the server's reporting
+  start.** It set up telemetry as the server does at boot, so run without
+  telemetry switched on it cleared when reporting began, and the server's
+  next period counts came out partial or not at all.
+- **`invitation_accepted` is sent once the join commits**, not before a
+  directory that can still refuse it.
+- **A command typed in a Switch Console chat is no longer a message.** A
+  `!reset` or other command sent from Console was reported as `message_sent`
+  and metered as a message toward the workspace's message usage; one typed on
+  a messaging platform never was.
 - **A full database pool no longer makes a pod drop everything it holds.**
   Each switch-core process renews its lease on a database connection of its
   own, outside the shared pool. Before, the renewal borrowed from the same
@@ -4883,6 +4915,26 @@ version of their own to them without also giving them a release of their own.
 
 #### Fixed
 
+- **Connecting a messaging app through its own install is counted.**
+  `bridge_connected` gains `method` (`credentials` or `app_install`): an
+  install that started and failed is reported, and one that finished is
+  reported when its connection shows up. Before, only pasted-in tokens were
+  counted, though disconnecting either kind was.
+- **A local or remote server Switch Console starts by itself is told apart.**
+  `managed_server_action` gains `trigger`: `user` when someone asked, and
+  `automatic` for a server started at launch because it was running when the
+  app last quit, or brought up to date then. Before, those counted as starts
+  someone asked for.
+- **Failures on the way to the server are counted.** Connecting a messaging
+  app while the server's host is known to be down reports `unreachable`; an
+  account link the server refuses by throwing, a single sign-on whose
+  settings can't be read, and a chat action whose workspace session can't be
+  had report a failure instead of nothing.
+- **A Switch server started by Switch Console run from source no longer
+  shares usage data**, matching the app, which sends nothing from source.
+- **An installation updated from before the first-run pages is told about
+  usage data.** It never saw those pages, so it is shown the notice over the
+  app, with the switch to turn sharing off, until it is answered.
 - **Creating an agent no longer flashes "An agent called … already exists
   on this server".** The form checked the name against the server's agent
   list, which picks up the new agent before the dialog closes, so for a moment
