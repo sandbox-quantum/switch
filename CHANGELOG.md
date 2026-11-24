@@ -78,6 +78,15 @@ version of their own to them without also giving them a release of their own.
   explicitly still turns it on. Agents already created keep their stored
   setting; `list_managed_agents` shows each one's `auto_mode`, and
   `update_agent_detail` or the agent's settings turn it off.
+- **The pre-tool-call mediation route is removed.** `POST
+  /agents/{agent_id}/mediation/pre-tool-call` answered `proceed` for any tool
+  attached to the agent, judging by its name alone, and the retired Claude
+  Code connector plugin turned that into skipping Claude Code's own permission
+  prompt. Bash, Edit and Write are attached by default, so in a session
+  connected to a room, text from anyone who could post there could lead to
+  commands nobody approved. Copies of that plugin still installed now get a
+  404, which they treat as no decision, so Claude Code asks as it normally
+  would. Claude Code agents no longer advertise tool-call mediation.
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
   at once, leaving the rest to its own work, such as renewing its lease,
@@ -247,6 +256,13 @@ version of their own to them without also giving them a release of their own.
   transferred to another owner now, and no longer stop a workspace being
   deleted. Dropping the table briefly locks `api_keys` and `tenants`, for at
   most `DB_MIGRATION_LOCK_TIMEOUT`, so upgrade at a quiet time.
+- **The rest of the mediation routes.** `POST
+  /agents/{agent_id}/mediation/pre-llm-request`, `post-tool-result` and
+  `post-llm-response` are gone and answer 404. No client called them: the
+  first checked a model against the agent's attached models, and the other
+  two always answered `ok`. A connector plugin copy still installed that calls
+  `post-tool-result` treats the 404 as no change to the tool's output, as it
+  did any failed call.
 
 #### Fixed
 - **A full database pool no longer makes a pod drop everything it holds.**

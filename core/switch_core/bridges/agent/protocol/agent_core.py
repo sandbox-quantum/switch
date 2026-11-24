@@ -44,7 +44,6 @@ from switch_core.authz import (
 )
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.mediation import MediationService
 from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -249,11 +248,6 @@ VALID_AGENT_NAME_RE = _VALID_NAME_RE
 # History comes from a single indexed query now, so the only thing this guards
 # is the size of the response.
 HISTORY_MAX_LIMIT = 500
-
-# The post-invocation hooks answer in a different vocabulary from the
-# pre-invocation ones: `ok` / `blocked` / `redacted` rather than `proceed` /
-# `blocked`. Nothing currently returns anything but this.
-POST_INVOCATION_OK = "ok"
 
 
 def _epoch_ms(when: Any) -> int | None:
@@ -513,9 +507,6 @@ class AgentCore:
         # connection set in two.
         self.connections = connections
         self.resource_service = resource_service
-        self.mediation = MediationService(
-            session_factory=session_factory, agent_store=agent_store
-        )
         self.api_key_store = api_key_store
         # Shared with the bearer-auth middleware for the same reason as
         # `connections`: a key this service rotates must stop authenticating
@@ -5259,58 +5250,6 @@ class AgentCore:
         await self.room_service.set_room_archived(room_id, archived)
         return await self.get_room_detail(agent_id, room_id)
 
-    async def pre_tool_call(
-        self,
-        agent_id: str,
-        room_id: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Whether this agent may call this tool. Verdict and reason.
-
-        `arguments` is not inspected. It is accepted because a mediation
-        decision that looks at what is being passed is the obvious next thing
-        to want.
-        """
-        await self.require_room_member(agent_id, room_id)
-        verdict = await self.mediation.tool_access(agent_id, tool_name)
-        return {"verdict": verdict.verdict, "reason": verdict.reason}
-
-    async def pre_llm_request(
-        self,
-        agent_id: str,
-        room_id: str,
-        model: str,
-        messages: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Whether this agent may call this model. Verdict and reason.
-
-        `messages` is not inspected, for the same reason `arguments` is not.
-        """
-        await self.require_room_member(agent_id, room_id)
-        verdict = await self.mediation.model_access(agent_id, model)
-        return {"verdict": verdict.verdict, "reason": verdict.reason}
-
-    async def post_tool_result(
-        self,
-        agent_id: str,
-        room_id: str,
-        tool_name: str,
-        result: Any,
-    ) -> dict[str, Any]:
-        """The hook point after a tool returns. Nothing is decided here yet.
-
-        It has always returned `ok` unconditionally — the verdict used to be
-        the literal string this method itself put on the wire and then read
-        back off it. Kept as the place a post-invocation check would go, and
-        as the membership check the caller is entitled to fail on.
-
-        Note the vocabulary differs from the pre-invocation hooks: these
-        answer `ok` / `blocked` / `redacted`, not `proceed` / `blocked`.
-        """
-        await self.require_room_member(agent_id, room_id)
-        return {"verdict": POST_INVOCATION_OK}
-
     async def list_room_resources(self, agent_id: str, room_id: str) -> dict[str, Any]:
         """Return the {reference_types, references, documents} payload for a
         room, as the agent is given it, acting as its owner. Used by
@@ -5464,21 +5403,6 @@ class AgentCore:
             )
             return
         await self._post_agent_notice(client, transport_room_id, body)
-
-    async def post_llm_response(
-        self,
-        agent_id: str,
-        room_id: str,
-        model: str,
-        response: Any,
-    ) -> dict[str, Any]:
-        """The hook point after a model answers. Nothing is decided here yet.
-
-        The counterpart to `post_tool_result`, and unconditional for the same
-        reason.
-        """
-        await self.require_room_member(agent_id, room_id)
-        return {"verdict": POST_INVOCATION_OK}
 
 
 def _check_schedule_text(text: str) -> None:
