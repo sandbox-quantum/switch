@@ -169,6 +169,8 @@ MACHINE_EVENTS: dict[str, frozenset[str]] = {
             # A machine that needs attention and has never been ready: its
             # launch was refused (the controller's own checks) or never came up.
             "launch_refused",
+            # The box scaler gave up waiting for room: every machine full.
+            "no_room",
             "owner_left",
             "needs_attention",
             "reported",

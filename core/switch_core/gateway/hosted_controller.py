@@ -403,7 +403,7 @@ async def _sweep(
 
 # The finer words the hosted metric and log line use beside product
 # telemetry's reasons.
-MachineFailure = Literal["wake_failed", "stop_failed", "launch_refused"]
+MachineFailure = Literal["wake_failed", "stop_failed", "launch_refused", "no_room"]
 
 FailureReason = Literal[
     "not_scheduled",
@@ -432,7 +432,7 @@ def _stop_failure(machine: CloudMachine) -> MachineFailure | None:
 
 
 def _observed_finer(
-    machine: CloudMachine, reason: FailureReason
+    machine: CloudMachine, reason: FailureReason, *, no_room: bool = False
 ) -> MachineFailure | None:
     """The hosted metric's finer word for an error a machine reported:
     `stop_failed` while it's wanted down; `launch_refused` for a machine that
@@ -441,6 +441,8 @@ def _observed_finer(
     failing; otherwise none."""
     if (stop := _stop_failure(machine)) is not None:
         return stop
+    if no_room:
+        return "no_room"
     if reason == "needs_attention" and machine.first_ready_at is None:
         return "launch_refused"
     return None
@@ -898,7 +900,11 @@ class _UpstreamObservation(BaseModel):
 class Observation(_UpstreamObservation):
     # v2 adds `box_missing`: the box scaler found a made box gone from the
     # cluster (`_box_missing`).
-    error_code: Literal["machine_needs_attention", "box_missing"] | None = None  # type: ignore[assignment]
+    # v2 also adds `no_room`: the box scaler gave up waiting for room in the
+    # cluster (its own, longer, limit), so every machine is full.
+    error_code: Literal["machine_needs_attention", "box_missing", "no_room"] | None = (
+        None  # type: ignore[assignment]
+    )
     # Boxes pushed off their machine since the operator's last accepted
     # observation (its eviction watch). Logged, counted, and kept as times in
     # the heartbeat's `box` key for the hosted alerts; the agents view's `box_moved` for 15 minutes.
@@ -925,7 +931,7 @@ class Observation(_UpstreamObservation):
             and isinstance(data, dict)
             and (
                 any(name in _V2_OBSERVATION_FIELDS for name in data)
-                or data.get("error_code") == BOX_MISSING
+                or data.get("error_code") in (BOX_MISSING, NO_ROOM)
             )
         ):
             _UpstreamObservation.model_validate(data)
@@ -940,6 +946,14 @@ _V2_OBSERVATION_FIELDS = frozenset(
 ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
 
 STALE_ERROR_IGNORED_STATES = {"deleted", "queued", "provisioning"}
+
+# The box scaler gave up waiting for room in the cluster: every machine is
+# full. The person sees this, with Retry.
+NO_ROOM = "no_room"
+NO_ROOM_MESSAGE = (
+    "Every machine is busy right now, so your agent couldn't start. "
+    "Try again in a few minutes."
+)
 
 OBSERVED_ERROR = "The cloud machine could not start. Retry it in Switch Console, or contact your administrator if it keeps failing."
 
@@ -1009,12 +1023,23 @@ async def observe(
             if machine.state != "error":
                 reason = _observed_failure(body.error_code)
                 _report_failure(
-                    session, machine, reason, finer=_observed_finer(machine, reason)
+                    session,
+                    machine,
+                    reason,
+                    finer=_observed_finer(
+                        machine, reason, no_room=body.error_code == NO_ROOM
+                    ),
                 )
+                # Only when it goes to error: a repeated stale report doesn't
+                # move the time the grace period counts from.
+                machine.updated_at = now
             machine.state = "error"
-            machine.error = body.error or OBSERVED_ERROR
+            machine.error = (
+                NO_ROOM_MESSAGE
+                if body.error_code == NO_ROOM
+                else body.error or OBSERVED_ERROR
+            )
             machine.error_code = body.error_code
-            machine.updated_at = now
         # Commits even with nothing changed, so the error counts above count,
         # and box facts are kept whichever branch ran, an ignored observation too.
         await session.commit()
@@ -1074,10 +1099,19 @@ async def observe(
             if machine.state != "error":
                 reason = _observed_failure(body.error_code)
                 _report_failure(
-                    session, machine, reason, finer=_observed_finer(machine, reason)
+                    session,
+                    machine,
+                    reason,
+                    finer=_observed_finer(
+                        machine, reason, no_room=body.error_code == NO_ROOM
+                    ),
                 )
             machine.state = "error"
-            machine.error = body.error or OBSERVED_ERROR
+            machine.error = (
+                NO_ROOM_MESSAGE
+                if body.error_code == NO_ROOM
+                else body.error or OBSERVED_ERROR
+            )
             machine.error_code = body.error_code
     else:
         machine.state = body.state

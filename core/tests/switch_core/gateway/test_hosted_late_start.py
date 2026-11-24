@@ -252,3 +252,87 @@ def test_a_given_up_box_keeps_its_login_through_the_grace_period() -> None:
 
 def test_a_v1_machine_carries_no_egress_word() -> None:
     assert "egress" not in machine_item(_machine(backend="vm", state="error"))
+
+
+async def test_the_scalers_no_room_is_shown_as_busy_counted_and_given_up(
+    harness: Harness,
+) -> None:
+    """The box scaler gave up waiting for room: the person sees that every
+    machine is busy (with Retry), it counts once as `failed`/`no_room`, and it
+    follows the grace-then-stop rule of any start given up on."""
+    from switch_core.gateway.hosted_controller import NO_ROOM_MESSAGE
+
+    owner = await add_member(harness.session_factory, "ada")
+    async with (
+        _hosted_app(harness.session_factory, owner) as hosted,
+        harness.client() as client,
+    ):
+        box = await _box(harness, owner, hosted, client)
+        machine = await _state(harness, box)
+        answer = await box.hosted.post(
+            f"/hosted-controller/machines/{box.machine_id}/observation",
+            headers=HEADERS,
+            json={
+                "state": "error",
+                "revision": machine.revision,
+                "error_code": "no_room",
+            },
+        )
+        assert answer.status_code == 200, answer.text
+        busy = await _state(harness, box)
+        assert (busy.state, busy.error_code, busy.error) == (
+            "error",
+            "no_room",
+            NO_ROOM_MESSAGE,
+        )
+        summary = (await hosted.get("/hosted-machines")).json()["machines"][0]
+        assert summary["error"] == NO_ROOM_MESSAGE
+        # Room came free in time: the late box is the person's start after all.
+        await _running(box)
+        await _report(box, 1)
+    assert (await _state(harness, box)).state == "ready"
+
+
+def test_with_v2_off_no_room_is_refused_as_upstream_would(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import ValidationError
+
+    from switch_core import hosted_v2
+    from switch_core.gateway.hosted_controller import Observation
+
+    monkeypatch.setattr(hosted_v2, "_process_on", False)
+    with pytest.raises(ValidationError):
+        Observation.model_validate(
+            {"state": "error", "revision": 1, "error_code": "no_room"}
+        )
+
+
+async def test_a_repeated_stale_error_doesnt_stretch_the_grace(
+    harness: Harness,
+) -> None:
+    owner = await add_member(harness.session_factory, "ada")
+    async with (
+        _hosted_app(harness.session_factory, owner) as hosted,
+        harness.client() as client,
+    ):
+        box = await _box(harness, owner, hosted, client)
+        await _gave_up(box, harness, "machine_needs_attention", timedelta(minutes=10))
+        before = await _state(harness, box)
+        async with harness.session_factory() as session:
+            machine = await CloudMachineStore().locked(session, box.machine_id)
+            assert machine is not None
+            machine.revision += 1  # Core moved on; the scaler is a revision behind
+            await session.commit()
+        answer = await box.hosted.post(
+            f"/hosted-controller/machines/{box.machine_id}/observation",
+            headers=HEADERS,
+            json={
+                "state": "error",
+                "revision": before.revision,
+                "error_code": "machine_needs_attention",
+            },
+        )
+        assert answer.status_code == 200, answer.text
+        after = await _state(harness, box)
+    assert after.updated_at == before.updated_at

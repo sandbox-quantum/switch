@@ -1123,7 +1123,7 @@ class CloudMachineStore:
         # (owner, idle, admin, pause, turn-off) is left as it is.
         stopped_by_core = ("box_not_made",) + (
             # The late-start stop (hosted agents v2's boxes only).
-            ("machine_needs_attention", "machine_connect_timeout")
+            ("machine_needs_attention", "machine_connect_timeout", "no_room")
             if machine.backend == "box"
             else ()
         )

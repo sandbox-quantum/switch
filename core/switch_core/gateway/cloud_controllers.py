@@ -646,7 +646,7 @@ def _when(value: Any) -> datetime | None:
 # A v2 box start Core or the box scaler gave up on: in `error` with one of
 # these codes, while still wanted running. Not `box_not_made` (Core already
 # stopped it) and not `box_missing` (its own path).
-GIVEN_UP = frozenset({"machine_needs_attention", "machine_connect_timeout"})
+GIVEN_UP = frozenset({"machine_needs_attention", "machine_connect_timeout", "no_room"})
 # How long after giving up a box that comes up anyway is still taken as the
 # person's start (`recover_late_start`); after that the sweep stops it.
 LATE_GRACE = timedelta(minutes=15)
