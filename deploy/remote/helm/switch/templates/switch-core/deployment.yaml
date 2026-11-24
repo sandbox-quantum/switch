@@ -135,6 +135,14 @@ spec:
             - name: HOSTED_BOX_CEILING
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.switchCore.hostedPoolSize }}
+            - name: HOSTED_POOL_SIZE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.switchCore.hostedLaunchCapacityPerWorkspace }}
+            - name: HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.switchCore.visibilityKeyedIdKeySecret }}
             - name: VISIBILITY_KEYED_ID_KEY_PATH
               value: /etc/switch-visibility/keyed-id.key

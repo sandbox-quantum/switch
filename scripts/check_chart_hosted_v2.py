@@ -79,6 +79,8 @@ V2_ENV = (
     "HOSTED_BOX_PROVISIONING",
     "HOSTED_PROVISIONS_PER_MINUTE",
     "HOSTED_BOX_CEILING",
+    "HOSTED_POOL_SIZE",
+    "HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE",
     "VISIBILITY_KEYED_ID_KEY_PATH",
     "VISIBILITY_KEYED_ID_KEY_VERSION",
     "VISIBILITY_OPERATORS_PATH",
@@ -113,6 +115,27 @@ def test_on_with_every_value_renders_v2_and_the_key() -> None:
     env = core_env(render(*ON))
     assert env["HOSTED_BOX_PROVISIONING"] == "true"
     assert env["VISIBILITY_KEYED_ID_KEY_PATH"] == "/etc/switch-visibility/keyed-id.key"
+
+
+def test_the_pool_and_per_workspace_limit_render_only_when_set() -> None:
+    """The warm pool's size and the per-workspace limit reach switch-core as
+    given, and are left out (switch-core's defaults) when empty."""
+    env = core_env(render(*ON))
+    assert env["HOSTED_POOL_SIZE"] == "1"
+    assert "HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE" not in env  # 0 is the default
+    env = core_env(
+        render(
+            *ON,
+            "--set",
+            "switchCore.hostedPoolSize=2",
+            "--set",
+            "switchCore.hostedLaunchCapacityPerWorkspace=3",
+        )
+    )
+    assert env["HOSTED_POOL_SIZE"] == "2"
+    assert env["HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE"] == "3"
+    env = core_env(render(*ON, "--set", "switchCore.hostedPoolSize="))
+    assert "HOSTED_POOL_SIZE" not in env
 
 
 #: Each value v2 needs, emptied, and the words its refusal must contain.
@@ -162,6 +185,7 @@ TESTS = [
     test_off_by_default_sets_no_v2,
     test_off_renders_nothing_of_v2,
     test_on_with_every_value_renders_v2_and_the_key,
+    test_the_pool_and_per_workspace_limit_render_only_when_set,
     test_on_without_a_needed_value_refuses_and_names_it,
     test_off_needs_none_of_them,
 ]

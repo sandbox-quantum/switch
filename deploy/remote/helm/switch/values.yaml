@@ -246,6 +246,13 @@ switchCore:
   # and 50).
   hostedProvisionsPerMinute: ""
   hostedBoxCeiling: ""
+  # v2 only. The warm pool: how many boxes wait, made ahead, for the next
+  # person's first start (0-5; switch-core refuses to start if it would leave
+  # fewer than 2 of hostedLaunchCapacity or hostedBoxCeiling for people). And
+  # the most live machines serving one workspace (0-100, 0 for no limit).
+  # Empty uses switch-core's defaults (0 and 0).
+  hostedPoolSize: ""
+  hostedLaunchCapacityPerWorkspace: ""
   # v2's Hosted area for Switch operators. Each is an existing Secret,
   # mounted as a single file (subPath, mode 0400), because switch-core
   # refuses a key or operator list that is a link or that anyone else can

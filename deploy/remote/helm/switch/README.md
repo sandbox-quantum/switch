@@ -536,6 +536,8 @@ switchCore:
   hostedLaunchCapacity: 20
   hostedProvisionsPerMinute: 5       # optional; switch-core's default is 5
   hostedBoxCeiling: 50               # optional; switch-core's default is 50
+  hostedPoolSize: 1                  # optional; the warm pool, default 0 (none)
+  hostedLaunchCapacityPerWorkspace: 0  # optional; 0 (the default) is no limit
   visibilityKeyedIdKeySecret: switch-visibility-key          # key: keyed-id.key
   visibilityOperatorsSecret: switch-visibility-operators     # key: operators.json
   featureFlags:

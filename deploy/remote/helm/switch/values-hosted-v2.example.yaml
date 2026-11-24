@@ -31,6 +31,12 @@ switchCore:
   hostedProvisionsPerMinute: 5
   hostedBoxCeiling: 50
 
+  # Optional. The warm pool (boxes made ahead for new people's first start; 0
+  # for none) and the most live machines one workspace may have (0 for no
+  # limit). A pool must leave at least 2 of the capacity and the ceiling free.
+  hostedPoolSize: 1
+  hostedLaunchCapacityPerWorkspace: 0
+
   # The Hosted area for Switch operators. Secret with keyed-id.key (random
   # bytes, read only by switch-core), and Secret with operators.json:
   # {"operators": ["<user id>", ...]}. Restart switch-core after changing either.
