@@ -1636,9 +1636,10 @@ class RoomService:
         join_event_listeners: list[str] | None = None,
         added_by_kind: Literal["user", "agent", "system"] = "user",
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
-    ) -> None:
+    ) -> int:
         """`with_agents` runs in the transaction that records the agents, so
-        what it writes commits with them or not at all."""
+        what it writes commits with them or not at all. Returns how many this
+        call put in: of two concurrent adds of one agent, one adds it."""
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1671,7 +1672,7 @@ class RoomService:
                 new_agent_ids,
                 agent_ids,
             )
-            return
+            return 0
 
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 
@@ -1680,7 +1681,7 @@ class RoomService:
         # and an arrival message) all belong to this room's tenant.
         with tenant_scope(room.tenant_id):
             async with self._session_factory() as session:
-                await self._room_store.add_agents(
+                inserted = await self._room_store.add_agents(
                     session,
                     room.id,
                     new_agent_ids,
@@ -1711,15 +1712,18 @@ class RoomService:
         await self.room_agents_changed(room.tenant_id, [room.id])
         self.room_changed(room.tenant_id, room.id)
 
-        emit_safely(
-            self._telemetry,
-            "room_agents_added",
-            {
-                # Added, not requested.
-                "agent_count": len(new_agent_ids),
-                "added_by_kind": added_by_kind,
-            },
-        )
+        if inserted:
+            emit_safely(
+                self._telemetry,
+                "room_agents_added",
+                {
+                    # Added by this call, not requested: a concurrent add of
+                    # the same agent put it in first.
+                    "agent_count": len(inserted),
+                    "added_by_kind": added_by_kind,
+                },
+            )
+        return len(inserted)
 
     async def remove_agents_from_room(
         self,
@@ -1728,8 +1732,8 @@ class RoomService:
         removed_by_kind: Literal["user", "agent", "system"] = "user",
         *,
         removed_by: str | None = None,
-    ) -> None:
-        """Take agents out of a room.
+    ) -> int:
+        """Take agents out of a room, returning how many this call took out.
 
         `removed_by` is the name of whoever asked, written into the room's
         history with each departure ("X was removed by Y"); None when nobody
@@ -1761,6 +1765,7 @@ class RoomService:
                 "room_agents_removed",
                 {"agent_count": removed, "removed_by_kind": removed_by_kind},
             )
+        return removed
 
     async def _load_room(self, room_id: str) -> Room:
         """A room row, read on the caller's session.

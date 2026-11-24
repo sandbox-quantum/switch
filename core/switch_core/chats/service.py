@@ -1320,18 +1320,20 @@ class ChatService:
             )
             if agent_id in await self._room_store.get_agent_ids(session, room.id):
                 return room
-        await self._room_service.add_agents_to_room(
+        added = await self._room_service.add_agents_to_room(
             room.id,
             agent_ids=[agent_id],
             with_agents=lambda session: self._group_if_several_agents(session, room),
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
-        emit_safely(
-            self._telemetry,
-            "console_member_added",
-            self._member_properties(room, "agent"),
-        )
+        # Of two overlapping adds of the agent, only the one that put it in.
+        if added:
+            emit_safely(
+                self._telemetry,
+                "console_member_added",
+                self._member_properties(room, "agent"),
+            )
         return room
 
     async def _locked_room(self, session: AsyncSession, room_id: str) -> Room:
@@ -1365,12 +1367,14 @@ class ChatService:
             await self._require_manager(session, tenant_id, actor, room)
             if agent_id not in await self._room_store.get_agent_ids(session, room.id):
                 return
-        await self._room_service.remove_agents_from_room(room.id, [agent_id])
-        emit_safely(
-            self._telemetry,
-            "console_member_removed",
-            {**self._member_properties(room, "agent"), "left": False},
-        )
+        removed = await self._room_service.remove_agents_from_room(room.id, [agent_id])
+        # Of two overlapping removals, only the one that took it out.
+        if removed:
+            emit_safely(
+                self._telemetry,
+                "console_member_removed",
+                {**self._member_properties(room, "agent"), "left": False},
+            )
 
     async def archive(self, tenant_id: str, user: User, room_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
