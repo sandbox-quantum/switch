@@ -269,3 +269,15 @@ def test_the_posted_mark_is_one_point_tagged_with_the_service():
     assert series["metric"] == "switch.daily_report.posted"
     assert series["points"] == [[1_800_000_000, 1]]
     assert series["tags"] == ["service:switch-core"]
+
+
+def test_agents_now_counts_each_pods_connections_once():
+    def series_for(query: str, at: int) -> list[dict]:
+        if query.startswith("sum(max:switch.agents.connected{service:switch-core}"):
+            return [{"scope": "service:switch-core", "pointlist": [[at * 1000, 163.0]]}]
+        if query == "sum:switch.agents.connected{service:switch-core}":
+            return [{"scope": "service:switch-core", "pointlist": [[at * 1000, 481.0]]}]
+        return []
+
+    dd = datadog_answering(series_for)
+    assert r.measure(dd, "switch-core", 0, r.DAY)["agents_now"] == 163
