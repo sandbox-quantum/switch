@@ -354,6 +354,11 @@ class SlackConnectionConfig(BridgeConnectionConfig):
 # Where Slack serves private files from, commercial and GovSlack.
 _SLACK_FILE_DOMAINS = ("slack.com", "slack-gov.com")
 
+# Files of one post whose upload URL and bytes are in flight at once. Slack
+# allows files.getUploadURLExternal well over a hundred calls a minute.
+_UPLOAD_CONCURRENCY = 8
+_UPLOAD_TIMEOUT_SECONDS = 30.0
+
 _MAX_OPEN_STREAMS = 100
 
 # Slack's own cap on a stream: it closes ten minutes after `chat.startStream`,
@@ -693,6 +698,10 @@ class SlackAdapter(PlatformAdapter):
         super().__init__()
         self._config = config
         self._web_client: AsyncWebClient | None = None
+        # Sends a file's bytes to the URL Slack issued for it.
+        self._upload_http: Callable[[], httpx.AsyncClient] = lambda: httpx.AsyncClient(
+            timeout=_UPLOAD_TIMEOUT_SECONDS
+        )
         self._socket_client: SocketModeClient | None = None
         self._bot_user_id: str = ""
         self._bot_id: str = ""
@@ -2413,8 +2422,8 @@ class SlackAdapter(PlatformAdapter):
         caption: str | None = None,
         thread_root_id: str | None = None,
     ) -> str | None:
-        """Upload several files as ONE Slack post via files_upload_v2's
-        `file_uploads` list, so N files share a single message and comment."""
+        """Upload several files as ONE Slack post, so N files share a single
+        message and comment."""
         if not files:
             return None
         if len(files) == 1:
@@ -2449,15 +2458,10 @@ class SlackAdapter(PlatformAdapter):
         )
 
         try:
-            result = await self._web_client.files_upload_v2(
-                channel=channel_id,
-                file_uploads=[
-                    {"file": file.data, "filename": file.filename} for file in files
-                ],
-                initial_comment=comment,
-                thread_ts=thread_ts,
+            result = await self._upload_as_one_post(
+                self._web_client, channel_id, files, comment, thread_ts
             )
-        except SlackApiError as e:
+        except (SlackApiError, httpx.HTTPError) as e:
             logger.error(
                 "Failed to upload %d attachments to Slack channel %s: %s",
                 len(files),
@@ -2470,6 +2474,40 @@ class SlackAdapter(PlatformAdapter):
 
         ts = self._extract_share_ts(result.get("files") or [], channel_id)
         return f"{channel_id}:{ts}" if ts else None
+
+    async def _upload_as_one_post(
+        self,
+        client: AsyncWebClient,
+        channel_id: str,
+        files: list[OutboundAttachment],
+        comment: str,
+        thread_ts: str | None,
+    ) -> Any:
+        """What files_upload_v2 does with `file_uploads`, with the files'
+        upload URLs and bytes sent several at a time. The SDK makes its two
+        round trips per file one file after another, and the room's later
+        messages wait for the post: many files would hold them up for seconds."""
+        slots = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
+
+        async def upload(
+            http: httpx.AsyncClient, file: OutboundAttachment
+        ) -> dict[str, str]:
+            async with slots:
+                issued = await client.files_getUploadURLExternal(
+                    filename=file.filename, length=len(file.data)
+                )
+                response = await http.post(issued["upload_url"], content=file.data)
+                response.raise_for_status()
+                return {"id": issued["file_id"], "title": file.filename}
+
+        async with self._upload_http() as http:
+            uploaded = await asyncio.gather(*(upload(http, file) for file in files))
+        return await client.files_completeUploadExternal(
+            files=list(uploaded),
+            channel_id=channel_id,
+            initial_comment=comment,
+            thread_ts=thread_ts,
+        )
 
     @staticmethod
     def _extract_share_ts(

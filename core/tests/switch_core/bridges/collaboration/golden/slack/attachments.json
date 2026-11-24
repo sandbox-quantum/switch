@@ -25,46 +25,102 @@
   },
   {
     "kwargs": {
-      "channel": "C0GENERAL",
-      "file_uploads": [
+      "filename": "a.txt",
+      "length": 5
+    },
+    "method": "files.getUploadURLExternal"
+  },
+  {
+    "kwargs": {
+      "content": {
+        "$bytes_base64": "YWxwaGE="
+      },
+      "url": "https://files.example.com/upload/Fa.txt"
+    },
+    "method": "upload"
+  },
+  {
+    "kwargs": {
+      "filename": "b.csv",
+      "length": 8
+    },
+    "method": "files.getUploadURLExternal"
+  },
+  {
+    "kwargs": {
+      "content": {
+        "$bytes_base64": "eCx5CjEsMgo="
+      },
+      "url": "https://files.example.com/upload/Fb.csv"
+    },
+    "method": "upload"
+  },
+  {
+    "kwargs": {
+      "channel_id": "C0GENERAL",
+      "files": [
         {
-          "file": {
-            "$bytes_base64": "YWxwaGE="
-          },
-          "filename": "a.txt"
+          "id": "Fa.txt",
+          "title": "a.txt"
         },
         {
-          "file": {
-            "$bytes_base64": "eCx5CjEsMgo="
-          },
-          "filename": "b.csv"
+          "id": "Fb.csv",
+          "title": "b.csv"
         }
       ],
       "initial_comment": "*Scout*: Two *files*",
       "thread_ts": "1700000000.000100"
     },
-    "method": "files.upload_v2"
+    "method": "files.completeUploadExternal"
   },
   {
     "kwargs": {
-      "channel": "C0GENERAL",
-      "file_uploads": [
+      "filename": "a.txt",
+      "length": 5
+    },
+    "method": "files.getUploadURLExternal"
+  },
+  {
+    "kwargs": {
+      "content": {
+        "$bytes_base64": "YWxwaGE="
+      },
+      "url": "https://files.example.com/upload/Fa.txt"
+    },
+    "method": "upload"
+  },
+  {
+    "kwargs": {
+      "filename": "b.csv",
+      "length": 8
+    },
+    "method": "files.getUploadURLExternal"
+  },
+  {
+    "kwargs": {
+      "content": {
+        "$bytes_base64": "eCx5CjEsMgo="
+      },
+      "url": "https://files.example.com/upload/Fb.csv"
+    },
+    "method": "upload"
+  },
+  {
+    "kwargs": {
+      "channel_id": "C0GENERAL",
+      "files": [
         {
-          "file": {
-            "$bytes_base64": "YWxwaGE="
-          },
-          "filename": "a.txt"
+          "id": "Fa.txt",
+          "title": "a.txt"
         },
         {
-          "file": {
-            "$bytes_base64": "eCx5CjEsMgo="
-          },
-          "filename": "b.csv"
+          "id": "Fb.csv",
+          "title": "b.csv"
         }
       ],
       "initial_comment": "*Scout* sent `a.txt`, `b.csv`",
       "thread_ts": null
     },
-    "method": "files.upload_v2"
+    "method": "files.completeUploadExternal"
   }
 ]
