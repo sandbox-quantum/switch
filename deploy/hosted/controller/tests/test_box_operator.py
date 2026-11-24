@@ -2312,3 +2312,70 @@ def test_every_code_it_reports_is_one_core_accepts():
 
     for code in ("name_refused", "policy_refused", "object_refused", "box_map_failed"):
         assert code in FAILURES + BIND_FAILURES
+
+
+# ---- the claim tells Core what the box map holds ----
+
+
+def test_each_claim_reports_the_box_maps_size_ceiling_and_namespaces():
+    kube = FakeKube()
+    kube.boxes = {MACHINE: NS, "66666666-6666-4666-8666-666666666666": BOX_NS}
+    core = FakeCore()
+    BoxOperator(core, kube, cfg()).run_once()
+    report = core.reports[-1]
+    assert report["boxes_live"] == 2 and report["ceiling"] == 50
+    assert report["boxes"] == sorted([NS, BOX_NS])
+    assert USER not in json.dumps(report["boxes"]).replace(
+        NS, ""
+    )  # namespaces only, nothing else of a person
+
+
+class InventoryRefusingCore(FakeCore):
+    """A Core from before: it refuses any claim body key it doesn't know, with a 422."""
+
+    def claim(self, report=None):  # type: ignore[no-untyped-def]
+        self.reports.append(report)
+        if report and any(k in report for k in ("boxes_live", "ceiling", "boxes")):
+            raise _http(422)
+        return self.actions.pop(0) if self.actions else None
+
+
+def test_a_core_that_refuses_the_report_gets_the_claim_without_it_and_isnt_sent_it_for_an_hour():
+    clock = {"now": 0.0}
+    core = InventoryRefusingCore(
+        [{"action_id": "a1", "machine_id": MACHINE, "user_keyed_id": USER, "claim_token": TOKEN}]
+    )
+    op = BoxOperator(core, FakeKube(), cfg(), clock=lambda: clock["now"], sleep=lambda s: None)
+    assert op.run_once() is True  # the action still came, on the second claim
+    assert result(core)[2] == "done"
+    assert "boxes" in core.reports[0] and "boxes" not in core.reports[1]
+    before = len(core.reports)
+    op.run_once()
+    assert (
+        len(core.reports) == before + 1 and "boxes" not in core.reports[-1]
+    )  # not offered again within the hour
+    clock["now"] += 3601
+    op.run_once()
+    assert (
+        "boxes" in core.reports[-2] and "boxes" not in core.reports[-1]
+    )  # offered again, refused again
+
+
+def test_a_box_map_that_cant_be_read_never_stops_a_claim():
+    class NoMap(FakeKube):
+        def box_map(self):  # type: ignore[no-untyped-def]
+            raise _http(503)
+
+    core = FakeCore()
+    BoxOperator(core, NoMap(), cfg()).run_once()
+    assert core.reports and "boxes" not in core.reports[-1]
+    assert "capabilities" in core.reports[-1]
+
+
+def test_another_claim_failure_is_still_raised():
+    class Down(FakeCore):
+        def claim(self, report=None):  # type: ignore[no-untyped-def]
+            raise _http(502)
+
+    with pytest.raises(HTTPError):
+        BoxOperator(Down(), FakeKube(), cfg()).run_once()

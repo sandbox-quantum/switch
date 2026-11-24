@@ -437,6 +437,11 @@ POOL_BIND_READY = True
 # operator makes the box as template t1 in the same step, and for an hour neither tries t2 nor lists pool or bind.
 T2_REFUSED_RETRY_S = 3600.0
 NAMES_RECHECK_S = 3600.0
+# Each claim also tells Core what the box map holds: how many boxes (`boxes_live`), the operator's ceiling, and the box
+# namespaces themselves (`boxes`), so Core can alert before the ceiling and find boxes it no longer knows. A Core from
+# before refuses the fields (422): the claim goes again without them, and they aren't sent again for this long.
+INVENTORY_RETRY_S = 3600.0
+INVENTORY_KEYS = ("boxes_live", "ceiling", "boxes")
 PROBE_NAMESPACE = box_namespace("k1-0000000000000000")
 PROBE_MACHINE = "00000000-0000-4000-8000-000000000000"
 # Bumped with any change to what a box is made of; with the image digest, Core's `template_revision`. Core retires
@@ -1339,6 +1344,7 @@ class BoxOperator:
         self._names_admitted = False
         self._names_checked: float | None = None
         self._t2_refused_until = 0.0
+        self._inventory_refused_until = 0.0
 
     def t2_admitted(self) -> bool:
         """False for an hour after the cluster refused a t2 box."""
@@ -1375,11 +1381,42 @@ class BoxOperator:
             capabilities.append(BOX_KEYED_NAMES)
         if POOL_BIND_READY and self.t2_admitted():
             capabilities += [POOL, BIND]
-        return {"template_revision": template_revision(self._config), "capabilities": capabilities}
+        report: dict[str, Any] = {
+            "template_revision": template_revision(self._config),
+            "capabilities": capabilities,
+        }
+        if self._clock() >= self._inventory_refused_until:
+            report.update(self._inventory())
+        return report
+
+    def _inventory(self) -> dict[str, Any]:
+        """The box map's size, the ceiling and its namespaces, or nothing if the map can't be read: a claim never
+        waits on it."""
+        try:
+            boxes, _ = self._kube.box_map()
+        except Exception as error:
+            logger.warning("Box map not read for the claim report (%s).", type(error).__name__)
+            return {}
+        return {
+            "boxes_live": len(boxes),
+            "ceiling": self._config.ceiling,
+            "boxes": sorted(set(boxes.values())),
+        }
+
+    def _claim(self) -> dict | None:
+        report = self.report()
+        try:
+            return self._core.claim(report)
+        except HTTPError as error:
+            if error.code != 422 or not any(key in report for key in INVENTORY_KEYS):
+                raise
+        self._inventory_refused_until = self._clock() + INVENTORY_RETRY_S
+        logger.info("Core doesn't take the box map report; claiming without it for an hour.")
+        return self._core.claim({k: v for k, v in report.items() if k not in INVENTORY_KEYS})
 
     def run_once(self) -> bool:
         """Claims and makes at most one box. False when Core had nothing waiting."""
-        raw = self._core.claim(self.report())
+        raw = self._claim()
         if raw is None:
             return False
         try:
