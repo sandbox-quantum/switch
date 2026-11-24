@@ -369,6 +369,14 @@ class Takeovers(RuleBasedStateMachine):
     def _heard(self, socket: Socket) -> None:
         socket.fence = "heard"
         socket.frame_in_hand = socket.next is not None and socket.next.done()
+        if (
+            socket.next is not None
+            and not socket.next.done()
+            and socket.in_hand is None
+        ):
+            # A read in flight is a pass under way: it may still deliver up to
+            # the heads as they are now.
+            socket.in_hand = self.head
         if socket.waiting:
             COVERAGE["took over a socket waiting to be woken"] += 1
         COVERAGE[f"fenced a socket {socket.why}"] += 1
