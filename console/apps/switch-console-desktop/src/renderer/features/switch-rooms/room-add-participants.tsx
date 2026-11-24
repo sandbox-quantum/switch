@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { workspaceRosterQuery } from '@renderer/features/chats/chat-people';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { forgetBuddyChat } from '@renderer/features/switch-buddy/buddy-chat';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -54,15 +55,14 @@ export async function addToChat(
   | { kind: 'agent'; chat: ChatSummary }
   | { kind: 'person'; members: Awaited<ReturnType<typeof rpc.chats.addMember>> }
 > {
-  if (participant.kind === 'agent')
-    return {
-      kind: 'agent',
-      chat: await api.addAgent({ serverId, roomId, agentId: participant.id }),
-    };
-  return {
-    kind: 'person',
-    members: await api.addMember({ serverId, roomId, userId: participant.id }),
-  };
+  if (participant.kind === 'agent') {
+    const chat = await api.addAgent({ serverId, roomId, agentId: participant.id });
+    forgetBuddyChat(serverId, roomId);
+    return { kind: 'agent', chat };
+  }
+  const members = await api.addMember({ serverId, roomId, userId: participant.id });
+  forgetBuddyChat(serverId, roomId);
+  return { kind: 'person', members };
 }
 
 const ADD_PARTICIPANT_INPUT = 'chat-add-participant';

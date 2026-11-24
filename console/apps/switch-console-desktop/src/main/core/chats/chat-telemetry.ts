@@ -3,6 +3,7 @@ import { serverKindOf } from '@main/core/switch-servers/servers-store';
 import type {
   TelemetryChatFailure,
   TelemetryChatMentions,
+  TelemetryToBuddy,
   TelemetryOutcome,
   TelemetryServerKind,
 } from '@main/core/telemetry/events';
@@ -57,6 +58,37 @@ export function chatMentions(
   if (agent && person) return 'both';
   if (agent) return 'agent';
   return person ? 'person' : 'none';
+}
+
+const TO_BUDDY: ReadonlySet<unknown> = new Set<TelemetryToBuddy>(['yes', 'no', 'unknown']);
+
+function isToBuddy(value: unknown): value is TelemetryToBuddy {
+  return TO_BUDDY.has(value);
+}
+
+/**
+ * What `chat_message_sent` says of a message, from what the composer sent:
+ * whether it carried files, was a thread reply, whom it named, and whether
+ * it went to the person's own switch-buddy. Nothing of the message.
+ */
+export function chatMessageShape(
+  input: Pick<
+    ChatSendInput,
+    'uploadIds' | 'threadRootId' | 'mentionAgentIds' | 'mentionUserIds' | 'mentionSpans' | 'toBuddy'
+  >
+): {
+  has_attachment: boolean;
+  in_thread: boolean;
+  mentions: TelemetryChatMentions;
+  to_buddy: TelemetryToBuddy;
+} {
+  return {
+    has_attachment: (input.uploadIds?.length ?? 0) > 0,
+    in_thread: input.threadRootId != null,
+    mentions: chatMentions(input),
+    // Only a known value: the input crosses IPC unvalidated.
+    to_buddy: isToBuddy(input.toBuddy) ? input.toBuddy : 'unknown',
+  };
 }
 
 /**

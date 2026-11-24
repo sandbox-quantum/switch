@@ -208,6 +208,12 @@ export type ChatSendInput = {
   mentionAgentIds?: string[];
   mentionUserIds?: string[];
   mentionSpans?: ChatMentionSpan[];
+  /**
+   * The message goes to the person's own switch-buddy, in a direct chat
+   * (`isBuddyChat`). Reported with the message's usage event, never sent to
+   * the server.
+   */
+  toBuddy: 'yes' | 'no' | 'unknown';
 };
 
 export type ChatUploadInput = {

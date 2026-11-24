@@ -45,6 +45,10 @@ function describeGatewayFailure(error: RpcError, fallback: string): FailureDescr
         detail: null,
       };
     case 'network':
+      // The main process names the address and why it never answered ("Can't
+      // reach host: the address doesn't resolve."); older text is a bare
+      // `fetch failed`, which needs the generic sentence in front of it.
+      if (isSentence(error.message)) return { headline: error.message, detail: null };
       return {
         headline:
           'Could not reach the server. Check that it is running and that you are on its network.',
@@ -94,10 +98,12 @@ export function describeFailure(error: unknown, fallback: string): FailureDescri
       case 'DuplicateServerUrlError':
       case 'NoDashboardError':
       case 'NoManagementApiError':
+      case 'RedirectedAddressError':
       case 'PasswordChangedSessionNotSavedError':
         // Already a modeled, actionable sentence: the server and the page to
         // fix it on, who is changing the server and when to try again, which
-        // agents to bring back first, which address to enter instead, or that a
+        // agents to bring back first, which address to enter instead (a
+        // redirect included), or that a
         // password changed but its new session could not be kept.
         return { headline: error.message, detail: null };
       case 'ChatApiError':

@@ -32,9 +32,11 @@ import {
   connectorsInTab,
   connectorsPageAccess,
   keyAccessText,
+  moreOnDiscover,
   profileConnectAction,
   reconnectNote,
   signInLabel,
+  toDiscoverText,
   tokenLifetimeLabel,
   workspaceOffNotice,
 } from '@renderer/features/connectors/connectors-catalog';
@@ -556,6 +558,19 @@ describe('the Yours and Discover tabs', () => {
     expect(names(connectorsInTab(catalog, 'yours', 'atlas'))).toEqual([]);
     expect(names(connectorsInTab(catalog, 'discover', ' NOTION '))).toEqual(['Notion']);
     expect(names(connectorsInTab(catalog, 'discover', 'incidents'))).toEqual(['Datadog']);
+  });
+
+  it('knows whether Discover has more than Yours for a search, coming soon included', () => {
+    expect(moreOnDiscover(catalog, '')).toBe(true);
+    expect(moreOnDiscover(catalog, 'notion')).toBe(true);
+    expect(moreOnDiscover(catalog, 'datadog')).toBe(false);
+    expect(moreOnDiscover(catalog, 'zzz')).toBe(false);
+    expect(moreOnDiscover([entry({ status: 'connected' })], '')).toBe(false);
+  });
+
+  it('words the way to Discover with and without a search', () => {
+    expect(toDiscoverText('')).toBe('Browse all connectors');
+    expect(toDiscoverText(' google ')).toBe('Search Discover for “google”');
   });
 });
 

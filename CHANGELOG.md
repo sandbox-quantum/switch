@@ -886,6 +886,14 @@ version of their own to them without also giving them a release of their own.
   you're left in with no workspace.**
 
 #### Changed
+- **The dashboard's Connectors page lists coming soon services in their own
+  section**, under the ones people can use, with a count for each, and
+  the catalog lists 24 more of them. Its All tab is now Discover, where the
+  page always opens, as in Switch Console. Yours ends with a card that opens
+  Discover, and a search there that matches nothing connected offers to search
+  Discover instead, keeping the search.
+  Discover ends with a link to request a connector on GitHub. A connector's category must now be
+  one of a fixed list.
 - **The dashboard has one layout: the one built behind `gateway_v2`.**
   Home, Agents, Rooms, Templates, Connectors and Resources on the rail, and
   Workspace and Organization settings as their own areas, on every server. The earlier layout's
@@ -4917,6 +4925,7 @@ version of their own to them without also giving them a release of their own.
   field shows the one that applies when left blank. When the server can't
   read its decision service, the page says so and keeps the saved choice.
   "Self-hosted endpoint" is now "Your own endpoint".
+
 #### Security
 
 - **A new OpenCode agent asks before it acts.** OpenCode's auto mode has no
@@ -4940,6 +4949,18 @@ version of their own to them without also giving them a release of their own.
   back on starts an unrelated one. The operating system version sent is cut
   down to its major version. The app no longer calls the data anonymous: it
   is pseudonymous, and the consent text says so.
+- **A message to switch-buddy can be counted again.** `chat_message_sent`
+  carries `to_buddy`: `yes` when the message went to the person's own
+  switch-buddy, in a direct chat with it alone, from that chat, the box on
+  Home or the first run's cards; `no` otherwise; `unknown` when the chat
+  could not be read to say. It is
+  the last step of the first run's funnel, after `agent_created` with
+  `entry_point` `switch_buddy`. 0.41.0 dropped `buddy_message_sent` saying the
+  Switch server's `message_sent` would count these, but a server event belongs
+  to a different Amplitude user than the install, so no funnel could join the
+  two, and it cannot tell a message to the buddy from any other. Filter on
+  `outcome` `success`; how many messages someone sent their buddy is
+  Amplitude's to count from these events.
 
 #### Fixed
 
@@ -5216,6 +5237,12 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Connectors page lists coming soon services in their own section**,
+  under the ones people can use, with a count for each. Yours ends with a
+  "Browse all connectors" card that opens Discover, and a search there that
+  matches nothing connected offers to search Discover instead, keeping the
+  search, rather than saying "No connector matches". Discover ends with a
+  link to request a connector on GitHub.
 - **Set up for a connector's app goes to whoever may set it up.** Console
   asks the server who may set up its connector apps, whichever layout its
   dashboard uses. Set up opens Organization settings › Connector apps in the
