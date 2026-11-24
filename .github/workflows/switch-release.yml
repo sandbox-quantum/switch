@@ -356,6 +356,7 @@ jobs:
     name: Package & publish agent controller
     needs: prep
     runs-on: ubuntu-latest
+    environment: ${{ needs.prep.outputs.push == 'true' && 'controller-signing' || '' }}
     permissions:
       contents: write
     outputs:
