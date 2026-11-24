@@ -1200,3 +1200,46 @@ def test_with_the_open_web_an_owned_box_keyed_box_is_open_and_an_unowned_one_get
     (box,) = parse_egress("{}", BOXES_BK, ("github",), True, open_web=True, owners={BK: OWNER})
     assert box.open_web and box.namespace == BK
     assert parse_egress("{}", BOXES_BK, ("github",), True, open_web=True, owners={}) == []
+
+
+# ---- boxes the scaler holds without a proxy login (`egress-held`) ----
+
+HELD_PATH = ("GET", "/api/v1/namespaces/switch-hosted/configmaps/egress-held")
+
+
+def test_egress_held_is_read_by_name_and_a_key_not_a_box_namespace_is_skipped(caplog):
+    from switch_hosted_controller.egress_lists import EgressKubeApi
+
+    api = EgressKubeApi(FakeCall({HELD_PATH: {"data": {BK: "", "kube-system": ""}}}))
+    with caplog.at_level(logging.ERROR):
+        assert api.egress_held() == {BK}
+    assert "egress-held ALERT" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error", [HTTPError("u", 404, "x", None, None), HTTPError("u", 403, "x", None, None), OSError()]
+)
+def test_egress_held_unreadable_or_missing_keeps_every_login_and_alerts(error, caplog):
+    from switch_hosted_controller.egress_lists import EgressKubeApi, without_held
+
+    with caplog.at_level(logging.ERROR):
+        held = EgressKubeApi(FakeCall({HELD_PATH: error})).egress_held()
+    assert held is None and "egress-held ALERT" in caplog.text
+    boxes = [BoxEgress(BK, ()), BoxEgress("agents-user-ada", ())]
+    assert without_held(boxes, held) == boxes  # fail open
+
+
+def test_a_held_box_gets_no_login_and_no_squid_include_and_others_are_untouched():
+    from switch_hosted_controller.egress_lists import parse_egress, without_held
+
+    person = f"agents-user-{OWNER}"
+    boxes = {"11111111-1111-1111-1111-111111111111": person, **BOXES_BK}
+    listed = without_held(parse_egress("{}", boxes, ("github",), True, owners={BK: OWNER}), {BK})
+    assert [b.namespace for b in listed] == [person]
+    files = FakeKube({})
+    reconcile_once(files, listed, PROXY)
+    assert BK not in files.logins
+    assert all(
+        "00000000000000aa" not in name and "00000000000000aa" not in text
+        for name, text in files.files.items()
+    )

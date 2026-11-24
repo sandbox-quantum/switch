@@ -757,6 +757,30 @@ rules:
   - secrets
   verbs:
   - get
+- apiGroups:
+  - ''
+  resourceNames:
+  - egress-held
+  resources:
+  - configmaps
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-hosted-controller-egress-held
+  namespace: switch-hosted
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - egress-held
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - update
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -849,6 +873,20 @@ subjects:
 - kind: ServiceAccount
   name: egress-lists
   namespace: egress-lists
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-hosted-controller-egress-held
+  namespace: switch-hosted
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-hosted-controller-egress-held
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-controller
+  namespace: switch-hosted
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -962,6 +1000,12 @@ data:
 kind: ConfigMap
 metadata:
   name: switch-box-operator-config
+  namespace: switch-hosted
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: egress-held
   namespace: switch-hosted
 ---
 apiVersion: v1

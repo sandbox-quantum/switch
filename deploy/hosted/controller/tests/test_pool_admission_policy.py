@@ -241,8 +241,42 @@ def test_the_provisioner_may_write_exactly_the_three_lists():
 
 def test_egress_lists_may_only_read_box_owners_by_name():
     role = doc(HOSTED, "Role", "switch-egress-lists-box-map")
-    assert "  resourceNames:\n  - box-map\n  - box-owners\n" in role
-    assert role.rstrip().endswith("verbs:\n  - get")
+    assert (
+        "  resourceNames:\n  - box-map\n  - box-owners\n  resources:\n  - secrets\n  verbs:\n  - get\n"
+        in role
+    )
+    # and the held list, by name, read only
+    assert role.rstrip().endswith(
+        "- apiGroups:\n  - ''\n  resourceNames:\n  - egress-held\n  resources:\n  - configmaps\n  verbs:\n  - get"
+    )
+    assert role.count("- apiGroups:") == 2
+    assert set(re.findall(r"^  - (\w+)$", role.split("verbs:")[-1], re.M)) == {"get"}
+
+
+def test_only_the_scaler_may_write_the_held_list_by_name():
+    """The scaler's account (`switch-hosted-controller`) reads and replaces `egress-held` by name, and nothing more:
+    no create, delete or list. The ConfigMap itself is made empty by the manifests."""
+    role = doc(HOSTED, "Role", "switch-hosted-controller-egress-held")
+    assert role.rstrip().endswith(
+        "rules:\n- apiGroups:\n  - ''\n  resourceNames:\n  - egress-held\n  resources:\n  - configmaps\n"
+        "  verbs:\n  - get\n  - update"
+    )
+    binding = doc(HOSTED, "RoleBinding", "switch-hosted-controller-egress-held")
+    assert "  name: switch-hosted-controller-egress-held\nsubjects:" in binding
+    assert binding.rstrip().endswith(
+        "- kind: ServiceAccount\n  name: switch-hosted-controller\n  namespace: switch-hosted"
+    )
+    cm = doc(HOSTED, "ConfigMap", "egress-held")
+    assert "namespace: switch-hosted" in cm and not re.search(r"^data:", cm, re.M)
+    # No other Role in the manifests names it.
+    for text in (HOSTED, REAPER):
+        named = [
+            d for d in docs(text) if "egress-held" in d and "\nkind: Role\n" in "\n" + d + "\n"
+        ]
+        assert {re.search(r"\n  name: (\S+)", d).group(1) for d in named} <= {
+            "switch-egress-lists-box-map",
+            "switch-hosted-controller-egress-held",
+        }
 
 
 # ---------------------------------------------------------------- the reaper

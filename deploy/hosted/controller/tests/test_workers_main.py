@@ -1228,3 +1228,121 @@ def test_pool_boxes_are_started_and_stopped_as_core_lists_them_and_never_reporte
     core.pool_boxes = [{"pool_box_id": "p1", "namespace": POOL_NS, "desired_state": "stopped"}]
     workers.run_round()
     assert kube.replicas[POOL_NS] == 0
+
+
+# ── Boxes Core says may not keep their proxy login (`egress-held`) ───────────
+
+
+class HeldKube(FakeKube):
+    def __init__(self) -> None:
+        super().__init__()
+        self.held_writes: list[set[str]] = []
+
+    def write_egress_held(self, namespaces: set[str]) -> bool:
+        self.held_writes.append(set(namespaces))
+        return True
+
+
+def test_the_scaler_writes_the_boxes_core_marks_egress_false(tmp_path: Path) -> None:
+    core = FakeCore(
+        [
+            {**_running(M1), "egress": False},  # given up past its grace: held
+            {**_running(M2), "egress": True},
+        ]
+    )
+    kube = HeldKube()
+    w = _workers(tmp_path, SCALER, {M1: NS1, M2: NS2}, core=core, kube=kube)
+    w.run_round()
+    assert kube.held_writes == [{NS1}]
+    w.run_round()
+    # Offered again every round: the client reads first and writes only if the list differs, so a list emptied or
+    # re-made by hand gets its holds back on the next round.
+    assert kube.held_writes == [{NS1}, {NS1}]
+
+
+def test_a_held_list_reset_by_hand_is_written_again_on_the_next_round(tmp_path: Path) -> None:
+    class ListKube(FakeKube):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cm: dict[str, Any] = {"metadata": {"resourceVersion": "1"}, "data": {}}
+            self.puts = 0
+
+        def _call(self, method: str, path: str, body: Any = None, timeout: float = 20) -> dict:
+            if path.endswith("/configmaps/egress-held"):
+                if method == "PUT":
+                    self.puts += 1
+                    self.cm = body
+                return self.cm
+            return super()._call(method, path, body, timeout)
+
+        write_egress_held = InClusterKubeApi.write_egress_held
+
+    core = FakeCore([{**_running(M1), "egress": False}])
+    kube = ListKube()
+    w = _workers(tmp_path, SCALER, {M1: NS1}, core=core, kube=kube)
+    w.run_round()
+    assert set(kube.cm["data"]) == {NS1} and kube.puts == 1
+    w.run_round()
+    assert kube.puts == 1  # unchanged: read, not written
+    kube.cm = {"metadata": {"resourceVersion": "7"}, "data": {}}  # emptied or re-made by hand
+    w.run_round()
+    assert set(kube.cm["data"]) == {NS1} and kube.puts == 2
+
+
+def test_a_core_without_the_field_holds_nothing_and_a_sleeping_box_is_never_held(
+    tmp_path: Path,
+) -> None:
+    core = FakeCore(
+        [{**_running(M1)}, {"machine_id": M2, "desired_state": "stopped", "revision": 3}]
+    )
+    kube = HeldKube()
+    _workers(tmp_path, SCALER, {M1: NS1, M2: NS2}, core=core, kube=kube).run_round()
+    assert kube.held_writes == [set()]
+
+
+def test_the_held_list_is_written_whole_by_name_keeping_its_labels() -> None:
+    api = object.__new__(InClusterKubeApi)
+    calls: list[tuple[str, str, Any]] = []
+    current = {
+        "metadata": {"resourceVersion": "9", "labels": {"app.kubernetes.io/part-of": "x"}},
+        "data": {NS2: ""},
+    }
+
+    def call(method: str, path: str, body: Any = None, timeout: float = 20) -> dict:
+        calls.append((method, path, body))
+        return current if method == "GET" else {}
+
+    api._call = call  # type: ignore[method-assign]
+    assert api.write_egress_held({NS1}) is True
+    (get, put) = calls
+    assert get[:2] == ("GET", "/api/v1/namespaces/switch-hosted/configmaps/egress-held")
+    assert put[0] == "PUT" and put[1] == get[1]
+    assert put[2]["data"] == {NS1: ""}  # keys only, empty values; NS2 no longer held
+    assert put[2]["metadata"]["labels"] == {"app.kubernetes.io/part-of": "x"}
+    assert put[2]["metadata"]["resourceVersion"] == "9"
+    calls.clear()
+    current["data"] = {NS1: ""}
+    assert api.write_egress_held({NS1}) is False and [c[0] for c in calls] == ["GET"]
+    with pytest.raises(ValueError):
+        api.write_egress_held({"kube-system"})
+
+
+def test_a_failed_box_map_read_leaves_the_held_list_untouched(tmp_path: Path) -> None:
+    """With no good box map this round, the held set can't be trusted (it could come out empty): nothing is written,
+    so a held box never gets its login back from a failed read, at start or later."""
+    import shutil
+
+    core = FakeCore([{**_running(M1), "egress": False}])
+    kube = HeldKube()
+    w = _workers(tmp_path, SCALER, {M1: NS1}, core=core, kube=kube)
+    w.run_round()
+    assert kube.held_writes == [{NS1}]
+    shutil.rmtree(tmp_path / "box-map")  # the mounted map unreadable from now on
+    assert w.run_round()["box_map"] == "failed"
+    assert kube.held_writes == [{NS1}]  # no write this round, empty or otherwise
+
+    fresh = HeldKube()
+    w2 = _workers(tmp_path / "second", SCALER, {M1: NS1}, core=core, kube=fresh)
+    shutil.rmtree(tmp_path / "second" / "box-map")  # unreadable from the very first round
+    w2.run_round()
+    assert fresh.held_writes == []

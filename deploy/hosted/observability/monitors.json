@@ -14,5 +14,21 @@
       "enable_logs_sample": false,
       "thresholds": {"critical": 0}
     }
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] box egress lists can't read which boxes are held",
+    "type": "log alert",
+    "query": "logs(\"service:switch-egress-lists env:REPLACE-WITH-ENV \\\"egress-held ALERT\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}The egress lists generator couldn't read `egress-held` (missing, unreadable, or holding an entry that isn't a box namespace), so it is keeping every box's proxy login. A box whose start Core gave up on may still have web access while this lasts, though it's scaled to 0.\n\n**Check:** the generator's `egress-held ALERT` lines give the error type. The ConfigMap `switch-hosted/egress-held` must exist; only the scaler writes it. See deploy/hosted/DEPLOY.md.{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": ["service:switch-egress-lists", "env:REPLACE-WITH-ENV", "team:switch", "tier:now"],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": false,
+      "thresholds": {"critical": 0}
+    }
   }
 ]

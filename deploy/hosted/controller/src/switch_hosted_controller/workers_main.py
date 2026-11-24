@@ -70,6 +70,8 @@ from urllib.parse import urlsplit
 from .box_names import is_legacy
 from .box_operator_main import BOX_MAP_SECRET, HOME_NAMESPACE, SA_DIR, read_token
 from .box_scaler import (
+    EGRESS_HELD_CONFIGMAP,
+    NAMESPACE_RE,
     START_LIMIT_S,
     CoreApi,
     KubeApi,
@@ -176,6 +178,31 @@ class InClusterKubeApi(KubeApi):
         return boxes_from_secret(
             self._call("GET", f"/api/v1/namespaces/{HOME_NAMESPACE}/secrets/{BOX_MAP_SECRET}")
         )
+
+    def write_egress_held(self, namespaces: set[str]) -> bool:
+        """`egress-held`, by name: its keys become exactly `namespaces` (box namespaces, empty values). Read first, so
+        it's written only when it changes and keeps its labels and annotations; replaced at the version read. True when
+        it wrote."""
+        if not all(NAMESPACE_RE.fullmatch(ns) for ns in namespaces):
+            raise ValueError("not a box namespace")
+        path = f"/api/v1/namespaces/{HOME_NAMESPACE}/configmaps/{EGRESS_HELD_CONFIGMAP}"
+        current = self._call("GET", path)
+        if set(current.get("data") or {}) == namespaces:
+            return False
+        meta = current.get("metadata") or {}
+        body = {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": EGRESS_HELD_CONFIGMAP,
+                "namespace": HOME_NAMESPACE,
+                "resourceVersion": meta.get("resourceVersion"),
+                **{k: meta[k] for k in ("labels", "annotations") if isinstance(meta.get(k), dict)},
+            },
+            "data": {ns: "" for ns in sorted(namespaces)},
+        }
+        self._call("PUT", path, body)
+        return True
 
 
 class InClusterRestartKubeApi(RestartKubeApi):
@@ -360,6 +387,7 @@ class Workers:
         target.update(boxes)
 
     def _scale(self) -> None:
+        held: set[str] = set()
         steps = reconcile_once(
             self.core,
             self.kube,
@@ -374,7 +402,14 @@ class Workers:
             room_since=self._room_since,
             room=self._room,
             no_room=self._no_room,
+            held=held,
         )
+        if self._map_read and hasattr(self.kube, "write_egress_held"):
+            try:
+                if self.kube.write_egress_held(held):
+                    logger.info("Boxes held without a proxy login: %d.", len(held))
+            except Exception as exc:  # the scaling above already happened; tried again next round
+                logger.warning("egress-held not written (%s).", _why(exc))
         self._scaled = sum(1 for step in steps if step.action)
         self._scaled += scale_pool_boxes(self.core, self.kube)
         self._observed.update({step.machine_id: step.reported for step in steps})

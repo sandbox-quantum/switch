@@ -17,6 +17,9 @@ spec:
     type: Recreate
   template:
     metadata:
+      annotations:
+        ad.datadoghq.com/egress-lists.logs: '[{"source":"switch-egress-lists","service":"switch-egress-lists"}]'
+        tags.datadoghq.com/service: switch-egress-lists
       labels:
         app: switch-egress-lists
     spec:

@@ -10,6 +10,8 @@ HOSTED = Path(__file__).resolve().parents[2]
 MONITORS = HOSTED / "observability" / "monitors.json"
 MANIFEST = HOSTED / "k8s" / "50-egress-proxy.yaml"
 SERVICE = "switch-egress-proxy"
+LISTS_SERVICE = "switch-egress-lists"
+LISTS_MANIFEST = HOSTED / "k8s" / "51-egress-lists.yaml"
 
 
 def _monitors() -> list[dict]:
@@ -31,7 +33,8 @@ def test_every_monitor_is_importable_and_names_no_deployment() -> None:
     for m in _monitors():
         assert "REPLACE-WITH-ENV" in m["name"]
         assert "@REPLACE-WITH-NOTIFICATION-HANDLE" in m["message"]
-        assert {f"service:{SERVICE}", "env:REPLACE-WITH-ENV"} <= set(m["tags"])
+        assert "env:REPLACE-WITH-ENV" in m["tags"]
+        assert {f"service:{SERVICE}", f"service:{LISTS_SERVICE}"} & set(m["tags"])
         # No log text in a notification: the lines carry counts only, but samples aren't needed.
         assert m["options"].get("enable_logs_sample") is False
 
@@ -75,3 +78,20 @@ def test_no_box_destination_reaches_datadog() -> None:
         {"type": "exclude_at_match", "name": "never_ship_box_destinations", "pattern": "."}
     ]
     assert "\n        name: access-log\n" in template
+
+
+def test_the_held_list_monitor_matches_the_generators_alert_line() -> None:
+    """The generator logs `egress-held ALERT` whenever it can't read the held list and keeps every login; the monitor
+    alerts on it, on the generator's own service tag, which its pod carries."""
+    (m,) = [m for m in _monitors() if "egress-held ALERT" in m["query"]]
+    assert m["query"].startswith(f'logs("service:{LISTS_SERVICE} env:REPLACE-WITH-ENV ')
+    source = (
+        HOSTED / "controller" / "src" / "switch_hosted_controller" / "egress_lists.py"
+    ).read_text()
+    assert source.count('"egress-held ALERT:') == 2
+    doc = LISTS_MANIFEST.read_text()
+    template = doc[doc.index("\n  template:\n") :]
+    assert f"\n        tags.datadoghq.com/service: {LISTS_SERVICE}\n" in template
+    (line,) = re.findall(r"^        ad\.datadoghq\.com/egress-lists\.logs: '(.*)'$", template, re.M)
+    assert json.loads(line) == [{"source": LISTS_SERVICE, "service": LISTS_SERVICE}]
+    assert "\n        name: egress-lists\n" in template

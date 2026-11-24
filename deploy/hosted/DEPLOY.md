@@ -22,6 +22,10 @@ cluster files never go in git or in chat.**
    - in `switch-hosted`: `switch-hosted-provisioner-core` (`token`), `switch-hosted-controller-core` (`token`),
      `switch-operator-actions-bearer` (`bearer`), `switch-hosted-reaper-core` (`token`, the reaper's own Core
      credential), and `box-map`, `pool-map` and `box-owners`, each created empty (the three add-only lists);
+   - in `switch-hosted`, the ConfigMap `egress-held` (the manifests make it, empty): the box namespaces Core says may not keep their
+     proxy login (a start given up on past its grace, or a box being deleted). Only the scaler writes it (`get` and
+     `update` by name); the egress lists read it (`get` by name) and leave those boxes out. If it's missing or
+     unreadable the egress lists keep every login and log `egress-held ALERT`, which the monitor alerts on;
    - in the Switch server's namespace: three Secrets, their names given to the chart as
      `hostedControllerSecret`, `visibilityKeyedIdKeySecret` and `visibilityOperatorsSecret`, holding the keys
      `controller.json` (the hosted controller config), `keyed-id.key` and `operators.json` (the operator list). The three tokens in `controller.json` equal the

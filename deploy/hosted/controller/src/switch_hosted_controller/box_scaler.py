@@ -227,6 +227,10 @@ NO_ROOM_ERROR = "There was no room in the cluster for the box within 6 minutes."
 # that failed: Core shows its own cap message with Retry. A Core without the code refuses it (422); the observation then
 # goes as `machine_needs_attention`, and the code isn't sent again for an hour (`RoomSignal`, reused).
 NO_ROOM_CODE = "no_room"
+# Boxes Core says may not keep their proxy login (its `egress: false`: a start given up on past its grace, or a box
+# being deleted). The scaler writes their namespaces, keys only, into this ConfigMap in `switch-hosted` each full pass,
+# and the egress lists leave them out. Only the scaler writes it (the cluster's rule); a sleeping box is never in it.
+EGRESS_HELD_CONFIGMAP = "egress-held"
 # Core's machine connect timeout (10 minutes; `_connect_timed_out` in Core's hosted controller sweep). Not used to
 # decide anything here: room plus start must fit inside it, which a test checks, and Core pins its side too.
 CORE_CONNECT_TIMEOUT_S = 600.0
@@ -356,6 +360,7 @@ def reconcile_once(
     room_since: dict[str, float] | None = None,
     room: RoomSignal | None = None,
     no_room: RoomSignal | None = None,
+    held: set[str] | None = None,
 ) -> list[Step]:
     """One pass over the machines Core lists that map to a box namespace.
 
@@ -409,6 +414,10 @@ def reconcile_once(
     for raw in listed:
         machine_id = str(raw.get("machine_id", ""))
         namespace = boxes.get(machine_id)
+        if held is not None and namespace is not None and raw.get("egress") is False:
+            held.add(
+                namespace
+            )  # Core says no proxy login; a Core without the field never sends False
         expected = raw.get("box_expected") is True and raw.get("desired_state") == RUNNING
         if namespace is None:
             if (

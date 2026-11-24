@@ -36,7 +36,7 @@ from urllib.error import HTTPError
 from uuid import UUID
 
 from .box_names import KEYED_ID_RE, identity, is_box_keyed, user_namespace
-from .box_scaler import NAMESPACE_RE, ScalerConfigError
+from .box_scaler import EGRESS_HELD_CONFIGMAP, NAMESPACE_RE, ScalerConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -594,6 +594,28 @@ class EgressKubeApi:
             owners[key] = owner
         return owners
 
+    def egress_held(self) -> set[str] | None:
+        """`egress-held` in `switch-hosted`, read by name (the generator's `get` on that one name): the box namespaces
+        the scaler holds without a proxy login (Core's `egress: false`). None when it can't be read, missing
+        included: the caller then keeps every login, and alerts. A key that isn't a box namespace is skipped."""
+        try:
+            cm = self._call(
+                "GET", f"/api/v1/namespaces/{self._hosted_ns}/configmaps/{EGRESS_HELD_CONFIGMAP}"
+            )
+        except Exception as error:
+            logger.error(
+                "egress-held ALERT: not readable (%s); keeping every box's login.",
+                type(error).__name__,
+            )
+            return None
+        held = set()
+        for key in (cm.get("data") if isinstance(cm, dict) else None) or {}:
+            if NAMESPACE_RE.fullmatch(key):
+                held.add(key)
+            else:
+                logger.error("egress-held ALERT: an entry is not a box namespace; skipped.")
+        return held
+
     def settings(self) -> str:
         """The operator's egress settings, as the text of `egress-settings`' one key."""
         data = self._secret_data(self._own_ns, SETTINGS_SECRET)
@@ -758,6 +780,15 @@ def check_template_main(argv: list[str] | None = None) -> int:
     return 1 if problems else 0
 
 
+def without_held(boxes: list[BoxEgress], held: set[str] | None) -> list[BoxEgress]:
+    """The boxes, less those the scaler holds without a proxy login (`egress-held`): no login and no squid include
+    for them, so squid refuses them. `None` (the list couldn't be read) leaves every box as it is: fail open, since a
+    held box is already scaled to 0 by then, and `egress_held` has logged the alert."""
+    if not held:
+        return boxes
+    return [box for box in boxes if box.namespace not in held]
+
+
 # ---- the loop ----
 
 
@@ -865,8 +896,9 @@ def main(env: Mapping[str, str] | None = None, sa_dir: Path = SA_DIR) -> int:
     signal.signal(signal.SIGTERM, lambda *_: stopping.__setitem__("now", True))
     run(
         api,
-        lambda: parse_egress(
-            api.settings(), api.box_map(), parts, split, open_web, api.box_owners()
+        lambda: without_held(
+            parse_egress(api.settings(), api.box_map(), parts, split, open_web, api.box_owners()),
+            api.egress_held(),
         ),
         proxy,
         stop=lambda: stopping["now"],
