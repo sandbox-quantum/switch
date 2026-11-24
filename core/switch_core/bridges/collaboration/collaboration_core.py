@@ -2579,13 +2579,13 @@ class CollaborationCore:
         channel. An archived one takes none, since the platform can bring it
         back: only the link goes, as when someone unlinks the room by hand,
         and linking it again later relays from then on."""
-        room_ids = self._channel_to_room.get(event.channel_id)
-        if room_ids is None:
-            return
-        room_id = room_ids[0]
-        tenant_id = await self._room_tenant(room_id)
         lock = self._channel_locks.setdefault(event.channel_id, asyncio.Lock())
         async with lock:
+            room_ids = self._channel_to_room.get(event.channel_id)
+            if room_ids is None:
+                return
+            room_id = room_ids[0]
+            tenant_id = await self._room_tenant(room_id)
             deleted = 0
             if event.deleted:
                 deleted = await self._platform_deletions.delete_room_messages(

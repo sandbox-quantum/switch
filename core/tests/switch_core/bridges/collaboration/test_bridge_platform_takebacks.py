@@ -337,6 +337,27 @@ class TestChannelRemoved:
         assert len(await _bodies(session_factory)) == 3
         assert service.unlinked == [room.id]
 
+    async def test_a_channel_deleted_while_its_room_is_being_made_loses_the_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        core, room, _ = await _setup(session_factory)
+        mapping = core._channel_to_room.pop(CHANNEL)
+        lock = core._channel_locks.setdefault(CHANNEL, asyncio.Lock())
+
+        async with lock:
+            removal = asyncio.create_task(
+                core._handle_channel_removed(
+                    InboundChannelRemoved(channel_id=CHANNEL, deleted=True)
+                )
+            )
+            await asyncio.sleep(0)
+            core._channel_to_room[CHANNEL] = mapping
+        await removal
+
+        service: Any = core._room_service
+        assert await _bodies(session_factory) == {}
+        assert service.unlinked == [room.id]
+
 
 def test_the_handlers_are_installed_before_the_adapter_starts() -> None:
     installed: dict[str, Any] = {}
