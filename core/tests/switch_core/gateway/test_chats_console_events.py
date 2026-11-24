@@ -92,6 +92,48 @@ async def test_leaving_and_being_removed_are_told_apart(chats: _Harness) -> None
     ]
 
 
+async def test_a_room_s_owner_put_in_by_a_template_is_not_a_console_add(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    await chats.service.admit_member(
+        "00000000-0000-0000-0000-000000000000", chats.alice, room_id, chats.bob.id
+    )
+
+    assert chats.telemetry_sink.events("room_users_added") == [{"user_count": 1}]
+    assert chats.telemetry_sink.events("console_member_added") == []
+
+
+async def test_a_removal_two_requests_race_for_is_reported_once(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+    kick = chats.service._provisioning.kick_user
+    kicked: list[bool | None] = []
+
+    async def kick_twice(room: str, user: str, **kwargs: object) -> bool | None:
+        # The second request passed the membership check before the first
+        # took the person out, so its own kick finds them already gone.
+        first = await kick(room, user, **kwargs)  # type: ignore[arg-type]
+        second = await kick(room, user, **kwargs)  # type: ignore[arg-type]
+        kicked.extend([first, second])
+        return second
+
+    chats.service._provisioning.kick_user = kick_twice  # type: ignore[method-assign]
+    removed = await chats.client.delete(
+        f"/chats/{room_id}/members/{chats.bob.id}", headers=chats.as_user(chats.alice)
+    )
+
+    assert removed.status_code == 204
+    assert kicked[1] is False
+    assert chats.telemetry_sink.events("console_member_removed") == []
+    assert chats.telemetry_sink.events("room_users_removed") == []
+
+
 async def test_people_named_with_a_room_made_elsewhere_are_not_console_adds(
     chats: _Harness,
 ) -> None:

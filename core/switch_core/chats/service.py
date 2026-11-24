@@ -1137,20 +1137,35 @@ class ChatService:
     async def add_member(
         self, tenant_id: str, actor: User, room_id: str, target_user_id: str
     ) -> Room:
+        """Switch Console's Add: `admit_member`, reported as a Console add."""
+        room, newly = await self._admit(tenant_id, actor, room_id, target_user_id)
+        if newly:
+            emit_safely(
+                self._telemetry,
+                "console_member_added",
+                self._member_properties(room, "person"),
+            )
+        return room
+
+    async def admit_member(
+        self, tenant_id: str, actor: User, room_id: str, target_user_id: str
+    ) -> Room:
+        """Put a tenant member in a room for a manager, with the checks
+        Console's Add makes, but not reported as one: a template or an agent's
+        tool putting the person a room was made for in it."""
+        room, _ = await self._admit(tenant_id, actor, room_id, target_user_id)
+        return room
+
+    async def _admit(
+        self, tenant_id: str, actor: User, room_id: str, target_user_id: str
+    ) -> tuple[Room, bool]:
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
             await self._require_manager(session, tenant_id, actor, room)
             target = await self._require_tenant_member(
                 session, tenant_id, target_user_id
             )
-        joined, newly = await self._join_person(tenant_id, room.id, target)
-        if newly:
-            emit_safely(
-                self._telemetry,
-                "console_member_added",
-                self._member_properties(joined, "person"),
-            )
-        return joined
+        return await self._join_person(tenant_id, room.id, target)
 
     async def join_member(self, tenant_id: str, room_id: str, target: User) -> Room:
         """Put a tenant member's member client in the room, with no check on
@@ -1263,22 +1278,25 @@ class ChatService:
                     ),
                 )
         with tenant_scope(tenant_id):
-            await self._provisioning.kick_user(
+            removed = await self._provisioning.kick_user(
                 room.transport_room_id, client.transport_user_id
             )
-        emit_safely(
-            self._telemetry,
-            "console_member_removed",
-            {
-                **self._member_properties(room, "person"),
-                "left": actor.id == target_user_id,
-            },
-        )
-        emit_safely(
-            self._telemetry,
-            "room_users_removed",
-            {"user_count": 1, "removed_by_kind": "user"},
-        )
+        # Two overlapping requests both pass the membership check above; only
+        # the one whose kick took the person out reports it.
+        if removed is not False:
+            emit_safely(
+                self._telemetry,
+                "console_member_removed",
+                {
+                    **self._member_properties(room, "person"),
+                    "left": actor.id == target_user_id,
+                },
+            )
+            emit_safely(
+                self._telemetry,
+                "room_users_removed",
+                {"user_count": 1, "removed_by_kind": "user"},
+            )
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             member_ids = [member.id for member, _ in await self.members(session, room)]
