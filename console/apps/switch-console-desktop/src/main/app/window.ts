@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { app, BrowserWindow, dialog } from 'electron';
 import appIcon from '@/assets/images/switch-console/icon-dock.png?asset';
+import { providerUsageService } from '@main/core/provider-usage/instance';
 import { events } from '@main/lib/events';
 import { registerExternalLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
@@ -97,7 +98,12 @@ export function createMainWindow(): BrowserWindow {
   });
 
   // Cleanup reference on close
+  mainWindow.webContents.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+    if (isMainFrame && !isSameDocument) providerUsageService.setActive(false);
+  });
+  mainWindow.webContents.on('render-process-gone', () => providerUsageService.setActive(false));
   mainWindow.on('closed', () => {
+    providerUsageService.setActive(false);
     mainWindow = null;
   });
 

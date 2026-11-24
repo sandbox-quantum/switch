@@ -6,6 +6,7 @@ import { shouldCatchUpIntro } from '@renderer/features/onboarding/intro-catch-up
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { OnboardingIntro } from '@renderer/features/onboarding/onboarding-intro';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
+import { ProviderUsageBar } from '@renderer/features/provider-usage/ProviderUsageBar';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
 import { WorkspaceTopBar } from '@renderer/features/sidebar/workspace-top-bar';
@@ -157,6 +158,7 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
       return (
         <>
           <WorkspaceLayout
+            bottomBar={<ProviderUsageBar />}
             leftSidebar={<LeftSidebar />}
             topBar={<WorkspaceTopBar />}
             mainContent={mainContent}

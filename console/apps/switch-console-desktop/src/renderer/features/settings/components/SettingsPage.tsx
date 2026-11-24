@@ -48,6 +48,7 @@ import {
   shownSettingsTab,
 } from '../settings-tabs';
 import NotificationSettingsCard from './NotificationSettingsCard';
+import { ProviderUsageSetting } from './ProviderUsageSetting';
 import { ReplayOnboardingRow } from './ReplayOnboardingRow';
 import {
   AutoGenerateSessionNamesRow,
@@ -68,6 +69,7 @@ function PreferencesSettingsPage() {
         description="Customize how Switch Console looks and behaves on this computer."
       />
       <ThemeCard />
+      <ProviderUsageSetting />
       <AutoGenerateSessionNamesRow />
       <AutoTrustWorktreesRow />
       <PreserveSessionNameCapitalizationRow />

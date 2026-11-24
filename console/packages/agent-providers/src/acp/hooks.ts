@@ -7,6 +7,7 @@ import type {
   UserInputQuestion,
 } from '../events';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
+import type { ReadSubscriptionUsage } from '../subscription-usage';
 import type { JsonRpcError, ProviderLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 import type {
   AcpAgentCapabilities,
@@ -175,6 +176,7 @@ export interface AcpProviderHooks {
    * process something more after the handshake.
    */
   checkSignIn?(input: AcpSignInInput): Promise<ProviderReadiness>;
+  readSubscriptionUsage?: ReadSubscriptionUsage;
   /**
    * `authenticate` method sent after `initialize` when a session starts with
    * this environment, which may open a browser; undefined sends none (the

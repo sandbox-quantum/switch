@@ -7,6 +7,7 @@ import { checkClaudeSignIn, CLAUDE_LOGIN } from '../claude/sign-in';
 import { clineAcp } from '../cline/cline-adapter';
 import { createCodexAdapter } from '../codex/codex-adapter';
 import { checkCodexSignIn, CODEX_LOGIN } from '../codex/sign-in';
+import { readCodexSubscriptionUsage } from '../codex/subscription-usage';
 import { copilotAcp } from '../copilot/copilot-acp';
 import { cursorAcp } from '../cursor/cursor-adapter';
 import { deepseekHarnessAcp } from '../deepseek-harness/deepseek-harness-acp';
@@ -21,6 +22,7 @@ import { createPiAdapter } from '../pi/pi-adapter';
 import { checkPiSignIn, PI_INHERIT_ENV, PI_LOGIN } from '../pi/sign-in';
 import { qwenAcp } from '../qwen/qwen-acp';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
+import type { ReadSubscriptionUsage } from '../subscription-usage';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 
 export interface ProviderRuntimeOptions {
@@ -72,6 +74,7 @@ export interface ProviderRuntime {
   createAdapter(options: ProviderRuntimeOptions): ProviderAdapter;
   /** Whether the CLI is signed in, answered without signing it in. */
   checkSignIn(input: SignInCheckInput): Promise<ProviderReadiness>;
+  readSubscriptionUsage?: ReadSubscriptionUsage;
 }
 
 /** An ACP-speaking CLI's runtime, made entirely from its hooks. */
@@ -85,6 +88,7 @@ export function acpProviderRuntime(hooks: AcpProviderHooks): ProviderRuntime {
     newAgentAutoMode: true,
     createAdapter: ({ binaryPath, logger }) => createAcpAdapter(hooks, { binaryPath, logger }),
     checkSignIn: (input) => checkAcpSignIn(hooks, input),
+    ...(hooks.readSubscriptionUsage ? { readSubscriptionUsage: hooks.readSubscriptionUsage } : {}),
   };
 }
 
@@ -114,6 +118,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     createAdapter: ({ binaryPath, logger }) =>
       createCodexAdapter({ binaryPath, ...(logger ? { logger } : {}) }),
     checkSignIn: checkCodexSignIn,
+    readSubscriptionUsage: readCodexSubscriptionUsage,
   },
   {
     id: 'opencode',

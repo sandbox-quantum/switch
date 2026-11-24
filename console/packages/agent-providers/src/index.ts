@@ -260,3 +260,4 @@ export {
   opencodeV1DatabasePath,
 } from './opencode/v1-database';
 export { windowsRegistryPath, withWindowsPathEntries } from './windows-registry-path';
+export * from './subscription-usage';

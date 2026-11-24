@@ -17,6 +17,7 @@ const provider = (id: string, name: string) => ({
   knownAgentType: id,
   supportsAutoMode: true,
   newAgentAutoMode: true,
+  supportsSubscriptionUsage: false,
 });
 
 describe('agent provider catalogue', () => {

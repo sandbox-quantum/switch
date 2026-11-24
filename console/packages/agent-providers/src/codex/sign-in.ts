@@ -10,7 +10,8 @@ import {
   type ProviderReadiness,
   type SignInCheckInput,
 } from '../readiness';
-import { noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
+import type { StdioJsonRpcClient } from '../transport/stdio-json-rpc';
+import { CodexAppServerTimeout, withCodexAppServer } from './app-server';
 import { codexSourceHome, hasCodexAuthFile } from './home';
 import {
   CODEX_EPHEMERAL_LOGIN_ARGS,
@@ -97,13 +98,13 @@ export async function checkCodexSignIn(input: SignInCheckInput): Promise<Provide
   let found: ProviderReadiness | HandOver;
   try {
     // The home this Codex read the login from, as Codex resolved it, when it says.
-    found = await withAppServer(input, [], deadline, (client, codexHome) =>
+    found = await withCodexAppServer(input, [], deadline, (client, codexHome) =>
       machineLogin(input, client, codexHome ?? sourceHome, deadline)
     );
   } catch (error) {
-    if (error instanceof CheckTimeout)
+    if (error instanceof CodexAppServerTimeout)
       return loginWontHelp(
-        readiness('unknown', `Could not check Codex's sign-in: ${error.message}`)
+        readiness('unknown', `Could not check Codex's sign-in: ${new CheckTimeout().message}`)
       );
     throw error;
   }
@@ -211,14 +212,17 @@ async function handOverStore(
   if (deadline - Date.now() < START_BUDGET_MS) return unchecked(home, new CheckTimeout().message);
   let store: unknown;
   try {
-    store = await withAppServer(input, CODEX_EPHEMERAL_LOGIN_ARGS, deadline, (session) =>
+    store = await withCodexAppServer(input, CODEX_EPHEMERAL_LOGIN_ARGS, deadline, (session) =>
       readCodexCredentialStore(session, input.cwd)
     );
   } catch (error) {
     // The session asks the same, so a Codex that cannot answer fails it too.
     if (isUnknownCodexMethod(error, 'config/read'))
       return readiness('unauthenticated', codexKeyringApiKeyWithheld(home));
-    return unchecked(home, describe(error));
+    return unchecked(
+      home,
+      error instanceof CodexAppServerTimeout ? new CheckTimeout().message : describe(error)
+    );
   }
   return store === 'ephemeral'
     ? readiness('authenticated', 'Signed in.')
@@ -228,52 +232,4 @@ async function handOverStore(
 function describe(error: unknown): string {
   const cause = error instanceof Error && error.cause !== undefined ? error.cause : error;
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-async function withAppServer<T>(
-  input: SignInCheckInput,
-  args: string[],
-  deadline: number,
-  read: (client: StdioJsonRpcClient, codexHome: string | null) => Promise<T>
-): Promise<T> {
-  const client = new StdioJsonRpcClient({
-    command: input.binaryPath,
-    args: ['app-server', ...args],
-    cwd: input.cwd,
-    env: input.env,
-    logger: noopLogger,
-    onExit: () => {},
-  });
-  let timedOut = false;
-  const timer = setTimeout(
-    () => {
-      timedOut = true;
-      void client.dispose().catch(() => console.warn('Provider readiness process cleanup failed.'));
-    },
-    Math.max(0, deadline - Date.now())
-  );
-  try {
-    const { codexHome } = z.object({ codexHome: z.string().nullish() }).parse(
-      await client.request('initialize', {
-        clientInfo: { name: 'switch-console', version: '0.1.0' },
-      })
-    );
-    client.notify('initialized', null);
-    return await read(client, codexHome ?? null);
-  } catch (error) {
-    // Stopped by the deadline, it fails as an exit; say what stopped it.
-    if (timedOut) throw new CheckTimeout();
-    throw error;
-  } finally {
-    clearTimeout(timer);
-    // What was read, or went wrong, is the answer: a Codex that will not stop
-    // is reported, not put in its place.
-    await client
-      .dispose()
-      .catch((error: unknown) =>
-        console.warn(
-          `The Codex that checked a sign-in did not stop: ${error instanceof Error ? error.message : String(error)}`
-        )
-      );
-  }
 }

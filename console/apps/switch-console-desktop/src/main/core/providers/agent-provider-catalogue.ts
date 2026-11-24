@@ -13,7 +13,10 @@ import type { AgentProviderDefinition } from '@shared/core/providers/agent-provi
  */
 export function buildAgentProviderCatalogue(
   plugins: readonly { metadata: CLIAgentPluginMetadata }[],
-  runtimes: readonly Pick<ProviderRuntime, 'id' | 'loginCommand' | 'newAgentAutoMode'>[]
+  runtimes: readonly Pick<
+    ProviderRuntime,
+    'id' | 'loginCommand' | 'newAgentAutoMode' | 'readSubscriptionUsage'
+  >[]
 ): AgentProviderDefinition[] {
   const pluginIds = plugins.map((plugin) => plugin.metadata.id);
   const runtimeById = new Map(runtimes.map((runtime) => [runtime.id, runtime]));
@@ -40,5 +43,6 @@ export function buildAgentProviderCatalogue(
     knownAgentType: metadata.knownAgentType ?? metadata.id,
     supportsAutoMode: metadata.supportsAutoMode !== false,
     newAgentAutoMode: runtimeById.get(metadata.id)!.newAgentAutoMode,
+    supportsSubscriptionUsage: Boolean(runtimeById.get(metadata.id)!.readSubscriptionUsage),
   }));
 }
