@@ -537,6 +537,75 @@ def test_send_message_threads_under_explicit_root() -> None:
     assert ref == "C123:999.9"
 
 
+class _RefusingWebClient(_FakeWebClient):
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+    async def chat_postMessage(self, **kwargs: Any) -> dict[str, str]:
+        self.calls.append(kwargs)
+        raise SlackApiError(self.error, response={"ok": False, "error": self.error})
+
+
+def test_a_send_slack_refuses_raises_for_the_caller() -> None:
+    """Returned as None, the refusal looked like a post the platform took
+    nothing of, so the bridge let the message go without trying it again."""
+    adapter = _adapter()
+    adapter._web_client = _RefusingWebClient("ratelimited")  # type: ignore[assignment]
+
+    with pytest.raises(SlackApiError) as refused:
+        _run(adapter.send_message("C123", "agent-bot", "hi", thread_root_id=None))
+
+    assert SlackAdapter.classify_refusal(refused.value) == "transient"
+
+
+def test_a_send_with_no_client_raises() -> None:
+    adapter = _adapter()
+    adapter._web_client = None
+
+    with pytest.raises(BridgeOperationError):
+        _run(adapter.send_message("C123", "agent-bot", "hi", thread_root_id=None))
+
+
+class _Response:
+    """A response with a status and no readable body, as slack_sdk hands
+    over for an empty 502 or a proxy's error page."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+@pytest.mark.parametrize(
+    ("refusal", "kind"),
+    [
+        (SlackApiError("is_archived", {"error": "is_archived"}), "permanent"),
+        (
+            SlackApiError("channel_not_found", {"error": "channel_not_found"}),
+            "permanent",
+        ),
+        (SlackApiError("msg_too_long", {"error": "msg_too_long"}), "permanent"),
+        (SlackApiError("token_revoked", {"error": "token_revoked"}), "permanent"),
+        (SlackApiError("not_in_channel", {"error": "not_in_channel"}), "bounded"),
+        (SlackApiError("ratelimited", {"error": "ratelimited"}), "transient"),
+        (SlackApiError("internal_error", {"error": "internal_error"}), "transient"),
+        (SlackApiError("bad gateway", _Response(502)), "transient"),
+        (SlackApiError("no body", {}), "transient"),
+        (TimeoutError("read timed out"), "transient"),
+    ],
+)
+def test_a_refusal_is_judged_by_slacks_error_code(
+    refusal: BaseException, kind: str
+) -> None:
+    assert SlackAdapter.classify_refusal(refusal) == kind
+
+
+def test_a_refusal_is_read_through_its_cause() -> None:
+    wrapped = RuntimeError("the card was not posted")
+    wrapped.__cause__ = SlackApiError("is_archived", {"error": "is_archived"})
+
+    assert SlackAdapter.classify_refusal(wrapped) == "permanent"
+
+
 def test_send_message_top_level_has_no_thread_ts() -> None:
     adapter = _adapter()
     fake = _FakeWebClient()

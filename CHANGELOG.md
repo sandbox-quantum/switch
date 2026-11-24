@@ -208,6 +208,13 @@ version of their own to them without also giving them a release of their own.
   did any failed call.
 
 #### Fixed
+- **A message Slack refuses is no longer treated as delivered.** When Slack
+  answered a message from Switch with an error (a rate limit, an archived
+  channel), the bridge logged it and moved on as if Slack had taken nothing,
+  so nothing could try it again. The refusal now reaches the bridge as an
+  error, and Slack's refusals are told apart: one that can clear (a rate
+  limit, an outage) from one that cannot (an archived or missing channel, a
+  message too long). The session activity messages use the same distinction.
 - **A full database pool no longer makes a pod drop everything it holds.**
   Each switch-core process renews its lease on a database connection of its
   own, outside the shared pool. Before, the renewal borrowed from the same
