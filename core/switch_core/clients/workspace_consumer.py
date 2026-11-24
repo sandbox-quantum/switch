@@ -84,12 +84,26 @@ class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
 
         The bridge lets go of its claim on a message the platform refused
         (`CollaborationCore._release_outbound`), but the transport has already
-        moved past the row, so nothing would read it again."""
+        moved past the row, so nothing would read it again.
+
+        A message that fails while the bridge is stopping, the one in hand
+        when it was told to stop, is held but not tried again here: the
+        retries were stopped already (`teardown`), and whoever holds the
+        bridge next reads it again."""
         try:
             await relay()
         except Exception:
             if seq == 0:
                 raise
+            self._retrying.setdefault(room.room_id, {})[event_id] = seq
+            if not self.running:
+                logger.warning(
+                    "[WORKSPACE-CONSUMER] %s did not reach the platform as the "
+                    "bridge stopped; whoever holds it next tries it again",
+                    event_id,
+                    exc_info=True,
+                )
+                return
             logger.warning(
                 "[WORKSPACE-CONSUMER] %s did not reach the platform; trying it "
                 "again in %.0fs",
@@ -97,7 +111,6 @@ class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
                 RETRY_RELAY_AFTER_SECONDS[0],
                 exc_info=True,
             )
-            self._retrying.setdefault(room.room_id, {})[event_id] = seq
             task = asyncio.create_task(self._retry(room, event_id, relay))
             self._retries.add(task)
             task.add_done_callback(self._retries.discard)
