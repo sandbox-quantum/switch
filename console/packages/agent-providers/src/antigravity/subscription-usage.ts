@@ -55,9 +55,44 @@ const versionLine =
 type ExitStatus = 'ok' | 'signed-out' | 'rate-limited' | 'unknown';
 
 class UsageCommandError extends Error {
-  constructor(readonly exitStatus: Exclude<ExitStatus, 'ok'>) {
+  constructor(
+    readonly exitStatus: Exclude<ExitStatus, 'ok'>,
+    readonly stdout?: string
+  ) {
     super('Antigravity usage command failed.');
   }
+}
+
+function parseReport(output: string): unknown {
+  try {
+    return JSON.parse(output);
+  } catch {
+    return null;
+  }
+}
+
+function hasUsageActivity(payload: unknown): boolean {
+  const activity = activitySchema.safeParse(payload).data;
+  return Boolean(
+    activity &&
+    (activity.num_turns > 0 ||
+      (activity.usage?.total_tokens ?? 0) > 0 ||
+      activity.conversation_id !== '' ||
+      (activity.command && activity.command.name !== 'usage'))
+  );
+}
+
+function hasBufferedActivity(output: string): boolean {
+  if (hasUsageActivity(parseReport(output))) return true;
+  // A complete report may already have arrived before a final incomplete line.
+  return output.split(/\r?\n/).some((line) => {
+    const candidate = line.trim();
+    return (
+      candidate.startsWith('{') &&
+      candidate.endsWith('}') &&
+      hasUsageActivity(parseReport(candidate))
+    );
+  });
 }
 
 function processStatus(code: number | null, stderr: string): ExitStatus {
@@ -94,6 +129,7 @@ function run(
     };
     const stop = () => {
       if (!finish()) return;
+      const received = Buffer.concat(stdout).toString('utf8');
       child.stdout?.destroy();
       child.stderr?.destroy();
       // The CLI and its descendants may keep pipes open after the parent
@@ -104,14 +140,16 @@ function run(
       } catch {
         // The process group has already exited.
       }
-      reject(new UsageCommandError('unknown'));
+      reject(new UsageCommandError('unknown', received));
     };
     const timer = setTimeout(stop, timeout);
     signal.addEventListener('abort', stop, { once: true });
     child.stdout?.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      const remaining = maxOutput - bytes;
+      stdout.push(chunk.subarray(0, remaining));
       bytes += chunk.length;
       if (bytes > maxOutput) stop();
-      else stdout.push(chunk);
     });
     child.stderr?.on('data', (chunk: Buffer) => {
       stderr = (stderr + chunk.toString('utf8')).slice(-4096);
@@ -204,23 +242,12 @@ export async function readAntigravitySubscriptionUsage(
       ['-p', '/usage', '--output-format', 'json', '--print-timeout', '20s'],
       25_000
     );
-    let payload: unknown;
-    try {
-      payload = JSON.parse(output.stdout);
-    } catch {
-      payload = null;
-    }
-    const activity = activitySchema.safeParse(payload).data;
-    if (
-      activity &&
-      (activity.num_turns > 0 ||
-        (activity.usage?.total_tokens ?? 0) > 0 ||
-        activity.conversation_id !== '' ||
-        (activity.command && activity.command.name !== 'usage'))
-    ) {
-      unsafeBinaries.add(binaryPath);
+    const payload = parseReport(output.stdout);
+    const unexpectedActivity = hasUsageActivity(payload);
+    if (unexpectedActivity) unsafeBinaries.add(binaryPath);
+    signal.throwIfAborted();
+    if (unexpectedActivity)
       return unavailable('This Antigravity CLI did not return a zero-turn usage report.');
-    }
     if (output.status !== 'ok') throw new UsageCommandError(output.status);
     const envelope = envelopeSchema.safeParse(payload);
     if (
@@ -262,6 +289,8 @@ export async function readAntigravitySubscriptionUsage(
       windows: [...windows.values()].sort((a, b) => a.windowMinutes! - b.windowMinutes!),
     };
   } catch (error) {
+    if (error instanceof UsageCommandError && error.stdout && hasBufferedActivity(error.stdout))
+      unsafeBinaries.add(binaryPath);
     signal.throwIfAborted();
     if (error instanceof UsageCommandError && error.exitStatus === 'signed-out') return signedOut();
     if (error instanceof UsageCommandError && error.exitStatus === 'rate-limited')

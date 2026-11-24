@@ -201,3 +201,38 @@ it.each(['abort', 'timeout'])('stops on %s when the child never emits close', as
   expect(running.stdout.destroyed).toBe(true);
   expect(running.stderr.destroyed).toBe(true);
 });
+
+it.each(['abort', 'timeout', 'output limit'])(
+  'latches received model activity when stopped by %s before process close',
+  async (reason) => {
+    vi.useFakeTimers();
+    const running = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    cli.spawn.mockImplementation((_command, args: string[]) =>
+      args[0] === '--version' ? childOutput('1.5.13') : running
+    );
+    const path = `/local/interrupted-${reason}/agy`;
+    const abort = new AbortController();
+    const result = readAntigravitySubscriptionUsage(input(path, {}, abort.signal), checkSignIn);
+    const settled =
+      reason === 'abort'
+        ? expect(result).rejects.toMatchObject({ name: 'AbortError' })
+        : expect(result).resolves.toMatchObject({ status: 'error' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cli.spawn).toHaveBeenCalledTimes(2);
+    running.stdout.write(`${report(1)}\n`);
+    if (reason === 'abort') abort.abort();
+    else if (reason === 'timeout') await vi.advanceTimersByTimeAsync(25_000);
+    else running.stdout.write('x'.repeat(512 * 1024));
+    await settled;
+
+    await expect(readAntigravitySubscriptionUsage(input(path), checkSignIn)).resolves.toMatchObject(
+      {
+        status: 'unavailable',
+      }
+    );
+    expect(cli.spawn).toHaveBeenCalledTimes(2);
+  }
+);
