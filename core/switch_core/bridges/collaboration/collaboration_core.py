@@ -3472,8 +3472,10 @@ class CollaborationCore:
         hand-over between processes from posting a message twice.
 
         A post that fails, or is cancelled because the bridge stopped before
-        it finished, lets its claim go, so whoever holds the bridge next posts
-        it; one the platform took just before the cancel then shows twice. A
+        it finished, lets its claim go, so it is posted when it is tried again:
+        by this process a little later (`WorkspaceConsumer`), or by whoever
+        holds the bridge next. One the platform took before failing or being
+        cancelled then shows twice. A
         process that dies between the claim and the post leaves the claim,
         which the next holder claims again once it is
         `_UNPOSTED_CLAIM_LAPSES_AFTER` old and posts the message, twice if the

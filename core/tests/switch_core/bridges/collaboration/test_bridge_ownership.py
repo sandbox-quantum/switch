@@ -40,6 +40,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients import workspace_consumer
 from switch_core.clients.actor import Actor, HumanActor
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -99,6 +100,8 @@ class _Platform:
     def __init__(self) -> None:
         self.listening: list[_Chat] = []
         self.posts: list[tuple[str, str, str]] = []
+        # How many of the next posts the platform refuses.
+        self.refusing = 0
 
     async def say(self, *, user_id: str, text: str, ref: str) -> None:
         """Someone writes in the channel. Every open connection hears it, as
@@ -197,6 +200,9 @@ class _Chat(PlatformAdapter):
         *,
         room_wide_mention: bool = False,
     ) -> str | None:
+        if self.platform.refusing:
+            self.platform.refusing -= 1
+            raise RuntimeError("the platform refused the post")
         self.platform.posts.append((channel_id, sender_name, content))
         return f"post-{len(self.platform.posts)}"
 
@@ -678,6 +684,52 @@ class TestHandingOver:
         assert await _posted(platform, 3) == ["one", "two", "three"]
         assert other.bridges.holds(bridge.bridge_id)
         assert len(platform.listening) == 1
+
+    async def test_a_post_the_platform_refused_is_tried_again(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            workspace_consumer, "RETRY_RELAY_AFTER_SECONDS", (0.05, 0.05)
+        )
+        _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        platform.refusing = 2
+        await _say(session_factory, bridge, "one")
+        await _say(session_factory, bridge, "two")
+
+        assert sorted(await _posted(platform, 2)) == ["one", "two"]
+
+    async def test_a_refused_post_still_being_tried_is_posted_by_the_next_holder(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(workspace_consumer, "RETRY_RELAY_AFTER_SECONDS", (60.0,))
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        platform.refusing = 1
+        await _say(session_factory, bridge, "one")
+        await _say(session_factory, bridge, "two")
+        assert await _posted(platform, 1) == ["two"]
+
+        await holder.stop()
+        await other.ownership.balance()
+
+        assert await _posted(platform, 2) == ["two", "one"]
 
     async def test_a_bridge_that_fails_to_stop_still_closes_its_connection(
         self,
