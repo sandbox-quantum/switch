@@ -169,6 +169,13 @@ class DiscordGatewayClient:
         self._connection.set_channel_update_handler(self._on_channel_update)
         self._connection.set_member_change_handler(self._member_changes.add)
         self._connection.set_permission_change_handler(self._permission_changes.add)
+        self._connection.set_takeback_handlers(
+            on_message_delete=self._on_message_delete,
+            on_bulk_message_delete=self._on_bulk_message_delete,
+            on_message_edit=self._on_message_edit,
+            on_channel_delete=self._on_channel_delete,
+            on_thread_delete=self._on_thread_delete,
+        )
         self._connection.set_guild_lifecycle_handlers(
             on_remove=self._on_guild_remove,
             on_join=self._on_guild_join,
@@ -400,6 +407,51 @@ class DiscordGatewayClient:
                 return
             adapter.attach_shared_connection(self._connection)
             await adapter.dispatch_channel_update(before, after)
+
+    async def _on_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        """Route a deleted message to its guild's bridge. The bot deleting its
+        own post, when discord.py still holds it, needs no resolution."""
+        if payload.guild_id is None:
+            return
+        cached = payload.cached_message
+        if cached is not None and cached.author.id == self._connection.bot_user_id:
+            return
+        with no_tenant():
+            adapter = await self._guild_adapter(payload.guild_id)
+            if adapter is not None:
+                await adapter.dispatch_message_delete(payload)
+
+    async def _on_bulk_message_delete(
+        self, payload: discord.RawBulkMessageDeleteEvent
+    ) -> None:
+        if payload.guild_id is None:
+            return
+        with no_tenant():
+            adapter = await self._guild_adapter(payload.guild_id)
+            if adapter is not None:
+                await adapter.dispatch_bulk_message_delete(payload)
+
+    async def _on_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        if payload.guild_id is None:
+            return
+        if payload.message.author.id == self._connection.bot_user_id:
+            return
+        with no_tenant():
+            adapter = await self._guild_adapter(payload.guild_id)
+            if adapter is not None:
+                await adapter.dispatch_message_edit(payload)
+
+    async def _on_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
+        with no_tenant():
+            adapter = await self._guild_adapter(channel.guild.id)
+            if adapter is not None:
+                await adapter.dispatch_channel_delete(channel)
+
+    async def _on_thread_delete(self, payload: discord.RawThreadDeleteEvent) -> None:
+        with no_tenant():
+            adapter = await self._guild_adapter(payload.guild_id)
+            if adapter is not None:
+                await adapter.dispatch_thread_delete(payload)
 
     async def _on_slash(
         self,

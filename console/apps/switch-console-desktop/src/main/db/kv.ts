@@ -47,6 +47,10 @@ export class KV<TSchema extends Record<string, unknown>> {
     }
   }
 
+  async delOrThrow<K extends keyof TSchema & string>(key: K): Promise<void> {
+    await db.delete(kv).where(eq(kv.key, this.prefixed(key)));
+  }
+
   async clear(): Promise<void> {
     try {
       await db.delete(kv).where(like(kv.key, `${this.namespace}:%`));

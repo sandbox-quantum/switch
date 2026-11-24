@@ -192,6 +192,9 @@ class _StartableAdapter:
     def set_interaction_handler(self, handler: Any) -> None:
         return None
 
+    def set_takeback_handlers(self, **handlers: Any) -> None:
+        return None
+
     async def start(self, **kwargs: Any) -> None:
         self.handler_set_before_start = self.channel_type_handler is not None
 

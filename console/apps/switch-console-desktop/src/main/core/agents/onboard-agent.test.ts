@@ -226,6 +226,17 @@ describe('the onboarded agent’s permission settings', () => {
     }
   );
 
+  it.each([undefined, 'build-box'])(
+    'start asking for an OpenCode agent, whose auto mode nothing reviews (%s)',
+    async (sshHost) => {
+      await onboardAgent(params({ providerId: 'opencode', ...(sshHost ? { sshHost } : {}) }));
+
+      expect(createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ autoApprove: false, autoMode: false })
+      );
+    }
+  );
+
   it('take an explicit choice over the defaults', async () => {
     await onboardAgent(params({ autoApprove: true, autoMode: false }));
 

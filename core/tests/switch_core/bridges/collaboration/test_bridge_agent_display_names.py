@@ -279,6 +279,9 @@ def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
         def set_interaction_handler(self, handler: Any) -> None:
             return None
 
+        def set_takeback_handlers(self, **handlers: Any) -> None:
+            return None
+
         async def start(self, **kwargs: Any) -> None:
             started.append("started")
             assert installed, "the resolver must be installed before start()"

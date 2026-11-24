@@ -1,7 +1,7 @@
 import { appSettingsService } from '@main/core/settings/settings-service';
 
 /**
- * Whether anonymous usage data may leave this machine right now.
+ * Whether usage data may leave this machine right now.
  *
  * Nothing may be sent without calling this first and getting `true` back. It is
  * the only supported way to read the consent setting at an emission point, and

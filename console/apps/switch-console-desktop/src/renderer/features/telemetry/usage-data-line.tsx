@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Switch } from '@renderer/lib/ui/switch';
-import { TELEMETRY_DETAILS_URL } from './telemetry-copy';
+import { TELEMETRY_DETAILS_URL, TELEMETRY_SHORT_SUMMARY } from './telemetry-copy';
 
 /**
  * Sharing usage data, for the first-run pages that say so instead of the
@@ -48,7 +48,7 @@ export function UsageDataToggle() {
   return (
     <div className="flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
       <p className="flex min-w-0 flex-wrap items-center gap-x-2 text-sm text-foreground">
-        <label htmlFor="usage-data-toggle">Share anonymous usage data</label>
+        <label htmlFor="usage-data-toggle">Share usage data</label>
         <span className="text-xs">
           <LearnMore />
         </span>
@@ -70,9 +70,7 @@ export function UsageDataNotice() {
   return (
     <p className="flex flex-wrap items-center justify-center gap-x-1.5 text-xs text-foreground-muted">
       <span>
-        {usage.enabled
-          ? 'Switch Console shares anonymous usage data to improve the app.'
-          : 'Switch Console does not share usage data.'}
+        {usage.enabled ? TELEMETRY_SHORT_SUMMARY : 'Switch Console does not share usage data.'}
       </span>
       <LearnMore />
       <span aria-hidden>·</span>
