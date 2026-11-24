@@ -27,9 +27,23 @@ properties:
     owner: platform
     status: proposed
     gaps:
-      model: needs an untimed abstraction of the lease
       system: waits on the two-replica lane with killed processes
     notes: >
-      Supersedes `lease.eventual-owner`. The model level needs an untimed
-      abstraction of the lease (expiry as an event under fairness), because a
-      bounded clock cannot carry a liveness property.
+      Supersedes `lease.eventual-owner`. Checked at the model level by
+      `properties/specs/ownership_eventual.qnt`, an untimed abstraction of the
+      lease: a bounded clock cannot carry a liveness property. A process
+      lease is read by the process (sure of it until its own deadline) and by
+      the database (holding it until it lapses), in that order, which
+      `ownership.qnt` checks against drifting clocks. Lapsing, the balance
+      that claims a free key, the suspension of work whose lease is not sure
+      and a live process's renewal are events under weak fairness; dying,
+      shutting down and losing the lease while alive are faults, bounded so
+      that one process outlives them. TLC checks the temporal property itself
+      (`Fair implies eventually(always(settled))`: from some point on exactly
+      one live process, sure of its lease and named by the key's row, runs
+      the key) over every run, with three processes and two faults, and four
+      and three nightly. It fails on a claim that never takes a lapsed
+      holder's key, a claim that takes a live holder's, work that is not
+      suspended when its lease is no longer sure, and a dead process's lease
+      kept renewed. It says nothing about how long the pickup takes, which is
+      the lease's lifetime and one balance.
