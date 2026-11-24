@@ -1092,7 +1092,7 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- end }}
 {{- with .Values.switchCore.teamsApp.partnerId }}
 {{- if not (kindIs "string" .) }}
-{{- fail "switchCore.teamsApp.partnerId must be quoted: YAML reads a bare number as a float, which loses its digits" }}
+{{- fail "switchCore.teamsApp.partnerId must be a string: quote it in a values file, or pass it with --set-string, since a bare number can lose its digits" }}
 {{- end }}
 - name: TEAMS_APP_PARTNER_ID
   value: {{ . | quote }}

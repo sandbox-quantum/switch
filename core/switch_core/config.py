@@ -38,9 +38,10 @@ _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 # worth catching at startup rather than at the first `GRANT`. The 63-character
 # cap matches Postgres's own `NAMEDATALEN` limit.
 _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
-# The longest short name and partner ID a Teams app manifest takes.
+# The longest short name a Teams app manifest takes.
 _TEAMS_APP_SHORT_NAME_LIMIT = 30
-_TEAMS_APP_PARTNER_ID_LIMIT = 10
+# A Microsoft partner ID: digits, and a Teams manifest takes at most 10.
+_TEAMS_APP_PARTNER_ID_RE = re.compile(r"[0-9]{1,10}")
 
 
 def _require_rsa_private_key(name: str, pem: str) -> rsa.RSAPrivateKey:
@@ -1960,15 +1961,11 @@ class SwitchConfig(BaseSettings):
                 f"package whose short name is longer, got {app_name!r}."
             )
         partner_id = self.teams_app_partner_id
-        if partner_id and not (
-            partner_id.isascii()
-            and partner_id.isdigit()
-            and len(partner_id) <= _TEAMS_APP_PARTNER_ID_LIMIT
-        ):
+        if partner_id and not _TEAMS_APP_PARTNER_ID_RE.fullmatch(partner_id):
             raise ValueError(
                 "TEAMS_APP_PARTNER_ID must be the publisher's Microsoft partner "
-                f"ID, up to {_TEAMS_APP_PARTNER_ID_LIMIT} digits; Teams refuses "
-                f"an app package naming anything longer, got {partner_id!r}."
+                "ID: digits only, at most 10 of them, as a Teams app package "
+                f"takes it, got {partner_id!r}."
             )
         for name in ("TEAMS_APP_PRIVACY_URL", "TEAMS_APP_TERMS_URL"):
             parts = urlsplit(str(settings[name]))

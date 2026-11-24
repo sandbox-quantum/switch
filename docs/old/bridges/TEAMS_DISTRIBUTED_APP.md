@@ -158,7 +158,8 @@ environment's app itself, to test against.
     first approval: an organisation takes a changed package only when its
     version is raised.
 
-All of these are required together; a partial configuration is refused at
+All of these but the name and the partner ID are required together; a
+partial configuration, a partner ID with no app included, is refused at
 startup. Setting `TEAMS_APP_CLIENT_ID` is what enables the button.
 
 ## What a customer's install produces

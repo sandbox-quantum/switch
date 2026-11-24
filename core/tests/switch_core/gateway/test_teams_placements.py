@@ -213,6 +213,7 @@ async def test_switch_is_added_to_a_team_from_the_catalogue(
             _Lifecycle(_shared_adapter(graph)),
             bridge_id=bridge_id,
             team_id="team-1",
+            teams_app_name="Switch Rooms (dev)",
         )
 
     assert graph.added == [("team-1", "c-1")]
@@ -237,12 +238,18 @@ async def test_without_the_app_in_the_catalogue_it_says_what_to_do(
         )
         with pytest.raises(HTTPException) as refused:
             await _call(
-                add_to_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+                add_to_team,
+                session,
+                lifecycle,
+                bridge_id=bridge_id,
+                team_id="team-1",
+                teams_app_name="Switch Rooms (dev)",
             )
 
     assert not placements.in_catalog
     assert placements.catalog_problem == "not a Teams admin"
     assert refused.value.status_code == 409
+    assert "Built for your org, Switch Rooms (dev)" in str(refused.value.detail)
     assert graph.added == []
 
 
@@ -277,7 +284,12 @@ async def test_an_app_uploaded_by_hand_is_learned_from_the_first_team_it_is_in(
         lifecycle = _Lifecycle(_shared_adapter(graph))
 
         await _call(
-            add_to_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+            add_to_team,
+            session,
+            lifecycle,
+            bridge_id=bridge_id,
+            team_id="team-1",
+            teams_app_name="Switch Rooms (dev)",
         )
         install = await MessagingInstallStore().get_for_bridge(
             session, bridge_id=bridge_id
@@ -554,7 +566,12 @@ async def test_a_microsoft_refusal_while_adding_or_removing_is_a_502(
 
         with pytest.raises(HTTPException) as adding:
             await _call(
-                add_to_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+                add_to_team,
+                session,
+                lifecycle,
+                bridge_id=bridge_id,
+                team_id="team-1",
+                teams_app_name="Switch Rooms (dev)",
             )
         with pytest.raises(HTTPException) as removing:
             await _call(

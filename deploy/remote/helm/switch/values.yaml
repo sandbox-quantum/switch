@@ -669,7 +669,7 @@ switchCore:
     name: ""
     # The publisher's Microsoft partner ID from Partner Center, up to 10
     # digits, once publisher verification is done; empty leaves it out of
-    # the app package. Quote it, so YAML keeps it a string.
+    # the app package. Quote it (or use --set-string), so it stays a string.
     partnerId: ""
 
   # The distributed Telegram app: one bot we register whose groups a customer
