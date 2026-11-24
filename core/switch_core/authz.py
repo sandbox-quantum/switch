@@ -288,16 +288,17 @@ def can_delete_api_key(
     owner_id: str | None,
     key_type: str,
     *,
-    an_agent_signs_in_with_it: bool,
+    an_agent_holds_it: bool,
 ) -> bool:
     """Whether `principal` may delete an API key: their own, or, administering
-    the workspace, anyone's key for adding agents; never one an agent still
-    signs in with. That key goes with its agent; once the agent is deleted,
-    what is left of it may go too."""
+    the workspace, anyone's key for adding agents or retired one; never one an
+    agent still holds, as its own key or a retired one (`AgentStore.holders_of_keys`).
+    That key goes with its agent; once the agent is deleted, what is left of it
+    may go too."""
     reaches = owns(principal, owner_id) or (
         principal.is_admin and key_type in ADMIN_REMOVABLE_KEY_TYPES
     )
-    return reaches and not an_agent_signs_in_with_it
+    return reaches and not an_agent_holds_it
 
 
 def require_group_filing(is_admin: bool) -> None:

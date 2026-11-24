@@ -36,6 +36,23 @@ export const MARK_COLOR: Readonly<Record<string, { light: string; dark: string }
   datadog: { light: "#632CA6", dark: FOREGROUND },
   "new-relic": { light: FOREGROUND, dark: "#1CE783" },
   airtable: { light: FOREGROUND, dark: "#18BFFF" },
+  pagerduty: { light: "#06AC38", dark: "#06AC38" },
+  grafana: { light: "#F46800", dark: "#F46800" },
+  supabase: { light: "#3FCF8E", dark: "#3FCF8E" },
+  cloudflare: { light: "#F38020", dark: "#F38020" },
+  stripe: { light: "#635BFF", dark: "#635BFF" },
+  shopify: { light: "#7AB55C", dark: "#7AB55C" },
+  hubspot: { light: "#FF7A59", dark: "#FF7A59" },
+  clickup: { light: "#7B68EE", dark: "#7B68EE" },
+  trello: { light: "#0052CC", dark: FOREGROUND },
+  dropbox: { light: "#0061FF", dark: FOREGROUND },
+  snowflake: { light: "#29B5E8", dark: "#29B5E8" },
+  bigquery: { light: "#669DF6", dark: "#669DF6" },
+  intercom: { light: FOREGROUND, dark: "#6AFDEF" },
+  zendesk: { light: "#03363D", dark: FOREGROUND },
+  calendly: { light: "#006BFF", dark: FOREGROUND },
+  zoom: { light: "#0B5CFF", dark: FOREGROUND },
+  miro: { light: "#050038", dark: FOREGROUND },
 };
 
 /** Up to two initials, for a service with no logo: "New Relic" -> "NR". */
