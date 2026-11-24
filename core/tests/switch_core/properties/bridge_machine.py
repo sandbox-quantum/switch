@@ -295,7 +295,7 @@ class BridgeRoundTrips(RuleBasedStateMachine):
             COVERAGE["a post taken and then failed"] += 1
 
     @precondition(lambda self: not self.platform.next)
-    @rule(outcome=st.sampled_from([TAKE_THEN_FAIL]))
+    @rule(outcome=st.sampled_from([REFUSE, TAKE_THEN_FAIL]))
     def fail_the_next_post(self, outcome: str) -> None:
         self.platform.next.append(outcome)
 
