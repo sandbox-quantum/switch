@@ -28,6 +28,7 @@ from tests.switch_core.properties.revocation_resources import (
     RoomAccess,
     RoomMembership,
 )
+from tests.switch_core.properties.shards import Shard
 
 SHOULD_REACH = (
     "a listening connection is severed",
@@ -65,39 +66,39 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     return clock
 
 
-def _reached(should: tuple[str, ...]) -> None:
-    if settings.get_current_profile_name() == "nightly":
-        unreached = [what for what in should if COVERAGE[what] == 0]
-        assert not unreached, (
-            f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
-        )
-
-
 @pytest.mark.property("revocation.takes-effect-everywhere")
 def test_a_revoked_controller_is_refused_everywhere(
-    postgres_schema: str, clock: Clock
+    postgres_schema: str, clock: Clock, shard: Shard
 ) -> None:
     COVERAGE.clear()
-    run_state_machine_as_test(machine_on(postgres_schema, ControllerAccess, clock))
-    _reached(HELD_SHOULD_REACH)
+    run_state_machine_as_test(
+        machine_on(postgres_schema, ControllerAccess, clock),
+        settings=shard.of(settings()),
+    )
+    shard.reached(COVERAGE, HELD_SHOULD_REACH)
 
 
 @pytest.mark.property("revocation.takes-effect-everywhere")
 def test_an_agent_removed_from_a_room_is_refused_everywhere(
-    postgres_schema: str, clock: Clock
+    postgres_schema: str, clock: Clock, shard: Shard
 ) -> None:
     COVERAGE.clear()
-    run_state_machine_as_test(machine_on(postgres_schema, RoomAccess, clock))
-    _reached(HELD_SHOULD_REACH)
+    run_state_machine_as_test(
+        machine_on(postgres_schema, RoomAccess, clock), settings=shard.of(settings())
+    )
+    shard.reached(COVERAGE, HELD_SHOULD_REACH)
 
 
 @pytest.mark.property("revocation.takes-effect-everywhere")
 def test_a_client_removed_from_a_room_stops_reading_it_everywhere(
-    postgres_schema: str, clock: Clock
+    postgres_schema: str, clock: Clock, shard: Shard
 ) -> None:
     COVERAGE.clear()
-    run_state_machine_as_test(machine_on(postgres_schema, RoomMembership, clock))
-    _reached(REREAD_SHOULD_REACH)
+    run_state_machine_as_test(
+        machine_on(postgres_schema, RoomMembership, clock),
+        settings=shard.of(settings()),
+    )
+    shard.reached(COVERAGE, REREAD_SHOULD_REACH)
 
 
 @pytest.mark.property("revocation.takes-effect-everywhere")
@@ -266,11 +267,14 @@ def test_a_reread_that_straddled_a_removal_does_not_keep_the_room(
 
 @pytest.mark.property("revocation.takes-effect-everywhere")
 def test_a_revoked_connector_grant_issues_nothing_anywhere(
-    postgres_schema: str, clock: Clock
+    postgres_schema: str, clock: Clock, shard: Shard
 ) -> None:
     COVERAGE.clear()
-    run_state_machine_as_test(machine_on(postgres_schema, ConnectorGrant, clock))
-    _reached(DIRECT_SHOULD_REACH)
+    run_state_machine_as_test(
+        machine_on(postgres_schema, ConnectorGrant, clock),
+        settings=shard.of(settings()),
+    )
+    shard.reached(COVERAGE, DIRECT_SHOULD_REACH)
 
 
 class _drawing:

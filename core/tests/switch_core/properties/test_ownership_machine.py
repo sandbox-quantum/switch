@@ -17,18 +17,17 @@ from tests.switch_core.properties.ownership_machine import (
     SHOULD_REACH,
     machine_on,
 )
+from tests.switch_core.properties.shards import Shard
 
 
 @pytest.mark.property("lease.no-overlap")
 @pytest.mark.property("lease.fenced-takeover")
-def test_ownership_keeps_its_properties(postgres_schema: str) -> None:
+def test_ownership_keeps_its_properties(postgres_schema: str, shard: Shard) -> None:
     COVERAGE.clear()
-    run_state_machine_as_test(machine_on(postgres_schema))
-    if settings.get_current_profile_name() == "nightly":
-        unreached = [what for what in SHOULD_REACH if COVERAGE[what] == 0]
-        assert not unreached, (
-            f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
-        )
+    run_state_machine_as_test(
+        machine_on(postgres_schema), settings=shard.of(settings())
+    )
+    shard.reached(COVERAGE, SHOULD_REACH)
 
 
 @pytest.mark.property("lease.fenced-takeover")

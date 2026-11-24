@@ -11,15 +11,14 @@ from tests.switch_core.properties.erasure_machine import (
     SHOULD_REACH,
     machine_on,
 )
+from tests.switch_core.properties.shards import Shard
 
 
 @pytest.mark.property("retention.erasure-complete")
-def test_an_erased_person_is_named_nowhere(postgres_schema: str) -> None:
+def test_an_erased_person_is_named_nowhere(postgres_schema: str, shard: Shard) -> None:
     COVERAGE.clear()
-    run_state_machine_as_test(machine_on(postgres_schema))
+    run_state_machine_as_test(
+        machine_on(postgres_schema), settings=shard.of(settings())
+    )
     print(f"reached {dict(COVERAGE)}")
-    if settings.get_current_profile_name() == "nightly":
-        unreached = [what for what in SHOULD_REACH if COVERAGE[what] == 0]
-        assert not unreached, (
-            f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
-        )
+    shard.reached(COVERAGE, SHOULD_REACH)

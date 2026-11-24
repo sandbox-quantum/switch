@@ -14,19 +14,20 @@ from tests.switch_core.properties.agent_surface_machine import (
     SHOULD_REACH,
     machine_on,
 )
+from tests.switch_core.properties.shards import Shard
 
 
 @pytest.mark.property("tenancy.agent-surface-no-cross-tenant")
-def test_an_agent_never_reaches_another_tenant(postgres_schema: str) -> None:
+def test_an_agent_never_reaches_another_tenant(
+    postgres_schema: str, shard: Shard
+) -> None:
     COVERAGE.clear()
     REACHED.clear()
     RAISED.clear()
-    run_state_machine_as_test(machine_on(postgres_schema))
+    run_state_machine_as_test(
+        machine_on(postgres_schema), settings=shard.of(settings())
+    )
     print(f"reached {dict(COVERAGE)}; stand-ins {dict(REACHED)}; raised {dict(RAISED)}")
     for what in ("a call answered 2xx", "a call refused"):
         assert COVERAGE[what], f"no call was counted as {what!r}: {dict(COVERAGE)}"
-    if settings.get_current_profile_name() == "nightly":
-        unreached = [what for what in SHOULD_REACH if COVERAGE[what] == 0]
-        assert not unreached, (
-            f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
-        )
+    shard.reached(COVERAGE, SHOULD_REACH)

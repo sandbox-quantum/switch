@@ -12,11 +12,14 @@ from tests.switch_core.properties.chats_machine import (
     SHOULD_REACH,
     machine_on,
 )
+from tests.switch_core.properties.shards import Shard
 
 
 @pytest.mark.property("chats.owned-sync-reversible")
 @pytest.mark.property("chats.membership-is-read-authority")
-def test_chat_membership_follows_its_reasons(postgres_schema: str) -> None:
+def test_chat_membership_follows_its_reasons(
+    postgres_schema: str, shard: Shard
+) -> None:
     COVERAGE.clear()
     # An owner membership needs a few steps to come about (the creator leaves,
     # then an agent of theirs arrives) and more to be taken back, so each
@@ -24,13 +27,9 @@ def test_chat_membership_follows_its_reasons(postgres_schema: str) -> None:
     current = settings()
     run_state_machine_as_test(
         machine_on(postgres_schema),
-        settings=settings(
-            current, stateful_step_count=max(50, current.stateful_step_count)
+        settings=shard.of(
+            settings(current, stateful_step_count=max(50, current.stateful_step_count))
         ),
     )
     print(f"reached {dict(COVERAGE)}")
-    if settings.get_current_profile_name() == "nightly":
-        unreached = [what for what in SHOULD_REACH if COVERAGE[what] == 0]
-        assert not unreached, (
-            f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
-        )
+    shard.reached(COVERAGE, SHOULD_REACH)

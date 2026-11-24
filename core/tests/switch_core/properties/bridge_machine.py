@@ -54,11 +54,11 @@ from tests.switch_core.bridges.collaboration.bridge_processes import (
 
 # How long the platform is watched for a second copy of a post, once the
 # first is there.
-QUIET_SECONDS = 0.3
+QUIET_SECONDS = 0.2
 MAX_HANDOVERS = 2
 # Long enough for a handover to come while a failed post waits to be tried
 # again.
-RETRY_AFTER_SECONDS = (0.5,)
+RETRY_AFTER_SECONDS = (0.3,)
 
 REFUSE = "refuse"
 TAKE_THEN_FAIL = "take then fail"

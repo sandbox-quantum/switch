@@ -169,7 +169,12 @@ bounds and long random simulation.
 
 PR CI runs a small number of examples per test; nightly runs many, with the
 Hypothesis example database kept between runs so a failure found at night is
-retried first the next day.
+retried first the next day. Hypothesis runs one test's examples one after another,
+so under nightly each machine's search is split into four shards
+(`core/tests/switch_core/properties/shards.py`), each running a quarter of the
+examples from its own seed under `pytest -n auto`; what a machine should reach
+is judged over its shards together once the session ends. The scheduled run
+gives each test file its own runner.
 
 ### System: workload, faults, history
 

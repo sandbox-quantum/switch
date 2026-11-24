@@ -16,10 +16,13 @@ from tests.switch_core.properties.broker_machine import (
     SHOULD_REACH,
     machine_on,
 )
+from tests.switch_core.properties.shards import Shard
 
 
 @pytest.mark.property("connector.token-only-to-granted")
-def test_a_token_goes_only_where_it_was_granted(postgres_schema: str) -> None:
+def test_a_token_goes_only_where_it_was_granted(
+    postgres_schema: str, shard: Shard
+) -> None:
     COVERAGE.clear()
     # A withdrawal is only seen between an issue and an upkeep after it, so a
     # run needs room for all three, and more runs than most machines to find
@@ -27,19 +30,17 @@ def test_a_token_goes_only_where_it_was_granted(postgres_schema: str) -> None:
     current = settings()
     run_state_machine_as_test(
         machine_on(postgres_schema),
-        settings=settings(
-            current,
-            max_examples=max(100, current.max_examples),
-            stateful_step_count=max(60, current.stateful_step_count),
+        settings=shard.of(
+            settings(
+                current,
+                max_examples=max(100, current.max_examples),
+                stateful_step_count=max(60, current.stateful_step_count),
+            )
         ),
     )
     print(f"reached {dict(COVERAGE)}")
     assert COVERAGE["refused"], f"no ask was refused: {dict(COVERAGE)}"
-    if settings.get_current_profile_name() == "nightly":
-        unreached = [what for what in SHOULD_REACH if COVERAGE[what] == 0]
-        assert not unreached, (
-            f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
-        )
+    shard.reached(COVERAGE, SHOULD_REACH)
 
 
 # The code that may read a connection's secret or an issued token in the clear,

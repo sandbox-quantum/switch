@@ -21,6 +21,7 @@ from tests.switch_core.properties.bridge_machine import (
     TAKE_THEN_FAIL,
     machine_on,
 )
+from tests.switch_core.properties.shards import Shard
 
 
 class _drawing:
@@ -36,14 +37,13 @@ class _drawing:
 @pytest.mark.property("bridge.roundtrip-exactly-once")
 def test_a_bridged_message_crosses_once_in_each_direction(
     postgres_schema: str,
+    shard: Shard,
 ) -> None:
     COVERAGE.clear()
-    run_state_machine_as_test(machine_on(postgres_schema))
-    if settings.get_current_profile_name() == "nightly":
-        unreached = [what for what in SHOULD_REACH if COVERAGE[what] == 0]
-        assert not unreached, (
-            f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
-        )
+    run_state_machine_as_test(
+        machine_on(postgres_schema), settings=shard.of(settings())
+    )
+    shard.reached(COVERAGE, SHOULD_REACH)
 
 
 @pytest.mark.property("bridge.roundtrip-exactly-once")

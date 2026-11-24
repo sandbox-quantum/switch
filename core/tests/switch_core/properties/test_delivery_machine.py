@@ -17,6 +17,7 @@ from tests.switch_core.properties.delivery_machine import (
     SHOULD_REACH_AT_SCALE,
     machine_on,
 )
+from tests.switch_core.properties.shards import Shard
 
 
 @pytest.mark.property("bus.room-seq-dense")
@@ -25,16 +26,17 @@ from tests.switch_core.properties.delivery_machine import (
 @pytest.mark.property("delivery.addressed-exactly-once")
 @pytest.mark.property("delivery.no-silent-loss")
 @pytest.mark.property("delivery.no-events-after-leave")
-def test_delivery_keeps_its_properties(postgres_schema: str) -> None:
+def test_delivery_keeps_its_properties(postgres_schema: str, shard: Shard) -> None:
     COVERAGE.clear()
-    run_state_machine_as_test(machine_on(postgres_schema))
-    required = SHOULD_REACH
-    if settings.get_current_profile_name() == "nightly":
-        required = SHOULD_REACH + SHOULD_REACH_AT_SCALE
-    unreached = [what for what in required if COVERAGE[what] == 0]
+    run_state_machine_as_test(
+        machine_on(postgres_schema), settings=shard.of(settings())
+    )
+    # Reached by every run, a shard of the nightly search included.
+    unreached = [what for what in SHOULD_REACH if COVERAGE[what] == 0]
     assert not unreached, (
         f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
     )
+    shard.reached(COVERAGE, SHOULD_REACH_AT_SCALE)
 
 
 @pytest.mark.property("delivery.no-silent-loss")
