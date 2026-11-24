@@ -18,6 +18,9 @@ What is checked, once everything sent has had time to arrive:
   bridge is handed over first, by the next. One the platform took before
   failing is on it twice, since the bridge cannot tell it went out
   (`_claim_outbound` says so).
+- Messages written in Switch reach the platform in the order they were
+  written: a reply is not posted before the message it answers, even when
+  that message failed and was tried again.
 - Nothing the platform said is posted back to it.
 """
 
@@ -352,6 +355,14 @@ class BridgeRoundTrips(RuleBasedStateMachine):
                 f"{' (taken, then failed)' if said.taken_then_failed else ''}"
                 f"{' (refused)' if said.refused else ''}"
             )
+        written = [s.text for s in self.world.said]
+        first_copies = list(
+            dict.fromkeys(t for t in self.platform.posted() if t in set(written))
+        )
+        assert first_copies == written, (
+            f"messages written in Switch reached the platform as {first_copies}, "
+            f"written as {written}"
+        )
         from_platform = {p.text for p in self.world.posted}
         echoed = [text for text in posts if text in from_platform]
         assert not echoed, f"posted back to the platform: {echoed}"
