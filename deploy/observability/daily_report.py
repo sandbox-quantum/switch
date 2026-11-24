@@ -191,6 +191,16 @@ class Day:
         return (self.mean - self.last_week) / self.last_week
 
 
+def connections(scope: str, by: str) -> str:
+    """switch.agents.connected summed by `by`, counting each pod's connections
+    once. A pod's gauge can arrive under more than one env tag at the same
+    time, and a plain sum adds every copy."""
+    return (
+        f"sum(max:switch.agents.connected{{{scope}}}"
+        f" by {{service,pod_name,transport,client}}, {{{by}}})"
+    )
+
+
 def featured_graphs(service: str) -> list[Graph]:
     s = f"service:{service}"
     streams = "!route:/gateway/chats/events,!route:/gateway/chats/activity/events"
@@ -232,14 +242,14 @@ def featured_graphs(service: str) -> list[Graph]:
         Graph(
             "agents",
             "Agent connections, all pods together",
-            (f"sum:switch.agents.connected{{{s}}}",),
+            (connections(s, "service"),),
             None,
             "How many agent connections the server holds. One agent can hold "
             "several, one per room it serves, so it counts connections, not "
             "agents.",
             "Cliffs: a sudden drop that stays down means agents were cut off. "
             "Short spikes are agents reconnecting after a deploy.",
-            f"sum:switch.agents.connected{{{s}}} by {{pod_name}}",
+            connections(s, "service,pod_name"),
             unit="",
             axis="Agent connections",
             labels=("All pods",),
@@ -643,7 +653,7 @@ def measure(dd: Datadog, service: str, start: int, end: int) -> dict[str, float 
     in_use = dd.points(f"max:switch.db.pool.in_use{{{s}}}", start, end)
     size = dd.points(f"max:switch.db.pool.size{{{s}}}", start, end)
     return {
-        "agents_now": agg(f"sum:switch.agents.connected{{{s}}}", last),
+        "agents_now": agg(connections(s, "service"), last),
         "bridges_min": agg(f"min:switch.health.check{{{s},check:bridges}}", min),
         "api_p95_max": agg(
             f"p95:switch.http.request.duration{{{s},"
@@ -665,8 +675,7 @@ def measure(dd: Datadog, service: str, start: int, end: int) -> dict[str, float 
         or 0,
         "pool_ratio": max(in_use) / max(size) if in_use and size else None,
         "loop_lag_max": agg(f"max:switch.runtime.event_loop_lag{{{s}}}", max),
-        "old_connection": agg(f"sum:switch.agents.connected{{{s},transport:sse}}", max)
-        or 0,
+        "old_connection": agg(connections(f"{s},transport:sse", "service"), max) or 0,
         "events_dropped": agg(f"sum:switch.agent.events_dropped{{{s}}}.as_count()", sum)
         or 0,
     }
