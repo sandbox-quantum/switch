@@ -116,6 +116,7 @@ async def _installers(config: SwitchConfig) -> MessagingInstallerRegistry:
                     messaging_public_url=config.messaging_public_url,
                     privacy_url=config.teams_app_privacy_url,
                     terms_url=config.teams_app_terms_url,
+                    partner_id=config.teams_app_partner_id,
                 ),
             )
         )

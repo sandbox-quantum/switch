@@ -205,8 +205,8 @@ async def add_to_team(
                     "Switch cannot add itself to a team until it knows where the "
                     "app is in your organisation's Teams app list. Once a Teams "
                     "admin has uploaded it, add it to any one team from Teams "
-                    "(Apps, Built for your org, Agent Switch) and Switch can add "
-                    "it to the rest; or have a Global Administrator approve "
+                    "(Apps, then Built for your org) and Switch can add it to "
+                    "the rest; or have a Global Administrator approve "
                     "Switch again, so Switch puts it in the list itself."
                 ),
             )

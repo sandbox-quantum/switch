@@ -573,10 +573,11 @@ async def test_the_app_package_is_downloaded_for_a_teams_admin(
 ) -> None:
     package = build_distributed_app_package(
         app_id="11111111-2222-3333-4444-555555555555",
-        app_name="Agent Switch",
+        app_name="Switch Rooms",
         messaging_public_url="https://switch.example",
         privacy_url="https://switch.example/privacy",
         terms_url="https://switch.example/terms",
+        partner_id=None,
     )
     installer = TeamsAppInstaller(app=object(), package=package)  # type: ignore[arg-type]
     async with session_factory() as session:

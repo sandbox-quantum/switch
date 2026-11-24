@@ -255,7 +255,7 @@ Two steps, in this order, one message each:
    `!invite-agent` alone only gets the usage line back. The `@` suggestion list may not
    offer the agent (on Slack's free plan it does not): type the full name by hand.
 
-Do not send them to the app's own name ("Switch", "Agent Switch"): a message to it
+Do not send them to the app's own name ("Switch", "Agent Switch", "Switch Rooms"): a message to it
 reaches no one. They mention the agent's name once it is in the channel.
 
 ## When a new version of you arrives

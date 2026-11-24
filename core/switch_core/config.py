@@ -38,8 +38,9 @@ _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 # worth catching at startup rather than at the first `GRANT`. The 63-character
 # cap matches Postgres's own `NAMEDATALEN` limit.
 _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
-# The longest short name a Teams app manifest takes.
+# The longest short name and partner ID a Teams app manifest takes.
 _TEAMS_APP_SHORT_NAME_LIMIT = 30
+_TEAMS_APP_PARTNER_ID_LIMIT = 10
 
 
 def _require_rsa_private_key(name: str, pem: str) -> rsa.RSAPrivateKey:
@@ -849,7 +850,11 @@ class SwitchConfig(BaseSettings):
     # The name the app goes by in Teams. Every environment registers an app of
     # its own, and an organisation approving more than one — ours, testing
     # them — would otherwise see several apps of the same name.
-    teams_app_name: str = "Agent Switch"
+    teams_app_name: str = "Switch Rooms"
+    # The publisher's Microsoft partner ID (Partner Center), named in the
+    # package so Teams can tie the app to its verified publisher. Only a
+    # publisher enrolled with Microsoft has one.
+    teams_app_partner_id: str | None = None
 
     # The distributed Telegram app (`TELEGRAM_DISTRIBUTED_APP.md`): one bot per
     # deployment whose groups a customer claims with a link, as opposed to the
@@ -1918,6 +1923,7 @@ class SwitchConfig(BaseSettings):
             ),
             "TEAMS_APP_PRIVACY_URL": self.teams_app_privacy_url,
             "TEAMS_APP_TERMS_URL": self.teams_app_terms_url,
+            "TEAMS_APP_PARTNER_ID": self.teams_app_partner_id,
         }
         if not any(settings.values()):
             return self
@@ -1952,6 +1958,17 @@ class SwitchConfig(BaseSettings):
                 f"TEAMS_APP_NAME must be 1 to {_TEAMS_APP_SHORT_NAME_LIMIT} "
                 "characters with no spaces around it; Teams refuses an app "
                 f"package whose short name is longer, got {app_name!r}."
+            )
+        partner_id = self.teams_app_partner_id
+        if partner_id and not (
+            partner_id.isascii()
+            and partner_id.isdigit()
+            and len(partner_id) <= _TEAMS_APP_PARTNER_ID_LIMIT
+        ):
+            raise ValueError(
+                "TEAMS_APP_PARTNER_ID must be the publisher's Microsoft partner "
+                f"ID, up to {_TEAMS_APP_PARTNER_ID_LIMIT} digits; Teams refuses "
+                f"an app package naming anything longer, got {partner_id!r}."
             )
         for name in ("TEAMS_APP_PRIVACY_URL", "TEAMS_APP_TERMS_URL"):
             parts = urlsplit(str(settings[name]))

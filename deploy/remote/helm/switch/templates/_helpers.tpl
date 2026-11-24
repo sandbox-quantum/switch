@@ -1090,6 +1090,13 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: TEAMS_APP_NAME
   value: {{ . | quote }}
 {{- end }}
+{{- with .Values.switchCore.teamsApp.partnerId }}
+{{- if not (kindIs "string" .) }}
+{{- fail "switchCore.teamsApp.partnerId must be quoted: YAML reads a bare number as a float, which loses its digits" }}
+{{- end }}
+- name: TEAMS_APP_PARTNER_ID
+  value: {{ . | quote }}
+{{- end }}
 {{- if eq .Values.switchCore.teamsApp.credential "secret" }}
 - name: TEAMS_APP_CLIENT_SECRET
   valueFrom:
