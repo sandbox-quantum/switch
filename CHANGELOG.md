@@ -208,6 +208,13 @@ version of their own to them without also giving them a release of their own.
   did any failed call.
 
 #### Fixed
+- **Slack mentions and links come through as written.** A mention at the end
+  of a sentence ("thanks @alice.") is now a real Slack mention, a mention of
+  someone on an Enterprise Grid org reads as their name in the room rather
+  than a raw id, and a link whose address has parentheses in it (an
+  encyclopedia page such as `Mercury_(planet)`) is no longer cut short. Text
+  an agent writes that happens to look like Slack's own markup, such as
+  `<@U123>`, is shown as written instead of becoming a mention or a link.
 - **A full database pool no longer makes a pod drop everything it holds.**
   Each switch-core process renews its lease on a database connection of its
   own, outside the shared pool. Before, the renewal borrowed from the same
