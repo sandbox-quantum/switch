@@ -312,6 +312,18 @@ def _upgrade(revision: str, ran: list[str] | None = None) -> Any:
     return move
 
 
+def _without_main_thirteenth(ran: list[str]) -> list[str]:
+    """An upgrade from before the thirteenth merge ends with that merge, and
+    runs main's `e223eae63078` once, somewhere after its parent `c18f5ebeef66`
+    (when that runs too). Check that, and return the run without the two."""
+    assert ran[-1] == _THIRTEENTH_MERGE
+    body = ran[:-1]
+    assert body.count(_MAIN_THIRTEENTH) == 1
+    if _MAIN_TWELFTH[-1] in body:
+        assert body.index(_MAIN_THIRTEENTH) > body.index(_MAIN_TWELFTH[-1])
+    return [r for r in body if r != _MAIN_THIRTEENTH]
+
+
 async def _engine(postgres_url: str) -> AsyncEngine:
     admin = create_async_engine(postgres_url, isolation_level="AUTOCOMMIT")
     async with admin.connect() as connection:
@@ -840,6 +852,7 @@ async def test_a_database_at_the_ninth_merge_runs_mains_seven_then_the_head(
         ran: list[str] = []
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade(_HEAD, ran))
+        ran = _without_main_thirteenth(ran)
         assert ran[: len(_MAIN_TENTH)] == list(_MAIN_TENTH)
         assert set(ran[len(_MAIN_TENTH) :]) == {
             _TENTH_MERGE,
@@ -900,7 +913,7 @@ async def test_a_database_at_the_twelfth_merge_runs_ours_after_it(
         ran: list[str] = []
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade("head", ran))
-        assert ran == list(_AFTER_MERGE)
+        assert _without_main_thirteenth(ran) == list(_AFTER_MERGE)
         assert await _version(engine) == [_HEAD]
         assert await _stop_reasons_allowed(engine) == set(_STOP_REASONS)
     finally:
@@ -1107,7 +1120,11 @@ async def test_a_database_at_the_eleventh_merge_runs_mains_three_then_ours(
         ran: list[str] = []
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade("head", ran))
-        assert ran == [*_MAIN_TWELFTH, _TWELFTH_MERGE, *_AFTER_MERGE]
+        assert _without_main_thirteenth(ran) == [
+            *_MAIN_TWELFTH,
+            _TWELFTH_MERGE,
+            *_AFTER_MERGE,
+        ]
         assert await _version(engine) == [_HEAD]
     finally:
         await engine.dispose()
