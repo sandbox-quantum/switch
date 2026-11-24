@@ -300,3 +300,40 @@ def test_an_empty_long_poll_goes_straight_to_the_next_and_a_quick_one_pauses(mon
     rounds = iter([False, False, True])
     m.run(Op([25.0, 0.1]), stop=lambda: next(rounds), sleep=sleeps.append)
     assert sleeps == [m.IDLE_WAIT_S]  # only after the one that came back at once
+
+
+@pytest.mark.parametrize("name", ["box-map", "pool-map", "box-owners"])
+def test_a_list_write_keeps_the_labels_and_annotations_it_read(name):
+    """A list made with labels (by hand, or a setup script) still takes an entry: the replaced Secret carries the
+    labels and annotations the read found, so the rule that they stay as they are lets it through."""
+    import base64
+
+    labels = {"purpose": "warm-pool", "app.kubernetes.io/managed-by": "switch-hosted"}
+    annotations = {"note": "made by setup"}
+    read = {
+        "metadata": {"resourceVersion": "7", "labels": labels, "annotations": annotations},
+        "data": {"a": base64.b64encode(b"x").decode()},
+    }
+    api, calls = kube_with([read, {}])
+    entries, version = api.read_list(name)
+    api.write_list(name, {**entries, "b": "y"}, version)
+    (_method, path, body) = calls[1]
+    assert path == f"/api/v1/namespaces/switch-hosted/secrets/{name}"
+    assert body["metadata"]["labels"] == labels and body["metadata"]["annotations"] == annotations
+    assert body["metadata"]["resourceVersion"] == "7"
+    assert set(body["data"]) == {"a", "b"}
+
+
+def test_an_unlabelled_list_is_written_with_no_labels_as_before():
+    api, calls = kube_with([{"metadata": {"resourceVersion": "1"}, "data": {}}, {}])
+    entries, version = api.read_list("box-owners")
+    api.write_list("box-owners", {**entries, "k": "v"}, version)
+    meta = calls[1][2]["metadata"]
+    assert "labels" not in meta and "annotations" not in meta
+
+
+def test_a_list_write_refused_is_raised_for_the_operator_to_report():
+    api, _ = kube_with([{"metadata": {"resourceVersion": "1"}, "data": {}}, http_error(422)])
+    api.read_list("box-owners")
+    with pytest.raises(HTTPError):
+        api.write_list("box-owners", {"k": "v"}, "1")

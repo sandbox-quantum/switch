@@ -25,6 +25,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.error import HTTPError, URLError
 
 from .box_names import (
     BOX_NAMESPACE_RE,
@@ -1315,6 +1316,10 @@ EXISTS_UNREAD: dict = {}
 
 
 BOX_MAP_TRIES = 5
+# A cluster call in a box's steps that fails for a reason that may pass (a 5xx, a 429, a timeout, no connection) is
+# tried again after these waits; still failing, it's reported to Core as a failure, so the person sees an error at
+# once and can retry, rather than the box sitting queued while the action's lease runs out.
+CLUSTER_RETRY_WAITS_S = (1.0, 3.0, 6.0)
 
 
 class BoxOperator:
@@ -1324,11 +1329,13 @@ class BoxOperator:
         kube: OperatorKube,
         config: OperatorConfig,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         self._core = core
         self._kube = kube
         self._config = config
         self._clock = clock
+        self._sleep = sleep
         self._names_admitted = False
         self._names_checked: float | None = None
         self._t2_refused_until = 0.0
@@ -1432,7 +1439,7 @@ class BoxOperator:
         namespace = action.namespace
         failed_at: str | None = None
         try:
-            existing = self._kube.get_namespace(namespace)
+            existing = self._cluster("object_refused", self._kube.get_namespace, namespace)
             annotations = ((existing or {}).get("metadata") or {}).get("annotations") or {}
             if existing is None or annotations.get(MACHINE_ANNOTATION) != action.machine_id:
                 raise ProvisionFailed("bind_machine_mismatch")
@@ -1466,17 +1473,53 @@ class BoxOperator:
         if not failed_at:
             logger.info("Pool box bound: action=%s namespace=%s", action.action_id, namespace)
 
+    def _cluster(self, failed_at: str, call: Callable[..., Any], *args: Any) -> Any:
+        """One cluster call in a box's steps. What the steps already handle passes through (a refusal, a list
+        conflict, a failure already named). A 5xx, 429, timeout or lost connection is tried again after
+        `CLUSTER_RETRY_WAITS_S`; any other error, or one still failing after the last wait, becomes `failed_at`,
+        reported to Core. Logs the error's type and status only."""
+        for wait in (*CLUSTER_RETRY_WAITS_S, None):
+            try:
+                return call(*args)
+            except (Refused, BoxMapConflict, ProvisionFailed, _T2Refused):
+                raise
+            except Exception as error:
+                status = error.code if isinstance(error, HTTPError) else None
+                if isinstance(error, HTTPError):
+                    passing = status == 429 or status >= 500
+                else:
+                    passing = isinstance(error, (URLError, TimeoutError, OSError))
+                if passing and wait is not None:
+                    self._sleep(wait)
+                    continue
+                logger.warning(
+                    "Cluster error in a box's steps (%s%s); reporting %s.",
+                    type(error).__name__,
+                    f" {status}" if status else "",
+                    failed_at,
+                )
+                raise ProvisionFailed(failed_at) from None
+        raise AssertionError("unreachable")
+
     def _add_owner(self, namespace: str, user: str) -> None:
         """`box-owners[namespace] = user`, add-only. The same entry again is fine (a retried bind); any other
         owner already there is `bind_owner_taken`."""
         for _ in range(BOX_MAP_TRIES):
-            owners, version = self._kube.read_list(BOX_OWNERS_SECRET)
+            owners, version = self._cluster(
+                "box_map_failed", self._kube.read_list, BOX_OWNERS_SECRET
+            )
             if owners.get(namespace) == user:
                 return
             if namespace in owners:
                 raise ProvisionFailed("bind_owner_taken")
             try:
-                self._kube.write_list(BOX_OWNERS_SECRET, {**owners, namespace: user}, version)
+                self._cluster(
+                    "box_map_failed",
+                    self._kube.write_list,
+                    BOX_OWNERS_SECRET,
+                    {**owners, namespace: user},
+                    version,
+                )
                 return
             except BoxMapConflict:
                 continue
@@ -1485,13 +1528,15 @@ class BoxOperator:
     def _add_to_list(self, name: str, key: str, value: str) -> None:
         """An add-only list (`pool-map`): this entry added, the same entry again fine, any other refused."""
         for _ in range(BOX_MAP_TRIES):
-            current, version = self._kube.read_list(name)
+            current, version = self._cluster("box_map_failed", self._kube.read_list, name)
             if current.get(key) == value:
                 return
             if key in current or value in current.values():
                 raise ProvisionFailed("box_map_failed")
             try:
-                self._kube.write_list(name, {**current, key: value}, version)
+                self._cluster(
+                    "box_map_failed", self._kube.write_list, name, {**current, key: value}, version
+                )
                 return
             except BoxMapConflict:
                 continue
@@ -1552,7 +1597,7 @@ class BoxOperator:
             else ("policy_refused" if step == "policies_ready" else "object_refused")
         )
         try:
-            existing = self._kube.create_or_get(obj)
+            existing = self._cluster(refused, self._kube.create_or_get, obj)
         except Refused as error:
             if quiet_refusal:
                 raise _T2Refused(error.status) from None
@@ -1594,12 +1639,12 @@ class BoxOperator:
 
     def _add_to_box_map(self, machine_id: str, namespace: str) -> None:
         for _ in range(BOX_MAP_TRIES):
-            boxes, version = self._kube.box_map()
+            boxes, version = self._cluster("box_map_failed", self._kube.box_map)
             updated = with_box(boxes, machine_id, namespace, self._config.ceiling)
             if updated is None:
                 return
             try:
-                self._kube.write_box_map(updated, version)
+                self._cluster("box_map_failed", self._kube.write_box_map, updated, version)
                 return
             except BoxMapConflict:
                 continue

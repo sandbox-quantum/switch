@@ -1914,10 +1914,13 @@ def test_pool_and_bind_are_listed_in_this_build_while_t2_is_admitted():
 
 
 def test_a_network_error_on_t2_is_a_failure_to_retry_never_a_fallback():
+    """Tried again, then reported as a failure the person can retry: never made as t1, and nothing remembered."""
     kube, core = P4OldKube(network_error=True), FakeCore()
-    op = BoxOperator(core, kube, cfg())
-    with pytest.raises(OSError):
-        op.provision(action())
+    waits: list[float] = []
+    op = BoxOperator(core, kube, cfg(), sleep=waits.append)
+    op.provision(action())
+    assert waits == [1.0, 3.0, 6.0]
+    assert result(core)[2:] == ("failed", NS, "object_refused")
     assert ("StatefulSet", NS, "box") not in kube.objects
     assert op.t2_admitted()  # nothing remembered: the next claim tries t2 again
 
@@ -2143,3 +2146,169 @@ def test_a_person_keyed_box_writes_no_owner_entry():
     kube = FakeKube()
     BoxOperator(FakeCore(), kube, cfg()).provision(action())
     assert kube.__dict__.get("lists", {}).get("box-owners", {}) == {}
+
+
+# ---- a cluster error in a box's steps is reported, not left queued ----
+
+
+def _http(status: int) -> HTTPError:
+    return HTTPError("https://cluster/x", status, "status", Message(), None)
+
+
+class FailingKube(FakeKube):
+    """FakeKube whose `method` raises `errors` in turn (then works), for objects of `kind` when given."""
+
+    def __init__(self, method, errors, kind=None):  # type: ignore[no-untyped-def]
+        super().__init__()
+        self._method, self._errors, self._kind = method, list(errors), kind
+        self.failed_calls = 0
+
+    def __getattribute__(self, name):  # type: ignore[no-untyped-def]
+        real = super().__getattribute__(name)
+        if name != super().__getattribute__("_method"):
+            return real
+
+        def call(*args):  # type: ignore[no-untyped-def]
+            kind = self._kind
+            if self._errors and (kind is None or (args and args[0].get("kind") == kind)):
+                self.failed_calls += 1
+                raise self._errors.pop(0)
+            return real(*args)
+
+        return call
+
+
+def _op(kube, core=None):  # type: ignore[no-untyped-def]
+    waits: list[float] = []
+    return BoxOperator(core or FakeCore(), kube, cfg(), sleep=waits.append), waits
+
+
+@pytest.mark.parametrize(
+    "error", [_http(500), _http(503), _http(429), TimeoutError(), OSError("reset")]
+)
+def test_a_passing_cluster_error_is_tried_again_and_the_box_is_made(error):
+    kube = FailingKube("create_or_get", [error, error], kind="NetworkPolicy")
+    op, waits = _op(kube)
+    core = op._core
+    op.provision(action())
+    assert waits == [1.0, 3.0]
+    assert result(core)[2:] == ("done", NS, None)
+    assert kube.boxes == {MACHINE: NS}
+
+
+@pytest.mark.parametrize(
+    ("kind", "failed_at"),
+    [
+        ("Namespace", "name_refused"),
+        ("NetworkPolicy", "policy_refused"),
+        ("StatefulSet", "object_refused"),
+    ],
+)
+def test_a_cluster_error_that_doesnt_pass_is_reported_at_its_step(kind, failed_at, caplog):
+    kube = FailingKube("create_or_get", [_http(500)] * 10, kind=kind)
+    op, waits = _op(kube)
+    with caplog.at_level(logging.WARNING):
+        op.provision(action())
+    assert waits == [1.0, 3.0, 6.0]  # about 10 s, then reported
+    assert result(op._core)[2:] == ("failed", NS, failed_at)
+    assert kube.boxes == {}
+    assert "HTTPError 500" in caplog.text and f"reporting {failed_at}" in caplog.text
+
+
+@pytest.mark.parametrize("status", [404, 401, 400])
+def test_another_client_error_is_reported_at_once(status):
+    kube = FailingKube("create_or_get", [_http(status)], kind="StatefulSet")
+    op, waits = _op(kube)
+    op.provision(action())
+    assert waits == []
+    assert result(op._core)[2:] == ("failed", NS, "object_refused")
+
+
+def test_a_refusal_is_still_reported_at_once_as_before():
+    kube = FakeKube()
+    kube.refuse = {"NetworkPolicy"}
+    op, waits = _op(kube)
+    op.provision(action())
+    assert waits == []
+    assert result(op._core)[2:] == ("failed", NS, "policy_refused")
+
+
+@pytest.mark.parametrize("method", ["box_map", "write_box_map"])
+def test_a_box_map_that_cant_be_read_or_written_is_reported(method):
+    kube = FailingKube(method, [_http(503)] * 10)
+    op, waits = _op(kube)
+    op.provision(action())
+    assert waits == [1.0, 3.0, 6.0]
+    assert result(op._core)[2:] == ("failed", NS, "box_map_failed")
+
+
+@pytest.mark.parametrize("method", ["read_list", "write_list"])
+def test_an_owners_list_refused_or_unreachable_is_reported_for_a_box_keyed_box(method):
+    for errors, waits_expected in (([_http(403)], []), ([_http(500)] * 10, [1.0, 3.0, 6.0])):
+        kube = FailingKube(method, errors)
+        op, waits = _op(kube)
+        op.provision(box_action())
+        assert waits == waits_expected
+        assert result(op._core)[2:] == ("failed", BOX_NS, "box_map_failed")
+        assert kube.boxes == {}  # never live without its owner
+
+
+def test_a_pool_map_unreachable_is_reported_for_a_pool_box():
+    kube = PoolKube()
+    kube.__class__ = type(
+        "FailingPoolKube",
+        (PoolKube,),
+        {"write_list": lambda self, *a: (_ for _ in ()).throw(_http(500))},
+    )
+    waits: list[float] = []
+    core = PoolCore()
+    BoxOperator(core, kube, cfg(), sleep=waits.append).pool(pool_action())
+    assert waits == [1.0, 3.0, 6.0]
+    assert result(core)[2:] == ("failed", POOL_NS, "box_map_failed")
+
+
+def test_a_bind_whose_namespace_cant_be_read_is_reported_before_anything_is_written():
+    kube, _ = _pooled()
+    kube.__class__ = type(
+        "UnreadablePoolKube",
+        (PoolKube,),
+        {"get_namespace": lambda self, n: (_ for _ in ()).throw(_http(500))},
+    )
+    waits: list[float] = []
+    core = PoolCore()
+    BoxOperator(core, kube, cfg(), sleep=waits.append).bind(bind_action())
+    assert waits == [1.0, 3.0, 6.0]
+    assert result(core)[2:] == ("failed", POOL_NS, "object_refused")
+    assert core.steps == [] and kube.lists["box-owners"] == {} and kube.boxes == {}
+
+
+def test_a_core_call_that_fails_is_still_left_to_the_lease():
+    """With no Core to report to, the round fails and the action is claimed again once its lease runs out."""
+
+    class DownCore(FakeCore):
+        def result(self, *args):  # type: ignore[no-untyped-def]
+            raise _http(502)
+
+    kube = FakeKube()
+    op, _ = _op(
+        kube,
+        DownCore(
+            [
+                {
+                    "action_id": "a1",
+                    "machine_id": MACHINE,
+                    "user_keyed_id": USER,
+                    "claim_token": TOKEN,
+                }
+            ]
+        ),
+    )
+    with pytest.raises(HTTPError):
+        op.run_once()
+
+
+def test_every_code_it_reports_is_one_core_accepts():
+    from switch_hosted_controller.box_operator import BIND_FAILURES
+
+    for code in ("name_refused", "policy_refused", "object_refused", "box_map_failed"):
+        assert code in FAILURES + BIND_FAILURES

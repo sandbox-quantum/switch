@@ -161,11 +161,23 @@ class OperatorKubeApi:
         if not isinstance(data, dict):
             raise ValueError("a list is not keys to values")
         entries = {key: base64.b64decode(value).decode() for key, value in data.items()}
-        return entries, secret["metadata"]["resourceVersion"]
+        # Kept for the write: replacing the Secret whole must keep its labels and annotations, or the cluster's
+        # rule that they stay as they are refuses the write.
+        meta = secret["metadata"]
+        self._list_meta()[name] = {
+            key: dict(meta[key])
+            for key in ("labels", "annotations")
+            if isinstance(meta.get(key), dict)
+        }
+        return entries, meta["resourceVersion"]
+
+    def _list_meta(self) -> dict[str, dict[str, dict[str, str]]]:
+        return self.__dict__.setdefault("_lists_meta", {})
 
     def write_list(self, name: str, data: dict[str, str], resource_version: str) -> None:
-        """Replaced whole at the version read (a 409 means someone wrote between: read again). The cluster's policy
-        refuses any change to or removal of an existing entry."""
+        """Replaced whole at the version read (a 409 means someone wrote between: read again), with the labels and
+        annotations that read found. The cluster's policy refuses any change to or removal of an existing entry,
+        and any change to its labels or annotations."""
         if name not in _LISTS:
             raise ValueError("not one of the operator's lists")
         body = {
@@ -175,6 +187,7 @@ class OperatorKubeApi:
                 "name": name,
                 "namespace": HOME_NAMESPACE,
                 "resourceVersion": resource_version,
+                **self._list_meta().get(name, {}),
             },
             "type": "Opaque",
             "data": {key: base64.b64encode(value.encode()).decode() for key, value in data.items()},
