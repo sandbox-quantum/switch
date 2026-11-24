@@ -220,9 +220,36 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
-
-  could likewise map a room again that was just unbridged. Neither now acts
-  over a newer change or a re-read that began after it.
+- **A cached controller token or room membership no longer outlives its TTL
+  after a slow read.** The TTL counted from when the read was stored, so a
+  change missed while the read was in flight could be served for the TTL plus
+  however long the read took. It now counts from when the read began.
+- **A machine whose connections changed quickly no longer stays online after
+  it has gone.** When a machine opened a new connection, attached and opened
+  another before switch-core had recorded the first change, the record that
+  its earlier connection was taken over could be dropped. The machine and its
+  agents then read as online until it connected again.
+- **A machine whose server came back after an outage reads as connected again
+  everywhere.** When a switch-core process stopped renewing its lease for a
+  while and then recovered, the other processes kept showing the machines it
+  held, and their agents, as offline until something about those machines
+  changed. They now read them again on their next periodic check.
+- **A message the platform refuses is tried again instead of being lost.** When
+  Slack, Mattermost or another platform answered a message from Switch with an
+  error, the bridge logged it and never posted it, even after a deploy handed
+  the bridge to another process. It is now tried again after 2, 10 and 60
+  seconds, and if the bridge is handed over meanwhile the next process posts
+  it. Later messages in the same room wait behind it, so a reply is not posted
+  before the message it answers. A message that still fails after that, or
+  that the platform refuses for good, is given up on, with an error in the
+  log.
+- **Slack mentions and links come through as written.** A mention at the end
+  of a sentence ("thanks @alice.") is now a real Slack mention, a mention of
+  someone on an Enterprise Grid org reads as their name in the room rather
+  than a raw id, and a link whose address has parentheses in it (an
+  encyclopedia page such as `Mercury_(planet)`) is no longer cut short. Text
+  an agent writes that happens to look like Slack's own markup, such as
+  `<@U123>`, is shown as written instead of becoming a mention or a link.
 - **A change made in one process reaches the others within a bound.** A
   re-read a signal queues now gives up after 15 seconds and is tried again,
   so one stuck on the database no longer holds up every change behind it.
@@ -241,8 +268,8 @@ version of their own to them without also giving them a release of their own.
   The periodic re-check of messaging apps read their rows, then compared them
   with the apps running here, so an app connected while it read looked removed
   and was stopped until the next re-check. A slow re-read of an app's rooms
-  could likewise map a room again that was just unbridged. Both now leave
-  anything changed while they read to the change that made it.
+  could likewise map a room again that was just unbridged. Neither now acts
+  over a newer change or a re-read that began after it.
 - **A slow re-read of a workspace's clients no longer undoes a newer change.**
   A re-check or resync that read the clients before a rename or deletion, and
   finished after it, could put an agent's old name back, or start again a
