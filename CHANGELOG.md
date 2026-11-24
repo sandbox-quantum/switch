@@ -220,6 +220,13 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A message Slack refuses is no longer treated as delivered.** When Slack
+  answered a message from Switch with an error (a rate limit, an archived
+  channel), the bridge logged it and moved on as if Slack had taken nothing,
+  so nothing could try it again. The refusal now reaches the bridge as an
+  error, and Slack's refusals are told apart: one that can clear (a rate
+  limit, an outage) from one that cannot (an archived or missing channel, a
+  message too long). The session activity messages use the same distinction.
 - **Erasing a person takes their name off the cards they answered.** A card
   pressed on a chat app now reads "erased" as its answerer once they are
   erased; which button was pressed stays. A card answer now records who
