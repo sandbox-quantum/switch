@@ -148,6 +148,70 @@ module mutant_write_without_token {
   ).* from "./ownership"
 }
 
+// The untimed lease: three processes and two faults, so one outlives them
+// however they fall (two dying, one losing its lease twice, a death and a
+// shutdown).
+module lease_eventual {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set()
+  ).* from "./ownership_eventual"
+}
+
+// Four processes and three faults: nightly.
+module lease_eventual_deep {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3, 4), MAX_FAULTS = 3, BUGS = Set()
+  ).* from "./ownership_eventual"
+}
+
+module mutant_lapsed_holder_kept {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("lapsed-holder-kept")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_eventual_claim_ignores_holder {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("claim-ignores-holder")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_no_suspend {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("no-suspend")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_renews_after_death {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("renews-after-death")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_live_ignores_lapse {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("live-ignores-lapse")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_owner_excludes_self {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("owner-excludes-self")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_no_handoff {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("no-handoff")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_keeps_rows_on_resume {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("keeps-rows-on-resume")
+  ).* from "./ownership_eventual"
+}
+
 // The signals model, one family a check: what a process holds and re-reads
 // (`view`), the held cache (`cache`), and the room wake-up (`room`). One
 // process holding the row, changes made by it or by one not modelled, two

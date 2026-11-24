@@ -2,7 +2,8 @@
 
 Quint models of the concurrent parts of Switch. `delivery.qnt` follows how a
 room's rows reach an agent; `ownership.qnt` follows how owned work passes
-between processes; `signals.qnt` follows how a change reaches what other
+between processes, and `ownership_eventual.qnt` whether it always comes back
+to one; `signals.qnt` follows how a change reaches what other
 processes hold when the `NOTIFY` announcing it is lost; `configs.qnt` says what bounds each check runs at and which
 behaviours that are not in the code each invariant must fail on.
 
@@ -92,9 +93,53 @@ handles the answer to a renewal, so a late answer cannot revive it.
 | `NoOverlap` | `lease.no-overlap` | At most one process is running the key and sure of its lease |
 | `FencedTakeover` | `lease.fenced-takeover` | Accepted writes carry non-decreasing tokens, none above the key's |
 
-`lease.eventual-owner` is not modelled: a liveness check needs fairness over
-time that this bounded model cannot give honestly, so it stays a property of
-the running system.
+A liveness check needs fairness over time that this bounded clock cannot give
+honestly, so whether work is picked up at all is a second model with no clock.
+
+## Whether ownership comes back
+
+`ownership_eventual.qnt` has one key and a few processes, and no time. A
+process lease is read twice: by the process, sure of it until its own deadline
+(`surely_held`), and by the database, holding it until it lapses
+(`ProcessLeases.holds`). The process's deadline comes first; `ownership.qnt`
+is where that is checked against drifting clocks, and here it is the order the
+two lapses may happen in.
+
+| Field | Is | In the code |
+| --- | --- | --- |
+| `procs[p].alive` | The process is up | |
+| `procs[p].sure`, `fresh` | Its own reading of its lease, and the database's | `ProcessLease.surely_held`, `ProcessLeases.holds` |
+| `procs[p].running` | It runs the key | `OwnedKind._held` |
+| `procs[p].suspended` | It suspended its work and has not resumed | `Ownership._suspended` |
+| `holder` | Who the key's row names | `ownership_leases` |
+| `faults` | Faults so far, bounded by `MAX_FAULTS` | |
+
+Placement is modelled: with one key, rendezvous hashing is a fixed order on
+the processes, so the key is placed on the highest-numbered process whose lease
+the database holds. Only that process claims it (`claim`), and a holder it is
+not placed on stops it and releases the row (`handoff`). A process that
+suspended releases every row it kept once its lease holds again (`resume`),
+and claims back its share after.
+
+`claim`, `handoff`, `suspend`, `resume`, `renew` and `expire` (the database's
+reading lapsing, once the process is no longer sure) are what the system does,
+each under weak fairness: the balance and the renewal run on intervals, the
+suspension wakes when the lease stops being sure, and a lease nobody renews
+lapses. `die`,
+`shutdown` and `lose_lease` (a live process whose renewals stop landing) are
+faults, at most `MAX_FAULTS` of them and fewer than there are processes, so
+one outlives them and a run has a point after which none happens. A renewal
+reaching a process past its deadline lands only once its work has stopped, as
+in `ownership.qnt`.
+
+| Temporal property | Property | It says |
+| --- | --- | --- |
+| `OwnershipEventual` | `replica.ownership-eventual` | Under that fairness, from some point on exactly one process runs the key, and it is the one the key is placed on, up, sure of its lease, held by the database, and named by the key's row |
+
+TLC checks it over every run (`--temporal`), not state by state: `lease_eventual`
+is three processes and two faults (539 states, about a second), and
+`lease_eventual_deep` four and three. It says nothing about how long the
+pickup takes.
 
 ## Signals
 
@@ -152,6 +197,14 @@ invariant that held on such a system could not have caught that bug.
 | `release_before_stop` | The key released while its work still runs | `NoOverlap` |
 | `stop_at_full_lease` | The holder stops at the whole lease, not half | `NoOverlap` |
 | `write_without_token` | A write accepted whoever the holder is | `FencedTakeover` |
+| `lapsed_holder_kept` | A key never taken from a holder whose process lease lapsed | `OwnershipEventual` |
+| `eventual_claim_ignores_holder` | A key taken from a holder whose process lease still holds, which goes on running beside the new one | `OwnershipEventual` |
+| `no_suspend` | Work goes on running once its process is no longer sure of its lease | `OwnershipEventual` |
+| `renews_after_death` | A dead process's lease kept renewed, as by a renewal task that outlived its work | `OwnershipEventual` |
+| `live_ignores_lapse` | Placement over every process with a lease row, lapsed or not, so the key can be placed on one that never claims | `OwnershipEventual` |
+| `owner_excludes_self` | Each process places the key among the others, so each believes another wins and none claims | `OwnershipEventual` |
+| `no_handoff` | A holder the key is no longer placed on keeps it | `OwnershipEventual` |
+| `keeps_rows_on_resume` | A process back from suspending keeps the rows it held, so a key now placed elsewhere is held by a row nothing runs | `OwnershipEventual` |
 | `view_acts_on_payload` | A handler takes the version a signal carries instead of re-reading | `LossOnlyDelays` |
 | `no_resync` | Nothing re-read when the listening connection comes back | `LossOnlyDelays` |
 | `no_recheck` | No periodic re-check, so a signal lost with its sender is lost for good | `NoWrongAnswerPastBound` |
