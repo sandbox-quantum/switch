@@ -276,6 +276,13 @@ version of their own to them without also giving them a release of their own.
   did any failed call.
 
 #### Fixed
+- **The dashboard's Add to Microsoft Teams button has the Teams logo** like
+  the other Add buttons. They now draw each platform's logo as Switch serves
+  it, not from a copy bundled for Slack, Discord and Telegram alone. The
+  People page's "Seen on", the delete-connection prompt and the new-room
+  messaging app picker name the platform as it names itself ("Microsoft
+  Teams", not "Teams" or "teams"), and WhatsApp and Rocket.Chat are
+  spelled as their makers spell them.
 - **What Switch says under an agent's name no longer counts as the agent
   talking.** An agent's join greeting, a Switch Console chat's opening line,
   notices of something done on its behalf and its answers to room commands

@@ -38,6 +38,7 @@ import {
   useRoomGroups,
 } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
+import { platformLabel } from "../../theme/format";
 import { flattenTree } from "./groupTree";
 import {
   ROOM_ACCESS_HELPERS,
@@ -47,6 +48,13 @@ import {
 } from "./roomAccess";
 
 type ChannelSource = "existing" | "new";
+
+/** A messaging app with the platform it is on, which an app named after its
+ *  platform needs no second time: "Slack", not "Slack (Slack)". */
+function bridgeOptionLabel(displayName: string, bridgeType: string): string {
+  const platform = platformLabel(bridgeType);
+  return displayName === platform ? platform : `${displayName} (${platform})`;
+}
 
 export default function RoomCreateFormBody() {
   const navigate = useNavigate();
@@ -470,7 +478,7 @@ export default function RoomCreateFormBody() {
         <MenuItem value="">None (internal only)</MenuItem>
         {(bridges ?? []).map((b) => (
           <MenuItem key={b.bridge_id} value={b.bridge_id}>
-            {b.display_name} ({b.bridge_type})
+            {bridgeOptionLabel(b.display_name, b.bridge_type)}
           </MenuItem>
         ))}
       </TextField>
