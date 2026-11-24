@@ -4,6 +4,7 @@ import {
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import { SWITCH_CONSOLE_REPO_URL } from '@shared/urls';
 import { lifetimeText, pasteAgainMethod, pastedConnection } from './connect-flow';
 import type { ConnectorCardState, ConnectorFix } from './connector-card-state';
 
@@ -35,6 +36,24 @@ export function connectorsInTab(
   );
   return filterConnections(inTab, '');
 }
+
+/**
+ * Whether Discover lists anything for `query` that Yours does not: the
+ * trailing card and the empty search on Yours point there when it does. No
+ * number is given, since one would have to say whether it counts services
+ * that are off here, not set up or coming soon.
+ */
+export function moreOnDiscover(entries: ConnectionCatalogEntry[], query: string): boolean {
+  return connectorsInTab(entries, 'discover', query).some((entry) => !isYours(entry));
+}
+
+/** The way from Yours to Discover, keeping the search. */
+export function toDiscoverText(query: string): string {
+  return query.trim() ? `Search Discover for “${query.trim()}”` : 'Browse all connectors';
+}
+
+/** Where to ask for a service the catalog does not list. */
+export const CONNECTOR_REQUEST_URL = `${SWITCH_CONSOLE_REPO_URL}/issues/new?template=connector_request.yml`;
 
 /**
  * The card's own control, beside the part that opens the profile: the fix

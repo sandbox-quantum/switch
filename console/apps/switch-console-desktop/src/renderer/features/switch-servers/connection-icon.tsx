@@ -39,6 +39,23 @@ const MARK_COLOR: Record<string, string> = {
   sentry: 'text-[#362D59] emdark:text-foreground',
   'new-relic': 'text-foreground emdark:text-[#1CE783]',
   airtable: 'text-foreground emdark:text-[#18BFFF]',
+  pagerduty: 'text-[#06AC38]',
+  grafana: 'text-[#F46800]',
+  supabase: 'text-[#3FCF8E]',
+  cloudflare: 'text-[#F38020]',
+  stripe: 'text-[#635BFF]',
+  shopify: 'text-[#7AB55C]',
+  hubspot: 'text-[#FF7A59]',
+  clickup: 'text-[#7B68EE]',
+  trello: 'text-[#0052CC] emdark:text-foreground',
+  dropbox: 'text-[#0061FF] emdark:text-foreground',
+  snowflake: 'text-[#29B5E8]',
+  bigquery: 'text-[#669DF6]',
+  intercom: 'text-foreground emdark:text-[#6AFDEF]',
+  zendesk: 'text-[#03363D] emdark:text-foreground',
+  calendly: 'text-[#006BFF] emdark:text-foreground',
+  zoom: 'text-[#0B5CFF] emdark:text-foreground',
+  miro: 'text-[#050038] emdark:text-foreground',
 };
 
 export function hasConnectionIcon(slug: string): boolean {

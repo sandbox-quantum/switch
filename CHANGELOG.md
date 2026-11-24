@@ -829,6 +829,14 @@ version of their own to them without also giving them a release of their own.
   you're left in with no workspace.**
 
 #### Changed
+- **The dashboard's Connectors page lists coming soon services in their own
+  section**, under the ones people can use, with a count for each, and
+  the catalog lists 24 more of them. Its All tab is now Discover, where the
+  page always opens, as in Switch Console. Yours ends with a card that opens
+  Discover, and a search there that matches nothing connected offers to search
+  Discover instead, keeping the search.
+  Discover ends with a link to request a connector on GitHub. A connector's category must now be
+  one of a fixed list.
 - **The dashboard has one layout: the one built behind `gateway_v2`.**
   Home, Agents, Rooms, Templates, Connectors and Resources on the rail, and
   Workspace and Organization settings as their own areas, on every server. The earlier layout's
@@ -5136,6 +5144,12 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Connectors page lists coming soon services in their own section**,
+  under the ones people can use, with a count for each. Yours ends with a
+  "Browse all connectors" card that opens Discover, and a search there that
+  matches nothing connected offers to search Discover instead, keeping the
+  search, rather than saying "No connector matches". Discover ends with a
+  link to request a connector on GitHub.
 - **Set up for a connector's app goes to whoever may set it up.** Console
   asks the server who may set up its connector apps, whichever layout its
   dashboard uses. Set up opens Organization settings › Connector apps in the
