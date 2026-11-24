@@ -502,6 +502,66 @@ def note_start_click(machine: CloudMachine, now: datetime) -> None:
     machine.heartbeat = heartbeat
 
 
+# The box scaler's word that a starting box is waiting for room in the cluster
+# (its pod Pending and unschedulable), at this revision, kept until any other
+# observation of the box replaces it.
+ROOM_KEY = "waiting_for_room"
+
+
+def note_waiting_for_room(machine: CloudMachine, waiting: bool, now: datetime) -> None:
+    """Keep, or clear, the box scaler's `waiting_for_room` for a v2 box at its
+    current revision. The caller holds the machine's lock and commits."""
+    if machine.backend != "box":
+        return
+    heartbeat = dict(machine.heartbeat or {})
+    marked = heartbeat.get(ROOM_KEY)
+    if waiting:
+        if isinstance(marked, dict) and marked.get("revision") == machine.revision:
+            return
+        heartbeat[ROOM_KEY] = {"revision": machine.revision, "since": now.isoformat()}
+    elif ROOM_KEY in heartbeat:
+        del heartbeat[ROOM_KEY]
+    else:
+        return
+    machine.heartbeat = heartbeat
+
+
+def _waiting_for_room(machine: CloudMachine) -> bool:
+    marked = (machine.heartbeat or {}).get(ROOM_KEY)
+    return isinstance(marked, dict) and marked.get("revision") == machine.revision
+
+
+def start_summary(machine: CloudMachine, state: str) -> dict | None:
+    """What the owner's summary says about a v2 box still starting, for the
+    Console's "still starting" hint: None unless it's a box wanted running
+    whose state, as the workspace sees it, is `queued` or `provisioning`.
+    `kind` is `first` until the box has ever been ready, then `wake`; `since`
+    is when the first request that needed this start came in, at the current
+    revision (`note_start_click`'s marker), or None when there's no marker for
+    it. Core doesn't say "slow": the Console works that out from `since`.
+    `waiting_for_room` is true while the box scaler says the box is waiting
+    for room in the cluster (its own, longer, limit), at this revision."""
+    if (
+        machine.backend != "box"
+        or machine.desired_state != "running"
+        or state not in ("queued", "provisioning")
+    ):
+        return None
+    marker = (machine.heartbeat or {}).get(START_KEY)
+    since = (
+        marker.get("clicked_at")
+        if isinstance(marker, dict)
+        and marker.get("revision") == machine.revision
+        and _when(marker.get("clicked_at")) is not None
+        else None
+    )
+    return {
+        "kind": "first" if machine.first_ready_at is None else "wake",
+        "since": since,
+        "waiting_for_room": _waiting_for_room(machine),
+    }
+
+
 def start_segments(
     clock: datetime, marks: list[tuple[str, datetime | None]]
 ) -> list[tuple[str, float]]:

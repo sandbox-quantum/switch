@@ -48,6 +48,7 @@ from switch_core.gateway.cloud_controllers import (
     given_up,
     live_controller,
     note_start_click,
+    note_waiting_for_room,
     ready_if_both_signals,
     recover_late_start,
 )
@@ -906,6 +907,11 @@ class Observation(_UpstreamObservation):
     # and the node it runs on (for the restart alert and the operator's Boxes tab).
     restarts: int | None = Field(default=None, ge=0, le=1_000_000)
     node: str | None = Field(default=None, pattern=NODE_NAME, max_length=253)
+    # The box scaler: a box still `provisioning` is waiting for room in the
+    # cluster (its pod Pending and unschedulable), under its own longer
+    # limit. A field, not a state: Core keeps the box provisioning and says
+    # so in the owner's `start` (`start.waiting_for_room`).
+    waiting_for_room: bool | None = None
 
     @model_validator(mode="wrap")
     @classmethod
@@ -1077,6 +1083,14 @@ async def observe(
         machine.state = body.state
         machine.error = None
         machine.error_code = None
+    if process_hosted_v2():
+        # The box scaler's waiting-for-room word, kept at this revision only
+        # while it says `provisioning` with it.
+        note_waiting_for_room(
+            machine,
+            body.state == "provisioning" and body.waiting_for_room is True,
+            now,
+        )
     if machine.state != previous:
         machine.updated_at = now
     await session.commit()
