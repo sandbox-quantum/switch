@@ -220,6 +220,11 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **Work no longer stays unowned after a server recovers from a short
+  stall.** A server whose lease renewals stalled stopped its work but kept its
+  claims, so work that had meanwhile moved to another server, such as a
+  bridged workspace, could not start there until the first server restarted.
+  A recovered server now lets its claims go and takes back only its share.
 - **Removing someone from a workspace, or leaving it, says who receives what
   they owned.** Their rooms, packages, references, reference types, library
   documents and templates pass to another admin, and until now nothing said

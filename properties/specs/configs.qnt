@@ -188,6 +188,30 @@ module mutant_renews_after_death {
   ).* from "./ownership_eventual"
 }
 
+module mutant_live_ignores_lapse {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("live-ignores-lapse")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_owner_excludes_self {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("owner-excludes-self")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_no_handoff {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("no-handoff")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_keeps_rows_on_resume {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("keeps-rows-on-resume")
+  ).* from "./ownership_eventual"
+}
+
 // The signals model, one family a check: what a process holds and re-reads
 // (`view`), the held cache (`cache`), and the room wake-up (`room`). One
 // process holding the row, changes made by it or by one not modelled, two

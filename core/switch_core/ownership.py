@@ -427,6 +427,14 @@ class Ownership:
                     "of the work back",
                     self.process_id,
                 )
+                # Suspending stopped the work but kept the rows. A row whose
+                # key now belongs to another process would refuse that
+                # process's claim for as long as this lease holds; nothing
+                # runs here, so let all of them go and claim back this
+                # process's share below.
+                async with self._session_factory() as session:
+                    await self._store.release_all(session, self.process_id)
+                    await session.commit()
                 self._suspended = False
             for kind in list(self._kinds.values()):
                 await kind._balance(live)
@@ -445,7 +453,8 @@ class Ownership:
     async def _suspend(self) -> None:
         """Stop all work here because this process can no longer be sure its
         lease holds. Nothing is released: the database may not be reachable,
-        and the leases pass to the other processes once this one lapses."""
+        and the leases pass to the other processes once this one lapses, or
+        are let go of by `balance` once this lease holds again."""
         if not any(kind.held() for kind in self._kinds.values()):
             self._suspended = True
             return

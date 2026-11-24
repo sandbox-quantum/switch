@@ -100,6 +100,10 @@ MUTANTS = [
     ("mutant_eventual_claim_ignores_holder", "OwnershipEventual"),
     ("mutant_no_suspend", "OwnershipEventual"),
     ("mutant_renews_after_death", "OwnershipEventual"),
+    ("mutant_live_ignores_lapse", "OwnershipEventual"),
+    ("mutant_owner_excludes_self", "OwnershipEventual"),
+    ("mutant_no_handoff", "OwnershipEventual"),
+    ("mutant_keeps_rows_on_resume", "OwnershipEventual"),
 ]
 
 
