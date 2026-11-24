@@ -97,10 +97,22 @@ async def two_processes(
 ) -> AsyncIterator[tuple[ControllerSignals, ControllerSignals]]:
     first, _, first_bus = _process(postgres_url, session_factory)
     second, _, second_bus = _process(postgres_url, session_factory)
+    # Each bus resyncs as it connects, after `connected` is set. A resync
+    # revokes a held controller the database has no row for, as the tests'
+    # "c1" is, so the tests start only once both first resyncs are done.
+    resynced = []
+    for bus in (first_bus, second_bus):
+        done = asyncio.Event()
+
+        async def mark(done: asyncio.Event = done) -> None:
+            done.set()
+
+        bus.on_resync(mark)
+        resynced.append(done)
     for bus in (first_bus, second_bus):
         await bus.start()
-    for bus in (first_bus, second_bus):
-        await asyncio.wait_for(bus.connected.wait(), DELIVERY_TIMEOUT)
+    for done in resynced:
+        await asyncio.wait_for(done.wait(), DELIVERY_TIMEOUT)
     yield first, second
     await first_bus.stop()
     await second_bus.stop()
