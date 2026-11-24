@@ -4,7 +4,7 @@
     "version": "1.1.0",
     "id": "{{APP_ID}}",
     "developer": {
-        "name": "Agent Switch",
+        "name": "SandboxAQ",
         "websiteUrl": "https://docs.switchagents.ai/",
         "privacyUrl": "{{PRIVACY_URL}}",
         "termsOfUseUrl": "{{TERMS_URL}}"

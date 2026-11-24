@@ -56,9 +56,10 @@ version of their own to them without also giving them a release of their own.
 - **The distributed Teams app is called "Switch Rooms" unless
   `TEAMS_APP_NAME` names it otherwise** (it was "Agent Switch"). Its package
   is version 1.1.0, so an organisation that approved the old one is given it
-  when its admin approves again. The package's website is now the Switch docs
-  rather than the GitHub repository, and its description tells people to
-  mention the app by the name this deployment gave it.
+  when its admin approves again. Its publisher is now SandboxAQ, the company
+  Partner Center verifies, its website is the Switch docs rather than the
+  GitHub repository, and its description calls the app by the name this
+  deployment gave it.
 - **`TEAMS_APP_PARTNER_ID`** (chart: `switchCore.teamsApp.partnerId`) names the
   publisher's Microsoft partner ID in the distributed Teams app's package, once
   publisher verification is done in Partner Center. Optional; anything but up

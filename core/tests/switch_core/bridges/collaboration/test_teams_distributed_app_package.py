@@ -63,6 +63,13 @@ def test_a_publishers_partner_id_is_named() -> None:
     assert manifest["developer"]["mpnId"] == "1234567"
 
 
+def test_its_publisher_is_the_one_partner_center_verifies() -> None:
+    """Partner Center verifies a company, and an admin weighing the app sees
+    the package's publisher beside Microsoft's verified badge."""
+    manifest, _ = _package()
+    assert manifest["developer"]["name"] == "SandboxAQ"
+
+
 def test_its_website_is_a_page_an_admin_can_get_help_from() -> None:
     """Microsoft reads the developer website as the app's support page, and it
     is what an IT admin weighing the app follows."""
