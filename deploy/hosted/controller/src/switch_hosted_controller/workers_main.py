@@ -298,6 +298,7 @@ class Workers:
         # Waiting for room: since when each box's pod has been unschedulable, and whether Core takes the field.
         self._room_since: dict[str, float] = {}
         self._room = RoomSignal()
+        self._no_room = RoomSignal()  # whether Core takes the `no_room` code
         self._check_wait = CHECK_S
         self._next_check = 0.0
         self._interval = MAX_INTERVAL_S
@@ -372,6 +373,7 @@ class Workers:
             still_unmapped=self._still_unmapped_once_per_pass(),
             room_since=self._room_since,
             room=self._room,
+            no_room=self._no_room,
         )
         self._scaled = sum(1 for step in steps if step.action)
         self._scaled += scale_pool_boxes(self.core, self.kube)
@@ -512,6 +514,7 @@ class Workers:
             reported_missing=self._reported_missing,
             room_since=self._room_since,
             room=self._room,
+            no_room=self._no_room,
         )
         acted = sum(1 for step in steps if step.action)
         if acted:

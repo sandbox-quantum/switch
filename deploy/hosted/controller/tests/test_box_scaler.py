@@ -476,6 +476,82 @@ def test_a_core_without_the_field_gets_provisioning_and_isnt_asked_again_for_an_
     assert _passes_more.allowed()
 
 
+class CodeCore(RoomCore):
+    """A Core that may refuse the `no_room` code (a Core from before it), as it refuses any unknown code."""
+
+    def __init__(self, machines, refuse_code=False):  # type: ignore[no-untyped-def]
+        super().__init__(machines)
+        self.refuse_code = refuse_code
+
+    def observe(self, machine_id, state, revision, error=None, **v2):  # type: ignore[no-untyped-def]
+        if v2.get("error_code") == "no_room" and self.refuse_code:
+            self.fields.append(dict(v2))
+            raise CoreRefused("/observation", 422, "unknown error code")
+        super().observe(machine_id, state, revision, error, **v2)
+
+
+def _cap_passes(kube, core, clock, steps, no_room):  # type: ignore[no-untyped-def]
+    waiting, room_since, room = {}, {}, RoomSignal(clock=lambda: clock["now"])
+    for advance, pods in steps:
+        clock["now"] += advance
+        if pods is not None:
+            kube.pods = pods
+        reconcile_once(
+            core,
+            kube,
+            BOXES,
+            waiting,
+            now=lambda: clock["now"],
+            room_since=room_since,
+            room=room,
+            no_room=no_room,
+        )
+
+
+def test_giving_up_at_the_room_cap_sends_the_no_room_code():
+    """Core can tell "the cluster had no room" (its cap message, with Retry) from a box that failed."""
+    clock = {"now": 0.0}
+    kube, core = PodKube([_pending()]), CodeCore([m("running")])
+    _cap_passes(
+        kube, core, clock, [(0, None), (ROOM_LIMIT_S + 1, None)], RoomSignal(lambda: clock["now"])
+    )
+    assert core.seen[-1] == (M, "error", 3, NO_ROOM_ERROR)
+    assert core.fields[-1].get("error_code") == "no_room"
+
+
+def test_a_core_without_the_code_gets_needs_attention_and_isnt_sent_it_again_for_an_hour():
+    clock = {"now": 0.0}
+    kube, core = PodKube([_pending()]), CodeCore([m("running")], refuse_code=True)
+    signal = RoomSignal(lambda: clock["now"])
+    _cap_passes(kube, core, clock, [(0, None), (ROOM_LIMIT_S + 1, None), (2, None)], signal)
+    assert core.seen[-1] == (M, "error", 3, NO_ROOM_ERROR)  # still reported, as before
+    codes = [f.get("error_code") for f in core.fields]
+    assert codes.count("no_room") == 1  # refused once, then not offered again
+    assert not signal.allowed()
+    clock["now"] += 3601
+    assert signal.allowed()
+
+
+def test_a_start_timeout_never_carries_the_no_room_code():
+    clock = {"now": 0.0}
+    kube, core = PodKube([_pending()]), CodeCore([m("running")])
+    steps = [(0, None), (60, None), (1, [SCHEDULED]), (START_LIMIT_S + 1, None)]
+    _cap_passes(kube, core, clock, steps, RoomSignal(lambda: clock["now"]))
+    assert core.seen[-1] == (M, "error", 3, START_TIMEOUT_ERROR)
+    assert all(f.get("error_code") is None for f in core.fields)
+
+
+def test_the_core_client_sends_the_no_room_code_as_the_observations_error_code():
+    from switch_hosted_controller.box_scaler import CoreApi
+
+    sent = []
+    api = object.__new__(CoreApi)
+    api._call = lambda path, body=None: sent.append(body)  # type: ignore[method-assign]
+    api.observe(M, "error", 3, NO_ROOM_ERROR, error_code="no_room")
+    api.observe(M, "error", 3, NO_ROOM_ERROR)
+    assert [b["error_code"] for b in sent] == ["no_room", "machine_needs_attention"]
+
+
 def test_the_core_client_sends_waiting_for_room_only_when_true():
     from switch_hosted_controller.box_scaler import CoreApi
 

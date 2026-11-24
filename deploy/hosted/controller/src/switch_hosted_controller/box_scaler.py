@@ -223,6 +223,10 @@ START_TIMEOUT_ERROR = "The box did not become ready within 3 minutes of starting
 # It has its own cap: with the start limit after it, the whole wait stays within Core's connect timeout.
 ROOM_LIMIT_S = 360.0
 NO_ROOM_ERROR = "There was no room in the cluster for the box within 6 minutes."
+# The code that goes with it, so Core can tell "gave up waiting for room" (the cluster at its machine limit) from a box
+# that failed: Core shows its own cap message with Retry. A Core without the code refuses it (422); the observation then
+# goes as `machine_needs_attention`, and the code isn't sent again for an hour (`RoomSignal`, reused).
+NO_ROOM_CODE = "no_room"
 # Core's machine connect timeout (10 minutes; `_connect_timed_out` in Core's hosted controller sweep). Not used to
 # decide anything here: room plus start must fit inside it, which a test checks, and Core pins its side too.
 CORE_CONNECT_TIMEOUT_S = 600.0
@@ -283,13 +287,20 @@ def _observe(
     box_facts: Any,
     waiting_for_room: bool = False,
     room: RoomSignal | None = None,
+    error_code: str | None = None,
+    code_signal: RoomSignal | None = None,
 ) -> None:
     """Tell Core what the box is doing. With hosted agents v2 off, Core refuses v2's fields (`evictions`, `restarts`,
     `node`) with a 422, as upstream refuses any unknown field: the observation then goes again with upstream's fields
     only, and those facts stay owed. Any other failure is logged by type and goes no further than this box."""
     room_field = waiting_for_room and (room is None or room.allowed())
+    code = (
+        error_code
+        if error and error_code and (code_signal is None or code_signal.allowed())
+        else None
+    )
     try:
-        if evictions is None and not facts and not room_field:
+        if evictions is None and not facts and not room_field and code is None:
             core.observe(machine_id, observed, revision, error)
             return
         try:
@@ -301,12 +312,15 @@ def _observe(
                 **({"evictions": evictions} if evictions is not None else {}),
                 **facts,
                 **({"waiting_for_room": True} if room_field else {}),
+                **({"error_code": code} if code is not None else {}),
             )
         except CoreRefused as refused:
             if refused.status != 422:
                 raise
             if room_field and room is not None:
                 room.refused()
+            if code is not None and code_signal is not None:
+                code_signal.refused()
             core.observe(machine_id, observed, revision, error)
             return
         # Accepted (a refused call raises): only what came after is still owed.
@@ -341,6 +355,7 @@ def reconcile_once(
     still_unmapped: Callable[[str], bool] | None = None,
     room_since: dict[str, float] | None = None,
     room: RoomSignal | None = None,
+    no_room: RoomSignal | None = None,
 ) -> list[Step]:
     """One pass over the machines Core lists that map to a box namespace.
 
@@ -468,6 +483,7 @@ def reconcile_once(
                     box_facts.see(machine_id, pods)
                     facts = {"restarts": box_facts.unreported(machine_id), "node": box_node(pods)}
             error = None
+            error_code = None
             waiting_for_room = False
             if desired == RUNNING and observed != RUNNING:
                 since = waiting.setdefault(machine_id, now())
@@ -483,6 +499,7 @@ def reconcile_once(
                     room_started = room_since.setdefault(machine_id, now())
                     if now() - room_started > ROOM_LIMIT_S:
                         observed, error = "error", NO_ROOM_ERROR
+                        error_code = NO_ROOM_CODE if no_room is not None else None
                         logger.warning(
                             "Machine %s: no room for its box within 6 minutes.", machine_id
                         )
@@ -556,6 +573,8 @@ def reconcile_once(
                     box_facts,
                     waiting_for_room,
                     room,
+                    error_code,
+                    no_room,
                 )
             if last_observed is not None:
                 last_observed[machine_id] = seen
