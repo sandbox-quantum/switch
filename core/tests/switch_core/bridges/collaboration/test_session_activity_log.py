@@ -310,3 +310,37 @@ def test_host_text_is_put_through_the_platforms_own_escape() -> None:
 
     assert "*not bold*" in seen
     assert "\\*not bold\\*" in drawn
+
+
+# ── A call's input and output ────────────────────────────────────────────────
+
+
+def test_a_calls_input_and_output_follow_its_line_indented() -> None:
+    lines = _log(
+        [_call(title="Ran the tests", text="Input: $ pytest\nOutput:\n42 passed")]
+    )
+
+    assert lines[1:] == [
+        "⌗ ✓ Ran the tests — Input: $ pytest",
+        "  Output:",
+        "  42 passed",
+    ]
+
+
+def test_a_call_detail_past_its_budget_says_it_was_cut() -> None:
+    lines = _log([_call(text="Output:\n" + "x" * 5_000)])
+
+    assert lines[-1] == "  […truncated]"
+    assert sum(len(line) for line in lines[1:]) < 1_700
+
+
+def test_a_detail_too_big_for_the_room_left_shrinks_to_one_line_rather_than_vanishing() -> (
+    None
+):
+    lines = _log(
+        [_call(title="Ran", text="Output:\n" + "word " * 400)], limit=300, heading=False
+    )
+
+    assert len(lines) == 1
+    assert lines[0].startswith("⌗ ✓ Ran — Output: word")
+    assert len("\n".join(lines)) <= 300
