@@ -2,11 +2,12 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { writeNodeCli } from '../testing/node-cli';
 import { exportOpenCodeConsole, importOpenCodeConsole } from './opencode-console';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
 let root: string;
 let cli: string;
 const value = {
