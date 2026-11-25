@@ -343,9 +343,11 @@ node scripts/generate-release-signing-key.mjs release-<yyyy>-<mm>
 It prints three things: the entry for `TRUSTED_RELEASE_KEYS` in
 `src/release-keys.ts`, the same key as a line for `install.sh`, and the private
 key. Paste the first two into a pull request; store the private key with
-`gh secret set CONTROLLER_RELEASE_SIGNING_KEY --env controller-signing` (paste
-it at the prompt, or redirect from a file you then delete) once the steps below
-say to, and keep no other copy outside a password manager or vault.
+`gh secret set CONTROLLER_RELEASE_SIGNING_KEY --env controller-signing` once the
+steps below say to, and keep no other copy outside a password manager or vault.
+The secret is the whole PEM, its `BEGIN` and `END PRIVATE KEY` lines included.
+Pipe it in (`pbpaste | gh secret set …`) rather than pasting it at the prompt,
+which takes one line.
 
 **Rotating.** Generate a new key with a new id, add it to both lists beside the
 old one, and release: controllers on that release trust both. Once they have

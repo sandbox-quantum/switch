@@ -24,12 +24,7 @@ import { TRUSTED_RELEASE_KEYS } from '../src/release-keys.ts';
  * while trusting only the replacement itself. See "If the private key leaks"
  * in RELEASING.md. Empty except for that one release.
  */
-const OUTGOING_RELEASE_KEYS = [
-  {
-    id: 'release-2026-10',
-    publicKey: 'MCowBQYDK2VwAyEAaRFfp1Yd/b91KkZs8Vj/OQSdsZS2ifd+rZu24pKTMpU=',
-  },
-];
+const OUTGOING_RELEASE_KEYS = [];
 
 const [file, version] = process.argv.slice(2);
 if (!file || !version) {
