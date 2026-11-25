@@ -66,7 +66,10 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     prompt_actions,
     read_press,
 )
-from switch_core.bridges.collaboration.mattermost.http_client import NoRedirectClient
+from switch_core.bridges.collaboration.mattermost.http_client import (
+    MattermostEmailUnverified,
+    NoRedirectClient,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -474,6 +477,10 @@ class MattermostAdapter(PlatformAdapter):
         )
         try:
             await asyncio.to_thread(driver.login)
+        except MattermostEmailUnverified as exc:
+            raise BridgeCredentialError(
+                "Verify the bridge account's email in Mattermost, then try connecting again."
+            ) from exc
         except NoAccessTokenProvided as exc:
             raise BridgeCredentialError(
                 f"Mattermost refused the sign-in for {config.admin_user}: {exc}. "
