@@ -316,8 +316,8 @@
   {
     "name": "[Switch REPLACE-WITH-ENV] agent connections are dropping en masse",
     "type": "query alert",
-    "query": "avg(last_10m):sum:switch.agents.connected{service:REPLACE-WITH-SERVICE} / week_before(sum:switch.agents.connected{service:REPLACE-WITH-SERVICE}) < 0.5",
-    "message": "{{#is_alert}}Fewer than half as many agents are connected as at this time a week ago. Agents that lost their connection stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere. If last week was the odd one out (an outage, or a load test that connected extra agents), this clears on its own.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "avg(last_10m):sum(max:switch.agents.connected{service:REPLACE-WITH-SERVICE} by {service,pod_name,transport,client}, {service}) / week_before(sum(max:switch.agents.connected{service:REPLACE-WITH-SERVICE} by {service,pod_name,transport,client}, {service})) < 0.33",
+    "message": "{{#is_alert}}Fewer than a third as many agents are connected as at this time a week ago. Agents that lost their connection stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere. If last week was the odd one out (an outage, or a load test that connected extra agents), this clears on its own.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -332,7 +332,7 @@
       "require_full_window": false,
       "include_tags": true,
       "thresholds": {
-        "critical": 0.5
+        "critical": 0.33
       }
     },
     "priority": 2
