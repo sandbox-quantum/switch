@@ -451,7 +451,7 @@ class TestChangingMembers:
         # The token has not run out, so signing in again would not help.
         assert refused.status_code == 503
         detail = refused.json()["detail"]
-        assert "doesn't accept member changes from Switch" in detail
+        assert "doesn't accept changes from Switch" in detail
         assert "already been taken away" in detail
         assert await _role(session_factory, organization_id, cy) == "org_admin"
 

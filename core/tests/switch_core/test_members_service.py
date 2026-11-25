@@ -72,7 +72,7 @@ class TestRefusals:
 
         token = _token(300)
         with pytest.raises(
-            DirectoryUnavailable, match="doesn't accept member changes from Switch"
+            DirectoryUnavailable, match="doesn't accept changes from Switch"
         ):
             await _service(handler).remove(token, "om_1")
         assert any(

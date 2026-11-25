@@ -65,16 +65,16 @@ TENANT_CREATION_TIMEOUT_SECONDS = 90.0
 _PAGE = 100
 
 SIGN_IN_AGAIN = (
-    "Your access to your organization's account ran out. Sign in again to "
-    "change the organization's members."
+    "Your access to your organization's account ran out. Sign in again, then "
+    "try again."
 )
 
 # The service checks a token without asking WorkOS, so a 401 for one that has
 # not run out is the service not accepting Switch's AuthKit application at
 # all: signing in again would get the same answer.
 NOT_ACCEPTED = (
-    "Your organization's account service doesn't accept member changes from "
-    "Switch yet. Make the change in the organization's account settings."
+    "Your organization's account service doesn't accept changes from Switch "
+    "yet. Whoever runs Switch needs to set that up."
 )
 
 
