@@ -357,7 +357,8 @@ data:
       if [ "${1:-}" = base ]; then
         cat "$src_boxes/_none.conf" > "$live/boxes.conf.new" 2>/dev/null || : > "$live/boxes.conf.new"
       else
-        files "$src_boxes" | while IFS= read -r f; do cat "$f" && echo || exit 1; done > "$live/boxes.conf.new"
+        # Only the .conf files: a box's .list files are the host lists its .conf names by path, not squid config.
+        files "$src_boxes" | grep '\.conf$' | while IFS= read -r f; do cat "$f" && echo || exit 1; done > "$live/boxes.conf.new"
       fi
     }
 
