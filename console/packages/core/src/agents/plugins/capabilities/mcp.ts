@@ -105,11 +105,12 @@ export type SwitchLaunchSpecialization = Record<string, string | undefined>;
  * `variants` is empty for a model with no reasoning control — every local model
  * seen so far, which is exactly the case the form needs to know about: an empty
  * list means the variant field has nothing to offer and should say so rather
- * than accept a value that will be ignored.
+ * than accept a value that will be ignored. It is null when the host lists the
+ * model but cannot say which variants it takes.
  */
 export type LaunchProfileModel = {
   id: string;
-  variants: string[];
+  variants: string[] | null;
 };
 
 /**

@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { checkProviderReadiness } from '../host/provider-readiness';
 
-// A stand-in for `opencode serve`: says it is listening, then answers the two
-// routes the sign-in check asks.
-const FAKE_SERVE = `
-if (process.argv.includes('--version')) {
-  console.log('1.19.5');
-  process.exit(0);
-}
+const AS_1X = `if (process.argv.includes('--version')) { console.log('1.19.5'); process.exit(0); }\n`;
+
+// A stand-in for OpenCode 1.x's `opencode serve`: says it is listening, then
+// answers the two routes the sign-in check asks.
+const FAKE_SERVE =
+  AS_1X +
+  `
 const http = require('node:http');
 const port = Number(process.argv.find((arg) => arg.startsWith('--port=')).slice(7));
 http
@@ -24,15 +24,38 @@ http
   .listen(port, '127.0.0.1', () => console.log('opencode server listening on http://127.0.0.1:' + port));
 `;
 
-const OPENCODE_2 = `
-console.log('2.3.0');
-`;
-
-const FAILING_SERVE = `
+const FAILING_SERVE =
+  AS_1X +
+  `
 console.log('starting');
 console.error('boom: the config could not be read');
 process.exit(3);
 `;
+
+// A stand-in for OpenCode 2.x's `opencode serve`. Like 2.4 it starts listening
+// before its providers have loaded, and lists only the free models at first.
+const FAKE_2X = `
+if (process.argv.includes('--version')) { console.log('opencode v2.4.1'); process.exit(0); }
+if (process.argv[2] !== 'serve') process.exit(2);
+const http = require('node:http');
+const port = Number(process.argv.find((arg) => arg.startsWith('--port=')).slice(7));
+const expected = 'Basic ' + Buffer.from('opencode:' + process.env.OPENCODE_SERVER_PASSWORD).toString('base64');
+const started = Date.now();
+http
+  .createServer((request, response) => {
+    if (request.headers.authorization !== expected || request.url !== '/api/provider') {
+      response.statusCode = 401;
+      return response.end('{}');
+    }
+    const free = { id: 'opencode', name: 'OpenCode', settings: { apiKey: 'public' } };
+    const loaded = Date.now() - started > 600;
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ data: loaded ? [free, { id: 'openrouter', name: 'OpenRouter', settings: {} }] : [free] }));
+  })
+  .listen(port, '127.0.0.1', () => console.log('server listening on http://127.0.0.1:' + port));
+`;
+
+const FAKE_3X = `console.log('opencode v3.0.0');`;
 
 let root: string;
 beforeEach(() => {
@@ -80,12 +103,17 @@ describe('the OpenCode sign-in check, with spaces in every path', () => {
     expect((await check(installCli(FAKE_SERVE))).status).toBe('authenticated');
   }, 60_000);
 
-  it('says OpenCode 2 is not supported, and how to install OpenCode 1', async () => {
-    const result = await check(installCli(OPENCODE_2));
-    expect(result.status).toBe('unconfigured');
+  it('waits for OpenCode 2 to load its providers', async () => {
+    const result = await check(installCli(FAKE_2X));
+    expect(result.status).toBe('authenticated');
+    expect(result.message).toContain('OpenRouter');
+  }, 60_000);
+
+  it('says a version it cannot drive is unsupported, without offering a sign-in', async () => {
+    const result = await check(installCli(FAKE_3X));
+    expect(result.status).toBe('unknown');
     expect(result.loginHelps).toBe(false);
-    expect(result.message).toContain('OpenCode 2 isn’t supported yet');
-    expect(result.message).toContain('npm install -g opencode-ai');
+    expect(result.message).toContain("OpenCode 3.0.0 isn't supported yet");
   }, 60_000);
 
   it('says what the CLI printed when it does not start', async () => {
