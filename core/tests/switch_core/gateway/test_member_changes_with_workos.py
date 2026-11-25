@@ -617,6 +617,46 @@ class TestRenewingAtOnce:
         assert await _kept(session_factory, isid) == ("refresh-3", None)
 
 
+class TestKeyRotationMeanwhile:
+    async def test_a_token_rewritten_under_another_key_is_still_replaced(
+        self, session_factory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Boot re-encrypts stored tokens under the current key: the same
+        token, new ciphertext. A renewal that read it before keeps the token
+        WorkOS rotated it to all the same, rather than leaving the spent one
+        to fail the next renewal."""
+        ada = _name("ada")
+        await _linked(session_factory, {ada: ("admin", "org_admin")})
+        isid = await _signed_in_through_workos(session_factory, ada, "refresh-1")
+        workos = _WorkOS({})
+        read = IdentitySessionStore.refresh_token
+        reads = 0
+
+        async def read_then_reencrypt(
+            store: IdentitySessionStore, db: AsyncSession, row_id: str
+        ) -> str | None:
+            nonlocal reads
+            reads += 1
+            kept = await read(store, db, row_id)
+            if reads == 1:
+                assert kept is not None
+                async with session_factory() as other, other.begin():
+                    await IdentitySessionStore().replace_refresh_token(
+                        other,
+                        row_id,
+                        spent=kept,
+                        renewed=_KEYRING.encrypt(_KEYRING.decrypt(kept)),
+                    )
+            return kept
+
+        monkeypatch.setattr(IdentitySessionStore, "refresh_token", read_then_reencrypt)
+        sessions = IdentitySessions(session_factory, _authkit(workos), _KEYRING)
+        await sessions.organization_token(ada, isid, WORKOS_ORGANIZATION)
+
+        monkeypatch.undo()
+        assert await _kept(session_factory, isid) == ("refresh-2", None)
+
+
 class TestOperatorRestoring:
     async def test_an_operator_is_told_who_can_make_the_change(
         self, session_factory

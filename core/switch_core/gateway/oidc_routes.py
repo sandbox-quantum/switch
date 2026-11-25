@@ -491,12 +491,15 @@ def _client_ip(request: Request) -> str | None:
     return None if address is None else str(address)
 
 
-async def _first_organization(organizations: list[AuthKitOrganization]) -> str | None:
-    # Switch keeps no WorkOS token, so the organization an AuthKit session is
-    # signed in to changes nothing here: memberships are read from WorkOS on
-    # their own (`_bring_in_organizations`). Any one listed lets the sign-in
-    # finish.
-    return organizations[0].id if organizations else None
+async def _organizations_in_order(
+    organizations: list[AuthKitOrganization],
+) -> list[str]:
+    # The organization a sign-in lands in changes nothing here: memberships
+    # are read from WorkOS on their own (`_bring_in_organizations`), and an
+    # organization's own token is renewed for it when an action needs one
+    # (`IdentitySessions.organization_token`). So any one listed that
+    # accepts the sign-in lets it finish, in the order WorkOS lists them.
+    return [organization.id for organization in organizations]
 
 
 async def _authkit_identity(
@@ -538,7 +541,7 @@ async def _authkit_identity(
             verifier=str(kept["verifier"]),
             ip_address=_client_ip(request),
             user_agent=request.headers.get("user-agent"),
-            choose_organization=_first_organization,
+            choose_organization=_organizations_in_order,
         )
     except AuthKitRefused as refused:
         logger.warning(
@@ -632,23 +635,6 @@ async def _oidc_identity(request: Request, config: SwitchConfig) -> _Identity:
     iss = claims.get("iss") or config.gateway_oidc_issuer_url
     if not iss:
         logger.error("OIDC sign-in refused: the token names no issuer")
-        raise SignInError("misconfigured")
-    # Under the WorkOS directory every other reader of these identities (the
-    # mirror, the organization sign-in, `switch-link-workos`) looks them up
-    # under the issuer as configured. An identity stored under another
-    # spelling of it would match none of them, so a mismatch is a
-    # configuration mistake to name, not a sign-in to let through.
-    if (
-        config.organization_directory == "workos"
-        and iss != config.gateway_oidc_issuer_url
-    ):
-        logger.error(
-            "OIDC sign-in refused: the token's issuer %r is not "
-            "GATEWAY_OIDC_ISSUER_URL %r exactly, which the WorkOS directory "
-            "looks identities up under; set it to the token's issuer",
-            iss,
-            config.gateway_oidc_issuer_url,
-        )
         raise SignInError("misconfigured")
     return _Identity(
         iss=iss,

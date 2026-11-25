@@ -50,7 +50,7 @@ export function signInErrorMessage(code: string): string {
     case "email_unverified":
       return "Your identity provider doesn't say your email address is verified. Verify it there, then sign in again.";
     case "account_conflict":
-      return "Your email address belongs to a Switch account that signs in another way, and your identity provider doesn't say it's verified. Sign in the way you did before.";
+      return "Your email address belongs to a Switch account that isn't linked to this sign-in yet. Sign in the way you did before, or ask your administrator to link your account.";
     case "signup_refused":
       return "Switch can't make an account for you from where you're signing in.";
     case "impersonation":

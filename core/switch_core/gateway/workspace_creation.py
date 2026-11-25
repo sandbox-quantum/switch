@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import uuid
+from dataclasses import dataclass
 
 from fastapi import HTTPException, Response
 from sqlalchemy import select
@@ -78,8 +79,9 @@ _LOCK_NOT_AVAILABLE = "55P03"
 # names it too; renamed in Switch only.
 DEFAULT_WORKSPACE_NAME = "Default"
 ONE_WORKSPACE = (
-    "This organization is kept in its account settings, where it has one "
-    "workspace. Rename that workspace rather than add another."
+    "This organization is kept in its account settings, where an organization "
+    "has one workspace, so no more are added. Rename a workspace rather than "
+    "add another."
 )
 ONLY_WORKSPACE = (
     "This is the organization's only workspace, kept for as long as the "
@@ -90,9 +92,24 @@ ONLY_WORKSPACE = (
 def keeps_one_workspace(
     organization_directory: OrganizationDirectory, organization: Organization
 ) -> bool:
-    """Whether `organization` has exactly one workspace, never added to or
-    deleted: one the directory keeps, as every product sharing it has it."""
+    """Whether `organization` gets no more workspaces and keeps its last one:
+    one the directory keeps, where every product sharing it has an
+    organization's one workspace. One linked with several before keeps them."""
     return organization_directory.keeps_members_of(organization)
+
+
+async def is_its_only_kept_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    organization: Organization,
+    tenant_id: str,
+) -> bool:
+    """Whether `tenant_id` is the last workspace of an organization that keeps
+    one (`keeps_one_workspace`), which is not deleted."""
+    if not keeps_one_workspace(organization_directory, organization):
+        return False
+    workspaces = await every_workspace_of(session_factory, organization.id)
+    return [workspace.id for workspace in workspaces] == [tenant_id]
 
 
 def _derive_slug(name: str) -> str:
@@ -292,30 +309,31 @@ async def create_organization_for(
     bypass is what `is_operator` means everywhere else (`authz.py`) and
     because the person provisioning for other people is the one caller a
     self-service bound must not stop; nothing is counted for them.
+
+    The directory is asked first, with the allowance checked but not locked:
+    it can take a minute (`members_service.py`), and the lock holds a
+    connection. The allowance is checked again under the lock before
+    Switch's rows are written, and the directory asked to discard what it
+    recorded if that refuses.
     """
     allowance: User | None = None
-    if caller.is_operator:
-        operator = await user_store.get(session, caller.id)
-        if operator is None:
-            raise HTTPException(status_code=401, detail="User not found")
-        user = operator
-        # Not held across provisioning, which opens a session per tenant.
-        await session.commit()
-    else:
-        user = allowance = await lock_workspace_allowance(
-            session, caller.id, config, new_organization=True
+    user = await user_store.get(session, caller.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not caller.is_operator:
+        refusal = workspace_creation_refusal(
+            config,
+            is_operator=False,
+            workspaces_created=user.workspaces_created,
+            new_organization=True,
         )
+        if refusal is not None:
+            raise HTTPException(status_code=403, detail=refusal)
+    # Nothing is held while the directory is asked.
+    await session.commit()
     try:
-        organization, tenant = await create_organization(
-            session_factory,
-            user_store,
-            organization_store,
-            organization_directory,
-            client_lifecycle,
-            user,
-            creator_token,
-            name,
-            workspace_name,
+        planned = await record_organization(
+            organization_directory, user, creator_token, name, workspace_name
         )
     except DirectorySignInRequired as error:
         raise directory_sign_in_required(
@@ -324,6 +342,26 @@ async def create_organization_for(
             outcome=NOTHING_CHANGED,
             access_ended=False,
         ) from None
+    except DirectoryError as error:
+        raise directory_failed(error, NOTHING_CHANGED) from None
+    if not caller.is_operator:
+        try:
+            user = allowance = await lock_workspace_allowance(
+                session, caller.id, config, new_organization=True
+            )
+        except BaseException:
+            await _discard(organization_directory, planned)
+            raise
+    try:
+        organization, tenant = await create_recorded_organization(
+            session_factory,
+            user_store,
+            organization_store,
+            organization_directory,
+            client_lifecycle,
+            user,
+            planned,
+        )
     except DirectoryError as error:
         raise directory_failed(error, NOTHING_CHANGED) from None
     if allowance is not None:
@@ -359,33 +397,36 @@ async def create_organization_for(
     )
 
 
-async def create_organization(
-    session_factory: async_sessionmaker[AsyncSession],
-    user_store: UserStore,
-    organization_store: OrganizationStore,
+@dataclass(frozen=True)
+class PlannedOrganization:
+    """An organization the directory has recorded, as Switch is to create it:
+    the names it takes (`record_organization`) and their slugs."""
+
+    recorded: DirectoryOrganization
+    name: str
+    organization_slugs: list[str]
+    workspace_name: str
+    workspace_slugs: list[str]
+
+
+async def record_organization(
     organization_directory: OrganizationDirectory,
-    client_lifecycle: ClientLifecycleService,
     creator: User,
     creator_token: CreatorToken,
     name: str,
     workspace_name: str,
-) -> tuple[Organization, Tenant]:
-    """Create an organization named `name` and its first workspace, named
-    `workspace_name`. `creator` becomes the organization's `org_admin` and
-    the workspace's `admin`, a member there in their own right.
-
-    The directory records it first (`organization_directory.py`), since the
-    row keeps what the directory knows it by; a `DirectoryError` there leaves
-    nothing written. If Switch's rows then cannot be created, for any reason,
-    the directory is asked to discard it again.
+) -> PlannedOrganization:
+    """Have the directory record a new organization named `name` for
+    `creator` (`organization_directory.py`), before any of Switch's rows are
+    written, since the row keeps what the directory knows it by; a
+    `DirectoryError` here leaves nothing anywhere.
 
     An organization the directory keeps has exactly one workspace, named
-    `DEFAULT_WORKSPACE_NAME` whatever was asked, which keeps the directory's
-    id for it, and the directory's name for the organization: asked again, it
-    answers with the one the creator made before. One an organization here
-    already follows is refused, as the directory allows each person one.
+    `DEFAULT_WORKSPACE_NAME` whatever was asked, and takes the directory's
+    name for it: asked again, the directory answers with the one the
+    creator made before.
     """
-    # Both names are checked before anything is written.
+    # Both names are checked before the directory is asked.
     _slugs(workspace_name)
     _slugs(name)
     recorded = await organization_directory.create_organization(
@@ -394,8 +435,34 @@ async def create_organization(
     if recorded.workos_organization_id is not None:
         name = recorded.name or name
         workspace_name = DEFAULT_WORKSPACE_NAME
-    workspace_slugs = _slugs(workspace_name)
-    organization_slugs = _slugs(name)
+    return PlannedOrganization(
+        recorded=recorded,
+        name=name,
+        organization_slugs=_slugs(name),
+        workspace_name=workspace_name,
+        workspace_slugs=_slugs(workspace_name),
+    )
+
+
+async def create_recorded_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    organization_store: OrganizationStore,
+    organization_directory: OrganizationDirectory,
+    client_lifecycle: ClientLifecycleService,
+    creator: User,
+    planned: PlannedOrganization,
+) -> tuple[Organization, Tenant]:
+    """Create the organization `record_organization` planned and its first
+    workspace. `creator` becomes the organization's `org_admin` and the
+    workspace's `admin`, a member there in their own right; the workspace of
+    one the directory keeps keeps the directory's id for it.
+
+    One an organization here already follows is refused, `DirectoryRefusal`,
+    as the directory allows each person one. If the rows cannot be created
+    for any other reason, the directory is asked to discard what it
+    recorded.
+    """
     try:
         return await _create_organization_rows(
             session_factory,
@@ -403,29 +470,35 @@ async def create_organization(
             organization_store,
             client_lifecycle,
             creator,
-            recorded,
-            name,
-            organization_slugs,
-            workspace_name,
-            workspace_slugs,
+            planned.recorded,
+            planned.name,
+            planned.organization_slugs,
+            planned.workspace_name,
+            planned.workspace_slugs,
         )
     except OrganizationFollowedAlready:
         # The directory answered with the one the creator made before, which
         # an organization here follows already: nothing was made to discard.
         raise DirectoryRefusal(
-            f"You've already created an organization, {name}, and each person "
-            "creates one."
+            f"You've already created an organization, {planned.name}, and each "
+            "person creates one."
         ) from None
     except BaseException:
-        try:
-            await organization_directory.discard_organization(recorded)
-        except Exception:
-            logger.exception(
-                "Could not discard organization %r from the directory after "
-                "creating it in Switch failed; it is left there",
-                name,
-            )
+        await _discard(organization_directory, planned)
         raise
+
+
+async def _discard(
+    organization_directory: OrganizationDirectory, planned: PlannedOrganization
+) -> None:
+    try:
+        await organization_directory.discard_organization(planned.recorded)
+    except Exception:
+        logger.exception(
+            "Could not discard organization %r from the directory after "
+            "creating it in Switch failed; it is left there",
+            planned.name,
+        )
 
 
 async def _create_organization_rows(

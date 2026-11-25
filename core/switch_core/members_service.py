@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 # Bounds every call: a route holds locks while it waits.
 MEMBERS_SERVICE_TIMEOUT_SECONDS = 10.0
 # Creating an account sets up the customer's cloud resources before it
-# answers, which the service itself allows a minute for; nothing is locked
-# meanwhile.
+# answers, which the service itself allows a minute for; the route holds no
+# lock or connection meanwhile (`workspace_creation.create_organization_for`).
 TENANT_CREATION_TIMEOUT_SECONDS = 90.0
 
 SIGN_IN_AGAIN = (

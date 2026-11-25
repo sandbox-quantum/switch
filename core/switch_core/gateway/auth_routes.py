@@ -24,6 +24,7 @@ from switch_core.accounts.deletion import (
     AccountDeletionRefused,
     Workspace,
 )
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
@@ -638,9 +639,14 @@ async def _one_workspace_organizations(
     organization_directory: OrganizationDirectory,
     tenants: list[TenantMembershipResponse],
 ) -> frozenset[str]:
-    """Those of the organizations of `tenants` that keep one workspace."""
+    """Those of the organizations of `tenants` that keep one workspace, among
+    those the caller is `org_admin` of: whom `can_add_workspace` is about."""
     keeping: set[str] = set()
-    for organization_id in {t.organization_id for t in tenants if t.organization_id}:
+    for organization_id in {
+        t.organization_id
+        for t in tenants
+        if t.organization_id and t.organization_role == ORGANIZATION_ADMIN_ROLE
+    }:
         async with organization_session(session_factory, organization_id) as session:
             organization = await session.get(Organization, organization_id)
         if organization is not None and keeps_one_workspace(

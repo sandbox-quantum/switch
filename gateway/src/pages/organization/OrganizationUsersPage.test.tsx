@@ -327,7 +327,11 @@ describe("OrganizationUsersPage", () => {
       );
       expect(
         JSON.parse(window.sessionStorage.getItem("switch.pendingOrganizationMemberChange")!),
-      ).toMatchObject({ change: { userId: "bob", role: "org_admin" }, organizationId: "org-1" });
+      ).toMatchObject({
+        change: { userId: "bob", role: "org_admin" },
+        organizationId: "org-1",
+        askedBy: "me",
+      });
     });
 
     it("signs in again with no organization when the server names none", async () => {
@@ -364,19 +368,25 @@ describe("OrganizationUsersPage", () => {
       );
     });
 
-    const keep = (organizationId: string, savedAt: number) =>
+    const keep = (organizationId: string, savedAt: number, askedBy = "me") =>
       window.sessionStorage.setItem(
         "switch.pendingOrganizationMemberChange",
-        JSON.stringify({ change: { userId: "bob", role: "org_admin" }, organizationId, savedAt }),
+        JSON.stringify({
+          change: { userId: "bob", role: "org_admin" },
+          organizationId,
+          askedBy,
+          savedAt,
+        }),
       );
     const patched = (calls: Call[]) => calls.some((c) => c.method === "PATCH");
 
-    it("drops a kept change from another organization, or one too old", async () => {
-      for (const [organizationId, savedAt] of [
-        ["org-2", Date.now()],
-        ["org-1", Date.now() - 11 * 60 * 1000],
+    it("drops a kept change from another organization, another person, or one too old", async () => {
+      for (const [organizationId, savedAt, askedBy] of [
+        ["org-2", Date.now(), "me"],
+        ["org-1", Date.now(), "someone-else"],
+        ["org-1", Date.now() - 11 * 60 * 1000, "me"],
       ] as const) {
-        keep(organizationId, savedAt);
+        keep(organizationId, savedAt, askedBy);
         const calls = answerFetch(directoryRoutes([200, { ...bob(), role: "org_admin", warning: null }]));
 
         const { unmount } = render(<OrganizationUsersPage />);

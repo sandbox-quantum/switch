@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -96,7 +97,6 @@ from switch_core.gateway.admin_tokens import signed_in_creator_token
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     AuthenticatedSession,
-    every_workspace_of,
     get_authenticated_caller,
     get_authenticated_session,
     get_authenticated_user_id,
@@ -199,7 +199,7 @@ from switch_core.gateway.workspace_creation import (
     ONLY_WORKSPACE,
     create_organization_for,
     directory_failed,
-    keeps_one_workspace,
+    is_its_only_kept_workspace,
     refuse_a_workspace_name_taken,
 )
 from switch_core.invitation_revocation import revoke_invitations_made_by
@@ -452,7 +452,13 @@ async def workspace_counts(
 async def current_tenant(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     user: Annotated[User, Depends(get_current_user)],
 ) -> CurrentTenantResponse:
     """The tenant this request is bound to, and the caller's standing in it.
@@ -490,8 +496,25 @@ async def current_tenant(
         ),
         can_delete=can_delete_workspace(
             tenant_role=tenant_role, is_default=tenant.id == TENANT_ZERO_ID
+        )
+        and not await _only_kept_workspace(
+            session, session_factory, organization_directory, tenant
         ),
         can_manage_data_protection=admin_by_own_membership(tenant_role),
+    )
+
+
+async def _only_kept_workspace(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    tenant: Tenant,
+) -> bool:
+    if tenant.organization_id is None:
+        return False
+    organization = await session.get(Organization, tenant.organization_id)
+    return organization is not None and await is_its_only_kept_workspace(
+        session_factory, organization_directory, organization, tenant.id
     )
 
 
@@ -681,16 +704,19 @@ async def delete_tenant(
         raise HTTPException(
             status_code=400, detail="That name doesn't match this workspace."
         )
+    # Locked to the commit, so two of its workspaces deleted at once can't
+    # each see the other and leave it none.
     organization = (
         None
         if tenant.organization_id is None
-        else await session.get(Organization, tenant.organization_id)
+        else await session.scalar(
+            select(Organization)
+            .where(Organization.id == tenant.organization_id)
+            .with_for_update(key_share=True)
+        )
     )
-    if (
-        organization is not None
-        and keeps_one_workspace(organization_directory, organization)
-        and [t.id for t in await every_workspace_of(session_factory, organization.id)]
-        == [tenant_id]
+    if organization is not None and await is_its_only_kept_workspace(
+        session_factory, organization_directory, organization, tenant_id
     ):
         raise HTTPException(status_code=409, detail=ONLY_WORKSPACE)
     try:

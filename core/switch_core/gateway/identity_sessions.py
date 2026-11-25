@@ -48,6 +48,7 @@ from switch_core.keys import Keyring
 from switch_core.observability.catalogue import AUTH_IDENTITY_SESSION_CHECKS
 from switch_core.observability.metrics import metrics
 from switch_core.workos_authkit import (
+    ORGANIZATION_POLICY_CODES,
     AuthKit,
     AuthKitError,
     AuthKitRefused,
@@ -67,19 +68,6 @@ _SPREAD_SECONDS = 60
 _CONCURRENT_CHECKS = 4
 
 SIGN_IN_ENDED = "Your sign-in has ended. Sign in again."
-
-# What WorkOS answers a renewal for an organization whose policy the session
-# does not meet as it stands: signing in again, through the organization's
-# own methods, gets one. (`invalid_grant`, a refresh token that is no longer
-# good, is told apart by whether the session itself is still alive.)
-_SIGN_IN_AGAIN_FOR = frozenset(
-    {
-        "sso_required",
-        "mfa_enrollment",
-        "mfa_challenge",
-        "organization_authentication_methods_required",
-    }
-)
 
 
 class SignInEnded(Exception):
@@ -270,12 +258,11 @@ class IdentitySessions:
             raise SignInEnded(SIGN_IN_ENDED)
         assert row is not None
         for attempt in range(2):
+            spent = self._keyring.decrypt(sealed)
             try:
-                tokens = await authkit.refresh(
-                    self._keyring.decrypt(sealed), workos_organization_id
-                )
+                tokens = await authkit.refresh(spent, workos_organization_id)
             except AuthKitRefused as refused:
-                if refused.code in _SIGN_IN_AGAIN_FOR:
+                if refused.code in ORGANIZATION_POLICY_CODES:
                     raise OrganizationSignInRequired(refused.message) from refused
                 if refused.code != "invalid_grant":
                     raise
@@ -283,19 +270,42 @@ class IdentitySessions:
                 # the one WorkOS rotated it to: renew from that instead.
                 async with self._session_factory() as db:
                     kept = await self._store.refresh_token(db, row.id)
-                if attempt == 0 and kept is not None and kept != sealed:
+                if (
+                    attempt == 0
+                    and kept is not None
+                    and self._keyring.decrypt(kept) != spent
+                ):
                     sealed = kept
                     continue
                 await self._refresh_token_refused(row, refused)
-            async with self._session_factory() as db, db.begin():
-                await self._store.replace_refresh_token(
-                    db,
-                    row.id,
-                    spent=sealed,
-                    renewed=self._keyring.encrypt(tokens.refresh_token),
-                )
+            await self._keep_renewed(row.id, sealed, spent, tokens.refresh_token)
             return tokens.access_token
         raise AssertionError("unreachable: the loop returns or raises")
+
+    async def _keep_renewed(
+        self, row_id: str, sealed: str, spent: str, renewed: str
+    ) -> None:
+        """Keep `renewed` in place of the token a renewal spent, as it was
+        read (`sealed`), unless the session has a newer one since: another
+        renewal's, or a sign-in's again. The same token rewritten under
+        another key meanwhile (`db/key_rotation.py`) is still the one spent."""
+        encrypted = self._keyring.encrypt(renewed)
+        async with self._session_factory() as db, db.begin():
+            if await self._store.replace_refresh_token(
+                db, row_id, spent=sealed, renewed=encrypted
+            ):
+                return
+            kept = await self._store.refresh_token(db, row_id)
+            if kept is not None and self._keyring.decrypt(kept) == spent:
+                if await self._store.replace_refresh_token(
+                    db, row_id, spent=kept, renewed=encrypted
+                ):
+                    return
+            logger.info(
+                "Identity session %s has a newer refresh token than the one a "
+                "renewal spent, or has ended; the renewal's is dropped",
+                row_id,
+            )
 
     async def _refresh_token_refused(
         self, row: IdentitySessionRow, refused: AuthKitRefused

@@ -11,11 +11,17 @@ import {
 } from "../../data/api";
 
 /** A change kept across the sign-in it waited on, made again once, on coming
- * back: only in the organization it was made in, and only within ten minutes,
- * long enough to sign in and short enough that a change left behind is not
- * made by surprise later. */
+ * back: only in the organization it was made in, only by the person who asked
+ * for it (the sign-in may come back as someone else), and only within ten
+ * minutes, long enough to sign in and short enough that a change left behind
+ * is not made by surprise later. */
 export type MemberChange = { userId: string; role: OrganizationRole } | { userId: string; remove: true };
-type PendingChange = { change: MemberChange; organizationId: string; savedAt: number };
+type PendingChange = {
+  change: MemberChange;
+  organizationId: string;
+  askedBy: string;
+  savedAt: number;
+};
 const PENDING_CHANGE_KEY = "switch.pendingOrganizationMemberChange";
 const PENDING_CHANGE_TTL_MS = 10 * 60 * 1000;
 
@@ -28,14 +34,15 @@ function make(change: MemberChange): Promise<{ warning: string | null }> {
 function signInThenMake(
   change: MemberChange,
   organizationId: string,
+  askedBy: string,
   signInTo: string | null,
 ): void {
-  const pending: PendingChange = { change, organizationId, savedAt: Date.now() };
+  const pending: PendingChange = { change, organizationId, askedBy, savedAt: Date.now() };
   window.sessionStorage.setItem(PENDING_CHANGE_KEY, JSON.stringify(pending));
   window.location.href = organizationSignInUrl(window.location.pathname, signInTo);
 }
 
-function takePendingChange(organizationId: string): MemberChange | null {
+function takePendingChange(organizationId: string, signedInAs: string): MemberChange | null {
   const kept = window.sessionStorage.getItem(PENDING_CHANGE_KEY);
   window.sessionStorage.removeItem(PENDING_CHANGE_KEY);
   if (kept === null) return null;
@@ -43,6 +50,7 @@ function takePendingChange(organizationId: string): MemberChange | null {
     const pending = JSON.parse(kept) as PendingChange;
     if (
       pending.organizationId !== organizationId ||
+      pending.askedBy !== signedInAs ||
       typeof pending.savedAt !== "number" ||
       Date.now() - pending.savedAt > PENDING_CHANGE_TTL_MS
     ) {
@@ -110,7 +118,7 @@ export function useMemberChanges({
         // for one is shown as the failure it is, not sent round again.
         if (needsOrganizationSignIn(err) && !replayed && !asOperator) {
           if (!signInAfterAccessEnded(err)) {
-            signInThenMake(change, organizationId, organizationToSignInTo(err));
+            signInThenMake(change, organizationId, selfId, organizationToSignInTo(err));
             return;
           }
           setToFinish(change);
@@ -128,9 +136,9 @@ export function useMemberChanges({
   useEffect(() => {
     if (replayed.current) return;
     replayed.current = true;
-    const pending = takePendingChange(organizationId);
+    const pending = takePendingChange(organizationId, selfId);
     if (pending !== null) void act(pending, true);
-  }, [act, organizationId]);
+  }, [act, organizationId, selfId]);
 
   return {
     act,
@@ -140,7 +148,8 @@ export function useMemberChanges({
     toFinish,
     /** Send the admin to sign in, then finish the change on coming back. */
     finish: () =>
-      toFinish !== null && signInThenMake(toFinish, organizationId, finishSigningInTo),
+      toFinish !== null &&
+      signInThenMake(toFinish, organizationId, selfId, finishSigningInTo),
     dismissError: () => {
       setActionError(null);
       setToFinish(null);

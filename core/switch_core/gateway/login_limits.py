@@ -284,7 +284,7 @@ def _sign_in_refused(
         + " is paused after too many failed attempts.",
         f"Try again in {_in_words(wait)}.",
     ]
-    if config.gateway_oidc_enabled:
+    if config.gateway_sso_enabled:
         sentences.append("Signing in with single sign-on still works.")
     if by_email:
         sentences.append(

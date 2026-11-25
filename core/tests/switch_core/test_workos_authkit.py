@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from urllib.parse import parse_qs, urlsplit
 
@@ -207,9 +208,9 @@ async def test_a_person_in_several_organizations_signs_in_to_the_one_chosen() ->
 
     offered: list[list[AuthKitOrganization]] = []
 
-    async def choose(organizations: list[AuthKitOrganization]) -> str | None:
+    async def choose(organizations: list[AuthKitOrganization]) -> list[str]:
         offered.append(organizations)
-        return "org_B"
+        return ["org_B"]
 
     sign_in = await _authkit(handler).authenticate(
         code="c",
@@ -227,6 +228,99 @@ async def test_a_person_in_several_organizations_signs_in_to_the_one_chosen() ->
     assert sign_in.organization_id == "org_B"
 
 
+async def test_an_organization_whose_policy_refuses_is_passed_for_the_next() -> None:
+    """A person signed in with a password, in an organization that wants
+    single sign-on and one that doesn't, lands in the one that doesn't."""
+    tried: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["grant_type"] == "authorization_code":
+            return httpx.Response(
+                403,
+                json={
+                    "code": "organization_selection_required",
+                    "pending_authentication_token": "pending-token",
+                    "organizations": [
+                        {"id": "org_SSO", "name": "Wants SSO"},
+                        {"id": "org_B", "name": "Beta"},
+                    ],
+                },
+            )
+        tried.append(body["organization_id"])
+        if body["organization_id"] == "org_SSO":
+            return httpx.Response(400, json={"error": "sso_required"})
+        return httpx.Response(200, json=authenticated(organization_id="org_B"))
+
+    async def in_order(organizations: list[AuthKitOrganization]) -> list[str]:
+        return [organization.id for organization in organizations]
+
+    sign_in = await _authkit(handler).authenticate(
+        code="c",
+        verifier="v",
+        ip_address=None,
+        user_agent=None,
+        choose_organization=in_order,
+    )
+    assert tried == ["org_SSO", "org_B"]
+    assert sign_in.organization_id == "org_B"
+
+
+async def test_every_organization_refusing_by_its_policy_is_the_last_refusal() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["grant_type"] == "authorization_code":
+            return httpx.Response(
+                403,
+                json={
+                    "code": "organization_selection_required",
+                    "pending_authentication_token": "pending-token",
+                    "organizations": [{"id": "org_A"}, {"id": "org_B"}],
+                },
+            )
+        return httpx.Response(400, json={"error": "mfa_enrollment"})
+
+    async def in_order(organizations: list[AuthKitOrganization]) -> list[str]:
+        return [organization.id for organization in organizations]
+
+    with pytest.raises(AuthKitRefused) as refused:
+        await _authkit(handler).authenticate(
+            code="c",
+            verifier="v",
+            ip_address=None,
+            user_agent=None,
+            choose_organization=in_order,
+        )
+    assert refused.value.code == "mfa_enrollment"
+
+
+def test_a_refusal_says_what_workos_said_but_never_the_rest_of_its_body() -> None:
+    """A refusal can carry a pending authentication token and the person's
+    address; its message, which is logged, carries neither."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "code": "mfa_challenge",
+                "message": "The user must complete an MFA challenge.",
+                "pending_authentication_token": "pending-secret",
+                "user": {"email": "ada@example.test"},
+            },
+        )
+
+    async def attempt() -> None:
+        await _authkit(handler).refresh("kept-refresh", "org_A")
+
+    with pytest.raises(AuthKitRefused) as refused:
+        asyncio.run(attempt())
+    assert "mfa_challenge: The user must complete an MFA challenge." in (
+        refused.value.message
+    )
+    assert "pending-secret" not in refused.value.message
+    assert "ada@example.test" not in refused.value.message
+
+
 async def test_no_organization_chosen_is_a_refusal() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -238,8 +332,8 @@ async def test_no_organization_chosen_is_a_refusal() -> None:
             },
         )
 
-    async def choose(_organizations: list[AuthKitOrganization]) -> str | None:
-        return None
+    async def choose(_organizations: list[AuthKitOrganization]) -> list[str]:
+        return []
 
     with pytest.raises(AuthKitRefused) as refused:
         await _authkit(handler).authenticate(

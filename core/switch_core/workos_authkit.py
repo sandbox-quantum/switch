@@ -107,7 +107,22 @@ class AuthKitTokens:
     expires_at: int
 
 
-ChooseOrganization = Callable[[list[AuthKitOrganization]], Awaitable[str | None]]
+#: The organizations a person in several may sign in to, as WorkOS lists
+#: them, in the order to try them; none to refuse.
+ChooseOrganization = Callable[[list[AuthKitOrganization]], Awaitable[list[str]]]
+
+#: What WorkOS answers for an organization whose own policy the sign-in, or a
+#: session as it stands, does not meet: single sign-on, MFA, or a way of
+#: signing in it allows. Another organization, or signing in again its way,
+#: may still be accepted.
+ORGANIZATION_POLICY_CODES = frozenset(
+    {
+        "sso_required",
+        "mfa_enrollment",
+        "mfa_challenge",
+        "organization_authentication_methods_required",
+    }
+)
 
 
 def _retry_after(response: httpx.Response) -> float | None:
@@ -138,8 +153,15 @@ def _error_code(body: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _detail(response: httpx.Response) -> str:
-    return response.text[:_DETAIL_LIMIT]
+def _detail(body: Mapping[str, Any]) -> str:
+    """What WorkOS said of a refusal, for a log line: its code and its own
+    description, never the rest of the body, which can carry a pending
+    authentication token and the person's address."""
+    code = _error_code(body) or "no code"
+    description = body.get("error_description") or body.get("message")
+    if not isinstance(description, str) or not description:
+        return code
+    return f"{code}: {description[:_DETAIL_LIMIT]}"
 
 
 class AuthKit:
@@ -231,7 +253,7 @@ class AuthKit:
             )
         body = _body(response)
         return AuthKitRefused(
-            f"WorkOS answered {response.status_code} for {path}: {_detail(response)}",
+            f"WorkOS answered {response.status_code} for {path}: {_detail(body)}",
             response.status_code,
             _error_code(body),
             body,
@@ -247,10 +269,12 @@ class AuthKit:
         choose_organization: ChooseOrganization,
     ) -> AuthKitSignIn:
         """Exchange a sign-in's code. A person in several organizations may be
-        asked which one to sign in to: `choose_organization` picks one of
-        those WorkOS lists, or None to refuse. Raises `AuthKitRefused` when
-        WorkOS refuses the code (its `code` says why) and `AuthKitUnavailable`
-        when it can't be reached or answers with something unreadable."""
+        asked which one to sign in to: `choose_organization` orders those
+        WorkOS lists, and they are tried in turn while each one's own policy
+        refuses the sign-in (`ORGANIZATION_POLICY_CODES`), or none is chosen
+        to refuse. Raises `AuthKitRefused` when WorkOS refuses the code (its
+        `code` says why) and `AuthKitUnavailable` when it can't be reached or
+        answers with something unreadable."""
         context: dict[str, str] = {}
         if ip_address is not None:
             context["ip_address"] = ip_address
@@ -270,21 +294,29 @@ class AuthKit:
         ):
             organizations, pending = self._organization_choice(body)
             chosen = await choose_organization(organizations)
-            if chosen is None:
+            if not chosen:
                 raise AuthKitRefused(
                     "No organization this person is in may sign in here.",
                     body.status_code,
                     "organization_selection_required",
                     {},
                 )
-            body = await self._authenticate(
-                {
-                    "grant_type": "urn:workos:oauth:grant-type:organization-selection",
-                    "pending_authentication_token": pending,
-                    "organization_id": chosen,
-                    **context,
-                }
-            )
+            for organization_id in chosen:
+                body = await self._authenticate(
+                    {
+                        "grant_type": (
+                            "urn:workos:oauth:grant-type:organization-selection"
+                        ),
+                        "pending_authentication_token": pending,
+                        "organization_id": organization_id,
+                        **context,
+                    }
+                )
+                if not (
+                    isinstance(body, AuthKitRefused)
+                    and body.code in ORGANIZATION_POLICY_CODES
+                ):
+                    break
         if isinstance(body, AuthKitRefused):
             raise body
         return _sign_in_from(body)

@@ -189,6 +189,7 @@ class TestItsOneWorkspace:
         async with _client(
             _with(session_factory, _Accounts()), ada, workspace_id
         ) as client:
+            current = await client.get("/tenants/current")
             deleted = await client.request(
                 "DELETE", f"/tenants/{workspace_id}", json={"name": "Default"}
             )
@@ -196,6 +197,9 @@ class TestItsOneWorkspace:
                 f"/tenants/{workspace_id}", json={"name": "Research"}
             )
 
+        # Not offered, and refused if asked.
+        assert current.status_code == 200, current.text
+        assert current.json()["can_delete"] is False
         assert deleted.status_code == 409
         assert deleted.json()["detail"] == ONLY_WORKSPACE
         assert renamed.status_code == 200, renamed.text
