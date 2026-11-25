@@ -502,14 +502,35 @@ def test_switch_buddy_names_only_choices_the_connect_dialog_offers():
     assert "pick Slack under Messaging app" in playbook
 
 
-def test_switch_buddy_joins_and_links_the_room_a_template_makes():
-    """A template's room does not include buddy, so it adds itself before
-    asking the first question, and always hands the person a link."""
+def test_switch_buddy_joins_introduces_and_links_the_rooms_it_creates():
+    """Buddy stays in the first rooms it creates (including template rooms with
+    a kickoff), introduces each room in the room, and hands the person a link."""
     text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
-    assert "has a `kickoff` asks its agents for you: don't join it" in text
+    assert "don't join it" not in text
     assert "add yourself with `invite_agent_to_room`" in text
+    assert "even when the template has a `kickoff`" in text
+    assert "post a short welcome with `post_message`" in text
+    assert 'a concrete "try this now" prompt' in text
+    assert (
+        "mention your name there if they want to change anything or have questions"
+        in text
+    )
     assert "switchdash://open/room/<room-id>" in text
     assert 'Never end the turn on "creating it now"' in text
+
+
+def test_switch_buddy_runs_adaptive_interview_and_starts_with_one_agent():
+    """Onboarding asks a few quick questions with a check-in to go deeper or
+    move on, drives connectors from those answers, and starts with one focused
+    agent in one room before hinting at multi-agent workflows."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "A few quick questions about their work" in text
+    assert "name the one-line agent idea you have in mind" in text
+    assert "answer 2–3 sharper questions to tailor it" in text
+    assert "Offer one focused agent first." in text
+    assert "Start with one agent in one room, not a multi-agent room template" in text
+    assert "hint at richer multi-agent setups once this one is working" in text
+    assert "wait for them to say they're done, then re-check `get_my_context`" in text
 
 
 def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
