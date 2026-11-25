@@ -104,7 +104,9 @@ export function sentenceCase(value: string): string {
  *  Falls back to title case for any platform with no name of its own to get
  *  wrong. */
 const PLATFORM_LABELS: Record<string, string> = {
+  rocketchat: "Rocket.Chat",
   teams: "Microsoft Teams",
+  whatsapp: "WhatsApp",
 };
 
 export const platformLabel = (value: string): string =>

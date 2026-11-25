@@ -15,7 +15,7 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 import type { ChatClaim } from "../../data/api";
-import { MONO_SX, titleCase } from "../../theme/format";
+import { MONO_SX, platformLabel } from "../../theme/format";
 
 interface Props {
   platform: string;
@@ -38,7 +38,7 @@ export default function ClaimChatDialog({ platform, claim, onClose }: Props) {
   const [copied, setCopied] = useState<string | null>(null);
   const command = claim ? `/connect ${claim.code}` : "";
   const handle = claim?.bot_handle ?? "";
-  const name = titleCase(platform);
+  const name = platformLabel(platform);
 
   const copy = async (text: string) => {
     await navigator.clipboard.writeText(text);
