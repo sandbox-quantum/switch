@@ -158,6 +158,11 @@ async def list_service_connections(
                 # Why, for a client to say what each person can do about it:
                 # `UnavailableCode` in `connections/broker.py`.
                 "unavailable_code": None if unavailable is None else unavailable.code,
+                # Why a person cannot sign in to it here though pasting a
+                # credential connects it (GitHub with no App set up), or null.
+                "sign_in_unavailable_reason": None
+                if standing.sign_in_unavailable is None
+                else standing.sign_in_unavailable.reason,
                 # Whether it waits on the server's operator setting up its app
                 # under Connectors, so a client can offer them that.
                 "server_setup_needed": standing.server_setup_needed,
@@ -183,10 +188,13 @@ async def list_service_connections(
                 else switches[definition.slug].decided_by,
                 # A grant hands the agent the owner's own token: it is on or
                 # off, at the connection's level, and lasts the token's life.
+                # So does one on a credential the person pasted for a service
+                # that otherwise mints its tokens (a GitHub token).
                 "pass_through": (
                     definition.token is not None
                     and definition.token.kind == "pass_through"
-                ),
+                )
+                or (connection is not None and connection.method != "oauth"),
                 "token_lifetime": (
                     None if definition.token is None else definition.token.max_lifetime
                 ),
@@ -199,7 +207,9 @@ async def list_service_connections(
                 # the gateway: false where it can't be connected here at all,
                 # where it returns only to Switch Console's listener, and for
                 # a key.
-                "web_sign_in": standing.connectable and flows.web_ready(definition),
+                "web_sign_in": standing.connectable
+                and standing.sign_in_unavailable is None
+                and flows.web_ready(definition),
                 # The ports Switch Console's listener may take a sign-in back
                 # on, for a vendor that matches them; null for any port.
                 "loopback_ports": (
@@ -246,7 +256,7 @@ async def list_service_connections(
                     None
                     if connection is None
                     or connection.method == "oauth"
-                    or definition.adapter != "oauth"
+                    or definition.adapter == "api_key"
                     else _pasted_reach(connection.method)
                 ),
             }
@@ -268,6 +278,8 @@ def _paste_form(method: PasteMethod) -> dict[str, Any]:
         "label": method.label,
         "fields": [_field(field) for field in method.fields],
         "help_url": method.help_url,
+        "create_url": method.create_url,
+        "manage_url": method.manage_url,
         # `vendor`: it ends on the date it was made to end; `never`: only
         # the vendor can revoke it.
         "expires": method.expires,

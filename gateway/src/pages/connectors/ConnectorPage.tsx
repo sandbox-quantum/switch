@@ -20,6 +20,7 @@ import { Link as RouterLink, useLocation, useNavigate, useParams, useSearchParam
 import BrandTile from "../../components/connectors/BrandTile";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import InfoTip from "../../components/InfoTip";
+import LinkedText from "../../components/LinkedText";
 import PageBanner from "../../components/PageBanner";
 import SuccessSnackbar from "../../components/SuccessSnackbar";
 import {
@@ -42,6 +43,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { formatDate } from "../../theme/format";
+import ConnectChoices, { offersChoices } from "./ConnectChoices";
 import ConnectorAgents from "./ConnectorAgents";
 import {
   CONSOLE_CONNECT_NOTE,
@@ -443,11 +445,22 @@ export default function ConnectorPage() {
       : (off?.text ?? connection.unavailable_reason ?? "It can't be connected here.");
   const keyBased = connection.auth_type === "api_key";
   const broken = brokenLine(connection);
+  // Not connected, with a sign-in and a token in its place: both are offered
+  // side by side below, in place of the buttons here.
+  // So are they where its sign-in waits on an app this server lacks: the
+  // sign-in is shown as not set up, and the token is the way in.
+  const choosing =
+    !connected &&
+    offersChoices(connection) &&
+    (way === "web" || (way === "paste" && connection.sign_in_unavailable_reason !== null));
   // What a pasted connection is replaced with: pasted the same way where
-  // that is still offered here, else the first way that is.
+  // that is still offered here, else the first way that is. So is a sign-in
+  // through an app this server no longer has, which only a token mends.
   const replaceWith = isPasted(connection)
     ? (connection.paste.find((way) => way.method === connection.method) ?? connection.paste[0] ?? null)
-    : null;
+    : connection.reconnect_code === "sign_in_unavailable"
+      ? (connection.paste[0] ?? null)
+      : null;
 
   return (
     <Stack spacing={4}>
@@ -495,7 +508,7 @@ export default function ConnectorPage() {
                 </span>
               </Tooltip>
             )}
-            {way === "web" && (!connected || broken) && (
+            {way === "web" && (!connected || broken) && !choosing && (
               <Button
                 variant={connected ? "outlined" : "contained"}
                 onClick={connect}
@@ -505,14 +518,27 @@ export default function ConnectorPage() {
                 {connected ? "Reconnect" : "Connect"}
               </Button>
             )}
-            {!connected && way === "paste" && (
+            {!connected && way === "web" && connection.paste.length > 0 && !choosing && (
+              <Button variant="text" onClick={() => setPasteDialog("add")} disabled={leaving !== null}>
+                {connection.paste.some((offered) => offered.method === "token")
+                  ? "Use a token instead"
+                  : "Use keys instead"}
+              </Button>
+            )}
+            {!connected && way === "paste" && !choosing && (
               <Button variant="contained" onClick={() => setPasteDialog("add")}>
                 Connect
               </Button>
             )}
             {connected && replaceWith && (
               <Button variant={broken ? "contained" : "outlined"} onClick={() => setPasteDialog("replace")}>
-                {replaceWith.method === "token" ? "Replace token" : "Replace keys"}
+                {isPasted(connection)
+                  ? replaceWith.method === "token"
+                    ? "Replace token"
+                    : "Replace keys"
+                  : replaceWith.method === "token"
+                    ? "Use a token"
+                    : "Use keys"}
               </Button>
             )}
             {!connected && way === "console" && (
@@ -586,8 +612,26 @@ export default function ConnectorPage() {
       )}
       {notice && (
         <Alert severity="info" onClose={() => setNotice(null)}>
-          {notice}
+          <LinkedText text={notice} />
         </Alert>
+      )}
+
+      {choosing && (
+        <ConnectChoices
+          connection={connection}
+          leaving={leaving !== null}
+          onSignIn={connect}
+          onToken={() => setPasteDialog("add")}
+          setUp={
+            connection.server_setup_needed && capabilities.canManageConnectorApps ? (
+              <Box>
+                <Button variant="outlined" component={RouterLink} to={`/settings/org/connector-apps?set_up=${connection.slug}`}>
+                  Set up the App
+                </Button>
+              </Box>
+            ) : null
+          }
+        />
       )}
 
       <General connection={connection} />
@@ -633,7 +677,7 @@ export default function ConnectorPage() {
       {pasteDialog && (
         <PasteDialog
           connection={connection}
-          replacing={pasteDialog === "replace"}
+          replacing={pasteDialog === "replace" && isPasted(connection)}
           onClose={() => setPasteDialog(null)}
           onSaved={(warning) => {
             setPasteDialog(null);
@@ -644,10 +688,31 @@ export default function ConnectorPage() {
       <ConfirmDialog
         open={disconnecting}
         title={`Disconnect ${connection.name}?`}
-        description={disconnectDescription(
-          connection.name,
-          listsLoaded ? own.filter((agent) => agent.granted).length : null,
-        )}
+        description={
+          replaceWith ? (
+            <>
+              Your agents lose {connection.name}: their grants on it are removed. Switch forgets your{" "}
+              {replaceWith.label.toLowerCase()} but cannot revoke it, so it keeps working in {connection.name} until it
+              expires or you delete it there.{" "}
+              {replaceWith.manage_url ? (
+                <Link href={replaceWith.manage_url} target="_blank" rel="noopener noreferrer">
+                  Delete it in {connection.name}
+                </Link>
+              ) : (
+                replaceWith.help_url && (
+                  <Link href={replaceWith.help_url} target="_blank" rel="noopener noreferrer">
+                    How to delete it
+                  </Link>
+                )
+              )}
+            </>
+          ) : (
+            disconnectDescription(
+              connection.name,
+              listsLoaded ? own.filter((agent) => agent.granted).length : null,
+            )
+          )
+        }
         confirmLabel="Disconnect"
         tone="destructive"
         onConfirm={async () => {

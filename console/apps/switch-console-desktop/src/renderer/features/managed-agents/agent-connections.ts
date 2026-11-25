@@ -5,7 +5,10 @@ import {
   grantStands,
   serviceBlockedReason,
 } from '@renderer/features/locations/components/settings-view/sections/service-grants';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectionCatalogEntry,
+  githubThroughApp,
+} from '@shared/core/switch-servers/connection-catalog';
 import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { ServiceGrant, ServiceGrants } from '@shared/core/switch-servers/service-grants';
 
@@ -69,7 +72,7 @@ export function agentConnectionCards(
     cards.push({
       slug: service.slug,
       name: service.name,
-      kind: !offered ? 'other' : service.slug === GITHUB ? 'github' : 'on-off',
+      kind: !offered ? 'other' : githubThroughApp(service) ? 'github' : 'on-off',
       service,
       grant,
     });

@@ -68,7 +68,8 @@ describe('the service connections answer', () => {
         },
       ],
     }).connections;
-    expect(connection.paste).toEqual([token]);
+    // A server from before prefilled forms sends no create_url.
+    expect(connection.paste).toEqual([{ ...token, create_url: null }]);
     expect([
       connection.access_note,
       connection.reconnect_code,
@@ -112,6 +113,7 @@ describe('the paste methods this Console offers', () => {
     label: 'API and application keys',
     fields: [{ name: 'api_key', label: 'API key', secret: true, help: null, choices: null }],
     help_url: 'https://docs.example.test/keys',
+    create_url: null,
     expires: 'never',
     access_note: 'Reaches what your keys allow.',
   };
