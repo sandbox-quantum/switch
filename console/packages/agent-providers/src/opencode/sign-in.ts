@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { execProvider } from '../provider-process';
 import {
   loginWontHelp,
   readiness,
@@ -10,36 +9,8 @@ import { startOpencodeServer, stopOpencodeServer } from './server';
 
 export const OPENCODE_LOGIN = 'opencode auth login';
 
-/**
- * The install that gives the OpenCode Switch runs. OpenCode 2 (`@opencode/cli`)
- * serves a different API, so its server is never found and its backends
- * cannot be listed.
- */
-export const OPENCODE_SUPPORTED_INSTALL = 'npm install -g opencode-ai';
-
-/** The major version `opencode --version` printed, or null when it printed none. */
-export function opencodeMajorVersion(output: string): number | null {
-  const match = /(\d+)\.\d+\.\d+/.exec(output);
-  return match ? Number(match[1]) : null;
-}
-
 /** OpenCode signs in per backend, so "signed in" means at least one backend is connected. */
 export async function checkOpencodeSignIn(input: SignInCheckInput): Promise<ProviderReadiness> {
-  const version = await execProvider(input.binaryPath, ['--version'], {
-    cwd: input.cwd,
-    env: input.env,
-    timeout: 15000,
-  }).then(
-    ({ stdout }) => opencodeMajorVersion(stdout),
-    () => null
-  );
-  if (version !== null && version >= 2)
-    return loginWontHelp(
-      readiness(
-        'unconfigured',
-        `OpenCode ${version} isn’t supported yet. Install OpenCode 1 instead: ${OPENCODE_SUPPORTED_INSTALL}`
-      )
-    );
   let server;
   try {
     server = await startOpencodeServer({

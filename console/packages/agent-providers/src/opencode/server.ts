@@ -41,7 +41,7 @@ export interface StartServerInput {
   skills: OpencodeSkill[];
 }
 
-async function findFreePort(): Promise<number> {
+export async function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const probe = createServer();
     probe.on('error', reject);
@@ -142,7 +142,12 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
 export async function stopOpencodeServer(
   server: Pick<OpencodeServerHandle, 'process' | 'configHome'>
 ): Promise<void> {
-  const child = server.process;
+  await stopOpencodeProcess(server.process);
+  await rm(server.configHome, { recursive: true, force: true });
+}
+
+/** Stops an OpenCode process, forcing it after two seconds, and releases its pipes. */
+export async function stopOpencodeProcess(child: ChildProcess): Promise<void> {
   if (child.pid && child.exitCode === null && child.signalCode === null) {
     await new Promise<void>((resolve, reject) => {
       const kill = setTimeout(() => stopProvider(child, 'SIGKILL'), 2000);
@@ -167,7 +172,6 @@ export async function stopOpencodeServer(
   // would otherwise hold these pipes open and keep this process alive.
   child.stdout?.destroy();
   child.stderr?.destroy();
-  await rm(server.configHome, { recursive: true, force: true });
 }
 
 async function waitForHealth(url: string, authorization: string, timeoutMs: number): Promise<void> {
