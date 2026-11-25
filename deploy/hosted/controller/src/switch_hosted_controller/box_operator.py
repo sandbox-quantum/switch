@@ -26,12 +26,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
+from uuid import UUID
 
 from .box_names import (
     BOX_NAMESPACE_RE,
+    REMOVALS_SECRET,
     USER_LABEL,
     box_namespace,
     is_box_keyed,
+    live_boxes,
     name_label,
     user_namespace,
 )
@@ -1280,15 +1283,23 @@ def agents_disk_matches(existing: dict, wanted: dict, config: OperatorConfig) ->
 
 
 def with_box(
-    current: Mapping[str, str], machine_id: str, namespace: str, ceiling: int
+    current: Mapping[str, str],
+    machine_id: str,
+    namespace: str,
+    ceiling: int,
+    removals: Mapping[str, str] | None = None,
 ) -> dict[str, str] | None:
     """The box map with this box in it, or None when it's already there. Refused if the machine or the namespace is
-    already someone else's, or the map holds the ceiling."""
+    already someone else's, if the namespace is retired (`box-removals`), or the map holds the ceiling of live boxes
+    (entries not retired)."""
+    removals = removals or {}
+    if namespace in removals:
+        raise ProvisionFailed("box_map_failed")
     if current.get(machine_id) == namespace:
         return None
     if machine_id in current or namespace in current.values():
         raise ProvisionFailed("box_map_failed")
-    if len(current) >= ceiling:
+    if len(live_boxes(current, removals)) >= ceiling:
         raise ProvisionFailed("ceiling_reached")
     return {**current, machine_id: namespace}
 
@@ -1307,6 +1318,8 @@ class OperatorCore(Protocol):
         namespace: str | None,
         failed_at: str | None,
     ) -> None: ...
+    def removal_claim(self) -> dict | None: ...  # the next box named for removal, or None
+    def removal_gone(self, machine_id: str, claim_token: str) -> bool: ...  # False on Core's 409
 
 
 class OperatorKube(Protocol):
@@ -1327,6 +1340,9 @@ class OperatorKube(Protocol):
         self, name: str, data: dict[str, str], resource_version: str
     ) -> None: ...  # BoxMapConflict on 409
     def get_namespace(self, name: str) -> dict | None: ...  # None when there's none
+    def volumes_left(
+        self, namespace: str
+    ) -> int: ...  # persistent volumes whose claim was in `namespace`
 
 
 class Refused(Exception):
@@ -1369,6 +1385,9 @@ class BoxOperator:
         self._names_checked: float | None = None
         self._t2_refused_until = 0.0
         self._inventory_refused_until = 0.0
+        self._removal: dict[str, Any] | None = (
+            None  # the removal this operator holds: machine, namespace, token
+        )
 
     def t2_admitted(self) -> bool:
         """False for an hour after the cluster refused a t2 box."""
@@ -1418,13 +1437,14 @@ class BoxOperator:
         waits on it."""
         try:
             boxes, _ = self._kube.box_map()
+            live = live_boxes(boxes, self._removals())
         except Exception as error:
             logger.warning("Box map not read for the claim report (%s).", type(error).__name__)
             return {}
         return {
-            "boxes_live": len(boxes),
+            "boxes_live": len(live),
             "ceiling": self._config.ceiling,
-            "boxes": sorted(set(boxes.values())),
+            "boxes": sorted(set(live.values())),
         }
 
     def _claim(self) -> dict | None:
@@ -1439,7 +1459,9 @@ class BoxOperator:
         return self._core.claim({k: v for k, v in report.items() if k not in INVENTORY_KEYS})
 
     def run_once(self) -> bool:
-        """Claims and makes at most one box. False when Core had nothing waiting."""
+        """Takes the held removal one step on, then claims and makes at most one box. False when Core had nothing
+        waiting."""
+        self.removal_once()
         raw = self._claim()
         if raw is None:
             return False
@@ -1468,6 +1490,7 @@ class BoxOperator:
         namespace = action.namespace
         self._agents_disk = None
         try:
+            self._refuse_retired(namespace)
             for step, obj in box_objects(action, self._config):
                 if obj["kind"] == "NetworkPolicy" and obj["metadata"]["name"] == "agent-egress":
                     continue
@@ -1500,6 +1523,7 @@ class BoxOperator:
         namespace = action.namespace
         failed_at: str | None = None
         try:
+            self._refuse_retired(namespace)
             existing = self._cluster("object_refused", self._kube.get_namespace, namespace)
             annotations = ((existing or {}).get("metadata") or {}).get("annotations") or {}
             if existing is None or annotations.get(MACHINE_ANNOTATION) != action.machine_id:
@@ -1608,6 +1632,7 @@ class BoxOperator:
         self._agents_disk: str | None = None  # the agents disk's storage request, made or found
         try:
             namespace = action.namespace or namespace_for(action.user)
+            self._refuse_retired(namespace)
             for step, obj in box_objects(action, self._config):
                 self._make(step, obj)
             if is_box_keyed(namespace):
@@ -1698,10 +1723,107 @@ class BoxOperator:
             )
             raise ProvisionFailed(refused)
 
+    # ---- retired boxes (`box-removals`) ----
+
+    def _removals(self) -> dict[str, str]:
+        """`box-removals`: namespace -> machine id. A list not made yet (404) is empty: nothing is retired. Any other
+        error is raised, so nothing is made or counted on a list that couldn't be read."""
+        try:
+            removals, _ = self._kube.read_list(REMOVALS_SECRET)
+        except HTTPError as error:
+            if error.code == 404:
+                return {}
+            raise
+        return removals
+
+    def _refuse_retired(self, namespace: str) -> None:
+        """No box is ever made, adopted or bound under a retired namespace, whatever Core asked."""
+        if namespace in self._cluster("object_refused", self._removals):
+            logger.error(
+                "Box operator ALERT: asked to make a box under a retired namespace: %s", namespace
+            )
+            raise ProvisionFailed("name_refused")
+
+    def removal_once(self) -> None:
+        """One step of the removal this operator holds, or a new one claimed from Core. Never raises: the provision
+        loop goes on whatever happens here.
+
+        - A new claim's namespace is checked on the cluster first: if it exists, its `machine-id` annotation must be
+          the claimed machine, or it's never listed (an alert). Then it's added to `box-removals` (add-only), which
+          stops every reader of the box map, and lets the remover delete it.
+        - Once the namespace is gone and no persistent volume names it, the removal is confirmed to Core with the
+          claim's token, however long that took (Core accepts the newest token after its lease lapses).
+        - After a restart the token is lost; Core offers the removal again once its lease lapses, and every step here
+          is safe to repeat."""
+        try:
+            if self._removal is None:
+                claim = self._core.removal_claim()
+                if claim is None:
+                    return
+                held = self._checked_removal(claim)
+                if held is None:
+                    return
+                self._removal = held
+            held = self._removal
+            if not held["listed"]:
+                self._add_to_list(REMOVALS_SECRET, held["namespace"], held["machine_id"])
+                held["listed"] = True
+                logger.info("Box %s retired: listed for removal.", held["namespace"])
+            if self._kube.get_namespace(held["namespace"]) is not None:
+                return  # the remover deletes it; looked at again next pass
+            if self._kube.volumes_left(held["namespace"]):
+                return
+            if self._core.removal_gone(held["machine_id"], held["claim_token"]):
+                logger.info("Box %s removed: told Core.", held["namespace"])
+            else:
+                logger.error(
+                    "Box operator ALERT: Core refused the removal of %s as gone.", held["namespace"]
+                )
+            self._removal = None
+        except Exception as error:  # one removal's trouble never stops making boxes
+            logger.warning("Removal not taken further this pass (%s).", type(error).__name__)
+
+    def _checked_removal(self, claim: dict) -> dict[str, Any] | None:
+        machine_id, namespace, token = (
+            claim.get("machine_id"),
+            claim.get("namespace"),
+            claim.get("claim_token"),
+        )
+        try:
+            machine_id = str(UUID(str(machine_id)))
+        except ValueError:
+            machine_id = None
+        if (
+            machine_id is None
+            or not isinstance(namespace, str)
+            or not BOX_NAMESPACE_RE.fullmatch(namespace)
+            or not isinstance(token, str)
+            or not CLAIM_TOKEN_RE.fullmatch(token)
+        ):
+            logger.error(
+                "Box operator ALERT: a removal claim from Core is out of form; not acted on."
+            )
+            return None
+        existing = self._kube.get_namespace(namespace)
+        if existing is not None:
+            annotations = (existing.get("metadata") or {}).get("annotations") or {}
+            if annotations.get(MACHINE_ANNOTATION) != machine_id:
+                logger.error(
+                    "Box operator ALERT: removal of %s refused: the namespace belongs to another machine.",
+                    namespace,
+                )
+                return None
+        return {
+            "machine_id": machine_id,
+            "namespace": namespace,
+            "claim_token": token,
+            "listed": False,
+        }
+
     def _add_to_box_map(self, machine_id: str, namespace: str) -> None:
         for _ in range(BOX_MAP_TRIES):
             boxes, version = self._cluster("box_map_failed", self._kube.box_map)
-            updated = with_box(boxes, machine_id, namespace, self._config.ceiling)
+            updated = with_box(boxes, machine_id, namespace, self._config.ceiling, self._removals())
             if updated is None:
                 return
             try:

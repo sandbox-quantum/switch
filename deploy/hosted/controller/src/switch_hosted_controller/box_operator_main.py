@@ -22,6 +22,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
+from .box_names import REMOVALS_SECRET
 from .box_operator import (
     ACTION_ID_RE,
     BIND_FAILURES,
@@ -29,6 +30,7 @@ from .box_operator import (
     CLAIM_TOKEN_RE,
     EXISTS_UNREAD,
     FAILURES,
+    MACHINE_ID_RE,
     NAMESPACE_RE,
     POOL_MAP_SECRET,
     BoxMapConflict,
@@ -84,7 +86,7 @@ _PATHS = {
 }
 
 
-_LISTS = (BOX_MAP_SECRET, POOL_MAP_SECRET, BOX_OWNERS_SECRET)
+_LISTS = (BOX_MAP_SECRET, POOL_MAP_SECRET, BOX_OWNERS_SECRET, REMOVALS_SECRET)
 
 
 class OperatorKubeApi:
@@ -199,6 +201,17 @@ class OperatorKubeApi:
                 raise BoxMapConflict() from None
             raise
 
+    def volumes_left(self, namespace: str) -> int:
+        """How many persistent volumes still name a claim in `namespace` (read only: `list` on volumes)."""
+        if not NAMESPACE_RE.fullmatch(namespace):
+            raise ValueError("not a box namespace")
+        listed = self._call("GET", "/api/v1/persistentvolumes") or {}
+        return sum(
+            1
+            for pv in listed.get("items") or []
+            if ((pv.get("spec") or {}).get("claimRef") or {}).get("namespace") == namespace
+        )
+
     def get_namespace(self, name: str) -> dict | None:
         if not NAMESPACE_RE.fullmatch(name):
             raise ValueError("not a box namespace")
@@ -277,6 +290,23 @@ class OperatorCoreApi:
                 {"step": step},
                 claim_token=claim_token,
             )
+            return True
+        except HTTPError as error:
+            if error.code == 409:
+                return False
+            raise
+
+    def removal_claim(self) -> dict | None:
+        """The next box named for removal, claimed for its lease, or None (204)."""
+        answer = self._call("/removals/claim", {})
+        return answer if isinstance(answer, dict) else None
+
+    def removal_gone(self, machine_id: str, claim_token: str) -> bool:
+        """Confirms a removal with its claim's token. False on Core's 409 (not this claim's, or not named any more)."""
+        if not MACHINE_ID_RE.fullmatch(machine_id) or not CLAIM_TOKEN_RE.fullmatch(claim_token):
+            raise ValueError("a machine id or claim token out of form")
+        try:
+            self._call(f"/removals/{machine_id}/gone", {"claim_token": claim_token})
             return True
         except HTTPError as error:
             if error.code == 409:

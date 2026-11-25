@@ -35,8 +35,15 @@ from typing import Protocol
 from urllib.error import HTTPError
 from uuid import UUID
 
-from .box_names import KEYED_ID_RE, identity, is_box_keyed, user_namespace
-from .box_scaler import EGRESS_HELD_CONFIGMAP, NAMESPACE_RE, ScalerConfigError
+from .box_names import (
+    KEYED_ID_RE,
+    REMOVALS_SECRET,
+    identity,
+    is_box_keyed,
+    live_boxes,
+    user_namespace,
+)
+from .box_scaler import EGRESS_HELD_CONFIGMAP, NAMESPACE_RE, ScalerConfigError, removals_from_secret
 
 logger = logging.getLogger(__name__)
 
@@ -594,6 +601,30 @@ class EgressKubeApi:
             owners[key] = owner
         return owners
 
+    def box_removals(self) -> dict[str, str]:
+        """`box-removals` in `switch-hosted`, by name: retired box namespaces, which get no login. A list not made yet
+        is empty; any other error is raised, and the caller keeps every box."""
+        try:
+            secret = self._call(
+                "GET", f"/api/v1/namespaces/{self._hosted_ns}/secrets/{REMOVALS_SECRET}"
+            )
+        except HTTPError as error:
+            if error.code == 404:
+                return {}
+            raise
+        return removals_from_secret(secret)
+
+    def live_box_map(self) -> dict[str, str]:
+        """The box map less its retired boxes. If `box-removals` can't be read, the whole map, logged."""
+        boxes = self.box_map()
+        try:
+            return live_boxes(boxes, self.box_removals())
+        except Exception as error:
+            logger.warning(
+                "box-removals unreadable (%s); keeping every box's login.", type(error).__name__
+            )
+            return boxes
+
     def egress_held(self) -> set[str] | None:
         """`egress-held` in `switch-hosted`, read by name (the generator's `get` on that one name): the box namespaces
         the scaler holds without a proxy login (Core's `egress: false`). None when it can't be read, missing
@@ -897,7 +928,9 @@ def main(env: Mapping[str, str] | None = None, sa_dir: Path = SA_DIR) -> int:
     run(
         api,
         lambda: without_held(
-            parse_egress(api.settings(), api.box_map(), parts, split, open_web, api.box_owners()),
+            parse_egress(
+                api.settings(), api.live_box_map(), parts, split, open_web, api.box_owners()
+            ),
             api.egress_held(),
         ),
         proxy,

@@ -230,20 +230,20 @@ def test_the_box_map_takes_both_name_shapes():
             assert not (re.fullmatch(user_re, enc) or re.fullmatch(box_re, enc))
 
 
-def test_the_provisioner_may_write_exactly_the_three_lists():
+def test_the_provisioner_may_write_exactly_the_four_lists():
     role = doc(HOSTED, "Role", "switch-hosted-provisioner-box-map")
-    assert "  - box-map\n  - pool-map\n  - box-owners\n" in role
+    assert "  - box-map\n  - pool-map\n  - box-owners\n  - box-removals\n" in role
     assert role.rstrip().endswith("verbs:\n  - get\n  - update")
     p6 = policy("switch-v0-p6-provisioner-catch-all")
-    assert "in ['box-map', 'box-templates', 'pool-map', 'box-owners']" in p6
+    assert "in ['box-map', 'box-templates', 'pool-map', 'box-owners', 'box-removals']" in p6
     assert "matches('^agents-(user|box)-k1-[0-9a-f]{16}$')" in p6
 
 
 def test_egress_lists_may_only_read_box_owners_by_name():
     role = doc(HOSTED, "Role", "switch-egress-lists-box-map")
     assert (
-        "  resourceNames:\n  - box-map\n  - box-owners\n  resources:\n  - secrets\n  verbs:\n  - get\n"
-        in role
+        "  resourceNames:\n  - box-map\n  - box-owners\n  - box-removals\n  resources:\n  - secrets\n"
+        "  verbs:\n  - get\n" in role
     )
     # and the held list, by name, read only
     assert role.rstrip().endswith(
@@ -393,7 +393,7 @@ def every_account_allows(op: str, old: dict, new: dict | None) -> bool:
 def test_the_add_only_rule_holds_for_every_account():
     p = policy("switch-pool-lists-add-only")
     assert "request.userInfo" not in p  # no account condition: admins too
-    assert "request.?name.orValue('') in ['pool-map', 'box-owners']" in p
+    assert "request.?name.orValue('') in ['pool-map', 'box-owners', 'box-removals']" in p
     assert "      - UPDATE\n      - DELETE\n" in p
     assert (
         "oldObject.?data.orValue({}).all(k, k in object.?data.orValue({}) && object.data[k] == oldObject.data[k])"
@@ -416,3 +416,19 @@ def test_the_add_only_rule_holds_for_every_account():
 )
 def test_add_only_cases(op, old, new, allowed):
     assert every_account_allows(op, old, new) is allowed
+
+
+def test_the_workers_read_the_removals_list_by_name_only():
+    role = doc(HOSTED, "Role", "switch-hosted-controller-box-map")
+    assert (
+        "  resourceNames:\n  - box-map\n  - box-removals\n  resources:\n  - secrets\n  verbs:\n  - get"
+        in role
+    )
+
+
+def test_the_provisioner_may_list_volumes_to_see_a_removed_boxs_disks_are_gone():
+    rbac = (K8S / "20-cluster-rbac.yaml").read_text()
+    role = doc(rbac, "ClusterRole", "switch-hosted-provisioner")
+    assert role.rstrip().endswith(
+        "- apiGroups:\n  - ''\n  resources:\n  - persistentvolumes\n  verbs:\n  - list"
+    )

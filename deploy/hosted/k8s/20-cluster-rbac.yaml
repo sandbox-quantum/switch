@@ -218,6 +218,12 @@ rules:
   - clusterroles
   verbs:
   - bind
+- apiGroups:
+  - ''
+  resources:
+  - persistentvolumes
+  verbs:
+  - list
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

@@ -1243,3 +1243,26 @@ def test_a_held_box_gets_no_login_and_no_squid_include_and_others_are_untouched(
         "00000000000000aa" not in name and "00000000000000aa" not in text
         for name, text in files.files.items()
     )
+
+
+# ---- retired boxes (`box-removals`) get no login ----
+
+
+def test_a_retired_box_gets_no_login_and_an_unreadable_list_keeps_every_box():
+    from switch_hosted_controller.egress_lists import EgressKubeApi
+
+    removals = ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-removals")
+    boxmap = ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-map")
+    data = {k: _b64(v) for k, v in BOXES.items()}
+    api = EgressKubeApi(
+        FakeCall({boxmap: {"data": data}, removals: {"data": {"agents-user-bo": _b64("x")}}})
+    )
+    assert set(api.live_box_map().values()) == {"agents-user-ada"}
+    api = EgressKubeApi(
+        FakeCall({boxmap: {"data": data}, removals: HTTPError("u", 404, "x", None, None)})
+    )
+    assert set(api.live_box_map().values()) == {"agents-user-ada", "agents-user-bo"}
+    api = EgressKubeApi(
+        FakeCall({boxmap: {"data": data}, removals: HTTPError("u", 403, "x", None, None)})
+    )
+    assert set(api.live_box_map().values()) == {"agents-user-ada", "agents-user-bo"}

@@ -125,6 +125,21 @@ def _boxes_from_dir(path: Path) -> dict[str, str]:
     return boxes
 
 
+def removals_from_secret(secret: Any) -> dict[str, str]:
+    """`box-removals` as the API returns it: retired box namespace to machine id. Entries that aren't a box namespace
+    are skipped (the list only ever retires; a bad entry must not stop the boxes that are live)."""
+    data = (secret.get("data") if isinstance(secret, dict) else None) or {}
+    out: dict[str, str] = {}
+    for key, value in data.items() if isinstance(data, dict) else ():
+        if not NAMESPACE_RE.fullmatch(str(key)):
+            continue
+        try:
+            out[str(key)] = base64.b64decode(str(value), validate=True).decode().strip()
+        except (ValueError, UnicodeDecodeError):
+            continue
+    return out
+
+
 def boxes_from_secret(secret: Any) -> dict[str, str]:
     """The `box-map` Secret as the API returns it (read by name): machine id to namespace, each value
     base64-decoded strictly. Refused whole, as the mounted map is, if any entry is off. An empty map

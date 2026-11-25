@@ -94,6 +94,15 @@ class FakeCore:
         assert claim_token == TOKEN
         self.calls.append(("result", action_id, result, namespace, failed_at))
 
+    # Removals (box-removals): none waiting unless a test queues some.
+    def removal_claim(self):  # type: ignore[no-untyped-def]
+        queue = self.__dict__.setdefault("removals", [])
+        return queue.pop(0) if queue else None
+
+    def removal_gone(self, machine_id, claim_token):  # type: ignore[no-untyped-def]
+        self.__dict__.setdefault("gone", []).append((machine_id, claim_token))
+        return self.__dict__.get("gone_ok", True)
+
 
 class FakeKube:
     def __init__(self):  # type: ignore[no-untyped-def]
@@ -126,13 +135,17 @@ class FakeKube:
 
     # The two add-only lists (`pool-map`, `box-owners`) and a namespace read, as the real client has them.
     def read_list(self, name):  # type: ignore[no-untyped-def]
-        lists = self.__dict__.setdefault("lists", {"pool-map": {}, "box-owners": {}})
+        lists = self.__dict__.setdefault(
+            "lists", {"pool-map": {}, "box-owners": {}, "box-removals": {}}
+        )
         if name == "box-map":
             return dict(self.boxes), str(self.version)
         return dict(lists[name]), "1"
 
     def write_list(self, name, data, resource_version):  # type: ignore[no-untyped-def]
-        lists = self.__dict__.setdefault("lists", {"pool-map": {}, "box-owners": {}})
+        lists = self.__dict__.setdefault(
+            "lists", {"pool-map": {}, "box-owners": {}, "box-removals": {}}
+        )
         current = self.boxes if name == "box-map" else lists[name]
         for key, value in current.items():  # what the cluster's add-only policy enforces
             assert data.get(key) == value, "an existing entry changed or went"
@@ -144,6 +157,9 @@ class FakeKube:
 
     def get_namespace(self, name):  # type: ignore[no-untyped-def]
         return copy.deepcopy(self.objects.get(("Namespace", "", name)))
+
+    def volumes_left(self, namespace):  # type: ignore[no-untyped-def]
+        return self.__dict__.get("pvs", {}).get(namespace, 0)
 
     def write_box_map(self, boxes, resource_version):  # type: ignore[no-untyped-def]
         if self.conflicts:
@@ -1960,7 +1976,11 @@ class PoolKube(ProbeKube):
 
     def __init__(self):  # type: ignore[no-untyped-def]
         super().__init__([False] * 50)
-        self.lists: dict[str, dict[str, str]] = {"pool-map": {}, "box-owners": {}}
+        self.lists: dict[str, dict[str, str]] = {
+            "pool-map": {},
+            "box-owners": {},
+            "box-removals": {},
+        }
         self.list_writes: list[str] = []
 
     def read_list(self, name):  # type: ignore[no-untyped-def]
@@ -2254,10 +2274,25 @@ def test_a_box_map_that_cant_be_read_or_written_is_reported(method):
     assert result(op._core)[2:] == ("failed", NS, "box_map_failed")
 
 
+class OwnersFailingKube(FailingKube):
+    """FailingKube whose list call fails only for `box-owners` (the other lists read as normal)."""
+
+    def __getattribute__(self, name):  # type: ignore[no-untyped-def]
+        call = super().__getattribute__(name)
+        if name != object.__getattribute__(self, "_method"):
+            return call
+        plain = getattr(FakeKube, name).__get__(self)
+
+        def only_owners(*args):  # type: ignore[no-untyped-def]
+            return call(*args) if args and args[0] == "box-owners" else plain(*args)
+
+        return only_owners
+
+
 @pytest.mark.parametrize("method", ["read_list", "write_list"])
 def test_an_owners_list_refused_or_unreachable_is_reported_for_a_box_keyed_box(method):
     for errors, waits_expected in (([_http(403)], []), ([_http(500)] * 10, [1.0, 3.0, 6.0])):
-        kube = FailingKube(method, errors)
+        kube = OwnersFailingKube(method, errors)
         op, waits = _op(kube)
         op.provision(box_action())
         assert waits == waits_expected
@@ -2441,3 +2476,193 @@ def test_a_controller_with_any_other_request_is_refused():
     core = FakeCore()
     BoxOperator(core, kube, cfg()).provision(action())
     assert result(core)[2:] == ("failed", NS, "object_refused")
+
+
+# ---- retired boxes: the operator's half of automated removal ----
+
+GONE_MACHINE = "66666666-6666-4666-8666-666666666666"
+GONE_NS = "agents-box-k1-00000000000000cc"
+RTOKEN = "removal-token-0123456789abcdefgh"
+
+
+def _made(kube, machine=GONE_MACHINE, ns=GONE_NS):  # type: ignore[no-untyped-def]
+    """A box namespace that exists, annotated with its machine, as the operator makes them."""
+    from switch_hosted_controller.box_operator import namespace_object
+
+    kube.objects[("Namespace", "", ns)] = namespace_object(ns, machine)
+
+
+def _claim(machine=GONE_MACHINE, ns=GONE_NS, token=RTOKEN):  # type: ignore[no-untyped-def]
+    return {
+        "machine_id": machine,
+        "namespace": ns,
+        "box_keyed_id": "k1-00000000000000cc",
+        "lease_seconds": 900,
+        "claim_token": token,
+    }
+
+
+def test_a_claimed_removal_is_listed_then_confirmed_once_the_namespace_and_volumes_are_gone():
+    kube, core = FakeKube(), FakeCore()
+    _made(kube)
+    kube.pvs = {GONE_NS: 2}
+    core.removals = [_claim()]
+    op = BoxOperator(core, kube, cfg())
+    op.removal_once()
+    assert kube.lists["box-removals"] == {GONE_NS: GONE_MACHINE}
+    assert core.__dict__.get("gone", []) == []  # the namespace is still there: the remover's job
+    del kube.objects[("Namespace", "", GONE_NS)]  # the remover deleted it
+    op.removal_once()
+    assert core.__dict__.get("gone", []) == []  # its disks are still going
+    kube.pvs = {}
+    op.removal_once()
+    assert core.gone == [(GONE_MACHINE, RTOKEN)]
+    op.removal_once()  # nothing held, nothing waiting
+    assert core.gone == [(GONE_MACHINE, RTOKEN)]
+
+
+def test_a_slow_removal_is_confirmed_with_its_first_token_however_many_passes_it_takes():
+    kube, core = FakeKube(), FakeCore()
+    _made(kube)
+    core.removals = [_claim(), _claim(token="another-token-0123456789abcdef")]
+    op = BoxOperator(core, kube, cfg())
+    for _ in range(40):  # a long namespace delete: no second claim while one is held
+        op.removal_once()
+    assert core.removals == [_claim(token="another-token-0123456789abcdef")]
+    del kube.objects[("Namespace", "", GONE_NS)]
+    op.removal_once()
+    assert core.gone == [(GONE_MACHINE, RTOKEN)]
+
+
+def test_a_namespace_of_another_machine_is_never_listed(caplog):
+    kube, core = FakeKube(), FakeCore()
+    _made(kube, machine="77777777-7777-4777-8777-777777777777")
+    core.removals = [_claim()]
+    with caplog.at_level(logging.ERROR):
+        BoxOperator(core, kube, cfg()).removal_once()
+    assert kube.__dict__.get("lists", {}).get("box-removals", {}) == {}
+    assert "belongs to another machine" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"namespace": "kube-system"},
+        {"machine_id": "not-a-uuid"},
+        {"claim_token": "short"},
+        {"namespace": None},
+    ],
+)
+def test_a_removal_claim_out_of_form_is_not_acted_on(bad, caplog):
+    kube, core = FakeKube(), FakeCore()
+    core.removals = [{**_claim(), **bad}]
+    with caplog.at_level(logging.ERROR):
+        BoxOperator(core, kube, cfg()).removal_once()
+    assert kube.__dict__.get("lists", {}).get("box-removals", {}) == {}
+    assert core.__dict__.get("gone", []) == []
+    assert "out of form" in caplog.text
+
+
+def test_after_a_restart_the_removal_offered_again_is_listed_and_confirmed_with_the_new_token():
+    kube, core = FakeKube(), FakeCore()
+    core.removals = [_claim()]
+    BoxOperator(
+        core, kube, cfg()
+    ).removal_once()  # listed; then the operator restarts, its token lost
+    assert kube.lists["box-removals"] == {GONE_NS: GONE_MACHINE}
+    core.removals = [
+        _claim(token="newer-token-0123456789abcdefgh")
+    ]  # offered again once its lease lapsed
+    BoxOperator(
+        core, kube, cfg()
+    ).removal_once()  # the namespace never existed here: listed again, confirmed
+    assert core.gone[-1] == (GONE_MACHINE, "newer-token-0123456789abcdefgh")
+    assert kube.lists["box-removals"] == {GONE_NS: GONE_MACHINE}
+
+
+def test_a_removal_that_fails_never_stops_making_boxes():
+    class Broken(FakeCore):
+        def removal_claim(self):  # type: ignore[no-untyped-def]
+            raise _http(502)
+
+    core = Broken(
+        [{"action_id": "a1", "machine_id": MACHINE, "user_keyed_id": USER, "claim_token": TOKEN}]
+    )
+    kube = FakeKube()
+    assert BoxOperator(core, kube, cfg()).run_once() is True
+    assert result(core)[2] == "done"
+
+
+def test_core_refusing_the_confirmation_drops_the_removal_with_an_alert(caplog):
+    kube, core = FakeKube(), FakeCore()
+    core.removals = [_claim()]
+    core.gone_ok = False
+    op = BoxOperator(core, kube, cfg())
+    with caplog.at_level(logging.ERROR):
+        op.removal_once()
+    assert "refused the removal" in caplog.text
+    assert op._removal is None
+
+
+@pytest.mark.parametrize("kind", ["provision", "pool", "bind"])
+def test_no_box_is_made_adopted_or_bound_under_a_retired_namespace(kind, caplog):
+    """Whatever Core asks: a namespace in box-removals is never made, adopted or bound again."""
+    if kind == "provision":
+        kube, core = FakeKube(), FakeCore()
+        kube.lists = {"pool-map": {}, "box-owners": {}, "box-removals": {BOX_NS: MACHINE}}
+        with caplog.at_level(logging.ERROR):
+            BoxOperator(core, kube, cfg()).provision(box_action())
+        ns = BOX_NS
+    else:
+        kube, core = (_pooled()[0], PoolCore()) if kind == "bind" else (PoolKube(), PoolCore())
+        kube.lists["box-removals"] = {POOL_NS: POOL_ID}
+        created_before = list(kube.created)
+        with caplog.at_level(logging.ERROR):
+            getattr(BoxOperator(core, kube, cfg()), kind)(
+                pool_action() if kind == "pool" else bind_action()
+            )
+        assert kube.created == created_before
+        ns = POOL_NS
+    assert result(core)[2:] == ("failed", ns, "name_refused")
+    assert "retired namespace" in caplog.text
+    assert kube.boxes == ({} if kind != "bind" else {}) or ns not in kube.boxes.values()
+
+
+def test_the_ceiling_counts_live_boxes_and_a_retired_name_is_refused():
+    from switch_hosted_controller.box_operator import with_box
+
+    full = {f"{i:08d}-0000-4000-8000-000000000000": f"agents-box-k1-{i:016x}" for i in range(3)}
+    with pytest.raises(ProvisionFailed) as refused:
+        with_box(full, MACHINE, BOX_NS, 3)
+    assert refused.value.code == "ceiling_reached"
+    retired = {"agents-box-k1-0000000000000000": "x"}
+    assert with_box(full, MACHINE, BOX_NS, 3, retired) == {
+        **full,
+        MACHINE: BOX_NS,
+    }  # one slot freed
+    with pytest.raises(ProvisionFailed) as refused:
+        with_box(full, MACHINE, "agents-box-k1-0000000000000000", 9, retired)
+    assert refused.value.code == "box_map_failed"
+
+
+def test_the_claim_report_counts_only_live_boxes():
+    kube = FakeKube()
+    kube.boxes = {MACHINE: NS, GONE_MACHINE: GONE_NS}
+    kube.lists = {"pool-map": {}, "box-owners": {}, "box-removals": {GONE_NS: GONE_MACHINE}}
+    core = FakeCore()
+    BoxOperator(core, kube, cfg()).run_once()
+    assert core.reports[-1]["boxes_live"] == 1 and core.reports[-1]["boxes"] == [NS]
+
+
+def test_a_removals_list_not_made_yet_is_read_as_empty():
+    class NoRemovals(FakeKube):
+        def read_list(self, name):  # type: ignore[no-untyped-def]
+            if name == "box-removals":
+                raise _http(404)
+            return super().read_list(name)
+
+    core = FakeCore(
+        [{"action_id": "a1", "machine_id": MACHINE, "user_keyed_id": USER, "claim_token": TOKEN}]
+    )
+    BoxOperator(core, NoRemovals(), cfg()).run_once()
+    assert result(core)[2] == "done"

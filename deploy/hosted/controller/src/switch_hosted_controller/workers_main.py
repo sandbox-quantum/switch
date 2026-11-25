@@ -65,9 +65,10 @@ import time
 from collections.abc import Callable, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
-from .box_names import is_legacy
+from .box_names import REMOVALS_SECRET, is_legacy, live_boxes
 from .box_operator_main import BOX_MAP_SECRET, HOME_NAMESPACE, SA_DIR, read_token
 from .box_scaler import (
     EGRESS_HELD_CONFIGMAP,
@@ -79,6 +80,7 @@ from .box_scaler import (
     boxes_from_secret,
     load_boxes,
     reconcile_once,
+    removals_from_secret,
     scale_pool_boxes,
 )
 from .cluster_watch import (
@@ -178,6 +180,17 @@ class InClusterKubeApi(KubeApi):
         return boxes_from_secret(
             self._call("GET", f"/api/v1/namespaces/{HOME_NAMESPACE}/secrets/{BOX_MAP_SECRET}")
         )
+
+    def box_removals(self) -> dict[str, str]:
+        """`box-removals`, read by name: retired namespace to machine id. A list not made yet is empty."""
+        try:
+            return removals_from_secret(
+                self._call("GET", f"/api/v1/namespaces/{HOME_NAMESPACE}/secrets/{REMOVALS_SECRET}")
+            )
+        except HTTPError as error:
+            if error.code == 404:
+                return {}
+            raise
 
     def write_egress_held(self, namespaces: set[str]) -> bool:
         """`egress-held`, by name: its keys become exactly `namespaces` (box namespaces, empty values). Read first, so
@@ -377,6 +390,11 @@ class Workers:
                 len(self.boxes),
             )
             raise WorkersConfigError("box map unreadable") from None
+        if hasattr(self.kube, "box_removals"):
+            try:
+                boxes = live_boxes(boxes, self.kube.box_removals())
+            except Exception as exc:  # retired boxes stay in this round; the map itself was read
+                logger.warning("box-removals unreadable (%s); using the whole box map.", _why(exc))
         self._replace(self.boxes, boxes)
         self._map_read = True
 

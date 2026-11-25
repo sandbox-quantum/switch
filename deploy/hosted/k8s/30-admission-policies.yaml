@@ -850,7 +850,7 @@ metadata:
 spec:
   failurePolicy: Fail
   matchConditions:
-  - expression: request.?namespace.orValue('') == 'switch-hosted' && request.?name.orValue('') in ['pool-map', 'box-owners']
+  - expression: request.?namespace.orValue('') == 'switch-hosted' && request.?name.orValue('') in ['pool-map', 'box-owners', 'box-removals']
     name: is-a-pool-list
   matchConstraints:
     matchPolicy: Equivalent
@@ -867,14 +867,14 @@ spec:
       resources:
       - secrets
       scope: "*"
-  # For EVERY account, cluster admins included: an entry in pool-map or box-owners never changes or goes, and a list
+  # For EVERY account, cluster admins included: an entry in pool-map, box-owners or box-removals never changes or goes, and a list
   # that holds entries is never deleted (an empty one may be, for teardown). Who may write at all is the provisioner's
   # own policies (switch-v0-p5-pool-map, switch-v0-p5-box-owners); this is the add-only rule on its own.
   validations:
   - expression: |-
       request.operation == 'UPDATE' ? oldObject.?data.orValue({}).all(k, k in object.?data.orValue({}) && object.data[k] == oldObject.data[k]) :
         oldObject.?data.orValue({}).size() == 0
-    message: an entry in pool-map or box-owners never changes or goes, and a list with entries is never deleted
+    message: an entry in pool-map, box-owners or box-removals never changes or goes, and a list with entries is never deleted
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -1036,9 +1036,10 @@ spec:
           (request.resource.group == 'apps' && request.resource.resource == 'statefulsets') ||
           (request.resource.group == 'rbac.authorization.k8s.io' && request.resource.resource == 'rolebindings'))) ||
         (request.operation == 'UPDATE' && request.?namespace.orValue('') == 'switch-hosted' && request.resource.group == '' &&
-          request.resource.resource == 'secrets' && request.?name.orValue('') in ['box-map', 'box-templates', 'pool-map', 'box-owners']))
+          request.resource.resource == 'secrets' && request.?name.orValue('') in ['box-map', 'box-templates', 'pool-map', 'box-owners', 'box-removals']))
     message: the provisioner may only create a box's objects (one RoleBinding among
-      them) and add to the box map, the pool map, the owners list and the template record
+      them) and add to the box map, the pool map, the owners list, the removals list and
+      the template record
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy

@@ -21,7 +21,8 @@ cluster files never go in git or in chat.**
 6. **Secrets, made in the cluster and the secret store, never sent over chat:**
    - in `switch-hosted`: `switch-hosted-provisioner-core` (`token`), `switch-hosted-controller-core` (`token`),
      `switch-operator-actions-bearer` (`bearer`), `switch-hosted-reaper-core` (`token`, the reaper's own Core
-     credential), and `box-map`, `pool-map` and `box-owners`, each created empty (the three add-only lists);
+     credential), and `box-map`, `pool-map`, `box-owners` and `box-removals`, each created empty (the add-only
+     lists; `box-removals` holds retired boxes: namespace to machine id);
    - in `switch-hosted`, the ConfigMap `egress-held` (the manifests make it, empty): the box namespaces Core says may not keep their
      proxy login (a start given up on past its grace, or a box being deleted). Only the scaler writes it (`get` and
      `update` by name); the egress lists read it (`get` by name) and leave those boxes out. If it's missing or

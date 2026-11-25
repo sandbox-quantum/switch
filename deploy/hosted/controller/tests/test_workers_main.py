@@ -1346,3 +1346,48 @@ def test_a_failed_box_map_read_leaves_the_held_list_untouched(tmp_path: Path) ->
     shutil.rmtree(tmp_path / "second" / "box-map")  # unreadable from the very first round
     w2.run_round()
     assert fresh.held_writes == []
+
+
+# ── Retired boxes (`box-removals`) are dropped from the box map ──────────────
+
+
+def test_a_retired_box_is_dropped_from_every_workers_view(tmp_path: Path) -> None:
+    class RemovalsKube(HeldKube):
+        def __init__(self, removals: Any) -> None:
+            super().__init__()
+            self.removals = removals
+
+        def box_removals(self) -> dict[str, str]:
+            if isinstance(self.removals, Exception):
+                raise self.removals
+            return self.removals
+
+    w = _workers(tmp_path, SCALER, {M1: NS1, M2: NS2}, kube=RemovalsKube({NS2: M2}))
+    w.run_round()
+    assert w.boxes == {M1: NS1}  # the scaler, restart worker and eviction watch all hold this map
+    w2 = _workers(tmp_path / "b", SCALER, {M1: NS1, M2: NS2}, kube=RemovalsKube(OSError()))
+    w2.run_round()
+    assert w2.boxes == {M1: NS1, M2: NS2}  # unreadable: the whole map, this round
+
+
+def test_the_removals_list_is_read_by_name_and_a_missing_one_is_empty() -> None:
+    import base64
+
+    api = object.__new__(InClusterKubeApi)
+    answers: list[Any] = [
+        {"data": {NS1: base64.b64encode(M1.encode()).decode(), "kube-system": "eA=="}}
+    ]
+
+    def call(method: str, path: str, body: Any = None, timeout: float = 20) -> dict:
+        assert (method, path) == ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-removals")
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    api._call = call  # type: ignore[method-assign]
+    assert api.box_removals() == {NS1: M1}  # a non-box key is skipped
+    from urllib.error import HTTPError
+
+    answers.append(HTTPError("u", 404, "x", None, None))  # type: ignore[arg-type]
+    assert api.box_removals() == {}

@@ -753,6 +753,7 @@ rules:
   resourceNames:
   - box-map
   - box-owners
+  - box-removals
   resources:
   - secrets
   verbs:
@@ -792,6 +793,7 @@ rules:
   - ''
   resourceNames:
   - box-map
+  - box-removals
   resources:
   - secrets
   verbs:
@@ -824,6 +826,7 @@ rules:
   - box-map
   - pool-map
   - box-owners
+  - box-removals
   resources:
   - secrets
   verbs:

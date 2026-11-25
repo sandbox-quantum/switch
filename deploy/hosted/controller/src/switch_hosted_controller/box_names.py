@@ -23,6 +23,7 @@ compiled anywhere else):
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 KEYED_ID = r"k1-[0-9a-f]{16}"
 KEYED_ID_RE = re.compile(KEYED_ID)
@@ -73,3 +74,14 @@ def is_legacy(namespace: str) -> bool:
         KNOWN_BOX_NAMESPACE_RE.fullmatch(namespace) is not None
         and BOX_NAMESPACE_RE.fullmatch(namespace) is None
     )
+
+
+# The add-only list of retired boxes, in `switch-hosted`: box namespace -> machine id. An entry means "this box is
+# gone, or going": every reader of the box map drops it, the remover may delete it, and no box is ever made or adopted
+# under it again. Only the provisioner adds to it, for a removal it claimed from Core.
+REMOVALS_SECRET = "box-removals"
+
+
+def live_boxes(box_map: Mapping[str, str], removals: Mapping[str, str]) -> dict[str, str]:
+    """The box map without its retired boxes: machine id -> namespace, for every namespace not in `box-removals`."""
+    return {machine: ns for machine, ns in box_map.items() if ns not in removals}
