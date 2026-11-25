@@ -128,6 +128,9 @@ class Organization(Base):
         Text, unique=True, nullable=True
     )
     customer_id: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
+    # What its creator answered about it when setting it up
+    # (`OrganizationSetupAnswers`); None for one made another way.
+    setup_answers: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -514,6 +517,23 @@ class OidcIdentity(Base):
     iss: Mapped[str | None] = mapped_column(Text, nullable=True)
     sub: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class LicenseAcceptance(Base):
+    """Someone accepted a version of the license
+    (`SwitchConfig.gateway_license_version`), which creating an organization
+    asks for first (`gateway/licenses.py`). Global, like the person; it goes
+    with the account."""
+
+    __tablename__ = "license_acceptances"
+
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[str] = mapped_column(Text, primary_key=True)
+    accepted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

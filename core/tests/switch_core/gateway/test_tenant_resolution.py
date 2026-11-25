@@ -177,6 +177,8 @@ def _session_app(
         keyring=_KEYRING,
         gateway_signup_mode=signup_mode,
         gateway_max_workspaces_per_user=3,
+        gateway_license_version=None,
+        organizations_created_in_directory=False,
         invite_email_enabled=invite_email_enabled,
     )
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: SimpleNamespace(

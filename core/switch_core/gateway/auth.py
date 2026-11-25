@@ -1460,11 +1460,13 @@ def describe_session_state(
     can_manage_connector_apps: bool,
     connector_apps_in_dashboard: bool,
     one_workspace_organizations: frozenset[str],
+    license_to_accept: str | None,
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
     `one_workspace_organizations` are those of the caller's organizations
-    that have exactly one workspace, never added to
-    (`workspace_creation.keeps_one_workspace`).
+    that get no more workspaces (`workspace_creation.keeps_one_workspace`);
+    `license_to_accept` the license version creating one waits on
+    (`gateway/licenses.py`).
 
     Follows its order exactly — a claim is honoured only if it names one of
     `tenants`, or is the workspace the platform operator entered
@@ -1517,6 +1519,8 @@ def describe_session_state(
         invite_email_enabled=config.invite_email_enabled,
         can_manage_connector_apps=can_manage_connector_apps,
         connector_apps_in_dashboard=connector_apps_in_dashboard,
+        license_to_accept=license_to_accept,
+        organizations_in_directory=config.organizations_created_in_directory,
     )
 
 

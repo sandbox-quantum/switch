@@ -219,6 +219,8 @@ def _app(
         gateway_cookie_secure=False,
         gateway_tenant_choice_enabled=False,
         gateway_max_workspaces_per_user=max_workspaces_per_user,
+        gateway_license_version=None,
+        organizations_created_in_directory=False,
         gateway_signup_mode=signup_mode,
         gateway_invite_emails_per_day=invite_emails_per_day,
         dashboard_base_url="https://switch.example.com/",

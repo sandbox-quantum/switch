@@ -149,6 +149,8 @@ def _app(
         gateway_tenant_choice_enabled=False,
         gateway_signup_mode=signup_mode,
         gateway_max_workspaces_per_user=max_workspaces_per_user,
+        gateway_license_version=None,
+        organizations_created_in_directory=False,
     )
     return app
 

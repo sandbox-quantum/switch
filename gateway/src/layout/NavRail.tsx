@@ -20,6 +20,8 @@ import { Link as RouterLink, useLocation } from "react-router";
 import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
+import { LicenseAgreement } from "../pages/onboarding/LicenseStep";
+import OrganizationSetupForm from "../pages/onboarding/OrganizationSetupForm";
 import { type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
 import SwitchLogo from "./SwitchLogo";
 import ThemeModeToggle from "./ThemeModeToggle";
@@ -275,7 +277,13 @@ export default memo(function NavRail() {
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>Create an organization</DialogTitle>
         <DialogContent sx={{ pt: "8px !important" }}>
-          <CreateWorkspaceForm onCancel={() => setCreateOpen(false)} />
+          {session?.license_to_accept ? (
+            <LicenseAgreement version={session.license_to_accept} />
+          ) : session?.organizations_in_directory ? (
+            <OrganizationSetupForm />
+          ) : (
+            <CreateWorkspaceForm onCancel={() => setCreateOpen(false)} />
+          )}
         </DialogContent>
       </Dialog>
 

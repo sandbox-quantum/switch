@@ -27,11 +27,15 @@ type NamesState =
 
 function WorkspaceRow({
   workspace,
+  label,
   pending,
   disabled,
   onChoose,
 }: {
   workspace: TenantMembership;
+  // What the row is called: the workspace's name, or its organization's
+  // where choosing one is choosing the other.
+  label: string;
   pending: boolean;
   disabled: boolean;
   onChoose: () => void;
@@ -65,18 +69,18 @@ function WorkspaceRow({
             typography: "subtitle2",
           }}
         >
-          {workspace.name.charAt(0).toUpperCase()}
+          {label.charAt(0).toUpperCase()}
         </Box>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
-            {workspace.name}
+            {label}
           </Typography>
           <Typography variant="caption" sx={{ color: "text.secondary", textTransform: "capitalize" }}>
             {workspace.role}
           </Typography>
         </Box>
         {pending ? (
-          <CircularProgress size={16} aria-label={`Opening ${workspace.name}`} />
+          <CircularProgress size={16} aria-label={`Opening ${label}`} />
         ) : (
           <ChevronRightOutlined sx={{ fontSize: 18, color: "text.secondary" }} />
         )}
@@ -129,10 +133,21 @@ export default function WorkspacePickerPage() {
     session?.tenants ?? [],
     names.status === "loaded" ? names.organizations : [],
   );
+  // Where organizations are kept in the account every Switch product shares,
+  // each has one workspace: the rows are the organizations, under no heading.
+  const byOrganization = (session?.organizations_in_directory ?? false) && names.status === "loaded";
+  const labelOf = (workspace: TenantMembership, organization: string | null, alone: boolean) =>
+    !byOrganization || organization === null
+      ? workspace.name
+      : alone
+        ? organization
+        : `${organization} · ${workspace.name}`;
 
   return (
     <AuthLayout
-      title="Choose a workspace"
+      // Where organizations are kept in the account every Switch product
+      // shares, each has one workspace: choosing one is choosing the other.
+      title={session?.organizations_in_directory ? "Choose an organization" : "Choose a workspace"}
       subtitle="You're in more than one. You can switch later."
       footer={<SignedInFooter />}
     >
@@ -153,9 +168,15 @@ export default function WorkspacePickerPage() {
             <List
               key={section.organizationId ?? "none"}
               disablePadding
-              aria-label={headed ? (section.name ?? "No organization") : "Workspaces"}
+              aria-label={
+                byOrganization
+                  ? (section.name ?? "Organizations")
+                  : headed
+                    ? (section.name ?? "No organization")
+                    : "Workspaces"
+              }
               subheader={
-                headed ? (
+                headed && !byOrganization ? (
                   <ListSubheader
                     disableSticky
                     sx={{ px: 0, lineHeight: "24px", mb: 0.5, backgroundColor: "transparent" }}
@@ -170,6 +191,7 @@ export default function WorkspacePickerPage() {
                 <WorkspaceRow
                   key={workspace.id}
                   workspace={workspace}
+                  label={labelOf(workspace, section.name, section.workspaces.length === 1)}
                   pending={pending === workspace.id}
                   disabled={pending !== null}
                   onChoose={() => choose(workspace.id)}

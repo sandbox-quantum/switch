@@ -555,6 +555,7 @@ async def create_tenant(
         creator_token,
         name=req.name,
         workspace_name=req.name,
+        setup_answers=None,
         signed_in=session_signed_in(request),
     )
     return created.workspace

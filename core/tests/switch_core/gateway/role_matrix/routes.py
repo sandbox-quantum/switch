@@ -209,6 +209,12 @@ ROUTES: dict[str, Case] = {
         f"{G}/auth/me/identities/pending", SELF
     ),
     "GET /gateway/auth/session": get(f"{G}/auth/session", SELF),
+    "POST /gateway/auth/license": post(
+        f"{G}/auth/license",
+        anyone(ok=404),
+        json={"version": "2026-11"},
+        why="Your own acceptance; this server asks for no license, and says so.",
+    ),
     "POST /gateway/auth/refresh": post(f"{G}/auth/refresh", SELF),
     "POST /gateway/auth/handoff": post(
         f"{G}/auth/handoff",

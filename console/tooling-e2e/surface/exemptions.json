@@ -30,6 +30,7 @@
     "GET /gateway/service-connections/{service}/flows/authorize": "Needs the third-party service's own sign-in page in a browser.",
     "GET /gateway/service-connections/{service}/flows/callback": "Needs the third-party service's own sign-in page in a browser.",
     "GET /gateway/service-connections/{service}/workspace": "A workspace admin's view of everyone connected to a service and every agent granted it; anything to list needs a person connected, which takes a vendor's own sign-in or a key the vendor accepts, and no stack the harness builds has either. Covered by core's test_service_connections.py against real Postgres.",
+    "POST /gateway/auth/license": "Accepting the license onboarding asks for before an organization is created; it needs GATEWAY_LICENSE_VERSION set, which no stack the harness builds sets. Covered by core's test_onboarding.py against real Postgres.",
     "POST /gateway/auth/me/reset-test-account": "Wiping your own test account. Off unless the server sets GATEWAY_ALLOW_TEST_ACCOUNT_RESET, which the e2e servers do not. Covered by core's test_reset_test_account.py against real Postgres.",
     "PATCH /gateway/auth/me": "Changing your own display name. Covered by core's test_update_me.py against real Postgres; no scenario changes a signed-in user's profile yet.",
     "POST /gateway/auth/oidc/exchange": "Needs a code from a live OIDC sign-in; the harness signs in with a password.",

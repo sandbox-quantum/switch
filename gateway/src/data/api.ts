@@ -1776,6 +1776,13 @@ export interface Session {
   // operator sets them up with the switch-connector-apps command. Absent
   // from a server from before it said.
   connector_apps_in_dashboard?: boolean;
+  // The license version the caller accepts before creating an organization;
+  // null when none is asked. Absent from a server from before it asked.
+  license_to_accept?: string | null;
+  // Whether a new organization is created in the account every Switch
+  // product shares, with one workspace, so onboarding asks what Switch Trust
+  // asks. Absent from a server from before it said.
+  organizations_in_directory?: boolean;
 }
 
 /** The signed-in session, or null when nobody is signed in. Any other
@@ -1787,6 +1794,50 @@ export async function fetchSession(): Promise<Session | null> {
     if (err instanceof ApiError && err.status === 401) return null;
     throw err;
   }
+}
+
+/** Accept the license version `GET /auth/session` names, before creating an
+ * organization. */
+export async function acceptLicense(version: string): Promise<void> {
+  const res = await gatewayFetch(`${BASE}/auth/license`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version }),
+  });
+  if (!res.ok) throw await failure(res);
+}
+
+/** The most characters an organization's name may have where organizations
+ * are kept in the account every Switch product shares, as it counts them. */
+export const DIRECTORY_ORGANIZATION_NAME_MAX = 64;
+
+export type TeamSize = "just_me" | "2_10" | "11_50" | "51_200" | "201_1000" | "over_1000";
+
+export const TEAM_SIZES: { value: TeamSize; label: string }[] = [
+  { value: "just_me", label: "Just me" },
+  { value: "2_10", label: "2 to 10" },
+  { value: "11_50", label: "11 to 50" },
+  { value: "51_200", label: "51 to 200" },
+  { value: "201_1000", label: "201 to 1,000" },
+  { value: "over_1000", label: "More than 1,000" },
+];
+
+export interface OrganizationSetupAnswers {
+  team_size: TeamSize | null;
+  use_case: string | null;
+}
+
+/** Set up an organization the onboarding way: its name and what its creator
+ * says about it. The server switches the session into its workspace. */
+export async function setUpOrganization(
+  name: string,
+  answers: OrganizationSetupAnswers,
+): Promise<TenantMembership> {
+  const created = await jsonRequest<{ workspace: TenantMembership }>("/organizations", "POST", {
+    name,
+    setup_answers: answers,
+  });
+  return created.workspace;
 }
 
 /** Create an organization with a first workspace of the same name, and switch

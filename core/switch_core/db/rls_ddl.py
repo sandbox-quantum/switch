@@ -209,6 +209,7 @@ GLOBAL_TABLES = frozenset(
         "users",
         "oidc_identities",
         "identity_sessions",
+        "license_acceptances",
         "deployment_identity",
         "telemetry_milestones",
         "telemetry_snapshot_watermark",

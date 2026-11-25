@@ -27,10 +27,10 @@ off by default; this page says what works today and what does not yet.
   its invitation.
 - `GATEWAY_SIGNUP_MODE=invite_only` or `open`; the server refuses to start
   with `default_tenant`. Under `invite_only` nobody but the operator creates
-  an organization. Under `open` someone with no workspace may create one
-  (up to `GATEWAY_MAX_WORKSPACES_PER_USER`), and it is Switch's own: nothing
-  is created in WorkOS, its members are managed in Switch, and it follows
-  WorkOS only once an operator links it (below).
+  an organization. Under `open` someone may create one (up to
+  `GATEWAY_MAX_WORKSPACES_PER_USER`). With `MEMBERS_SERVICE_URL` set it is
+  created in WorkOS too and linked at once (see Creating an organization);
+  without, it is Switch's own until an operator links it (below).
 
 With the Helm chart (`deploy/remote/helm/switch`), set
 `switchCore.organizationDirectory.mode: workos` and `secrets.workosApiKey`
@@ -256,6 +256,27 @@ sharing the environment have it. It is created with the organization, named
 service does not hear of yet. Adding a workspace to a linked organization is
 refused, and so is deleting its only workspace. An organization linked
 earlier with several workspaces keeps them.
+
+### Onboarding
+
+The dashboard's onboarding follows suit (`organizations_in_directory` in
+`GET /auth/session`). Someone signed in and in no organization yet who may
+create one is asked what Switch Trust asks, "What's your organization
+called?", held to the same rules (64 characters at most, no `"` or `\`), and
+two optional questions, how many people work there and what they'll use
+Switch for, which are kept on the organization (`setup_answers`). Someone who
+may not create one is told they aren't in an organization yet, to ask an
+admin, and offered to sign in again, which picks up an invitation or a
+membership made meanwhile. With several organizations, the picker says
+"Choose an organization", since each has its one workspace.
+
+`GATEWAY_LICENSE_VERSION` (Helm: `switchCore.signup.licenseVersion`) asks for
+a license before any organization is created, wherever organizations are
+kept: onboarding shows it first, `POST /auth/license` records who accepted
+which version and when (`license_acceptances`), and creating one is refused
+until the caller has. A new version is asked of everyone who creates an
+organization after it is set; joining one someone else created asks
+nothing. The text shown is a placeholder until the final one is supplied.
 
 ## When a customer leaves
 

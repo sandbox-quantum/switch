@@ -1246,6 +1246,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/auth/license",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/auth/login",
       "auth": "none",
       "flags": []

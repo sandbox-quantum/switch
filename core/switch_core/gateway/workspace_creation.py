@@ -49,6 +49,7 @@ from switch_core.gateway.auth import (
     workspace_creation_refusal,
 )
 from switch_core.gateway.dependencies import current_telemetry
+from switch_core.gateway.licenses import LICENSE_FIRST, license_to_accept
 from switch_core.gateway.schemas import (
     OrganizationCreateResponse,
     OrganizationSummary,
@@ -298,6 +299,7 @@ async def create_organization_for(
     *,
     name: str,
     workspace_name: str,
+    setup_answers: dict[str, str] | None,
     signed_in: SignedIn,
 ) -> OrganizationCreateResponse:
     """Create an organization and its first workspace for `caller`, count it
@@ -314,7 +316,8 @@ async def create_organization_for(
     it can take a minute (`members_service.py`), and the lock holds a
     connection. The allowance is checked again under the lock before
     Switch's rows are written, and the directory asked to discard what it
-    recorded if that refuses.
+    recorded if that refuses. Where a license is asked for, nothing is
+    created until the caller has accepted it (`gateway/licenses.py`).
     """
     allowance: User | None = None
     user = await user_store.get(session, caller.id)
@@ -329,11 +332,18 @@ async def create_organization_for(
         )
         if refusal is not None:
             raise HTTPException(status_code=403, detail=refusal)
+        if await license_to_accept(session, config, user.id) is not None:
+            raise HTTPException(status_code=409, detail=LICENSE_FIRST)
     # Nothing is held while the directory is asked.
     await session.commit()
     try:
         planned = await record_organization(
-            organization_directory, user, creator_token, name, workspace_name
+            organization_directory,
+            user,
+            creator_token,
+            name,
+            workspace_name,
+            setup_answers,
         )
     except DirectorySignInRequired as error:
         raise directory_sign_in_required(
@@ -407,6 +417,7 @@ class PlannedOrganization:
     organization_slugs: list[str]
     workspace_name: str
     workspace_slugs: list[str]
+    setup_answers: dict[str, str] | None
 
 
 async def record_organization(
@@ -415,6 +426,7 @@ async def record_organization(
     creator_token: CreatorToken,
     name: str,
     workspace_name: str,
+    setup_answers: dict[str, str] | None,
 ) -> PlannedOrganization:
     """Have the directory record a new organization named `name` for
     `creator` (`organization_directory.py`), before any of Switch's rows are
@@ -441,6 +453,7 @@ async def record_organization(
         organization_slugs=_slugs(name),
         workspace_name=workspace_name,
         workspace_slugs=_slugs(workspace_name),
+        setup_answers=setup_answers,
     )
 
 
@@ -475,6 +488,7 @@ async def create_recorded_organization(
             planned.organization_slugs,
             planned.workspace_name,
             planned.workspace_slugs,
+            planned.setup_answers,
         )
     except OrganizationFollowedAlready:
         # The directory answered with the one the creator made before, which
@@ -512,6 +526,7 @@ async def _create_organization_rows(
     organization_slugs: list[str],
     workspace_name: str,
     workspace_slugs: list[str],
+    setup_answers: dict[str, str] | None,
 ) -> tuple[Organization, Tenant]:
     """The organization's row, its first workspace and its creator's
     memberships. The organization is committed first, because the workspace
@@ -525,6 +540,7 @@ async def _create_organization_rows(
             slug=slug,
             workos_organization_id=recorded.workos_organization_id,
             customer_id=recorded.customer_id,
+            setup_answers=setup_answers,
         )
         try:
             async with organization_session(session_factory, candidate.id) as session:

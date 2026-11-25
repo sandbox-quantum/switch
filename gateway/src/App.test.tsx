@@ -468,6 +468,33 @@ describe("AppRoutes", () => {
     ]);
   });
 
+  it("asks to choose an organization where each has one workspace", async () => {
+    mockFetch({
+      "/auth/session": [
+        200,
+        session({
+          state: "needs_selection",
+          tenants: [beta, acme],
+          organizations_in_directory: true,
+        }),
+      ],
+      "/feature-flags": [200, { flags: [] }],
+      "/organizations": [
+        200,
+        [
+          { id: "o1", slug: "acme-group", name: "Acme Group", role: "org_admin" },
+          { id: "o2", slug: "beta-holdings", name: "Beta Holdings", role: "member" },
+        ],
+      ],
+    });
+    renderAt("/");
+    expect(await screen.findByRole("heading", { name: "Choose an organization" })).toBeTruthy();
+    // The rows are the organizations, not their workspaces, under no heading.
+    expect(await screen.findByRole("button", { name: /Acme Group/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Beta Holdings/ })).toBeTruthy();
+    expect(screen.queryByText("Acme", { exact: true })).toBeNull();
+  });
+
   it("lists the workspaces of one organization without a heading", async () => {
     const research: TenantMembership = { ...beta, id: "t3", name: "Research", organization_id: "o1" };
     mockFetch({

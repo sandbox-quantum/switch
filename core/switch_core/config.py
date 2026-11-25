@@ -518,6 +518,11 @@ class SwitchConfig(BaseSettings):
     # docs/old/multi-tenancy-phase2-tenants.md, §5.
     gateway_max_workspaces_per_user: int = 3
 
+    # The version of the license someone accepts before creating an
+    # organization (`gateway/licenses.py`); unset, no license is asked for.
+    # A new version is asked of everyone who creates one after it is set.
+    gateway_license_version: str | None = None
+
     # Test and canary servers only. Lets a person wipe their own account
     # through `POST /auth/me/reset-test-account`: the messaging apps, rooms,
     # agents, machines, workspaces and organization they alone are in, and
@@ -2183,6 +2188,15 @@ class SwitchConfig(BaseSettings):
         """Some single sign-on is offered: the generic OIDC client, or WorkOS
         AuthKit. Both are reached through `/auth/oidc/login`."""
         return self.gateway_workos_sign_in or self.gateway_oidc_enabled
+
+    @property
+    def organizations_created_in_directory(self) -> bool:
+        """Whether an organization created here is created in the WorkOS
+        directory's account service first (`members_service.py`), so it
+        exists in every product sharing the environment, with one workspace."""
+        return self.organization_directory == "workos" and bool(
+            self.members_service_url
+        )
 
     @property
     def identity_issuer(self) -> str | None:

@@ -57,6 +57,9 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # traded for the session cookie, before there is a session to bind from.
     ("POST", "/auth/oidc/exchange"),
     ("GET", "/auth/session"),
+    # Accepting the license before an organization, and so any workspace,
+    # exists: it writes only the person's own global acceptance row.
+    ("POST", "/auth/license"),
     ("POST", "/tenants"),
     ("POST", "/tenants/{tenant_id}/switch"),
     # Locks the caller's `users` row, which has no tenant, while it creates a
@@ -131,6 +134,10 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # What a signed-in caller's session resolves to — including that it
     # resolves to no workspace, which is the answer a caller with none needs.
     ("GET", "/auth/session"),
+    # The license is accepted by someone in no workspace yet, as the first
+    # step of creating their organization; it records only the person's own
+    # acceptance (`gateway/licenses.py`).
+    ("POST", "/auth/license"),
     # A deployment-wide constant — the agent types this build knows about.
     # Nothing tenant-specific to scope it to.
     ("GET", "/known-types"),

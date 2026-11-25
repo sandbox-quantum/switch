@@ -1365,6 +1365,12 @@ class UpdateMeRequest(BaseModel):
     ]
 
 
+class LicenseAcceptRequest(BaseModel):
+    # The version accepted, as `GET /auth/session` named it, so an acceptance
+    # of one the server has moved on from is refused rather than recorded.
+    version: Annotated[str, StringConstraints(min_length=1, max_length=100)]
+
+
 class DeleteAccountRequest(BaseModel):
     """The account's own email, typed by the person as their confirmation:
     an SSO account has no password to ask for."""
@@ -1498,10 +1504,23 @@ class TenantCreateRequest(BaseModel):
     name: OneLineName
 
 
+class OrganizationSetupAnswers(BaseModel):
+    """What someone setting up an organization may say about it, kept on it
+    for the people who look after customers. Both optional."""
+
+    team_size: (
+        Literal["just_me", "2_10", "11_50", "51_200", "201_1000", "over_1000"] | None
+    ) = None
+    use_case: (
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None
+    ) = None
+
+
 class OrganizationCreateRequest(BaseModel):
     name: OneLineName
     # The first workspace's name; the organization's when left out.
     workspace_name: OneLineName | None = None
+    setup_answers: OrganizationSetupAnswers | None = None
 
 
 class OrganizationSummary(BaseModel):
@@ -1653,6 +1672,13 @@ class SessionStateResponse(BaseModel):
     # (`auth.connector_apps_in_dashboard`). Says, to someone who may not,
     # whom to ask.
     connector_apps_in_dashboard: bool
+    # The version of the license the caller has yet to accept before creating
+    # an organization (`gateway/licenses.py`); None when none is asked.
+    license_to_accept: str | None
+    # Whether a new organization is created in the account every product
+    # sharing the WorkOS environment has (`members_service.py`), with one
+    # workspace: onboarding then asks what Switch Trust asks.
+    organizations_in_directory: bool
 
 
 MAX_INVITATION_USES = 100

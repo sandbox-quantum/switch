@@ -506,6 +506,11 @@ async def create_organization(
         creator_token,
         name=req.name,
         workspace_name=req.workspace_name or req.name,
+        setup_answers=(
+            None
+            if req.setup_answers is None
+            else req.setup_answers.model_dump(exclude_none=True) or None
+        ),
         signed_in=session_signed_in(request),
     )
 

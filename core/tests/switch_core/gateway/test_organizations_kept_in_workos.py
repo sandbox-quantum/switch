@@ -223,6 +223,8 @@ class TestItsOneWorkspace:
             keyring=_KEYRING,
             gateway_signup_mode="open",
             gateway_max_workspaces_per_user=3,
+            gateway_license_version=None,
+            organizations_created_in_directory=True,
             invite_email_enabled=False,
         )
 
@@ -233,3 +235,4 @@ class TestItsOneWorkspace:
         body = response.json()
         assert body["tenant"]["organization_role"] == "org_admin"
         assert body["can_add_workspace"] is False
+        assert body["organizations_in_directory"] is True

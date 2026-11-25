@@ -275,6 +275,14 @@ version of their own to them without also giving them a release of their own.
   already follows it. A linked organization has exactly one workspace,
   `Default`, which can be renamed in Switch but not deleted; adding another
   is refused. Organizations linked earlier keep the workspaces they have.
+- **Onboarding sets up an organization the way Switch Trust does.** Where
+  organizations are created in WorkOS, someone in none yet is asked what the
+  organization is called, under Trust's name rules, and two optional
+  questions kept on it; someone who may not create one is told they aren't in
+  an organization yet and offered to sign in again. With several, the picker
+  chooses an organization. `GATEWAY_LICENSE_VERSION` (Helm:
+  `switchCore.signup.licenseVersion`) asks for a license first and records
+  who accepted which version and when; unset, none is asked.
 - **A message in a busy chat no longer costs every member's Console stream a
   database pass of its own at the same instant.** Chat stream passes hold at
   most a quarter of the process's database pool at once, and a pass over that

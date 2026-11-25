@@ -108,6 +108,7 @@ from switch_core.gateway.hosted_machines import (
     hosted_settings,
 )
 from switch_core.gateway.identity_sessions import IdentitySessions
+from switch_core.gateway.licenses import accept_license, license_to_accept
 from switch_core.gateway.login_limits import (
     admit_login,
     count_signup,
@@ -119,6 +120,7 @@ from switch_core.gateway.schemas import (
     AuthConfigResponse,
     ChangePasswordRequest,
     DeleteAccountRequest,
+    LicenseAcceptRequest,
     LinkedIdentity,
     LoginRequest,
     OidcLoginOptionView,
@@ -144,6 +146,7 @@ from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
+from switch_core.workos_directory import WorkOSDirectory
 
 logger = logging.getLogger(__name__)
 
@@ -586,6 +589,31 @@ async def auth_config(
     )
 
 
+@router.post("/auth/license", status_code=204)
+async def accept_the_license(
+    req: LicenseAcceptRequest,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> None:
+    """Accept the license creating an organization asks for first
+    (`gateway/licenses.py`): the version the server asks for now, which
+    `GET /auth/session` names. Accepting it again changes nothing."""
+    if config.gateway_license_version is None:
+        raise HTTPException(status_code=404, detail="This server asks for no license.")
+    if req.version != config.gateway_license_version:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "That isn't the license this server asks for now. Reload the "
+                "page to read the current one."
+            ),
+        )
+    await accept_license(session, caller.id, req.version, datetime.now(UTC))
+    await session.commit()
+    logger.info("User %s accepted license version %s", caller.id, req.version)
+
+
 @router.get("/auth/session")
 async def session_state(
     auth: Annotated[AuthenticatedSession, Depends(get_authenticated_session)],
@@ -612,6 +640,7 @@ async def session_state(
     user = await user_store.get(session, auth.user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    waiting_license = await license_to_accept(session, config, user.id)
     # One connection at a time: release this one before the lookup opens its own.
     await session.commit()
     tenants = await list_tenant_memberships(session_factory, user_store, user.id)
@@ -631,6 +660,7 @@ async def session_state(
         one_workspace_organizations=await _one_workspace_organizations(
             session_factory, organization_directory, tenants
         ),
+        license_to_accept=waiting_license,
     )
 
 
@@ -640,8 +670,12 @@ async def _one_workspace_organizations(
     tenants: list[TenantMembershipResponse],
 ) -> frozenset[str]:
     """Those of the organizations of `tenants` that keep one workspace, among
-    those the caller is `org_admin` of: whom `can_add_workspace` is about."""
+    those the caller is `org_admin` of: whom `can_add_workspace` is about.
+    Only the WorkOS directory keeps any, so nothing is read under the local
+    one."""
     keeping: set[str] = set()
+    if not isinstance(organization_directory, WorkOSDirectory):
+        return frozenset()
     for organization_id in {
         t.organization_id
         for t in tenants

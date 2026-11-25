@@ -950,6 +950,10 @@ nothing on an AuthKit sign-in's button: shown as the dashboard's own default. */
 - name: GATEWAY_SIGNUP_REFUSED_HEADER
   value: {{ . | quote }}
 {{- end }}
+{{- with .Values.switchCore.signup.licenseVersion }}
+- name: GATEWAY_LICENSE_VERSION
+  value: {{ . | quote }}
+{{- end }}
 {{- include "switch.organizationDirectoryEnv" . }}
 - name: GATEWAY_TENANT_CHOICE_ENABLED
   value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
