@@ -31,7 +31,11 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
-from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
+from switch_core.db.stores.room_store import (
+    LINKED_CHANNEL_NAME_KEY,
+    RoomStore,
+    creation_visibility_notice,
+)
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.room import (
@@ -377,6 +381,7 @@ async def _build_room_detail(
             if room.external_channel_id
             else None
         ),
+        creation_visibility_notice=creation_visibility_notice(room),
         room_admin_candidates=candidates,
         **flags,
         auto_route=auto_route,
