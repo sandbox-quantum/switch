@@ -34,7 +34,7 @@ process.stdout.write(
     `${id} ${spki}`,
     '',
     "# 3. Store as CONTROLLER_RELEASE_SIGNING_KEY in the 'controller-signing' environment (then discard):",
-    '#    gh secret set CONTROLLER_RELEASE_SIGNING_KEY --env controller-signing',
+    '#    pbpaste | gh secret set CONTROLLER_RELEASE_SIGNING_KEY --env controller-signing',
     pem.trimEnd(),
     '',
   ].join('\n')

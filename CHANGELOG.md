@@ -52,6 +52,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Security
+- **Controller releases are signed only with the new release key.** The key
+  0.32.2 retired can no longer sign a release, and this release's package is
+  signed with the key 0.32.2 trusts, so `install.sh` installs it again. A
+  controller still on a release before 0.32.2 refuses it; reinstall that
+  controller.
+
 ### [0.32.2] - 2026-11-25
 
 #### Changed
