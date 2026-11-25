@@ -19,6 +19,7 @@ const fixture = vi.hoisted(() => {
     loginCommand: `${id} login`,
     knownAgentType: id,
     supportsAutoMode: false,
+    newAgentAutoMode: false,
     supportsSubscriptionUsage: true,
   }));
   const state: ProviderUsageState = {
