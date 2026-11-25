@@ -5,6 +5,13 @@ from switch_core.config import SwitchConfig
 from tests.switch_core.test_config_max_workspaces import _config
 
 OIDC = dict(
+    gateway_sign_in_provider="workos",
+    workos_client_id="client_EXAMPLE",
+    gateway_oidc_redirect_url="https://switch.example.test/gateway/auth/oidc/callback",
+    gateway_signup_mode="invite_only",
+)
+
+CONNECT = dict(
     gateway_oidc_issuer_url="https://auth.example.test",
     gateway_oidc_client_id="client_example",
     gateway_oidc_client_secret="placeholder",  # gitleaks:allow
@@ -32,11 +39,43 @@ def test_workos_without_its_key_is_refused() -> None:
 
 
 def test_workos_without_the_sign_in_is_refused() -> None:
-    with pytest.raises(ValidationError, match="GATEWAY_OIDC"):
+    with pytest.raises(ValidationError, match="GATEWAY_SIGN_IN_PROVIDER=workos"):
         _config(
             organization_directory="workos",
             workos_api_key="sk_test_example",  # gitleaks:allow
         )
+
+
+def test_workos_signing_in_through_a_connect_application_is_refused() -> None:
+    with pytest.raises(ValidationError, match="GATEWAY_SIGN_IN_PROVIDER=workos"):
+        _config(
+            organization_directory="workos",
+            workos_api_key="sk_test_example",  # gitleaks:allow
+            **CONNECT,
+        )
+
+
+def test_workos_turns_the_password_form_off_by_default() -> None:
+    config: SwitchConfig = _config(
+        organization_directory="workos",
+        workos_api_key="sk_test_example",  # gitleaks:allow
+        **OIDC,
+    )
+    assert not config.gateway_password_login_enabled
+
+
+def test_workos_keeps_the_password_form_a_deployment_turns_on() -> None:
+    config: SwitchConfig = _config(
+        organization_directory="workos",
+        workos_api_key="sk_test_example",  # gitleaks:allow
+        gateway_password_login_enabled=True,
+        **OIDC,
+    )
+    assert config.gateway_password_login_enabled
+
+
+def test_the_local_directory_keeps_the_password_form_by_default() -> None:
+    assert _config().gateway_password_login_enabled
 
 
 def test_workos_with_open_sign_up_is_accepted() -> None:
@@ -59,7 +98,6 @@ def test_workos_with_the_default_tenant_is_refused() -> None:
 
 CHANGES = dict(
     members_service_url="https://members.example.test",
-    workos_client_id="client_EXAMPLE",
     workos_redirect_url="https://switch.example.test/gateway/auth/workos/callback",
 )
 
@@ -82,20 +120,6 @@ def test_the_members_service_and_its_callback_are_set_together(missing: str) -> 
             workos_api_key="sk_test_example",  # gitleaks:allow
             **OIDC,
             **{key: value for key, value in CHANGES.items() if key != missing},
-        )
-
-
-def test_changes_sent_to_workos_need_the_authkit_application() -> None:
-    with pytest.raises(ValidationError, match="needs WORKOS_CLIENT_ID"):
-        _config(
-            organization_directory="workos",
-            workos_api_key="sk_test_example",  # gitleaks:allow
-            **OIDC,
-            **{
-                key: value
-                for key, value in CHANGES.items()
-                if key != "workos_client_id"
-            },
         )
 
 

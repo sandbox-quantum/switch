@@ -46,7 +46,7 @@ pytestmark = pytest.mark.no_ambient_tenant
 ADMIN_EMAIL = "admin@switch.local"
 
 
-def _config() -> SwitchConfig:
+def _config(**overrides: object) -> SwitchConfig:
     return SwitchConfig(
         db_host="unused",
         db_port="5432",
@@ -58,6 +58,7 @@ def _config() -> SwitchConfig:
         secret_keys="test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         gateway_admin_email=ADMIN_EMAIL,
         gateway_admin_password="hunter2",
+        **overrides,  # type: ignore[arg-type]
     )
 
 
@@ -198,6 +199,43 @@ class TestWhatBeingStrandedCosts:
         assert await _memberships(session_factory, user_id) == [
             (TENANT_ZERO_ID, "member")
         ]
+
+
+class TestTheAdminPasswordIsStoredOnlyWhereItSignsIn:
+    async def test_with_password_login_off_a_new_admin_has_no_password(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        with tenant_scope(TENANT_ZERO_ID):
+            await _seed_admin_user(
+                session_factory,
+                UserStore(),
+                _config(gateway_password_login_enabled=False),
+            )
+        async with session_factory() as session:
+            admin = (
+                await session.execute(select(User).where(User.email == ADMIN_EMAIL))
+            ).scalar_one()
+        assert admin.password_hash is None
+
+    async def test_with_password_login_off_an_admin_without_one_is_not_given_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        with tenant_scope(TENANT_ZERO_ID):
+            await _seed_admin_user(
+                session_factory,
+                UserStore(),
+                _config(gateway_password_login_enabled=False),
+            )
+            await _seed_admin_user(
+                session_factory,
+                UserStore(),
+                _config(gateway_password_login_enabled=False),
+            )
+        async with session_factory() as session:
+            admin = (
+                await session.execute(select(User).where(User.email == ADMIN_EMAIL))
+            ).scalar_one()
+        assert admin.password_hash is None
 
 
 def test_there_is_one_way_to_write_a_membership() -> None:

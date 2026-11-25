@@ -46,8 +46,21 @@ Secret of its own.
 the admin is seeded without a password.
 */}}
 {{- define "switch.adminPasswordRequired" -}}
-{{- $passwordLogin := or (not .Values.switchCore.oidc.enabled) .Values.switchCore.oidc.passwordLoginEnabled }}
+{{- $passwordLogin := or (not .Values.switchCore.oidc.enabled) (include "switch.passwordLoginEnabled" .) }}
 {{- if $passwordLogin }}true{{ end }}
+{{- end }}
+
+{{/*
+"true" when Switch's own password form is on: switchCore.oidc.passwordLoginEnabled
+as set, or, unset, off under organizationDirectory.mode workos (WorkOS holds
+every password there) and on otherwise. Mirrors switch-core's own default
+(config.py).
+*/}}
+{{- define "switch.passwordLoginEnabled" -}}
+{{- $set := .Values.switchCore.oidc.passwordLoginEnabled }}
+{{- if kindIs "invalid" $set }}
+{{- if ne .Values.switchCore.organizationDirectory.mode "workos" }}true{{ end }}
+{{- else if $set }}true{{ end }}
 {{- end }}
 
 {{/*
@@ -918,10 +931,8 @@ nothing on an AuthKit sign-in's button: shown as the dashboard's own default. */
 - name: GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED
   value: "false"
 {{- end }}
-{{- if not .Values.switchCore.oidc.passwordLoginEnabled }}
 - name: GATEWAY_PASSWORD_LOGIN_ENABLED
-  value: "false"
-{{- end }}
+  value: {{ include "switch.passwordLoginEnabled" . | eq "true" | quote }}
 {{- end }}
 - name: GATEWAY_SIGNUP_ENABLED
   value: {{ .Values.switchCore.signupEnabled | quote }}
@@ -1357,6 +1368,9 @@ render instead of a pod.
 {{- if eq $directory.mode "workos" }}
 {{- if not .Values.switchCore.oidc.enabled }}
 {{- fail "switchCore.organizationDirectory.mode workos needs switchCore.oidc.enabled, against the same WorkOS environment: the sign-in is what names the person there." }}
+{{- end }}
+{{- if ne (include "switch.signInProvider" .) "workos" }}
+{{- fail "switchCore.organizationDirectory.mode workos needs switchCore.signIn.provider workos: people sign in through the WorkOS environment's AuthKit, as in every product that shares it." }}
 {{- end }}
 {{- if eq .Values.switchCore.signup.mode "default_tenant" }}
 {{- fail "switchCore.organizationDirectory.mode workos cannot be combined with switchCore.signup.mode default_tenant; use invite_only or open." }}

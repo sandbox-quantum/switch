@@ -5,6 +5,8 @@
 - `create EMAIL --name NAME [--operator]` adds an account in no workspace,
   as an invitation or a domain join then places it. Its password is read
   from `--password-file` or standard input, never from the command line.
+  Refused under `ORGANIZATION_DIRECTORY=workos`, where every account is a
+  WorkOS user and joins an organization by its invitation.
 - `delete EMAIL [--execute [--yes]]` deletes an account through the account
   deletion the dashboard uses (`accounts/deletion.py`), with its refusals.
   It first shows what is connected to the account, as that deletion finds it.
@@ -961,6 +963,11 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                     await list_accounts(session_factory, operators=arguments.operators)
                 )
             elif command == "create":
+                if config.organization_directory == "workos":
+                    raise CommandRefused(
+                        "Accounts here are WorkOS users: invite this person "
+                        "through the organization."
+                    )
                 password = read_password(arguments.password_file)
                 user = await create_account(
                     session_factory,

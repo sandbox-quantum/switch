@@ -411,8 +411,10 @@ switchCore:
     # authorization server, which reports false for every directory-provisioned
     # user and offers no way to change that.
     requireEmailVerified: true
-    # Set false to disable password login entirely (OIDC-only).
-    passwordLoginEnabled: true
+    # Switch's own email and password form. Unset: off when
+    # organizationDirectory.mode is workos (WorkOS holds every password there),
+    # on otherwise. A value that is set wins.
+    passwordLoginEnabled: null
   # How single sign-on works once oidc.enabled turns it on
   # (docs/old/GATEWAY_OIDC_SETUP.md).
   #   oidc   — the generic OIDC client: oidc.issuerUrl, oidc.clientId,

@@ -1992,8 +1992,23 @@ async def _seed_admin_user(
     if config.gateway_admin_password and not config.gateway_password_login_enabled:
         logger.warning(
             "GATEWAY_ADMIN_PASSWORD is set but password login is disabled, so "
-            "it signs nobody in; it can be removed."
+            "it signs nobody in and is not stored; it can be removed."
         )
+    if (
+        config.organization_directory == "workos"
+        and config.gateway_password_login_enabled
+    ):
+        logger.warning(
+            "Password login is on under ORGANIZATION_DIRECTORY=workos, so the "
+            "sign-in page offers two ways in, and a password made in WorkOS "
+            "does not work in Switch's own form. WorkOS should be the only way "
+            "in: unset GATEWAY_PASSWORD_LOGIN_ENABLED."
+        )
+    # Stored only while password login can use it: a password nothing signs
+    # in with is one more to steal.
+    admin_password = (
+        config.gateway_admin_password if config.gateway_password_login_enabled else None
+    )
     # Tenant zero by name, not by fallback. The admin `User` row is global
     # (db/models.py) and the lookup below spans every tenant either way, but
     # `UserStore.create` also writes a `tenant_members` row, and which tenant
@@ -2024,8 +2039,8 @@ async def _seed_admin_user(
                 )
             else:
                 logger.info("Admin user already exists: %s", existing.id)
-            if existing.password_hash is None and config.gateway_admin_password:
-                existing.password_hash = hash_password(config.gateway_admin_password)
+            if existing.password_hash is None and admin_password:
+                existing.password_hash = hash_password(admin_password)
                 await session.commit()
                 logger.warning(
                     "Admin user %s was seeded without a password; set it from "
@@ -2038,11 +2053,7 @@ async def _seed_admin_user(
             name="Admin",
             email=config.gateway_admin_email,
             role="admin",
-            password_hash=(
-                hash_password(config.gateway_admin_password)
-                if config.gateway_admin_password
-                else None
-            ),
+            password_hash=hash_password(admin_password) if admin_password else None,
         )
         await user_store.create(session, admin)
         await session.commit()

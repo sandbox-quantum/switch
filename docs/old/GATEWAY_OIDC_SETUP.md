@@ -14,15 +14,30 @@ Against WorkOS there is a second way in: AuthKit's own sign-in
 every other application in the WorkOS environment. See "Signing in through
 WorkOS AuthKit" below; most of this page applies to both.
 
-OIDC login is additive: password login (`GATEWAY_ADMIN_EMAIL` /
-`GATEWAY_ADMIN_PASSWORD` and any user created under it) keeps working unless
-you explicitly turn it off with `GATEWAY_PASSWORD_LOGIN_ENABLED=false`.
+Which ways in the sign-in page offers depends on the kind of deployment:
 
-With password login off, `GATEWAY_ADMIN_PASSWORD` is optional. Leave it unset
-and the admin account is seeded without a password; the first OIDC sign-in
-with the `GATEWAY_ADMIN_EMAIL` address (verified by the IdP) links to it. If
-it is set anyway, the server logs a warning at startup, since it signs nobody
-in. In the Helm chart, `secrets.gatewayAdminPassword` may then be left empty.
+| Deployment | The sign-in page offers | Passwords are kept by |
+| --- | --- | --- |
+| Organizations kept in WorkOS (`ORGANIZATION_DIRECTORY=workos`) | WorkOS's own sign-in page only, through AuthKit | WorkOS |
+| No single sign-on | Switch's email and password form | Switch |
+| A customer's own identity provider (`GATEWAY_OIDC_*`) | A button for the provider, and the password form unless it is turned off | The provider, and Switch for the password form |
+
+Under `ORGANIZATION_DIRECTORY=workos` the password form is off unless
+`GATEWAY_PASSWORD_LOGIN_ENABLED=true` turns it on, in which case the server
+starts and logs a warning: a password made in WorkOS does not work in Switch's
+form. A password lives in Switch only where WorkOS mode is off.
+
+Outside WorkOS mode, OIDC login is additive: password login
+(`GATEWAY_ADMIN_EMAIL` / `GATEWAY_ADMIN_PASSWORD` and any user created under
+it) keeps working unless you explicitly turn it off with
+`GATEWAY_PASSWORD_LOGIN_ENABLED=false`.
+
+With password login off, `GATEWAY_ADMIN_PASSWORD` is optional and is not
+stored. Leave it unset and the admin account is seeded without a password;
+the first OIDC sign-in with the `GATEWAY_ADMIN_EMAIL` address (verified by the
+IdP) links to it. If it is set anyway, the server logs a warning at startup,
+since it signs nobody in. In the Helm chart, `secrets.gatewayAdminPassword`
+may then be left empty.
 
 ## The variables
 

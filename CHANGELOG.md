@@ -244,6 +244,17 @@ version of their own to them without also giving them a release of their own.
   organization, for a move to another WorkOS environment.
 
 #### Changed
+- **Organizations kept in WorkOS sign in only through WorkOS.** Under
+  `ORGANIZATION_DIRECTORY=workos` the server needs `GATEWAY_SIGN_IN_PROVIDER=workos`
+  and refuses to start with a WorkOS Connect application or any other
+  sign-in, so every account is a WorkOS user that the other products in the
+  environment share. The password form is off there unless
+  `GATEWAY_PASSWORD_LOGIN_ENABLED=true` turns it on, which starts with a
+  warning; the Helm chart's `switchCore.oidc.passwordLoginEnabled` now
+  follows the same default when unset. `switch-accounts create` is refused
+  there: a person joins an organization by its invitation. Wherever password
+  login is off, `GATEWAY_ADMIN_PASSWORD` is no longer stored on the admin
+  account.
 - **A message in a busy chat no longer costs every member's Console stream a
   database pass of its own at the same instant.** Chat stream passes hold at
   most a quarter of the process's database pool at once, and a pass over that

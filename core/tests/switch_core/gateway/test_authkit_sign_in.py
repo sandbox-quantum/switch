@@ -17,17 +17,28 @@ import jwt
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
 import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.config import WORKOS_IDENTITY_ISSUER, SwitchConfig
-from switch_core.db.models import IdentitySession, OidcIdentity, User
+from switch_core.db.models import (
+    IdentitySession,
+    OidcIdentity,
+    Organization,
+    OrganizationMember,
+    User,
+)
 from switch_core.db.stores.identity_session_store import IdentitySessionStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import decode_jwt
-from switch_core.organization_directory import LocalDirectory
+from switch_core.organization_directory import (
+    DirectoryMembership,
+    DirectoryUnavailable,
+    LocalDirectory,
+)
 from switch_core.workos_authkit import AuthKit
 
 API = "https://api.workos.example.test"
@@ -104,6 +115,7 @@ def _app(
     session_factory: async_sessionmaker[AsyncSession],
     workos: _WorkOS,
     config: SwitchConfig,
+    directory: object = None,
 ) -> FastAPI:
     async def _session_dep():
         async with session_factory() as session:
@@ -115,7 +127,9 @@ def _app(
     gateway.dependency_overrides[gw_deps.get_system_session] = _session_dep
     gateway.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     gateway.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
-    gateway.dependency_overrides[gw_deps.get_organization_directory] = LocalDirectory
+    gateway.dependency_overrides[gw_deps.get_organization_directory] = (
+        LocalDirectory if directory is None else (lambda: directory)
+    )
     gateway.add_middleware(SessionMiddleware, secret_key="test")
     gateway.state.authkit = AuthKit(
         httpx.AsyncClient(transport=httpx.MockTransport(workos.handler)),
@@ -486,6 +500,84 @@ class TestUnderTheWorkOSDirectory:
                 select(OidcIdentity).where(OidcIdentity.user_id == ada.id)
             )
         assert legacy is not None and legacy.iss is None
+
+
+class _Directory:
+    """A directory kept outside Switch: answers `memberships`, or raises."""
+
+    def __init__(self, memberships: object) -> None:
+        self.memberships = memberships
+        self.asked: list[str] = []
+
+    async def memberships_at_sign_in(self, subject: str):
+        self.asked.append(subject)
+        if isinstance(self.memberships, Exception):
+            raise self.memberships
+        return self.memberships
+
+
+class TestBringingInOrganizations:
+    """Under the WorkOS directory the person's organizations are brought into
+    Switch at sign-in, and neither WorkOS nor Switch failing stops it."""
+
+    def _config(self) -> SwitchConfig:
+        return _config(
+            organization_directory="workos", gateway_signup_mode="invite_only"
+        )
+
+    async def test_their_organizations_are_brought_in(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        linked = f"org_workos_{uuid.uuid4().hex[:8]}"
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(
+                Organization(
+                    id=organization_id,
+                    slug=organization_id,
+                    name="Acme",
+                    workos_organization_id=linked,
+                )
+            )
+            await session.commit()
+        directory = _Directory([DirectoryMembership(linked, "org_admin")])
+        app = _app(session_factory, _WorkOS(), self._config(), directory)
+        async with _client(app) as client:
+            response = await _come_back(client, await _start(client))
+        user, _ = await _signed_in_as(session_factory, response)
+        assert directory.asked == ["user_ADA"]
+        async with session_factory() as session:
+            member = await session.get(OrganizationMember, (organization_id, user.id))
+        assert member is not None and member.role == "org_admin"
+
+    async def test_an_unreachable_directory_does_not_stop_the_sign_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        directory = _Directory(DirectoryUnavailable("WorkOS answered 500."))
+        app = _app(session_factory, _WorkOS(), self._config(), directory)
+        async with _client(app) as client:
+            response = await _come_back(client, await _start(client))
+        assert "switch_auth" in response.cookies
+        assert "WorkOS answered 500." in caplog.text
+
+    async def test_a_failure_writing_switchs_rows_does_not_stop_the_sign_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        async def failing(*_args: object) -> None:
+            raise OperationalError("UPDATE organization_members", {}, Exception())
+
+        monkeypatch.setattr(oidc_routes, "bring_in_memberships", failing)
+        app = _app(session_factory, _WorkOS(), self._config(), _Directory([]))
+        async with _client(app) as client:
+            response = await _come_back(client, await _start(client))
+        assert "switch_auth" in response.cookies
+        [record] = [r for r in caplog.records if "may be behind" in r.message]
+        assert record.levelname == "ERROR"
 
 
 class TestHandingTheSignInBackToConsole:

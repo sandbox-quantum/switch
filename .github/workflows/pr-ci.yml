@@ -180,6 +180,7 @@ jobs:
               - 'scripts/pin_chart_images.py'
               - 'scripts/release_charts.sh'
               - 'scripts/check_chart_decision.py'
+              - 'scripts/check_chart_sign_in.py'
               - '.github/workflows/switch-release.yml'
             # Spans every tree, so it gets its own filter rather than riding
             # any one of them. Includes the files whose versions the registry is
@@ -522,6 +523,11 @@ jobs:
         # Off renders nothing; on runs it, points switch-core at it and admits
         # only switch-core; an endpoint elsewhere is wired without it.
         run: python3 scripts/check_chart_decision.py
+
+      - name: Sign-in settings render as configured
+        # WorkOS mode signs in through AuthKit with the password form off by
+        # default; each combination switch-core refuses fails the render.
+        run: python3 scripts/check_chart_sign_in.py
 
   gateway:
     name: Gateway UI

@@ -359,6 +359,8 @@ class SwitchConfig(BaseSettings):
     # button label and the email-verified rule are the same for both.
     gateway_sign_in_provider: Literal["oidc", "workos"] = "oidc"
     # Lets the password login path be disabled (OIDC-only) without code changes.
+    # Off by default under ORGANIZATION_DIRECTORY=workos, where WorkOS holds
+    # every password; a value that is set wins either way.
     gateway_password_login_enabled: bool = True
     # Open self sign-up with email and password: anyone who can reach the
     # gateway can create an account in tenant zero. Only takes effect while
@@ -1524,6 +1526,17 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _default_password_login_by_directory(self) -> "SwitchConfig":
+        # WorkOS holds every password where organizations are kept there, so
+        # the password form is off unless a deployment turns it on on purpose.
+        if (
+            self.organization_directory == "workos"
+            and "gateway_password_login_enabled" not in self.model_fields_set
+        ):
+            self.gateway_password_login_enabled = False
+        return self
+
+    @model_validator(mode="after")
     def _validate_gateway_admin_password(self) -> "SwitchConfig":
         if self.gateway_password_login_enabled and not self.gateway_admin_password:
             raise ValueError(
@@ -1807,12 +1820,12 @@ class SwitchConfig(BaseSettings):
                 "ORGANIZATION_DIRECTORY=workos needs WORKOS_API_KEY, to read "
                 "who belongs to which organization."
             )
-        if self.identity_issuer is None:
+        if not self.gateway_workos_sign_in:
             raise ValueError(
-                "ORGANIZATION_DIRECTORY=workos needs the gateway's sign-in set up "
-                "against the same WorkOS environment, as "
-                "GATEWAY_SIGN_IN_PROVIDER=workos or GATEWAY_OIDC_*: the sign-in "
-                "is what names the person there."
+                "ORGANIZATION_DIRECTORY=workos needs GATEWAY_SIGN_IN_PROVIDER=workos: "
+                "people sign in through the WorkOS environment's AuthKit, as in "
+                "every product that shares it, and the sign-in is what names the "
+                "person there."
             )
         # An organization someone creates for themselves under `open` is
         # Switch's own (`WorkOSDirectory.create_organization` records nothing
@@ -1829,11 +1842,6 @@ class SwitchConfig(BaseSettings):
                 "changes to a linked organization's members go to the members "
                 "service with a token from the AuthKit application's sign-in, "
                 "which comes back to WORKOS_REDIRECT_URL."
-            )
-        if self.members_service_url and not self.workos_client_id:
-            raise ValueError(
-                "MEMBERS_SERVICE_URL needs WORKOS_CLIENT_ID, the AuthKit "
-                "application admins sign in to for the members service's token."
             )
         return self
 
