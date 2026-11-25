@@ -513,6 +513,27 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/organizations/current/members/{user_id}": delete(
         f"{G}/organizations/current/members/{{org_target}}", org_admin()
     ),
+    "GET /gateway/organizations/current/invitations": get(
+        f"{G}/organizations/current/invitations",
+        org_admin(ok=409),
+        why="Its admin's; an organization kept here invites to its workspaces instead, and says so.",
+    ),
+    "POST /gateway/organizations/current/invitations": post(
+        f"{G}/organizations/current/invitations",
+        org_admin(ok=409),
+        json={"email": "invitee@example.test"},
+        why="Its admin's; an organization kept here invites to its workspaces instead, and says so.",
+    ),
+    "POST /gateway/organizations/current/invitations/{invitation_id}/resend": post(
+        f"{G}/organizations/current/invitations/invitation_matrix/resend",
+        org_admin(ok=409),
+        why="Its admin's; an organization kept here has no directory invitations.",
+    ),
+    "DELETE /gateway/organizations/current/invitations/{invitation_id}": delete(
+        f"{G}/organizations/current/invitations/invitation_matrix",
+        org_admin(ok=409),
+        why="Its admin's; an organization kept here has no directory invitations.",
+    ),
     "GET /gateway/organizations/current/services": get(
         f"{G}/organizations/current/services", org_admin()
     ),

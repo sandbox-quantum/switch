@@ -228,7 +228,32 @@ the admin to sign in again. A platform operator restoring an Org Admin is no
 admin there: unless WorkOS already has that person as `org_admin`, they are
 told to have someone made one in the organization's account settings.
 
-Adding someone new to a linked organization from Switch is still refused.
+## Inviting people
+
+With `MEMBERS_SERVICE_URL` set, an Org Admin invites people to a linked
+organization through the service, with their own token as above:
+`POST /organizations/current/invitations` with an e-mail address and
+`member` or `org_admin` becomes the service's `POST
+/v1/auth/tenants/invitations`, inviting a Member as WorkOS's `viewer` and an
+Org Admin as `org_admin`. WorkOS sends the e-mail. `GET`, `POST
+…/{id}/resend` and `DELETE …/{id}` list, resend and revoke them. Each is
+recorded in the organization's audit log, and the service keeps its own rules
+(nobody invites above their own role, one pending invitation per address).
+For the link in the e-mail to open Switch rather than another product, the
+service has to send Switch's invitations with Switch's own AuthKit
+application key, and that application's User invitation URL in the WorkOS
+dashboard has to be Switch's `/gateway/auth/oidc/login`, which hands the
+invitation on to AuthKit. The e-mail's look is set once for the whole
+environment.
+
+Accepting signs the person in. Switch brings in their membership at sign-in,
+as for anyone the organization has in WorkOS. In an organization with one
+workspace, joining the organization joins its workspace too, as a member, and
+leaving the organization takes them out of it again. An organization linked
+earlier with several workspaces leaves where people work to its admins.
+
+Invitations to one of a workspace's own links, which Switch sends itself,
+still can't add someone new to a linked organization.
 
 ## Creating an organization
 
@@ -314,11 +339,13 @@ anyone new to it.
 
 ## Not done yet
 
-- **Adding someone to a linked organization from Switch is refused**, from
-  the dashboard or by invitation: add them in WorkOS. Without changes sent to
-  WorkOS (above), making someone Org Admin is refused too, and a removal or
-  demotion changes only Switch; whatever WorkOS still grants comes back at
-  the next sign-in or check.
+- **Without `MEMBERS_SERVICE_URL`, adding someone to a linked organization
+  from Switch is refused**, from the dashboard or by invitation: add them in
+  WorkOS. Making someone Org Admin is refused too, and a removal or demotion
+  changes only Switch; whatever WorkOS still grants comes back at the next
+  sign-in or check.
+- The dashboard has no form for the organization invitations yet: the routes
+  are there for one.
 - Without `MEMBERS_SERVICE_URL`, a new organization created on the server,
   by an operator or by someone signing up under `open`, is Switch's own until
   it is linked.

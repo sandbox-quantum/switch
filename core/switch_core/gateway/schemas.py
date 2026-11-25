@@ -1684,6 +1684,36 @@ class SessionStateResponse(BaseModel):
 MAX_INVITATION_USES = 100
 
 
+class OrganizationInvitationCreateRequest(BaseModel):
+    """Someone to invite to an organization kept in a directory, which sends
+    the invitation: they join it, and its one workspace, by accepting."""
+
+    email: str
+    role: Literal["member", "org_admin"] = "member"
+
+    @field_validator("email")
+    @classmethod
+    def _address_shaped(cls, value: str) -> str:
+        address = value.strip().lower()
+        local, at, domain = address.partition("@")
+        if not at or not local or "." not in domain or " " in address:
+            raise ValueError("Enter one e-mail address.")
+        return address
+
+
+class OrganizationInvitationResponse(BaseModel):
+    """An invitation to the organization, as the directory has it: `role` in
+    Switch's terms, `state` the directory's (pending, accepted, revoked,
+    expired)."""
+
+    id: str
+    email: str
+    role: Literal["member", "org_admin"]
+    state: str
+    created_at: datetime
+    expires_at: datetime
+
+
 class InvitationCreateRequest(BaseModel):
     role: str = "member"
     # None mints a shareable link; set, the invitation is addressed to one

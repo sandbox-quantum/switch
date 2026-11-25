@@ -13,10 +13,13 @@ import json
 from types import SimpleNamespace
 
 import httpx
+import jwt
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Organization, Tenant
+from switch_core.db.models import Organization, OrganizationAuditEvent, Tenant
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.admin_tokens import CREATING_AN_ORGANIZATION, SIGN_IN_ENDED
 from switch_core.gateway.workspace_creation import ONE_WORKSPACE, ONLY_WORKSPACE
@@ -29,6 +32,7 @@ from tests.switch_core.gateway.test_member_changes_with_workos import (
 )
 from tests.switch_core.gateway.test_organization_routes import (
     _KEYRING,
+    _app,
     _client,
     _user,
     _workspaces_created,
@@ -44,6 +48,8 @@ class _Accounts(_WorkOS):
         super().__init__({})
         self.created: list[tuple[str, str]] = []
         self.names: dict[str, str] = {}
+        self.invitations: list[dict[str, str]] = []
+        self.invitation_calls: list[tuple[str, str, str]] = []
 
     def api(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == f"/organizations/{WORKOS_ORGANIZATION}":
@@ -63,6 +69,8 @@ class _Accounts(_WorkOS):
         return super().api(request)
 
     def members_service(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/v1/auth/tenants/invitations"):
+            return self._invitations(request)
         if request.url.path != "/v1/auth/tenants":
             return super().members_service(request)
         token = request.headers["Authorization"]
@@ -70,6 +78,38 @@ class _Accounts(_WorkOS):
         self.created.append((token, name))
         self.names.setdefault(token, name)
         return httpx.Response(201, json={"org_id": WORKOS_ORGANIZATION})
+
+    def _invitations(self, request: httpx.Request) -> httpx.Response:
+        """auth-gateway's invitation routes, recording each call with the
+        organization its token was issued for."""
+        token = request.headers["Authorization"].removeprefix("Bearer ")
+        organization = jwt.decode(token, options={"verify_signature": False})["org_id"]
+        path = request.url.path.removeprefix("/v1/auth/tenants/invitations")
+        self.invitation_calls.append((request.method, path, organization))
+        if request.method == "POST" and path == "":
+            body = json.loads(request.content)
+            invitation = {
+                "id": f"invitation_{len(self.invitations) + 1}",
+                "email": body["email"],
+                "role": body["role"],
+                "state": "pending",
+                "organization_id": organization,
+                "created_at": "2026-11-25T19:00:00.123456789Z",
+                "expires_at": "2026-12-02T19:00:00Z",
+            }
+            self.invitations.append(invitation)
+            return httpx.Response(201, json=invitation)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "data": self.invitations,
+                    "total": len(self.invitations),
+                    "limit": 100,
+                    "offset": 0,
+                },
+            )
+        return httpx.Response(204 if request.method == "DELETE" else 200, json={})
 
 
 async def _signed_in_newcomer(
@@ -236,3 +276,120 @@ class TestItsOneWorkspace:
         assert body["tenant"]["organization_role"] == "org_admin"
         assert body["can_add_workspace"] is False
         assert body["organizations_in_directory"] is True
+
+
+class TestInvitingThroughTheDirectory:
+    async def test_an_org_admin_invites_and_the_directory_sends_it(
+        self, session_factory
+    ) -> None:
+        workos = _Accounts()
+        ada, isid = await _signed_in_newcomer(session_factory)
+        async with _client_on(
+            _with(session_factory, workos), ada, None, isid
+        ) as client:
+            created = await client.post("/organizations", json={"name": "Acme"})
+        workspace_id = created.json()["workspace"]["id"]
+
+        async with _client_on(
+            _with(session_factory, workos), ada, workspace_id, isid
+        ) as client:
+            member = await client.post(
+                "/organizations/current/invitations",
+                json={"email": "  Dana@Example.com ", "role": "member"},
+            )
+            admin = await client.post(
+                "/organizations/current/invitations",
+                json={"email": "eve@example.com", "role": "org_admin"},
+            )
+            listed = await client.get("/organizations/current/invitations")
+            resent = await client.post(
+                "/organizations/current/invitations/invitation_1/resend"
+            )
+            revoked = await client.delete(
+                "/organizations/current/invitations/invitation_2"
+            )
+
+        assert member.status_code == 201, member.text
+        assert member.json()["email"] == "dana@example.com"
+        assert member.json()["role"] == "member"
+        assert admin.json()["role"] == "org_admin"
+        # A Member is invited as WorkOS's least role, an Org Admin as one.
+        assert [i["role"] for i in workos.invitations] == ["viewer", "org_admin"]
+        assert [i["email"] for i in listed.json()] == [
+            "dana@example.com",
+            "eve@example.com",
+        ]
+        assert (resent.status_code, revoked.status_code) == (204, 204)
+        # Every call is made with the admin's token for the linked organization.
+        assert {organization for _, _, organization in workos.invitation_calls} == {
+            WORKOS_ORGANIZATION
+        }
+        assert [(method, path) for method, path, _ in workos.invitation_calls] == [
+            ("POST", ""),
+            ("POST", ""),
+            ("GET", ""),
+            ("POST", "/invitation_1/resend"),
+            ("DELETE", "/invitation_2"),
+        ]
+        async with session_factory() as session:
+            organization_id = created.json()["organization"]["id"]
+            actions = list(
+                await session.scalars(
+                    select(OrganizationAuditEvent.action)
+                    .where(
+                        OrganizationAuditEvent.organization_id == organization_id,
+                        OrganizationAuditEvent.target_type == "invitation",
+                    )
+                    .order_by(OrganizationAuditEvent.occurred_at)
+                )
+            )
+        assert actions == [
+            "organization.directory_invitation_sent",
+            "organization.directory_invitation_sent",
+            "organization.directory_invitation_resent",
+            "organization.directory_invitation_revoked",
+        ]
+
+    async def test_an_organization_kept_here_invites_to_a_workspace_instead(
+        self, session_factory
+    ) -> None:
+        ada = await _user(session_factory, "user")
+        local = _app(session_factory)
+        async with _client(local, ada, None) as client:
+            created = await client.post("/organizations", json={"name": "Acme"})
+        async with _client(local, ada, created.json()["workspace"]["id"]) as client:
+            refused = await client.post(
+                "/organizations/current/invitations",
+                json={"email": "dana@example.com"},
+            )
+
+        assert refused.status_code == 409
+        assert "invite people to one of its workspaces" in refused.json()["detail"]
+
+    async def test_only_an_org_admin_invites(self, session_factory) -> None:
+        workos = _Accounts()
+        ada, isid = await _signed_in_newcomer(session_factory)
+        async with _client_on(
+            _with(session_factory, workos), ada, None, isid
+        ) as client:
+            created = await client.post("/organizations", json={"name": "Acme"})
+        workspace_id = created.json()["workspace"]["id"]
+        bob = await _user(session_factory, "user")
+        async with tenant_session(session_factory, workspace_id) as session:
+            await UserStore().add_membership(
+                session,
+                tenant_id=workspace_id,
+                user_id=bob,
+                role="member",
+                organization_role="member",
+            )
+            await session.commit()
+
+        async with _client(_with(session_factory, workos), bob, workspace_id) as client:
+            refused = await client.post(
+                "/organizations/current/invitations",
+                json={"email": "dana@example.com"},
+            )
+
+        assert refused.status_code == 403
+        assert workos.invitation_calls == []

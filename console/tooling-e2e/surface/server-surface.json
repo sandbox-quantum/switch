@@ -183,6 +183,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/organizations/current/invitations/{invitation_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/organizations/current/members/{user_id}",
       "auth": "session",
       "flags": []
@@ -735,6 +740,11 @@
     },
     {
       "route": "GET /gateway/organizations/current/guardrails",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations/current/invitations",
       "auth": "session",
       "flags": []
     },
@@ -1489,6 +1499,16 @@
         "organization_connector_apps",
         "service_connections"
       ]
+    },
+    {
+      "route": "POST /gateway/organizations/current/invitations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/current/invitations/{invitation_id}/resend",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "POST /gateway/organizations/current/workspaces",

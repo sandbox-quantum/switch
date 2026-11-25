@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from switch_core.db.models import Organization, User
@@ -40,6 +41,20 @@ class DirectoryOrganization:
     customer_id: str | None
     name: str | None
     workspace_id: str | None
+
+
+@dataclass(frozen=True)
+class DirectoryInvitation:
+    """An invitation to an organization the directory keeps, which the
+    directory sends: `role` is the directory's own, `state` its word for
+    where the invitation stands (pending, accepted, revoked, expired)."""
+
+    id: str
+    email: str
+    state: str
+    role: str
+    created_at: datetime
+    expires_at: datetime
 
 
 NOT_IN_A_DIRECTORY = DirectoryOrganization(
@@ -194,6 +209,40 @@ class OrganizationDirectory(Protocol):
         `prepare_change` worked out for it."""
         ...
 
+    async def invite(
+        self,
+        organization: Organization,
+        email: str,
+        role: str,
+        admin_token: AdminToken,
+    ) -> DirectoryInvitation:
+        """Have the directory invite `email` to `organization` as a `role`
+        member, with the admin's token, and send the invitation. Raises
+        `DirectoryRefusal` where `organization` is not one it invites to."""
+        ...
+
+    async def invitations(
+        self, organization: Organization, admin_token: AdminToken
+    ) -> list[DirectoryInvitation]:
+        """Every invitation the directory has to `organization`."""
+        ...
+
+    async def revoke_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None: ...
+
+    async def resend_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None: ...
+
+
+# Why a directory invitation was asked of an organization the directory does
+# not invite to.
+NOT_INVITED_HERE = (
+    "This organization's members are kept here: invite people to one of its "
+    "workspaces instead."
+)
+
 
 class LocalDirectory:
     """Switch's own tables are the record: each change is the route's write
@@ -245,3 +294,27 @@ class LocalDirectory:
         self, organization: Organization, user_id: str, change: MemberChange
     ) -> None:
         return None
+
+    async def invite(
+        self,
+        organization: Organization,
+        email: str,
+        role: str,
+        admin_token: AdminToken,
+    ) -> DirectoryInvitation:
+        raise DirectoryRefusal(NOT_INVITED_HERE)
+
+    async def invitations(
+        self, organization: Organization, admin_token: AdminToken
+    ) -> list[DirectoryInvitation]:
+        raise DirectoryRefusal(NOT_INVITED_HERE)
+
+    async def revoke_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None:
+        raise DirectoryRefusal(NOT_INVITED_HERE)
+
+    async def resend_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None:
+        raise DirectoryRefusal(NOT_INVITED_HERE)

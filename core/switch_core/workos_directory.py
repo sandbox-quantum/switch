@@ -45,8 +45,10 @@ from switch_core.members_service import MembersService
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
     NOT_IN_A_DIRECTORY,
+    NOT_INVITED_HERE,
     AdminToken,
     CreatorToken,
+    DirectoryInvitation,
     DirectoryMembership,
     DirectoryOrganization,
     DirectoryRefusal,
@@ -502,6 +504,56 @@ class WorkOSDirectory:
         if change.membership_id is None:
             return None
         await self._members_service().remove(_token_of(change), change.membership_id)
+
+    async def invite(
+        self,
+        organization: Organization,
+        email: str,
+        role: str,
+        admin_token: AdminToken,
+    ) -> DirectoryInvitation:
+        """Through the members service, as the admin: an Org Admin is invited
+        as `org_admin`, anyone else as `viewer`, the least a member of a
+        shared organization can be (`switch_role`)."""
+        workos_organization_id = self._invites_to(organization)
+        return await self._members_service().invite(
+            await admin_token(workos_organization_id),
+            email,
+            ORGANIZATION_ADMIN_ROLE
+            if role == ORGANIZATION_ADMIN_ROLE
+            else MEMBER_ROLE_IN_WORKOS,
+        )
+
+    async def invitations(
+        self, organization: Organization, admin_token: AdminToken
+    ) -> list[DirectoryInvitation]:
+        workos_organization_id = self._invites_to(organization)
+        return await self._members_service().invitations(
+            await admin_token(workos_organization_id)
+        )
+
+    async def revoke_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None:
+        workos_organization_id = self._invites_to(organization)
+        await self._members_service().revoke_invitation(
+            await admin_token(workos_organization_id), invitation_id
+        )
+
+    async def resend_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None:
+        workos_organization_id = self._invites_to(organization)
+        await self._members_service().resend_invitation(
+            await admin_token(workos_organization_id), invitation_id
+        )
+
+    def _invites_to(self, organization: Organization) -> str:
+        """The WorkOS organization invitations to `organization` go to, or a
+        refusal where it follows none, or there is no service to send them."""
+        if organization.workos_organization_id is None or self._members is None:
+            raise DirectoryRefusal(NOT_INVITED_HERE)
+        return organization.workos_organization_id
 
     def _members_service(self) -> MembersService:
         if self._members is None:

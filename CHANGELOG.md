@@ -275,6 +275,12 @@ version of their own to them without also giving them a release of their own.
   already follows it. A linked organization has exactly one workspace,
   `Default`, which can be renamed in Switch but not deleted; adding another
   is refused. Organizations linked earlier keep the workspaces they have.
+- **Org Admins invite people to a linked organization through WorkOS.**
+  `/organizations/current/invitations` creates, lists, resends and revokes
+  invitations through the members service with the admin's own token, and
+  WorkOS sends them; each is in the organization's audit log. Joining a linked
+  organization with one workspace, by accepting or by signing in as a member
+  there, joins its workspace too, and leaving the organization leaves it.
 - **Onboarding sets up an organization the way Switch Trust does.** Where
   organizations are created in WorkOS, someone in none yet is asked what the
   organization is called, under Trust's name rules, and two optional

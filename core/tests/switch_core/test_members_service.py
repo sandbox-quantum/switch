@@ -181,3 +181,84 @@ class TestCreatingAnAccount:
         assert timeouts == [
             {"connect": 90.0, "read": 90.0, "write": 90.0, "pool": 90.0}
         ]
+
+
+def _invitation(n: int) -> dict[str, object]:
+    return {
+        "id": f"invitation_{n}",
+        "email": f"person{n}@example.test",
+        "state": "pending",
+        "role": "viewer",
+        "organization_id": "org_a",
+        "created_at": "2026-11-25T19:00:00.123456789Z",
+        "expires_at": "2026-12-02T19:00:00Z",
+    }
+
+
+class TestInvitations:
+    async def test_an_invitation_is_sent_as_asked_and_read_back(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(201, json=_invitation(1))
+
+        invitation = await _service(handler).invite(
+            TOKEN, "person1@example.test", "viewer"
+        )
+
+        [request] = seen
+        assert (request.method, request.url.path) == (
+            "POST",
+            "/v1/auth/tenants/invitations",
+        )
+        assert json.loads(request.content) == {
+            "email": "person1@example.test",
+            "role": "viewer",
+        }
+        assert (invitation.id, invitation.state, invitation.role) == (
+            "invitation_1",
+            "pending",
+            "viewer",
+        )
+        assert invitation.created_at.microsecond == 123456
+
+    async def test_every_page_of_invitations_is_read(self) -> None:
+        pages: list[str] = []
+        everyone = [_invitation(n) for n in range(150)]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            offset = int(request.url.params["offset"])
+            pages.append(request.url.params["limit"] + "@" + str(offset))
+            return httpx.Response(
+                200,
+                json={
+                    "data": everyone[offset : offset + 100],
+                    "total": len(everyone),
+                    "limit": 100,
+                    "offset": offset,
+                },
+            )
+
+        invitations = await _service(handler).invitations(TOKEN)
+
+        assert len(invitations) == 150
+        assert pages == ["100@0", "100@100"]
+
+    async def test_an_unreadable_invitation_is_unavailable(self) -> None:
+        broken = _invitation(1)
+        del broken["email"]
+        with pytest.raises(DirectoryUnavailable, match="unreadable invitation"):
+            await _service(lambda request: httpx.Response(201, json=broken)).invite(
+                TOKEN, "person1@example.test", "viewer"
+            )
+
+    async def test_a_second_pending_invitation_is_refused_as_the_service_says(
+        self,
+    ) -> None:
+        with pytest.raises(DirectoryRefusal, match="pending invitation"):
+            await _service(
+                lambda request: httpx.Response(
+                    409, json={"error": "email already has a pending invitation"}
+                )
+            ).invite(TOKEN, "person1@example.test", "viewer")
