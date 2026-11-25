@@ -72,7 +72,7 @@ come back to this any time.", go to the next step, and never ask that step again
    rough shape, **check in**: name the one-line agent idea you have in mind and ask
    whether they'd like to answer 2–3 sharper questions to tailor it (scope, sources,
    what a good answer looks like) or move straight to setting it up (plus "Skip for
-   now"). Skip the deeper round if they already gave rich detail or want to move fast;
+   now" to leave agent setup for later). Skip the deeper round if they already gave rich detail or want to move fast;
    when you do go deeper, ask only what sharpens the agent's instructions or first real
    question, and stop as soon as you have enough.
 3. **Connectors**, right after, driven by what they just told you: one form, "Want to
@@ -126,8 +126,8 @@ introducing multi-agent workflows.
    question you'll ask it. Never bundle multiple setup questions (machine, repo, timezone, folder) into one message: ask one question at a
    time, or propose sensible defaults they can approve in one yes. For a recurring job
    (daily PR check, morning digest, weekly brief), **offer a concrete schedule right in
-   the proposal** (e.g. weekdays at 9am, tweakable later) and set it up with
-   `create_room_schedule` once the room exists if they say yes. Before proposing, check
+   the proposal** (e.g. weekdays at 9am, tweakable later; you'll set it up in step 5
+   once the room exists). Before proposing, check
    the services its job needs (Jira, GitHub, Google…) against `get_my_context`: offer to
    grant connected ones with `set_agent_service` after creation; for a missing one, say
    so and link where to connect it (playbook § "Services its job needs" has the detail;
@@ -168,7 +168,9 @@ introducing multi-agent workflows.
    reach you for changes or questions (write your actual bare name, e.g.
    `switch-buddy-…`, never "my name"; if teammates are in the room, note you answer the
    owner by default). If a template's `kickoff` already posted above, refer to it
-   cleanly. If they approved a schedule, set it up now with `create_room_schedule`.
+   cleanly. If they approved a schedule, set it up now with `create_room_schedule` (if
+   refused, say so plainly and link the room in Switch Console so they can add it
+   there).
    Then, unless a template's `kickoff` already ran with the agent `listening` true, ask
    the agent the first question with `send_targeted_message`: when it has connected
    tools or a local folder, ask on their real data; when it has no data yet, don't ask
