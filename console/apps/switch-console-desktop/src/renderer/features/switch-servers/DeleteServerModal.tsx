@@ -190,9 +190,9 @@ export const DeleteServerModal = observer(function DeleteServerModal({
           </div>
         ) : managed ? (
           <p className="text-sm text-foreground-muted">
-            This permanently tears down the managed stack on this computer — its containers,{' '}
-            <strong className="text-foreground">all data and secrets</strong> — and removes it from
-            Switch Console. This can’t be undone.
+            This permanently tears down the managed server on this computer —{' '}
+            <strong className="text-foreground">all its data and secrets</strong> — and removes it
+            from Switch Console. This can’t be undone.
           </p>
         ) : (
           <p className="text-sm text-foreground-muted">
