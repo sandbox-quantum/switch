@@ -398,9 +398,9 @@ class UserStore:
             if existing is not None:
                 if not link_by_email:
                     raise OidcIdentityConflictError(
-                        f"An account with email {email!r} already exists here, "
-                        "and this sign-in is not linked to it. Ask your "
-                        "administrator to link it."
+                        "We found an account with this address. It is not "
+                        "connected to your new login yet. Contact your "
+                        "administrator."
                     )
                 if not email_verified:
                     raise OidcIdentityConflictError(

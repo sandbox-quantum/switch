@@ -52,6 +52,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **`switch-link-workos accounts` puts each account in a category and counts
+  them.** Every account is listed, also one already linked, as `linkable`,
+  `linked`, `no_workos_user`, `unverified_address`, `several_workos_users`,
+  `workos_user_taken` or `no_id`, with a count of each at the end.
+  `--format csv` prints the user id, address and category of each account,
+  with the counts on stderr. A WorkOS sign-in refused because an account with
+  that address is not linked yet now says so, without the address, and tells
+  the person to contact their administrator.
+
 #### Fixed
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login
