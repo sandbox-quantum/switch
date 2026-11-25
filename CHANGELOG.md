@@ -243,6 +243,13 @@ version of their own to them without also giving them a release of their own.
   before the message it answers. A message that still fails after that, or
   that the platform refuses for good, is given up on, with an error in the
   log.
+- **An agent's activity in an archived Slack channel is no longer retried
+  forever.** When the channel a session's activity was posted to had been
+  archived or deleted, Switch logged the refusal and tried the post again
+  every few minutes for as long as it ran. It now gives up at once, and on a
+  refusal that may pass (Switch not yet in the channel) after a few attempts.
+  A Slack card that cannot be posted is now reported as a failed send, as a
+  plain message already was.
 - **Slack mentions and links come through as written.** A mention at the end
   of a sentence ("thanks @alice.") is now a real Slack mention, a mention of
   someone on an Enterprise Grid org reads as their name in the room rather
