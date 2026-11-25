@@ -52,6 +52,8 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.32.2] - 2026-11-25
+
 #### Changed
 - **The distributed Teams app is called "Switch Rooms" unless
   `TEAMS_APP_NAME` names it otherwise** (it was "Agent Switch"). Its package
@@ -72,6 +74,11 @@ version of their own to them without also giving them a release of their own.
   chart.
 
 #### Security
+- **Controllers move to a new release signing key with this release.** Upgrade
+  every deployment through 0.32.2 so its controllers pick up the new key; a
+  controller that skips this release has to be reinstalled. Fresh installs from
+  0.32.2's `install.sh` refuse its own package — use the next release, or an
+  older `install.sh`.
 - **Cloud machines install security updates daily and reboot within 7
   days.** The machine image (`deploy/hosted/machine`) turns on
   unattended-upgrades for Ubuntu's security updates, restarts updated
