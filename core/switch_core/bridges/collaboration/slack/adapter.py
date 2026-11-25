@@ -707,8 +707,8 @@ class SlackAdapter(PlatformAdapter):
         # up with its channel asks Slack once per person, not on every pass.
         self._not_a_person: dict[str, bool] = {}
         self._channel_name_cache: dict[str, str] = {}
-        self._seen_ts: OrderedDict[str, None] = OrderedDict()
-        self._seen_ts_max = 1000
+        self._seen_messages: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._seen_messages_max = 1000
         self._channel_type_cache: dict[str, str] = {}
         self._last_user_message_ts: dict[str, str] = {}
         # The message a card button was pressed on, by message ref, as each
@@ -4331,11 +4331,12 @@ class SlackAdapter(PlatformAdapter):
             logger.warning("Slack message event missing channel or ts, skipping")
             return
 
-        if message_ts in self._seen_ts:
+        key = (channel_id, message_ts)
+        if key in self._seen_messages:
             return
-        self._seen_ts[message_ts] = None
-        if len(self._seen_ts) > self._seen_ts_max:
-            self._seen_ts.popitem(last=False)
+        self._seen_messages[key] = None
+        if len(self._seen_messages) > self._seen_messages_max:
+            self._seen_messages.popitem(last=False)
         try:
             await self._deliver_message_event(event, channel_id, message_ts)
         except BaseException:
@@ -4346,7 +4347,7 @@ class SlackAdapter(PlatformAdapter):
             # socket. Skipped as seen, the copy would be acknowledged and the
             # event lost. It writes only what this attempt did not
             # (`collaboration_core._post_source`).
-            self._seen_ts.pop(message_ts, None)
+            self._seen_messages.pop(key, None)
             raise
 
     async def _deliver_message_event(
