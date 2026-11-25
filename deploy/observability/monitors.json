@@ -1395,8 +1395,8 @@
   {
     "name": "[Switch REPLACE-WITH-ENV] Security: one caller keeps tripping the refusal breaker",
     "type": "log alert",
-    "query": "logs(\"service:REPLACE-WITH-SERVICE @switch.event:security.refusal_breaker.tripped\").index(\"*\").rollup(\"count\").by(\"@security_details.caller\").last(\"10m\") > 5",
-    "message": "{{#is_alert}}Caller {{[@security_details.caller].name}} (a short prefix of its hashed credential) was cut off for repeating refused requests {{value}} times in 10 minutes. A client with a dead credential retries like this; so does someone trying credentials.\n\n**Check:** the routes and statuses (`security_details.path`, `security_details.status`) and the address (`security_details.client_ip`). A revoked controller or agent key that is still running is the usual cause.\n\n**To stop it:** suspend the agent or person, which ends their access at once and keeps everything for review: the `switch-suspend` CLI on a switch-core pod, or the gateway's suspend and freeze routes (for an agent, a person, or a whole workspace). Lift the suspension the same way once it is cleared. See the suspend runbook in the operator docs.{{/is_alert}}{{#is_recovery}}Recovered: caller {{[@security_details.caller].name}} has stopped tripping the refusal breaker.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "logs(\"service:REPLACE-WITH-SERVICE @switch.event:security.refusal_breaker.tripped\").index(\"*\").rollup(\"cardinality\", \"@security_details.path\").by(\"@security_details.caller\").last(\"30m\") > 3",
+    "message": "{{#is_alert}}Caller {{[@security_details.caller].name}} (a short prefix of its hashed credential) was cut off on {{value}} different routes in 30 minutes for repeating refused requests. A client with a dead credential retries like this across the routes it uses; so does someone probing with a credential. An outdated client stuck on one or two removed routes stays below this.\n\n**Check:** the routes and statuses (`security_details.path`, `security_details.status`) and the address (`security_details.client_ip`). A revoked controller or agent key that is still running is the usual cause.\n\n**To stop it:** suspend the agent or person, which ends their access at once and keeps everything for review: the `switch-suspend` CLI on a switch-core pod, or the gateway's suspend and freeze routes (for an agent, a person, or a whole workspace). Lift the suspension the same way once it is cleared. See the suspend runbook in the operator docs.{{/is_alert}}{{#is_recovery}}Recovered: caller {{[@security_details.caller].name}} has stopped tripping the refusal breaker.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -1412,7 +1412,7 @@
       "include_tags": true,
       "enable_logs_sample": true,
       "thresholds": {
-        "critical": 5
+        "critical": 3
       }
     },
     "priority": 3

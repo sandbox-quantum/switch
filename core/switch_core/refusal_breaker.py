@@ -1,8 +1,9 @@
 """Answers a caller that keeps repeating a refused request, from memory.
 
 Some clients never update and retry a refusal for as long as they run: an
-agent runtime asking for a room it is no longer in, a controller on a
-protocol this server no longer speaks, a machine whose credential is gone.
+agent runtime asking for a room it is no longer in, or for a transport this
+server no longer serves (410), a controller on a protocol this server no
+longer speaks, a machine whose credential is gone.
 Every retry costs a credential lookup at least, and the clients that do it
 are the ones that will never be fixed from their side.
 
@@ -42,7 +43,7 @@ from switch_core.security_events import SecuritySignal, log_security_event
 
 logger = logging.getLogger(__name__)
 
-REFUSAL_STATUSES = frozenset({401, 403, 404, 426})
+REFUSAL_STATUSES = frozenset({401, 403, 404, 410, 426})
 REFUSALS_TO_TRIP = 8
 WINDOW_S = 120.0
 INITIAL_COOLDOWN_S = 60.0

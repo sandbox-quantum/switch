@@ -184,7 +184,7 @@ export flattens them to `switch.agent_id`, and Datadog queries both as
 | An API key was revealed | action `api_key.revealed` | `switch.actor_user_id` | any | P4 |
 | Sign-ins failing from one address | `security.auth.sign_in_failed` | `security_details.client_ip` | 20 in 10 min | P3 |
 | Sign-ins failing for one account | `security.auth.sign_in_failed` naming a real account | `switch.actor_user_id` | 20 in 10 min | P3 |
-| One caller keeps tripping the refusal breaker | `security.refusal_breaker.tripped` | `security_details.caller` | 5 in 10 min | P3 |
+| One caller keeps tripping the refusal breaker | `security.refusal_breaker.tripped`, distinct `security_details.path` | `security_details.caller` | 3 routes in 30 min | P3 |
 | An agent or person was suspended | actions `agent.suspended` / `user.suspended` | `switch.target_type`, `switch.target_id` | any | P4 |
 
 **The thresholds are starting points.** They come from the load tests (an
@@ -203,6 +203,15 @@ only as good as the address: unless `FORWARDED_ALLOW_IPS`
 (`switchCore.forwardedAllowIps`) names the proxy in front of switch-core,
 every attempt carries the load balancer's address and that rule counts
 everyone together.
+
+The refusal-breaker rule counts routes, not trips. The breaker's state lives
+in each pod, so a restart, or a second replica, starts its cooldown over at a
+minute, and one stale client on one dead route then trips several times in a
+few minutes on every pod. Counting trips fired on every rollout for an old
+Console still polling a removed route. Every route a caller is refused on trips
+at least once in any 30 minutes (the longest cooldown is 15), so the number of
+distinct routes stays the same however many pods and restarts there are, and a
+credential refused across the routes a client uses still crosses it.
 
 `security.agent.rooms_listed` (an agent calling `list_all_rooms`) is logged
 but has no rule of its own: listing reads names, not conversations, and an
