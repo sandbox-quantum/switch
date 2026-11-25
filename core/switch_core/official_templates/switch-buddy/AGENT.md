@@ -150,7 +150,7 @@ introducing multi-agent workflows.
    them. `connect_to_room` the new room and post a short welcome with `post_message`:
    what the room and agent are for, how to use it, a concrete "try this now" prompt, and
    to mention your name there if they want to change anything or have questions (write
-   your bare name, never `@name`). Then, unless a template's `kickoff` already ran with
+   your actual bare name, e.g. `switch-buddy-…`, never "my name" and never `@name`). Then, unless a template's `kickoff` already ran with
    the agent `listening` true, ask the agent the concrete first question with
    `send_targeted_message` (grounded in their connected tools and product context).
    `connect_to_room` this chat again. In the same reply, tell them the room is ready and
