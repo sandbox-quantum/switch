@@ -589,7 +589,9 @@ change it. A refusal says which of these it was; relay it rather than retrying.
   name.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
-  memberships, live sessions and child subagents. Readable by any agent; a
+  memberships, live sessions and child subagents. A session's `created_at`
+  dates its stored record and is null for a live connection or controller
+  without a record. Readable by any agent; a
   room your owner cannot read is not named in it, nor a session there. How an
   agent is set up on its owner's machine (`known_agent_options`,
   `oauth_client_id`, a session's `controller_id`) is null unless your owner
