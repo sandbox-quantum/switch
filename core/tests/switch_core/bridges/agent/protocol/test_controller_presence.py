@@ -9,6 +9,7 @@ where its sessions are, so it never promises a session for it.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -277,6 +278,53 @@ class TestTheRegistryAsksTheController:
         assert not registry.controllers.is_bound("direct")
         assert not registry.is_live("direct")
         assert registry.live_connection_count() == 0
+
+
+class TestAMachineMoving:
+    """A controller whose process shut down reads as connected while it
+    reattaches to another (`ControllerPresence.moving`)."""
+
+    async def test_it_is_live_until_its_time_is_up_and_then_told_gone(self) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "agent")
+        presence = registry.controllers
+        gone: list[tuple[str, str]] = []
+        presence.use_gone_listener(
+            lambda tenant, controller: gone.append((tenant, controller))
+        )
+        presence.held_elsewhere(CONTROLLER, "the-old-process", TENANT_ZERO_ID)
+        mark = presence.connection_mark()
+
+        presence.moving(CONTROLLER, TENANT_ZERO_ID, time.monotonic() + 0.2)
+
+        assert presence.connection_changed_since(CONTROLLER, mark)
+        assert registry.is_live("agent")
+        assert presence.process_holding("agent") is None
+        await asyncio.sleep(0.4)
+        assert not registry.is_live("agent")
+        assert gone == [(TENANT_ZERO_ID, CONTROLLER)]
+
+    async def test_a_reattach_or_a_newer_row_ends_it_and_nothing_is_told(
+        self,
+    ) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "agent")
+        presence = registry.controllers
+        gone: list[tuple[str, str]] = []
+        presence.use_gone_listener(
+            lambda tenant, controller: gone.append((tenant, controller))
+        )
+
+        presence.moving(CONTROLLER, TENANT_ZERO_ID, time.monotonic() + 0.2)
+        presence.held_elsewhere(CONTROLLER, "the-new-process", TENANT_ZERO_ID)
+        assert registry.is_live("agent")
+        presence.moving(CONTROLLER, TENANT_ZERO_ID, time.monotonic() + 0.2)
+        # The row says its socket went from where it reattached.
+        presence.held_elsewhere(CONTROLLER, None, TENANT_ZERO_ID)
+        assert not registry.is_live("agent")
+
+        await asyncio.sleep(0.4)
+        assert gone == []
 
 
 class TestRoleLeases:

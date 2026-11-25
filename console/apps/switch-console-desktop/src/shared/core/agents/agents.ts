@@ -69,12 +69,19 @@ export type CreateAgentParams = {
   providerConfig?: AgentProviderConfig | null;
 };
 
-/** Defaults for providers with automatic review. */
-export const NEW_AGENT_PERMISSIONS = { autoApprove: false, autoMode: true } as const;
-
-/** New agents use the provider's automatic review when available, otherwise bypass. */
-export function newAgentPermissions(providerId: AgentProviderId) {
-  return requireProvider(providerId).supportsAutoMode
-    ? NEW_AGENT_PERMISSIONS
-    : { autoApprove: true, autoMode: false };
+/**
+ * The permission settings a new agent on `providerId` starts with, wherever it
+ * runs. A provider with no auto mode to offer (`supportsAutoMode`, Cursor over
+ * ACP) starts with bypass on. Every other starts with bypass off, and the
+ * provider's auto mode on unless nothing would review an action in it
+ * (OpenCode), where the agent asks its owner instead. `newAgentAutoMode` comes
+ * from the provider's runtime in `@switch-console/agent-providers`.
+ */
+export function newAgentPermissions(providerId: AgentProviderId): {
+  autoApprove: boolean;
+  autoMode: boolean;
+} {
+  const provider = requireProvider(providerId);
+  if (!provider.supportsAutoMode) return { autoApprove: true, autoMode: false };
+  return { autoApprove: false, autoMode: provider.newAgentAutoMode };
 }

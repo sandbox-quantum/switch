@@ -58,6 +58,7 @@ from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
     AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
+    SAID_FOR_AGENT_FLAG,
     SENDER_IS_APP_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
@@ -1191,7 +1192,7 @@ class AgentRecipient:
             )
             return
         opening = opening_message_for(meta, self.agent.id)
-        extra_content: dict[str, object] | None = None
+        extra_content: dict[str, object] = {SAID_FOR_AGENT_FLAG: True}
         if opening is not None:
             greeting = opening
         elif meta.console_chat:
@@ -1200,7 +1201,7 @@ class AgentRecipient:
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
-            extra_content = {AGENT_GREETING_KEY: True}
+            extra_content[AGENT_GREETING_KEY] = True
         await self.actor.send_message(
             self._room.room_id,
             greeting,
@@ -1399,6 +1400,7 @@ class AgentRecipient:
             format=format,
             thread_root_id=thread_root_id,
             metered=False,
+            extra_content={SAID_FOR_AGENT_FLAG: True},
         )
 
     async def _resolve_room_meta(self, transport_room_id: str) -> RoomMeta | None:

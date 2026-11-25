@@ -5,9 +5,9 @@ a chat is reported."""
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 
-from switch_core.db.models import TENANT_ZERO_ID, ChatOperation
+from switch_core.db.models import TENANT_ZERO_ID, ChatOperation, TenantUsage
 from switch_core.db.session_scope import tenant_session
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 from tests.switch_core.gateway.conftest import _Harness
@@ -29,6 +29,29 @@ async def test_a_post_is_told_to_the_message_observer_once(chats: _Harness) -> N
     assert observed.sender_is_app is False
     assert observed.has_attachment is False
     assert observed.in_thread is False
+
+
+async def test_a_command_typed_in_a_chat_is_not_a_message(chats: _Harness) -> None:
+    """As one typed on a platform is not: it is neither reported as a message
+    nor metered as one."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    sent = await chats.send(chats.alice, room_id, "m1", "!reset @helper")
+    assert sent.status_code == 200, sent.text
+
+    assert chats.observer.observed == []
+    async with tenant_session(chats.factory, TENANT_ZERO_ID) as session:
+        metered = await session.scalar(
+            select(func.coalesce(func.sum(TenantUsage.amount), 0)).where(
+                TenantUsage.metric == "messages"
+            )
+        )
+    assert metered == 0
+
+    said = await chats.send(chats.alice, room_id, "m2", "hello")
+    assert said.status_code == 200, said.text
+    assert len(chats.observer.observed) == 1
 
 
 async def test_a_post_with_several_files_is_one_message(chats: _Harness) -> None:

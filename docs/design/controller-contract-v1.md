@@ -430,8 +430,8 @@ After acting, send status.
 - Then it binds the agent to B at revision r+2. B refuses to start a revision older than one it has already applied.
 
 **Machine state.** Read from the recorded connection (§6), not from the status report:
-- `online`: its socket is attached, and the server process holding it is alive (its lease renewed within 15 s, and not stopped).
-- `offline`: it has connected before, and its socket went (closed, a lapsed heartbeat, a takeover not replaced, the server shutting down), or the server process holding it stopped or died. A controller that stops shows offline at once when its socket closes, within about 8 s when its heartbeat lapses with the socket still open, and within 15 s when the process holding its socket died.
+- `online`: its socket is attached, and the server process holding it is alive (its lease renewed within 15 s, and not stopped). Also for up to 15 s after that process shut down, while the controller reattaches to another: a release stops every server process in turn.
+- `offline`: it has connected before, and its socket went (closed, a lapsed heartbeat, a takeover not replaced, the server shutting down and the controller not back within 15 s), or the server process holding it died. A controller that stops shows offline at once when its socket closes, within about 8 s when its heartbeat lapses with the socket still open, and within 15 s when the process holding its socket died or shut down.
 - `unknown`: no connection has ever been recorded for it.
 - `revoked`: its credential is gone.
 

@@ -1155,6 +1155,13 @@ nothing on an AuthKit sign-in's button: shown as the dashboard's own default. */
 - name: TEAMS_APP_NAME
   value: {{ . | quote }}
 {{- end }}
+{{- with .Values.switchCore.teamsApp.partnerId }}
+{{- if not (kindIs "string" .) }}
+{{- fail "switchCore.teamsApp.partnerId must be a string: quote it in a values file, or pass it with --set-string, since a bare number can lose its digits" }}
+{{- end }}
+- name: TEAMS_APP_PARTNER_ID
+  value: {{ . | quote }}
+{{- end }}
 {{- if eq .Values.switchCore.teamsApp.credential "secret" }}
 - name: TEAMS_APP_CLIENT_SECRET
   valueFrom:

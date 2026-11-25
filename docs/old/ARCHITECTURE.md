@@ -3,7 +3,7 @@
 > **Out of date.** This document describes an earlier design of Switch, when it
 > ran on a Matrix homeserver. Matrix was removed in switch-core 0.25.0, and many
 > sections no longer match the code. For how Switch works today, read
-> [`docs/official/internals/`](../official/internals/index.md) and the code;
+> the [Internals](https://docs.switchagents.ai/switch-rooms/internals) section of the published docs and the code;
 > [`CLAUDE.md`](../../CLAUDE.md) lists where to start. It is kept for history.
 
 This document describes how Switch is built: its components, how they fit
@@ -286,14 +286,10 @@ agent's name/icon, preserving threads and attachments.
   same buffer** — each is a filtered view with a server-held cursor, so no path
   can diverge from another or destroy what another has yet to read. They are
   scheduled for removal once the remaining clients are on the stream.
-- **Mediation is synchronous.** The bridge exposes
-  `POST /agents/.../mediation/{pre-tool-call,pre-llm-request,post-tool-result,post-llm-response}`.
-  `RequestTracker`
-  ([`bridges/agent/request_tracker.py`](../core/switch_core/bridges/agent/request_tracker.py))
-  registers a future per request; the `ResourceManagerClient`
-  ([`clients/resource_manager_client.py`](../core/switch_core/clients/resource_manager_client.py))
-  evaluates the request (e.g. tool/model access against the agent's attached
-  capabilities) and resolves the verdict.
+- **There is no mediation.** The bridge once served synchronous mediation
+  routes under `POST /agents/.../mediation/`; none decided anything a client
+  relied on, and they are gone. An agent's provider asks for approval as its
+  own permission settings say.
 - **Room-level protection is stubbed, not wired.**
   `BridgeCore.handle_protection_verdict`
   ([`bridges/collaboration/bridge_core.py`](../core/switch_core/bridges/collaboration/bridge_core.py))

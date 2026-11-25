@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration import lifecycle_service as lifecycle_mod
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.models import BridgeStartRefused
 from switch_core.db.models import CollaborationBridge
+from switch_core.ownership import Fence
 
 from .test_lifecycle_tenant_binding import (
     _make_bridge,
@@ -38,6 +39,13 @@ async def _bridge(session_factory: async_sessionmaker[AsyncSession]) -> tuple[st
         bridge_id, _ = await _make_bridge(session, tenant_id=tenant)
         await session.commit()
     return tenant, bridge_id
+
+
+def _fence(bridge_id: str) -> Fence:
+    """A hold on the bridge, as a first claim hands it out."""
+    return Fence(
+        kind="bridge", key=bridge_id, process_id="here", token=1, unheld_since=None
+    )
 
 
 async def test_a_refused_bridge_runs_nothing(
@@ -157,11 +165,11 @@ async def test_a_refused_take_over_is_said_once_and_not_tried_again_until_change
         raise BridgeStartRefused("switch-mattermost does not resolve")
 
     service.add_bridge_start_guard(refuse)
-    fence = object()
+    fence = _fence(bridge_id)
 
     with caplog.at_level(logging.DEBUG, logger=lifecycle_module.__name__):
-        await service._take_over(bridge_id, fence)  # type: ignore[arg-type]
-        await service._take_over(bridge_id, fence)  # type: ignore[arg-type]
+        await service._take_over(bridge_id, fence)
+        await service._take_over(bridge_id, fence)
 
     assert asked == [bridge_id]
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
@@ -182,7 +190,7 @@ async def test_a_refused_take_over_is_said_once_and_not_tried_again_until_change
             .values(display_name="renamed")
         )
         await session.commit()
-    await service._take_over(bridge_id, fence)  # type: ignore[arg-type]
+    await service._take_over(bridge_id, fence)
     assert asked == [bridge_id, bridge_id, bridge_id]
 
 
@@ -228,9 +236,9 @@ async def test_a_restart_elsewhere_tries_a_bridge_refused_here_again(
         raise BridgeStartRefused("switch-mattermost does not resolve")
 
     elsewhere.add_bridge_start_guard(refuse)
-    fence = object()
-    await elsewhere._take_over(bridge_id, fence)  # type: ignore[arg-type]
-    await elsewhere._take_over(bridge_id, fence)  # type: ignore[arg-type]
+    fence = _fence(bridge_id)
+    await elsewhere._take_over(bridge_id, fence)
+    await elsewhere._take_over(bridge_id, fence)
     assert asked == [bridge_id]
 
     announced: list[str] = []

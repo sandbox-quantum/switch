@@ -61,7 +61,7 @@ from switch_core.observability.metrics import MetricsRegistry, install, uninstal
 from switch_core.process_lease import ProcessLeases
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
-from tests.switch_core.hosted_machine_helpers import add_tenant
+from tests.switch_core.hosted_machine_helpers import add_tenant, place_managed_agent
 from tests.switch_core.management.harness import (
     TEST_KEYRING,
     Harness,
@@ -850,13 +850,15 @@ class TestControllerMachines:
     ) -> None:
         """A provider login that is missing or expired is counted in the kept
         summary on every report, but logged only on the first report showing
-        it, with fixed words and the machine id."""
+        it, with fixed words and the machine id. Only a provider an agent on
+        the controller runs counts: the others' logins are nobody's problem."""
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
         providers = [
             provider("claude", auth="expired"),
             provider("codex", installed=False, auth="missing"),
-            provider("cursor"),
+            provider("cursor", auth="missing"),
+            provider("opencode"),
         ]
         async with _hosted_app(harness.session_factory, owner) as hosted:
             code = (await _prepare(hosted, machine.id))["controllers"][0][
@@ -877,6 +879,14 @@ class TestControllerMachines:
                     harness=harness,
                     headers=bearer(token.json()["access_token"]),
                 )
+                async with harness.session_factory() as session:
+                    await place_managed_agent(
+                        session,
+                        owner_id=owner.id,
+                        controller_id=enrolled["controller_id"],
+                        name="claude-agent",
+                    )
+                    await session.commit()
                 with caplog.at_level(logging.INFO, logger=cloud_controllers.__name__):
                     for seq in (1, 2):
                         response = await report_status(
@@ -1039,7 +1049,7 @@ def test_a_waking_machine_is_judged_by_its_last_report() -> None:
         last_seen_at=now - timedelta(hours=2),
         status={"providers": [{"provider": "claude", "installed": True, "auth": "ok"}]},
     )
-    leases = ProcessLeases(read_at=now, leases={})
+    leases = ProcessLeases(read_at=now, leases={}, read_mono=0.0)
     asleep = placement_refusal(
         controller, "claude", leases=leases, now=now, interval_seconds=60, waking=False
     )

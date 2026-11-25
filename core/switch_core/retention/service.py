@@ -185,12 +185,10 @@ class RetentionService:
 
 
 async def retain_once(
-    session_factory: async_sessionmaker[AsyncSession],
-    history_sessions: async_sessionmaker[AsyncSession],
-    now: datetime,
+    session_factory: async_sessionmaker[AsyncSession], now: datetime
 ) -> None:
     """One pass over every tenant, each bound before it is touched, then the
-    purge of deleted workspaces' audit history on `history_sessions`."""
+    purge of deleted workspaces' audit history."""
     service = RetentionService(session_factory)
     for tenant_id in await all_tenant_ids(session_factory):
         with tenant_scope(tenant_id):
@@ -200,7 +198,7 @@ async def retain_once(
                 # One tenant's failure must not stop the others' retention.
                 logger.exception("Data retention failed for tenant %s", tenant_id)
     try:
-        await purge_deleted_workspace_history(history_sessions, now)
+        await purge_deleted_workspace_history(session_factory)
     except Exception:
         logger.exception(
             "Data retention could not purge deleted workspaces' audit history"
@@ -223,10 +221,7 @@ async def prune_identity_sessions(
     return pruned
 
 
-async def retention_loop(
-    session_factory: async_sessionmaker[AsyncSession],
-    history_sessions: async_sessionmaker[AsyncSession],
-) -> None:
+async def retention_loop(session_factory: async_sessionmaker[AsyncSession]) -> None:
     """Retention at start and hourly, as a task of its own.
 
     Not in the session-activity upkeep loop, which also expires approval
@@ -236,7 +231,7 @@ async def retention_loop(
     with no_tenant():
         while True:
             try:
-                await retain_once(session_factory, history_sessions, datetime.now(UTC))
+                await retain_once(session_factory, datetime.now(UTC))
             except Exception:
                 logger.exception("Data retention could not list tenants")
             await asyncio.sleep(PASS_EVERY_SECONDS)

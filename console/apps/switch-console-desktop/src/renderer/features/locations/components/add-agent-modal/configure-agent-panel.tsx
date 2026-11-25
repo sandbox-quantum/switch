@@ -3,6 +3,7 @@ import { CircleAlert, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import {
+  autoModeDescription,
   PERMISSION_COPY,
   UnsafeBadge,
 } from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
@@ -156,11 +157,10 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
             {form.supportsAutoMode && (
               <PermissionToggle
                 setting="autoMode"
-                description={
+                description={autoModeDescription(
+                  form.providerId === null ? [] : [form.providerId],
                   form.autoApprove
-                    ? `${PERMISSION_COPY.autoMode.description} ${PERMISSION_COPY.autoMode.overridden}`
-                    : PERMISSION_COPY.autoMode.description
-                }
+                )}
                 checked={form.autoMode}
                 onCheckedChange={form.setAutoMode}
               />

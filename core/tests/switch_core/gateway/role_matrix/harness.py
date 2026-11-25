@@ -324,6 +324,7 @@ def _management(
             session_factory=session_factory,
             processes=SwitchCoreProcessStore(),
             key_ids=[key.id for key in settings.keyring.keys],
+            booting=False,
         ),
         user_changes=SignalUserChanges(local=LocalUserChanges(), bus=signal_bus),
     )

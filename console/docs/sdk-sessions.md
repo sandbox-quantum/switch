@@ -434,19 +434,26 @@ resumes or attaches, including ones started automatically:
 
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
-  automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
+  automatic reviewer and keeps its sandbox, Cursor
   uses Smart Auto, Mistral Vibe uses Smart Approve where Vibe offers it, and
   Antigravity, Pi (and Mistral Vibe without Smart Approve) approve edits and ask
   before commands. DeepSeek Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
   Junie uses its Auto brave mode, and Kiro applies its own trust policy and safety check before anything reaches
-  Console, which asks about the rest.
+  Console, which asks about the rest. OpenCode runs with `--auto`, which has no
+  review at all: every ask is allowed once.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 
 Together they select the session's runtime mode (`runtimeModeFor` in
 `@switch-console/agent-providers`): `full-access` with bypass on, `auto` with
 only auto mode on, `approval-required` with both off. New agents start with auto
-mode on and bypass off, on this computer, on SSH hosts and as managed agents.
+mode on and bypass off, on this computer, on SSH hosts and as managed agents,
+except OpenCode agents, which start with both off (`newAgentAutoMode` on the
+provider's runtime in `@switch-console/agent-providers`, read through
+`newAgentPermissions`). OpenCode has no automatic review: in auto mode the
+adapter answers every permission ask itself, as OpenCode's own `--auto` does,
+so no one sees a command before it runs. Its owner can still turn auto mode
+on, and the switch says what that means.
 Agents that existed before auto mode keep the behaviour they had: auto mode
 reads as off for them until someone turns it on.
 

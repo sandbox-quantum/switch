@@ -25,6 +25,7 @@ const listMessagingApps = vi.hoisted(() => vi.fn());
 const beginMessagingAppInstall = vi.hoisted(() => vi.fn());
 const beginChatClaim = vi.hoisted(() => vi.fn());
 const listBridges = vi.hoisted(() => vi.fn());
+const messagingAppInstalled = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const createBridge = vi.hoisted(() => vi.fn());
 const openExternalUrl = vi.hoisted(() => vi.fn());
 const showModal = vi.hoisted(() => vi.fn());
@@ -46,6 +47,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       beginMessagingAppInstall,
       beginChatClaim,
       listBridges,
+      messagingAppInstalled,
       createBridge,
       slackOwnAppSetup: () =>
         Promise.resolve({ createUrl: 'https://api.slack.com/apps?x', manifestJson: null }),
@@ -107,6 +109,7 @@ beforeEach(() => {
     ]);
   listMessagingApps.mockReset().mockResolvedValue({ installable: ['slack'], claimable: [] });
   beginMessagingAppInstall.mockReset().mockResolvedValue('https://slack.example/oauth?state=s');
+  messagingAppInstalled.mockClear();
   beginChatClaim.mockReset().mockResolvedValue({
     url: 'https://t.me/example_bot?startgroup=abc',
     code: 'abc',
@@ -193,6 +196,8 @@ describe('the connect-messaging-app dialog', () => {
       displayName: 'slack b-new',
       directorySearchSupported: true,
     });
+    // The install finished in the browser: this is where it is counted.
+    expect(messagingAppInstalled).toHaveBeenCalledWith({ workspaceId: 'ws-1', bridgeId: 'b-new' });
   });
 
   it('keeps waiting while only connections that already existed are listed', async () => {
@@ -203,6 +208,7 @@ describe('the connect-messaging-app dialog', () => {
 
     expect(el.textContent).toContain('Waiting for Slack');
     expect(onSuccess).not.toHaveBeenCalled();
+    expect(messagingAppInstalled).not.toHaveBeenCalled();
   });
 
   it('stays put when the browser could not be opened', async () => {

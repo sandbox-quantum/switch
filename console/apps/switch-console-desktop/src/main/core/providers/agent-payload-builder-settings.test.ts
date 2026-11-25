@@ -62,6 +62,7 @@ const catalogued = (id: string) => ({
   loginCommand: id,
   knownAgentType: id,
   supportsAutoMode: true,
+  newAgentAutoMode: true,
 });
 
 beforeEach(() => {

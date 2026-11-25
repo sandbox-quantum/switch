@@ -21,14 +21,18 @@ _BYO_MANIFEST = (
 )
 
 
-def _package() -> tuple[dict[str, Any], zipfile.ZipFile]:
-    package = build_distributed_app_package(
-        app_id=APP_ID,
-        app_name="Agent Switch",
-        messaging_public_url="https://switch.example",
-        privacy_url="https://switch.example/privacy",
-        terms_url="https://switch.example/terms",
-    )
+_DEFAULTS: dict[str, Any] = dict(
+    app_id=APP_ID,
+    app_name="Switch Rooms",
+    messaging_public_url="https://switch.example",
+    privacy_url="https://switch.example/privacy",
+    terms_url="https://switch.example/terms",
+    partner_id=None,
+)
+
+
+def _package(**overrides: Any) -> tuple[dict[str, Any], zipfile.ZipFile]:
+    package = build_distributed_app_package(**{**_DEFAULTS, **overrides})
     archive = zipfile.ZipFile(io.BytesIO(package.archive))
     return json.loads(archive.read("manifest.json")), archive
 
@@ -48,44 +52,61 @@ def test_this_deployments_values_are_filled_in() -> None:
     assert manifest["developer"]["termsOfUseUrl"] == "https://switch.example/terms"
 
 
-def test_the_default_name_is_agent_switch() -> None:
+def test_it_names_no_partner_id_unless_given_one() -> None:
+    manifest, _ = _package()
+    assert "mpnId" not in manifest["developer"]
+
+
+def test_a_publishers_partner_id_is_named() -> None:
+    """Teams ties the app to its publisher's Partner Center account by it."""
+    manifest, _ = _package(partner_id="1234567")
+    assert manifest["developer"]["mpnId"] == "1234567"
+
+
+def test_its_publisher_is_the_one_partner_center_verifies() -> None:
+    """Partner Center verifies a company, and an admin weighing the app sees
+    the package's publisher beside Microsoft's verified badge."""
+    manifest, _ = _package()
+    assert manifest["developer"]["name"] == "SandboxAQ"
+
+
+def test_its_website_is_a_page_an_admin_can_get_help_from() -> None:
+    """Microsoft reads the developer website as the app's support page, and it
+    is what an IT admin weighing the app follows."""
+    manifest, _ = _package()
+    assert manifest["developer"]["websiteUrl"] == "https://docs.switchagents.ai/"
+
+
+def test_the_name_is_filled_in() -> None:
     manifest, _ = _package()
     assert manifest["name"] == {
-        "short": "Agent Switch",
-        "full": "Agent Switch — your AI agents, in your channels",
+        "short": "Switch Rooms",
+        "full": "Switch Rooms — your AI agents, in your channels",
     }
+
+
+def test_the_description_calls_the_app_what_this_environment_does() -> None:
+    """A channel message reaches the bot only when it mentions the app, by the
+    name this environment gave it, and one description names one app."""
+    manifest, _ = _package(app_name="Switch Rooms (dev)")
+    full = manifest["description"]["full"]
+    assert full.startswith("Switch Rooms (dev) puts your AI agents")
+    assert "@Switch Rooms (dev) /help" in full
+    assert "{{" not in json.dumps(manifest["description"])
 
 
 def test_an_environment_names_its_own_app() -> None:
     """Each environment registers its own app; an organisation approving more
     than one — ours, testing them — tells them apart by name."""
-    package = build_distributed_app_package(
-        app_id=APP_ID,
-        app_name="Agent Switch (dev)",
-        messaging_public_url="https://switch.example",
-        privacy_url="https://switch.example/privacy",
-        terms_url="https://switch.example/terms",
-    )
-    manifest = json.loads(
-        zipfile.ZipFile(io.BytesIO(package.archive)).read("manifest.json")
-    )
+    manifest, _ = _package(app_name="Switch Rooms (dev)")
     assert manifest["name"] == {
-        "short": "Agent Switch (dev)",
-        "full": "Agent Switch (dev) — your AI agents, in your channels",
+        "short": "Switch Rooms (dev)",
+        "full": "Switch Rooms (dev) — your AI agents, in your channels",
     }
 
 
 def test_a_name_with_json_characters_stays_a_string() -> None:
-    package = build_distributed_app_package(
-        app_id=APP_ID,
-        app_name='Switch "QA" {{x}}',
-        messaging_public_url="https://switch.example",
-        privacy_url="https://switch.example/privacy",
-        terms_url="https://switch.example/terms",
-    )
-    manifest = json.loads(
-        zipfile.ZipFile(io.BytesIO(package.archive)).read("manifest.json")
-    )
+    manifest, _ = _package(app_name='Switch "QA" {{x}}')
     assert manifest["name"]["short"] == 'Switch "QA" {{x}}'
 
 
@@ -128,15 +149,9 @@ def test_its_commands_match_the_bring_your_own_apps() -> None:
 
 
 def test_a_value_with_json_syntax_in_it_stays_a_string() -> None:
-    package = build_distributed_app_package(
-        app_id=APP_ID,
-        app_name="Agent Switch",
-        messaging_public_url="https://switch.example",
+    manifest, _ = _package(
         privacy_url='https://switch.example/privacy?a="b"',
         terms_url="https://switch.example/terms\\x",
-    )
-    manifest = json.loads(
-        zipfile.ZipFile(io.BytesIO(package.archive)).read("manifest.json")
     )
     assert manifest["developer"]["privacyUrl"] == 'https://switch.example/privacy?a="b"'
     assert manifest["developer"]["termsOfUseUrl"] == "https://switch.example/terms\\x"
@@ -160,8 +175,9 @@ def test_an_unfilled_placeholder_in_the_template_is_a_loud_failure(
     with pytest.raises(ValueError, match="does not fill in"):
         build_distributed_app_package(
             app_id=APP_ID,
-            app_name="Agent Switch",
+            app_name="Switch Rooms",
             messaging_public_url="https://switch.example",
             privacy_url="https://switch.example/privacy",
             terms_url="https://switch.example/terms",
+            partner_id=None,
         )

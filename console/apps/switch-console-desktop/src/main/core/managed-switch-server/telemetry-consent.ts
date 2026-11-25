@@ -1,6 +1,6 @@
 import { appSettingsService } from '@main/core/settings/settings-service';
 import type { DeployedTelemetry } from '@shared/core/managed-switch-server/managed-switch-server';
-import { TELEMETRY_RELAY_ORIGIN } from '../telemetry/config';
+import { resolveTelemetryConfig, TELEMETRY_RELAY_ORIGIN } from '../telemetry/config';
 import { runningServiceEnv } from './compose';
 import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
 import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY, TELEMETRY_ENDPOINT_KEY } from './env-file';
@@ -9,6 +9,7 @@ import type { ServerHost } from './host/types';
 
 /**
  * The "Share usage data" answer, as the managed server needs it (CHOO-2890).
+ * Always no from a build run from source, which sends nothing itself.
  *
  * One consent decision covers the Console and the server it runs, so there is
  * no separate server-side preference to merge with — this is the toggle, read
@@ -21,6 +22,7 @@ import type { ServerHost } from './host/types';
  * one guess that cannot be defended is the one in favour.
  */
 export async function telemetryConsent(): Promise<boolean> {
+  if (!resolveTelemetryConfig().enabled) return false;
   return (await appSettingsService.get('telemetry')).enabled;
 }
 
@@ -33,6 +35,7 @@ export function deployedTelemetryOf(
     known: true,
     enabled: envFlag(read(TELEMETRY_ENABLED_KEY)),
     endpointCurrent: read(TELEMETRY_ENDPOINT_KEY) === expected,
+    buildShares: resolveTelemetryConfig().enabled,
   };
 }
 
