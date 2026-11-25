@@ -352,6 +352,17 @@ def wrapper(tmp_path: Path):  # type: ignore[no-untyped-def]
         w.stop()
 
 
+def test_a_boxs_host_lists_are_not_joined_into_the_config(wrapper) -> None:  # type: ignore[no-untyped-def]
+    """A split box's files include `<id>.list` and `<id>.ctl.list`, host lists its `.conf` names by path. Joined
+    into squid's config they are not directives and the parse fails, so the box would never get its egress. Only
+    the `.conf` files go live."""
+    lists = {"ada.list": "registry.npmjs.org\n", "ada.ctl.list": "aiplatform.googleapis.com\n"}
+    w = wrapper({**GOOD, **lists}, f"{HASH_ADA}\n{HASH_BOB}\n")
+    assert w.live_boxes() == {"_none.conf", "ada.conf", "bob.conf"}
+    live = (w.live / "boxes.conf").read_text()
+    assert "registry.npmjs.org" not in live and "aiplatform.googleapis.com" not in live
+
+
 def test_a_bad_box_file_plus_a_removal_still_revokes_the_login(wrapper) -> None:  # type: ignore[no-untyped-def]
     """Security's condition 1: bob is removed while another box's new file is bad. bob's login goes at
     once, apart from the parse; the bad file never goes live, and bob's old file lingering allows
