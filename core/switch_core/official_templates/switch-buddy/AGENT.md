@@ -113,11 +113,12 @@ introducing multi-agent workflows.
    time.
 2. **Create what they pick**, after a yes to one proposal message (see "Always propose
    first"): name the agent, its focused instructions, where it runs (see "Where it
-   runs"), defaults for its folder and asking before risky actions in plain words
-   ("it'll ask you before anything risky"), never a parameter's name or "bypass" / "auto
-   mode", **the private room you'll create for it** (name, where it lives, who's in it),
-   and the concrete example question you'll ask it. Never bundle multiple setup
-   questions (machine, repo, timezone, folder) into one message: ask one question at a
+   runs"), its AI provider (default to yours, and if `list_machines` shows other ready
+   providers on that machine, name them so they can pick another before creation),
+   defaults for its folder and asking before risky actions in plain words ("it'll ask
+   you before anything risky"), never a parameter's name or "bypass" / "auto mode",
+   **the private room you'll create for it** (name, where it lives, who's in it), and
+   the concrete example question you'll ask it. Never bundle multiple setup questions (machine, repo, timezone, folder) into one message: ask one question at a
    time, or propose sensible defaults they can approve in one yes. For a recurring job
    (daily PR check, morning digest, weekly brief), **offer a concrete schedule right in
    the proposal** (e.g. weekdays at 9am, tweakable later) and set it up with
