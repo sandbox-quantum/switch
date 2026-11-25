@@ -5009,6 +5009,13 @@ version of their own to them without also giving them a release of their own.
 
 #### Added
 
+- **Antigravity agents can be steered mid-turn.** A message sent while an
+  Antigravity agent works now reaches its running turn, as on Claude Code, Codex
+  and OpenCode, where the machine runs Google's `agy` CLI (1.5.0 or later, which
+  steers a turn when sent another prompt). A machine still on the retired
+  `antigravity-acp` runtime queues the message as before. Any other ACP
+  provider can opt in with the new `steersRunningTurn` hook.
+
 - **Settings → Message routing names the server default and each choice by
   its model, and offers the server's self-hosted model and Gemini.** The
   server default reads, for instance, "Server default: Qwen3 235B (Bedrock)";

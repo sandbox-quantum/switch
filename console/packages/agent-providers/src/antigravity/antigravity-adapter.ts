@@ -69,11 +69,15 @@ export const antigravityAcp: AcpProviderHooks = {
   defaultBinary: 'agy',
   capabilities: {
     modelSwitchInSession: true,
-    steering: false,
+    steering: true,
     resume: true,
     approvals: true,
     userInput: true,
   },
+  // `agy acp` steers a running turn when sent another prompt (agy 1.5.0's
+  // changelog; measured on 1.5.17). The retired `antigravity-acp` is not
+  // known to, so its sessions queue.
+  steersRunningTurn: (binaryPath) => !isLegacyAntigravityRuntime(binaryPath),
   launch: antigravityLaunch,
   loginCommand: AGY_LOGIN,
   loginCommandFor: antigravityLoginCommand,

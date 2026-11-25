@@ -9,8 +9,13 @@ import type {
   ProviderCapabilities,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
+  ProviderTurnStartResult,
 } from '../adapter';
-import { ProviderConversationUnavailableError, ProviderSessionError } from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  ProviderSessionError,
+  SteerNotSentError,
+} from '../adapter';
 import type {
   ApprovalDecision,
   ProviderItem,
@@ -132,6 +137,19 @@ interface State {
   nativeId: string;
   client: StdioJsonRpcClient;
   turn: string | null;
+  /**
+   * Whether a `session/prompt` sent while one runs steers the running turn,
+   * for this session's executable: see {@link AcpProviderHooks.steersRunningTurn}.
+   */
+  steering: boolean;
+  /**
+   * The running turn's latest `session/prompt`, counted from the session's
+   * start: once a turn has been steered, only the answer to its latest prompt
+   * ends it. Undefined until the turn's first prompt has been sent.
+   */
+  latestPrompt: number | undefined;
+  /** How many `session/prompt` requests the session has sent. */
+  prompts: number;
   queue: ProviderSendTurnInput[];
   items: Map<string, ProviderItem>;
   decisions: Map<string, PendingDecision>;
@@ -226,6 +244,9 @@ export class AcpAdapter implements ProviderAdapter {
       nativeId: '',
       client,
       turn: null,
+      steering: hooks.capabilities.steering && (hooks.steersRunningTurn?.(binaryPath) ?? true),
+      latestPrompt: undefined,
+      prompts: 0,
       queue: [],
       items: new Map(),
       decisions: new Map(),
@@ -356,11 +377,56 @@ export class AcpAdapter implements ProviderAdapter {
     }
   }
 
-  async sendTurn(input: ProviderSendTurnInput) {
+  /**
+   * A message sent while a turn runs steers it where the session can: it goes
+   * to the agent at once as another `session/prompt`, and the turn then ends
+   * with the answer to its latest prompt. agy (1.5.17) answers the earlier
+   * prompt `end_turn` as soon as the later one arrives and carries on in the
+   * same turn, so an earlier prompt's answer ends nothing. Otherwise the
+   * message queues as a turn of its own, except one sent with
+   * `expectedTurnId`: that is refused with {@link SteerNotSentError}, having
+   * sent nothing, so the host queues it instead.
+   */
+  async sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
     const state = this.require(input.sessionId);
+    const turnId = state.turn;
+    if (input.expectedTurnId && turnId !== input.expectedTurnId)
+      throw new SteerNotSentError('The authorized turn is no longer running.');
+    if (turnId && this.canSteer(state)) {
+      const content = await this.promptContent(state, input);
+      // The turn may have ended, or stopped being steerable, while the
+      // attachments were read.
+      if (state.turn === turnId && this.canSteer(state)) {
+        this.settle(state, turnId, Promise.resolve(this.prompt(state, content)));
+        return { turnId: input.turnId, steeredInto: turnId };
+      }
+    }
+    if (input.expectedTurnId)
+      throw new SteerNotSentError(
+        state.steering
+          ? `${this.hooks.label} is not ready to take a message mid-turn.`
+          : `${this.hooks.label} cannot steer a running turn.`
+      );
     state.queue.push(input);
     if (!state.turn) this.drain(state);
     return { turnId: input.turnId };
+  }
+
+  /**
+   * Whether a prompt sent now would steer the running turn: not before the
+   * turn's first prompt has been sent (the second would reach the agent
+   * first), once it is being interrupted, or while it waits on an approval
+   * or a question (the prompt would be read in place of the answer).
+   */
+  private canSteer(state: State): boolean {
+    return (
+      state.steering &&
+      state.turn !== null &&
+      state.latestPrompt !== undefined &&
+      !state.interrupted &&
+      !state.decisions.size &&
+      !state.questions.size
+    );
   }
 
   private drain(state: State): void {
@@ -368,6 +434,7 @@ export class AcpAdapter implements ProviderAdapter {
     const input = state.queue.shift();
     if (!input) return;
     state.turn = input.turnId;
+    state.latestPrompt = undefined;
     state.interrupted = false;
     state.refusedRequest = false;
     state.messageId = randomUUID();
@@ -375,38 +442,85 @@ export class AcpAdapter implements ProviderAdapter {
     state.mcpToolCalls.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
-    void this.run(state, input).then(
-      (reason) => {
-        if (state.turn !== input.turnId) return;
-        // `cancelled` answers our own `session/cancel`, or follows a request
-        // someone cancelled or declined; an agent that cancels unasked (Junie,
-        // when every model refuses it) has failed.
-        const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
-        this.complete(
-          state,
-          interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
-          interrupted
-            ? 'Interrupted.'
-            : reason === 'end_turn'
-              ? undefined
-              : reason === 'cancelled'
-                ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
-                : `${this.hooks.label} stopped: ${reason}`
-        );
-      },
-      (error: unknown) => {
-        if (state.turn !== input.turnId) return;
-        this.complete(
-          state,
-          state.interrupted ? 'interrupted' : 'error',
-          state.interrupted ? 'Interrupted.' : String(error)
-        );
-      }
-    );
+    this.settle(state, input.turnId, this.run(state, input));
   }
 
-  private async run(state: State, input: ProviderSendTurnInput): Promise<string> {
+  /**
+   * Ends turn `turnId` with the answer to one of its prompts, unless a later
+   * prompt has been sent into it since: that one's answer ends it instead.
+   */
+  private settle(
+    state: State,
+    turnId: string,
+    prompt: Promise<{ seq: number; stopReason: Promise<string> }>
+  ): void {
+    let seq: number | undefined;
+    const current = () =>
+      state.turn === turnId && (seq === undefined || seq === state.latestPrompt);
+    void prompt
+      .then((sent) => {
+        seq = sent.seq;
+        return sent.stopReason;
+      })
+      .then(
+        (reason) => {
+          if (!current()) return;
+          // `cancelled` answers our own `session/cancel`, or follows a request
+          // someone cancelled or declined; an agent that cancels unasked (Junie,
+          // when every model refuses it) has failed.
+          const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
+          this.complete(
+            state,
+            interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
+            interrupted
+              ? 'Interrupted.'
+              : reason === 'end_turn'
+                ? undefined
+                : reason === 'cancelled'
+                  ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
+                  : `${this.hooks.label} stopped: ${reason}`
+          );
+        },
+        (error: unknown) => {
+          if (!current()) return;
+          this.complete(
+            state,
+            state.interrupted ? 'interrupted' : 'error',
+            state.interrupted ? 'Interrupted.' : String(error)
+          );
+        }
+      );
+  }
+
+  private async run(
+    state: State,
+    input: ProviderSendTurnInput
+  ): Promise<{ seq: number; stopReason: Promise<string> }> {
     if (input.model) await this.setModel(state.id, input.model);
+    const content = await this.promptContent(state, input);
+    return this.prompt(state, content);
+  }
+
+  /**
+   * Sends one `session/prompt` and makes it the running turn's latest. Its
+   * number is taken as it is sent, so a later prompt is always later here.
+   */
+  private prompt(
+    state: State,
+    prompt: Array<Record<string, unknown>>
+  ): { seq: number; stopReason: Promise<string> } {
+    const seq = ++state.prompts;
+    state.latestPrompt = seq;
+    const stopReason = state.client
+      .request<{ stopReason: string }>('session/prompt', { sessionId: state.nativeId, prompt })
+      .then((result) => result.stopReason);
+    return { seq, stopReason };
+  }
+
+  private async promptContent(
+    state: State,
+    input: ProviderSendTurnInput
+  ): Promise<Array<Record<string, unknown>>> {
     const prompt: Array<Record<string, unknown>> = [
       { type: 'text', text: state.context ? `${state.context}\n\n${input.text}` : input.text },
     ];
@@ -440,12 +554,7 @@ export class AcpAdapter implements ProviderAdapter {
         });
       }
     }
-    return (
-      await state.client.request<{ stopReason: string }>('session/prompt', {
-        sessionId: state.nativeId,
-        prompt,
-      })
-    ).stopReason;
+    return prompt;
   }
 
   async interruptTurn(id: string): Promise<void> {

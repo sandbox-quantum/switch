@@ -115,6 +115,15 @@ export interface AcpProviderHooks {
   /** Executable used when the caller names none. */
   defaultBinary: string;
   capabilities: ProviderCapabilities;
+  /**
+   * With `capabilities.steering`, whether the executable at `binaryPath`
+   * steers: takes a `session/prompt` sent while another runs into the running
+   * turn, rather than refusing or queueing it. ACP leaves a second prompt
+   * undefined, so a provider claims steering only where its CLI documents it.
+   * Omitted, every executable of a steering provider steers. A session that
+   * cannot steer refuses each steer, and the host queues the message.
+   */
+  steersRunningTurn?(binaryPath: string): boolean;
   /** The command, arguments and environment to run the agent with. May prepare the host first. */
   launch(input: AcpLaunchInput): Promise<AcpLaunch> | AcpLaunch;
   /**

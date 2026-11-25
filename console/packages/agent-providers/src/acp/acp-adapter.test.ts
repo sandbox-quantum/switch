@@ -1,7 +1,7 @@
 import type * as fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { beforeEach, expect, it, vi } from 'vitest';
-import { ProviderConversationUnavailableError } from '../adapter';
+import { ProviderConversationUnavailableError, SteerNotSentError } from '../adapter';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
 import type { AcpProviderHooks } from './hooks';
@@ -744,3 +744,127 @@ it.each([
     expect(server.received.some((m) => m.id === 80 && m.result)).toBe(false);
   }
 );
+
+/** A provider whose CLI steers a running turn when sent another prompt, as agy does. */
+const steering: AcpProviderHooks = {
+  ...dummy,
+  capabilities: { ...dummy.capabilities, steering: true },
+};
+
+/** The `session/prompt` requests the agent has been sent, awaiting answers. */
+function prompts(server: FakeAppServer) {
+  return server.received.filter((m) => m.method === 'session/prompt');
+}
+function answer(server: FakeAppServer, prompt: { id?: unknown }, stopReason: string) {
+  server.send({ id: prompt.id as number, result: { stopReason } });
+}
+const turnEvents = (events: ProviderRuntimeEvent[]) =>
+  events.flatMap((e) =>
+    e.type === 'turn.started' || e.type === 'turn.completed'
+      ? [
+          e.type === 'turn.completed'
+            ? `${e.type}:${e.turnId}:${e.outcome}`
+            : `${e.type}:${e.turnId}`,
+        ]
+      : []
+  );
+
+it('steers a running turn with another prompt, ending it only with the latest prompt’s answer', async () => {
+  const { adapter, events, server } = await start(steering);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'list sixty animals' });
+  await server.waitFor('session/prompt');
+  await expect(
+    adapter.sendTurn({ sessionId: 's', turnId: 'u', expectedTurnId: 't', text: 'stop now' })
+  ).resolves.toEqual({ turnId: 'u', steeredInto: 't' });
+  await flush();
+  const [first, second] = prompts(server);
+  expect(second?.params).toEqual({
+    sessionId: 'native',
+    prompt: [{ type: 'text', text: 'stop now' }],
+  });
+  // agy answers the first prompt as soon as the second arrives, and goes on.
+  answer(server, first!, 'end_turn');
+  await flush();
+  expect(turnEvents(events)).toEqual(['turn.started:t']);
+  answer(server, second!, 'end_turn');
+  await flush();
+  expect(turnEvents(events)).toEqual(['turn.started:t', 'turn.completed:t:completed']);
+});
+
+it('interrupts a steered turn through its latest prompt', async () => {
+  const { adapter, events, server } = await start(steering);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await server.waitFor('session/prompt');
+  await adapter.sendTurn({ sessionId: 's', turnId: 'u', expectedTurnId: 't', text: 'more' });
+  await flush();
+  const [first, second] = prompts(server);
+  answer(server, first!, 'end_turn');
+  await adapter.interruptTurn('s');
+  answer(server, second!, 'cancelled');
+  await flush();
+  expect(server.received.some((m) => m.method === 'session/cancel')).toBe(true);
+  expect(turnEvents(events)).toEqual(['turn.started:t', 'turn.completed:t:interrupted']);
+});
+
+it('refuses a steer it cannot take, sending nothing, so the host can queue it', async () => {
+  const plain = await start();
+  await plain.adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await plain.server.waitFor('session/prompt');
+  await expect(
+    plain.adapter.sendTurn({ sessionId: 's', turnId: 'u', expectedTurnId: 't', text: 'more' })
+  ).rejects.toBeInstanceOf(SteerNotSentError);
+
+  const { adapter, server } = await start(steering);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await server.waitFor('session/prompt');
+  await expect(
+    adapter.sendTurn({ sessionId: 's', turnId: 'u', expectedTurnId: 'other', text: 'more' })
+  ).rejects.toBeInstanceOf(SteerNotSentError);
+  // A turn waiting on an approval would read the prompt as its answer.
+  server.send({
+    id: 90,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'call', title: 'Run', kind: 'execute' },
+      options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }],
+    },
+  });
+  await flush();
+  await expect(
+    adapter.sendTurn({ sessionId: 's', turnId: 'u', expectedTurnId: 't', text: 'more' })
+  ).rejects.toBeInstanceOf(SteerNotSentError);
+  answer(server, prompts(server)[0]!, 'end_turn');
+  await flush();
+  await expect(
+    adapter.sendTurn({ sessionId: 's', turnId: 'u', expectedTurnId: 't', text: 'more' })
+  ).rejects.toBeInstanceOf(SteerNotSentError);
+  expect(prompts(plain.server)).toHaveLength(1);
+  expect(prompts(server)).toHaveLength(1);
+});
+
+it('queues a message sent mid-turn without an expected turn when the session cannot steer it', async () => {
+  const { adapter, events, server } = await start();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await server.waitFor('session/prompt');
+  await expect(adapter.sendTurn({ sessionId: 's', turnId: 'u', text: 'next' })).resolves.toEqual({
+    turnId: 'u',
+  });
+  await flush();
+  expect(prompts(server)).toHaveLength(1);
+  answer(server, prompts(server)[0]!, 'end_turn');
+  await flush();
+  expect(prompts(server)).toHaveLength(2);
+  expect(turnEvents(events)).toEqual([
+    'turn.started:t',
+    'turn.completed:t:completed',
+    'turn.started:u',
+  ]);
+});
+
+it('steers Antigravity through agy, and not through the retired antigravity-acp', () => {
+  expect(antigravityAcp.capabilities.steering).toBe(true);
+  expect(antigravityAcp.steersRunningTurn?.('/usr/local/bin/agy')).toBe(true);
+  expect(antigravityAcp.steersRunningTurn?.('/home/me/.local/bin/antigravity-acp')).toBe(false);
+  expect(antigravityAcp.steersRunningTurn?.('/opt/agy_acp_server.par')).toBe(false);
+});
