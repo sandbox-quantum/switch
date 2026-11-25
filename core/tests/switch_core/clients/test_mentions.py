@@ -113,6 +113,23 @@ class TestMentionTokens:
         assert unmatched_mentions("ssh root@staging", []) == []
 
 
+class TestInlineCodeMentions:
+    def test_inline_code_span_is_ignored(self) -> None:
+        assert mention_tokens("Try `@pr-tracker what's waiting on me?`") == []
+        assert not mentions_anyone("Try `@pr-tracker what's waiting on me?`")
+        assert unmatched_mentions("Try `@pr-tracker`", []) == []
+
+    def test_mention_outside_inline_code_still_matches(self) -> None:
+        assert mention_tokens("`@pr-tracker` example, ping @helper") == ["helper"]
+        assert mention_tokens("`a` @helper `b`") == ["helper"]
+
+    def test_fenced_code_block_is_not_stripped(self) -> None:
+        assert mention_tokens("```\n@helper\n```") == ["helper"]
+
+    def test_unclosed_backtick_does_not_hide_mention(self) -> None:
+        assert mention_tokens("unclosed `backtick and @helper") == ["helper"]
+
+
 class TestConversationMentions:
     def test_mentioned_names_without_punctuation(self) -> None:
         assert mentioned_names("thanks @Reviewer.") == {"reviewer"}

@@ -26,14 +26,19 @@ _MENTION_END = rf"(?!{NAME_CHAR}*[A-Za-z0-9])"
 # a valid character in agent and role names.
 _EMPHASIS = re.compile(r"[*~]")
 
+# Single-backtick inline code spans on one line (not triple-backtick fences),
+# so examples like `` `@agent what's next?` `` do not address the agent.
+_INLINE_CODE = re.compile(r"(?<!`)`[^`\n]+`(?!`)")
+
 # A token ends on a letter or digit, so trailing punctuation is left out of it
 # by the same rule `_MENTION_END` uses.
 _MENTION_TOKEN = re.compile(rf"{_MENTION_START}@({NAME_CHAR}*[A-Za-z0-9])")
 
 
 def strip_emphasis(text: str) -> str:
-    """Remove Markdown/mrkdwn emphasis markers so `@*name*` matches `@name`."""
-    return _EMPHASIS.sub("", text)
+    """Remove inline code spans and Markdown/mrkdwn emphasis markers so
+    `` `@name` `` examples don't address agents and `@*name*` matches `@name`."""
+    return _EMPHASIS.sub("", _INLINE_CODE.sub(" ", text))
 
 
 def mention_pattern(name: str) -> str:
