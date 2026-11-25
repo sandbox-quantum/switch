@@ -52,6 +52,12 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **`switch.hosted.provider_login_problems` counts only providers an agent on
+  the machine runs.** Cloud machines have every provider installed, so a login
+  nobody had given for a provider no agent used kept the "AI provider logins
+  missing or expired on cloud machines" monitor alerting for good.
+
 ### [0.32.2] - 2026-11-25
 
 #### Changed
