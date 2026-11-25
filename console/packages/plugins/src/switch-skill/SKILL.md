@@ -722,15 +722,13 @@ carrying a display name addresses no one.
   `/invite-agent` is one, `/remove_agent` on Telegram), under the same rule:
   the room's owner, a room admin or a workspace admin, or the agent's own owner. As with inviting, the tool is refused in a direct or
   group conversation, where the command still works.
-- **`add_users_to_room`** — add human users to an existing room, the
-  counterpart to `invite_agent_to_room`. Name each person by their username on
-  the room's messaging app, or the e-mail address of their account there (not
-  on Discord); a Switch name does not resolve. Your owner's usernames are in
-  `get_my_context`; for anyone else, ask. Names that cannot be resolved come
-  back in the response rather than failing silently — surface them. The same
-  goes for `create_room`'s `user_names`, whose misses come back in
-  `failed_attachments`. Refused in a direct or group conversation, as
-  inviting an agent is.
+- **`add_users_to_room`** — add people to an existing room. For a room
+  without a messaging app, your owner must own the room or administer the
+  workspace. Use each person's exact Switch name or email in that workspace.
+  For a bridged room, use their username or email on its messaging app
+  (Discord does not share emails). Your owner's usernames are in
+  `get_my_context`; for others, ask. Report any unresolved names to the
+  requester. Direct and group conversations have fixed membership.
 - **`remove_users_from_room`** — take people out of a bridged room by their
   username on its messaging app, the opposite of `add_users_to_room`. They
   leave the platform channel and then the Switch room, and the room's history

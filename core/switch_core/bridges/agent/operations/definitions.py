@@ -1691,30 +1691,24 @@ async def remove_agent_from_room(room_id: str, agent_name: str) -> dict[str, boo
 
 @operation
 async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, Any]:
-    """Add one or more human users to an existing bridged room by name.
+    """Add one or more people to an existing room by name or email.
 
-    Unlike `invite_agent_to_room` (which adds agents), this adds humans. The
-    room must already be bridged: each user is added to the room's external
-    channel (Slack/Mattermost) and joined to the Switch room. Each name must
-    be a user already known to that bridge — e.g. someone who has signed into
-    the workspace — otherwise the bridge cannot resolve them. Use this after a
-    bridge change to re-invite the humans who were dropped, since their
-    identities are bridge-specific and are not carried across. A direct or
-    group conversation is refused: its platform fixes who is in it.
+    In a room without a messaging app, the caller must act for the room's
+    owner or a workspace admin. A name must identify exactly one Switch
+    account in the workspace. In a bridged room, use the username or email
+    on its messaging app (Discord does not share emails). The user is added
+    to its channel and joined to the Switch room. A direct or group
+    conversation is refused because its membership is fixed.
 
     Args:
         room_id: The Switch room id (UUID string).
-        user_names: The people to add, each named by their username on the
-            room's messaging app, or by the e-mail address of their account
-            there (not on Discord, which never shares e-mail addresses); their
-            Switch name does not resolve. Your owner's usernames
-            are in `get_my_context` (`messaging_apps`, `your_usernames`).
+        user_names: Names or emails of the people to add. Your owner's
+            messaging app usernames are in `get_my_context`; for anyone
+            else, ask.
 
     Returns:
-        `{"ok": bool, "added": [...], "unresolved": [...]}`. `unresolved`
-        lists names the bridge had no external user for — they were skipped,
-        not added (likely they have not signed into the workspace yet). `ok`
-        is true only when every requested name was added.
+        `{"ok": bool, "added": [...], "unresolved": [...]}`. Tell the requester
+        about any `unresolved` names. `ok` is true when every name was added.
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
@@ -1725,8 +1719,7 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
 @operation
 async def remove_users_from_room(room_id: str, user_names: list[str]) -> dict[str, Any]:
-    """Take one or more people out of a bridged room by name — the opposite of
-    `add_users_to_room`.
+    """Take one or more people out of a bridged room by name.
 
     Each person is taken out of the room's platform channel and then the
     Switch room, which stops what reaches them and ends what being in the
