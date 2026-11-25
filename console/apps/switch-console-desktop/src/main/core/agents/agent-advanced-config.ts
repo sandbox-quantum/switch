@@ -29,7 +29,15 @@ export function getAgentAdvancedSettings(providerId: AgentProviderId): AgentAdva
     : behavior.mcp?.launchProfileSettings
       ? 'launch-profile'
       : 'none';
-  return { surface, keys: Object.keys(advancedSettings(providerId)) };
+  // The OpenCode session launcher passes the variant with the chosen model.
+  // It does not load the other advanced settings from an OpenCode launch
+  // profile. Keep saved values for compatibility, but offer only the setting
+  // that a Console-managed session consumes.
+  const keys = Object.keys(advancedSettings(providerId));
+  return {
+    surface,
+    keys: providerId === 'opencode' ? keys.filter((key) => key === 'variant') : keys,
+  };
 }
 
 /**
