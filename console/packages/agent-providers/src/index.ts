@@ -205,6 +205,7 @@ export {
   MAX_SESSIONS_PER_REQUEST,
 } from './host/cli-conversations';
 export { verifyClaudeSignIn } from './claude/sign-in';
+export { type ClaudeAuthStatus } from './claude/auth-status';
 export type { ProviderReadiness, SignInCheckInput } from './readiness';
 export {
   acpProviderRuntime,
@@ -226,3 +227,16 @@ export {
   opencodeV1DatabasePath,
 } from './opencode/v1-database';
 export { windowsRegistryPath, withWindowsPathEntries } from './windows-registry-path';
+export {
+  loginCommandFor,
+  runSetupCheck,
+  SETUP_CHECKS,
+  type CheckTarget,
+  type LegacyInstallationConfig,
+  type SetupCheck,
+  type SetupCheckInput,
+  type SetupCheckName,
+  type SetupCheckOutput,
+  type SetupCheckProvider,
+  type SetupCheckResult,
+} from './setup-checks';

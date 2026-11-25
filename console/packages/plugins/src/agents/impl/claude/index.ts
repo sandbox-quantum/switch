@@ -22,14 +22,14 @@ import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
  * the native build's launcher and its versions, and leaves settings in
  * `~/.claude` alone.
  */
-const CLAUDE_UNIX_UNINSTALL =
+export const CLAUDE_UNIX_UNINSTALL =
   'rm -f "$HOME/.local/bin/claude" && rm -rf "$HOME/.local/share/claude"';
 /**
  * The same on Windows, written without `$`, `%` or inner double quotes like the
  * install. Only what is not there is passed over: a delete that fails (a running
  * session holding `claude.exe`) stops the command with its own error.
  */
-const CLAUDE_WINDOWS_UNINSTALL = `powershell -ExecutionPolicy ByPass -c "${[
+export const CLAUDE_WINDOWS_UNINSTALL = `powershell -ExecutionPolicy ByPass -c "${[
   removeFromProfile('.local', 'bin', 'claude.exe'),
   removeFromProfile('.local', 'share', 'claude'),
 ].join('; ')}"`;

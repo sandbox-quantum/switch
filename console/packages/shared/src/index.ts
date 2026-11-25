@@ -22,3 +22,28 @@ export { isDeepEqual } from './deep-equal';
 export type { IDisposable, IInitializable, ILifecycle, Lease, Unsubscribe } from './lifecycle';
 export { compareVersions } from './version';
 export { parameterize, type ParamSubstitution } from './parameterize';
+export {
+  bold,
+  code,
+  italic,
+  lines,
+  plainText,
+  rich,
+  type RichSpan,
+  type RichText,
+  type RichValue,
+} from './rich-text';
+export {
+  activityLog,
+  addActivity,
+  describeFurther,
+  noActivity,
+  runActivity,
+  updateActivity,
+  waitActivity,
+  type Activity,
+  type ActivityFields,
+  type ActivityLog,
+  type ActivityStatus,
+  type ActivityUpdate,
+} from './activity-log';

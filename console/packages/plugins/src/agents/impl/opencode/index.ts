@@ -36,11 +36,11 @@ const validateSessionId = (id: string) => id.startsWith('ses');
  * OpenCode Desktop 2 had migrated the shared one (`opencodeV1DatabasePath`):
  * OpenCode 2 migrates only the shared database, once.
  */
-const OPENCODE_PACKAGE = '@opencode/cli';
-const OPENCODE_1_PACKAGE = 'opencode-ai';
-const OPENCODE_2 = '2.0.0';
+export const OPENCODE_PACKAGE = '@opencode/cli';
+export const OPENCODE_1_PACKAGE = 'opencode-ai';
+export const OPENCODE_2 = '2.0.0';
 
-const OPENCODE_2_SUMMARY =
+export const OPENCODE_2_SUMMARY =
   'Your settings, sign-ins and most sessions carry over. Running sessions stay on this version until they restart. If the upgrade fails, this version is put back.';
 
 /**
@@ -50,7 +50,7 @@ const OPENCODE_2_SUMMARY =
  * and the upgrade then changes nothing. Written without `$` or `%`, since the
  * install shell may be PowerShell or cmd.exe.
  */
-const OPENCODE_WINDOWS_PRECHECK = {
+export const OPENCODE_WINDOWS_PRECHECK = {
   command:
     'powershell -NoProfile -Command "if (Get-Process -Name opencode -ErrorAction SilentlyContinue) { exit 1 }"',
   blockedMessage: 'Close OpenCode and stop its agents, then try again. Nothing was changed.',
@@ -72,7 +72,7 @@ export function opencodeWindowsReleaseUrl(version: string): string {
  * then adds its folder to the user's PATH. Written without `$`, `%` or double
  * quotes inside, so it runs the same from cmd.exe and from PowerShell.
  */
-function opencodeWindowsInstall(version: string): string {
+export function opencodeWindowsInstall(version: string): string {
   return [
     'powershell -ExecutionPolicy ByPass -c "',
     "[Net.ServicePointManager]::SecurityProtocol = 'Tls12';",
@@ -87,7 +87,7 @@ function opencodeWindowsInstall(version: string): string {
  * checked against. Not GitHub's latest release: OpenCode still publishes 1.x
  * releases, and the newest of them can be the latest there.
  */
-const OPENCODE_WINDOWS_INSTALL = opencodeWindowsInstall(
+export const OPENCODE_WINDOWS_INSTALL = opencodeWindowsInstall(
   `(Invoke-RestMethod '${OPENCODE_LATEST_URL}').version`
 );
 

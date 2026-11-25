@@ -1,7 +1,7 @@
 import { definePlugin, registerPluginBehavior } from '@switch-console/core/agents/plugins';
 import { icon } from './icon';
 
-const MISTRAL_VIBE_INSTALL_COMMAND = 'curl -LsSf https://mistral.ai/vibe/install.sh | bash';
+export const MISTRAL_VIBE_INSTALL_COMMAND = 'curl -LsSf https://mistral.ai/vibe/install.sh | bash';
 
 /**
  * Re-reads PATH from the registry into the running PowerShell, so a `uv` the line before
