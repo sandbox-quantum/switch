@@ -65,8 +65,7 @@ TENANT_CREATION_TIMEOUT_SECONDS = 90.0
 _PAGE = 100
 
 SIGN_IN_AGAIN = (
-    "Your access to your organization's account ran out. Sign in again, then "
-    "try again."
+    "Your access to your organization's account ran out. Sign in again, then try again."
 )
 
 # The service checks a token without asking WorkOS, so a 401 for one that has
