@@ -436,6 +436,7 @@ def _process(
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in TEST_KEYRING.keys],
+        booting=False,
     )
     return _Process(
         service=service,

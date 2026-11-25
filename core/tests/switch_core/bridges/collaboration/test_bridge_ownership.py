@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
@@ -27,6 +27,7 @@ from sqlalchemy.pool import NullPool
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -90,6 +91,7 @@ from tests.routing import router_on
 TIMEOUT = 10.0
 CHAT = "fakechat"
 LOUD_CHAT = "loudchat"
+READING_CHAT = "readingchat"
 CHANNEL = "C1"
 
 
@@ -99,6 +101,22 @@ class _Platform:
     def __init__(self) -> None:
         self.listening: list[_Chat] = []
         self.posts: list[tuple[str, str, str]] = []
+        # Everything said in the channel, and when, as a history call reads it.
+        self.history: list[tuple[datetime, InboundMessage]] = []
+        # Which copy of the bridge read back, and from when, once it was done.
+        self.read_backs: list[tuple[_Chat, datetime]] = []
+        # Whether a connection that opens is live at once; when not, its
+        # events reach it once a test says so.
+        self.live = True
+        # A shared connection the bridge joins already up, listening before its
+        # adapter has started.
+        self.up_before_start = False
+        # When set, a read-back waits for it before it reads, and says so.
+        self.read_back_gate: asyncio.Event | None = None
+        self.reading_back = asyncio.Event()
+        # When set, an adapter that has opened its connection waits for it
+        # before its start returns, as Discord's does while it syncs commands.
+        self.start_gate: asyncio.Event | None = None
 
     async def say(self, *, user_id: str, text: str, ref: str) -> None:
         """Someone writes in the channel. Every open connection hears it, as
@@ -107,8 +125,24 @@ class _Platform:
         async with asyncio.timeout(TIMEOUT):
             while not self.listening:
                 await asyncio.sleep(0.01)
+        post = _post(user_id=user_id, text=text, ref=ref)
+        self.history.append((datetime.now(UTC), post))
         for chat in list(self.listening):
-            await chat.hear(_post(user_id=user_id, text=text, ref=ref))
+            await chat.hear(post)
+
+    def say_unheard(self, *, user_id: str, text: str, ref: str) -> None:
+        """Someone writes in the channel while no connection is open."""
+        assert not self.listening
+        self.history.append(
+            (datetime.now(UTC), _post(user_id=user_id, text=text, ref=ref))
+        )
+
+    def say_undelivered(self, *, user_id: str, text: str, ref: str) -> None:
+        """Someone writes in the channel while a connection that just opened
+        is not yet delivered to, as Slack's Socket Mode is for about a second."""
+        self.history.append(
+            (datetime.now(UTC), _post(user_id=user_id, text=text, ref=ref))
+        )
 
     async def command(self, *, user_id: str, command: str, ref: str) -> None:
         """Someone types a command in the channel, heard like a post."""
@@ -235,6 +269,42 @@ class _Chat(PlatformAdapter):
 
     def translate_inbound(self, raw: Any) -> str:
         return str(raw)
+
+
+class _ReadingChat(_Chat):
+    """A platform that sends nothing again to a connection that was not open,
+    as Discord and Mattermost do, whose adapter reads its history back."""
+
+    async def start(
+        self,
+        on_message: Callable[[InboundMessage], Awaitable[None]],
+        on_command: Callable[[InboundCommand], Awaitable[None]],
+        on_agent_joined: Callable[[InboundAgentJoin], Awaitable[None]],
+        on_user_joined: Callable[[InboundUserJoin], Awaitable[None]],
+        on_app_joined: Callable[[InboundAppJoin], Awaitable[None]],
+    ) -> None:
+        await super().start(
+            on_message, on_command, on_agent_joined, on_user_joined, on_app_joined
+        )
+        if self.platform.start_gate is not None:
+            await self.platform.start_gate.wait()
+
+    def listening(self) -> bool:
+        if self.platform.up_before_start:
+            return self.platform.live
+        return self in self.platform.listening and self.platform.live
+
+    async def read_back(self, since: datetime, channel_ids: Collection[str]) -> int:
+        self.platform.reading_back.set()
+        if self.platform.read_back_gate is not None:
+            await self.platform.read_back_gate.wait()
+        handed = 0
+        for said_at, post in list(self.platform.history):
+            if said_at > since and post.channel_id in channel_ids:
+                await self.hear(post)
+                handed += 1
+        self.platform.read_backs.append((self, since))
+        return handed
 
 
 class _LoudChat(_Chat):
@@ -407,6 +477,7 @@ async def _process(
     )
     bridges.register_adapter(CHAT, _Chat, _ChatConfig)
     bridges.register_adapter(LOUD_CHAT, _LoudChat, _ChatConfig)
+    bridges.register_adapter(READING_CHAT, _ReadingChat, _ChatConfig)
     bridges._room_service = RoomService(
         provisioning=provisioning,
         room_store=RoomStore(),
@@ -806,6 +877,441 @@ class TestHandingOver:
         assert await _room_bodies(
             session_factory, bridge.room_id, person.transport_user_id
         ) == ["only once"]
+
+    async def test_what_was_said_while_none_listened_is_read_back_once(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """On a platform that sends nothing again to a connection that was
+        not open, the next holder reads back from shortly before the last
+        one let go: what was said in between reaches the room, and what the
+        last holder had heard is not stored twice."""
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await platform.say(user_id="U1", text="heard", ref="m1")
+        await holder.stop()
+        platform.say_unheard(user_id="U1", text="missed", ref="m2")
+        await other.ownership.balance()
+        taken = other.bridges.get(bridge.bridge_id)
+        assert taken is not None
+        await _eventually(lambda: _read_back_by(platform, taken.adapter) is not None)
+        await platform.say(user_id="U1", text="heard after", ref="m3")
+
+        since = _read_back_by(platform, taken.adapter)
+        assert since is not None and since < platform.history[0][0]
+        person = await _person(session_factory, bridge)
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "heard",
+            "missed",
+            "heard after",
+        ]
+
+    async def test_a_post_read_back_after_it_was_handled_is_not_handled_again(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The read-back hands on again what the last holder heard just
+        before it let go. Its rows are written once, and what handling a post
+        does besides (a card answer, a Switch Trust check and its notice, an
+        upload) does not run again either."""
+        handled: list[str] = []
+        handle = CollaborationCore._handle_inbound_message
+
+        async def counting(core: CollaborationCore, msg: InboundMessage) -> str | None:
+            handled.append(msg.message_ref)
+            return await handle(core, msg)
+
+        monkeypatch.setattr(CollaborationCore, "_handle_inbound_message", counting)
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await platform.say(user_id="U1", text="heard", ref="m1")
+        await holder.stop()
+        platform.say_unheard(user_id="U1", text="missed", ref="m2")
+        await other.ownership.balance()
+        taken = other.bridges.get(bridge.bridge_id)
+        assert taken is not None
+        await _eventually(lambda: _read_back_by(platform, taken.adapter) is not None)
+
+        assert handled == ["m1", "m2"]
+        person = await _person(session_factory, bridge)
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "heard",
+            "missed",
+        ]
+
+    async def test_a_bridge_turned_back_on_reads_nothing_back(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """What was said while a bridge was paused is not bridged in when it
+        is turned back on: nobody wanted it heard."""
+        await _reading(session_factory, bridge)
+        await _boot_two(postgres_url, session_factory, processes)
+
+        await _set_status(session_factory, bridge, "inactive")
+        for process in processes:
+            await process.bridges.reconcile_bridge(bridge.bridge_id)
+        await _eventually(lambda: platform.listening == [])
+        platform.say_unheard(user_id="U1", text="said while paused", ref="m1")
+        await _set_status(session_factory, bridge, "active")
+        for process in processes:
+            await process.bridges.reconcile_bridge(bridge.bridge_id)
+        await _eventually(lambda: len(platform.listening) == 1)
+        await platform.say(user_id="U1", text="said once on", ref="m2")
+
+        person = await _person(session_factory, bridge)
+        await _eventually_bodies(session_factory, bridge, person, ["said once on"])
+        holder = next(p for p in processes if p.bridges.holds(bridge.bridge_id))
+        restarted = holder.bridges.get(bridge.bridge_id)
+        assert restarted is not None
+        await asyncio.sleep(0.5)
+        assert _read_back_by(platform, restarted.adapter) is None
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "said once on"
+        ]
+
+    async def test_what_is_said_as_delivery_settles_is_read_back_again(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A post the platform did not yet deliver to the connection that
+        just opened, said after the read-back, is read back once delivery has
+        settled, and what both read-backs read is stored once."""
+        monkeypatch.setattr(_ReadingChat, "listening_settles_seconds", 0.5)
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await platform.say(user_id="U1", text="heard", ref="m1")
+        await holder.stop()
+        await other.ownership.balance()
+        taken = other.bridges.get(bridge.bridge_id)
+        assert taken is not None
+        await _eventually(lambda: _read_back_by(platform, taken.adapter) is not None)
+        platform.say_undelivered(user_id="U1", text="said as it opened", ref="m2")
+        await _eventually(
+            lambda: (
+                [r for r, _ in platform.read_backs if r is taken.adapter]
+                == [taken.adapter, taken.adapter]
+            )
+        )
+
+        person = await _person(session_factory, bridge)
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "heard",
+            "said as it opened",
+        ]
+
+    async def test_the_read_back_waits_until_the_platforms_events_arrive(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """Read before then, what was said between the read and the events
+        arriving would be in neither."""
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await holder.stop()
+        platform.live = False
+        await other.ownership.balance()
+        taken = other.bridges.get(bridge.bridge_id)
+        assert taken is not None
+        await asyncio.sleep(1.0)
+        assert _read_back_by(platform, taken.adapter) is None
+
+        platform.live = True
+        await _eventually(lambda: _read_back_by(platform, taken.adapter) is not None)
+
+    async def test_a_connection_up_before_the_bridge_starts_reads_its_channels(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """A shared connection can be listening before the bridge has loaded
+        its channels; read back then, it would read none and be done."""
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await platform.say(user_id="U1", text="heard", ref="m1")
+        await holder.stop()
+        platform.up_before_start = True
+        platform.say_unheard(user_id="U1", text="missed", ref="m2")
+        await other.ownership.balance()
+        taken = other.bridges.get(bridge.bridge_id)
+        assert taken is not None
+        await _eventually(lambda: _read_back_by(platform, taken.adapter) is not None)
+
+        person = await _person(session_factory, bridge)
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "heard",
+            "missed",
+        ]
+
+    async def test_a_live_message_waits_for_the_read_back_under_way(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """What was said while none listened reaches the room before what is
+        said while it is read back."""
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await platform.say(user_id="U1", text="heard", ref="m1")
+        await holder.stop()
+        platform.say_unheard(user_id="U1", text="missed", ref="m2")
+        platform.read_back_gate = asyncio.Event()
+        platform.reading_back.clear()
+        await other.ownership.balance()
+        await _eventually(platform.reading_back.is_set)
+
+        live = asyncio.create_task(
+            platform.say(user_id="U1", text="said meanwhile", ref="m3")
+        )
+        await asyncio.sleep(0.5)
+        assert not live.done()
+        platform.read_back_gate.set()
+        await live
+
+        person = await _person(session_factory, bridge)
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "heard",
+            "missed",
+            "said meanwhile",
+        ]
+
+    async def test_a_live_message_said_while_it_waits_waits_too(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """A connection can deliver before the platform reads as listening,
+        as an early bot's socket on Mattermost does: that message waits too."""
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await holder.stop()
+        platform.say_unheard(user_id="U1", text="missed", ref="m1")
+        platform.live = False
+        await other.ownership.balance()
+
+        live = asyncio.create_task(
+            platform.say(user_id="U1", text="said meanwhile", ref="m2")
+        )
+        await asyncio.sleep(0.5)
+        assert not live.done()
+        platform.live = True
+        await live
+
+        person = await _person(session_factory, bridge)
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "missed",
+            "said meanwhile",
+        ]
+
+    async def test_a_live_message_while_the_adapter_starts_waits_too(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """Discord delivers while its adapter is still starting, syncing its
+        commands: what arrives then waits for the read-back too, which reads
+        once the adapter has started."""
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await holder.stop()
+        platform.say_unheard(user_id="U1", text="missed", ref="m1")
+        platform.start_gate = asyncio.Event()
+        platform.reading_back.clear()
+        await other.ownership.balance()
+        await _eventually(lambda: bool(platform.listening))
+
+        live = asyncio.create_task(
+            platform.say(user_id="U1", text="said meanwhile", ref="m2")
+        )
+        await asyncio.sleep(0.5)
+        assert not live.done()
+        assert not platform.reading_back.is_set()
+        platform.start_gate.set()
+        await live
+
+        person = await _person(session_factory, bridge)
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "missed",
+            "said meanwhile",
+        ]
+
+    async def test_a_bridge_let_go_of_before_it_read_back_reads_back_as_it_stops(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """The next holder reads back only from when this one let go, so what
+        was said before this one read back would be lost with it."""
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await holder.stop()
+        platform.say_unheard(user_id="U1", text="missed", ref="m1")
+        platform.live = False
+        await other.ownership.balance()
+        taken = other.bridges.get(bridge.bridge_id)
+        assert taken is not None
+        await asyncio.sleep(0.5)
+        assert _read_back_by(platform, taken.adapter) is None
+
+        await other.stop()
+
+        assert _read_back_by(platform, taken.adapter) is not None
+        person = await _person(session_factory, bridge)
+        assert await _room_bodies(session_factory, bridge.room_id, person) == ["missed"]
+
+    async def test_a_bridge_restarted_in_place_reads_nothing_back(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """Only a take-over knows since when nobody listened, and it reads
+        back once: a restart of the bridge later reads nothing."""
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await holder.stop()
+        await other.ownership.balance()
+        taken = other.bridges.get(bridge.bridge_id)
+        assert taken is not None
+        await _eventually(lambda: _read_back_by(platform, taken.adapter) is not None)
+
+        await other.bridges.restart(bridge.bridge_id)
+        restarted = other.bridges.get(bridge.bridge_id)
+        assert restarted is not None and restarted is not taken
+        await platform.say(user_id="U1", text="after the restart", ref="m1")
+        await asyncio.sleep(0.5)
+
+        assert _read_back_by(platform, restarted.adapter) is None
+
+
+def _read_back_by(platform: _Platform, adapter: PlatformAdapter) -> datetime | None:
+    """When this copy of the bridge read back from, once it has."""
+    return next(
+        (since for reader, since in platform.read_backs if reader is adapter), None
+    )
+
+
+async def _reading(
+    session_factory: async_sessionmaker[AsyncSession], bridge: _Bridge
+) -> None:
+    """Put the bridge on the platform that does not deliver again."""
+    async with session_factory() as session:
+        await session.execute(
+            update(CollaborationBridge)
+            .where(CollaborationBridge.id == bridge.bridge_id)
+            .values(type=READING_CHAT)
+        )
+        await session.commit()
+
+
+async def _set_status(
+    session_factory: async_sessionmaker[AsyncSession], bridge: _Bridge, status: str
+) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(CollaborationBridge)
+            .where(CollaborationBridge.id == bridge.bridge_id)
+            .values(status=status)
+        )
+        await session.commit()
+
+
+async def _eventually_bodies(
+    session_factory: async_sessionmaker[AsyncSession],
+    bridge: _Bridge,
+    person: str,
+    bodies: list[str],
+) -> None:
+    async with asyncio.timeout(TIMEOUT):
+        while await _room_bodies(session_factory, bridge.room_id, person) != bodies:
+            await asyncio.sleep(0.05)
+
+
+async def _person(
+    session_factory: async_sessionmaker[AsyncSession], bridge: _Bridge
+) -> str:
+    """The one person who spoke on the bridge, as the room knows them."""
+    async with session_factory() as session:
+        people = (
+            await session.scalars(
+                select(ExternalUser.client_id).where(
+                    ExternalUser.bridge_id == bridge.bridge_id
+                )
+            )
+        ).all()
+        assert len(people) == 1
+        person = await session.get(Client, people[0])
+    assert person is not None
+    return person.transport_user_id
 
 
 class TestChangesMadeElsewhere:

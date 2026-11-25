@@ -1533,6 +1533,35 @@ version of their own to them without also giving them a release of their own.
   taking over another pod's agents during a roll, was restarted and handed its
   work over again. A startup probe now gives a booting pod up to five minutes,
   and liveness waits five seconds for an answer.
+- **A messaging app bridge is no longer handed to a switch-core pod that is
+  still booting.** The other pods counted a starting pod as soon as it
+  started, and handed it its share of the bridges and consumers while it
+  could not run any of them yet, so a bridge could sit with no connection to
+  its platform until that pod's boot was done. A starting pod now takes work
+  once it can hear the other pods, and they hand its share over then. A pod
+  starting alone takes everything at once, as before.
+- **A machine no longer reads offline while a release moves it to another
+  switch-core pod.** Each pod a rolling update stopped took its machines
+  offline until their controllers reattached to another pod, one to three
+  seconds later: Switch Console showed them offline, and a message to one of
+  their agents got the "device is offline" reply. A machine whose pod shut
+  down now reads online for up to 15 seconds while it reattaches, as long as
+  one whose pod died, and messages to its agents wait for it. One that does
+  not come back in time reads offline from when its pod stopped, and its
+  owner's Console is told, as it now is when a machine's pod dies; before,
+  Console showed such a machine online until it next refreshed on its own.
+- **Messages typed in a Slack, Discord or Mattermost channel while its bridge
+  moves between switch-core pods no longer go missing or come a minute
+  late.** Discord and Mattermost do not send again what was said while the
+  bridge had no connection, so a message typed between one pod letting go of
+  the bridge and the next taking it up never reached the room, and Slack sent
+  it again a minute later. The pod taking a bridge over now reads its channels
+  back from shortly before the last one let go, at most ten minutes back, and
+  hands on what was said there. On Discord and Mattermost, posts by bots and
+  integrations in that gap are still not read back. On Slack, the read-back
+  stops after ten seconds or at Slack's rate limit, and reads replies only in
+  threads whose root is among the posts it reads; what it leaves still comes
+  a minute late.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error

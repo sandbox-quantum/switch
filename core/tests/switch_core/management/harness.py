@@ -259,6 +259,7 @@ def build_harness(
             session_factory=session_factory,
             processes=SwitchCoreProcessStore(),
             key_ids=[key.id for key in TEST_KEYRING.keys],
+            booting=False,
         ),
         user_changes=SignalUserChanges(local=user_changes, bus=signal_bus),
     )

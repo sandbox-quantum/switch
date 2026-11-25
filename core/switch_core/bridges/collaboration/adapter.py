@@ -497,6 +497,30 @@ class SupportsSharedConnection(Protocol):
         ...
 
 
+@runtime_checkable
+class SupportsReadBack(Protocol):
+    """An adapter whose platform does not send again what was said while
+    nothing listened, or sends it only late, and that can read it back.
+
+    A bridge moves between switch-core processes, and the one taking it over
+    reads back each of its channels from shortly before the last one let go
+    (`CollaborationCore.read_back_from`). What it hands on was maybe handled
+    already: a post or a command read twice is written once
+    (`collaboration_core._post_source`)."""
+
+    def listening(self) -> bool:
+        """Whether the platform's live events reach the adapter now: what is
+        said from here on arrives without being read back."""
+        ...
+
+    async def read_back(self, since: datetime, channel_ids: Collection[str]) -> int:
+        """Hand on, oldest first and as if each had just arrived, what was
+        said in `channel_ids` after `since`. Returns how many were handed on.
+        Where a bridge just started here cannot yet tell its own posts from
+        other bots' and integrations', those are left out."""
+        ...
+
+
 class PlatformAdapter(ABC):
     #: The platform as a person names it — "Microsoft Teams", not "teams".
     #:
@@ -730,6 +754,20 @@ class PlatformAdapter(ABC):
     # requests and webhooks that reach it. An adapter that cannot keep quiet
     # listens wherever it runs, so its platform delivers to every process.
     keeps_quiet_unless_listening: ClassVar[bool] = False
+
+    # Whether the platform delivers events to the agents' own identities, as
+    # Mattermost does to each agent's bot over a socket of its own: the
+    # bridge listens once those are provisioned.
+    listens_through_agent_identities: ClassVar[bool] = False
+
+    # Whether the platform sends again, a while later, an event the bridge did
+    # not acknowledge: what a read-back misses then arrives late, not never.
+    sends_missed_events_again: ClassVar[bool] = False
+
+    # How long after `SupportsReadBack.listening` turns true the platform may
+    # still not deliver to the new connection: a bridge taken over reads back
+    # once more after that, for what was said in between.
+    listening_settles_seconds: ClassVar[float] = 0.0
 
     #: What `retire_channel` does to a deleted room's channel when it works.
     #:

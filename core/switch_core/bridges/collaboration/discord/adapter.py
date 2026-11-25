@@ -511,6 +511,15 @@ def _button_label(control: Control) -> str:
 
 _RECOVERY_LIMIT = 100
 
+
+def _said_after(last_message_id: int | None, since: datetime) -> bool:
+    """Whether a place whose newest message is `last_message_id` may hold one
+    newer than `since`. A place whose newest message is not known is read."""
+    return (
+        last_message_id is None or discord.utils.snowflake_time(last_message_id) > since
+    )
+
+
 # Waited when Discord says it is rate limiting but does not say for how long.
 # Its buckets are short, so this is a floor that keeps the caller's backoff in
 # the right order of magnitude rather than a figure Discord commits to.
@@ -3000,6 +3009,73 @@ class DiscordAdapter(PlatformAdapter):
             error,
         )
 
+    def listening(self) -> bool:
+        """Whether the Gateway's events reach this bridge: its connection is
+        open as the socket, not logged in for the API alone
+        (`SupportsReadBack`)."""
+        connection = self._connection
+        client = connection.client_or_none if connection is not None else None
+        return client is not None and client.is_ready()
+
+    async def read_back(self, since: datetime, channel_ids: Collection[str]) -> int:
+        """Hand on what people said in these channels, and in the threads
+        open under them, after `since`, as the gateway would have
+        (`SupportsReadBack`): Discord sends nothing again to a bot that was
+        not connected. A channel and its threads feed one room, so their
+        messages are handed on together in the order they were sent. A
+        place with nothing newer than `since` is not read, and how far back
+        `since` goes is what bounds the rest.
+
+        What was handed on already is handed on again rather than skipped:
+        it may be a live message waiting for this read-back, and a reply
+        read back before it would lose its thread. A post or a command
+        handed on twice is written once."""
+        bot_user_id = self._require_connection().bot_user_id
+        handed = 0
+        for channel_id in channel_ids:
+            said: list[Any] = []
+            for place in await self._read_back_places(int(channel_id), since):
+                try:
+                    async for message in place.history(
+                        after=since, limit=None, oldest_first=True
+                    ):
+                        if message.webhook_id is None and not message.author.bot:
+                            said.append(message)
+                except discord.HTTPException as e:
+                    logger.warning(
+                        "Could not read back Discord channel %s: %s", place.id, e
+                    )
+            for message in sorted(said, key=lambda message: message.id):
+                if message.type not in ALLOWED_MESSAGE_TYPES:
+                    continue
+                self._remember_seen(message.id)
+                try:
+                    await self._hand_on(message, bot_user_id)
+                except Exception:
+                    logger.exception(
+                        "Could not hand on Discord message %s read back from "
+                        "channel %s",
+                        message.id,
+                        channel_id,
+                    )
+                    continue
+                handed += 1
+        return handed
+
+    async def _read_back_places(self, channel_id: int, since: datetime) -> list[Any]:
+        """The channel and the threads open under it, those with a message
+        after `since`."""
+        try:
+            channel = await self._get_channel(channel_id)
+        except (discord.HTTPException, ChannelNotBindable) as e:
+            logger.warning("Could not read back Discord channel %s: %s", channel_id, e)
+            return []
+        return [
+            place
+            for place in [channel, *getattr(channel, "threads", [])]
+            if _said_after(getattr(place, "last_message_id", None), since)
+        ]
+
     async def find_request_card(
         self,
         channel_id: str,
@@ -3998,13 +4074,19 @@ class DiscordAdapter(PlatformAdapter):
             return
         if message.type not in ALLOWED_MESSAGE_TYPES:
             return
-
         if message.id in self._seen_ids:
             return
-        self._seen_ids[message.id] = None
+        self._remember_seen(message.id)
+        await self._hand_on(message, bot_user_id)
+
+    def _remember_seen(self, message_id: int) -> None:
+        self._seen_ids[message_id] = None
         if len(self._seen_ids) > self._seen_ids_max:
             self._seen_ids.popitem(last=False)
 
+    async def _hand_on(self, message: Any, bot_user_id: int) -> None:
+        """Hand a message on to the bridge, as a command or as a message."""
+        author = message.author
         channel = message.channel
         # A message inside a thread is bridged into the PARENT channel's room,
         # threaded under the thread's root message (thread id == root message

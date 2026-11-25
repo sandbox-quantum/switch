@@ -69,11 +69,11 @@ async def _say(session: AsyncSession, room_id: str, body: str = "hi") -> int:
 async def _hold(session: AsyncSession, key: str, process_id: str) -> int:
     """Claim `key`'s lease for `process_id`, as its ownership would, and
     return the token."""
-    await SwitchCoreProcessStore().renew(session, process_id, key_ids=[])
+    await SwitchCoreProcessStore().renew(session, process_id, key_ids=[], booting=False)
     claimed = await OwnershipLeaseStore().claim(
         session, kind=KIND, keys=[key], process_id=process_id, lease_ttl=LEASE_TTL
     )
-    return claimed[key]
+    return claimed[key].token
 
 
 def _advance(client_id: str, room_id: str, seq: int, token: int) -> CursorAdvance:

@@ -10,7 +10,14 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Mapping,
+    Sequence,
+)
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -191,6 +198,39 @@ _MATTERMOST_REFUSALS = (
     MethodNotAllowed,
     ContentTooLarge,
 )
+
+# How many posts a read-back asks Mattermost for at a time, newest first.
+_READ_BACK_PAGE = 200
+
+# Failed connections in a row after which a bridge's read-back stops waiting
+# for that bot's socket (`listening`): a bot that cannot connect would
+# otherwise hold it up, and every live post with it.
+_GIVE_UP_LISTENING_AFTER = 3
+
+
+def _posts_since(driver: Any, channel_id: str, since_ms: int) -> list[dict[str, Any]]:
+    """The posts made in the channel after `since_ms` and not deleted, read a
+    page at a time from the newest back. Paged rather than asked with
+    `since`, which caps at a thousand and counts edits too."""
+    found: list[dict[str, Any]] = []
+    page = 0
+    while True:
+        answer = dict(
+            driver.posts.get_posts_for_channel(
+                channel_id, params={"page": page, "per_page": _READ_BACK_PAGE}
+            )
+        )
+        posts = answer.get("posts") or {}
+        newest_first = [posts[post_id] for post_id in answer.get("order") or []]
+        for post in newest_first:
+            if int(post.get("create_at") or 0) <= since_ms:
+                return found
+            if not post.get("delete_at"):
+                found.append(post)
+        if len(newest_first) < _READ_BACK_PAGE:
+            return found
+        page += 1
+
 
 # How far an attachment has got, in the order Mattermost draws its parts. A
 # part that would draw above one already there goes in a new attachment.
@@ -460,6 +500,8 @@ class MattermostAdapter(PlatformAdapter):
     # admin. Mattermost sends every event to every open socket, so a socket
     # in each process would hand each process every post.
     keeps_quiet_unless_listening: ClassVar[bool] = True
+    # Posts reach the bridge over its agents' bots' sockets.
+    listens_through_agent_identities: ClassVar[bool] = True
 
     @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
@@ -682,6 +724,12 @@ class MattermostAdapter(PlatformAdapter):
         self._seen_post_ids: OrderedDict[str, None] = OrderedDict()
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
+        # The bots whose socket has said hello since the adapter started, and
+        # each bot's failed connections in a row, read by `listening`;
+        # written from each socket's own thread.
+        self._listening_bots: set[str] = set()
+        self._failed_connections: dict[str, int] = {}
+        self._listening_lock = threading.Lock()
 
         # (agent_name, post_id) currently carrying the working reaction. A
         # reaction belongs to the bot that added it, so two agents on the same
@@ -2395,6 +2443,118 @@ class MattermostAdapter(PlatformAdapter):
             props.pop(_ATTACHMENTS_PROP, None)
         return props
 
+    def listening(self) -> bool:
+        """Whether every agent's bot has opened its socket, the sockets being
+        where Mattermost delivers posts (`SupportsReadBack`). Opened once is
+        enough: a socket that drops later reconnects on its own. A bot that
+        failed to connect `_GIVE_UP_LISTENING_AFTER` times in a row is not
+        waited for."""
+        bots = {str(bot.get("user_id") or "") for bot in self._agent_bots.values()}
+        with self._listening_lock:
+            return bool(bots) and all(
+                bot in self._listening_bots
+                or self._failed_connections.get(bot, 0) >= _GIVE_UP_LISTENING_AFTER
+                for bot in bots
+            )
+
+    def _connection_failed(self, bot_id: str, agent_name: str) -> None:
+        with self._listening_lock:
+            failed = self._failed_connections.get(bot_id, 0) + 1
+            self._failed_connections[bot_id] = failed
+        if failed == _GIVE_UP_LISTENING_AFTER:
+            logger.warning(
+                "Mattermost bot %s failed to connect %d times in a row; a "
+                "read-back no longer waits for it, and posts only it would "
+                "hear are missed until it connects",
+                agent_name,
+                failed,
+            )
+
+    async def read_back(self, since: datetime, channel_ids: Collection[str]) -> int:
+        """Hand on, in order, what people posted in these channels after
+        `since`, as the bots' sockets would have (`SupportsReadBack`):
+        Mattermost sends nothing again to a socket that was not connected. A
+        channel with no post since is not read for posts.
+
+        What was handed on already is handed on again rather than skipped:
+        it may be a live post waiting for this read-back, and a reply read
+        back before it would lose its thread. A post or a command handed on
+        twice is written once."""
+        driver = self._admin_driver
+        if driver is None:
+            raise RuntimeError("Cannot read back Mattermost: adapter not started")
+        loop = asyncio.get_running_loop()
+        since_ms = int(since.timestamp() * 1000)
+
+        def _read(channel_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            channel = dict(driver.channels.get_channel(channel_id))
+            if int(channel.get("last_post_at") or 0) <= since_ms:
+                return channel, []
+            return channel, _posts_since(driver, channel_id, since_ms)
+
+        people: dict[str, bool] = {}
+        handed = 0
+        for channel_id in channel_ids:
+            try:
+                channel, said = await loop.run_in_executor(None, _read, channel_id)
+            except Exception as e:
+                logger.warning(
+                    "Could not read back Mattermost channel %s: %s", channel_id, e
+                )
+                continue
+            posts = sorted(
+                (post for post in said if not post.get("type")),
+                key=lambda post: int(post.get("create_at") or 0),
+            )
+            for post in posts:
+                try:
+                    if not await self._said_by_a_person(post, people, loop):
+                        continue
+                    self._first_sighting(post.get("id", ""))
+                    handing_on = await self._hand_on(
+                        post,
+                        mm_channel_type=str(channel.get("type") or ""),
+                        channel_name=str(channel.get("display_name") or "") or None,
+                        agent_name=None,
+                    )
+                    if handing_on is not None:
+                        await handing_on
+                        handed += 1
+                except Exception:
+                    logger.exception(
+                        "Could not hand on Mattermost post %s read back from "
+                        "channel %s",
+                        post.get("id"),
+                        channel_id,
+                    )
+        return handed
+
+    async def _said_by_a_person(
+        self,
+        post: dict[str, Any],
+        people: dict[str, bool],
+        loop: asyncio.AbstractEventLoop,
+    ) -> bool:
+        """Whether a post read back was a person's, and not a bot's or an
+        integration's: the bridge's own bots may not all be known here yet,
+        and one of their posts handed on would come back as a person's.
+        `people` keeps the answer for each sender."""
+        props = post.get("props") or {}
+        if str(props.get("from_webhook", "")).lower() == "true" or (
+            str(props.get("from_bot", "")).lower() == "true"
+        ):
+            return False
+        user_id = str(post.get("user_id") or "")
+        if user_id in self._bridge_bot_ids or user_id == self._admin_user_id:
+            return False
+        if user_id not in people:
+            assert self._admin_driver is not None
+            user = await loop.run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
+            people[user_id] = not user.get("is_bot", False)
+        return people[user_id]
+
     async def find_request_card(
         self,
         channel_id: str,
@@ -3390,6 +3550,7 @@ class MattermostAdapter(PlatformAdapter):
                 except Exception as e:
                     reason = str(e)
                     backoff_next = min(backoff * 2, 30)
+                    self._connection_failed(bot_id, name)
                 else:
                     # It returns only once an established connection closed.
                     reason = "connection closed"
@@ -3775,6 +3936,14 @@ class MattermostAdapter(PlatformAdapter):
 
         event_type = event.get("event")
 
+        if event_type == "hello":
+            # The socket is open: Mattermost greets each one as it does.
+            bot_id = str((event.get("broadcast") or {}).get("user_id") or "")
+            with self._listening_lock:
+                self._listening_bots.add(bot_id)
+                self._failed_connections.pop(bot_id, None)
+            return
+
         if event_type == "user_added":
             await self._handle_user_added(event)
             return
@@ -3815,20 +3984,41 @@ class MattermostAdapter(PlatformAdapter):
         if user_id in self._bridge_bot_ids or user_id == self._admin_user_id:
             return
 
-        post_id = post.get("id", "")
-        if not self._first_sighting(post_id):
+        if not self._first_sighting(post.get("id", "")):
             return
 
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError("Cannot handle posted event: adapter not started")
+        handing_on = await self._hand_on(
+            post,
+            mm_channel_type=data.get("channel_type", ""),
+            channel_name=str(data.get("channel_display_name", "")) or None,
+            agent_name=agent_name,
+        )
+        if handing_on is not None:
+            self._dispatch(handing_on, loop)
+
+    async def _hand_on(
+        self,
+        post: dict[str, Any],
+        *,
+        mm_channel_type: str,
+        channel_name: str | None,
+        agent_name: str | None,
+    ) -> Coroutine[Any, Any, None] | None:
+        """What handing a person's post on to the bridge is, for the caller
+        to run where it runs the bridge's work: a command, or a message with
+        its files. Its sender is looked up on the loop this runs on. None
+        when there is no handler for it."""
+        if self._admin_driver is None:
+            raise RuntimeError("Cannot handle posted event: adapter not started")
+        user_id = post.get("user_id", "")
+        post_id = post.get("id", "")
         channel_id = post.get("channel_id", "")
         message = post.get("message", "")
         # Mattermost sets root_id to the thread root for replies, "" otherwise.
         root_id = post.get("root_id", "") or None
-        mm_channel_type = data.get("channel_type", "")
-        channel_name = str(data.get("channel_display_name", "")) or None
-
-        loop = self._main_loop
-        if loop is None or self._admin_driver is None:
-            raise RuntimeError("Cannot handle posted event: adapter not started")
 
         ws_loop = asyncio.get_event_loop()
         user_is_bot = False
@@ -3877,7 +4067,7 @@ class MattermostAdapter(PlatformAdapter):
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
             args = parts[1].strip() if len(parts) > 1 else ""
-            coro = self._on_command(
+            return self._on_command(  # type: ignore[return-value]
                 InboundCommand(
                     channel_id=channel_id,
                     channel_type=channel_type,
@@ -3891,29 +4081,27 @@ class MattermostAdapter(PlatformAdapter):
                     channel_name=channel_name,
                 )
             )
-            self._dispatch(coro, loop)  # type: ignore[arg-type]
-            return
 
-        if self._on_message:
-            attachments, attachment_failures = await self._fetch_attachments(
-                post.get("file_ids", []), ws_loop
-            )
-            inbound = InboundMessage(
-                channel_id=channel_id,
-                channel_type=channel_type,
-                sender_id=user_id,
-                sender_name=username,
-                content=message,
-                message_ref=post_id,
-                root_id=root_id,
-                agent_name=agent_name,
-                channel_name=channel_name,
-                attachments=attachments,
-                attachment_failures=attachment_failures,
-                sender_is_app=sender_is_app,
-            )
-            coro = self._on_message(inbound)
-            self._dispatch(coro, loop)  # type: ignore[arg-type]
+        if self._on_message is None:
+            return None
+        attachments, attachment_failures = await self._fetch_attachments(
+            post.get("file_ids", []), ws_loop
+        )
+        inbound = InboundMessage(
+            channel_id=channel_id,
+            channel_type=channel_type,
+            sender_id=user_id,
+            sender_name=username,
+            content=message,
+            message_ref=post_id,
+            root_id=root_id,
+            agent_name=agent_name,
+            channel_name=channel_name,
+            attachments=attachments,
+            attachment_failures=attachment_failures,
+            sender_is_app=sender_is_app,
+        )
+        return self._on_message(inbound)  # type: ignore[return-value]
 
     def _handle_post_takeback(self, event_type: str, event: dict[str, Any]) -> None:
         """A post deleted or edited on Mattermost. Every bot in the channel

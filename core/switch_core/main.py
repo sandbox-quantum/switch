@@ -811,7 +811,8 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # What another process reads to know this one is alive. Renewed on a
     # connection of its own, outside the pool, so requests and streams that
     # fill the pool cannot make it lapse and drop everything this process
-    # holds (`create_lease_engine`).
+    # holds (`create_lease_engine`). Booting until its ownership can take work
+    # (`ownership.py`).
     lease_engine = create_lease_engine(config)
     instrument_queries(lease_engine)
     process_lease = ProcessLease(
@@ -819,6 +820,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in config.keyring.keys],
+        booting=True,
         renewal_session_factory=create_session_factory(lease_engine),
     )
     await process_lease.renew()
@@ -1847,7 +1849,8 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         )
 
     # Start the work this process owns, before it serves: with one process,
-    # all of it. Then the quiet copies of the bridges another process holds.
+    # all of it, and beside others none until its signal bus listens. Then the
+    # quiet copies of the bridges another process holds.
     await ownership.start()
     # Running from here, so the rest of the boot is covered: a lease that
     # stops being sure stops the work it holds there and then.
