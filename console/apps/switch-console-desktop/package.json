@@ -117,7 +117,7 @@
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
     "framer-motion": "^12.33.0",
-    "js-yaml": "^5.3.0",
+    "js-yaml": "^5.4.1",
     "jsdom": "^29.0.2",
     "katex": "^0.16.45",
     "lucide-react": "^0.564.0",
