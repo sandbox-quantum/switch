@@ -285,59 +285,55 @@ The canary app only reads GitHub's 10 most recent releases, and core and stable
 releases count toward them. If 10 of those are published after the newest canary,
 canary installs find no update until the next canary is tagged.
 
-## switch-agent-controller release (separate)
+## switch-agent-controller release
 
 The headless agent controller (`console/packages/agent-controller`), which runs
-managed agents on a customer's own Linux or macOS machine, releases on its own tag,
-`switch-agent-controller-v<version>`, via
-`.github/workflows/agent-controller-release.yml`:
+managed agents on a customer's own Linux or macOS machine, is published only by
+the `controller` job of `switch-release.yml`, as
+`switch-agent-controller-v<version>` at the Switch version: see
+[The controller a Switch release names](#the-controller-a-switch-release-names).
+There is no separate controller tag; pushing a `switch-agent-controller-v*` tag
+publishes nothing.
 
-```bash
-git tag switch-agent-controller-v0.2.0 <commit on main>
-git push origin switch-agent-controller-v0.2.0
-```
-
-- **The tag sets the version.** It must be `x.y.z`; the workflow stamps it into the
-  package on the runner, so `package.json` is not bumped. The controller reports it
-  to Switch and compares it with newer releases.
 - **What it publishes:** a GitHub Release holding
   `switch-agent-controller-<version>.tgz` (one npm package with the CLI and the
   shared-host bundle, no dependencies), its signature
   `switch-agent-controller-<version>.tgz.sig` (see [Release signing](#release-signing))
-  and `install.sh`. It is never marked Latest,
+  and, for a stable release, `install.sh`. It is never marked Latest,
   so Switch Console's stable updater never sees it.
 - **How installs find it:** `install.sh` and `switch-agent-controller update` list the
   repository's releases and take the highest non-draft, non-prerelease controller tag
   that carries its package. No npm registry or token is involved.
 - **Canary visibility:** each controller release counts toward the 10 most recent
   releases the Console canary updater reads (see Canary builds above).
-- **Not gated:** the workflow needs no approval. It tests the controller, packs it,
-  installs the package and runs it once before releasing.
-
-`workflow_dispatch` runs everything except signing and the release, for
-verification, and needs no secret.
 
 ### Release signing
 
 Controllers install only a release signed with a key built into them, so neither
 a compromised Switch server nor its chart values can make them run a package the
-release workflows did not publish. Both `agent-controller-release.yml` and the
-`controller` job of `switch-release.yml` sign each package they publish (stable,
-RC and dev builds alike) with `scripts/sign-release.mjs`, which writes
-`<package>.tgz.sig`: the Ed25519 signature, base64, of
-`switch-agent-controller-release-v1\n<version>\n<sha256>\n`. The private key is
-the `CONTROLLER_RELEASE_SIGNING_KEY` GitHub Actions secret (PKCS#8 PEM). A
-publishing run without it fails, and so does one whose key's public half is not in
-`console/packages/agent-controller/src/release-keys.ts`. A re-run of a release
-that is already published with the same package uploads the signature if the
-release lacks it.
+release workflow did not publish. The `controller` job of `switch-release.yml`
+signs each package it publishes (stable, RC and dev builds alike) with
+`scripts/sign-release.mjs`, which writes `<package>.tgz.sig`: the Ed25519
+signature, base64, of `switch-agent-controller-release-v1\n<version>\n<sha256>\n`.
+
+The private key is the `CONTROLLER_RELEASE_SIGNING_KEY` secret of the
+`controller-signing` GitHub environment (PKCS#8 PEM). The environment's
+deployment rules admit only `main` and `switch-v*` tags, so a workflow pushed to
+any other branch cannot read the key, and only the `controller` job enters it.
+**Never store the key as a repository secret**: every account with write access
+can read a repository secret from a workflow on a branch of its own. A
+publishing run without the key fails, and so does one whose key's public half is
+not in `console/packages/agent-controller/src/release-keys.ts` (or, for the one
+release that retires a leaked key, `OUTGOING_RELEASE_KEYS` in
+`scripts/sign-release.mjs`). A re-run of a release that is already published
+with the same package uploads the signature if the release lacks it.
 
 The controller (`run`, `update`) and `install.sh` check the signature against the
 trusted keys in `src/release-keys.ts` (`install.sh` carries a copy between its
 `TRUSTED RELEASE KEYS` markers; `release-keys.test.ts` fails when they differ).
 With no trusted key, they install nothing.
 
-**Generating the first key.** On a machine you trust:
+**Generating a key.** On a machine you trust:
 
 ```bash
 cd console/packages/agent-controller
@@ -346,26 +342,36 @@ node scripts/generate-release-signing-key.mjs release-<yyyy>-<mm>
 
 It prints three things: the entry for `TRUSTED_RELEASE_KEYS` in
 `src/release-keys.ts`, the same key as a line for `install.sh`, and the private
-key. Paste the first two and merge them; store the private key as the repository
-secret `CONTROLLER_RELEASE_SIGNING_KEY` (Settings → Secrets and variables →
-Actions, or `gh secret set CONTROLLER_RELEASE_SIGNING_KEY < key.pem` from a file
-you then delete), and keep no other copy outside a password manager or vault.
-No release can be published while the list is empty: `sign-release.mjs` refuses
-a key that is not in it. Controllers from before release signing check only the
-SHA-256 Switch names, so they update to the first signed release as before and
-verify signatures from then on.
+key. Paste the first two into a pull request; store the private key with
+`gh secret set CONTROLLER_RELEASE_SIGNING_KEY --env controller-signing` (paste
+it at the prompt, or redirect from a file you then delete) once the steps below
+say to, and keep no other copy outside a password manager or vault.
 
 **Rotating.** Generate a new key with a new id, add it to both lists beside the
 old one, and release: controllers on that release trust both. Once they have
 moved to it (the owner's controller list shows `release.current`), replace the
-secret with the new private key, and in a later release remove the old public
-key. A controller that skipped the release trusting both cannot verify releases
-signed only with the new key; reinstall it by hand.
+environment secret with the new private key, and in a later release remove the
+old public key. A controller that skipped the release trusting both cannot
+verify releases signed only with the new key; reinstall it by hand.
 
-**If the private key leaks.** Remove its public key from both lists, add a new
-one, replace the secret, and release. Controllers still on releases that trust
-the leaked key keep trusting it until they update, so treat them as exposed until
-they run the new release.
+**If the private key leaks.** Installed controllers trust only the leaked key,
+so the release that moves them off it has to be signed with it:
+
+1. Generate a new key and keep its private half in a vault for now.
+2. In one pull request, make the new key the only one in both lists and put the
+   leaked key in `OUTGOING_RELEASE_KEYS` in `scripts/sign-release.mjs`. Merge it
+   and cut a Switch release; it is signed with the leaked key and trusts only
+   the new one, so controllers that install it trust the leaked key no more.
+   Fresh installs from that release's `install.sh` refuse its package, so ship
+   the next release soon.
+3. Store the new private key in the environment secret (replacing the leaked
+   one), and delete any other copy of the leaked key.
+4. Empty `OUTGOING_RELEASE_KEYS` and cut another release, signed with the new key.
+
+Upgrade every Switch deployment through the release in step 2: a controller
+that skips it trusts only the leaked key and refuses everything after it, so
+reinstall such a controller by hand. Until a controller runs that release, treat
+it as exposed.
 
 ### The controller a Switch release names
 
