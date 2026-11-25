@@ -14,7 +14,7 @@
 # - Box pods should carry `karpenter.sh/do-not-disrupt: "true"` (or the cluster autoscaler's
 #   `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`) in the user template, so only machines with no boxes are
 #   removed. That's a template change, not in this file.
-# - The size matches the box's requests today (250m CPU, 1Gi memory). Change both together.
+# - The size matches a Base box's requests (500m CPU, 11776Mi memory: agents plus controller). Change both together.
 ---
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
@@ -58,8 +58,8 @@ spec:
         - name: pause
           image: __PAUSE_IMAGE__
           resources:
-            requests: { cpu: 250m, memory: 1Gi }
-            limits: { cpu: 250m, memory: 1Gi }
+            requests: { cpu: 500m, memory: 11776Mi }
+            limits: { cpu: 500m, memory: 11776Mi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

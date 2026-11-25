@@ -337,3 +337,61 @@ def test_a_list_write_refused_is_raised_for_the_operator_to_report():
     api.read_list("box-owners")
     with pytest.raises(HTTPError):
         api.write_list("box-owners", {"k": "v"}, "1")
+
+
+def test_the_start_line_names_the_ceiling_default_size_and_sizes(tmp_path, monkeypatch, caplog):
+    """A deploy step reads this line back to confirm which size new boxes are made at, so its form is pinned:
+    `Box operator on: ceiling=<n> default_size=<name> sizes=<names, sorted, comma-separated>`, names only."""
+    import logging
+
+    from switch_hosted_controller import box_operator_main as bom
+
+    raw = {
+        "server_ip": "10.0.0.10",
+        "server_url": "https://10.0.0.10",
+        "image": "registry.example/box@sha256:" + "a" * 64,
+        "storage_class": "gp3",
+        "proxy_host": "squid.egress-proxy.svc",
+        "proxy_port": 3128,
+        "zones": ["eu-west-3a"],
+        "sizes": {
+            name: {
+                "disk": disk,
+                "cpu_request": "500m",
+                "cpu_limit": "4",
+                "memory_request": "1Gi",
+                "memory_limit": "1Gi",
+            }
+            for name, disk in (("pro", "80Gi"), ("max", "160Gi"), ("earlier", "15Gi"))
+        },
+        "ceiling": 45,
+        "daily_calls": 500,
+        "default_size": "pro",
+    }
+    files = {}
+    for name, text in (
+        ("config", __import__("json").dumps(raw)),
+        ("ca", "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"),
+        ("settings", "{}"),
+        ("token", "t" * 40),
+    ):
+        files[name] = tmp_path / name
+        files[name].write_text(text)
+    for key, value in {
+        "SWITCH_BOX_OPERATOR_CONFIG": files["config"],
+        "SWITCH_BOX_OPERATOR_BOX_CA": files["ca"],
+        "SWITCH_BOX_OPERATOR_MANAGED_SETTINGS": files["settings"],
+        "SWITCH_BOX_OPERATOR_CORE_URL": "https://core.example.invalid",
+        "SWITCH_BOX_OPERATOR_CORE_TOKEN_FILE": files["token"],
+        "KUBERNETES_SERVICE_HOST": "10.0.0.1",
+    }.items():
+        monkeypatch.setenv(key, str(value))
+    monkeypatch.setattr(bom, "OperatorKubeApi", lambda *a, **k: object())
+    monkeypatch.setattr(bom, "OperatorCoreApi", lambda *a, **k: object())
+    monkeypatch.setattr(bom, "run", lambda *a, **k: None)
+    with caplog.at_level(logging.INFO):
+        assert bom.main() == 0
+    (line,) = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("Box operator on:")
+    ]
+    assert line == "Box operator on: ceiling=45 default_size=pro sizes=earlier,max,pro"

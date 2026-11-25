@@ -979,7 +979,28 @@ data:
         "__ZONE__"
       ],
       "sizes": {
-        "standard": {
+        "base": {
+          "disk": "40Gi",
+          "cpu_request": "400m",
+          "cpu_limit": "4",
+          "memory_request": "11008Mi",
+          "memory_limit": "11008Mi"
+        },
+        "plus": {
+          "disk": "80Gi",
+          "cpu_request": "900m",
+          "cpu_limit": "8",
+          "memory_request": "23808Mi",
+          "memory_limit": "23808Mi"
+        },
+        "max": {
+          "disk": "160Gi",
+          "cpu_request": "1900m",
+          "cpu_limit": "16",
+          "memory_request": "48384Mi",
+          "memory_limit": "48384Mi"
+        },
+        "standard-before-held": {
           "disk": "15Gi",
           "cpu_request": "150m",
           "cpu_limit": "3",
@@ -989,7 +1010,7 @@ data:
       },
       "ceiling": 20,
       "daily_calls": __DAILY_CALLS__,
-      "default_size": "standard",
+      "default_size": "base",
       "split": true,
       "allowed_images": [
         "__PREVIOUS_BOX_IMAGE_3__",

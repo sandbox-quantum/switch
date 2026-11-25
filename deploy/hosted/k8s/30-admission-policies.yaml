@@ -109,10 +109,10 @@ spec:
       && !has(object.spec.containers[0].volumeMounts)
     message: a placeholder is one pause container (the pinned image), with no command,
       env or mounts
-  - expression: 'object.spec.containers[0].resources.requests == {''cpu'': ''250m'',
-      ''memory'': ''1Gi''} && object.spec.containers[0].resources.limits == {''cpu'':
-      ''250m'', ''memory'': ''1Gi''}'
-    message: a placeholder is exactly one box in size (250m CPU, 1Gi memory)
+  - expression: 'object.spec.containers[0].resources.requests == {''cpu'': ''500m'',
+      ''memory'': ''11776Mi''} && object.spec.containers[0].resources.limits == {''cpu'':
+      ''500m'', ''memory'': ''11776Mi''}'
+    message: a placeholder is exactly one Base box in size (500m CPU, 11776Mi memory)
   - expression: |-
       object.spec.all(k, k in ['containers', 'restartPolicy', 'terminationGracePeriodSeconds', 'dnsPolicy', 'securityContext',
         'schedulerName', 'tolerations', 'priority', 'priorityClassName', 'preemptionPolicy', 'enableServiceLinks',
@@ -492,7 +492,7 @@ spec:
         object.?spec.?resources.?requests.orValue({}).size() == 1 &&
         (object.metadata.name == 'data-controller'
           ? string(object.?spec.?resources.?requests.orValue({})[?'storage'].orValue('')) == '2Gi'
-          : string(object.?spec.?resources.?requests.orValue({})[?'storage'].orValue('')) in ['15Gi']))
+          : string(object.?spec.?resources.?requests.orValue({})[?'storage'].orValue('')) in ['15Gi', '40Gi', '80Gi', '160Gi']))
     message: a disk is gp3, ReadWriteOnce, new (no source or volume), and of an allowed
       size
   - expression: |-
@@ -615,6 +615,20 @@ spec:
   - expression: variables.c.size() == 2 && variables.c[?0].?name.orValue('') == 'controller'
       && variables.c[?1].?name.orValue('') == 'agents'
     message: exactly two containers, controller and agents
+  # A new box's size, exactly one of the tiers: memory held whole (request = limit) in both containers, so a busy box
+  # is stopped by its own limit, never a neighbour. The controller is the same in every tier (768Mi); the agents are
+  # Base, Plus or Max (11.5, 24 or 48 GiB a box in total). The operator config's tiers must say the same (a test checks
+  # they agree); a box made earlier keeps its own size.
+  - expression: |-
+      variables.c[?0].?resources.?requests.orValue({}) == {'cpu': '100m', 'memory': '768Mi'} &&
+      variables.c[?0].?resources.?limits.orValue({}) == {'cpu': '1', 'memory': '768Mi'} &&
+      [
+        [{'cpu': '400m', 'memory': '11008Mi'}, {'cpu': '4', 'memory': '11008Mi'}],
+        [{'cpu': '900m', 'memory': '23808Mi'}, {'cpu': '8', 'memory': '23808Mi'}],
+        [{'cpu': '1900m', 'memory': '48384Mi'}, {'cpu': '16', 'memory': '48384Mi'}]
+      ].exists(t, variables.c[?1].?resources.?requests.orValue({}) == t[0] &&
+        variables.c[?1].?resources.?limits.orValue({}) == t[1])
+    message: a new box is exactly one tier (Base, Plus or Max), its memory held whole
   - expression: (variables.c + variables.t.?initContainers.orValue([])).all(x, x.?image.orValue('') in ['__BOX_IMAGE__', '__PREVIOUS_BOX_IMAGE_1__',
       '__PREVIOUS_BOX_IMAGE_2__'] && x.?image.orValue('').matches('@sha256:[0-9a-f]{64}$'))
     message: allowed images only, pinned by digest

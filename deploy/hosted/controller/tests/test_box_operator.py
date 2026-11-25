@@ -766,6 +766,10 @@ def test_the_operator_builds_exactly_the_ticked_template():
     }
     assert [v for v in pod["volumes"] if v["name"] == "enrol"][0]["secret"]["defaultMode"] == 0o440
     assert [v["name"] for v in pod["volumes"]][-1] == "login-check"
+    # And template t3's: the controller's memory held whole (request = limit), where the reviewed render held 256Mi.
+    ctl = next(c for c in pod["containers"] if c["name"] == "controller")
+    assert ctl["resources"]["requests"]["memory"] == ctl["resources"]["limits"]["memory"] == "768Mi"
+    ctl["resources"]["requests"]["memory"] = "256Mi"
     sts["spec"] = _before_starter(sts["spec"])
     ours = {(o["kind"], o["metadata"]["name"]): o for _, o in built}
     theirs = {(o["kind"], o["metadata"]["name"]): o for o in rendered}
@@ -1691,7 +1695,7 @@ def test_every_claim_carries_this_builds_template_revision():
     op = BoxOperator(core, ProbeKube([False]), cfg())
     op.run_once()
     revision = core.reports[0]["template_revision"]
-    assert re.fullmatch(r"t2-[0-9a-f]{12}", revision)
+    assert re.fullmatch(r"t3-[0-9a-f]{12}", revision)
     from switch_hosted_controller.box_operator import template_revision
 
     other = cfg(image="registry.example/hosted-agents-box@sha256:" + "b" * 64)
@@ -1699,6 +1703,14 @@ def test_every_claim_carries_this_builds_template_revision():
         template_revision(other) != revision
     )  # a new image is a new revision: Core retires older pool boxes
     assert template_revision(cfg()) == revision
+    resized = cfg(sizes={"standard": {**RAW_CONFIG["sizes"]["standard"], "memory_request": "6Gi"}})
+    assert template_revision(resized) != revision  # so is a new default size
+    with_another = cfg(
+        sizes={**RAW_CONFIG["sizes"], "other": {**RAW_CONFIG["sizes"]["standard"], "disk": "30Gi"}}
+    )
+    assert (
+        template_revision(with_another) == revision
+    )  # a size boxes aren't made at changes nothing
 
 
 # ---- template t2: the starter container (warm pool) ----
@@ -2379,3 +2391,53 @@ def test_another_claim_failure_is_still_raised():
 
     with pytest.raises(HTTPError):
         BoxOperator(Down(), FakeKube(), cfg()).run_once()
+
+
+# ---- t3: the controller's memory held whole ----
+
+
+def test_a_new_box_holds_its_controllers_memory_whole():
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    ctl = next(c for c in _sts_pod(kube)["containers"] if c["name"] == "controller")
+    assert ctl["resources"] == {
+        "requests": {"cpu": "100m", "memory": "768Mi"},
+        "limits": {"cpu": "1", "memory": "768Mi"},
+    }
+
+
+@pytest.mark.parametrize("make", [action, box_action])
+@pytest.mark.parametrize("starter", [True, False])
+def test_a_box_made_before_the_controllers_memory_was_held_is_still_reused(make, starter, caplog):  # type: ignore[no-untyped-def]
+    """A box made with the controller's earlier request (256Mi), with or without the starter, is still its own on
+    re-claim: re-used, nothing written, and logged as an earlier shape."""
+    from switch_hosted_controller.box_operator import _before_starter
+
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(make())
+    ns = make().namespace or NS
+    sts = kube.objects[("StatefulSet", ns, "box")]
+    if not starter:
+        sts["spec"] = _before_starter(sts["spec"])
+    for c in sts["spec"]["template"]["spec"]["containers"]:
+        if c["name"] == "controller":
+            c["resources"]["requests"]["memory"] = "256Mi"
+    kube.created.clear()
+    core = FakeCore()
+    with caplog.at_level(logging.WARNING):
+        BoxOperator(core, kube, cfg()).provision(make())
+    assert result(core)[2] == "done"
+    assert not [k for k in kube.created if k[0] == "StatefulSet"]
+    assert any("before the controller's memory was held" in r.getMessage() for r in caplog.records)
+
+
+def test_a_controller_with_any_other_request_is_refused():
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    sts = kube.objects[("StatefulSet", NS, "box")]
+    for c in sts["spec"]["template"]["spec"]["containers"]:
+        if c["name"] == "controller":
+            c["resources"]["requests"]["memory"] = "512Mi"
+    core = FakeCore()
+    BoxOperator(core, kube, cfg()).provision(action())
+    assert result(core)[2:] == ("failed", NS, "object_refused")

@@ -894,8 +894,8 @@ def assert_policy_shape(body, zone):
     for absent in ("command", "args", "env", "envFrom", "volumeMounts"):
         assert absent not in c
     assert c["resources"] == {
-        "requests": {"cpu": "250m", "memory": "1Gi"},
-        "limits": {"cpu": "250m", "memory": "1Gi"},
+        "requests": {"cpu": "500m", "memory": "11776Mi"},
+        "limits": {"cpu": "500m", "memory": "11776Mi"},
     }
     assert set(spec) <= {
         "containers",

@@ -54,7 +54,8 @@ KIND = "drain"
 POD = "box-0"
 ROOM_NAMESPACE = "switch-drain-room"
 PLACEHOLDER_PREFIX = "drain-room-"
-PLACEHOLDER_CPU, PLACEHOLDER_MEMORY = "250m", "1Gi"  # exactly the policy's one-box size
+# Exactly the policy's one-box size: a Base box's requests (agents 400m and 11008Mi, controller 100m and 768Mi).
+PLACEHOLDER_CPU, PLACEHOLDER_MEMORY = "500m", "11776Mi"
 PLACEHOLDER_PRIORITY_CLASS = "switch-placeholder"  # the placer's own low class (priority <= 0)
 ZONE_KEY = "topology.kubernetes.io/zone"
 

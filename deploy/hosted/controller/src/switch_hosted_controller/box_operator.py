@@ -393,6 +393,10 @@ def zone_for(user: str, zones: Sequence[str]) -> str:
 MACHINE_ANNOTATION = "switch.dev/machine-id"
 CONTROLLER_DISK = "2Gi"  # the split template's fixed controller disk
 CONTROLLER_MEMORY_LIMIT = "768Mi"
+# The controller's memory is held whole (request = limit), so a busy neighbour can't push it out: the box's own memory
+# guard counts it in full. Boxes made before held only part of it; `_earlier_templates` still knows that shape.
+CONTROLLER_MEMORY_REQUEST = CONTROLLER_MEMORY_LIMIT
+EARLIER_CONTROLLER_MEMORY_REQUEST = "256Mi"
 
 
 def _bytes(quantity: str) -> int:
@@ -446,13 +450,24 @@ PROBE_NAMESPACE = box_namespace("k1-0000000000000000")
 PROBE_MACHINE = "00000000-0000-4000-8000-000000000000"
 # Bumped with any change to what a box is made of; with the image digest, Core's `template_revision`. Core retires
 # waiting pool boxes made at an older one.
-TEMPLATE_VERSION = (
-    "t2"  # t2: the starter container, the code read-only to the pod group, safe-to-evict
-)
+TEMPLATE_VERSION = "t3"  # t2: the starter container, the code read-only to the pod group, safe-to-evict; t3: memory held whole
 
 
 def template_revision(config: OperatorConfig) -> str:
-    return f"{TEMPLATE_VERSION}-{hashlib.sha256(config.image.encode()).hexdigest()[:12]}"
+    """The template version and a digest of what a new box is made from: the image and the default size, so a pool
+    box made at an older size is retired too when the size changes."""
+    size = config.sizes[config.default_size]
+    made_of = "\n".join(
+        [
+            config.image,
+            size.disk,
+            size.cpu_request,
+            size.cpu_limit,
+            size.memory_request,
+            size.memory_limit,
+        ]
+    )
+    return f"{TEMPLATE_VERSION}-{hashlib.sha256(made_of.encode()).hexdigest()[:12]}"
 
 
 def box_objects(action: ProvisionAction, config: OperatorConfig) -> list[tuple[str, dict]]:
@@ -751,7 +766,7 @@ def _box_pod_spec(
             {"name": "SWITCH_BOX_MEMORY_LIMIT_BYTES", "value": str(memory_limit)},
         ],
         "resources": {
-            "requests": {"cpu": "100m", "memory": "256Mi"},
+            "requests": {"cpu": "100m", "memory": CONTROLLER_MEMORY_REQUEST},
             "limits": {"cpu": "1", "memory": CONTROLLER_MEMORY_LIMIT},
         },
         "volumeMounts": [
@@ -1156,11 +1171,20 @@ def _earlier_templates(spec: dict) -> list[tuple[str | None, dict]]:
     for container in before_cap["template"]["spec"]["containers"]:
         if "env" in container:
             container["env"] = [e for e in container["env"] if e.get("name") != DAILY_CALLS_ENV]
-    return [
+    shapes: list[tuple[str | None, dict]] = [
         (None, spec),
         ("before the starter container", before_starter),
         ("before the daily call cap", before_cap),
     ]
+    # Each of those, as made before the controller's memory was held whole (its request below its limit).
+    for name, shape in list(shapes):
+        part_held = copy.deepcopy(shape)
+        for container in part_held["template"]["spec"]["containers"]:
+            if container.get("name") == "controller":
+                container["resources"]["requests"]["memory"] = EARLIER_CONTROLLER_MEMORY_REQUEST
+        label = "before the controller's memory was held"
+        shapes.append((label if name is None else f"{name}, and {label}", part_held))
+    return shapes
 
 
 def _stop(stop_after: Callable[[str], None] | None, step: str) -> None:

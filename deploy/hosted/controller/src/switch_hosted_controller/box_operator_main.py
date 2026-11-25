@@ -334,6 +334,15 @@ def run(
             sleep(IDLE_WAIT_S)
 
 
+def start_line(config: Any) -> str:
+    """The operator's one start line: its ceiling, its default size and the configured size names (sorted, names
+    only). Its form is fixed, so a deploy step can read back which size new boxes are made at."""
+    return (
+        f"Box operator on: ceiling={config.ceiling} default_size={config.default_size}"
+        f" sizes={','.join(sorted(config.sizes))}"
+    )
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
@@ -353,7 +362,7 @@ def main() -> int:
     operator = BoxOperator(core, kube, config)
     stopping = {"now": False}
     signal.signal(signal.SIGTERM, lambda *_: stopping.__setitem__("now", True))
-    logger.info("Box operator on: ceiling=%d", config.ceiling)
+    logger.info("%s", start_line(config))
     run(operator, stop=lambda: stopping["now"])
     return 0
 
