@@ -61,6 +61,19 @@ version of their own to them without also giving them a release of their own.
   with the counts on stderr. A WorkOS sign-in refused because an account with
   that address is not linked yet now says so, without the address, and tells
   the person to contact their administrator.
+- **WorkOS members who never signed in to Switch get an account.** The
+  directory mirror makes one, with WorkOS's name and address, no password and
+  the WorkOS identity, for each member of a linked organization with none,
+  so admins see them and can add them to a workspace; their first sign-in
+  uses it. No account is made where one already has the address. Until that
+  sign-in the daily check keeps the name and address as WorkOS has them, and
+  removal from the last organization deletes the account. `users` has a new
+  `first_signed_in_at` (existing accounts: when they were made), set by the
+  first password or WorkOS sign-in or by sign-up.
+- **Every member of an organization sees its Users page**, read-only unless
+  they are an Org Admin (`GET /organizations/current/members` answers any
+  member). Someone brought in from WorkOS who has not signed in yet is marked
+  "Never signed in", and each member has `first_signed_in_at`.
 
 #### Fixed
 - **`switch.hosted.provider_login_problems` counts only providers an agent on

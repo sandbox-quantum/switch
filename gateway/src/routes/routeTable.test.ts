@@ -80,6 +80,7 @@ describe("Connector apps", () => {
       isOperator: false,
       administersWorkspace: true,
       administersOrganization: true,
+      memberOfOrganization: true,
       inOrganization: true,
       canDeleteWorkspace: true,
       canManageDataProtection: true,
@@ -159,7 +160,7 @@ describe("Connector apps", () => {
 });
 
 describe("Organization settings for everyone else", () => {
-  it("still admits only the organization's admins and the operator to its pages", () => {
+  it("shows its members Users, and keeps the admins' pages to the admins and the operator", () => {
     const flags = featureFlagsFrom(
       ["agent_management", "service_connections", "organization_connector_apps"].map((key) => ({
         key,
@@ -170,6 +171,7 @@ describe("Organization settings for everyone else", () => {
       isOperator: false,
       administersWorkspace: true,
       administersOrganization: false,
+      memberOfOrganization: true,
       inOrganization: true,
       canDeleteWorkspace: true,
       canManageDataProtection: true,
@@ -177,13 +179,23 @@ describe("Organization settings for everyone else", () => {
       connectorAppsInDashboard: true,
       features: flags,
     };
-    for (const path of ["/settings/org", "/settings/org/general", "/settings/org/users"]) {
+    for (const path of ["/settings/org/general", "/settings/org/workspaces", "/settings/org/audit-log"]) {
       expect(accessTo(path, member)).toEqual({
         allowed: false,
         reason: "not_permitted",
         message: "Only the organization's admins can open this page.",
       });
     }
+    for (const path of ["/settings/org", "/settings/org/users"]) {
+      expect(accessTo(path, member)?.allowed).toBe(true);
+    }
+    expect(menuOf("organization", member).map((item) => item.path)).toEqual(["/settings/org/users"]);
+    const outsider = { ...member, memberOfOrganization: false };
+    expect(accessTo("/settings/org/users", outsider)).toEqual({
+      allowed: false,
+      reason: "not_permitted",
+      message: "Only the organization's members can open this page.",
+    });
     const operator = { ...member, isOperator: true, canManageConnectorApps: true };
     for (const path of ["/settings/org/general", "/settings/org/users", "/settings/org/connector-apps"]) {
       expect(accessTo(path, operator)?.allowed).toBe(true);

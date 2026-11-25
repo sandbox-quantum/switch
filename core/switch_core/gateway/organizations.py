@@ -194,6 +194,7 @@ def _member_detail(
         email=user.email,
         role=member.role,
         created_at=str(member.created_at),
+        first_signed_in_at=user.first_signed_in_at,
         warning=warning,
         service_account=is_bootstrap_owner(user),
         can_change_role=change and change_refusal is None,
@@ -862,12 +863,22 @@ async def list_organization_members(
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[OrganizationMemberListEntry]:
     """Every member of the organization, their role in it and the workspaces
-    of it they hold a membership in. `org_admin` only: the list spans every
-    workspace of the organization, not only this one."""
-    access = await require_organization_admin(
+    of it they hold a membership in, as far as the caller reaches them. Any
+    member of the organization sees it, as in Switch Trust; what each row
+    lets them change is for its `org_admin`, and the operator restoring one."""
+    organization_id = await _current_organization_id(session)
+    access = await organization_access(
         session, user_store, organization_store, user, operator_restores=True
     )
-    organization_id = access.organization_id
+    if (
+        access is None
+        and await user_store.organization_role(session, require_tenant_id(), user.id)
+        is None
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Only a member of the organization may see its members",
+        )
     accepts_promotion = _accepts_promotion(
         organization_directory, await _organization(session, organization_id)
     )

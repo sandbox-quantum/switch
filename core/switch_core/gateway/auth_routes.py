@@ -219,6 +219,7 @@ async def login(
     await attempt.succeeded(session)
 
     tenant_claim = await initial_tenant_claim(session_factory, user_store, user)
+    await user_store.mark_signed_in(session, user)
     await record_sign_in(
         session,
         request,
@@ -339,6 +340,7 @@ async def signup(
             email=req.email,
             role="user",
             password_hash=password_hash,
+            first_signed_in_at=datetime.now(UTC),
         )
         try:
             async with session.begin_nested():

@@ -34,6 +34,7 @@ function authState(canAdminTenant: boolean) {
       isOperator: false,
       administersWorkspace: canAdminTenant,
       administersOrganization: false,
+      memberOfOrganization: false,
       inOrganization: false,
       canDeleteWorkspace: false,
       canManageDataProtection: false,

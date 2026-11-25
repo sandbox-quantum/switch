@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
@@ -392,6 +393,11 @@ class UserStore:
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             user = await self.get_by_oidc_identity(session, iss=iss, sub=sub)
             if user is not None:
+                if not await self.mark_signed_in(session, user):
+                    # Deleted since it was read: an account the directory
+                    # mirror made for someone who had not signed in yet.
+                    self._raise_if_exhausted(attempt)
+                    continue
                 return OidcUser(user, created=False)
 
             existing = await self.get_by_email(session, email)
@@ -419,13 +425,20 @@ class UserStore:
                 except IntegrityError:
                     self._raise_if_exhausted(attempt)
                     continue
+                await self.mark_signed_in(session, existing)
                 return OidcUser(existing, created=False)
 
             if not create_allowed:
                 raise SignupRefusedError(
                     "A new account may not be created for this sign-in"
                 )
-            user = User(name=name, email=email.lower(), role="user", password_hash=None)
+            user = User(
+                name=name,
+                email=email.lower(),
+                role="user",
+                password_hash=None,
+                first_signed_in_at=datetime.now(UTC),
+            )
             try:
                 async with session.begin_nested():
                     if join_tenant:
@@ -446,6 +459,25 @@ class UserStore:
             return OidcUser(user, created=True)
 
         raise AssertionError("unreachable: the loop above always returns or raises")
+
+    async def mark_signed_in(self, session: AsyncSession, user: User) -> bool:
+        """Record `user`'s first sign-in, if this is it, on `session`. The
+        row stays locked until the caller's transaction ends, so the directory
+        mirror cannot delete it as an account nobody signed in to meanwhile.
+        False when the account is already gone."""
+        first = await session.scalar(
+            update(User)
+            .where(User.id == user.id)
+            .values(
+                first_signed_in_at=func.coalesce(User.first_signed_in_at, func.now())
+            )
+            .returning(User.first_signed_in_at)
+            .execution_options(synchronize_session=False)
+        )
+        if first is None:
+            return False
+        set_committed_value(user, "first_signed_in_at", first)
+        return True
 
     def _raise_if_exhausted(self, attempt: int) -> None:
         # The savepoint above already rolled back just the failed write, not

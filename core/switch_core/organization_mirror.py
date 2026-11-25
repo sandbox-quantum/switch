@@ -15,6 +15,9 @@ The directory is the record, so whatever it says is applied:
   `org_admin` (`organization_access.end_access_through_organization`).
 - A member it no longer lists is removed, from the organization and from each
   of its workspaces, with their keys, service connections and sign-ins there.
+  An account the mirror made for them that was never signed in to, and is in
+  no other organization or workspace, is deleted with it
+  (`workos_mirror.py`).
 
 Each is recorded in the organization's audit log, with where it came from
 (`source`). A change that breaks a rule Switch keeps itself (the last Org
@@ -35,8 +38,10 @@ from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.deletion import delete_account_rows
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.db.audit import (
@@ -53,7 +58,10 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import directory_organizations_of_user
+from switch_core.db.tenant_lookup import (
+    directory_organizations_of_user,
+    tenants_of_user,
+)
 from switch_core.gateway.auth import (
     workspaces_in_organization,
     workspaces_reached_through_organization,
@@ -64,6 +72,7 @@ from switch_core.organization_access import (
     remove_membership,
 )
 from switch_core.organization_directory import DirectoryMembership
+from switch_core.tenant_context import no_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +123,9 @@ class MirrorDependencies:
     revocation: AccessRevocation
     organization_store: OrganizationStore
     user_store: UserStore
+    # Who keeps the server-wide settings a deleted account last saved
+    # (`accounts/deletion.delete_account_rows`).
+    admin_email: str
 
 
 async def apply_from_directory(
@@ -255,6 +267,57 @@ async def apply_from_directory(
             },
         )
         await session.commit()
+    if wanted is None:
+        await _delete_if_never_signed_in(session_factory, dependencies, user_id)
+
+
+async def _delete_if_never_signed_in(
+    session_factory: async_sessionmaker[AsyncSession],
+    dependencies: MirrorDependencies,
+    user_id: str,
+) -> None:
+    """Delete `user_id` if it is an account the mirror made for someone who
+    never signed in, and nothing holds it any more: no password, and no
+    organization or workspace membership. The row is locked first, so a
+    sign-in under way (`UserStore.mark_signed_in`) either finishes before
+    and keeps the account, or finds it gone."""
+    with no_tenant():
+        async with session_factory() as session:
+            user = await session.scalar(
+                select(User).where(User.id == user_id).with_for_update()
+            )
+            if (
+                user is None
+                or user.first_signed_in_at is not None
+                or user.password_hash is not None
+            ):
+                return
+            # A placeholder only ever joins organizations that follow WorkOS:
+            # any other takes a sign-in to join.
+            if await directory_organizations_of_user(
+                session_factory, user_id, []
+            ) or await tenants_of_user(session_factory, user_id):
+                return
+            try:
+                await delete_account_rows(
+                    session_factory, session, user, dependencies.admin_email
+                )
+                await session.commit()
+            except IntegrityError as error:
+                await session.rollback()
+                logger.warning(
+                    "Account %s, made for a WorkOS member who never signed in, "
+                    "is in no organization now but is kept: rows still name it "
+                    "(%s)",
+                    user_id,
+                    error.orig,
+                )
+                return
+    logger.warning(
+        "Deleted account %s, made for a WorkOS member who never signed in, "
+        "now in no organization",
+        user_id,
+    )
 
 
 def _grants(current: str | None, wanted: str | None) -> bool:

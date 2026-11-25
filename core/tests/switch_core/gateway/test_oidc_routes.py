@@ -232,6 +232,44 @@ class TestSigningInWithADirectory:
         assert refused.value.status_code == 409
         assert "administrator" in refused.value.detail
 
+    async def test_an_account_the_mirror_made_is_signed_in_to_and_marked(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async with session_factory() as session:
+            placeholder = User(name="Dana", email="dana@example.com", role="user")
+            session.add(placeholder)
+            await session.flush()
+            session.add(
+                OidcIdentity(
+                    user_id=placeholder.id, iss="https://idp.example", sub="user_DANA"
+                )
+            )
+            await session.commit()
+            placeholder_id = placeholder.id
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(self._TOKEN))
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                config=self._config(),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=_Directory([]),  # type: ignore[arg-type]
+            )
+
+        assert response.status_code == 303
+        async with session_factory() as session:
+            accounts = list(
+                await session.scalars(
+                    select(User).where(User.email == "dana@example.com")
+                )
+            )
+        assert [account.id for account in accounts] == [placeholder_id]
+        assert accounts[0].first_signed_in_at is not None
+
     async def test_an_issuer_other_than_the_configured_one_is_refused(
         self,
         session_factory: async_sessionmaker[AsyncSession],

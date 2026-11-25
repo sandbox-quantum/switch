@@ -43,6 +43,7 @@ function member(
     email: `${overrides.name.toLowerCase()}@example.com`,
     role: "member",
     created_at: "2026-01-01",
+    first_signed_in_at: "2026-01-01T00:00:00Z",
     warning: null,
     service_account: false,
     can_change_role: true,

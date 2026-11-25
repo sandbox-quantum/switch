@@ -6,7 +6,7 @@ fixtures and reads results."""
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -52,8 +52,16 @@ _KEYRING = Keyring.parse(
 )
 
 
+# They signed in once: only an account never signed in to is deleted with
+# its last membership.
+SIGNED_IN = datetime(2026, 1, 1, tzinfo=UTC)
+
+
 def _id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+ADMIN_EMAIL = "admin@example.test"
 
 
 def _dependencies(
@@ -63,6 +71,7 @@ def _dependencies(
         revocation=_revocation(session_factory),
         organization_store=OrganizationStore(),
         user_store=UserStore(),
+        admin_email=ADMIN_EMAIL,
     )
 
 
@@ -129,6 +138,7 @@ class _World:
                         name=user_id,
                         email=f"{user_id}@example.invalid",
                         role="user",
+                        first_signed_in_at=SIGNED_IN,
                     )
                 )
             await session.flush()
@@ -321,7 +331,13 @@ class TestTakingAway:
         cleo = _id("cleo")
         async with owner() as session:
             session.add(
-                User(id=cleo, name=cleo, email=f"{cleo}@example.invalid", role="user")
+                User(
+                    id=cleo,
+                    name=cleo,
+                    email=f"{cleo}@example.invalid",
+                    role="user",
+                    first_signed_in_at=SIGNED_IN,
+                )
             )
             await session.flush()
             session.add(
@@ -452,7 +468,13 @@ class TestGranting:
         cy = _id("cy")
         async with owner() as session:
             session.add(
-                User(id=cy, name=cy, email=f"{cy}@example.invalid", role="user")
+                User(
+                    id=cy,
+                    name=cy,
+                    email=f"{cy}@example.invalid",
+                    role="user",
+                    first_signed_in_at=SIGNED_IN,
+                )
             )
             await session.commit()
 
@@ -488,6 +510,7 @@ class TestGranting:
                     name=robot,
                     email=f"{robot}@example.invalid",
                     role="user",
+                    first_signed_in_at=SIGNED_IN,
                     metadata_={BOOTSTRAP_OWNER_MARKER_META_KEY: True},
                 )
             )

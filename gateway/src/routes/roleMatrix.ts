@@ -94,7 +94,8 @@ export const PAGES: readonly MatrixPage[] = [
 
   page("/settings/org/general", ORGANIZATION_ADMIN_OR_OPERATOR),
   page("/settings/org/workspaces", ORGANIZATION_ADMIN_OR_OPERATOR),
-  page("/settings/org/users", ORGANIZATION_ADMIN_OR_OPERATOR),
+  // Every member sees who is in the organization, as in Switch Trust.
+  page("/settings/org/users", EVERYONE),
   page("/settings/org/connectors", ORGANIZATION_ADMIN),
   // The deployment's connector apps. An organization's admin may set them up
   // only on a deployment with no other organization, which this is not.
@@ -106,7 +107,7 @@ export const PAGES: readonly MatrixPage[] = [
 
 export const AREAS: readonly MatrixArea[] = [
   { path: "/settings", open: EVERYONE, first: "/settings/general" },
-  { path: "/settings/org", open: ORGANIZATION_ADMIN_OR_OPERATOR, first: "/settings/org/general" },
+  { path: "/settings/org", open: EVERYONE, first: "/settings/org/general" },
 ];
 
 /** Every moved page's old URL, so a link from an older Switch Console, the
@@ -182,8 +183,8 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
         "Devices",
         "Audit log",
       ],
-      workspaceAdmin: null,
-      member: null,
+      workspaceAdmin: ["Users"],
+      member: ["Users"],
       operator: ["General", "Workspaces", "Users", "Connector apps"],
     },
   };

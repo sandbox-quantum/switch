@@ -1,11 +1,13 @@
 import { Alert } from "@mui/material";
 
 /** What organization Users says above the table: why the
- * platform operator sees nothing, or may only make an admin; and, where the
- * members come from the organization's account settings (a directory such as
- * WorkOS), what changing them here does. */
+ * platform operator sees nothing, or may only make an admin; that a member
+ * who is no admin only reads it; and, where the members come from the
+ * organization's account settings (a directory such as WorkOS), what
+ * changing them here does. */
 export default function OrganizationUsersNotices({
   asOperator,
+  administers,
   lockedOut,
   error,
   loaded,
@@ -13,6 +15,7 @@ export default function OrganizationUsersNotices({
   directoryTakesChanges,
 }: {
   asOperator: boolean;
+  administers: boolean;
   // The operator, while the organization has an admin: nothing to manage.
   lockedOut: boolean;
   error: string | null;
@@ -40,7 +43,10 @@ export default function OrganizationUsersNotices({
               "users an admin; the change is recorded in its audit log, marked as yours."}
         </Alert>
       )}
-      {fromDirectory && directoryTakesChanges && !asOperator && (
+      {!asOperator && !administers && (
+        <Alert severity="info">Only the organization's admins can change who is in it.</Alert>
+      )}
+      {fromDirectory && directoryTakesChanges && administers && (
         <Alert severity="info">
           This organization's users, and who is its admin, come from your organization's
           account settings. Changes you make here are made there too; you may be asked to
@@ -48,7 +54,7 @@ export default function OrganizationUsersNotices({
           there.
         </Alert>
       )}
-      {fromDirectory && !directoryTakesChanges && !asOperator && (
+      {fromDirectory && !directoryTakesChanges && administers && (
         <Alert severity="info">
           This organization's users, and who is its admin, come from your organization's
           account settings. Add people and make someone an organization admin there; the change

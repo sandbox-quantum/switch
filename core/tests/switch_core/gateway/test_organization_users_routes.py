@@ -140,6 +140,33 @@ async def test_someone_outside_the_organization_is_invited_instead(
     assert "invite them" in response.json()["detail"]
 
 
+async def test_someone_who_never_signed_in_is_listed_and_added(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An account the WorkOS mirror made has no sign-in yet; an admin adds
+    it to a workspace all the same, as it needs only the organization row."""
+    app = _app(session_factory)
+    _with_archive(app)
+    org = await _organization(session_factory, app)
+    async with session_factory() as session:
+        bob = await session.get(User, org.bob)
+        assert bob is not None
+        bob.first_signed_in_at = None
+        bob.password_hash = None
+        await session.commit()
+
+    async with _client(app, org.ada, org.first) as client:
+        before = await client.get(MEMBERS)
+        added = await client.post(
+            f"{WORKSPACES}/{org.first}/members",
+            json={"user_id": org.bob, "role": "member"},
+        )
+
+    [row] = [row for row in before.json() if row["user_id"] == org.bob]
+    assert row["first_signed_in_at"] is None
+    assert added.status_code == 201, added.text
+
+
 async def test_nobody_is_added_to_an_archived_workspace(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

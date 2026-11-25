@@ -1873,6 +1873,9 @@ class OrganizationMemberDetail(BaseModel):
     email: str
     role: str
     created_at: str
+    # When they first signed in to Switch; None for someone the WorkOS
+    # directory mirror brought in who never has.
+    first_signed_in_at: datetime | None
     # What could not be revoked at a vendor when a demotion took away what
     # they held in workspaces they were in only as `org_admin`.
     warning: str | None

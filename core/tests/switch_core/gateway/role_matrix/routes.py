@@ -21,6 +21,7 @@ from tests.switch_core.gateway.role_matrix.access import (
     anyone,
     operator,
     org_admin,
+    org_members,
     owner,
     owner_or_admins,
 )
@@ -497,7 +498,7 @@ ROUTES: dict[str, Case] = {
         f"{G}/organizations/current/issues", org_admin()
     ),
     "GET /gateway/organizations/current/members": get(
-        f"{G}/organizations/current/members", org_admin()
+        f"{G}/organizations/current/members", org_members()
     ),
     "PATCH /gateway/organizations/current/members/{user_id}": patch(
         f"{G}/organizations/current/members/{{org_target}}",

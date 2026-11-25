@@ -902,3 +902,51 @@ class TestLastTenant:
                 "theme": "dark",
                 "last_tenant_id": TENANT_ZERO_ID,
             }
+
+
+class TestTheFirstSignIn:
+    async def test_an_account_made_at_sign_in_is_marked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            made = await UserStore().get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="first@example.com",
+                name="First",
+                sub="user_FIRST",
+                email_verified=True,
+                join_tenant=False,
+                link_by_email=False,
+                create_allowed=True,
+            )
+            await session.commit()
+
+        assert made.user.first_signed_in_at is not None
+
+    async def test_only_the_first_sign_in_is_recorded(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            user = User(name="Once", email="once@example.com", role="user")
+            session.add(user)
+            await session.commit()
+
+            assert await store.mark_signed_in(session, user)
+            first = user.first_signed_in_at
+            await session.commit()
+            assert await store.mark_signed_in(session, user)
+            await session.commit()
+
+        assert first is not None
+        assert user.first_signed_in_at == first
+
+    async def test_an_account_gone_is_not_marked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            assert not await UserStore().mark_signed_in(
+                session,
+                User(id="nobody", name="Nobody", email="n@example.com", role="user"),
+            )

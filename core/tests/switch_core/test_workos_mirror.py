@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from switch_core import workos_mirror
 from switch_core.db.audit import OrganizationAuditAction
@@ -47,6 +47,11 @@ pytestmark = pytest.mark.no_ambient_tenant
 ISSUER = "https://auth.example.test"
 
 
+# They signed in once: only an account never signed in to is deleted with
+# its last membership.
+SIGNED_IN = datetime(2026, 1, 1, tzinfo=UTC)
+
+
 def _id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
@@ -64,6 +69,9 @@ class _WorkOS:
         self.reject_cursor = False
         self.fail_events = False
         self.fail_members = False
+        # WorkOS users by id; one not here is named after their id.
+        self.users: dict[str, dict[str, Any]] = {}
+        self.users_read: list[str] = []
 
     def change(self, subject: str, organization: str, role: str | None) -> None:
         if role is None:
@@ -103,6 +111,18 @@ class _WorkOS:
             raise DirectoryUnavailable("WorkOS answered 500.")
         return self.memberships.get((subject, organization))
 
+    async def user(self, subject: str) -> dict[str, Any]:
+        self.users_read.append(subject)
+        return self.users.get(
+            subject,
+            {
+                "id": subject,
+                "email": f"{subject.lower()}@example.invalid",
+                "first_name": subject,
+                "last_name": None,
+            },
+        )
+
     async def organization_members(self, organization: str) -> dict[str, str]:
         if self.fail_members:
             raise DirectoryUnavailable("WorkOS answered 500.")
@@ -137,6 +157,7 @@ async def _person(owner, subject: str | None) -> str:
                 name=user_id,
                 email=f"{user_id}@example.invalid",
                 role="user",
+                first_signed_in_at=SIGNED_IN,
             )
         )
         await session.flush()
@@ -144,6 +165,16 @@ async def _person(owner, subject: str | None) -> str:
             session.add(OidcIdentity(user_id=user_id, iss=ISSUER, sub=subject))
         await session.commit()
     return user_id
+
+
+async def _account_of(owner, subject: str) -> User | None:
+    """The account WorkOS user `subject` signs in to, if any."""
+    async with owner() as session:
+        return await session.scalar(
+            select(User)
+            .join(OidcIdentity, OidcIdentity.user_id == User.id)
+            .where(OidcIdentity.iss == ISSUER, OidcIdentity.sub == subject)
+        )
 
 
 async def _member(owner, organization_id: str, user_id: str, role: str) -> None:
@@ -302,21 +333,22 @@ class TestEvents:
 
         assert await _roles(owner, organization_id) == {bea: "org_admin"}
 
-    async def test_events_for_other_organizations_and_strangers_are_skipped(
+    async def test_events_for_other_organizations_are_skipped(
         self, rls_harness: RLSHarness
     ) -> None:
         owner = rls_harness.owner
-        organization_id, workos_id = await _linked(owner)
+        organization_id, _ = await _linked(owner)
         await _person(owner, "user_ADA")
         workos = _WorkOS()
         mirror = await _mirror(rls_harness, workos)
         await mirror.poll_once()
         workos.change("user_ADA", _id("org_elsewhere"), "org_admin")
-        workos.change("user_NOBODY", workos_id, "org_admin")
+        workos.change("user_NOBODY", _id("org_elsewhere"), "org_admin")
 
         assert await mirror.poll_once() == 2
 
         assert await _roles(owner, organization_id) == {}
+        assert await _account_of(owner, "user_NOBODY") is None
 
     async def test_an_event_that_fails_is_read_again_next_time(
         self, rls_harness: RLSHarness
@@ -451,11 +483,14 @@ class TestDailyCheck:
 
         await (await _mirror(rls_harness, workos)).check_once()
 
+        stranger = await _account_of(owner, "user_STRANGER")
+        assert stranger is not None
         assert await _roles(owner, organization_id) == {
             ada: "member",
             cy: "member",
             dee: "member",
             eve: "org_admin",
+            stranger.id: "member",
         }
         assert f"User {dee} is in organization" in caplog.text
 
@@ -757,3 +792,229 @@ class TestReporting:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+
+class TestMembersWhoNeverSignedIn:
+    async def test_an_event_makes_an_account_whose_role_then_follows_events(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        subject = _id("user_ZOE")
+        workos = _WorkOS()
+        workos.users[subject] = {
+            "id": subject,
+            "email": f"{subject}@Example.Invalid",
+            "first_name": "Zoe",
+            "last_name": "Ng",
+        }
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+
+        workos.change(subject, workos_id, "member")
+        await mirror.poll_once()
+
+        zoe = await _account_of(owner, subject)
+        assert zoe is not None
+        assert (zoe.name, zoe.email) == ("Zoe Ng", f"{subject.lower()}@example.invalid")
+        assert (zoe.password_hash, zoe.first_signed_in_at) == (None, None)
+        assert await _roles(owner, organization_id) == {zoe.id: "member"}
+
+        workos.change(subject, workos_id, "org_admin")
+        await mirror.poll_once()
+
+        assert await _roles(owner, organization_id) == {zoe.id: "org_admin"}
+
+    async def test_the_full_check_makes_one_and_reads_only_whom_it_lacks(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        ada = await _person(owner, "user_ADA")
+        subject = _id("user_ZOE")
+        workos = _WorkOS()
+        workos.memberships = {
+            ("user_ADA", workos_id): "member",
+            (subject, workos_id): "member",
+        }
+
+        await (await _mirror(rls_harness, workos)).check_once()
+
+        zoe = await _account_of(owner, subject)
+        assert zoe is not None
+        assert await _roles(owner, organization_id) == {ada: "member", zoe.id: "member"}
+        assert workos.users_read == [subject]
+
+    async def test_an_address_an_account_has_makes_none(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        old = await _person(owner, None)
+        subject = _id("user_OLD")
+        workos = _WorkOS()
+        workos.users[subject] = {
+            "id": subject,
+            "email": f"{old.upper()}@EXAMPLE.INVALID",
+        }
+        workos.memberships = {(subject, workos_id): "member"}
+        mirror = await _mirror(rls_harness, workos)
+
+        await mirror.check_once()
+        await mirror.poll_once()
+        workos.change(subject, workos_id, "org_admin")
+        await mirror.poll_once()
+
+        assert await _account_of(owner, subject) is None
+        assert await _roles(owner, organization_id) == {}
+
+    async def test_a_membership_not_active_makes_none(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        _, workos_id = await _linked(owner)
+        subject = _id("user_GONE")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+
+        workos.change(subject, workos_id, "member")
+        workos.change(subject, workos_id, None)
+        await mirror.poll_once()
+
+        assert await _account_of(owner, subject) is None
+        assert workos.users_read == []
+
+    async def test_two_passes_at_once_make_one_account(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        subject = _id("user_ZOE")
+        workos = _WorkOS()
+        workos.memberships = {(subject, workos_id): "member"}
+        mirror = await _mirror(rls_harness, workos)
+
+        await asyncio.gather(mirror.check_once(), mirror.check_once())
+
+        async with owner() as session:
+            accounts = list(
+                await session.scalars(
+                    select(OidcIdentity.user_id).where(
+                        OidcIdentity.iss == ISSUER, OidcIdentity.sub == subject
+                    )
+                )
+            )
+        assert len(accounts) == 1
+        assert await _roles(owner, organization_id) == {accounts[0]: "member"}
+
+    async def test_the_full_check_keeps_name_and_address_until_the_first_sign_in(
+        self, rls_harness: RLSHarness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        owner = rls_harness.owner
+        _, workos_id = await _linked(owner)
+        zoe_id, yan_id = _id("user_ZOE"), _id("user_YAN")
+        taken = await _person(owner, None)
+        workos = _WorkOS()
+        workos.memberships = {
+            (zoe_id, workos_id): "member",
+            (yan_id, workos_id): "member",
+        }
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.check_once()
+        yan_before = await _account_of(owner, yan_id)
+        assert yan_before is not None
+
+        workos.users[zoe_id] = {
+            "id": zoe_id,
+            "email": f"{zoe_id}-new@example.invalid",
+            "first_name": "Zoe",
+            "last_name": "Renamed",
+        }
+        workos.users[yan_id] = {"id": yan_id, "email": f"{taken}@example.invalid"}
+        await mirror.check_once()
+
+        zoe = await _account_of(owner, zoe_id)
+        yan = await _account_of(owner, yan_id)
+        assert zoe is not None and yan is not None
+        assert (zoe.name, zoe.email) == (
+            "Zoe Renamed",
+            f"{zoe_id.lower()}-new@example.invalid",
+        )
+        assert yan.email == yan_before.email
+        assert f"Account {yan.id} keeps its address" in caplog.text
+        assert f"{taken}@example.invalid" not in caplog.text
+
+    async def test_a_signed_in_account_is_not_refreshed(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        _, workos_id = await _linked(owner)
+        ada = await _person(owner, "user_ADA")
+        workos = _WorkOS()
+        workos.memberships = {("user_ADA", workos_id): "member"}
+
+        await (await _mirror(rls_harness, workos)).check_once()
+
+        async with owner() as session:
+            user = await session.get(User, ada)
+        assert user is not None
+        assert user.email == f"{ada}@example.invalid"
+        assert workos.users_read == []
+
+    async def test_a_removal_deletes_one_nothing_else_holds(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        subject = _id("user_ZOE")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        workos.change(subject, workos_id, "member")
+        await mirror.poll_once()
+        zoe = await _account_of(owner, subject)
+        assert zoe is not None
+
+        workos.change(subject, workos_id, None)
+        await mirror.poll_once()
+
+        assert await _roles(owner, organization_id) == {}
+        async with owner() as session:
+            assert await session.get(User, zoe.id) is None
+
+    @pytest.mark.parametrize("kept_by", ["sign_in", "password", "other_organization"])
+    async def test_a_removal_keeps_an_account_something_else_holds(
+        self, rls_harness: RLSHarness, kept_by: str
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        _, other_workos_id = await _linked(owner)
+        subject = _id("user_ZOE")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        workos.change(subject, workos_id, "member")
+        if kept_by == "other_organization":
+            workos.change(subject, other_workos_id, "member")
+        await mirror.poll_once()
+        zoe = await _account_of(owner, subject)
+        assert zoe is not None
+        if kept_by != "other_organization":
+            async with owner() as session:
+                await session.execute(
+                    update(User)
+                    .where(User.id == zoe.id)
+                    .values(
+                        first_signed_in_at=SIGNED_IN if kept_by == "sign_in" else None,
+                        password_hash="hash" if kept_by == "password" else None,
+                    )
+                )
+                await session.commit()
+
+        workos.change(subject, workos_id, None)
+        await mirror.poll_once()
+
+        assert await _roles(owner, organization_id) == {}
+        async with owner() as session:
+            assert await session.get(User, zoe.id) is not None

@@ -208,6 +208,7 @@ async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(
     user = await _user(app, "new.person@example.com")
     assert body["id"] == user.id
     assert verify_password(PASSWORD, user.password_hash)
+    assert user.first_signed_in_at is not None
     token = decode_jwt(response.cookies["switch_auth"], TEST_KEYRING)
     assert token["sub"] == user.id
     async with app.factory() as session:
@@ -230,6 +231,8 @@ async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(
         "/auth/login", json={"email": "new.person@example.com", "password": PASSWORD}
     )
     assert login.status_code == 200, login.text
+    after_login = await _user(app, "new.person@example.com")
+    assert after_login.first_signed_in_at == user.first_signed_in_at
 
 
 async def test_signup_keeps_a_display_name(signup_app):

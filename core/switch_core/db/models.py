@@ -407,6 +407,13 @@ class User(Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # When they first signed in; NULL for an account the WorkOS directory
+    # mirror made for an organization member who never has
+    # (`workos_mirror.py`). Set by a password or OIDC sign-in and by sign-up
+    # (`UserStore.mark_signed_in`).
+    first_signed_in_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Workspaces this person has created through self-service, which is what
     # `GATEWAY_MAX_WORKSPACES_PER_USER` bounds. A count of creations rather
     # than of workspaces administered now, so handing a workspace to another
