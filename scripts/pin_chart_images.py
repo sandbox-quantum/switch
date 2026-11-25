@@ -326,9 +326,13 @@ def _repository(ref: str) -> str:
     return ref[:colon] if colon > slash else ref
 
 
-def verify(chart: str, rendered: str, registry: str) -> list[str]:
-    """Return the chart's image references, or raise if any is unpinned."""
+def verify(
+    chart: str, rendered: str, registry: str, *, digests: dict[str, str] | None = None
+) -> list[str]:
+    """Return the chart's image references, or raise if any is unpinned or mismatched."""
     _check_registry(registry)
+    if digests is not None:
+        _check_digests(digests)
     images = images_of(chart)
     refs = sorted(
         {ref for doc in yaml.safe_load_all(rendered) if doc for ref in _images(doc)}
@@ -345,8 +349,11 @@ def verify(chart: str, rendered: str, registry: str) -> list[str]:
             seen.add(name)
             if repository != f"{registry}/{name}":
                 problems.append(f"{ref}: not from {registry}")
-            if not re.search(r"@sha256:[0-9a-f]{64}$", ref):
+            actual = ref.rpartition("@")[2] if "@" in ref else ""
+            if not DIGEST.fullmatch(actual):
                 problems.append(f"{ref}: not pinned by digest")
+            elif digests is not None and actual != digests[name]:
+                problems.append(f"{ref}: not the build digest {digests[name]}")
         elif ref.startswith(prefix):
             problems.append(
                 f"{ref}: not an image of the {chart} chart; add it to IMAGES if it should be"
@@ -471,6 +478,9 @@ def main(argv: list[str]) -> int:
     )
     p_verify.add_argument("--chart", required=True, choices=sorted(CHARTS))
     p_verify.add_argument("--registry", required=True)
+    expected = p_verify.add_mutually_exclusive_group()
+    expected.add_argument("--digests-dir", type=Path)
+    expected.add_argument("--placeholder-digests", action="store_true")
 
     p_covered = sub.add_parser(
         "covered",
@@ -537,7 +547,14 @@ def main(argv: list[str]) -> int:
             )
             print(f"pinned {values}")
         elif args.command == "verify":
-            for ref in verify(args.chart, sys.stdin.read(), args.registry):
+            digests = None
+            if args.placeholder_digests:
+                digests = dict.fromkeys(IMAGES, PLACEHOLDER_DIGEST)
+            elif args.digests_dir is not None:
+                digests = read_digests(args.digests_dir)
+            for ref in verify(
+                args.chart, sys.stdin.read(), args.registry, digests=digests
+            ):
                 print(ref)
         elif args.command == "covered":
             covered(args.chart, sys.stdin.read())

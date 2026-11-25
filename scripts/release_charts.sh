@@ -47,11 +47,12 @@ status() {
 # refs `verify` accepts.
 rendered_refs() {
     local chart="$1" ref="$2" registry="$3" files args
+    shift 3
     while read -r files; do
         args=()
         for f in $(jq -r '.[]' <<<"$files"); do args+=(-f "$f"); done
         helm template switch "$ref" "${args[@]}" \
-            | python3 scripts/pin_chart_images.py verify --chart "$chart" --registry "$registry"
+            | python3 scripts/pin_chart_images.py verify --chart "$chart" --registry "$registry" "$@"
     done < <(field "$chart" '.renders[] | tojson') | sort -u
 }
 
@@ -111,7 +112,7 @@ build)
             for f in $(jq -r '.[]' <<<"$files"); do args+=(-f "$f"); done
             helm lint "$tgz" "${args[@]}"
         done < <(field "$chart" '.renders[] | tojson')
-        rendered_refs "$chart" "$tgz" "$registry" | tee "$out/$chart.refs"
+        rendered_refs "$chart" "$tgz" "$registry" "$@" | tee "$out/$chart.refs"
         python3 scripts/pin_chart_images.py covered --chart "$chart" <"$out/$chart.refs"
     done
     ;;
