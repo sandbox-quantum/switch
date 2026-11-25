@@ -979,10 +979,16 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- end }}
 - name: GATEWAY_COOKIE_SECURE
   value: {{ .Values.switchCore.cookieSecure | quote }}
+{{- $forwardedAllowIps := .Values.switchCore.forwardedAllowIps | default "127.0.0.1" }}
+{{- if has "*" (splitList "," (nospace $forwardedAllowIps)) }}
+{{- fail "switchCore.forwardedAllowIps must not be \"*\": it would let any caller forge its client address. Name the ingress or load balancer's source CIDR(s)." }}
+{{- end }}
+- name: FORWARDED_ALLOW_IPS
+  value: {{ $forwardedAllowIps | quote }}
 - name: SWITCH_LOG_LEVEL
   value: {{ .Values.switchCore.logLevel | default "INFO" | quote }}
 - name: LOG_FORMAT
-  value: {{ .Values.switchCore.logging.format | quote }}
+  value: {{ .Values.switchCore.logging.format | default "json" | quote }}
 - name: LOG_LEVEL
   value: {{ .Values.switchCore.logging.rootLevel | quote }}
 - name: TENANT_ID
@@ -1082,6 +1088,13 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ required "switchCore.teamsApp.termsUrl is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.termsUrl | quote }}
 {{- with .Values.switchCore.teamsApp.name }}
 - name: TEAMS_APP_NAME
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.switchCore.teamsApp.partnerId }}
+{{- if not (kindIs "string" .) }}
+{{- fail "switchCore.teamsApp.partnerId must be a string: quote it in a values file, or pass it with --set-string, since a bare number can lose its digits" }}
+{{- end }}
+- name: TEAMS_APP_PARTNER_ID
   value: {{ . | quote }}
 {{- end }}
 {{- if eq .Values.switchCore.teamsApp.credential "secret" }}

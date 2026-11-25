@@ -56,6 +56,7 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.chats import MEMBER_CLIENT_TYPE, is_console_chat
+from switch_core.chats.stream_reads import StreamReads
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
     MESSAGE_EVENT_TYPE,
@@ -63,6 +64,7 @@ from switch_core.chats.views import (
     ChatMention,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
     AgentSessionActivityItem,
@@ -106,6 +108,7 @@ from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
 from switch_core.observability.metrics import metrics
 from switch_core.provisioning import Provisioning
+from switch_core.room_read_only import read_only_state, refusal_text
 from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import ACTIVITY_RETENTION
@@ -137,9 +140,6 @@ if TYPE_CHECKING:
     from switch_core.delivery.router import MessageRouter, Routed
 
 logger = logging.getLogger(__name__)
-
-# How many open chat streams of this process re-read at once after a wake.
-STREAM_READS_AT_ONCE = 16
 
 # Told the rooms whose part in a person's chats changed, or None for any.
 MembershipWatcher = Callable[[list[str] | None], None]
@@ -180,6 +180,14 @@ def _hash(payload: dict[str, object]) -> str:
     ).hexdigest()
 
 
+def _sent_kind(command: tuple[str, str] | None, content: dict[str, object]) -> str:
+    """What a post was, as `MESSAGES_SENT` labels it. A command is an event,
+    as the transport labels one a platform's bridge writes."""
+    if command is not None:
+        return "event"
+    return "media" if "url" in content else "message"
+
+
 def _upload_key(upload_id: str) -> str:
     # Uploads share the per-user key space with requests; the prefix keeps a
     # client's upload id from ever colliding with one of its request ids.
@@ -209,8 +217,13 @@ class ChatService:
         trust_client: TrustClient,
         message_observer: ParticipantMessageObserver,
         telemetry: TelemetryService | None,
+        stream_slots: int | None = None,
     ) -> None:
         self.session_factory = session_factory
+        # What this process's Console streams share: the slots their passes
+        # hold a connection in (`stream_slots`, None for no limit) and the
+        # pages of rooms' new rows they read (`chats/stream_reads.py`).
+        self.stream_reads = StreamReads(stream_slots)
         self._trust_client = trust_client
         # A post is stored straight through the router rather than sent by a
         # transport, so it is told to the observer here, as the transport
@@ -240,10 +253,6 @@ class ChatService:
         self._membership_watchers: dict[tuple[str, str], set[MembershipWatcher]] = {}
         self._agent_room_listeners: tuple[Callable[[str, list[str]], None], ...] = ()
         self._tasks: set[asyncio.Task[None]] = set()
-        # Held by an open chat stream while it re-reads after a wake
-        # (`gateway/chats.py`): a change to a room wakes the stream of
-        # everyone in it at once, and each re-read holds a session.
-        self.stream_reads = asyncio.Semaphore(STREAM_READS_AT_ONCE)
         # Rooms whose people's streams are still to be woken, per tenant, and
         # the one task per tenant waking them (`rooms_changed`).
         self._changed_rooms: dict[str, dict[str, None]] = {}
@@ -303,6 +312,13 @@ class ChatService:
         for watchers in list(self._membership_watchers.values()):
             for callback in list(watchers):
                 callback(None)
+
+    def memberships_changed(
+        self, tenant_id: str, user_ids: list[str], room_ids: list[str]
+    ) -> None:
+        """`_memberships_changed`, for a membership changed outside this
+        service (an account taken out of every room, `room_moderation.py`)."""
+        self._memberships_changed(tenant_id, user_ids, room_ids)
 
     def _memberships_changed(
         self, tenant_id: str, user_ids: list[str], room_ids: list[str]
@@ -1121,17 +1137,48 @@ class ChatService:
     async def add_member(
         self, tenant_id: str, actor: User, room_id: str, target_user_id: str
     ) -> Room:
+        """Switch Console's Add: `admit_member`, reported as a Console add."""
+        room, newly = await self._admit(tenant_id, actor, room_id, target_user_id)
+        if newly:
+            emit_safely(
+                self._telemetry,
+                "console_member_added",
+                self._member_properties(room, "person"),
+            )
+        return room
+
+    async def admit_member(
+        self, tenant_id: str, actor: User, room_id: str, target_user_id: str
+    ) -> Room:
+        """Put a tenant member in a room for a manager, with the checks
+        Console's Add makes, but not reported as one: a template or an agent's
+        tool putting the person a room was made for in it."""
+        room, _ = await self._admit(tenant_id, actor, room_id, target_user_id)
+        return room
+
+    async def _admit(
+        self, tenant_id: str, actor: User, room_id: str, target_user_id: str
+    ) -> tuple[Room, bool]:
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
             await self._require_manager(session, tenant_id, actor, room)
             target = await self._require_tenant_member(
                 session, tenant_id, target_user_id
             )
-        return await self.join_member(tenant_id, room.id, target)
+        return await self._join_person(tenant_id, room.id, target)
 
     async def join_member(self, tenant_id: str, room_id: str, target: User) -> Room:
         """Put a tenant member's member client in the room, with no check on
         who asks: the caller has already authorised the join."""
+        room, _ = await self._join_person(tenant_id, room_id, target)
+        return room
+
+    async def _join_person(
+        self, tenant_id: str, room_id: str, target: User
+    ) -> tuple[Room, bool]:
+        """`join_member`, and whether the person was not in the room before.
+        Only an add from Console is a `console_member_added`; people named when
+        a room is made elsewhere are only a `room_users_added`."""
         target_user_id = target.id
         client = await self.member_actor(tenant_id, target)
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -1149,16 +1196,11 @@ class ChatService:
         joined()
         if not already_in:
             emit_safely(self._telemetry, "room_users_added", {"user_count": 1})
-            emit_safely(
-                self._telemetry,
-                "console_member_added",
-                self._member_properties(room, "person"),
-            )
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             member_ids = [member.id for member, _ in await self.members(session, room)]
         self._memberships_changed(tenant_id, member_ids, [room.id])
-        return room
+        return room, not already_in
 
     async def join_people(
         self,
@@ -1236,17 +1278,25 @@ class ChatService:
                     ),
                 )
         with tenant_scope(tenant_id):
-            await self._provisioning.kick_user(
+            removed = await self._provisioning.kick_user(
                 room.transport_room_id, client.transport_user_id
             )
-        emit_safely(
-            self._telemetry,
-            "console_member_removed",
-            {
-                **self._member_properties(room, "person"),
-                "left": actor.id == target_user_id,
-            },
-        )
+        # Two overlapping requests both pass the membership check above; only
+        # the one whose kick took the person out reports it.
+        if removed is not False:
+            emit_safely(
+                self._telemetry,
+                "console_member_removed",
+                {
+                    **self._member_properties(room, "person"),
+                    "left": actor.id == target_user_id,
+                },
+            )
+            emit_safely(
+                self._telemetry,
+                "room_users_removed",
+                {"user_count": 1, "removed_by_kind": "user"},
+            )
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             member_ids = [member.id for member, _ in await self.members(session, room)]
@@ -1270,18 +1320,20 @@ class ChatService:
             )
             if agent_id in await self._room_store.get_agent_ids(session, room.id):
                 return room
-        await self._room_service.add_agents_to_room(
+        added = await self._room_service.add_agents_to_room(
             room.id,
             agent_ids=[agent_id],
             with_agents=lambda session: self._group_if_several_agents(session, room),
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
-        emit_safely(
-            self._telemetry,
-            "console_member_added",
-            self._member_properties(room, "agent"),
-        )
+        # Of two overlapping adds of the agent, only the one that put it in.
+        if added:
+            emit_safely(
+                self._telemetry,
+                "console_member_added",
+                self._member_properties(room, "agent"),
+            )
         return room
 
     async def _locked_room(self, session: AsyncSession, room_id: str) -> Room:
@@ -1315,12 +1367,14 @@ class ChatService:
             await self._require_manager(session, tenant_id, actor, room)
             if agent_id not in await self._room_store.get_agent_ids(session, room.id):
                 return
-        await self._room_service.remove_agents_from_room(room.id, [agent_id])
-        emit_safely(
-            self._telemetry,
-            "console_member_removed",
-            {**self._member_properties(room, "agent"), "left": False},
-        )
+        removed = await self._room_service.remove_agents_from_room(room.id, [agent_id])
+        # Of two overlapping removals, only the one that took it out.
+        if removed:
+            emit_safely(
+                self._telemetry,
+                "console_member_removed",
+                {**self._member_properties(room, "agent"), "left": False},
+            )
 
     async def archive(self, tenant_id: str, user: User, room_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -2070,6 +2124,8 @@ class ChatService:
                 self._require_same(operation, "send", payload_hash)
                 return room, await self._posted(session, room, operation)
 
+            if room.frozen_at is not None:
+                raise ChatError(409, "ROOM_FROZEN", refusal_text(room.name, "frozen"))
             unarchive = room.archived_at is not None
             if unarchive and not await self.can_manage(session, tenant_id, user, room):
                 raise ChatError(
@@ -2142,6 +2198,19 @@ class ChatService:
             )
             if named_people is not None:
                 contents[0][MENTIONS_KEY] = named_people
+            if unarchive:
+                # Before the rows: an archived room takes no posts
+                # (`room_read_only.py`), and writing in it is what brings it back.
+                await self._room_store.set_archived(session, room.id, False)
+                await record_audit_event(
+                    session,
+                    tenant_id=tenant_id,
+                    actor_user_id=user.id,
+                    action=AuditAction.ROOM_UNARCHIVED,
+                    target_type="room",
+                    target_id=room.id,
+                    details={"name": room.name, "via": "message"},
+                )
             posted: list[Message] = []
             routed: list[Routed] = []
             if command is not None:
@@ -2183,14 +2252,17 @@ class ChatService:
                     )
                 )
                 posted.append(message)
-            await self._usage_store.record(
-                session,
-                tenant_id=tenant_id,
-                metric=UsageMetric.MESSAGES,
-                client_id=client.id,
-                model="",
-                amount=len(posted),
-            )
+            # A command is not something said, so it is neither metered nor
+            # reported as a message, as one typed on a platform is not.
+            if command is None:
+                await self._usage_store.record(
+                    session,
+                    tenant_id=tenant_id,
+                    metric=UsageMetric.MESSAGES,
+                    client_id=client.id,
+                    model="",
+                    amount=len(posted),
+                )
             await session.execute(
                 update(ChatOperation)
                 .where(
@@ -2200,18 +2272,17 @@ class ChatService:
                 )
                 .values(result={"messageIds": [m.transport_event_id for m in posted]})
             )
-            if unarchive:
-                await self._room_store.set_archived(session, room.id, False)
             await session.commit()
         if unarchive:
             self._room_service.room_changed(tenant_id, room.id)
         for each in routed:
             each.committed()
-        self._observe(tenant_id, room.id, client.id, uploads, root)
+        if command is None:
+            self._observe(tenant_id, room.id, client.id, uploads, root)
         for content in contents:
             metrics().increment(
                 MESSAGES_SENT,
-                {"kind": "media" if "url" in content else "message", "actor": "human"},
+                {"kind": _sent_kind(command, content), "actor": "human"},
             )
         return room, posted
 
@@ -2281,6 +2352,11 @@ class ChatService:
                 self._require_same(operation, "control", payload_hash)
                 return str((operation.result or {})["commandId"])
 
+            state = read_only_state(room)
+            if state is not None:
+                raise ChatError(
+                    409, f"ROOM_{state.upper()}", refusal_text(room.name, state)
+                )
             if agent_id not in await self._room_store.get_agent_ids(session, room.id):
                 raise ChatError(
                     422, "AGENT_NOT_IN_CHAT", "That agent is not in this chat."
@@ -2491,6 +2567,7 @@ class ChatService:
             text_check, files_check = await asyncio.gather(
                 check_message(
                     self._trust_client,
+                    self.session_factory,
                     tenant_id=tenant_id,
                     role="user",
                     content=body,
@@ -2498,6 +2575,7 @@ class ChatService:
                 ),
                 check_attachments(
                     self._trust_client,
+                    self.session_factory,
                     tenant_id=tenant_id,
                     role="user",
                     files=files,
@@ -2507,6 +2585,7 @@ class ChatService:
         elif body.strip():
             text_check = await check_message(
                 self._trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 content=body,
@@ -2515,6 +2594,7 @@ class ChatService:
         elif files:
             files_check = await check_attachments(
                 self._trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 files=files,

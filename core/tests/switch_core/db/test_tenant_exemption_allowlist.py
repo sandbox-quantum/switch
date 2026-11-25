@@ -135,6 +135,18 @@ _ALLOWED_MODULES = {
     # holds no membership. Everything it then reads or deletes in a workspace
     # is bound to that workspace.
     "switch_core.accounts.organization_purge",
+    # The operator taking an account out of every room of a workspace names
+    # the workspace by id, holding no membership of it: whether that id is a
+    # workspace is asked with nothing bound, and everything after is bound to
+    # it.
+    "switch_core.room_moderation_admin",
+    # Suspending a person suspends every agent they own, in every workspace,
+    # their former ones included, and an admin may suspend them only if they
+    # administer every workspace the person belongs to: enumerate, then read
+    # and write each workspace's agents with it bound. The operator's command
+    # line also finds an agent named by id alone the same way.
+    "switch_core.accounts.suspension",
+    "switch_core.suspension_admin",
     # Enumerating tenants at boot, and starting one bridge by id from a
     # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
@@ -200,7 +212,6 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.agent.operations.context",
     "switch_core.bridges.agent.operations.definitions",
     "switch_core.bridges.agent.operations.agent_management",
-    "switch_core.bridges.agent.mediation",
     # Reached only from the gateway's rooms endpoints, so the same holds.
     "switch_core.rooms_yaml",
     # Runs: reached from the gateway's run endpoints and from an agent's room
@@ -221,6 +232,11 @@ _RAW_SESSION_FACTORY_MODULES = {
     # on purpose and touches only the seven functions above, which are the one
     # thing a session with nothing bound may read.
     "switch_core.db.tenant_lookup",
+    # The audit-history purge, the one other exempt function
+    # (`db/audit_history_ddl.py`). Its session has nothing bound on purpose
+    # and only calls that function, which deletes across tenants as the owner
+    # and returns nothing but each purged tenant's id and row count.
+    "switch_core.retention.audit_history",
     # ── The readiness check, which issues `SELECT 1` and reads no table at
     # all. Unbound on purpose: binding a tenant would make the health of the
     # database a question about one customer's rows, and reading a scoped
@@ -283,6 +299,16 @@ _RAW_SESSION_FACTORY_MODULES = {
     # `users` row (`rls_ddl.GLOBAL_TABLES`) for the organizations they may
     # be left in; the workspace and organization it reads next are bound.
     "switch_core.gateway.organizations",
+    # Suspending a person, or lifting it, reads and writes their `users` row,
+    # which is global (`rls_ddl.GLOBAL_TABLES`); every workspace whose agents
+    # it touches is bound. The gateway's suspension routes read the same row
+    # back for their answer.
+    "switch_core.accounts.suspension",
+    "switch_core.gateway.suspension",
+    # What the purge leaves outside Switch: it reads `oidc_identities`, global
+    # (`rls_ddl.GLOBAL_TABLES`), and writes the server's audit log; it reads
+    # no workspace or organization.
+    "switch_core.accounts.purge_elsewhere",
     # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
     # and reads `oidc_identities` to match people, both global
     # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.

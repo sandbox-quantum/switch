@@ -72,6 +72,7 @@ MACHINE_ITEM_KEYS = {
     "revision",
     "data_volume_id",
     "retain_until",
+    "expedite_deletion",
     "bundle_revision",
 }
 
@@ -375,6 +376,7 @@ async def test_machines_lists_every_live_machine_with_the_contract_keys(
         "revision": 1,
         "data_volume_id": None,
         "retain_until": None,
+        "expedite_deletion": False,
         "bundle_revision": 1,
     }
 
@@ -1142,6 +1144,29 @@ async def test_a_machine_not_known_to_be_idle_is_kept_awake(
     await _idle_ready(app, minutes=30, sessions=sessions, reported=reported)
     [item] = await list_machines(app.client)
     assert item["desired_state"] == "running"
+
+
+async def test_a_suspended_owners_machine_is_put_to_sleep_not_replaced(controller_app):
+    """Its controllers are refused, so they stop reporting: that is neither
+    idle nor a broken machine, and it sleeps rather than running on."""
+    app = controller_app
+    await _idle_ready(app, minutes=30, reported=timedelta(minutes=10))
+    await update_machine(
+        app.factory, app.machine_id, active_at=datetime.now(UTC) - timedelta(minutes=1)
+    )
+    owner_id = (await machine_of(app.factory, app.machine_id)).owner_id
+    async with app.factory() as session:
+        owner = await session.get(User, owner_id)
+        assert owner is not None
+        owner.suspended_at = datetime.now(UTC)
+        owner.suspended_by_role = "operator"
+        await session.commit()
+
+    [item] = await list_machines(app.client)
+
+    assert (item["desired_state"], item["revision"]) == ("stopped", 2)
+    saved = await machine_of(app.factory, app.machine_id)
+    assert (saved.state, saved.stop_reason) == ("ready", "idle")
 
 
 async def test_idle_stop_is_off_when_the_setting_is_zero(controller_app):

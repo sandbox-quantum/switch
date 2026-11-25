@@ -539,10 +539,18 @@ WORKSPACE_ARCHIVED = Closure(
     code="closed", message="the agent's workspace was archived", room_id=None
 )
 
+#: How an agent's connections end when it, or its owner, is suspended
+#: (`accounts/suspension.py`). A client that reopens is refused until the
+#: suspension is lifted.
+AGENT_SUSPENDED = Closure(
+    code="closed", message="the agent was suspended", room_id=None
+)
+
 ENDINGS: dict[str, Closure] = {
     "deleted": AGENT_DELETED,
     "key_reissued": KEY_REISSUED,
     "workspace_archived": WORKSPACE_ARCHIVED,
+    "suspended": AGENT_SUSPENDED,
 }
 
 
@@ -1427,6 +1435,13 @@ class AgentConnectionRegistry:
         agent is refused when it tries again (`bridges/agent/auth.py`)."""
         await self._end_agent(agent_id, "workspace_archived")
 
+    async def agent_suspended(self, agent_id: str) -> None:
+        """End the connections of an agent that was suspended, or whose owner
+        was, here and in every other process, as `agent_key_reissued` does:
+        the caller deleted their rows (`accounts/suspension.py`), and the
+        agent is refused when it tries again (`bridges/agent/auth.py`)."""
+        await self._end_agent(agent_id, "suspended")
+
     async def _end_agent(self, agent_id: str, ending: str) -> None:
         if self._rows is not None:
             await self._rows.agent_ended(agent_id, ending)
@@ -1610,15 +1625,22 @@ class AgentConnectionRegistry:
         self._by_id[row.id] = copy
         self._by_agent.setdefault(row.agent_id, set()).add(row.id)
 
-    def drop_copies_held_by(self, process_ids: set[str]) -> set[str]:
+    def drop_copies_held_by(
+        self, process_ids: set[str], *, moving_until: dict[str, float]
+    ) -> set[str]:
         """Forget the connections these processes held, agents' and
-        controllers': their leases lapsed. Returns the agents that lost one."""
+        controllers': they stopped holding their leases. A controller moving
+        from one that shut down still reads as connected until the time
+        `moving_until` gives that process (`ControllerPresence.moving`).
+        Returns the agents that lost a connection."""
         agents: set[str] = set()
         for conn in list(self._by_id.values()):
             if conn.held_by in process_ids:
                 self._forget(conn.id)
                 agents.add(conn.agent_id)
-        for controller_id in self.controllers.forget_processes(process_ids):
+        for controller_id in self.controllers.forget_processes(
+            process_ids, moving_until=moving_until
+        ):
             agents |= self.controllers.agents_of(controller_id)
         return agents
 

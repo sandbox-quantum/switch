@@ -88,6 +88,8 @@ import {
   type ChatClaim,
   type ConnectedChat,
   type DecisionBackend,
+  type DecisionBackendInfo,
+  type DecisionServiceChoice,
   type DecisionSettings,
   type DecisionSettingsInput,
   type DecisionTestInput,
@@ -147,7 +149,8 @@ import type {
 import type { OrganizationRole, WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
-import { NoManagementApiError } from './server-address';
+import { describeNetworkFailure } from './network-failure';
+import { NoManagementApiError, RedirectedAddressError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 import { noteSessionEnded } from './session-ended';
 
@@ -418,10 +421,7 @@ export async function gatewayRequest(
       });
     } catch (cause) {
       noteManagedServerUnanswered(server);
-      throw new GatewayError(
-        'network',
-        `Could not reach ${server.url}: ${cause instanceof Error ? cause.message : String(cause)}`
-      );
+      throw new GatewayError('network', describeNetworkFailure(server.url, cause));
     }
   };
 
@@ -448,7 +448,19 @@ export async function gatewayRequest(
   if (answeredWithPage(response)) {
     throw new NoManagementApiError(server.name, server.url, response.status);
   }
+  // Only a call made without a session can blame the address: a signed-in
+  // call redirected is more likely a sign-in proxy in front of the server
+  // whose own login has lapsed, and is left to the caller as a refusal.
+  const location = response.headers.get('location');
+  if (!options.authenticated && response.status >= 300 && response.status < 400 && location) {
+    await response.body?.cancel();
+    throw new RedirectedAddressError(server.url, location);
+  }
   return response;
+}
+
+function isHtmlResponse(response: Response): boolean {
+  return (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
 }
 
 /**
@@ -459,8 +471,7 @@ export async function gatewayRequest(
  * server is down, which the caller reports as it is.
  */
 function answeredWithPage(response: Response): boolean {
-  const html = (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
-  return html && (response.ok || response.status === 404);
+  return isHtmlResponse(response) && (response.ok || response.status === 404);
 }
 
 /** The `retryable` beside `detail` in a coded refusal, or undefined without one. */
@@ -485,9 +496,12 @@ export async function gatewayFetch(
   });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
+    // A page of markup says nothing a person can read in a sentence; the body
+    // is still kept whole on the error for whoever reads it.
+    const shown = isHtmlResponse(response) ? '' : body;
     throw new GatewayError(
       'http',
-      `Switch gateway returned ${response.status}${body ? `: ${body}` : ''}`,
+      `Switch gateway returned ${response.status}${shown ? `: ${shown}` : ''}`,
       response.status,
       parseErrorDetail(body),
       parseErrorCode(body),
@@ -594,6 +608,13 @@ export async function clearTrustSettings(server: SwitchServer): Promise<TrustSet
   return mapTrustSettings((await res.json()) as TrustSettingsJson);
 }
 
+type DecisionBackendInfoJson = {
+  label: string;
+  model: string;
+  threshold: number | null;
+  fallback: { backend: string; model: string; label: string; after_s: number } | null;
+};
+
 type DecisionSettingsJson = {
   source: 'workspace' | 'server_default';
   effective: {
@@ -605,6 +626,8 @@ type DecisionSettingsJson = {
   };
   workspace: {
     backend: DecisionBackend;
+    /** Absent from a server that predates it. */
+    unrecognized_backend?: string | null;
     endpoint: string | null;
     threshold: number | null;
     has_api_key: boolean;
@@ -612,9 +635,56 @@ type DecisionSettingsJson = {
     api_key_unreadable: boolean;
     updated_at: string;
   } | null;
-  server_default: { configured: boolean; endpoint: string | null; has_api_key: boolean };
-  options: { haiku_anthropic: boolean; haiku_bedrock: boolean };
+  server_default: {
+    configured: boolean;
+    endpoint: string | null;
+    has_api_key: boolean;
+    /** Absent from a server that predates offers read from the decision service. */
+    info?: DecisionBackendInfoJson | null;
+  };
+  /** The fields past the two Haiku ones are absent from a server that
+   * predates offers read from the decision service. */
+  options: {
+    haiku_anthropic: boolean;
+    haiku_bedrock: boolean;
+    self_hosted?: boolean;
+    gemini?: boolean;
+    details?: Partial<Record<DecisionServiceChoice, DecisionBackendInfoJson>>;
+    source?: 'service' | 'configuration' | 'unavailable' | 'none';
+    note?: string | null;
+  };
 };
+
+function mapDecisionBackendInfo(
+  json: DecisionBackendInfoJson | null | undefined
+): DecisionBackendInfo | null {
+  if (json === null || json === undefined) return null;
+  return {
+    label: json.label,
+    model: json.model,
+    threshold: json.threshold,
+    fallback:
+      json.fallback === null
+        ? null
+        : {
+            backend: json.fallback.backend,
+            model: json.fallback.model,
+            label: json.fallback.label,
+            afterS: json.fallback.after_s,
+          },
+  };
+}
+
+function mapDecisionDetails(
+  json: Partial<Record<DecisionServiceChoice, DecisionBackendInfoJson>> | undefined
+): Partial<Record<DecisionServiceChoice, DecisionBackendInfo>> {
+  const details: Partial<Record<DecisionServiceChoice, DecisionBackendInfo>> = {};
+  for (const [choice, info] of Object.entries(json ?? {})) {
+    const mapped = mapDecisionBackendInfo(info);
+    if (mapped !== null) details[choice as DecisionServiceChoice] = mapped;
+  }
+  return details;
+}
 
 function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
   const { workspace } = json;
@@ -632,6 +702,7 @@ function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
         ? null
         : {
             backend: workspace.backend,
+            unrecognizedBackend: workspace.unrecognized_backend ?? null,
             endpoint: workspace.endpoint,
             threshold: workspace.threshold,
             hasApiKey: workspace.has_api_key,
@@ -643,10 +714,16 @@ function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
       configured: json.server_default.configured,
       endpoint: json.server_default.endpoint,
       hasApiKey: json.server_default.has_api_key,
+      info: mapDecisionBackendInfo(json.server_default.info),
     },
     options: {
       haikuAnthropic: json.options.haiku_anthropic,
       haikuBedrock: json.options.haiku_bedrock,
+      selfHosted: json.options.self_hosted ?? false,
+      gemini: json.options.gemini ?? false,
+      details: mapDecisionDetails(json.options.details),
+      source: json.options.source ?? (json.server_default.configured ? 'configuration' : 'none'),
+      note: json.options.note ?? null,
     },
   };
 }
@@ -877,6 +954,27 @@ export class PasswordChangedSessionNotSavedError extends Error {
       { cause }
     );
     this.name = 'PasswordChangedSessionNotSavedError';
+  }
+}
+
+/** Short, because it stands in front of a status read that would otherwise answer at once. */
+const PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * Whether the server answers at all, asked without a session. Any answer
+ * counts, a refusal included; only a request that never got one is raised, as
+ * the `network` {@link GatewayError} that says why.
+ */
+export async function probeGateway(server: SwitchServer): Promise<void> {
+  try {
+    const res = await gatewayRequest(server, '/auth/config', {
+      authenticated: false,
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    await res.body?.cancel();
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.kind !== 'network') return;
+    throw cause;
   }
 }
 
@@ -4503,6 +4601,8 @@ export async function getConnectionCatalog(
     status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
     unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
     unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
+    sign_in_unavailable_reason: entry.enabled ? entry.sign_in_unavailable_reason : null,
+    server_setup_needed: entry.enabled && entry.server_setup_needed,
     read_only_reason: entry.enabled ? entry.read_only_reason : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
@@ -4536,6 +4636,8 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         connectable: entry.enabled && entry.slug === 'github',
         unavailable_reason: null,
         unavailable_code: null,
+        sign_in_unavailable_reason: null,
+        server_setup_needed: false,
         read_only_reason: null,
         pass_through: false,
         token_lifetime: null,

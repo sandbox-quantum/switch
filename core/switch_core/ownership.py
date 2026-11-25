@@ -10,16 +10,26 @@ Each piece of work is a kind and a key ("client" and a client id). A process
 wants the keys it could run, and runs those it owns. Which process owns a key
 is decided twice over:
 
-- **Who should.** Rendezvous hashing over the processes whose lease in
-  `switch_core_processes` holds: every process scores every key against every
-  live process and the highest score wins. All processes reading the same
-  leases agree, and a process coming or going moves only the keys it wins or
-  held, not everyone's. A key that can only run beside another kind's key is
-  hashed as that key (`OwnedKind.want`), so both land on the same process.
+- **Who should.** Rendezvous hashing over the processes that take work: those
+  whose lease in `switch_core_processes` holds and has finished booting. Every
+  process scores every key against every one of them and the highest score
+  wins. All processes reading the same leases agree, and a process coming or
+  going moves only the keys it wins or held, not everyone's. A key that can
+  only run beside another kind's key is hashed as that key (`OwnedKind.want`),
+  so both land on the same process.
 - **Who does.** A row in `ownership_leases`, claimed in one statement and only
   while nobody holds it or its holder's process lease has lapsed. The hash says
   who tries; the row makes sure only one succeeds, whatever two processes
   briefly believe about each other.
+
+A process starting beside others is handed work only once it can hear them.
+Its lease is claimed early in its boot and reads booting until its signal bus
+listens (`_resync`): handed its share before then, it could not take it up
+until its boot was done, and the share ran nowhere meanwhile. Listening, it
+hears each handover as it happens. It counts itself all along, so it takes up
+work nobody holds, such as a share a process from before the booting flag
+handed it; and a process starting alone takes everything at once, as a
+deployment of one process always has.
 
 A key moves without overlap. The process that should no longer own it stops
 the work first and then releases the row, and only then can the new owner claim
@@ -31,7 +41,9 @@ claim it (`ProcessLease.surely_held`).
 Every claim bumps the row's `token`, and the work is started with it (`Fence`).
 Writes that must not outlive the hold name the token in the same statement
 (`DeliveryCursorStore.advance`), so a holder taken over without knowing it is
-refused, and is stopped when it is.
+refused, and is stopped when it is. The fence also says since when the work
+ran nowhere, so work that listens to something outside Switch can read back
+what it missed meanwhile.
 
 Changes reach the other processes over the signal bus: `ownership.changed`
 after a process releases keys, starts, or has marked its process lease stopped
@@ -51,7 +63,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from switch_core.process_lease import (
@@ -63,7 +75,10 @@ from switch_core.process_lease import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
+    from switch_core.db.stores.ownership_lease_store import (
+        Claim,
+        OwnershipLeaseStore,
+    )
     from switch_core.db.stores.switch_core_process_store import (
         SwitchCoreProcessStore,
     )
@@ -93,12 +108,16 @@ StopWork = Callable[[str], Awaitable[None]]
 @dataclass(frozen=True)
 class Fence:
     """The hold a piece of work was started under: which lease, which process,
-    and the token the claim returned."""
+    and the token the claim returned. `unheld_since` is when the work last
+    ran elsewhere, as far as its row told: when its last holder let go of it,
+    or that holder's last renewal if it stopped holding its lease without
+    letting go. None for work no process held before."""
 
     kind: str
     key: str
     process_id: str
     token: int
+    unheld_since: datetime | None
 
 
 def owner_of(kind: str, key: str, processes: Sequence[str]) -> str | None:
@@ -180,14 +199,16 @@ class OwnedKind:
 
     async def drop(self, key: str) -> None:
         """This process will not run `key` any more: stop it here now if it
-        runs, and let go of its lease. For work being deleted, which must be
-        stopped before its rows go."""
+        runs, and forget its lease unless another process holds it. For work
+        being deleted or turned off, which must be stopped before its rows go.
+        Forgotten rather than let go of, so work turned back on later starts
+        afresh rather than as a take-over (`Fence.unheld_since`)."""
         self._wanted.discard(key)
         self._placed_with.pop(key, None)
         async with self._ownership.balancing():
             if key in self._held:
                 await self._stop_held([key])
-                await self._ownership.release(self.name, [key])
+            await self._ownership.forget(self.name, [key])
 
     def lost(self, fence: Fence) -> None:
         """The work found its lease taken over: stop it at the next balance."""
@@ -222,12 +243,18 @@ class OwnedKind:
         if not wanted:
             return
         claimed = await self._ownership.claim(self.name, wanted)
-        for key, token in sorted(claimed.items()):
+        for key, claim in sorted(claimed.items()):
             # Dropped while the claim was in flight: give it straight back.
             if key not in self._wanted:
-                await self._ownership.release(self.name, [key])
+                await self._ownership.forget(self.name, [key])
                 continue
-            fence = Fence(kind=self.name, key=key, process_id=me, token=token)
+            fence = Fence(
+                kind=self.name,
+                key=key,
+                process_id=me,
+                token=claim.token,
+                unheld_since=claim.unheld_since,
+            )
             self._held[key] = fence
             try:
                 await self._start(key, fence)
@@ -286,6 +313,10 @@ class Ownership:
         self._nudged = asyncio.Event()
         self._suspended = False
         self._stopped = False
+        # Whether this process's lease may stop reading booting, so the
+        # others hand it its share: its signal bus listens, or no other
+        # process took work as it started.
+        self._can_finish_booting = False
         # Whether `stop` saw every piece of work here stop, rather than being
         # cancelled first.
         self._work_stopped = False
@@ -328,8 +359,18 @@ class Ownership:
         other processes are told this one is here.
 
         The lease is renewed first, so the work starts with all the time the
-        lease is sure for, however long the boot took since it was claimed."""
+        lease is sure for, however long the boot took since it was claimed.
+        With other processes taking work, the lease reads booting until this
+        one can hear them (`_resync`), and it takes only work nobody holds."""
         await self._lease.renew()
+        if not self._can_finish_booting:
+            async with self._session_factory() as session:
+                leases = await read_leases(session, self._processes)
+            self._can_finish_booting = not any(
+                leases.takes_work(process_id)
+                for process_id in leases.leases
+                if process_id != self.process_id
+            )
         await self.balance()
         self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
 
@@ -406,11 +447,24 @@ class Ownership:
             if not self._lease.surely_held():
                 await self._suspend()
                 return
+            if self._lease.booting and self._can_finish_booting:
+                await self._lease.finish_booting()
+                logger.info(
+                    "This process's lease %s has finished booting; taking its "
+                    "share of the work",
+                    self.process_id,
+                )
+                self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
             async with self._session_factory() as session:
                 leases = await read_leases(session, self._processes)
             await self._prune_now_and_then()
+            # Itself while its lease holds, booting or not: the others count
+            # it once it has finished booting.
             live = sorted(
-                process_id for process_id in leases.leases if leases.holds(process_id)
+                process_id
+                for process_id in leases.leases
+                if leases.takes_work(process_id)
+                or (process_id == self.process_id and leases.holds(process_id))
             )
             if self.process_id not in live:
                 # Sure of its own lease by its own clock but not yet seen
@@ -458,7 +512,7 @@ class Ownership:
         for kind in list(self._kinds.values()):
             await kind._stop_all()
 
-    async def claim(self, kind: str, keys: Sequence[str]) -> dict[str, int]:
+    async def claim(self, kind: str, keys: Sequence[str]) -> dict[str, Claim]:
         async with self._session_factory() as session:
             claimed = await self._store.claim(
                 session,
@@ -480,6 +534,14 @@ class Ownership:
             await session.commit()
         self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
 
+    async def forget(self, kind: str, keys: Sequence[str]) -> None:
+        async with self._session_factory() as session:
+            await self._store.forget(
+                session, kind=kind, keys=keys, process_id=self.process_id
+            )
+            await session.commit()
+        self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
+
     # ── Signals ──────────────────────────────────────────────────────────────
 
     def _on_changed(self, signal: dict[str, Any]) -> None:
@@ -487,5 +549,7 @@ class Ownership:
 
     async def _resync(self) -> None:
         """Signals sent while this process was not listening are gone; the
-        balance reads what they would have said."""
+        balance reads what they would have said. Listening, a booting process
+        can be handed work: it hears every handover from here on."""
+        self._can_finish_booting = True
         self.nudge()

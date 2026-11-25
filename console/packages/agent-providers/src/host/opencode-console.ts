@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { chmod, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, lstat, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { openCodeConsoleCredentialSchema } from '../opencode/console-credential';
 import { execProvider } from '../provider-process';
+import { ensureLoginDirectory } from './login-directory';
 
 interface Database {
   prepare(sql: string): {
@@ -17,6 +18,9 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: new (path: string) => Database;
 };
 
+/** Beside OpenCode's database: that Switch imported a console login into it, and which. */
+export const OPENCODE_CONSOLE_MARKER = '.switch-console-credential';
+
 export async function importOpenCodeConsole(
   dataHome: string,
   env: Record<string, string>,
@@ -25,7 +29,7 @@ export async function importOpenCodeConsole(
 ) {
   const input = openCodeConsoleCredentialSchema.parse(JSON.parse(credential));
   const directory = join(dataHome, 'opencode');
-  const marker = join(directory, '.switch-console-credential');
+  const marker = join(directory, OPENCODE_CONSOLE_MARKER);
   for (const path of [dataHome, directory, join(directory, 'opencode.db'), marker]) {
     try {
       if ((await lstat(path)).isSymbolicLink())
@@ -44,7 +48,8 @@ export async function importOpenCodeConsole(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await ensureLoginDirectory(dataHome);
+  await ensureLoginDirectory(directory);
   try {
     await execProvider(binaryPath, ['db', 'SELECT 1', '--format', 'json'], {
       env,

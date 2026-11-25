@@ -16,9 +16,7 @@ first:
 - an agent with sub-agents, or a sub-agent, is one of a family registered
   together from one session;
 - an agent that signs in with an OAuth client of its own holds a credential
-  this module does not rotate;
-- an agent a server-side connector runs is registered again by that
-  connector, under its own owner, whenever the server starts.
+  this module does not rotate.
 
 What is left is the agent's API key, which its owner can reveal. It is
 re-issued to the new owner, so a copy the previous owner holds stops working.
@@ -59,6 +57,7 @@ from switch_core.db.models import (
     ServiceGrant,
     Template,
     TenantMember,
+    User,
 )
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.room_store import RoomStore
@@ -156,7 +155,6 @@ class AgentTransferFacts:
     # It is a sub-agent, or has sub-agents.
     in_family: bool
     has_oauth_client: bool
-    run_by_server_connector: bool
 
 
 async def agent_transfer_facts(
@@ -174,7 +172,6 @@ async def agent_transfer_facts(
                 Agent.can_manage_agents,
                 Agent.parent_agent_id,
                 Agent.oauth_client_id,
-                Agent.metadata_,
             ).where(Agent.tenant_id == tenant_id, Agent.id.in_(ids))
         )
     ).all()
@@ -207,10 +204,8 @@ async def agent_transfer_facts(
             may_manage_agents=may_manage_agents,
             in_family=parent_agent_id is not None or agent_id in parents,
             has_oauth_client=oauth_client_id is not None,
-            run_by_server_connector=isinstance(metadata, dict)
-            and bool(metadata.get("server_connector_id")),
         )
-        for agent_id, may_manage_agents, parent_agent_id, oauth_client_id, metadata in rows
+        for agent_id, may_manage_agents, parent_agent_id, oauth_client_id in rows
     }
 
 
@@ -244,12 +239,6 @@ def agent_transfer_refusal(facts: AgentTransferFacts, *, to_owner: bool) -> str 
     if facts.has_oauth_client:
         return (
             "This agent signs in with an OAuth client of its own and can't be "
-            "transferred."
-        )
-    if facts.run_by_server_connector:
-        return (
-            "This agent is run by Switch itself, which registers it again "
-            "under its own owner whenever Switch starts, so it can't be "
             "transferred."
         )
     return None
@@ -308,20 +297,32 @@ async def _refuse(
             )
 
 
-async def _reissue_agent_key(
-    session: AsyncSession, agent: Agent, new_owner_id: str, keyring: Keyring
-) -> str:
-    """Give the agent's key to `new_owner_id` as a new secret; return the
-    retired one's hash."""
-    key = await session.get(ApiKey, agent.api_key_id)
+@dataclass(frozen=True)
+class ReissuedKey:
+    """An agent's key given a new secret: its row, the retired secret's hash
+    for the caller to drop from the key cache, and the new secret."""
+
+    key: ApiKey
+    retired_hash: str
+    plaintext: str
+
+
+async def reissue_agent_key(
+    session: AsyncSession, agent: Agent, keyring: Keyring
+) -> ReissuedKey:
+    """Give the agent's key a new secret, on `session`. The row keeps its id,
+    so everything naming the key still does; the old secret matches nothing
+    once the caller commits. The caller also deletes the agent's connection
+    rows and, once committed, ends its connections
+    (`AgentConnectionRegistry.agent_key_reissued`)."""
+    key = await session.get(ApiKey, agent.api_key_id, with_for_update=True)
     if key is None:
         raise RuntimeError(f"Agent {agent.id} has no API key row {agent.api_key_id}")
     retired = key.key_hash
     plaintext = secrets.token_urlsafe(32)
     key.key_hash = hashlib.sha256(plaintext.encode()).hexdigest()
     key.encrypted_key = keyring.encrypt(plaintext)
-    key.user_id = new_owner_id
-    return retired
+    return ReissuedKey(key=key, retired_hash=retired, plaintext=plaintext)
 
 
 async def transfer_ownership(
@@ -365,6 +366,16 @@ async def transfer_ownership(
         )
     if previous == new_owner_id:
         raise TransferRefused(400, f"They already own this {label}.")
+    new_owner = await session.get(User, new_owner_id)
+    if new_owner is not None and new_owner.suspended_at is not None:
+        raise TransferRefused(409, "The new owner's account is suspended.")
+    if isinstance(resource, Agent) and resource.suspended_with_owner:
+        # Lifted with its owner's suspension, which would no longer reach it.
+        raise TransferRefused(
+            409,
+            "This agent is suspended because its owner is. Lift the owner's "
+            "suspension first.",
+        )
     if new_owner_id == caller.id:
         # An admin taking someone's agent would also take its key.
         raise TransferRefused(
@@ -376,7 +387,9 @@ async def transfer_ownership(
 
     retired: str | None = None
     if isinstance(resource, Agent):
-        retired = await _reissue_agent_key(session, resource, new_owner_id, keyring)
+        reissued = await reissue_agent_key(session, resource, keyring)
+        reissued.key.user_id = new_owner_id
+        retired = reissued.retired_hash
         await AgentConnectionStore().delete_agent(
             session, tenant_id=tenant_id, agent_id=resource.id
         )

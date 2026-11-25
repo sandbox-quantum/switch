@@ -10,10 +10,15 @@ import {
   type CliConversationMode,
 } from './cli-conversations';
 import { type ControlContext, ensureSessions, serveControl } from './control';
-import { dirMode } from './host-permissions';
-import { materializeHostedProvider } from './hosted-provider';
+import { agentHasOwnUser, dirMode } from './host-permissions';
+import { clearHostedProvider, materializeHostedProvider } from './hosted-provider';
 import { openHubStream } from './hub-stream';
-import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import {
+  detachedSupervision,
+  ensureSharedProcess,
+  inProcessSupervision,
+  sharedSessionsBase,
+} from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
@@ -176,6 +181,17 @@ async function main(): Promise<void> {
         login,
         config.execution?.binaryPath ?? config.start.provider
       );
+    else if (config.execution)
+      // None handed over: a login withdrawn, or given before, leaves no file
+      // behind, whether or not the controller could remove it itself.
+      await clearHostedProvider(
+        resolve(root),
+        agentHasOwnUser() ? sharedSessionsBase() : null
+      ).catch((error: unknown) => {
+        console.error(
+          `Could not remove a provider login Switch no longer gives this agent: ${(error as Error).message}`
+        );
+      });
     // An agent controller running this agent host in a process of its own
     // names its hub: the agent's events come from there, not from Switch.
     const hub = config.execution

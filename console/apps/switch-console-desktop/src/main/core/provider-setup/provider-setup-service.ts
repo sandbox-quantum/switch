@@ -62,6 +62,13 @@ function setupOf(provider: string) {
   return setup;
 }
 
+/** Whether the OpenCode installation sessions here use, as last checked, is OpenCode 1. */
+function usesOpenCode1(snapshot: ProviderSetupSnapshot): boolean {
+  const checked = snapshot.checked;
+  const used = checked?.installations.find((installation) => installation.id === checked.used);
+  return !(Number.parseInt(used?.version ?? '', 10) >= 2);
+}
+
 /** Runs kept per provider; the oldest go first. */
 const MAX_RUNS = 10;
 
@@ -148,8 +155,9 @@ class ProviderSetupService {
         runSetupCommand(
           command,
           await setupShell(),
-          // OpenCode 1 keeps its own database, apart from OpenCode 2's.
-          entry.snapshot.provider === 'opencode'
+          // Only OpenCode 1 is given a database of its own; OpenCode 2 reads
+          // the shared one. The installation signed in is the one in use.
+          entry.snapshot.provider === 'opencode' && usesOpenCode1(entry.snapshot)
             ? { ...process.env, ...opencodeV1DatabaseEnv(process.env) }
             : process.env,
           (line) => entry.onLine?.(line),

@@ -1,3 +1,4 @@
+import { compareVersions } from '@switch-console/shared';
 import { ArrowRight, Loader2, RefreshCw } from 'lucide-react';
 import { useMemo } from 'react';
 import { useAgentInstallationStatus } from '@renderer/lib/stores/use-agent-installation-statuses';
@@ -85,6 +86,44 @@ export function DependencyInstallationUpdateCard({
 
     const isUpdatingThis =
       isUpdating && (updatingMethod === undefined || updatingMethod === usedMethod);
+
+    const migration = installOption?.lineMigration;
+    if (
+      migration &&
+      usedInstallation.version &&
+      compareVersions(usedInstallation.version, migration.below) < 0
+    ) {
+      const name = agentPayload?.name ?? agentId;
+      const next = usedInstallation.latestVersion ?? migration.below;
+      return (
+        <div className="space-y-2 rounded-lg border p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="flex size-6 items-center justify-center rounded-lg bg-background-1">
+                <RefreshCw className="size-3.5 shrink-0 text-foreground-muted" />
+              </div>
+              <span className="text-foreground">
+                Upgrade to {name} {next.split('.')[0]}
+              </span>
+            </div>
+            {versionArrow}
+          </div>
+          <p className="text-xs text-foreground-muted">{migration.summary}</p>
+          {/* One step a line: Windows PowerShell 5.1 cannot run `a && b`. */}
+          <CommandRow
+            command={`${migration.removeCommand}\n${command}`}
+            action={
+              <CommandActionButton
+                disabled={isUpdatingThis}
+                onClick={() => void update(usedMethod as InstallMethod)}
+              >
+                {isUpdatingThis ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Upgrade'}
+              </CommandActionButton>
+            }
+          />
+        </div>
+      );
+    }
 
     return (
       <UpdateCard versionArrow={versionArrow}>

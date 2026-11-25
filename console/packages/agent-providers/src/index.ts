@@ -84,6 +84,7 @@ export {
   ensureSharedProcess,
   inProcessSupervision,
   liveSupervisor,
+  sessionsBaseIn,
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
@@ -146,7 +147,7 @@ export {
   hostedCredentialSchema,
   providerLoginEnvironment,
 } from './host/provider-login';
-export { materializeHostedProvider } from './host/hosted-provider';
+export { clearHostedProvider, materializeHostedProvider } from './host/hosted-provider';
 export {
   generateSealingKeyPair,
   openProviderLogin,
@@ -186,7 +187,7 @@ export {
   watcherHealthSchema,
 } from './host/watcher-tools';
 
-export { codexSourceHome, prepareCodexSessionHome, withManagedCodexSandbox } from './codex/home';
+export { codexSourceHome, prepareCodexSessionHome } from './codex/home';
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 

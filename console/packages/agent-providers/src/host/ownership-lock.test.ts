@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
+import { removeTestRoot } from '../testing/remove-test-root';
 import {
   releaseOwner,
   replaceOwner,
@@ -16,7 +17,7 @@ if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
 
 const roots: string[] = [];
 afterEach(async () => {
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await removeTestRoot(root);
 });
 const moduleUrl = pathToFileURL(join(import.meta.dirname, 'ownership-lock.ts')).href;
 async function rootDirectory() {

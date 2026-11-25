@@ -38,6 +38,7 @@ from switch_core.providers.registry import (
     UnknownProvider,
     agent_provider,
     agent_providers,
+    new_agent_auto_mode,
     offered_provider_ids,
     provider_ids,
     require_offered_provider,
@@ -316,3 +317,57 @@ def test_switch_console_gates_the_same_providers_behind_the_same_flags() -> None
     assert block is not None
     console = dict(re.findall(r"'?([a-z-]+)'?: '([a-z_.]+)'", block.group(1)))
     assert console == {p.id: p.flag for p in agent_providers() if p.flag is not None}
+
+
+def test_a_new_opencode_agent_is_not_in_auto_mode() -> None:
+    # OpenCode's auto mode answers every permission ask itself, so nothing
+    # reviews a command before it runs.
+    assert new_agent_auto_mode("opencode") is False
+    assert {p.id for p in agent_providers() if not p.new_agent_auto_mode} == {
+        "opencode"
+    }
+    with pytest.raises(UnknownProvider):
+        new_agent_auto_mode("nope")
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "expected"),
+    [("claude", True), ("codex", True), ("opencode", False)],
+)
+def test_a_definition_without_auto_mode_takes_the_providers_default(
+    provider_id: str, expected: bool
+) -> None:
+    assert DefinitionV1.model_validate({"provider": provider_id}).auto_mode is expected
+    assert (
+        DefinitionV1.model_validate(
+            {"provider": provider_id, "auto_mode": not expected}
+        ).auto_mode
+        is not expected
+    )
+
+
+def test_a_definition_with_an_unknown_provider_is_refused_for_the_provider() -> None:
+    with pytest.raises(ValidationError) as refused:
+        DefinitionV1.model_validate({"provider": "nope"})
+    assert [error["loc"] for error in refused.value.errors()] == [("provider",)]
+
+
+_CONSOLE_PROVIDER_RUNTIMES = (
+    Path(__file__).resolve().parents[4]
+    / "console/packages/agent-providers/src/providers/registry.ts"
+)
+
+
+def test_switch_console_starts_the_same_providers_new_agents_outside_auto_mode() -> (
+    None
+):
+    text = _CONSOLE_PROVIDER_RUNTIMES.read_text()
+    block = re.search(r"PROVIDER_RUNTIMES[^=]*= \[(.*?)\n\];", text, re.DOTALL)
+    assert block is not None
+    console = set(
+        re.findall(
+            r"id: '([a-z-]+)',(?:(?!\bid: ')[\s\S])*?newAgentAutoMode: false",
+            block.group(1),
+        )
+    )
+    assert console == {p.id for p in agent_providers() if not p.new_agent_auto_mode}

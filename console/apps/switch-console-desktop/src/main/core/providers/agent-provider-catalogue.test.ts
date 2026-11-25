@@ -16,7 +16,11 @@ const plugin = (metadata: {
   },
 });
 
-const runtime = (id: string) => ({ id, loginCommand: `${id} login` });
+const runtime = (id: string, newAgentAutoMode = true) => ({
+  id,
+  loginCommand: `${id} login`,
+  newAgentAutoMode,
+});
 
 describe('buildAgentProviderCatalogue', () => {
   it('makes one entry per plugin, in registration order, with its runtime login command', () => {
@@ -36,6 +40,7 @@ describe('buildAgentProviderCatalogue', () => {
         loginCommand: 'beta login',
         knownAgentType: 'beta',
         supportsAutoMode: true,
+        newAgentAutoMode: true,
       },
       expect.objectContaining({ id: 'alpha', loginCommand: 'alpha login' }),
     ]);
@@ -67,6 +72,12 @@ describe('buildAgentProviderCatalogue', () => {
       [runtime('cursor')]
     );
     expect(entry.supportsAutoMode).toBe(false);
+  });
+
+  it("takes whether a new agent starts in auto mode from the provider's runtime", () => {
+    const [entry] = buildAgentProviderCatalogue([plugin({ id: 'acme' })], [runtime('acme', false)]);
+
+    expect(entry?.newAgentAutoMode).toBe(false);
   });
 
   it('refuses a plugin with no runtime, naming it', () => {

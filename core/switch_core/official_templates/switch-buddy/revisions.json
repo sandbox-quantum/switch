@@ -131,6 +131,18 @@
           "display_name": "74234e98afe7498fb5daf1f36ac2d78a"
         }
       }
+    },
+    {
+      "revision": 12,
+      "document": "dc3d15b8eb9ee0ba262e2bcdb3f01539",
+      "agents": {
+        "buddy": {
+          "instructions": "fb59b8a560a6527a08f4f40ad33e6f94",
+          "description": "7edad24274ce05e3932b5e712718e10a",
+          "icon_url": "05ca6f0fb75b6abfd1d8b0bc7bcd9da4",
+          "display_name": "74234e98afe7498fb5daf1f36ac2d78a"
+        }
+      }
     }
   ]
 }

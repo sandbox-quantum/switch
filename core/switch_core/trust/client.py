@@ -15,15 +15,19 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.organization_trust_settings_store import (
     OrganizationTrustSettingsStore,
 )
 from switch_core.keys import Keyring
+from switch_core.logging_context import current_log_context
+from switch_core.security_events import SecuritySignal, log_security_event
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +76,19 @@ class GuardrailsRefusedError(GuardrailsCheckError):
     def __init__(self, message: str, status_code: int) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class TrustDeletionError(RuntimeError):
+    """Switch Trust did not confirm it deleted what it holds for a session:
+    network error, timeout, or an answer other than success or 404."""
+
+
+class TrustSessionEraser(Protocol):
+    async def delete_session(self, session_id: str) -> None:
+        """Have Switch Trust delete everything it holds for `session_id`
+        (the `x-agent-session-id` its checks were sent with: a room id).
+        Raises `TrustDeletionError` unless it is gone."""
+        ...
 
 
 class GuardrailBlockedError(Exception):
@@ -312,6 +329,32 @@ class DynamicTrustClient:
             self._kept[organization_id] = _Kept(checker, read_at)
         return checker
 
+    async def session_eraser(self, organization_id: str) -> HttpTrustClient | None:
+        """The client `organization_id`'s own settings make, to delete what
+        Switch Trust holds for its rooms, or None when it connected no policy
+        and so nothing of it was sent there. Read now, not kept: an eraser
+        outlives the settings when the organization it was made for is
+        purged. Raises `GuardrailsCheckError` when the settings can't be
+        read."""
+        try:
+            async with organization_session(
+                self._session_factory, organization_id
+            ) as session:
+                settings = await self._store.get(session, organization_id)
+            if settings is None:
+                return None
+            return HttpTrustClient(
+                base_url=settings.endpoint,
+                api_key=self._keyring.decrypt(settings.api_key_encrypted),
+                policy_id=settings.policy_id,
+                timeout_seconds=self._timeout_seconds,
+                client=self._client,
+            )
+        except Exception as error:
+            raise GuardrailsCheckError(
+                f"Could not read Switch Trust settings: {error}"
+            ) from error
+
 
 class HttpTrustClient:
     """Posts to `{base_url}/guardrails/check`. One client, reused.
@@ -331,7 +374,8 @@ class HttpTrustClient:
         timeout_seconds: float,
         client: httpx.AsyncClient,
     ) -> None:
-        self._url = base_url.rstrip("/") + "/guardrails/check"
+        self._base_url = base_url.rstrip("/")
+        self._url = self._base_url + "/guardrails/check"
         self._headers = {
             "Content-Type": "application/json",
             "x-guardrails-policy-id": policy_id,
@@ -340,6 +384,31 @@ class HttpTrustClient:
         }
         self._timeout_seconds = timeout_seconds
         self._client = client
+
+    async def delete_session(self, session_id: str) -> None:
+        """`DELETE {base_url}/guardrails/sessions/{session_id}`, with the
+        same credentials as a check. 404 means Switch Trust holds nothing for
+        the session, which is as good as deleted.
+
+        The endpoint is provisional: Switch Trust has not yet published a
+        deletion API, and this shape stands in for it until it does. Only
+        this method should need to change."""
+        url = f"{self._base_url}/guardrails/sessions/{quote(session_id, safe='')}"
+        try:
+            response = await self._client.delete(
+                url,
+                headers={**self._headers, "x-agent-session-id": session_id},
+                timeout=self._timeout_seconds,
+            )
+        except httpx.HTTPError as error:
+            raise TrustDeletionError(
+                f"DELETE {url} failed: {type(error).__name__}: {error}"
+            ) from error
+        if response.status_code == 404 or 200 <= response.status_code < 300:
+            return
+        raise TrustDeletionError(
+            f"DELETE {url} answered {response.status_code}: {response.text[:200]}"
+        )
 
     async def check(
         self, *, role: Role, content: str, room_id: str
@@ -449,15 +518,26 @@ def trust_redaction_notice(result: TrustCheckResult) -> str | None:
 
 
 async def check_message(
-    client: TrustClient, *, tenant_id: str, role: Role, content: str, room_id: str
+    client: TrustClient,
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    tenant_id: str,
+    role: Role,
+    content: str,
+    room_id: str,
 ) -> TrustCheckResult:
     """`client.check`, failing open: a Switch Trust outage degrades to
     unchecked messages rather than to no messaging at all. Logged loudly
     either way, since this is the one place that gap is visible. Reported as
     `outcome="errored"` rather than `"ok"`, so callers give it the same
-    quiet in-chat annotation as an engine-side error."""
+    quiet in-chat annotation as an engine-side error.
+
+    A verdict other than `ok` is a security event (`record_verdict`). A
+    blocked or redacted one is written to the audit log on `sessions` before
+    this returns, so before the caller can deliver anything; if that write
+    fails, its error propagates and nothing is delivered."""
     try:
-        return await client.check(
+        result = await client.check(
             tenant_id=tenant_id, role=role, content=content, room_id=room_id
         )
     except GuardrailsCheckError:
@@ -465,7 +545,79 @@ async def check_message(
             "Switch Trust check failed; message allowed through unchecked",
             exc_info=True,
         )
-        return TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+        result = TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+    if result.outcome != "ok":
+        await record_verdict(
+            sessions, result, tenant_id=tenant_id, role=role, room_id=room_id
+        )
+    return result
+
+
+# Verdicts that change what reaches the room, kept as audit rows. An alert
+# or an error changes nothing, and during an outage every message is an
+# error, so those are written to the log only.
+_AUDITED_VERDICTS = {
+    "blocked": AuditAction.TRUST_MESSAGE_BLOCKED,
+    "redacted": AuditAction.TRUST_MESSAGE_REDACTED,
+}
+
+
+async def record_verdict(
+    sessions: async_sessionmaker[AsyncSession],
+    result: TrustCheckResult,
+    *,
+    tenant_id: str,
+    role: Role,
+    room_id: str,
+) -> None:
+    """A verdict other than `ok` as a security event: the policy, the room,
+    the outcome, the sender's role and what each finding was, never the text
+    it found or the message. The sender is whoever the request is for, from
+    the log context.
+
+    Blocked and redacted verdicts go to the workspace audit log, on a short
+    session of their own: the check runs before the send's transaction
+    opens, a block has no send at all, and the row is of the verdict, which
+    stands whether or not the send that follows succeeds."""
+    context = current_log_context()
+    details = {
+        "outcome": result.outcome,
+        "policy_id": result.policy_id,
+        "policy_name": result.policy_name,
+        "role": role,
+        "findings": [
+            {
+                "category": finding.category,
+                "detector_name": finding.detector_name,
+                "severity": finding.severity,
+            }
+            for finding in result.findings
+        ],
+    }
+    action = _AUDITED_VERDICTS.get(result.outcome)
+    if action is None:
+        log_security_event(
+            SecuritySignal.TRUST_VERDICT,
+            tenant_id=tenant_id,
+            actor_user_id=context.user_id,
+            target_type="room",
+            target_id=room_id,
+            agent_id=context.agent_id,
+            room_id=room_id,
+            details=details,
+        )
+        return
+    async with tenant_session(sessions, tenant_id) as session:
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=context.user_id,
+            action=action,
+            target_type="room",
+            target_id=room_id,
+            details={**details, "agent_id": context.agent_id},
+        )
+        await session.commit()
 
 
 async def trust_is_active(client: TrustClient, tenant_id: str) -> bool:

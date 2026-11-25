@@ -438,6 +438,16 @@ class SharedConnections:
                 await self._store.delete_agent(
                     session, tenant_id=tenant_id, agent_id=agent_id
                 )
+            # The same for a suspended agent (`accounts/suspension.py`).
+            suspended = (
+                []
+                if archived or not found
+                else await self._store.suspended_among(session, tenant_id, found)
+            )
+            for agent_id in suspended:
+                await self._store.delete_agent(
+                    session, tenant_id=tenant_id, agent_id=agent_id
+                )
             await session.commit()
         for agent_id in archived:
             logger.warning(
@@ -446,6 +456,14 @@ class SharedConnections:
                 tenant_id,
             )
             self._endings[agent_id] = "workspace_archived"
+            found.pop(agent_id)
+        for agent_id in suspended:
+            logger.warning(
+                "[CONN] suspended agent=%s held a connection in tenant %s; ended",
+                agent_id,
+                tenant_id,
+            )
+            self._endings[agent_id] = "suspended"
             found.pop(agent_id)
         if pruned:
             logger.info(
@@ -463,6 +481,9 @@ class SharedConnections:
                 self._apply(agent_id, tenant_id, found.get(agent_id, _EMPTY))
         for agent_id in archived:
             self._publish_changed(tenant_id, agent_id, [], ending="workspace_archived")
+        for agent_id in suspended:
+            self._registry.ended_elsewhere(agent_id)
+            self._publish_changed(tenant_id, agent_id, [], ending="suspended")
         self._deliver(relayed)
 
     def _deliver(self, relayed: list[tuple[str, dict[str, Any]]]) -> None:
@@ -708,15 +729,23 @@ class SharedConnections:
         }
         lost = lapsed - shut_down
         if shut_down:
-            agents = self._registry.drop_copies_held_by(shut_down)
+            moving_until = {
+                process_id: until
+                for process_id in shut_down
+                if (until := leases.move_ends(process_id)) is not None
+            }
+            agents = self._registry.drop_copies_held_by(
+                shut_down, moving_until=moving_until
+            )
             logger.info(
                 "Switch-core process(es) %s shut down; their connections of %d "
-                "agent(s) no longer count",
+                "agent(s) no longer count, but for the machines still moving to "
+                "another process",
                 ", ".join(sorted(shut_down)),
                 len(agents),
             )
         if lost:
-            agents = self._registry.drop_copies_held_by(lost)
+            agents = self._registry.drop_copies_held_by(lost, moving_until={})
             logger.warning(
                 "Switch-core process(es) %s stopped holding their lease without "
                 "shutting down; their connections of %d agent(s) no longer count",

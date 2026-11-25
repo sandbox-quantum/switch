@@ -40,6 +40,8 @@ _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 # The longest short name a Teams app manifest takes.
 _TEAMS_APP_SHORT_NAME_LIMIT = 30
+# A Microsoft partner ID: digits, and a Teams manifest takes at most 10.
+_TEAMS_APP_PARTNER_ID_RE = re.compile(r"[0-9]{1,10}")
 
 
 def _require_rsa_private_key(name: str, pem: str) -> rsa.RSAPrivateKey:
@@ -683,6 +685,13 @@ class SwitchConfig(BaseSettings):
 
     server_host: str = "0.0.0.0"
     server_port: int = 8000
+    # The addresses whose `X-Forwarded-For` / `X-Forwarded-Proto` uvicorn
+    # believes: comma-separated IPs or CIDRs of the ingress or load balancer
+    # in front of this server. A request from anywhere else keeps its own
+    # connection address, which is what the access log, sign-in events and
+    # the refusal breaker report. The same variable uvicorn itself reads.
+    # `*` believes every caller, so anyone can claim any address.
+    forwarded_allow_ips: str = "127.0.0.1"
 
     # Where collaboration bridges take platform callbacks. Only a Mattermost
     # button press needs one today: the press is delivered by the Mattermost
@@ -842,7 +851,11 @@ class SwitchConfig(BaseSettings):
     # The name the app goes by in Teams. Every environment registers an app of
     # its own, and an organisation approving more than one — ours, testing
     # them — would otherwise see several apps of the same name.
-    teams_app_name: str = "Agent Switch"
+    teams_app_name: str = "Switch Rooms"
+    # The publisher's Microsoft partner ID (Partner Center), named in the
+    # package so Teams can tie the app to its verified publisher. Only a
+    # publisher enrolled with Microsoft has one.
+    teams_app_partner_id: str | None = None
 
     # The distributed Telegram app (`TELEGRAM_DISTRIBUTED_APP.md`): one bot per
     # deployment whose groups a customer claims with a link, as opposed to the
@@ -953,6 +966,21 @@ class SwitchConfig(BaseSettings):
     # proxy gives up after about 10 s. It is answered 503. Writes are not
     # limited, as some do a workspace's worth of work in one statement.
     gateway_read_statement_timeout: str = "10s"
+    # Long-lived gateway streams of one kind (the chats feed, the activity
+    # feed, the change notices) one person may hold in one workspace, in a
+    # process. Console opens one of each per workspace, so 16 leaves room for
+    # a person's machines and browser tabs, as the change notices' own limit
+    # did before (`gateway/changes.py`). Past it, the caller's oldest of that kind is closed
+    # for the new one, or the new one is refused 429 when the oldest is under
+    # 30 s old (`gateway/stream_caps.py`).
+    gateway_streams_per_caller: int = Field(default=16, ge=1)
+    # Long-lived gateway streams of every kind a process holds at once,
+    # counting those still opening. Each holds no database connection while
+    # it waits, but a task, a file handle and a subscription, and reads again
+    # each time its rooms move, so a pod past this many would slow down for
+    # everyone on it. Past it, new ones are refused 503 with a `Retry-After`
+    # and the load balancer sends them elsewhere. 0 turns it off.
+    gateway_streams_per_process: int = Field(default=4000, ge=0)
 
     # Resolving a bearer token to its agent is the highest-frequency query in
     # the system — it runs before every authenticated request, and a fleet of
@@ -1896,6 +1924,7 @@ class SwitchConfig(BaseSettings):
             ),
             "TEAMS_APP_PRIVACY_URL": self.teams_app_privacy_url,
             "TEAMS_APP_TERMS_URL": self.teams_app_terms_url,
+            "TEAMS_APP_PARTNER_ID": self.teams_app_partner_id,
         }
         if not any(settings.values()):
             return self
@@ -1930,6 +1959,13 @@ class SwitchConfig(BaseSettings):
                 f"TEAMS_APP_NAME must be 1 to {_TEAMS_APP_SHORT_NAME_LIMIT} "
                 "characters with no spaces around it; Teams refuses an app "
                 f"package whose short name is longer, got {app_name!r}."
+            )
+        partner_id = self.teams_app_partner_id
+        if partner_id and not _TEAMS_APP_PARTNER_ID_RE.fullmatch(partner_id):
+            raise ValueError(
+                "TEAMS_APP_PARTNER_ID must be the publisher's Microsoft partner "
+                "ID: digits only, at most 10 of them, as a Teams app package "
+                f"takes it, got {partner_id!r}."
             )
         for name in ("TEAMS_APP_PRIVACY_URL", "TEAMS_APP_TERMS_URL"):
             parts = urlsplit(str(settings[name]))

@@ -296,6 +296,10 @@ Do not turn bypass on for an existing agent without their explicit request.
 
 Other new agents start in auto mode (`auto_mode`, on by default): the agent's own provider
 reviews each action, runs the safe ones and still asks its owner before risky ones.
+OpenCode is the exception: its auto mode has no review and runs every command without
+asking, so a new OpenCode agent starts with auto mode off and asks before each action.
+Turn it on for one only when they ask for that, after saying commands will then run
+unreviewed.
 Bypass (`auto_approve`) runs every command and file change without asking anyone, and
 overrides auto mode. It is faster and works unwatched, but unsafe; asking keeps them in
 control of what runs on their computer. It is their choice, never yours, so ask:
@@ -303,7 +307,7 @@ control of what runs on their computer. It is their choice, never yours, so ask:
 - **For an agent you create with a provider other than Cursor:** ask in the same message as the rest of the proposal, in
   plain words ("It will ask you before anything risky. Should it instead go ahead on
   everything without asking?"). Pass a yes as `auto_approve` to `create_agent`. Without an
-  answer, leave bypass off and auto mode on.
+  answer, leave bypass off and `auto_mode` out, which gives the provider's default.
 - **For yourself:** you cannot change your own settings; only your owner can. The first time a request will take several
   steps that each need their approval (running commands, editing files), say so in one line and tell them where to switch it on if they want:
   "This needs a few approvals from you. If you'd rather I went ahead without asking, turn

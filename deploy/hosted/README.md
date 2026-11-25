@@ -279,6 +279,12 @@ controller reports no running session and nothing kept it active. A message
 addressed to one of its agents wakes it, and the room is told so. A machine its
 owner stopped stays stopped.
 
+A machine installs security updates every day and reboots itself within 7 days
+of one that needs a reboot, a new kernel say, even while sessions run
+([machine/README.md](machine/README.md), "Security updates and reboots"). The
+instance stays running for EC2 and the hosted controller; its controllers stop
+reporting for the minute or two the reboot takes.
+
 | Setting | Default | Meaning |
 |---|---|---|
 | `HOSTED_LAUNCH_CAPACITY` | 0 | Machines at once, at most 100. 0 disables. |

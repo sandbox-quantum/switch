@@ -211,8 +211,10 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
  "auto_approve": false, "directory": null, "isolation": "shared"}
 ```
 
-`auto_mode` (default `true` on create) asks the provider for its own automatic review:
-safe actions run, risky ones still ask a person. `auto_approve` is bypass, every permission
+`auto_mode` asks the provider for its own automatic review: safe actions run, risky ones
+still ask a person. Left out on create, it is the provider's default for a new agent
+(`new_agent_auto_mode` in `providers/registry.py`): `true`, except `false` for `opencode`,
+whose auto mode has no review and answers every permission ask itself. `auto_approve` is bypass, every permission
 check skipped, and wins over `auto_mode`. A definition stored before `auto_mode` existed has
 no such key and reads as `false` (`schemas.stored_definition`): the managed-agent view, the
 assignment entry and an agent's update all fill it in that way, so an existing agent keeps
@@ -533,6 +535,8 @@ stream. The flag and everything else above stay as they are.
   A machine is online while its socket is recorded attached and its holding
   process's lease was renewed within 15 s and is not stopped; so a process that
   dies without writing its closings takes its machines offline within 15 s.
+  A process that shuts down leaves its machines online for 15 s from the stop,
+  as long as one that died, while they reattach to another process.
   Leases are written and compared on the database's clock.
 - **Holder id.** A controller-backed agent holds things under
   `controller:{controller_id}:{agent_id}`: the operation caller's session key

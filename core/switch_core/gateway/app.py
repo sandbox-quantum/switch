@@ -37,6 +37,7 @@ from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.admission import GatewayAdmission
+from switch_core.gateway.agent_key_rotation import router as agent_key_rotation_router
 from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
@@ -60,6 +61,7 @@ from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
 )
+from switch_core.gateway.moderation import router as moderation_router
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.organization_connector_apps import (
@@ -93,6 +95,8 @@ from switch_core.gateway.service_connections import (
     router as service_connections_router,
 )
 from switch_core.gateway.service_flows import router as service_flows_router
+from switch_core.gateway.stream_caps import GatewayStreamCaps
+from switch_core.gateway.suspension import router as suspension_router
 from switch_core.gateway.teams_placements import router as teams_placements_router
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
@@ -247,6 +251,14 @@ def create_gateway_app(
     origins = allowed_origins(config)
     log_origin_setup(config, origins)
     app.add_middleware(OriginCheckMiddleware, allowed=origins)
+    # Outside everything but admission, which lets streams through: a stream
+    # refused here does no other work.
+    app.add_middleware(
+        GatewayStreamCaps,
+        per_caller=config.gateway_streams_per_caller,
+        per_process=config.gateway_streams_per_process,
+        keyring=config.keyring,
+    )
     # Last, so outermost: a request turned away does no other work.
     app.add_middleware(
         GatewayAdmission,
@@ -276,6 +288,7 @@ def create_gateway_app(
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
     if config.decision_routing_enabled:
         app.include_router(room_auto_route_router, prefix="/rooms", tags=["rooms"])
+    app.include_router(moderation_router, tags=["moderation"])
     app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
@@ -294,6 +307,8 @@ def create_gateway_app(
     app.include_router(packages_router, tags=["packages"])
     app.include_router(templates_router, tags=["templates"])
     app.include_router(ownership_router, tags=["ownership"])
+    app.include_router(suspension_router, tags=["suspension"])
+    app.include_router(agent_key_rotation_router, tags=["agents"])
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])

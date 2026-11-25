@@ -37,6 +37,12 @@ const modalHost = vi.hoisted(() => ({
   },
 }));
 const gatewayLayout = vi.hoisted(() => ({ v2: false }));
+const opened = vi.hoisted(() => vi.fn(async (_url: string, _failure: string) => true));
+
+vi.mock('@renderer/lib/open-external', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/lib/open-external')>()),
+  openExternalUrl: opened,
+}));
 const featureFlags = vi.hoisted(() => ({
   get: vi.fn(async () => ({
     success: true,
@@ -225,6 +231,8 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
@@ -272,6 +280,7 @@ beforeEach(() => {
   for (const mock of Object.values(workspaces)) mock.mockReset();
   for (const mock of Object.values(switchServers)) mock.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
+  opened.mockClear();
   switchServers.connectorAppManagement.mockResolvedValue({ canManage: null, inDashboard: null });
 });
 
@@ -309,6 +318,10 @@ function grid(page: HTMLElement): HTMLElement | null {
   );
 }
 
+function comingSoonGrid(page: HTMLElement): HTMLElement | null {
+  return page.querySelector<HTMLElement>('[role="group"][aria-label="Coming soon connectors"]');
+}
+
 it("shows the workspace's catalog, everything on Discover and what the person has on Yours", async () => {
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   const page = await render();
@@ -320,13 +333,40 @@ it("shows the workspace's catalog, everything on Discover and what the person ha
   );
   expect(button(/^Example/, grid(page)!)).toBeDefined();
   expect(page.querySelector('button[aria-label="Connect Example"]')).not.toBeNull();
-  expect(button(/^Linear/, grid(page)!)?.disabled).toBe(true);
-  expect(button(/^Linear/, grid(page)!)?.textContent).toMatch(/Coming soon/);
+  expect(button(/^Linear/, grid(page)!)).toBeUndefined();
+  expect(button(/^Linear/, comingSoonGrid(page)!)?.disabled).toBe(true);
+  expect(button(/^Linear/, comingSoonGrid(page)!)?.textContent).toMatch(/Coming soon/);
 
   await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
   await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeUndefined());
   expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
   expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
+
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Discover"]')!.click());
+  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeDefined());
+  expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
+});
+
+it("lists the ones that can't be used here last in their section", async () => {
+  workspaces.getServiceConnections.mockResolvedValue([
+    entry({ slug: 'atlassian', name: 'Atlassian', workspace_enabled: false }),
+    entry({
+      slug: 'github',
+      name: 'GitHub',
+      connectable: false,
+      unavailable_reason: 'Not set up.',
+    }),
+    entry({ slug: 'example', name: 'Example' }),
+    entry({ slug: 'linear', name: 'Linear', enabled: false, status: 'coming_soon' }),
+  ]);
+  const page = await render();
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  const names = [...grid(page)!.querySelectorAll('button')]
+    .map((b) => b.textContent ?? '')
+    .filter((text) => /^(Atlassian|GitHub|Example)/.test(text))
+    .map((text) => text.match(/^(Atlassian|GitHub|Example)/)![1]);
+  expect(names).toEqual(['Example', 'Atlassian', 'GitHub']);
+  expect(page.querySelector('#connectors-built')?.textContent).toMatch(/^Supported/);
 });
 
 it('stays on the tab the person picks', async () => {
@@ -359,6 +399,122 @@ it('marks a service the server cannot use with its reason, without offering to c
     'GitHub is not set up on this server.'
   );
   expect(page.querySelector('button[aria-label="Connect GitHub"]')).toBeNull();
+});
+
+const pressed = (page: HTMLElement, name: string) =>
+  page.querySelector(`button[aria-label="${name}"]`)?.getAttribute('aria-pressed');
+
+async function search(page: HTMLElement, text: string): Promise<void> {
+  const input = page.querySelector<HTMLInputElement>('input[aria-label="Search connectors"]')!;
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    set.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function openYours(): Promise<HTMLElement> {
+  const page = await render();
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Yours')).toBe('true'));
+  return page;
+}
+
+it('ends Yours with a way to the rest of the catalog on Discover', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  const more = button(/^Browse all connectors$/, grid(page)!);
+  expect(more).toBeDefined();
+  await act(async () => more!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
+  expect(button(/^Example/, grid(page)!)).toBeDefined();
+});
+
+it('shows no trailing card when Discover has nothing more', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(
+    CATALOG.filter((item) => item.status !== 'coming_soon').map((item) => ({
+      ...item,
+      status: 'connected' as const,
+    }))
+  );
+  const page = await openYours();
+  expect(button(/Browse all connectors/, grid(page)!)).toBeUndefined();
+});
+
+it('says what Discover has when a search on Yours matches nothing connected', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  await search(page, 'github');
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('None of your connectors match “github”.')
+  );
+  expect(page.textContent).not.toContain('No connector matches');
+  await act(async () => button(/^Search Discover for/, page)!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
+  expect(page.querySelector<HTMLInputElement>('input[aria-label="Search connectors"]')!.value).toBe(
+    'github'
+  );
+  expect(button(/^GitHub/, grid(page)!)).toBeDefined();
+});
+
+it('offers the search on Discover when Yours has some matches too', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  // Every fixture says "Example access": Atlassian on Yours, the rest on Discover.
+  await search(page, 'access');
+  await vi.waitFor(() =>
+    expect(button(/^Search Discover for “access”$/, grid(page)!)).toBeDefined()
+  );
+  expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
+});
+
+it('says no connector matches only when nothing anywhere does', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  await search(page, 'zzz');
+  await vi.waitFor(() => expect(page.textContent).toContain('No connector matches “zzz”.'));
+  expect(button(/^Search Discover for/, page)).toBeUndefined();
+});
+
+it('keeps the badge of a connection that needs attention on Yours', async () => {
+  workspaces.getServiceConnections.mockResolvedValue([
+    ...CATALOG,
+    entry({ slug: 'datadog', name: 'Datadog', status: 'needs_reauthorization' }),
+  ]);
+  const page = await openYours();
+  await vi.waitFor(() => expect(button(/^Datadog/, grid(page)!)).toBeDefined());
+  expect(button(/^Datadog/, grid(page)!)!.textContent).toMatch(/reauthori|Reconnect|sign in/i);
+});
+
+it('says when a search on Yours finds only a coming soon service on Discover', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  await search(page, 'linear');
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('None of your connectors match “linear”.')
+  );
+  await act(async () => button(/^Search Discover for/, page)!.click());
+  await vi.waitFor(() => expect(button(/^Linear/, comingSoonGrid(page)!)).toBeDefined());
+});
+
+it('offers a way to Discover from an empty Yours', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(
+    CATALOG.map((item) =>
+      item.status === 'connected' ? { ...item, status: 'not_connected' as const } : item
+    )
+  );
+  const page = await openYours();
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('You have not connected anything yet.')
+  );
+  await act(async () => button(/^Browse all connectors$/, page)!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
 });
 
 const NOT_SET_UP = entry({
@@ -395,7 +551,7 @@ it("offers the server's operator to set up an app that is not set up, on the car
 
   navigation.navigate('connectors', { connector: 'example' });
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
-  expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+  expect(button(/^Connect Example$/, page)).toBeUndefined();
   await act(async () => button(/^Set up$/, page)!.click());
   expect(navigation.view()).toBe('settings');
   expect(navigation.params()).toEqual({
@@ -581,7 +737,7 @@ it('tells anyone else who sets the app up, with no button to press', async () =>
   await act(async () => card.click());
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
   expect(button(/^Set up$/, page)).toBeUndefined();
-  expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+  expect(button(/^Connect Example$/, page)).toBeUndefined();
 });
 
 it("says GitHub can't work on a server without https, and offers this computer's sign-in instead", async () => {
@@ -721,6 +877,24 @@ async function disconnect(page: HTMLElement): Promise<void> {
   await vi.waitFor(() => expect(dialog()).toBeNull());
 }
 
+it('shows the warning a disconnect gives, with the page it names as a link', async () => {
+  serveDisconnect();
+  const page_url = 'https://vendor.example.test/settings/tokens';
+  workspaces.disconnectService.mockResolvedValue({
+    warning: `Switch cannot revoke it. Delete it there: ${page_url}`,
+  });
+  const page = await render();
+  await openAtlassian(page);
+
+  await act(async () => button(/^Disconnect$/, page)!.click());
+  const dialog = () => document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
+  await vi.waitFor(() => expect(dialog()?.textContent).toContain('M1 loses Atlassian.'));
+  await act(async () => button(/^Disconnect$/, dialog()!)!.click());
+  await vi.waitFor(() => expect(dialog()?.querySelector('a')?.getAttribute('href')).toBe(page_url));
+  // Shown without its scheme, and with hyphens a line cannot end at.
+  expect(dialog()!.querySelector('a')!.textContent).toBe('vendor.example.test/settings/tokens');
+});
+
 it('offers Connect on the profile after a disconnect, made in the workspace shown', async () => {
   serveDisconnect();
   const page = await render();
@@ -731,7 +905,7 @@ it('offers Connect on the profile after a disconnect, made in the workspace show
     workspaceId: 'workspace',
     service: 'atlassian',
   });
-  expect(button(/^Connect to Switch$/, page)).toBeDefined();
+  expect(button(/^Connect Atlassian$/, page)).toBeDefined();
   expect(button(/^Disconnect$/, page)).toBeUndefined();
   expect(page.textContent).not.toContain('Connected as ada');
   expect(page.textContent).toContain('None of your agents use Atlassian yet.');
@@ -754,7 +928,7 @@ it('says on the profile when re-reading the catalog fails, with Retry', async ()
 
   workspaces.getServiceConnections.mockImplementation(serve);
   await act(async () => button(/^retry$/i, page)!.click());
-  await vi.waitFor(() => expect(button(/^Connect to Switch$/, page)).toBeDefined());
+  await vi.waitFor(() => expect(button(/^Connect Atlassian$/, page)).toBeDefined());
   expect(page.querySelector('[role="alert"]')).toBeNull();
 });
 
@@ -920,6 +1094,7 @@ const PASTED_TOKEN = {
     { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
   ],
   help_url: null,
+  create_url: null,
   expires: 'vendor' as const,
   access_note: 'Reaches what your token allows.',
 };
@@ -1045,4 +1220,20 @@ it('says what a pasted token reaches only while it works', async () => {
   expect(page.querySelector('header')!.textContent).not.toContain(
     'Reaches what your token allows.'
   );
+});
+
+it('offers a connector request on Discover only, opening the issue form', async () => {
+  const page = await discover(CATALOG);
+
+  const request = button(/^Request a connector$/, page);
+  expect(request).toBeDefined();
+  await act(async () => request!.click());
+  expect(opened).toHaveBeenCalledWith(
+    'https://github.com/sandbox-quantum/switch/issues/new?template=connector_request.yml',
+    'Could not open the connector request form'
+  );
+
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Yours')).toBe('true'));
+  expect(button(/^Request a connector$/, page)).toBeUndefined();
 });

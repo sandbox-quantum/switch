@@ -79,7 +79,17 @@ export function canArchiveRoom(room: RoomSummary): boolean {
   return room.can_archive ?? room.can_manage;
 }
 
+export interface AgentSuspension {
+  suspended_at: string;
+  reason: string | null;
+  by_role: 'owner' | 'admin' | 'operator';
+  // Suspended because its owner's account is.
+  with_owner: boolean;
+}
+
 export interface AgentSummary {
+  // Null unless the agent is suspended; then it is refused everything.
+  suspension: AgentSuspension | null;
   id: string;
   name: string;
   // The label people read ("Notes Helper"); null when none was chosen and the
@@ -335,7 +345,6 @@ export interface RoomDetail extends RoomSummary {
   matrix_room_id: string;
   external_channel_id: string | null;
   instructions: string | null;
-  protection_config: Record<string, unknown> | null;
   observe_config: Record<string, unknown> | null;
   agent_ids: string[];
   agent_statuses: Record<string, string>;
@@ -655,15 +664,6 @@ export async function removeRoomAdmin(roomId: string, userId: string): Promise<R
     `/rooms/${roomId}/admins/${encodeURIComponent(userId)}`,
     "DELETE",
   );
-}
-
-export async function updateRoomProtection(
-  roomId: string,
-  config: Record<string, unknown>,
-): Promise<RoomDetail> {
-  return jsonRequest<RoomDetail>(`/rooms/${roomId}/protection`, "PUT", {
-    protection_config: config,
-  });
 }
 
 export async function updateRoomObserve(
@@ -1034,16 +1034,21 @@ export interface ApiKeyDetail {
   expires_at: string | null;
   owner_id: string;
   owner_name: string;
-  /** The agent that signs in with it, by its name now; null for any other
-   *  key, and for an agent key whose agent is gone. */
+  /** The agent that holds it, by its name now: its own key, or one retired
+   *  while the agent stays. Null for any other key, and once the agent is
+   *  gone. */
   agent_id: string | null;
   agent_name: string | null;
-  // Copying the key, its owner's alone; and deleting it, its owner's or an
-  // admin's for a key that adds agents, and never one an agent still signs
-  // in with, though one a deleted agent left behind can go.
+  // Copying the key, its owner's alone and never a retired one; and deleting
+  // it, its owner's or an admin's for a key that adds agents or a retired one,
+  // and never one an agent still holds, though one a deleted agent left
+  // behind can go.
   can_reveal: boolean;
   can_delete: boolean;
 }
+
+/** A key that no longer authenticates, kept for a person to see and remove. */
+export const RETIRED_KEY_TYPE = "retired";
 
 export interface CreateApiKeyResult {
   id: string;
@@ -3640,6 +3645,16 @@ export async function setServiceGrant(
 }
 
 /** A catalog service, with the signed-in person's connection to it. */
+/**
+ * Whether the service is GitHub reached through the Switch GitHub App, whose
+ * grants name repositories and a level. GitHub connected with a pasted token
+ * is on or off for an agent, like any service that hands out the owner's own
+ * token.
+ */
+export function githubThroughApp(service: Pick<ServiceConnection, "slug" | "pass_through">): boolean {
+  return service.slug === "github" && !service.pass_through;
+}
+
 export interface ServiceConnection {
   slug: string;
   name: string;
@@ -3650,6 +3665,9 @@ export interface ServiceConnection {
   /** Why the service cannot be granted to agents on this server; null when it can. */
   unavailable_reason: string | null;
   /** Whether it waits on the server's operator setting up its app under Connectors. */
+  /** Why a person cannot sign in to it here though pasting a credential
+   * connects it (GitHub with no App set up); null where signing in works. */
+  sign_in_unavailable_reason: string | null;
   server_setup_needed: boolean;
   /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
   app_source: "organization" | "server";
@@ -3660,7 +3678,11 @@ export interface ServiceConnection {
    */
   read_only_reason: string | null;
   status: "not_connected" | "active" | "needs_reauthorization";
-  /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
+  /**
+   * Whether a grant hands the agent the owner's own token: on or off, at the
+   * connection's level. False for GitHub through its App, whose grant names
+   * repositories; true for GitHub connected with a pasted token.
+   */
   pass_through: boolean;
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
   token_lifetime: number | null;
@@ -3692,7 +3714,9 @@ export interface ServiceConnection {
    * empty where the service takes none here. */
   paste: ServicePasteMethod[];
   /** Why the connection must be reconnected, where it must: `token_refused`
-   * asks for a new pasted credential. */
+   * and `token_never_expires` ask for a new pasted credential, and
+   * `sign_in_unavailable` for one in place of a sign-in this server can no
+   * longer make. */
   reconnect_code: string | null;
   reconnect_reason: string | null;
   /** The level the person allowed when connecting; null while not connected. */
@@ -3717,6 +3741,10 @@ export interface ServicePasteMethod {
   label: string;
   fields: ServiceKeyField[];
   help_url: string | null;
+  /** The vendor's form for a new one, already filled in for Switch, where it offers one. */
+  create_url: string | null;
+  /** The vendor's page listing the ones a person has made, where one is deleted. */
+  manage_url: string | null;
   expires: "vendor" | "never";
   access_note: string;
 }

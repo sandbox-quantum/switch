@@ -115,9 +115,10 @@ export const provider = registerPluginBehavior(plugin, {
   prompt: {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
-        // Approvals only — the sandbox is left to the user's config. "Bypass
-        // permissions" promises unattended approval, not unattended filesystem
-        // and network access.
+        // Approvals only — the sandbox is left to the user's config, which
+        // also wins over the default a controller-started session falls back
+        // to (`prepareCodexSessionHome`). "Bypass permissions" promises
+        // unattended approval, not unattended filesystem and network access.
         autoApproveFlag: '-c approval_policy="never"',
         // Codex's automatic reviewer answers what the sandbox escalates.
         autoModeFlag: '-c approval_policy="on-request" -c approvals_reviewer="auto_review"',

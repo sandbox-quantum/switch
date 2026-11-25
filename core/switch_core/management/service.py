@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.accounts.suspension import owner_is_suspended
 from switch_core.agent_icon import (
     InvalidIconUrl,
     drop_third_party_avatar,
@@ -52,6 +53,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
 )
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
 from switch_core.config import ControllerRelease
+from switch_core.db.audit import AuditAction, record_audit_event, request_actor
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -292,6 +294,7 @@ class ManagementService:
             api_key_id=key.id,
             device_hash=same_device,
         )
+        await self._record_enrolled(session, controller, via="console")
         await session.commit()
         self.user_changes.publish(
             controller.tenant_id, owner_id, MACHINE, controller.id
@@ -482,6 +485,12 @@ class ManagementService:
             or key.expired(self.now())
         ):
             raise invalid
+        if await owner_is_suspended(session, key.user_id):
+            raise ManagementError(
+                403,
+                reason_codes.ACCOUNT_SUSPENDED,
+                "The account this enrollment code belongs to is suspended.",
+            )
         consumed = await self.controllers.consume_enrollment_code(
             session, tenant_id, key.id, self.now()
         )
@@ -540,6 +549,7 @@ class ManagementService:
         await self.controllers.complete_enrollment(
             session, tenant_id, consumed.id, controller.id
         )
+        await self._record_enrolled(session, controller, via="enrollment_code")
         await self.api_keys.delete(session, key.id)
         replaced: str | None = None
         moved: list[AgentDefinitionRow] = []
@@ -600,6 +610,14 @@ class ManagementService:
         if is_revoked(controller):
             raise ManagementError(
                 401, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
+            )
+        # Refused, not revoked: the same credential is exchanged again once
+        # the suspension is lifted.
+        if await owner_is_suspended(session, controller.owner_id):
+            raise ManagementError(
+                403,
+                reason_codes.ACCOUNT_SUSPENDED,
+                "The account this controller belongs to is suspended.",
             )
         return tokens.mint_access_token(
             secret=self.settings.token_secret,
@@ -1239,6 +1257,47 @@ class ManagementService:
             )
         return detached
 
+    async def _record_auto_approve(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        agent_name: str,
+        change: str,
+    ) -> None:
+        _, acting_agent_id = request_actor()
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=owner_id,
+            action=AuditAction.AGENT_AUTO_APPROVE_ENABLED,
+            target_type="agent",
+            target_id=agent_id,
+            details={
+                "agent_name": agent_name,
+                "change": change,
+                "acting_agent_id": acting_agent_id,
+            },
+        )
+
+    async def _record_enrolled(
+        self, session: AsyncSession, controller: AgentController, *, via: str
+    ) -> None:
+        await record_audit_event(
+            session,
+            tenant_id=controller.tenant_id,
+            actor_user_id=controller.owner_id,
+            action=AuditAction.CONTROLLER_ENROLLED,
+            target_type="controller",
+            target_id=controller.id,
+            details={
+                "name": controller.name,
+                "kind": controller.kind,
+                "via": via,
+            },
+        )
+
     async def _revoke(
         self, session: AsyncSession, tenant_id: str, controller_id: str
     ) -> None:
@@ -1247,6 +1306,21 @@ class ManagementService:
         controller = await self.controllers.get(session, tenant_id, controller_id)
         if controller is None or controller.revoked_at is not None:
             return
+        actor_user_id, acting_agent_id = request_actor()
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            action=AuditAction.CONTROLLER_REVOKED,
+            target_type="controller",
+            target_id=controller_id,
+            details={
+                "name": controller.name,
+                "kind": controller.kind,
+                "owner_id": controller.owner_id,
+                "acting_agent_id": acting_agent_id,
+            },
+        )
         key_id = controller.api_key_id
         await self.controllers.mark_revoked(
             session, tenant_id, controller_id, self.now()
@@ -1588,6 +1662,9 @@ class ManagementService:
                 row,
                 controller,
                 workspace_archived=await is_archived(session, tenant_id),
+                agent_suspended=await self.definitions.agent_suspended(
+                    session, tenant_id, row.agent_id
+                ),
             )
         )
 
@@ -1623,6 +1700,42 @@ class ManagementService:
         for row in placed:
             await self._bind(session, tenant_id, row)
         self._nudge(tenant_id, revisions)
+
+    async def agents_suspension_changed(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        agent_ids: list[str],
+        revisions: dict[str, int],
+    ) -> None:
+        """The agents were suspended or let back in, and that has committed
+        with their controllers' revisions moved on (`accounts/suspension.py`):
+        Core's bindings follow, here and in every other process, and each
+        controller pulls its assignment, which has a suspended agent stopped
+        and any other as its owner set it (`assignment_entry`)."""
+        rows = [
+            row
+            for agent_id in agent_ids
+            if (
+                row := await self.definitions.get_for_agent(
+                    session, tenant_id, agent_id
+                )
+            )
+            is not None
+            and row.controller_id is not None
+        ]
+        for row in rows:
+            await self._bind(session, tenant_id, row)
+        await session.commit()
+        self._nudge(tenant_id, revisions)
+
+    def owner_suspended(self, controller_ids: list[str]) -> None:
+        """The controllers' owner was suspended, and that has committed: each
+        controller's stream ends, here and in every other process, and it is
+        refused until the suspension is lifted (`management/auth.py`). Not a
+        revocation: its credential stays, and lets it back in after."""
+        for controller_id in controller_ids:
+            self.signals.owner_suspended(controller_id)
 
     async def check_new_managed_agent(
         self,
@@ -1707,6 +1820,10 @@ class ManagementService:
             desired_state=request.desired_state,
             definition=definition.model_dump(),
         )
+        if definition.auto_approve:
+            await self._record_auto_approve(
+                session, tenant_id, owner_id, result.agent_id, request.name, "created"
+            )
         revisions = await self._bump_and_collect(
             session, tenant_id, {request.controller_id}
         )
@@ -1801,6 +1918,10 @@ class ManagementService:
         while the definition is still at that revision (`DefinitionChanged`
         otherwise), for a change worked out from what it was."""
         definition = DefinitionV1.model_validate(target.definition)
+        # Read now: updating the definition writes over `existing` in place.
+        was_auto_approve = existing is not None and bool(
+            existing.definition.get("auto_approve")
+        )
         if (
             existing is None
             or existing.definition.get("provider") != definition.provider
@@ -1889,6 +2010,15 @@ class ManagementService:
                     controller_id=previous_controller_id,
                     agent_id=agent.id,
                 )
+        if target.definition.get("auto_approve") and not was_auto_approve:
+            await self._record_auto_approve(
+                session,
+                tenant_id,
+                owner_id,
+                agent.id,
+                agent.name,
+                "adopted" if existing is None else "updated",
+            )
         revisions = await self._bump_and_collect(session, tenant_id, affected)
         await session.commit()
         self.user_changes.publish(tenant_id, owner_id, MANAGED_AGENT, agent.id)

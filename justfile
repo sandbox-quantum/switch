@@ -101,7 +101,8 @@ run:
 # For testing Switch Console against this checkout instead of whatever a shared
 # deployment runs. Needs `just up` first. Invitation e-mails go to the Mailpit
 # catcher, and their links point at :8000 so that pasting one into the Console
-# matches the stand-in. docs/old/LOCAL_DEVELOPMENT.md, "A local Switch Cloud".
+# matches the stand-in. `just gateway-dev` on :5173 can sign in to it too.
+# docs/old/LOCAL_DEVELOPMENT.md, "A local Switch Cloud".
 # Run switch-core as Switch Cloud, with invitation e-mail caught at :8025
 local-cloud:
     docker compose -f deploy/local/docker-compose.yml --project-directory . --profile mail up -d mailpit
@@ -109,6 +110,7 @@ local-cloud:
     GATEWAY_SMTP_USERNAME= GATEWAY_SMTP_PASSWORD= \
     GATEWAY_SMTP_FROM="Switch <invites@switch.local>" \
     FRONTEND_BASE_URL=http://localhost:8000 GATEWAY_COOKIE_SECURE=false \
+    GATEWAY_EXTRA_ORIGINS='["http://localhost:5173"]' \
     uv run --project core python -m switch_core.main
 
 # Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in
@@ -292,13 +294,9 @@ standalone-reset:
     docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down -v
 
 # ── Documentation ──────────────────────────────────────────────────────────────
-# Clones the docs repository unless --source names a checkout of it:
-#     just sync-docs --source ../docs
-# Everything under docs/official is rewritten, so edit the source pages instead.
-# Convert the published Switch pages into docs/official as Markdown
-sync-docs *args:
-    python3 scripts/sync_docs.py {{ args }}
-
-# Fail when docs/official differs from the published docs (writes nothing)
-check-docs *args:
-    python3 scripts/sync_docs.py --check {{ args }}
+# The docs are published at https://docs.switchagents.ai; read them there.
+# Download the whole site as one Markdown file (docs/llms-full.txt, gitignored) for offline use
+docs:
+    curl -fsSL https://docs.switchagents.ai/llms-full.txt -o docs/llms-full.txt.tmp || { rm -f docs/llms-full.txt.tmp; exit 1; }
+    mv docs/llms-full.txt.tmp docs/llms-full.txt
+    @echo "Wrote docs/llms-full.txt"

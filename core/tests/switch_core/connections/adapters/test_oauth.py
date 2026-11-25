@@ -89,6 +89,7 @@ def _request(resources: dict | None = None) -> IssueRequest:
         access="write",
         reach={"scopes": ["read:items", "write:items"]},
         resources=resources or {},
+        pasted=False,
     )
 
 

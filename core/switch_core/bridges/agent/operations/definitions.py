@@ -64,6 +64,7 @@ from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.names import refuse_hidden_characters
 from switch_core.providers.registry import offered_provider_ids
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
+from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
 from switch_core.template_runs import (
@@ -756,6 +757,16 @@ async def read_context(
         context = await protocol.read_context(
             agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
         )
+    log_security_event(
+        SecuritySignal.AGENT_ROOM_READ,
+        tenant_id=tenant_id,
+        actor_user_id=None,
+        target_type="room",
+        target_id=room_id,
+        agent_id=agent_id,
+        room_id=room_id,
+        details={"connected": room_id in connected},
+    )
 
     reader = counting_reader()
     if reader is not None and room_id in connected:
@@ -838,6 +849,10 @@ async def post_message(
         message is not delivered at all, and the call fails instead.
         `trust.card` is "dropped" when Switch Trust redacted the text of your
         `ui` card: the card was not sent, only `body` (as `delivered`).
+
+        In a frozen or archived room the call fails and nothing is posted:
+        the room is read-only. Do not retry (see the skill's "Frozen and
+        archived rooms").
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
@@ -964,7 +979,6 @@ async def create_room(
     bridge_id: str | None = None,
     internal_only: bool = False,
     admin_mode: bool = False,
-    security_config: dict[str, Any] | None = None,
     instructions: str | None = None,
     reference_ids: list[str] | None = None,
     package_ids: list[str] | None = None,
@@ -1012,7 +1026,6 @@ async def create_room(
         internal_only: Create a room with no external channel, opting out of
             the default bridge. Ignored when `bridge_id` is set.
         admin_mode: When true, the room is created in administrative mode.
-        security_config: Optional dict overriding default protection checks.
         instructions: Room-specific system prompt / guidance shown to agents
             when they connect.
         reference_ids: References to attach at creation. Authorization is
@@ -1089,7 +1102,6 @@ async def create_room(
             bridge_id=bridge_id,
             internal_only=internal_only,
             admin_mode=admin_mode,
-            security_config=security_config,
             instructions=instructions,
             reference_ids=reference_ids,
             package_ids=package_ids,
@@ -1788,6 +1800,16 @@ async def list_all_rooms(
         name_contains=name_contains,
         limit=limit,
         cursor=cursor,
+    )
+    log_security_event(
+        SecuritySignal.AGENT_ROOMS_LISTED,
+        tenant_id=require_tenant_id(),
+        actor_user_id=None,
+        target_type="agent",
+        target_id=agent_id,
+        agent_id=agent_id,
+        room_id=None,
+        details={"rooms": len(rooms), "next_page": next_cursor is not None},
     )
     return {
         "rooms": [
@@ -2686,7 +2708,9 @@ async def update_agent_detail(
         instructions: Its system prompt (at most 32 KiB).
         auto_mode: Auto mode: the provider's own automatic review lets safe
             actions run without asking and still asks a person before risky
-            ones. On by default for new agents.
+            ones. On by default for new agents, except OpenCode's: its auto
+            mode has no review and runs every command without asking, so
+            turn it on for OpenCode only when the person asks for that.
         auto_approve: Bypass mode: run every tool without any permission
             check; overrides `auto_mode`. Unsafe; turn it on only when the
             person explicitly asks.

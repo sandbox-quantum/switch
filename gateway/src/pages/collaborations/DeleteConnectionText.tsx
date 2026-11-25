@@ -1,6 +1,7 @@
 import { DialogContentText } from "@mui/material";
 import { useEffect, useState } from "react";
 import type { BridgeDetail } from "../../data/api";
+import { platformLabel } from "../../theme/format";
 import { connectedChats, mayHoldChats } from "./deleteConnection";
 
 /**
@@ -55,7 +56,7 @@ export default function DeleteConnectionText({ bridge }: { bridge: BridgeDetail 
     return (
       <DialogContentText>
         Are you sure you want to delete &quot;{bridge.display_name}&quot; (
-        {bridge.bridge_type})? {rooms}
+        {platformLabel(bridge.bridge_type)})? {rooms}
       </DialogContentText>
     );
   }
