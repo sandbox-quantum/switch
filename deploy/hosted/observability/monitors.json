@@ -30,5 +30,37 @@
       "enable_logs_sample": false,
       "thresholds": {"critical": 0}
     }
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] box remover refused a removal",
+    "type": "log alert",
+    "query": "logs(\"service:switch-hosted-remover env:REPLACE-WITH-ENV \\\"Remover ALERT\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}The box remover refused to delete a box listed for removal: its namespace belongs to another machine than the list says, Core doesn't back the removal, or the entry is out of form. Nothing was deleted. A namespace of another machine is the case to look at first: a box may have been listed by mistake.\n\n**Check:** the remover's `Remover ALERT` lines give the namespace and the reason; Core's alerts name boxes it doesn't back. See deploy/hosted/DEPLOY.md.{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": ["service:switch-hosted-remover", "env:REPLACE-WITH-ENV", "team:switch", "tier:now"],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": false,
+      "thresholds": {"critical": 0}
+    }
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] box operator refused a removal or a retired name",
+    "type": "log alert",
+    "query": "logs(\"service:switch-hosted-provisioner env:REPLACE-WITH-ENV \\\"Box operator ALERT\\\" (removal OR retired)\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}The box operator refused part of a box removal: a claim out of form, a namespace that belongs to another machine, Core refusing the confirmation, or a request to make a box under a retired name. Nothing was deleted or made.\n\n**Check:** the provisioner's `Box operator ALERT` lines give the namespace and the reason. See deploy/hosted/DEPLOY.md.{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": ["service:switch-hosted-provisioner", "env:REPLACE-WITH-ENV", "team:switch", "tier:now"],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": false,
+      "thresholds": {"critical": 0}
+    }
   }
 ]

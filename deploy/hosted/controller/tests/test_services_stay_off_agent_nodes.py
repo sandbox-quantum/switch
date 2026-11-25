@@ -6,7 +6,7 @@ could never be placed on a tainted agents group: it would sit Pending. And the c
 for a service in its own namespace (a written toleration, or a gVisor class outside the box namespaces). So:
 
 - no workload in `k8s/` selects agent nodes unless it runs under a gVisor class;
-- the five services (drain worker, controller, operator, provisioner, egress lists) carry no node selector and a
+- the cluster's services (drain worker, controller, operator, provisioner, egress lists, remover) carry no node selector and a
   *preferred* affinity for `switch.dev/pool=system`: on a cluster whose agent nodes are tainted they land on the
   system nodes, and on a cluster with no system nodes yet they still start (never a required pin);
 - and a *required* anti-affinity to any box's pod (`app=switch-box`, in any namespace) per node: the services that
@@ -32,6 +32,7 @@ SERVICES = {
     ("switch-hosted", "switch-hosted-operator"),
     ("switch-hosted", "switch-hosted-provisioner"),
     ("egress-lists", "switch-egress-lists"),
+    ("switch-hosted", "switch-hosted-remover"),
 }
 PREFER_SYSTEM = """      affinity:
         nodeAffinity:

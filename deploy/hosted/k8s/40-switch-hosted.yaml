@@ -467,7 +467,9 @@ spec:
     type: Recreate
   template:
     metadata:
-      annotations: {}
+      annotations:
+        ad.datadoghq.com/provisioner.logs: '[{"source":"switch-hosted-provisioner","service":"switch-hosted-provisioner"}]'
+        tags.datadoghq.com/service: switch-hosted-provisioner
       labels:
         app: switch-hosted-provisioner
     spec:

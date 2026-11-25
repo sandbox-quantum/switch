@@ -86,6 +86,7 @@ KUBERNETES_SERVICE = "cidr: 172.20.0.1/32"
 KUBERNETES_SERVICE_COUNT = {
     "40-switch-hosted.yaml": 4,
     "45-switch-hosted-reaper.yaml": 1,
+    "46-switch-hosted-remover.yaml": 1,
     "51-egress-lists.yaml": 1,
 }
 REPO = HERE.parents[1]

@@ -918,6 +918,45 @@ spec:
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
+  name: switch-remover-deletes-listed-boxes
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-remover'
+    name: is-the-remover
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - "*"
+      apiVersions:
+      - "*"
+      operations:
+      - "*"
+      resources:
+      - "*/*"
+      scope: "*"
+  paramKind:
+    apiVersion: v1
+    kind: Secret
+  # The remover deletes one thing: a box namespace listed in `box-removals` (which only the provisioner adds to, for
+  # a removal it claimed from Core). Its own code also checks the namespace's machine-id annotation and asks Core
+  # before every delete; this is the cluster's last word on the part a policy can read. The binding passes
+  # `box-removals` as params, and refuses everything if it's missing.
+  validations:
+  - expression: request.?subResource.orValue('') == '' && request.operation == 'DELETE' && request.resource.group == ''
+      && request.resource.resource == 'namespaces'
+    message: the remover may only delete namespaces
+  - expression: request.?name.orValue('').matches('^agents-(user|box)-k1-[0-9a-f]{16}$')
+    message: only a box namespace, agents-user-k1-<16 hex> or agents-box-k1-<16 hex>
+  - expression: request.?name.orValue('') in params.?data.orValue({})
+    message: only a namespace listed in box-removals
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
   name: switch-box-namespace-identity
 spec:
   failurePolicy: Fail
@@ -1317,6 +1356,19 @@ spec:
     namespace: switch-hosted
     parameterNotFoundAction: Deny
   policyName: switch-reaper-deletes-unclaimed-pool-boxes
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-remover-deletes-listed-boxes
+spec:
+  paramRef:
+    name: box-removals
+    namespace: switch-hosted
+    parameterNotFoundAction: Deny
+  policyName: switch-remover-deletes-listed-boxes
   validationActions:
   - Deny
 ---
