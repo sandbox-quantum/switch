@@ -21,7 +21,6 @@ PLACEHOLDERS = {
     "azure-devops",
     "bigquery",
     "bitbucket",
-    "box",
     "calendly",
     "canva",
     "clickup",
@@ -56,6 +55,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "airtable",
         "atlassian",
+        "box",
         "datadog",
         "google-workspace",
         "gitlab",
@@ -66,6 +66,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "box",
         "datadog",
         "github",
         "gitlab",
@@ -78,6 +79,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["box"].skill_files
     assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
@@ -388,6 +390,75 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
         "id",
         "id",
     )
+
+
+def test_the_shipped_box_entry_signs_in_as_box_publishes_it():
+    definition = CATALOG["box"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Box offers no dynamic registration: a Box admin adds Integration
+    # Credentials to the Box MCP server, and each server's operator saves
+    # them under Connector apps or in BOX_CLIENT_CONFIG_PATH.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "BOX"
+    assert oauth.loopback_ports is None
+    # The endpoints and the revocation endpoint come from Box's metadata.
+    assert (oauth.authorization_url, oauth.token_url) == (None, None)
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, True)
+    assert oauth.remove_access is None
+    assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
+    # Box documents its refresh tokens as single-use.
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    # Box's tokens outlive the hour it documents: the longest reported in
+    # the project's PR #1390 was 4,068 s. Under a cap below that, a fresh
+    # token would be refused for its first minutes after every sign-in and
+    # refresh.
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        4500,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("box", "https://mcp.box.com")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["root_readonly"]
+    assert definition.access.write.scopes == ["root_readwrite"]
+    # Never the scopes that spend Box AI units or need Doc Gen's licence.
+    every = {*definition.access.read.scopes, *definition.access.write.scopes}
+    assert not every & {"ai.readwrite", "docgen.readwrite"}
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.box.com/2.0/users/me"
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "id",
+        "login",
+    )
+
+
+def test_the_box_skill_names_every_change_its_default_tools_make():
+    # Box's MCP server turns these write tools on by default; the skill has
+    # to name each one so the agent confirms before using it.
+    skill = CATALOG["box"].skill_files["SKILL.md"]
+    for tool in (
+        "upload_file",
+        "create_folder",
+        "copy_file",
+        "copy_folder",
+        "create_file_comment",
+        "create_metadata_template",
+        "create_hub",
+        "copy_hub",
+        "add_items_to_hub",
+    ):
+        assert f"`{tool}`" in skill, tool
+    # The Box AI scope isn't asked for: the skill keeps the agent off those
+    # tools rather than promising Box refuses them.
+    assert "Don't call them" in skill
 
 
 def test_the_shipped_notion_entry_signs_in_as_the_spike_found_it_must():
