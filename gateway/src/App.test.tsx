@@ -179,6 +179,30 @@ afterEach(() => {
 });
 
 describe("AppRoutes", () => {
+  it.each([
+    ["signed out", "/login"],
+    ["signed in", "/settings"],
+  ] as const)("opens the gateway while %s with browser storage denied", async (state, path) => {
+    if (state === "signed in") {
+      mockFetch(signedInAs("workspace_admin"));
+    } else {
+      mockFetch({ "/auth/session": [401, { detail: "Not authenticated" }], "/auth/config": [200, authConfig] });
+    }
+    const deny = () => {
+      throw new DOMException("Storage is blocked", "SecurityError");
+    };
+    const sessionAccess = vi.spyOn(window, "sessionStorage", "get").mockImplementation(deny);
+    const localAccess = vi.spyOn(window, "localStorage", "get").mockImplementation(deny);
+    try {
+      renderAt(path);
+      if (state === "signed in") expect(await railLabels()).toContain("Settings");
+      else expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    } finally {
+      sessionAccess.mockRestore();
+      localAccess.mockRestore();
+    }
+  });
+
   it("sends a signed-out visitor to sign in", async () => {
     mockFetch({ "/auth/session": [401, { detail: "Not authenticated" }], "/auth/config": [200, authConfig] });
     renderAt("/rooms");

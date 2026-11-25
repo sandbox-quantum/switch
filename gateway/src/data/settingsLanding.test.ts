@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { landingAfterSwitch, landingCarriedAcross } from "./settingsLanding";
 
 afterEach(() => window.sessionStorage.clear());
@@ -18,6 +18,18 @@ describe("landingAfterSwitch", () => {
       expect(landingAfterSwitch(path)).toBe("/");
     },
   );
+
+  it("still leaves for settings when the tab's storage quota is full", () => {
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage is full", "QuotaExceededError");
+    });
+    try {
+      expect(landingAfterSwitch("/settings/api-keys")).toBe("/settings");
+      expect(landingCarriedAcross()).toBeNull();
+    } finally {
+      write.mockRestore();
+    }
+  });
 
   it("carries a settings page across through the area", () => {
     expect(landingAfterSwitch("/settings/api-keys")).toBe("/settings");
