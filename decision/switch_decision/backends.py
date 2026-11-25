@@ -29,11 +29,14 @@ from botocore.exceptions import (
 from switch_decision.config import Settings
 from switch_decision.models import DecideRequest
 from switch_decision.prompt import (
+    GEMINI_NOBODY,
     NONE,
     PICK_TOOL,
     SPEAKER_QUESTION,
     build_messages,
     build_state,
+    gemini_decision_request,
+    gemini_nobody_key,
     letter_messages,
     output_schema,
     pick_tool,
@@ -285,16 +288,14 @@ def bedrock_request(req: DecideRequest, settings: Settings) -> dict:
     return body
 
 
-_bedrock_clients: dict[tuple[str, str | None], Any] = {}
+_aws_clients: dict[tuple[str, str | None], Any] = {}
 
 
-def bedrock_client(settings: Settings) -> Any:
-    key = (settings.aws_region, settings.aws_profile)
-    if key not in _bedrock_clients:
-        session = boto3.Session(
-            profile_name=settings.aws_profile, region_name=settings.aws_region
-        )
-        _bedrock_clients[key] = session.client(
+def _aws_client(region: str, settings: Settings) -> Any:
+    key = (region, settings.aws_profile)
+    if key not in _aws_clients:
+        session = boto3.Session(profile_name=settings.aws_profile, region_name=region)
+        _aws_clients[key] = session.client(
             "bedrock-runtime",
             config=Config(
                 read_timeout=settings.timeout_s,
@@ -302,27 +303,42 @@ def bedrock_client(settings: Settings) -> Any:
                 retries={"max_attempts": 2},
             ),
         )
-    return _bedrock_clients[key]
+    return _aws_clients[key]
+
+
+def bedrock_client(settings: Settings) -> Any:
+    return _aws_client(settings.aws_region, settings)
+
+
+def bedrock_openai_client(settings: Settings) -> Any:
+    return _aws_client(settings.bedrock_openai_region, settings)
+
+
+def _bedrock_failure(where: str, exc: BotoCoreError | ClientError) -> ModelServerError:
+    code = (
+        exc.response.get("Error", {}).get("Code", "")
+        if isinstance(exc, ClientError)
+        else ""
+    )
+    return ModelServerError(
+        f"{where} failed: {type(exc).__name__}: {exc}",
+        kind=kind_of_bedrock_error(exc),
+        log_text=f"{where} failed: {type(exc).__name__} {code}".rstrip(),
+    )
 
 
 async def ask_bedrock(settings: Settings, req: DecideRequest) -> ModelAnswer:
     options = [a.name for a in req.agents] + [NONE]
     where = f"Bedrock {settings.model} in {settings.aws_region}"
     try:
+        request = bedrock_request(req, settings)
+        # The client is made in the thread too: the first one resolves AWS
+        # credentials, which can block on the network.
         body = await asyncio.to_thread(
-            bedrock_client(settings).converse, **bedrock_request(req, settings)
+            lambda: bedrock_client(settings).converse(**request)
         )
     except (BotoCoreError, ClientError) as exc:
-        code = (
-            exc.response.get("Error", {}).get("Code", "")
-            if isinstance(exc, ClientError)
-            else ""
-        )
-        raise ModelServerError(
-            f"{where} failed: {type(exc).__name__}: {exc}",
-            kind=kind_of_bedrock_error(exc),
-            log_text=f"{where} failed: {type(exc).__name__} {code}".rstrip(),
-        ) from exc
+        raise _bedrock_failure(where, exc) from exc
     stop = body.get("stopReason")
     if stop in _BEDROCK_REFUSAL_STOPS:
         raise ModelServerError(
@@ -338,7 +354,7 @@ def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
         top = body["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ModelServerError(
-            "llama.cpp response has no top logprobs for the first token",
+            "the model response has no top logprobs for the first token",
             kind="model_server_error",
         ) from exc
     mass: dict[str, float] = {}
@@ -361,6 +377,73 @@ def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
         reason="probabilities: " + ", ".join(f"{k}={v:.2f}" for k, v in ranked),
         runner_up=_runner_up(probs, choice),
     )
+
+
+# The most top_logprobs each backend takes: llama.cpp and vLLM default to 20,
+# and Bedrock refuses more than 20. A room has at most 13 agents and "none".
+TOP_LOGPROBS = 20
+
+
+def letter_request(
+    req: DecideRequest, settings: Settings
+) -> tuple[dict, dict[str, str]]:
+    """An OpenAI chat body asking for one token and its top logprobs, and the
+    letter each option goes by. A room with more agents than letters is a
+    failure, so a fallback can answer it."""
+    try:
+        messages, letters = letter_messages(req, settings.history_limit)
+    except ValueError as exc:
+        raise ModelServerError(
+            f"the letter prompt cannot ask {settings.model}: {exc}",
+            kind="model_server_error",
+        ) from exc
+    return {
+        "messages": messages,
+        "max_tokens": 1,
+        "temperature": 0,
+        "logprobs": True,
+        "top_logprobs": TOP_LOGPROBS,
+    }, letters
+
+
+async def ask_bedrock_openai(settings: Settings, req: DecideRequest) -> ModelAnswer:
+    """An open-weights model on Bedrock through InvokeModel with an OpenAI chat
+    body, scored by the first token's letter logprobs like llama.cpp."""
+    where = f"Bedrock {settings.model} in {settings.bedrock_openai_region}"
+    payload, letters = letter_request(req, settings)
+    body_text = json.dumps(payload)
+
+    def invoke() -> bytes:
+        # The client is made in the thread too: the first one resolves AWS
+        # credentials, which can block on the network.
+        response = bedrock_openai_client(settings).invoke_model(
+            modelId=settings.model,
+            body=body_text,
+            contentType="application/json",
+            accept="application/json",
+        )
+        return response["body"].read()
+
+    try:
+        raw = await asyncio.to_thread(invoke)
+    except (BotoCoreError, ClientError) as exc:
+        raise _bedrock_failure(where, exc) from exc
+    try:
+        body = json.loads(raw)
+    except ValueError as exc:
+        raise ModelServerError(
+            f"{where} returned non-JSON", kind="model_server_error"
+        ) from exc
+    try:
+        finish = body["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        finish = None
+    if finish == "content_filter":
+        raise ModelServerError(
+            f"{where} declined to answer (finish_reason={finish})",
+            kind="backend_refused",
+        )
+    return read_letter_logprobs(body, letters)
 
 
 def anthropic_request(req: DecideRequest, settings: Settings) -> dict:
@@ -482,13 +565,137 @@ async def ask_anthropic(
     return read_anthropic(message, options)
 
 
+# ── Google's Decisions API (gemini-decision-1) ──────────────────────────────
+
+# What a 400 from the Decisions API says when it blocked the input.
+_GEMINI_BLOCKED = {
+    "safety",
+    "prohibited_content",
+    "blocklist",
+    "image_safety",
+    "content_blocked",
+}
+# What a Google API's 400 says about a key it will not take.
+_GOOGLE_KEY_REFUSED = {"API_KEY_INVALID", "API_KEY_SERVICE_BLOCKED", "API_KEY_EXPIRED"}
+
+
+def kind_of_gemini_status(status: int, body: object) -> ErrorKind:
+    """An error status from the Decisions API, classified. Google answers 400
+    both for a key it won't take and for an input it blocked: both are refusals.
+    Any other 400 is a request we got wrong."""
+    if status != 400:
+        return kind_of_status(status)
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return "model_server_error"
+    code = str(error.get("code", "")).lower()
+    reasons = {
+        d.get("reason")
+        for d in error.get("details") or []
+        if isinstance(d, dict) and d.get("reason")
+    }
+    if code in _GEMINI_BLOCKED or reasons & _GOOGLE_KEY_REFUSED:
+        return "backend_refused"
+    return "model_server_error"
+
+
+def read_gemini_decision(
+    body: object, agent_names: list[str], nobody_key: str
+) -> ModelAnswer:
+    """Map a Decisions API answer to a choice, the chosen option's probability
+    and the runner-up's. The nobody option reads back as NONE."""
+    try:
+        answer = body["answers"][SPEAKER_QUESTION]  # type: ignore[index]
+        raw_choice = answer["choice"]
+        raw_probs = answer.get("probabilities") or {}
+    except (KeyError, TypeError) as exc:
+        raise ModelServerError(
+            f"Decisions API response has no '{SPEAKER_QUESTION}' answer",
+            kind="model_server_error",
+        ) from exc
+    if not isinstance(raw_probs, dict):
+        raw_probs = {}
+
+    def option(key: object) -> str:
+        return NONE if key == nobody_key else str(key)
+
+    probabilities = {
+        option(k): float(v) for k, v in raw_probs.items() if isinstance(v, (int, float))
+    }
+    choice = option(raw_choice)
+    confidence = probabilities.get(choice, answer.get("confidence"))
+    if raw_choice != nobody_key and raw_choice not in agent_names:
+        raise InvalidChoiceError(raw_choice, _confidence_of(confidence))
+    if not isinstance(confidence, (int, float)):
+        raise ModelServerError(
+            f"Decisions API response has no probability for {raw_choice!r}",
+            kind="model_server_error",
+        )
+    return ModelAnswer(
+        choice=choice,
+        confidence=float(confidence),
+        reason="",
+        runner_up=_runner_up(probabilities, choice) if probabilities else None,
+    )
+
+
+async def ask_gemini_decision(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    req: DecideRequest,
+    api_key: str | None = None,
+) -> ModelAnswer:
+    """One Decisions API call. The key is the request's own, else the
+    service's (GEMINI_DECISION_API_KEY); it travels in a header that is never logged."""
+    key = api_key or settings.gemini_decision_api_key
+    if not key:
+        raise ModelServerError(
+            "GEMINI_DECISION_API_KEY is not set", kind="credentials_missing"
+        )
+    names = [a.name for a in req.agents]
+    nobody = gemini_nobody_key(names, GEMINI_NOBODY)
+    url = settings.gemini_decision_url
+    where = f"Decisions API ({settings.model})"
+    try:
+        r = await client.post(
+            url,
+            json=gemini_decision_request(
+                req, settings.model, settings.history_limit, nobody
+            ),
+            headers={"x-goog-api-key": key},
+            timeout=settings.timeout_s,
+        )
+    except httpx.HTTPError as exc:
+        raise ModelServerError(
+            f"{where} at {url} unreachable: {type(exc).__name__}: {exc}",
+            kind=kind_of_httpx_error(exc),
+        ) from exc
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    if r.status_code != 200:
+        raise ModelServerError(
+            f"{where} returned {r.status_code}: {r.text[:300]}",
+            kind=kind_of_gemini_status(r.status_code, body),
+            log_text=f"{where} returned {r.status_code}",
+        )
+    if body is None:
+        raise ModelServerError(f"{where} returned non-JSON", kind="model_server_error")
+    return read_gemini_decision(body, names, nobody)
+
+
 def model_server(settings: Settings) -> str:
     if settings.backend == "bedrock":
         return f"bedrock:{settings.aws_region}"
+    if settings.backend == "bedrock_openai":
+        return f"bedrock:{settings.bedrock_openai_region}"
     if settings.backend == "llamacpp":
         return settings.llamacpp_url
     if settings.backend == "anthropic":
         return "api.anthropic.com"
+    if settings.backend == "gemini_decision":
+        return httpx.URL(settings.gemini_decision_url).host
     return (
         settings.systemone_url
         if settings.backend == "systemone"
@@ -508,23 +715,22 @@ async def ask(
     client: httpx.AsyncClient,
     settings: Settings,
     req: DecideRequest,
-    anthropic_key: str | None = None,
+    api_key: str | None = None,
 ) -> ModelAnswer:
+    """Ask the configured backend. `api_key` is a per-request key for the
+    anthropic or gemini_decision backend; None uses the service's own."""
     if settings.backend == "bedrock":
         return await ask_bedrock(settings, req)
+    if settings.backend == "bedrock_openai":
+        return await ask_bedrock_openai(settings, req)
     if settings.backend == "anthropic":
-        return await ask_anthropic(settings, req, anthropic_key)
+        return await ask_anthropic(settings, req, api_key)
+    if settings.backend == "gemini_decision":
+        return await ask_gemini_decision(client, settings, req, api_key)
     if settings.backend == "llamacpp":
-        messages, letters = letter_messages(req, settings.history_limit)
+        payload, letters = letter_request(req, settings)
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
         url = f"{settings.llamacpp_url}/v1/chat/completions"
-        payload = {
-            "messages": messages,
-            "max_tokens": 1,
-            "temperature": 0,
-            "logprobs": True,
-            "top_logprobs": 20,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
         try:
             r = await client.post(
                 url,
@@ -602,7 +808,13 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
                 "ANTHROPIC_API_KEY is not set", kind="credentials_missing"
             )
         return {"status": "api key set"}
-    if settings.backend == "bedrock":
+    if settings.backend == "gemini_decision":
+        if not settings.gemini_decision_api_key:
+            raise ModelServerError(
+                "GEMINI_DECISION_API_KEY is not set", kind="credentials_missing"
+            )
+        return {"status": "api key set"}
+    if settings.backend in ("bedrock", "bedrock_openai"):
         try:
             creds = await asyncio.to_thread(
                 lambda: boto3.Session(
@@ -618,21 +830,15 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
                 "AWS credentials unavailable: no profile or environment credentials found",
                 kind="credentials_missing",
             )
-        return {"status": "credentials found", "region": settings.aws_region}
+        region = (
+            settings.aws_region
+            if settings.backend == "bedrock"
+            else settings.bedrock_openai_region
+        )
+        return {"status": "credentials found", "region": region}
     if settings.backend == "llamacpp":
         url = f"{settings.llamacpp_url}/health"
-        try:
-            r = await client.get(url, timeout=5)
-            r.raise_for_status()
-            return r.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ModelServerError(
-                f"model server {url} unavailable: {type(exc).__name__}: {exc}",
-                kind=kind_of_httpx_error(exc)
-                if isinstance(exc, httpx.HTTPError)
-                else "model_server_error",
-            ) from exc
-    if settings.backend == "systemone":
+    elif settings.backend == "systemone":
         base = settings.systemone_url.rsplit("/v1/", 1)[0]
         url = f"{base}/health"
     else:
@@ -640,11 +846,24 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
     try:
         r = await client.get(url, timeout=5)
         r.raise_for_status()
-        return r.json()
-    except (httpx.HTTPError, ValueError) as exc:
+    except httpx.HTTPError as exc:
         raise ModelServerError(
             f"model server {url} unavailable: {type(exc).__name__}: {exc}",
-            kind=kind_of_httpx_error(exc)
-            if isinstance(exc, httpx.HTTPError)
-            else "model_server_error",
+            kind=kind_of_httpx_error(exc),
         ) from exc
+    return health_body(r)
+
+
+def health_body(r: httpx.Response) -> dict:
+    """A model server's 200 health answer as a status object. vLLM answers
+    with an empty body, which is healthy too."""
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        return body
+    return {
+        "status": "ok",
+        "body": "empty" if not r.content.strip() else "not a JSON object",
+    }

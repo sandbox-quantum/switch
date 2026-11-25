@@ -102,11 +102,13 @@ const {
   fetchTenants,
   fetchWorkspaceCreation,
   fetchInviteEmailEnabled,
+  fetchConnectorAppManagement,
   createRoom,
   deleteBridge,
   deleteRoom,
   ensureCloudMachine,
   fetchAuthConfig,
+  probeGateway,
   fetchBridges,
   fetchMe,
   ownsOwnerAddressedAgent,
@@ -343,7 +345,7 @@ describe('gatewayFetch console attribution', () => {
   it('asks for the host to be read again when a managed server does not answer', async () => {
     fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
 
-    await expect(fetchMe(MANAGED)).rejects.toThrow(/Could not reach/);
+    await expect(fetchMe(MANAGED)).rejects.toThrow(/Can.t reach/);
 
     expect(noteManagedServerUnanswered).toHaveBeenCalledExactlyOnceWith(MANAGED);
   });
@@ -560,6 +562,7 @@ describe('room creation', () => {
           home_url: 'mattermost://chat.example.com/switch',
           channel_creation_supported: true,
           channel_creation_enabled: true,
+          directory_search_hint: 'Your name, handle or email',
         },
         { bridge_id: 'b2', bridge_type: 'slack', display_name: 'Slack', status: 'stopped' },
       ]) as never
@@ -577,6 +580,7 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        directorySearchHint: 'Your name, handle or email',
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
@@ -585,6 +589,7 @@ describe('room creation', () => {
         publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
+        commands: {},
       },
       {
         id: 'b2',
@@ -601,6 +606,7 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        directorySearchHint: 'Your name or handle',
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
@@ -609,6 +615,7 @@ describe('room creation', () => {
         publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
+        commands: {},
       },
     ]);
   });
@@ -2436,6 +2443,7 @@ describe('sign-up support', () => {
       oidcEnabled: false,
       oidcProviderLabel: null,
       signupEnabled: true,
+      testAccountResetEnabled: false,
       oidcLoginOptions: [],
       oidcBrowserHandoff: false,
     });
@@ -2453,6 +2461,13 @@ describe('sign-up support', () => {
     const read = await fetchAuthConfig(SERVER);
     expect(read.oidcLoginOptions).toEqual([{ id: 'google', label: 'Google' }]);
     expect(read.oidcBrowserHandoff).toBe(true);
+  });
+
+  it.each([true, false, undefined])('reads test-account reset support: %s', async (enabled) => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ...config, test_account_reset_enabled: enabled })
+    );
+    expect((await fetchAuthConfig(SERVER)).testAccountResetEnabled).toBe(enabled === true);
   });
 
   it('treats a server predating sign-up as not offering it', async () => {
@@ -2476,6 +2491,139 @@ describe('sign-up support', () => {
     }
   );
 
+  it('says an address that redirects elsewhere is not a Switch server', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html><title>302 Found</title></html>', {
+        status: 302,
+        headers: { 'content-type': 'text/html', location: 'https://elsewhere.example.org/x' },
+      })
+    );
+    await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+      name: 'RedirectedAddressError',
+      message:
+        "switch.example.com doesn't answer as a Switch server: it redirects to " +
+        'elsewhere.example.org. Check the address.',
+    });
+  });
+
+  it('leaves a signed-in call that is redirected as a plain refusal', async () => {
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>Sign in</html>', {
+        status: 302,
+        headers: { 'content-type': 'text/html', location: 'https://login.example.org/' },
+      })
+    );
+    await expect(fetchMe(SERVER)).rejects.toMatchObject({
+      name: 'GatewayError',
+      kind: 'http',
+      status: 302,
+      message: 'Switch gateway returned 302',
+    });
+  });
+
+  it('says an address that redirects on its own host is not answering as a Switch server', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: '/login' } })
+    );
+    await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+      name: 'RedirectedAddressError',
+      message:
+        'switch.example.com redirects instead of answering as a Switch server. Check the address.',
+    });
+  });
+
+  it('keeps the path of the address entered in the https suggestion', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 301,
+        headers: { location: 'https://example.com/switch/gateway/auth/config' },
+      })
+    );
+    await expect(
+      fetchAuthConfig({ ...(SERVER as object), url: 'http://example.com/switch' } as never)
+    ).rejects.toMatchObject({
+      message:
+        'example.com only answers over https. Enter the address as https://example.com/switch.',
+    });
+  });
+
+  it('says to use https when plain http redirects to the same host on another port', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 308,
+        headers: { location: 'https://switch.example.com:8443/gateway/auth/config' },
+      })
+    );
+    await expect(
+      fetchAuthConfig({ ...(SERVER as object), url: 'http://switch.example.com:8080' } as never)
+    ).rejects.toMatchObject({
+      message:
+        'switch.example.com:8080 only answers over https. ' +
+        'Enter the address as https://switch.example.com:8443.',
+    });
+  });
+
+  it('says to use https when plain http redirects to the same host', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 301,
+        headers: { location: 'https://switch.example.com/gateway/auth/config' },
+      })
+    );
+    await expect(
+      fetchAuthConfig({ ...(SERVER as object), url: 'http://switch.example.com' } as never)
+    ).rejects.toMatchObject({
+      name: 'RedirectedAddressError',
+      message:
+        'switch.example.com only answers over https. Enter the address as https://switch.example.com.',
+    });
+  });
+
+  it('gives up on a server that has not answered the reachability check in five seconds', async () => {
+    const timeout = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(timeout.signal);
+    const hangingFetch = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+        })
+    );
+    vi.stubGlobal('fetch', hangingFetch);
+    try {
+      const probe = probeGateway(SERVER);
+      await vi.waitFor(() => expect(hangingFetch).toHaveBeenCalled());
+      timeout.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+      await expect(probe).rejects.toMatchObject({
+        name: 'GatewayError',
+        kind: 'network',
+        message: "Can't reach switch.example.com: the server didn't answer in time.",
+      });
+      expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it('counts any answer to the reachability check, a refusal included', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('nope', { status: 503 }));
+    await expect(probeGateway(SERVER)).resolves.toBeUndefined();
+  });
+
+  it('does not count a redirect as an answer to the reachability check', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: 'https://elsewhere.example.org/' } })
+    );
+    await expect(probeGateway(SERVER)).rejects.toMatchObject({ name: 'RedirectedAddressError' });
+  });
+
+  it('does not count a web page in place of the API as an answer to the reachability check', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>app</html>', { status: 200, headers: { 'content-type': 'text/html' } })
+    );
+    await expect(probeGateway(SERVER)).rejects.toMatchObject({ name: 'NoManagementApiError' });
+  });
+
   it('reports a proxy’s 502 page as the failure it is, not as a missing route', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response('<html>Bad Gateway</html>', {
@@ -2486,6 +2634,8 @@ describe('sign-up support', () => {
     await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
       name: 'GatewayError',
       status: 502,
+      message: 'Switch gateway returned 502',
+      body: '<html>Bad Gateway</html>',
     });
   });
 
@@ -2935,12 +3085,31 @@ describe('linked messaging accounts', () => {
         bridgeType: 'slack',
         externalUserId: 'U1',
         externalUsername: 'ada',
+        externalDisplayName: 'ada',
+        hasHandle: true,
         requestedByName: 'Grace',
         codeExpiresAt: '2026-10-27T12:30:00Z',
       },
     ]);
     const [url] = fetchMock.mock.calls[0] as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/auth/me/identities/pending');
+  });
+
+  it('carries the name of an account whose handle Switch made up', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          ...LINKED,
+          external_username: 'MM_42',
+          external_display_name: 'M M',
+          has_handle: false,
+        },
+      ]) as never
+    );
+
+    const [linked] = await fetchMyIdentities(SERVER);
+
+    expect(linked).toMatchObject({ externalDisplayName: 'M M', hasHandle: false });
   });
 
   it('reads a server without the pending route as having none pending', async () => {
@@ -3738,6 +3907,56 @@ describe('workspace invitations', () => {
     await expect(fetchWorkspaceCreation(SERVER)).rejects.toThrow(/can_add_workspace/);
   });
 
+  it('reads who sets up connector apps, and null where the server does not say', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ can_manage_connector_apps: true, connector_apps_in_dashboard: true }) as never
+    );
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: true,
+      inDashboard: true,
+    });
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        can_manage_connector_apps: false,
+        connector_apps_in_dashboard: false,
+      }) as never
+    );
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: false,
+      inDashboard: false,
+    });
+
+    // A server from before it said whether the apps are set up in the dashboard.
+    fetchMock.mockResolvedValue(jsonResponse({ can_manage_connector_apps: false }) as never);
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: false,
+      inDashboard: null,
+    });
+    fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: null,
+      inDashboard: null,
+    });
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: null,
+      inDashboard: null,
+    });
+  });
+
+  it('refuses an unreadable answer about setting up connector apps, and a failed read', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ can_manage_connector_apps: 'yes' }) as never);
+    await expect(fetchConnectorAppManagement(SERVER)).rejects.toThrow(/can_manage_connector_apps/);
+    fetchMock.mockResolvedValue(
+      jsonResponse({ can_manage_connector_apps: false, connector_apps_in_dashboard: 1 }) as never
+    );
+    await expect(fetchConnectorAppManagement(SERVER)).rejects.toThrow(
+      /connector_apps_in_dashboard/
+    );
+    fetchMock.mockResolvedValue(errorResponse(500, '{"detail":"boom"}') as never);
+    await expect(fetchConnectorAppManagement(SERVER)).rejects.toThrow();
+  });
+
   it('keeps the link when an older server says nothing about the e-mail', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ...ROW, token: 'tok-1' }) as never);
 
@@ -3783,8 +4002,13 @@ describe('agent management calls', () => {
       name: 'build-box',
       platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
       version: '0.1.0',
+      deviceId: null,
     });
-    expect(enrolled).toEqual({ controllerId: 'controller-1', credential: 'swcc_placeholder' });
+    expect(enrolled).toEqual({
+      controllerId: 'controller-1',
+      credential: 'swcc_placeholder',
+      adopted: false,
+    });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://switch.example.com/gateway/management/controllers');
     expect(init.method).toBe('POST');
@@ -3794,6 +4018,25 @@ describe('agent management calls', () => {
       platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
       version: '0.1.0',
     });
+  });
+
+  it('names this computer by its device id, and reads a takeover of the device it already was', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(201, { controller_id: 'controller-0', credential: 'swcc_placeholder', adopted: true })
+    );
+    const enrolled = await enrollConsoleController(SERVER, {
+      name: 'build-box',
+      platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
+      version: '0.1.0',
+      deviceId: 'd'.repeat(64),
+    });
+    expect(enrolled).toEqual({
+      controllerId: 'controller-0',
+      credential: 'swcc_placeholder',
+      adopted: true,
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({ device_id: 'd'.repeat(64) });
   });
 
   it('reads a bare 404 as a server without agent management, and an enveloped one as a refusal', async () => {

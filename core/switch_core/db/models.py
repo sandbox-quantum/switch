@@ -33,6 +33,7 @@ from switch_core.db.agent_event_notify_ddl import (
     CREATE_AGENT_EVENT_NOTIFY_TRIGGER,
     DROP_AGENT_EVENT_NOTIFY_TRIGGER,
 )
+from switch_core.db.audit_history_ddl import attach_audit_history_purge
 from switch_core.db.auth_rows_notify_ddl import (
     CREATE_AGENT_NOTIFY_FUNCTION,
     CREATE_AGENT_NOTIFY_TRIGGER,
@@ -77,6 +78,7 @@ from switch_core.db.session_version_ddl import (
     DROP_SESSION_VERSION_TRIGGER,
 )
 from switch_core.db.tenant_lookup import attach_tenant_lookups
+from switch_core.template_use_cases import USE_CASES
 from switch_core.tenant_context import current_organization_id, current_tenant_id
 
 #: The highest boot number `agent_event_boot` hands out. An agent's own event
@@ -376,8 +378,24 @@ class OrganizationScoped:
 # ── Users ──────────────────────────────────────────────────────────────────────
 
 
+# Who suspended an account or an agent, which decides who may lift it
+# (`accounts/suspension.py`): its owner (agents only), an admin of the
+# workspace or organization, or the server's operator.
+SUSPENDER_ROLES = ("owner", "admin", "operator")
+
+
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "suspended_by_role IN ('admin', 'operator')",
+            name="ck_users_suspended_by_role",
+        ),
+        CheckConstraint(
+            "(suspended_at IS NULL) = (suspended_by_role IS NULL)",
+            name="ck_users_suspension_complete",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -403,6 +421,21 @@ class User(Base):
     session_version: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
+    # Set while the account is suspended (`accounts/suspension.py`): no
+    # session is accepted or started, its keys are refused, and every agent
+    # it owns is suspended with it. `suspended_by` is cleared when that
+    # account is deleted, and is NULL for the operator's command line;
+    # `suspended_by_role` stays, since it decides who may lift it.
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    suspended_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_users_suspended_by"),
+        nullable=True,
+    )
+    suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspended_by_role: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # Changing a password or losing the server-admin role ends every session. As
@@ -581,6 +614,12 @@ class CloudMachine(Base):
     data_volume_id: Mapped[str | None] = mapped_column(Text)
     instance_id: Mapped[str | None] = mapped_column(Text)
     retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set by an organization purge with `desired_state` deleted: the hosted
+    # controller takes `retain_until` even when it is earlier than the
+    # deadline it already holds, which it otherwise never brings forward.
+    expedite_deletion: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # The machine's disk and memory, and per workspace (keyed by its
     # `MachineWorkspace` id) when its controller last reported and how many
@@ -939,6 +978,14 @@ class Agent(TenantScoped, Base):
             "mid_turn_delivery IN ('steer', 'queue')",
             name="ck_agents_mid_turn_delivery",
         ),
+        CheckConstraint(
+            "suspended_by_role IN ('owner', 'admin', 'operator')",
+            name="ck_agents_suspended_by_role",
+        ),
+        CheckConstraint(
+            "(suspended_at IS NULL) = (suspended_by_role IS NULL)",
+            name="ck_agents_suspension_complete",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -995,6 +1042,25 @@ class Agent(TenantScoped, Base):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Set while the agent is suspended (`accounts/suspension.py`): its
+    # credentials and its controller are refused for it, its devices assign
+    # it stopped, and its rooms keep it as a member. `suspended_with_owner`
+    # marks a suspension that came from suspending its owner, which is lifted
+    # with the owner's and not on its own. `suspended_by` is cleared when
+    # that account is deleted.
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    suspended_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_agents_suspended_by"),
+        nullable=True,
+    )
+    suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspended_by_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspended_with_owner: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
     )
 
 
@@ -1244,6 +1310,9 @@ class Room(TenantScoped, Base):
         Boolean, server_default="false", nullable=False
     )
     instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Unused: nothing reads or writes it. It stays mapped only because a pod
+    # on an earlier release still selects it during a rolling deploy; a later
+    # release drops the column.
     protection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     observe_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_by: Mapped[str | None] = mapped_column(
@@ -1284,15 +1353,29 @@ class Room(TenantScoped, Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     # When set, the room is archived: hidden from the default active room lists
-    # (gateway + agent MCP tools) but otherwise fully intact and retrievable —
-    # members, room, and bridge channel are untouched. NULL = active.
-    # Archiving is metadata-only and reversible (unarchive clears this).
+    # (gateway + agent MCP tools) and read-only (`room_read_only.py`), but
+    # otherwise intact and retrievable — members, history and bridge channel
+    # are untouched. NULL = active. Reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # The highest live `seq` retention has deleted from this room. Numbering
-    # continues above it, so a room emptied by retention never hands out a
-    # position a cursor has already passed. See `MessageStore._next_seq`.
+    # When set, the room is frozen: read-only while a workspace admin or the
+    # server's operator contains it, until they unfreeze it
+    # (`room_read_only.py`). `frozen_by` is who froze it and `frozen_reason`
+    # what they gave as the reason, shown to admins only.
+    frozen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    frozen_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_rooms_frozen_by"),
+        nullable=True,
+    )
+    frozen_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The highest live `seq` deleted from this room (`MessageStore._delete_where`).
+    # Numbering continues above it, so a room whose newest rows were deleted
+    # never hands out a position a cursor has already passed. See
+    # `MessageStore._next_seq`.
     seq_floor: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=text("0")
     )
@@ -1678,6 +1761,10 @@ class Template(TenantScoped, Base):
             name="fk_templates_created_by_agent",
             ondelete="SET NULL (created_by_agent_id)",
         ),
+        CheckConstraint(
+            "use_case IN ({})".format(", ".join(f"'{u}'" for u in USE_CASES)),
+            name="ck_templates_use_case",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -1695,6 +1782,8 @@ class Template(TenantScoped, Base):
         Text, nullable=False, server_default="private"
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # What it is for, from ``template_use_cases``; NULL when nobody said.
+    use_case: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     # The agent that saved it through an agent operation, NULL for a person.
     # ``owner_id`` is the agent's owner either way; only this agent may change
@@ -1822,11 +1911,18 @@ class TemplateRunRecord(TenantScoped, Base):
     """One run of a template in this workspace, counted for the catalogue.
 
     ``template_id`` is an ``official:`` id or a stored template's, so there is
-    no foreign key: an official template is not a row. A person's run is
-    reported by the client that ran it, once the whole run has succeeded; an
-    agent's is recorded by the operation that ran it. Nothing here says who
-    ran it, so the rows go with their template (``TemplateStore.delete``) or
-    their workspace, and erasing a person leaves nothing behind in them.
+    no foreign key: an official template is not a row. An agent's run is
+    recorded by the operation that ran it, and a person's by the route that
+    ran it when the run went through the server with the template's id.
+    Switch Console also reports every run of a template once the whole run
+    has succeeded, however it ran, and that report is believed at most once
+    per person and template in ``REPORTED_RUN_WINDOW``
+    (``TemplateStore.record_reported_run``), so a run the server counted is
+    not counted again and a reader cannot inflate a count by reporting.
+    ``run_by`` names the person a run was counted for, for that check alone
+    (an agent's run names nobody); it is cleared when their account goes.
+    The rows go with their template (``TemplateStore.delete``) or their
+    workspace.
     """
 
     __tablename__ = "template_run_records"
@@ -1836,6 +1932,13 @@ class TemplateRunRecord(TenantScoped, Base):
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     template_id: Mapped[str] = mapped_column(Text, nullable=False)
+    run_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id", ondelete="SET NULL", name="fk_template_run_records_run_by"
+        ),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2016,7 +2119,7 @@ class CollaborationBridge(TenantScoped, Base):
     is_default: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
-    # Registered by the deployment's own setup step — the bundled Mattermost —
+    # Registered by the deployment's own setup step — a connector it bundles —
     # rather than by a person. Telemetry reads it so that "time to first
     # connector" measures a person connecting their platform, not a
     # deployment booting.
@@ -2264,37 +2367,6 @@ class MessagingEventReceipt(TenantScoped, Base):
     )
     handled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
-    )
-
-
-# ── Server-Side Connectors ────────────────────────────────────────────────────
-
-
-# Nothing reads or writes this table any more. It is dropped a release after
-# the code that used it went, so a release still running that code during a
-# rolling deploy finds it there (`migrations/script.py.mako`). Until then the
-# model keeps `create_all` in step with the migrated schema.
-class ServerConnector(TenantScoped, Base):
-    __tablename__ = "server_connectors"
-    __table_args__ = (
-        Index("ix_server_connectors_tenant_id", "tenant_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "api_key_id"],
-            ["api_keys.tenant_id", "api_keys.id"],
-            name="fk_server_connectors_api_key",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    type: Mapped[str] = mapped_column(Text, nullable=False)
-    display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict | None] = mapped_column(
-        EncryptedJSONB, nullable=True
-    )
-    api_key_id: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
@@ -2702,6 +2774,12 @@ class BridgeMessageMap(TenantScoped, Base):
         ),
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
+        # A reply to any part of a message the platform split resolves to it.
+        Index(
+            "ix_bridge_message_map_further_post_ids",
+            "further_post_ids",
+            postgresql_using="gin",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "bridge_id"],
             ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
@@ -2719,6 +2797,13 @@ class BridgeMessageMap(TenantScoped, Base):
     # answers, so a second process handling the same message finds the claim
     # and does not post it again (`CollaborationCore._claim_outbound`).
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The platform's other posts for this one message, when it split it to fit
+    # (Telegram's 4,096-character cap): `external_post_id` is the first, which
+    # edits and deletes go to, and a reply to any of these is a reply to it.
+    # Null for a message posted whole.
+    further_post_ids: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True
+    )
     # The press that answered the card this message carries, `{"by", "label"}`;
     # null until a press is delivered. A card takes one answer.
     card_answer: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -2993,7 +3078,14 @@ class OrganizationTrustSettings(OrganizationScoped, Base):
 # The backends a workspace may choose for decision routing
 # (`decision/settings.py`): none (auto-route off in the workspace), its own
 # endpoint, or Haiku run by the server's decision service.
-DECISION_BACKENDS = ("none", "endpoint", "haiku_anthropic", "haiku_bedrock")
+DECISION_BACKENDS = (
+    "none",
+    "endpoint",
+    "haiku_anthropic",
+    "haiku_bedrock",
+    "self_hosted",
+    "gemini",
+)
 
 
 class DecisionSettings(TenantScoped, Base):
@@ -3005,7 +3097,8 @@ class DecisionSettings(TenantScoped, Base):
     backend `none` turns auto-route off in the workspace even when the server
     has a default. `api_key_encrypted` is under `config.keyring`: the bearer
     token for an `endpoint`, the Anthropic key for `haiku_anthropic`, never
-    set for `haiku_bedrock`. `threshold` is sent to the service as the
+    set for the other choices the server's decision service runs
+    (`haiku_bedrock`, `self_hosted`, `gemini`). `threshold` is sent to the service as the
     confidence it needs to name an agent; None leaves it to the service.
     """
 
@@ -3013,7 +3106,8 @@ class DecisionSettings(TenantScoped, Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", name="pk_decision_settings"),
         CheckConstraint(
-            "backend IN ('none', 'endpoint', 'haiku_anthropic', 'haiku_bedrock')",
+            "backend IN ('none', 'endpoint', 'haiku_anthropic', 'haiku_bedrock', "
+            "'self_hosted', 'gemini')",
             name="ck_decision_settings_backend",
         ),
         CheckConstraint(
@@ -3043,7 +3137,9 @@ class Message(TenantScoped, Base):
     This table is the message bus: a send is an insert here, and `seq` is the
     position every delivery cursor reads from. It is also the room's history,
     and the only copy Switch keeps, so deleting a row (data retention, erasing
-    a person) deletes the message for every reader. `rooms.seq_floor` keeps
+    a person, its author deleting it on a bridged platform) deletes the
+    message for every reader. A row is changed in place only when its author
+    edits it on that platform (`MessageStore.replace_body`). `rooms.seq_floor` keeps
     numbering intact when the deleted rows were a room's newest.
 
     Every participant in a room is a Switch-owned client, so recording each
@@ -4663,6 +4759,14 @@ class AgentController(TenantScoped, Base):
     ignored. `assignment_revision` bumps on every change to the set of agents
     the controller should run, and is what its ETag carries.
 
+    `device_hash` says which machine, OS account and data folder the controller
+    runs from: the SHA-256 of its owner's id and the device id it derives
+    (`management/device_identity.py`), so the stored value is no use for
+    linking two people's controllers to one machine. A controller enrolling
+    with the hash of one of its owner's devices that is not running takes that
+    device over, agents and all, rather than adding another. Null for a
+    controller that has not said, and for a Switch Cloud machine's.
+
     The `connection_*`, `connected_at` and `disconnect*` columns are the
     controller's socket as the switch-core process holding it last recorded it
     (`management/connection_ledger.py`): which connection, which process holds
@@ -4698,6 +4802,13 @@ class AgentController(TenantScoped, Base):
         ),
         Index("ix_agent_controllers_owner_id", "owner_id"),
         Index("ix_agent_controllers_tenant_id", "tenant_id"),
+        Index(
+            "ix_agent_controllers_device_hash",
+            "tenant_id",
+            "owner_id",
+            "device_hash",
+            postgresql_where=text("device_hash IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -4710,6 +4821,7 @@ class AgentController(TenantScoped, Base):
     version: Mapped[str | None] = mapped_column(Text, nullable=True)
     public_key: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     api_key_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    device_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     assignment_revision: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
@@ -5278,6 +5390,118 @@ class ServerAuditEvent(Base):
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
+class AuthAttempt(Base):
+    """Password sign-ins and sign-ups, counted against what they came with
+    (`gateway/login_limits.py`), here so that a limit holds across replicas.
+
+    `kind` says what is counted against what: failed sign-ins against the
+    email address typed, whether or not it has an account, failed sign-ins
+    against the client's address, or accounts signed up from it. `key` is a
+    SHA-256 digest of that email or address, so neither is kept in the clear.
+    `attempts` counts from `window_started_at`, and no attempt is taken before
+    `locked_until`. Past `expires_at` the row means nothing, and the next
+    attempt to come along deletes it.
+
+    Not tenant-scoped: an address belongs to no workspace, and a sign-in has
+    no workspace yet when it is counted.
+    """
+
+    __tablename__ = "auth_attempts"
+    __table_args__ = (Index("ix_auth_attempts_expires_at", "expires_at"),)
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class RevokedSession(Base):
+    """A session someone signed out of (`/auth/logout`). Every copy of its
+    cookie carries its id (`gateway/auth.py`'s `sid` claim) and is refused
+    from then on, wherever it was copied to.
+
+    Kept until no copy of the session could still be live, `SESSION_MAX_AGE`
+    after it signed in, however often it was refreshed; the next sign-out
+    after that deletes it.
+
+    Not tenant-scoped: a session is a person's, across their workspaces, and
+    the row holds only its random id.
+    """
+
+    __tablename__ = "revoked_sessions"
+    __table_args__ = (Index("ix_revoked_sessions_expires_at", "expires_at"),)
+
+    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class BrowserHandoff(Base):
+    """A one-time sign-in Switch Console hands a browser, so a dashboard page
+    it opens there is already signed in (`gateway/browser_handoff.py`).
+
+    Console's own session never leaves Console. It mints one of these, and
+    the browser redeems the code once, within a minute, for a session of its
+    own. Only the code's SHA-256 is kept.
+
+    The new session takes the minting one's workspace, sign-in time and
+    session version, so it never outlives Console's and ends with "Sign out of
+    all devices". `workspace_claim` is only what that session selects,
+    re-checked against a membership on every request as a session's
+    `tenant_id` claim is: it has no foreign key, and is not called
+    `tenant_id`, since a `tenant_id` keyed to `tenants` would make the table
+    tenant-scoped.
+
+    `console_sid` is the minting session's id, null for a cookie from before
+    sessions had ids, and `browser_sid` the session the code was redeemed for.
+    Signing out of the first signs out the second (`auth.sign_out_session`),
+    so a redeemed row that links them is kept as long as that session could
+    be live, `SESSION_MAX_AGE` after `auth_time`; any other row goes an hour
+    after it expired.
+
+    Not tenant-scoped: it is redeemed before any workspace is known, by a
+    browser that may hold no session at all.
+    """
+
+    __tablename__ = "browser_handoffs"
+    __table_args__ = (
+        UniqueConstraint("code_hash", name="uq_browser_handoffs_code_hash"),
+        Index("ix_browser_handoffs_expires_at", "expires_at"),
+        Index("ix_browser_handoffs_user_id_created_at", "user_id", "created_at"),
+        Index("ix_browser_handoffs_console_sid", "console_sid"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    workspace_claim: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_path: Mapped[str] = mapped_column(Text, nullable=False)
+    auth_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    session_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    console_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    browser_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class WorkspaceServiceSetting(TenantScoped, Base):
     """A workspace admin switched a catalog service on or off for the workspace.
 
@@ -5490,6 +5714,10 @@ attach_row_level_security(Base.metadata)
 # `create_all` built without them is not the schema the server runs against.
 # After the tables, not before — see `db/tenant_lookup.py`.
 attach_tenant_lookups(Base.metadata)
+
+# The purge of deleted workspaces' audit history, the one other function that
+# runs as the owner. See `db/audit_history_ddl.py`.
+attach_audit_history_purge(Base.metadata)
 
 
 # The triggers that signal every process when an agent joins or leaves a room,

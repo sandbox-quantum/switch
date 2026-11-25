@@ -92,6 +92,11 @@ bot events are identical to the self-registered app's, because the app does
 the same job once installed — the differences are all in `settings` and
 `oauth_config`.
 
+`/auto-route` belongs only on an app whose server has the `decision_routing`
+feature flag on. A server with it off does not have the command, and answers
+it with "Unknown command", so leave it out of that server's app until
+auto-route is turned on there.
+
 ```json
 {
     "display_information": {
@@ -176,7 +181,11 @@ the same job once installed — the differences are all in `settings` and
                 "message.groups",
                 "message.im",
                 "message.mpim",
-                "subteam_updated"
+                "subteam_updated",
+                "channel_deleted",
+                "channel_archive",
+                "group_deleted",
+                "group_archive"
             ]
         },
         "interactivity": {

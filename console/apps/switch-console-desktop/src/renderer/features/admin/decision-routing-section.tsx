@@ -15,17 +15,18 @@ import type {
   UpdateDecisionSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
 import {
-  CHOICE_LABELS,
   choiceFields,
+  choiceHint,
+  choiceLabel,
+  choicesNote,
   type DecisionChoice,
   type DecisionForm,
   appliesText,
+  defaultThreshold,
   formFor,
   formProblem,
-  haikuNote,
   inputFor,
   offeredChoices,
-  serverDefaultText,
   storedKeyText,
   testInputFor,
   testOutcomeText,
@@ -40,20 +41,11 @@ function resultText(result: { kind: string; message?: string }): string {
     case 'forbidden':
       return 'Only an admin of this workspace can view or change its decision routing.';
     case 'unsupported':
-      return 'This Switch server doesn’t offer decision routing settings. Update it to set them up here.';
+      return 'Message routing isn’t available on this Switch server.';
     default:
       return result.message ?? 'Could not reach the decision routing settings.';
   }
 }
-
-const CHOICE_HINTS: Record<DecisionChoice, string> = {
-  server_default: '',
-  none: 'Auto-route is off in this workspace’s rooms, whatever the server default.',
-  endpoint: 'A decision service you run. Room messages are sent to it.',
-  haiku_anthropic:
-    'The most accurate picks, at about 1.5 s each. Room messages are sent to Anthropic.',
-  haiku_bedrock: 'Haiku through Amazon Bedrock, on this server’s AWS account. No key needed.',
-};
 
 type TestState =
   | { phase: 'idle' }
@@ -64,9 +56,9 @@ type TestState =
 /**
  * A workspace's decision routing: who decides which agent answers an untagged
  * message in its auto-route rooms. The server's default applies until a
- * workspace admin chooses otherwise — none, a self-hosted endpoint, or Haiku
- * where the server can run it — and a test runs one sample decision against
- * the values as entered, before anything is saved.
+ * workspace admin chooses otherwise — a model the server's decision service
+ * runs (as it lists them), their own endpoint, or none — and a test runs one
+ * sample decision against the values as entered, before anything is saved.
  *
  * The form shows what the server says: it is reset from each answer, and a
  * refusal leaves the stored setting as it was, with the reason under it.
@@ -178,7 +170,8 @@ export function DecisionRoutingSection({ workspaceId }: { workspaceId: string })
   const fields = choiceFields(form.choice);
   const problem = form.choice === 'server_default' ? null : formProblem(form, settings);
   const keyText = storedKeyText(settings);
-  const note = haikuNote(settings);
+  const note = choicesNote(settings);
+  const threshold = defaultThreshold(form.choice, settings);
   const unchanged = form.choice === 'server_default' && settings.source === 'server_default';
 
   return (
@@ -204,11 +197,9 @@ export function DecisionRoutingSection({ workspaceId }: { workspaceId: string })
             <label key={choice} className="flex items-start gap-2.5 text-sm">
               <RadioGroupItem value={choice} className="mt-0.5" />
               <span className="flex flex-col">
-                <span className="text-foreground">{CHOICE_LABELS[choice]}</span>
+                <span className="text-foreground">{choiceLabel(choice, settings)}</span>
                 <span className="text-xs text-foreground-muted">
-                  {choice === 'server_default'
-                    ? `Currently ${serverDefaultText(settings)}.`
-                    : CHOICE_HINTS[choice]}
+                  {choiceHint(choice, settings)}
                 </span>
               </span>
             </label>
@@ -276,13 +267,15 @@ export function DecisionRoutingSection({ workspaceId }: { workspaceId: string })
                 id="decision-threshold"
                 inputMode="decimal"
                 className="w-32"
-                placeholder="Default"
+                placeholder={threshold === null ? 'Default' : `Default (${threshold})`}
                 value={form.threshold}
                 onChange={(e) => edit({ threshold: e.target.value })}
               />
               <FieldDescription className="text-xs">
-                Between 0 and 1. A pick less confident than this goes to nobody. Leave blank for the
-                decision service’s own.
+                Between 0 and 1. A pick less confident than this goes to nobody.{' '}
+                {threshold === null
+                  ? 'Leave blank for the decision service’s own.'
+                  : `Leave blank for this choice’s default, ${threshold}.`}
               </FieldDescription>
             </Field>
           )}

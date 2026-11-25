@@ -63,6 +63,7 @@ export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
 export {
   createDeepseekHarnessAdapter,
   deepseekHarnessAcp,
+  DSH_GATE_VERSIONS,
 } from './deepseek-harness/deepseek-harness-acp';
 export { droidAcp, createDroidAdapter } from './droid/droid-adapter';
 export { gooseAcp, createGooseAdapter } from './goose/goose-adapter';
@@ -83,6 +84,7 @@ export {
   ensureSharedProcess,
   inProcessSupervision,
   liveSupervisor,
+  sessionsBaseIn,
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
@@ -145,7 +147,7 @@ export {
   hostedCredentialSchema,
   providerLoginEnvironment,
 } from './host/provider-login';
-export { materializeHostedProvider } from './host/hosted-provider';
+export { clearHostedProvider, materializeHostedProvider } from './host/hosted-provider';
 export {
   generateSealingKeyPair,
   openProviderLogin,
@@ -163,7 +165,9 @@ export {
   googleCredentialsSchema,
   parseGoogleCredentials,
   parseVertexLogin,
+  signsInThroughVertex,
   VERTEX_CREDENTIALS_FILE,
+  VERTEX_PROVIDERS_ONLY,
   type VertexLogin,
   vertexLoginCredential,
   vertexLoginSchema,
@@ -183,7 +187,7 @@ export {
   watcherHealthSchema,
 } from './host/watcher-tools';
 
-export { codexSourceHome, prepareCodexSessionHome, withManagedCodexSandbox } from './codex/home';
+export { codexSourceHome, prepareCodexSessionHome } from './codex/home';
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 
@@ -214,4 +218,11 @@ export type { ProviderRuntime, ProviderRuntimeOptions } from './providers/regist
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
+export { loadNodeSqlite } from './node-sqlite';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
+export {
+  opencodeDataHome,
+  opencodeV1DatabaseEnv,
+  opencodeV1DatabasePath,
+} from './opencode/v1-database';
+export { windowsRegistryPath, withWindowsPathEntries } from './windows-registry-path';

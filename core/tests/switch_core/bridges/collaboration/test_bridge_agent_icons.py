@@ -13,6 +13,7 @@ import logging
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
+import httpx
 import pytest
 
 from switch_core.agent_icon import generated_icon_url, initials_icon_url
@@ -256,3 +257,35 @@ class TestThirdPartyAvatarsOff:
         adapter.set_agent_presentation_resolver(resolver)
         await adapter._set_bot_icon("bot-1", "worker")
         assert fetched == []
+
+    async def test_an_unreachable_icon_host_is_a_warning_not_an_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        adapter = MattermostAdapter(
+            config=MattermostConnectionConfig(
+                url="http://mattermost.invalid",
+                admin_user="admin",
+                admin_password="pw",
+                team_name="team",
+            )
+        )
+        adapter._admin_driver = object()  # type: ignore[assignment]
+        adapter._main_loop = asyncio.get_running_loop()
+
+        async def fetch_icon(url: str) -> bytes | None:
+            raise httpx.ReadTimeout("")
+
+        async def resolver(name: str) -> AgentPresentation | None:
+            return AgentPresentation(display_name=None, icon_url=_CUSTOM)
+
+        adapter._fetch_icon = fetch_icon  # type: ignore[method-assign]
+        adapter.set_agent_presentation_resolver(resolver)
+        with caplog.at_level(logging.WARNING):
+            await adapter._set_bot_icon("bot-1", "worker")
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (
+                logging.WARNING,
+                "[BOT-ICON] could not fetch the icon for worker from "
+                "cdn.example.com (ReadTimeout: ); leaving the bot's current image",
+            )
+        ]

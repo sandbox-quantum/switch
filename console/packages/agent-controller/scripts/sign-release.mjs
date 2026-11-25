@@ -13,9 +13,24 @@ import { TRUSTED_RELEASE_KEYS } from '../src/release-keys.ts';
  *
  * which the controller (src/release-signing.ts) and install.sh check before
  * they install a release. Fails when the key is missing, is not Ed25519, or
- * its public key is not in src/release-keys.ts: a release no controller trusts
- * is not worth publishing.
+ * its public key is neither in src/release-keys.ts nor in OUTGOING_RELEASE_KEYS:
+ * a release no controller trusts is not worth publishing.
  */
+
+/**
+ * Keys that may still sign although this release no longer trusts them. When a
+ * signing key leaks, the release that moves installed controllers onto its
+ * replacement must be signed with the leaked key, the only one they trust,
+ * while trusting only the replacement itself. See "If the private key leaks"
+ * in RELEASING.md. Empty except for that one release.
+ */
+const OUTGOING_RELEASE_KEYS = [
+  {
+    id: 'release-2026-10',
+    publicKey: 'MCowBQYDK2VwAyEAaRFfp1Yd/b91KkZs8Vj/OQSdsZS2ifd+rZu24pKTMpU=',
+  },
+];
+
 const [file, version] = process.argv.slice(2);
 if (!file || !version) {
   process.stderr.write('usage: node scripts/sign-release.mjs <package .tgz> <version>\n');
@@ -33,10 +48,15 @@ if (privateKey.asymmetricKeyType !== 'ed25519')
   throw new Error('CONTROLLER_RELEASE_SIGNING_KEY must be an Ed25519 private key (PKCS#8 PEM).');
 const spki = createPublicKey(privateKey).export({ type: 'spki', format: 'der' }).toString('base64');
 
-const key = TRUSTED_RELEASE_KEYS.find((candidate) => candidate.publicKey === spki);
+const outgoing = OUTGOING_RELEASE_KEYS.find((candidate) => candidate.publicKey === spki);
+const key = TRUSTED_RELEASE_KEYS.find((candidate) => candidate.publicKey === spki) ?? outgoing;
 if (!key)
   throw new Error(
     `The signing key's public key (${spki}) is not in src/release-keys.ts, so no controller would install this release. Add it there (and to install.sh) first.`
+  );
+if (outgoing && !TRUSTED_RELEASE_KEYS.some((candidate) => candidate.publicKey === spki))
+  process.stdout.write(
+    `::warning::Signing with outgoing release key ${outgoing.id}, which this release no longer trusts. Controllers on the release before it install it; install.sh from this release refuses it. Move the signing secret to a trusted key.\n`
   );
 
 const sha256 = createHash('sha256').update(readFileSync(file)).digest('hex');

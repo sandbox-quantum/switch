@@ -11,12 +11,17 @@
     uv run --project core python loadtest/run.py --namespace <namespace> \\
         --controllers 25 --scenarios idle,steady --steps 500,1000 --rate 2
 
+    # an admin making 400 rooms Private, 200 a click, over steady traffic
+    uv run --project core python loadtest/run.py --namespace <namespace> \\
+        --scenarios admin-bulk --steps 200 --rate 5 --bulk-rooms 400
+
 Seeds its own agents and rooms, runs the scenarios at each step, samples
 every switch-core pod and the database while it does, then removes what it
 made, on Ctrl-C and on failure too. `--cleanup <run_id>` removes leftovers.
 It never restarts, scales or edits anything in Kubernetes: `kubectl get` and
 `kubectl exec` (and, with `--via port-forward`, `kubectl port-forward`) only.
-See loadtest/README.md.
+The admin-bulk scenario also writes to the database, to the run's own rooms
+and one inactive bridge of its own (bulk_rooms.py). See loadtest/README.md.
 """
 
 from __future__ import annotations
@@ -40,14 +45,25 @@ import httpx
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Agent, Stats, play  # noqa: E402
+from consoles import MODES, Console, tracked_agents  # noqa: E402
 from controllers import FakeController, ManagedAgent  # noqa: E402
-from kube import Kube, PortForward, Refused, Sampler, guard_target  # noqa: E402
-from report import phase_summary, render  # noqa: E402
+from kube import (  # noqa: E402
+    BULK_ROOMS,
+    Kube,
+    PortForward,
+    Refused,
+    Sampler,
+    guard_target,
+)
+from report import bulk_verdict, phase_summary, render  # noqa: E402
 from seed import (  # noqa: E402
     Admin,
     NoWorkspace,
     RequestIds,
     SeededAgent,
+    archive_rooms,
+    bulk_prefix,
+    create_bulk_rooms,
     create_controllers,
     revoke_controllers,
     seed,
@@ -55,15 +71,21 @@ from seed import (  # noqa: E402
     teardown,
 )
 from workload import (  # noqa: E402
+    ARCHIVE,
+    MAKE_PRIVATE,
     SCENARIOS,
     build_membership,
     build_schedule,
+    bulk_plan,
     fingerprint,
 )
 
 RUNS = Path(__file__).parent / "runs"
 # A run id names a directory under RUNS and prefixes what the run makes.
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+BULK = "admin-bulk"
+# The server's own cap on one "Make N Private", and on one bulk archive.
+BULK_BATCH_MAX = 200
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -176,6 +198,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     w.add_argument("--payload-min", type=int, default=40)
     w.add_argument("--payload-max", type=int, default=2000)
     w.add_argument(
+        "--bulk-rooms",
+        type=int,
+        default=400,
+        help="admin-bulk: rooms the admin makes Private in each window",
+    )
+    w.add_argument(
+        "--bulk-batch",
+        type=int,
+        default=BULK_BATCH_MAX,
+        help=f"admin-bulk: rooms per click, at most {BULK_BATCH_MAX}",
+    )
+    w.add_argument(
+        "--bulk-at",
+        type=float,
+        default=15.0,
+        help="admin-bulk: seconds into the window of the first click",
+    )
+    w.add_argument(
+        "--bulk-gap",
+        type=float,
+        default=2.0,
+        help="admin-bulk: seconds between one click and the next",
+    )
+    w.add_argument(
         "--read-fraction",
         type=float,
         default=0.1,
@@ -208,6 +254,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "operations on the controller's socket",
     )
     w.add_argument("--seed", type=int, default=1)
+    c = ap.add_argument_group("Switch Console windows (consoles.py)")
+    c.add_argument(
+        "--consoles",
+        type=int,
+        default=0,
+        help="Console windows open on the run's agents for the whole run, each "
+        "re-reading its sidebar every --console-interval seconds",
+    )
+    c.add_argument(
+        "--console-agents", type=int, default=60, help="agents each window tracks"
+    )
+    c.add_argument(
+        "--console-interval",
+        type=float,
+        default=20.0,
+        help="seconds between a window's re-reads; the Console's own is 20",
+    )
+    c.add_argument(
+        "--console-mode",
+        choices=MODES,
+        default="per-agent",
+        help="per-agent: one GET /gateway/agents/{id} per agent, as Consoles from "
+        "before GET /gateway/agents/rooms; batch: that route, 100 agents a request",
+    )
     o = ap.add_argument_group("run")
     o.add_argument("--run-id", help="default: UTC time, e.g. 20261026t153000")
     o.add_argument("--sample-interval", type=float, default=1.0)
@@ -287,6 +357,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("--seed-only needs --keep, and makes agents rather than reusing them")
     if a.concurrency < 1:
         ap.error("--concurrency must be at least 1")
+    if a.consoles < 0 or a.console_agents < 1 or a.console_interval <= 0:
+        ap.error(
+            "--consoles takes 0 or more, --console-agents 1 or more, and "
+            "--console-interval more than 0"
+        )
+    if BULK in a.scenarios:
+        if a.bulk_rooms < 1:
+            ap.error("--bulk-rooms must be at least 1")
+        if not 1 <= a.bulk_batch <= BULK_BATCH_MAX:
+            ap.error(f"--bulk-batch must be between 1 and {BULK_BATCH_MAX}")
+        if a.bulk_gap < 0 or not 0 <= a.bulk_at < a.duration:
+            ap.error(
+                "--bulk-at must fall inside --duration, and --bulk-gap be 0 or more"
+            )
     for flag, value in (("--run-id", a.run_id), ("--reuse", a.reuse)):
         if value is not None and not RUN_ID.fullmatch(value):
             ap.error(f"{flag} takes letters, digits, - and _ only")
@@ -389,6 +473,22 @@ def broken(summary: dict) -> str | None:
     return None
 
 
+def pool_ceiling(kube: Kube) -> int | None:
+    """The most connections a switch-core pod's pool hands out: its size and
+    overflow (DB_POOL_SIZE, DB_MAX_OVERFLOW), with switch-core's own defaults
+    for either the release leaves unset. None if the release cannot be read."""
+    try:
+        env = kube.core_env()
+    except Exception:  # noqa: BLE001 - the report says it is unknown
+        return None
+
+    def setting(name: str, default: int) -> int:
+        value = env.get(name, {}).get("value")
+        return int(value) if value not in (None, "") else default
+
+    return setting("DB_POOL_SIZE", 30) + setting("DB_MAX_OVERFLOW", 10)
+
+
 def admin_login(kube: Kube) -> tuple[str, str]:
     """The admin's email and password: LOADTEST_ADMIN_EMAIL and
     LOADTEST_ADMIN_PASSWORD when both are set, for an environment whose admin
@@ -486,6 +586,13 @@ async def cleanup(a: argparse.Namespace, kube: Kube) -> int:
             except NoWorkspace as exc:
                 print(f"{exc}: nothing to clean", flush=True)
                 return 0
+        # An admin-bulk run's rooms are unbound from its bridge before they
+        # are archived, as at the end of a run.
+        cleared = await asyncio.to_thread(
+            kube.run_script, BULK_ROOMS, "clear", await admin.workspace_id(),
+            "load-" if a.cleanup == "*" else bulk_prefix(a.cleanup), a.cleanup,
+        )  # fmt: skip
+        print(f"bulk rooms: {json.dumps(cleared)}", flush=True)
         done = await teardown(admin, a.cleanup, concurrency=a.concurrency)
     finally:
         await admin.close()
@@ -565,9 +672,14 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     }
     agents: list[Agent] = []
     controllers: list[FakeController] = []
+    consoles: list[Console] = []
+    console_tasks: list[asyncio.Task] = []
+    consoles_stop = asyncio.Event()
     phases: list[dict] = []
     connected_log: dict[str, list[int]] = {}
     td: dict | None = None
+    # The admin-bulk scenario's rooms, once made: their workspace and ids.
+    bulk: dict = {}
 
     async def count_connected() -> None:
         while True:
@@ -591,18 +703,47 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 break
         return False
 
+    async def click_through(t0: float, clicks: list[dict]) -> None:
+        """The admin's clicks, each sent once the one before has answered,
+        and not before its time in the plan."""
+        for c in bulk_plan(a.bulk_rooms, a.bulk_batch, a.bulk_at, a.bulk_gap):
+            if await wait(stop, c.at - (time.monotonic() - t0)):
+                return
+            rooms = bulk["rooms"][c.start : c.end]
+            if c.action == MAKE_PRIVATE:
+                done = await admin.make_private(bulk["tenant"], rooms)
+            else:
+                done = await admin.bulk_archive(rooms, archived=c.action == ARCHIVE)
+            done["action"] = c.action
+            done["at_s"] = round(time.monotonic() - t0, 1)
+            clicks.append(done)
+            print(f"    {c.action}: {json.dumps(done)}", flush=True)
+
     async def measure(
         name: str, scenario: str, step: int, duration: float, drain: bool = False
     ) -> None:
         schedule = schedules[name]
+        clicks: list[dict] = []
+        if scenario == BULK:
+            # Public again, so every window's clicks change every room.
+            reset = await asyncio.to_thread(
+                kube.run_script, BULK_ROOMS, "reset", bulk["tenant"],
+                bulk_prefix(run_id), run_id,
+            )  # fmt: skip
+            print(f"  {name}: {reset['rooms']} bulk rooms Public again", flush=True)
         stats.phase = sampler.phase = name
         start, t0 = time.time(), time.monotonic()
         print(f"  {name}: {len(schedule)} messages over {duration:.0f}s", flush=True)
+        admin_task = (
+            asyncio.create_task(click_through(t0, clicks)) if scenario == BULK else None
+        )
         if schedule:
             await play(
                 schedule, agents[:step], room_ids, membership, stats, run_id, name, stop
             )
         await wait(stop, duration - (time.monotonic() - t0))
+        if admin_task is not None:
+            await admin_task
         end, secs = time.time(), time.monotonic() - t0
         stopped = stop.is_set()
         if drain:
@@ -628,6 +769,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 "planned": len(schedule),
                 "fingerprint": fingerprint(schedule),
                 "stopped": stopped,
+                **({"bulk": clicks} if scenario == BULK else {}),
             }
         )
 
@@ -715,6 +857,27 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 + f" in {time.monotonic() - t:.1f}s",
                 flush=True,
             )
+        if BULK in a.scenarios and not a.seed_only:
+            t = time.monotonic()
+            bulk["tenant"] = await admin.workspace_id()
+            bulk["rooms"] = await create_bulk_rooms(
+                admin, run_id, a.bulk_rooms, asyncio.Semaphore(a.concurrency)
+            )
+            shaped = await asyncio.to_thread(
+                kube.run_script, BULK_ROOMS, "shape", bulk["tenant"],
+                bulk_prefix(run_id), run_id,
+            )  # fmt: skip
+            bulk["shaped"] = True
+            if shaped["rooms"] != len(bulk["rooms"]):
+                raise RuntimeError(
+                    f"bulk_rooms.py shaped {shaped['rooms']} of the "
+                    f"{len(bulk['rooms'])} bulk rooms"
+                )
+            print(
+                f"{shaped['rooms']} bulk rooms on private channels of an inactive "
+                f"bridge, Public, in {time.monotonic() - t:.1f}s",
+                flush=True,
+            )
         if a.seed_only:
             print("seed only: nothing connects; agents and rooms are kept", flush=True)
         rooms_of: dict[int, list[str]] = {}
@@ -778,6 +941,34 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 raise RuntimeError("not every controller came online")
 
         opened = 0
+        if a.consoles and not a.seed_only:
+            if admin.cookie is None:
+                raise RuntimeError("the Console windows need the admin's session")
+            tracked = tracked_agents(
+                [s.id for s in seeded], a.consoles, a.console_agents
+            )
+            consoles = [
+                Console(
+                    i,
+                    a.gateway_url,
+                    admin.cookie,
+                    tracked[i],
+                    a.console_mode,
+                    a.console_interval,
+                    ids,
+                    stats,
+                    a.seed,
+                )
+                for i in range(a.consoles)
+            ]
+            console_tasks = [
+                asyncio.create_task(c.run(consoles_stop)) for c in consoles
+            ]
+            print(
+                f"consoles: {a.consoles} windows of {len(tracked[0])} agents, "
+                f"re-reading every {a.console_interval:g}s, {a.console_mode}",
+                flush=True,
+            )
         for step in [] if a.seed_only else a.steps:
             if stop.is_set():
                 break
@@ -834,8 +1025,31 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     finally:
         stats.phase = sampler.phase = "teardown"
         counter.cancel()
+        consoles_stop.set()
+        await asyncio.gather(*console_tasks, return_exceptions=True)
+        await asyncio.gather(*(c.stop() for c in consoles), return_exceptions=True)
         await asyncio.gather(*(x.stop() for x in agents), return_exceptions=True)
         await asyncio.gather(*(c.stop() for c in controllers), return_exceptions=True)
+        if bulk.get("shaped"):
+            # Unbound first: a room still on the run's bridge would keep that
+            # bridge from being deleted, and archive as a bridged room.
+            try:
+                cleared = await asyncio.to_thread(
+                    kube.run_script, BULK_ROOMS, "clear", bulk["tenant"],
+                    bulk_prefix(run_id), run_id,
+                )  # fmt: skip
+                archived = await archive_rooms(admin, bulk["rooms"], a.concurrency)
+                print(
+                    f"bulk rooms: {cleared['rooms']} unbound, bridge removed, "
+                    f"{archived} archived",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"clearing the bulk rooms failed ({exc}); run: --cleanup {run_id}",
+                    flush=True,
+                )
+                code = 1
         try:
             if a.keep and taken_over:
                 meta["kept"] = True
@@ -881,6 +1095,9 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
             pf.close()
 
     meta["pods"] = sorted(sampler.pods_seen)
+    meta["pool_ceiling"] = await asyncio.to_thread(pool_ceiling, kube)
+    for p in phases:
+        p["pool_ceiling"] = meta["pool_ceiling"]
     meta["pod_info"] = sampler.pods_seen
     meta["ended"] = datetime.now(UTC).isoformat(timespec="seconds")
     for p in phases:
@@ -905,6 +1122,10 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     )
     (out / "summary.md").write_text(render(meta, summaries, td))
     print((out / "summary.md").read_text())
+    for summary in summaries:
+        if summary["bulk"] and (why := bulk_verdict(summary)):
+            print(f"{summary['phase']} failed: {'; '.join(why)}", flush=True)
+            code = code or 1
     return code
 
 
@@ -921,6 +1142,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"membership {fingerprint(membership)}: {a.rooms} rooms of {a.room_size}")
         for name, sch in schedules.items():
             print(f"{name}: {len(sch)} messages, schedule {fingerprint(sch)}")
+        if BULK in a.scenarios:
+            clicks = bulk_plan(a.bulk_rooms, a.bulk_batch, a.bulk_at, a.bulk_gap)
+            print(
+                f"{BULK}: {a.bulk_rooms} rooms made Private, archived and "
+                f"unarchived in {len(clicks)} clicks, at "
+                + ", ".join(f"{c.at:g}s ({c.action} {c.end - c.start})" for c in clicks)
+            )
         return 0
     try:
         guard_target(a.namespace, a.api_url or "", a.gateway_url or "")

@@ -88,8 +88,10 @@ function deps(server = core.url): ControllerDeps {
     dataDir: dir,
     workspacesFor: () => join(dir, 'workspaces'),
     version: '0.1.0',
+    deviceId: 'd'.repeat(64),
     updatedBy: 'self',
     selfUpdate: null,
+    supervised: false,
     now: Date.now,
     random: () => 0,
     timing: {
@@ -100,6 +102,7 @@ function deps(server = core.url): ControllerDeps {
       streamIdleMs: 2_000,
       streamInitialBackoffMs: 10,
       streamMaxBackoffMs: 50,
+      streamSuspendedRetryMs: 30,
       eventBufferLimit: 100,
     },
   };
@@ -196,7 +199,10 @@ afterEach(async () => {
   await running?.catch(() => {});
   await core.stop();
   store.close();
-  rmSync(dir, { recursive: true, force: true });
+  // maxRetries/retryDelay: Windows can hold a just-closed database or watcher
+  // handle open for a little while after this process believes it is done
+  // with it, so an immediate removal can answer EBUSY or ENOTEMPTY briefly.
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 describe('runController', () => {
@@ -616,6 +622,52 @@ describe('runController', () => {
     expect(await running).toBe('stopped');
   });
 
+  it('stops every agent while its owner is suspended, keeps its credential, and starts them once let in again', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+
+    core.suspendOwner();
+    await waitFor(
+      () => runtime.calls.some((call) => call.kind === 'stop' && call.agentId === 'agent-1'),
+      'the agent stopped'
+    );
+    // Held stopped, on disk too, so a restart starts nothing either.
+    const saved = store.cachedAssignment();
+    expect(saved.kind === 'saved' && saved.assignment.agents[0]!.desired_state).toBe('stopped');
+    expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBe(core.credential);
+    expect(store.revokedAt()).toBeNull();
+    expect(runtime.calls).not.toContainEqual({ kind: 'deleteCredentials', agentId: 'agent-1' });
+
+    core.liftOwnerSuspension({ revision: 3, agents: [agent(3)] });
+    await waitFor(() => runtime.launches('agent-1').length === 2, 'the agent started again');
+    expect(await Promise.race([running, delay(50).then(() => 'running')])).toBe('running');
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('starts nothing from its saved assignment while its owner is still suspended', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    core.suspendOwner();
+    await waitFor(() => {
+      const saved = store.cachedAssignment();
+      return saved.kind === 'saved' && saved.assignment.agents[0]!.desired_state === 'stopped';
+    }, 'the stopped assignment saved');
+    stop.abort();
+    expect(await running).toBe('stopped');
+
+    stop = new AbortController();
+    running = runController(deps(), stop.signal);
+    await waitFor(
+      () => core.requests.filter((r) => r.path.endsWith('/token')).length >= 2,
+      'a refused exchange after the restart'
+    );
+    await delay(100);
+    expect(runtime.launches('agent-1')).toHaveLength(1);
+  });
+
   it('exits as revoked when the credential exchange is refused as revoked', async () => {
     core.revoked = true;
     running = runController(deps(), stop.signal);
@@ -882,5 +934,48 @@ describe('ensureRelayCredentials', () => {
       token: 'swlr_1',
       providerLogin: null,
     });
+  });
+
+  it('removes what the agent host wrote of a login withdrawn or replaced, and only then', async () => {
+    const runtime = new FakeRuntime();
+    const { relay } = fakeRelay();
+    const deps = { runtime, relay, log: silentLogger };
+    const forgotten = () => runtime.calls.filter((call) => call.kind === 'forgetProviderLogin');
+    await ensureRelayCredentials('agent-1', null, deps);
+    await ensureRelayCredentials('agent-1', login, deps);
+    await ensureRelayCredentials('agent-1', login, deps);
+    // Given for the first time, or unchanged: nothing to remove.
+    expect(forgotten()).toEqual([]);
+    await ensureRelayCredentials('agent-1', { ...login, revision: '2' }, deps);
+    expect(forgotten()).toHaveLength(1);
+    await ensureRelayCredentials('agent-1', null, deps);
+    expect(forgotten()).toEqual([
+      { kind: 'forgetProviderLogin', agentId: 'agent-1' },
+      { kind: 'forgetProviderLogin', agentId: 'agent-1' },
+    ]);
+    await ensureRelayCredentials('agent-1', null, deps);
+    expect(forgotten()).toHaveLength(2);
+  });
+
+  it('logs a login it could not remove as an error, and still rewrites the file', async () => {
+    const runtime = new FakeRuntime();
+    const { relay } = fakeRelay();
+    const errors: { message: string; fields?: Record<string, unknown> }[] = [];
+    const log = {
+      ...silentLogger,
+      error: (message: string, fields?: Record<string, unknown>) =>
+        void errors.push({ message, fields }),
+    };
+    const deps = { runtime, relay, log };
+    await ensureRelayCredentials('agent-1', login, deps);
+    runtime.failNextForget = new Error('EACCES: permission denied');
+    expect(await ensureRelayCredentials('agent-1', null, deps)).toBe(true);
+    expect(runtime.credentials.get('agent-1')?.providerLogin).toBeNull();
+    expect(errors).toEqual([
+      {
+        message: 'Could not remove a provider login Switch no longer gives an agent',
+        fields: { agentId: 'agent-1', provider: 'claude', error: 'EACCES: permission denied' },
+      },
+    ]);
   });
 });

@@ -23,7 +23,11 @@ import yaml
 from pydantic import ValidationError
 
 from switch_core.agent_icon import InvalidIconUrl, validate_icon_url
-from switch_core.providers.registry import provider_ids
+from switch_core.providers.registry import (
+    agent_provider,
+    new_agent_auto_mode,
+    provider_ids,
+)
 from switch_core.rooms_yaml import (
     CONSOLE_PARAM_TYPES,
     ENTITY_PARAM_TYPES,
@@ -40,7 +44,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
 )
-from switch_core.template_v2 import compile_v2, is_v2
+from switch_core.template_v2 import compile_v2, is_v2, resource_types
 
 TemplateKind = Literal["room", "group", "agent"]
 
@@ -82,6 +86,39 @@ def template_kind(text: str) -> TemplateKind:
     if agents:
         return "agent" if len(agents) == 1 else "group"
     return "room"
+
+
+@dataclass(frozen=True)
+class TemplateCounts:
+    """How many agents and rooms a document describes: what the catalogue
+    says a template creates."""
+
+    agents: int
+    rooms: int
+
+
+def template_counts(text: str) -> TemplateCounts:
+    """The agents and rooms a document describes, counting the ones a
+    condition may leave out, since which are created depends on the inputs.
+    An agent a room merely invites is not one it creates. Raises ValueError
+    for a document that does not parse.
+
+    Version 2 counts its resources by type; a group's rooms are resources of
+    their own. Version 1 counts its ``agent:`` or ``agents:``, and its
+    ``room:`` or the ``rooms:`` of a ``group:``."""
+    data = _load(text)
+    if is_v2(data):
+        types = resource_types(data)
+        return TemplateCounts(agents=types.count("agent"), rooms=types.count("room"))
+    rooms = data.get("rooms")
+    return TemplateCounts(
+        agents=len(_agents(data)),
+        rooms=(
+            sum(isinstance(r, dict) for r in rooms)
+            if isinstance(rooms, list)
+            else int(isinstance(data.get("room"), dict))
+        ),
+    )
 
 
 # Past this a display name is not slugged, as in the Console's agent-slug.
@@ -788,10 +825,31 @@ class _Planner:
                 "invalid_isolation",
                 f"isolation '{isolation}' is not shared or isolated.",
             )
-        auto_mode = interpolate(entry.get("auto_mode", True), values)
+        # Absent, it is the provider's default for a new agent; one whose
+        # provider is not one Switch runs is refused below anyway.
+        provider_entry = (
+            agent_provider(provider)
+            if provider is not None and provider in provider_ids()
+            else None
+        )
+        supports_auto_mode = provider_entry is None or provider_entry.supports_auto_mode
+        auto_mode = interpolate(
+            entry.get(
+                "auto_mode",
+                provider_entry is not None and new_agent_auto_mode(provider_entry.id),
+            ),
+            values,
+        )
         if not isinstance(auto_mode, bool):
             self.problem(slot, "invalid_auto_mode", "auto_mode is not true or false.")
-        auto_approve = interpolate(entry.get("auto_approve", False), values)
+        auto_approve = interpolate(
+            entry.get(
+                "auto_approve",
+                not supports_auto_mode
+                and not ("auto_mode" in entry and auto_mode is False),
+            ),
+            values,
+        )
         if not isinstance(auto_approve, bool):
             self.problem(
                 slot, "invalid_auto_approve", "auto_approve is not true or false."

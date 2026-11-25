@@ -86,6 +86,53 @@ HTTP_REQUEST_DURATION = _spec(
     "route",
     "method",
 )
+# A gateway request answered at once, without being served, because its caller
+# (`caller`, 429) or the process (`process`, 503) had as many requests running
+# as it may for longer than the request could wait (`gateway/admission.py`).
+GATEWAY_TURNED_AWAY = _spec(
+    "switch.http.gateway_turned_away",
+    "sum",
+    "{request}",
+    "Gateway requests answered at once without being served, because their "
+    "caller (`caller`) or the process (`process`) had as many running as it "
+    "may for longer than they could wait.",
+    "reason",
+)
+
+# The long-lived gateway streams this process holds, by `kind` (`chat_events`,
+# `chat_activity`, `changes`), counted from when each is accepted
+# (`gateway/stream_caps.py`).
+GATEWAY_STREAMS_OPEN = _spec(
+    "switch.http.gateway_streams.open",
+    "gauge",
+    "{stream}",
+    "Long-lived gateway streams (chats feed, activity feed, change notices) "
+    "this process holds, by kind.",
+    "kind",
+)
+# A long-lived gateway stream refused: its caller already held as many of that
+# `kind` as it may, all opened too recently to close (`caller`, 429), or the
+# process held as many streams as it may (`process`, 503).
+GATEWAY_STREAMS_TURNED_AWAY = _spec(
+    "switch.http.gateway_streams.turned_away",
+    "sum",
+    "{stream}",
+    "Long-lived gateway streams refused, because their caller (`caller`) or "
+    "the process (`process`) already held as many as it may.",
+    "kind",
+    "reason",
+)
+# A caller's oldest stream of a `kind`, closed to make room for a newer one of
+# theirs past `GATEWAY_STREAMS_PER_CALLER`.
+GATEWAY_STREAMS_CLOSED_FOR_NEWER = _spec(
+    "switch.http.gateway_streams.closed_for_newer",
+    "sum",
+    "{stream}",
+    "Long-lived gateway streams closed because their caller opened a newer one "
+    "of the same kind past the limit.",
+    "kind",
+)
+
 # A caller that kept repeating a refused request, answered 429 from memory
 # (`refusal_breaker.py`). `route` is the template of the route that refused it.
 HTTP_REFUSALS_THROTTLED = _spec(
@@ -652,9 +699,17 @@ RUNTIME_GC_PAUSE = _spec(
 # Auto-route asks a decision backend which agent, if any, should answer a
 # person's untagged message (`decision/client.py`, `delivery/router.py`).
 # `backend` is the kind of backend that was asked — `server_default`,
-# `endpoint`, `haiku_anthropic`, `haiku_bedrock` or `machine` — never which
-# endpoint, workspace or machine: those are per tenant and live in the decision
-# record the router logs for each message.
+# `endpoint`, `haiku_anthropic`, `haiku_bedrock`, `self_hosted`, `gemini` or
+# `machine` — never which endpoint, workspace or machine: those are per tenant
+# and live in the decision record the router logs for each message. `model` is
+# the model that answered, as the server's own decision service names it
+# (`gemini-decision-1`, `claude-haiku-5-5`, ...; for `gemini`, the fallback's
+# model when the fallback answered): a workspace's own endpoint is
+# `workspace_endpoint` whatever it says, a decision with no answer is
+# `unknown`, and a name that is not plain, or past the few a process keeps, is
+# `other`
+# (`decision.client.MAX_MODEL_LABELS`). `backend` says who was asked, `model`
+# what answered: the server default is one backend whichever model it runs.
 DECISION_LATENCY_BOUNDS_MS: tuple[float, ...] = (
     25.0,
     50.0,
@@ -678,8 +733,9 @@ DECISION_REQUESTS = _spec(
     "{decision}",
     "Decisions asked of a backend, by backend and outcome: `agent` (it picked "
     "one), `none` (it picked nobody, or its pick fell below the threshold) or "
-    "`failed` (no usable answer).",
+    "`failed` (no usable answer). `model` is the model that answered.",
     "backend",
+    "model",
     "outcome",
 )
 DECISION_FAILURES = _spec(
@@ -688,8 +744,9 @@ DECISION_FAILURES = _spec(
     "{failure}",
     "Decisions that got no usable answer, by backend and reason (`timeout`, "
     "`unreachable`, `error_status`, `bad_answer`, `key_unreadable`, "
-    "`endpoint_refused`).",
+    "`endpoint_refused`). `model` is `unknown` unless an answer came back.",
     "backend",
+    "model",
     "reason",
 )
 # What a failed answer said went wrong behind the service, from the fixed
@@ -701,8 +758,10 @@ DECISION_BACKEND_ERRORS = _spec(
     "{error}",
     "Failed answers by what the backend said went wrong behind it: the model "
     "server unreachable, timing out or erroring, the model not loaded, "
-    "credentials missing, the upstream refusing, or `unknown`.",
+    "credentials missing, the upstream refusing, or `unknown`. No answer came "
+    "back, so `model` is `unknown` (or `workspace_endpoint`).",
     "backend",
+    "model",
     "kind",
 )
 DECISION_DURATION = _spec(
@@ -713,6 +772,7 @@ DECISION_DURATION = _spec(
     "request, failures included. Compare with switch.decision.model_time: the "
     "gap is the network and the backend's queue.",
     "backend",
+    "model",
     bounds=DECISION_LATENCY_BOUNDS_MS,
 )
 DECISION_MODEL_TIME = _spec(
@@ -722,6 +782,7 @@ DECISION_MODEL_TIME = _spec(
     "How long the backend says its model took for an answered decision. "
     "Missing for an endpoint that does not say.",
     "backend",
+    "model",
     bounds=DECISION_LATENCY_BOUNDS_MS,
 )
 DECISION_CONFIDENCE = _spec(
@@ -731,6 +792,7 @@ DECISION_CONFIDENCE = _spec(
     "The backend's confidence in each answered decision, 0 to 1, for setting "
     "the threshold: how many answers fall just under it.",
     "backend",
+    "model",
     bounds=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
 )
 # One per undecided message, however it ended — the one place every path meets
@@ -778,6 +840,45 @@ DECISION_NOTICES = _spec(
     '"Auto-route is unavailable" notices posted to rooms (at most one an hour '
     "per room).",
 )
+
+# ── WorkOS directory mirror ──────────────────────────────────────────────────
+# Reported only by the process running the mirror (`workos_mirror.py`), and
+# only under `ORGANIZATION_DIRECTORY=workos`: no reading means nobody runs it.
+# Read with max, which also covers the moment a hold changes hands.
+WORKOS_CURSOR_AGE = _spec(
+    "switch.workos.cursor_age",
+    "gauge",
+    "s",
+    "Seconds since a pass of the WorkOS mirror last read the membership events "
+    "through. Grows while passes fail, WorkOS refuses where the mirror reads "
+    "from, or an event keeps failing, so a removal made in WorkOS waits. Up to "
+    "30 s is normal.",
+)
+WORKOS_RECHECK_OLDEST_AGE = _spec(
+    "switch.workos.recheck.oldest_age",
+    "gauge",
+    "s",
+    "Seconds the longest-waiting organization has been in the WorkOS mirror's "
+    "full recheck, checked on every pass after a change for it failed. 0 when "
+    "none waits.",
+)
+WORKOS_FULL_CHECK_AGE = _spec(
+    "switch.workos.full_check.age",
+    "gauge",
+    "s",
+    "Seconds since the WorkOS mirror last finished checking every linked "
+    "organization's members in full, which it does when it starts and once a "
+    "day.",
+)
+WORKOS_ORGANIZATION_DELETED = _spec(
+    "switch.workos.organization_deleted",
+    "sum",
+    "{organization}",
+    "WorkOS organizations deleted while a Switch organization followed them. "
+    "The Switch organization keeps its members, rooms and agents, and is left "
+    "for an operator to remove.",
+)
+
 
 # ── Health ───────────────────────────────────────────────────────────────────
 # One series per dependency, so a dashboard shows which one broke.
@@ -950,6 +1051,21 @@ AUTH_SIGN_IN_FAILURES = _spec(
     "Password sign-ins refused for a wrong password or an unknown email. No "
     "attributes: never the email, the account or the caller's address.",
 )
+# `limit` is `email` or `client_address`, the sign-in limit that locked
+# (`gateway/login_limits.py`). Email lock-outs coming steadily with no
+# address lock-outs beside them are someone keeping one person out on
+# purpose, which the per-email lock lets anyone who knows the email do.
+AUTH_SIGN_IN_LOCKOUTS = _spec(
+    "switch.auth.sign_in_lockouts",
+    "sum",
+    "{lockout}",
+    "Password sign-in lock-outs, by the limit that locked: `email` (failures "
+    "with one email address, whether or not an account has it) or "
+    "`client_address` (failures from one client address). Counted when the "
+    "failed attempt that reached the limit is refused, never the email, the "
+    "account or the address.",
+    "limit",
+)
 CONTROLLER_CREDENTIAL_REFUSALS = _spec(
     "switch.controller.credential_refusals",
     "sum",
@@ -984,6 +1100,10 @@ CATALOGUE: dict[str, MetricSpec] = {
         HTTP_REQUESTS,
         HTTP_REQUEST_DURATION,
         HTTP_REFUSALS_THROTTLED,
+        GATEWAY_TURNED_AWAY,
+        GATEWAY_STREAMS_OPEN,
+        GATEWAY_STREAMS_TURNED_AWAY,
+        GATEWAY_STREAMS_CLOSED_FOR_NEWER,
         DB_POOL_IN_USE,
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,
@@ -1045,6 +1165,10 @@ CATALOGUE: dict[str, MetricSpec] = {
         DECISION_PENDING,
         DECISION_PENDING_OLDEST_AGE,
         DECISION_NOTICES,
+        WORKOS_CURSOR_AGE,
+        WORKOS_RECHECK_OLDEST_AGE,
+        WORKOS_FULL_CHECK_AGE,
+        WORKOS_ORGANIZATION_DELETED,
         HEALTH_CHECK,
         HOSTED_AGENTS,
         HOSTED_AGENTS_STOPPED,
@@ -1062,6 +1186,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_CONTROLLER_ERRORS,
         HOSTED_CONTROLLER_RESTARTS,
         AUTH_SIGN_IN_FAILURES,
+        AUTH_SIGN_IN_LOCKOUTS,
         CONTROLLER_CREDENTIAL_REFUSALS,
         RUNTIME_UNHANDLED_EXCEPTIONS,
     )

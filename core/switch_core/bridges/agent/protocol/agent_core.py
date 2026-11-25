@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 
 from switch_core import room_admins, room_policy
 from switch_core.addressing import (
@@ -44,7 +44,6 @@ from switch_core.authz import (
 )
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.mediation import MediationService
 from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -55,6 +54,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     assemble_agent_detail,
     describe_addressing,
     list_agent_summaries,
+    shown_to,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.message_events import removed_by
@@ -91,6 +91,7 @@ from switch_core.chats.service import ChatError
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
+    SAID_FOR_AGENT_FLAG,
     AdminMessageType,
     platform_on_behalf_of,
     platform_replies_in_channel,
@@ -130,6 +131,7 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_schedule_store import RoomScheduleStore
+from switch_core.db.stores.room_store import visible_to_agent
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
@@ -147,6 +149,7 @@ from switch_core.room_invites import (
     with_subagents,
 )
 from switch_core.room_policy import RoomAction, RoomCaller, RoomPermissionError
+from switch_core.room_read_only import RoomReadOnly
 from switch_core.room_schedules import (
     TEXT_LIMIT,
     ScheduleError,
@@ -164,6 +167,7 @@ from switch_core.room_wide_mention import (
     reject_reserved_mention_name,
     room_wide_mention_content,
 )
+from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.telemetry import TelemetryService, emit_after_commit, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -245,11 +249,6 @@ VALID_AGENT_NAME_RE = _VALID_NAME_RE
 # History comes from a single indexed query now, so the only thing this guards
 # is the size of the response.
 HISTORY_MAX_LIMIT = 500
-
-# The post-invocation hooks answer in a different vocabulary from the
-# pre-invocation ones: `ok` / `blocked` / `redacted` rather than `proceed` /
-# `blocked`. Nothing currently returns anything but this.
-POST_INVOCATION_OK = "ok"
 
 
 def _epoch_ms(when: Any) -> int | None:
@@ -402,8 +401,16 @@ def _describe_room(room: Room) -> RoomDescriptor:
         transport_room_id=room.transport_room_id,
         matrix_room_id=room.transport_room_id,
         archived=room.archived_at is not None,
+        frozen=room.frozen_at is not None,
         bridge_id=room.bridge_id,
     )
+
+
+def _require_postable(room: RoomDescriptor) -> None:
+    if room.frozen:
+        raise RoomReadOnly(room.name, "frozen")
+    if room.archived:
+        raise RoomReadOnly(room.name, "archived")
 
 
 class AgentCore:
@@ -439,7 +446,7 @@ class AgentCore:
     install_service: MessagingInstallService | None = None
     # Told (tenant_id, room_id) for each room a deleted agent was in, after it
     # is gone, so whatever follows rooms' agents can catch up at once.
-    _room_agents_listener: Callable[[str, str], Awaitable[None]] | None = None
+    _room_agents_listener: Callable[[str, list[str]], Awaitable[None]] | None = None
     # Told (tenant_id, agent_id) after an agent's icon or display name changes,
     # so whatever shows them can refresh.
     _agent_profile_listener: Callable[[str, str], Awaitable[None]] | None = None
@@ -449,9 +456,6 @@ class AgentCore:
     # Raises the ChatError `_member_adder` would refuse that person with:
     # (tenant_id, user_id). Wired with it.
     _member_join_check: Callable[[str, str], Awaitable[None]] | None = None
-    # Whether people can be in internal rooms as Switch Console chats (the
-    # `group_chats` flag), told with `_member_adder`.
-    _group_chats_enabled: bool = False
 
     def __init__(
         self,
@@ -504,9 +508,6 @@ class AgentCore:
         # connection set in two.
         self.connections = connections
         self.resource_service = resource_service
-        self.mediation = MediationService(
-            session_factory=session_factory, agent_store=agent_store
-        )
         self.api_key_store = api_key_store
         # Shared with the bearer-auth middleware for the same reason as
         # `connections`: a key this service rotates must stop authenticating
@@ -655,6 +656,7 @@ class AgentCore:
                     parent_agent_id=parent_agent_id,
                     tools=tool_specs,
                     models=model_specs,
+                    registration_path=registration_path,
                 )
                 logger.info("Re-registered agent: %s (%s)", name, agent_id)
             else:
@@ -680,6 +682,7 @@ class AgentCore:
                     tools=tool_specs,
                     models=model_specs,
                     addressing_policy=addressing_policy,
+                    registration_path=registration_path,
                 )
                 logger.info("Registered agent: %s (%s)", name, agent_id)
                 newly_registered = True
@@ -732,6 +735,7 @@ class AgentCore:
         tools: list[ToolSpec],
         models: list[ModelSpec],
         addressing_policy: AddressingPolicy | None,
+        registration_path: str,
     ) -> str:
         api_key_record = ApiKey(
             type="agent",
@@ -794,6 +798,21 @@ class AgentCore:
                 ),
             )
 
+        await record_audit_event(
+            session,
+            tenant_id=agent.tenant_id,
+            actor_user_id=owner_id,
+            action=AuditAction.AGENT_REGISTERED,
+            target_type="agent",
+            target_id=agent.id,
+            details={
+                "agent_name": name,
+                "agent_type": agent_type,
+                "connector_type": connector_type,
+                "registration_path": registration_path,
+                "parent_agent_id": parent_agent_id,
+            },
+        )
         await session.commit()
         self.client_lifecycle.start_client(client_record)
         self.client_lifecycle.announce(client_record.tenant_id, [client_record.id])
@@ -818,6 +837,7 @@ class AgentCore:
         parent_agent_id: str | None,
         tools: list[ToolSpec],
         models: list[ModelSpec],
+        registration_path: str,
     ) -> str:
         new_api_key_record = ApiKey(
             type="agent",
@@ -882,6 +902,20 @@ class AgentCore:
                 ),
             )
 
+        await record_audit_event(
+            session,
+            tenant_id=existing.tenant_id,
+            actor_user_id=owner_id,
+            action=AuditAction.AGENT_REREGISTERED,
+            target_type="agent",
+            target_id=existing.id,
+            details={
+                "agent_name": existing.name,
+                "agent_type": agent_type,
+                "connector_type": connector_type,
+                "registration_path": registration_path,
+            },
+        )
         await session.commit()
         self.api_key_cache.invalidate_agent(existing.id)
         if profile_changed:
@@ -894,7 +928,7 @@ class AgentCore:
         self._agent_removal_listener = listener
 
     def set_room_agents_listener(
-        self, listener: Callable[[str, str], Awaitable[None]]
+        self, listener: Callable[[str, list[str]], Awaitable[None]]
     ) -> None:
         self._room_agents_listener = listener
 
@@ -902,12 +936,9 @@ class AgentCore:
         self,
         adder: Callable[[str, User, str, str], Awaitable[Room]],
         join_check: Callable[[str, str], Awaitable[None]],
-        *,
-        group_chats_enabled: bool,
     ) -> None:
         self._member_adder = adder
         self._member_join_check = join_check
-        self._group_chats_enabled = group_chats_enabled
 
     def set_agent_profile_listener(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -1518,8 +1549,7 @@ class AgentCore:
         # client told cannot open another.
         await self.connections.agent_deleted(resolved_id)
         if self._room_agents_listener is not None:
-            for room_id in room_ids:
-                await self._room_agents_listener(tenant_id, room_id)
+            await self._room_agents_listener(tenant_id, room_ids)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
         return AgentDeletionResult(bridge_failures=bridge_failures)
@@ -1575,20 +1605,29 @@ class AgentCore:
         return tenant_session(self.session_factory, tenant_id)
 
     async def require_room_poster(self, agent_id: str, room_id: str) -> RoomDescriptor:
-        """`require_room_member`, and raise `BudgetExceeded` if the agent has
-        reached a budget covering it. One session for both, so a post still
-        costs one pool checkout."""
+        """`require_room_member`, and raise `RoomReadOnly` if the room is
+        frozen or archived and `BudgetExceeded` if the agent has reached a
+        budget covering it. One session for all of it, so a post still costs
+        one pool checkout.
+
+        The read-only check here is the early answer, before Switch Trust or
+        an upload runs; the router refuses the row itself as well
+        (`room_read_only.py`), so a descriptor held a moment too long cannot
+        let a post through."""
         tenant_id = require_tenant_id()
         access = self.room_access
         room = access.member(tenant_id, agent_id, room_id)
+        if room is not None:
+            _require_postable(room)
         if room is not None and access.unbudgeted(tenant_id, agent_id):
             return room
         async with self.session_factory() as session:
             if room is None:
                 room = await self._room_member_in(session, agent_id, room_id)
+                _require_postable(room)
             ticket = access.ticket()
             covered = await self.budget_guard.require_within(
-                session, tenant_id=tenant_id, agent_id=agent_id
+                session, tenant_id=tenant_id, agent_id=agent_id, room_id=room_id
             )
         if not covered:
             access.put_unbudgeted(tenant_id, agent_id, ticket)
@@ -1750,7 +1789,12 @@ class AgentCore:
         bridges — the resource manager isn't a bridge participant, so its own
         notices wouldn't reach Slack/Mattermost."""
         try:
-            await client.send_message(transport_room_id, body, metered=False)
+            await client.send_message(
+                transport_room_id,
+                body,
+                metered=False,
+                extra_content={SAID_FOR_AGENT_FLAG: True},
+            )
         except Exception:
             logger.exception(
                 "Failed to post agent activity notice to %s", transport_room_id
@@ -1779,6 +1823,7 @@ class AgentCore:
         content."""
         check = await check_message(
             self.trust_client,
+            self.session_factory,
             tenant_id=require_tenant_id(),
             role="assistant",
             content=content,
@@ -1828,6 +1873,7 @@ class AgentCore:
         body_check, card_check = await asyncio.gather(
             check_message(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 content=content,
@@ -1835,6 +1881,7 @@ class AgentCore:
             ),
             check_message(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 content=trust_text(ui),
@@ -1902,7 +1949,7 @@ class AgentCore:
         checked), as its own notice threaded under the flagged reply's own
         event id — not the pre-send thread the agent happened to be posting
         in — rather than appended to the reply itself. Mirrors how
-        `CollaborationCore._post_trust_notice` threads an ALERTED/ERRORED
+        `CollaborationCore._post_sender_notice` threads an ALERTED/ERRORED
         human-authored message under the message that triggered it.
 
         Returns None once the notice is posted, or why it was not (logged as
@@ -2140,6 +2187,7 @@ class AgentCore:
         if await trust_is_active(self.trust_client, tenant_id):
             files_check_task = check_attachments(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 files=files,
@@ -2149,6 +2197,7 @@ class AgentCore:
                 caption_check, files_check = await asyncio.gather(
                     check_message(
                         self.trust_client,
+                        self.session_factory,
                         tenant_id=tenant_id,
                         role="assistant",
                         content=caption_text,
@@ -2195,6 +2244,16 @@ class AgentCore:
         try:
             for index, (data, filename, mimetype) in enumerate(files):
                 media_uri = await client.upload_media(data, mimetype, filename)
+                log_security_event(
+                    SecuritySignal.ATTACHMENT_UPLOADED,
+                    tenant_id=tenant_id,
+                    actor_user_id=None,
+                    target_type="room",
+                    target_id=room.id,
+                    agent_id=agent_id,
+                    room_id=room.id,
+                    details={"media_uri": media_uri, "size": len(data)},
+                )
                 msgtype = "m.image" if mimetype.startswith("image/") else "m.file"
                 event_id = await client.send_media(
                     room.transport_room_id,
@@ -3041,6 +3100,16 @@ class AgentCore:
             resp = await client.transport.download_media(media_uri)
         except TransportError as exc:
             raise ValueError(f"Failed to download media {media_uri}: {exc}") from exc
+        log_security_event(
+            SecuritySignal.ATTACHMENT_DOWNLOADED,
+            tenant_id=client.tenant_id,
+            actor_user_id=None,
+            target_type="room",
+            target_id=room_id,
+            agent_id=agent_id,
+            room_id=room_id,
+            details={"media_uri": media_uri, "size": len(resp.body)},
+        )
         return resp.body, resp.content_type or "", resp.filename
 
     # ── Events ───────────────────────────────────────────────────────────────
@@ -3185,7 +3254,7 @@ class AgentCore:
         only the fields an agent needs to make a choice — not the raw
         connection_config."""
         async with self.session_factory() as session:
-            bridges = await self.bridge_store.get_all(session)
+            bridges = await self.bridge_store.get_listed(session)
         return [
             {
                 "id": b.id,
@@ -3237,7 +3306,6 @@ class AgentCore:
         bridge_id: str | None,
         internal_only: bool = False,
         admin_mode: bool = False,
-        security_config: dict[str, Any] | None = None,
         instructions: str | None = None,
         reference_ids: list[str] | None = None,
         package_ids: list[str] | None = None,
@@ -3342,7 +3410,6 @@ class AgentCore:
                 bridge_id=bridge_id,
                 internal_only=internal_only,
                 admin_mode=admin_mode,
-                protection_config=security_config,
                 instructions=instructions,
                 created_by=agent.owner_id,
                 created_by_kind="agent",
@@ -3597,7 +3664,6 @@ class AgentCore:
 
         console_rooms = (
             ConsoleRooms(
-                enabled=self._group_chats_enabled,
                 add_member=self._member_adder,
                 require_can_join=self._member_join_check,
             )
@@ -3650,6 +3716,16 @@ class AgentCore:
                 details={"event": "agent_acting"},
             )
         return agent, agent.owner_id, owner_is_admin
+
+    async def _acting_principal(
+        self, session: AsyncSession, agent_id: str
+    ) -> Principal:
+        """Who the calling agent acts as: its owner, with the owner's standing
+        in this workspace (`_resolve_acting_identity`)."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        return Principal(owner_id, owner_is_admin)
 
     async def _require_room_action(
         self,
@@ -4596,10 +4672,16 @@ class AgentCore:
             include_archived=include_archived,
         )
 
-    async def _visible_room_ids(self, session: AsyncSession, agent_id: str) -> set[str]:
-        """Ids of `rooms_visible_to`, archived rooms included."""
-        rooms = await self.rooms_visible_to(session, agent_id, include_archived=True)
-        return {r.id for r in rooms}
+    async def _room_visibility(
+        self, session: AsyncSession, agent_id: str
+    ) -> ColumnElement[bool]:
+        """True for a `Room` row among `rooms_visible_to`, archived or not."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        return visible_to_agent(
+            owner_id, reader_is_admin=owner_is_admin, agent_id=agent_id
+        )
 
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.
@@ -4778,13 +4860,15 @@ class AgentCore:
                 owner_name=owner_name,
                 known_agent_type=known_agent_type,
             )
-        return [agent_facing_summary(s) for s in summaries]
+            viewer = await self._acting_principal(session, agent_id)
+        return [agent_facing_summary(shown_to(viewer, s)) for s in summaries]
 
     async def get_agent_detail(
         self, agent_id: str, target_agent_id: str
     ) -> AgentDetail:
         """Return full detail for `target_agent_id`, mirroring the gateway
-        GET /agents/{id}. Readable by any authenticated agent.
+        GET /agents/{id}, as its owner would be shown it (`shown_to`).
+        Readable by any authenticated agent.
 
         Raises ValueError if the target agent does not exist.
         """
@@ -4792,10 +4876,10 @@ class AgentCore:
             agent = await self.agent_store.get(session, target_agent_id)
             if agent is None:
                 raise ValueError(f"Agent not found: {target_agent_id}")
-            return await assemble_agent_detail(
+            detail = await assemble_agent_detail(
                 session,
                 agent=agent,
-                visible_room_ids=await self._visible_room_ids(session, agent_id),
+                visible=await self._room_visibility(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4803,6 +4887,7 @@ class AgentCore:
                 room_role_store=self.room_role_store,
                 connections=self.connections,
             )
+            return shown_to(await self._acting_principal(session, agent_id), detail)
 
     async def get_agent_addressing(
         self, agent_id: str, target_agent_id: str
@@ -4869,7 +4954,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,
-                visible_room_ids=await self._visible_room_ids(session, agent_id),
+                visible=await self._room_visibility(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4877,6 +4962,27 @@ class AgentCore:
                 room_role_store=self.room_role_store,
                 connections=self.connections,
             )
+
+    async def _channel_web_url(self, room: Room) -> str | None:
+        """An https link to the room's channel on its app, or None.
+
+        Only a web address: a native scheme (`slack://`) is not something a
+        chat message can be trusted to open, so a room whose app gives only
+        that is linked through Switch Console instead.
+        """
+        if not room.bridge_id or not room.external_channel_id:
+            return None
+        adapter = self.collab_lifecycle.get_adapter(room.bridge_id)
+        if adapter is None:
+            return None
+        try:
+            url = await adapter.channel_deeplink(room.external_channel_id)
+        except Exception:
+            logger.warning(
+                "Could not build a channel link for room %s", room.id, exc_info=True
+            )
+            return None
+        return url if url is not None and url.startswith("https://") else None
 
     async def get_room_detail(
         self, agent_id: str, room_id: str
@@ -4949,6 +5055,7 @@ class AgentCore:
             id=room.id,
             name=room.name,
             description=room.description,
+            channel_url=await self._channel_web_url(room),
             channel_type=room.channel_type,
             admin_mode=room.admin_mode,
             instructions=room.instructions,
@@ -5149,64 +5256,15 @@ class AgentCore:
         await self.room_service.set_room_archived(room_id, archived)
         return await self.get_room_detail(agent_id, room_id)
 
-    async def pre_tool_call(
-        self,
-        agent_id: str,
-        room_id: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Whether this agent may call this tool. Verdict and reason.
-
-        `arguments` is not inspected. It is accepted because a mediation
-        decision that looks at what is being passed is the obvious next thing
-        to want.
-        """
-        await self.require_room_member(agent_id, room_id)
-        verdict = await self.mediation.tool_access(agent_id, tool_name)
-        return {"verdict": verdict.verdict, "reason": verdict.reason}
-
-    async def pre_llm_request(
-        self,
-        agent_id: str,
-        room_id: str,
-        model: str,
-        messages: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Whether this agent may call this model. Verdict and reason.
-
-        `messages` is not inspected, for the same reason `arguments` is not.
-        """
-        await self.require_room_member(agent_id, room_id)
-        verdict = await self.mediation.model_access(agent_id, model)
-        return {"verdict": verdict.verdict, "reason": verdict.reason}
-
-    async def post_tool_result(
-        self,
-        agent_id: str,
-        room_id: str,
-        tool_name: str,
-        result: Any,
-    ) -> dict[str, Any]:
-        """The hook point after a tool returns. Nothing is decided here yet.
-
-        It has always returned `ok` unconditionally — the verdict used to be
-        the literal string this method itself put on the wire and then read
-        back off it. Kept as the place a post-invocation check would go, and
-        as the membership check the caller is entitled to fail on.
-
-        Note the vocabulary differs from the pre-invocation hooks: these
-        answer `ok` / `blocked` / `redacted`, not `proceed` / `blocked`.
-        """
-        await self.require_room_member(agent_id, room_id)
-        return {"verdict": POST_INVOCATION_OK}
-
-    async def list_room_resources(self, room_id: str) -> dict[str, Any]:
+    async def list_room_resources(self, agent_id: str, room_id: str) -> dict[str, Any]:
         """Return the {reference_types, references, documents} payload for a
-        room. Used by ``connect_to_room`` and the ``list_references`` MCP tool.
-        Caller is responsible for verifying agent membership first."""
+        room, as the agent is given it, acting as its owner. Used by
+        ``connect_to_room`` and the ``list_references`` MCP tool. Caller is
+        responsible for verifying agent membership first."""
         async with self.session_factory() as session:
-            return await self.resource_service.list_room_resources(session, room_id)
+            return await self.resource_service.list_room_resources(
+                session, room_id, await self._acting_principal(session, agent_id)
+            )
 
     async def request_document_load(
         self,
@@ -5224,7 +5282,10 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
             entries = await self.resource_service.load_documents(
-                session, room_id, document_ids
+                session,
+                room_id,
+                document_ids,
+                await self._acting_principal(session, agent_id),
             )
         return [entry.model_dump(mode="json") for entry in entries]
 
@@ -5348,21 +5409,6 @@ class AgentCore:
             )
             return
         await self._post_agent_notice(client, transport_room_id, body)
-
-    async def post_llm_response(
-        self,
-        agent_id: str,
-        room_id: str,
-        model: str,
-        response: Any,
-    ) -> dict[str, Any]:
-        """The hook point after a model answers. Nothing is decided here yet.
-
-        The counterpart to `post_tool_result`, and unconditional for the same
-        reason.
-        """
-        await self.require_room_member(agent_id, room_id)
-        return {"verdict": POST_INVOCATION_OK}
 
 
 def _check_schedule_text(text: str) -> None:

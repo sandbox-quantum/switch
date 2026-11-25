@@ -12,8 +12,11 @@ const provider = (id: string, name: string) => ({
   description: `${name} description`,
   docUrl: `https://${id}.example.com`,
   cliLabel: name,
+  shortName: name,
   loginCommand: `${id} login`,
   knownAgentType: id,
+  supportsAutoMode: true,
+  newAgentAutoMode: true,
 });
 
 describe('agent provider catalogue', () => {

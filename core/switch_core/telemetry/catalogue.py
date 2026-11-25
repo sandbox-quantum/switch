@@ -163,10 +163,32 @@ AGENT_TYPE = one_of(
     "always_on", "session_addressable", "session_passive", "auto_session"
 )
 
+# The runtimes Switch offers, each as the `known_agent_type` its agents
+# declare (`providers/registry.py`, which a test holds this to). Spelled out
+# rather than read from the registry, so this file stays the whole list of what
+# may be sent.
+KNOWN_RUNTIMES = (
+    "claude-code",
+    "codex",
+    "opencode",
+    "antigravity",
+    "cursor",
+    "deepseek-harness",
+    "pi",
+    "copilot",
+    "kiro",
+    "mistral-vibe",
+    "goose",
+    "qwen",
+    "droid",
+    "cline",
+    "junie",
+)
+
 # The runtime behind an agent, from `known_agent_type` in its metadata.
-# `other` covers a runtime Switch has no special knowledge of; `none` covers an
-# agent registered without declaring one at all.
-KNOWN_AGENT_TYPE = one_of("claude-code", "codex", "opencode", "other", "none")
+# `other` covers a runtime Switch has no knowledge of; `none` covers an agent
+# registered without declaring one at all.
+KNOWN_AGENT_TYPE = one_of(*KNOWN_RUNTIMES, "other", "none")
 
 # The runtime as `message_sent` reports it for an agent's message. That event
 # looks the sending agent up after the fact, so it has a third answer:
@@ -199,7 +221,7 @@ DOCUMENT_SCOPE = one_of("library", "room")
 # What a key is for. `agent` authenticates a registered agent, `registration`
 # mints new ones, `bootstrap` is the deployment-wide key, `other` is anything
 # a later type introduces.
-API_KEY_TYPE = one_of("agent", "registration", "bootstrap", "other")
+API_KEY_TYPE = one_of("agent", "registration", "bootstrap", "retired", "other")
 
 VISIBILITY = one_of("private", "public")
 
@@ -221,9 +243,15 @@ TRISTATE = one_of("true", "false", "unknown")
 
 
 # Which decision backend a workspace's auto-route used: the server's own
-# decision service as its default, the workspace's own endpoint, or Haiku.
+# decision service as its default, the workspace's own endpoint, or a choice
+# that service runs (Haiku, its self-hosted model, Gemini).
 DECISION_BACKEND = one_of(
-    "server_default", "endpoint", "haiku_anthropic", "haiku_bedrock"
+    "server_default",
+    "endpoint",
+    "haiku_anthropic",
+    "haiku_bedrock",
+    "self_hosted",
+    "gemini",
 )
 
 # The confidence the decision service gave its choice, in tenths above one
@@ -423,7 +451,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # shipped. Together they are the activation funnel.
     "deployment_installed": dict(_SINCE_INSTALL),
     # The first connector a person added. One the setup step registered itself
-    # never claims it, or the bundled Mattermost would, seconds after install.
+    # never claims it, or a bundled connector would, seconds after install.
     "first_connector_added": {**_SINCE_INSTALL, "bridge_platform": BRIDGE_PLATFORM},
     "first_room_created": {
         **_SINCE_INSTALL,
@@ -547,7 +575,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         # Left out where the deployment has no install clock.
         "seconds_since_install": optional(NUMBER),
         "seconds_since_configured": optional(NUMBER),
-        # Registered by the deployment's setup step (the bundled Mattermost)
+        # Registered by the deployment's setup step (a bundled connector)
         # rather than by a person. Filter these out to measure onboarding.
         "is_preconfigured": BOOLEAN,
         # The first connector a person added: never true for a preconfigured

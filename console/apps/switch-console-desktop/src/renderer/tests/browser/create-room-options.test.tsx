@@ -100,16 +100,17 @@ function radio(el: HTMLElement, title: string): HTMLButtonElement | undefined {
 }
 
 describe('creating a room on a messaging app', () => {
-  it('shows the channel choice as cards, a new public channel picked', async () => {
+  it('shows the channel choice as cards, a new private channel picked', async () => {
     const el = await render();
-    expect(radio(el, 'New public channel')!.getAttribute('aria-checked')).toBe('true');
+    expect(radio(el, 'New private channel')!.getAttribute('aria-checked')).toBe('true');
+    expect(radio(el, 'New public channel')!.getAttribute('aria-checked')).toBe('false');
     expect(el.textContent).toContain('Anyone in the Slack workspace can find and join it.');
     expect(el.textContent).toContain('Console can’t move a room to another channel later.');
   });
 
-  it('says what More options holds while shut: no group, open to the workspace', async () => {
+  it('says what More options holds while shut: no group, private', async () => {
     const el = await render();
-    expect(el.textContent).toContain('Group: none · Public');
+    expect(el.textContent).toContain('Group: none · Private');
     expect(el.querySelector('[aria-label="Group"]')).toBeNull();
   });
 
@@ -147,6 +148,14 @@ describe('creating a room on a messaging app', () => {
     expect(el.querySelector('[aria-label="Access"]')).toBeNull();
   });
 
+  it('makes a public room only when a new public channel is chosen', async () => {
+    const el = await render();
+    await click(radio(el, 'New public channel')!);
+    expect(latest.channel).toEqual({ kind: 'new', private: false });
+    expect(latest.access).toBeNull();
+    expect(el.textContent).toContain('Group: none · Public');
+  });
+
   it('follows the channel after switching between public and private', async () => {
     const el = await render();
     await click(radio(el, 'New private channel')!);
@@ -159,7 +168,7 @@ describe('creating a room on a messaging app', () => {
     const el = await render(BRIDGE, false);
     expect(el.textContent).not.toContain('Group:');
     expect(el.querySelector('button[aria-expanded]')).toBeNull();
-    expect(el.textContent).toContain('Access: Public');
+    expect(el.textContent).toContain('Access: Private');
   });
 });
 

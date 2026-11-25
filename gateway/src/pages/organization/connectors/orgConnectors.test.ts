@@ -7,6 +7,7 @@ import {
   available,
   needsConfirming,
   offConfirmation,
+  policyChanged,
   policyChip,
   policyForSwitch,
   policyOf,
@@ -47,6 +48,16 @@ describe("the organization's setting", () => {
       on_locked: "Locked on",
       off_locked: null,
     });
+  });
+
+  it("says each change in a full sentence", () => {
+    expect(policyChanged("GitHub", "off_locked")).toBe(
+      "GitHub is off in every workspace. It disappears from them until it is switched back on.",
+    );
+    expect(policyChanged("GitHub", "workspaces_decide")).toBe("Each workspace now decides whether to use GitHub.");
+    expect(policyChanged("GitHub", "on_by_default")).toBe(
+      "GitHub is now on by default in every workspace. Workspace admins can turn it off.",
+    );
   });
 
   it("asks first only when it turns a connector off everywhere", () => {

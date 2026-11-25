@@ -3,7 +3,7 @@ import type { Capabilities } from "./capabilities";
 
 /** How much of the workspace's agents and rooms someone is shown: all of
  * them to whoever administers it, and to a member only their own. The
- * Overview counts and the Agents and Rooms lists narrow by the same rule, so
+ * Home counts and the Agents and Rooms lists narrow by the same rule, so
  * a count is the number of rows its list shows. Users is never narrowed:
  * everyone in a workspace may see who else is in it. */
 export type ListScope = "workspace" | "yours";

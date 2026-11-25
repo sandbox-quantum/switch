@@ -38,9 +38,8 @@ relay accepts.
 - Each provider CLI the agents use, installed on `PATH` and signed in as the user
   the controller runs as (`claude`, `codex`, `opencode`, `agent`/`cursor-agent`,
   `agy`, `pi`, `kiro-cli`, `vibe-acp`, `junie`), or its API key in the `--env-file` the controller runs with.
-- A Switch server with the `agent_management` feature flag on
-  (`FEATURE_FLAGS_ENABLED=agent_management`). Behind a proxy or ingress,
-  `/v1` must reach switch-core (the Helm chart routes it).
+- A Switch server. Behind a proxy or ingress, `/v1` must reach switch-core
+  (the Helm chart routes it).
 
 ## Install
 
@@ -226,8 +225,9 @@ user's default one):
 
 - a pool of system users, `sa<uid>-01` … (16 by default, `--agent-users <n>` up to
   99), all in a group of their own, `switch-agents-<uid>`;
-- a systemd template unit, `switch-agent-<uid>@.service`, that runs an agent as
-  one of them;
+- two systemd template units that run an agent as one of them:
+  `switch-agent-<uid>@.service`, and `switch-agent-<uid>-codex@.service` for
+  Codex agents (see the system call filter below);
 - a polkit rule that lets the controller's user start, stop, restart and reset
   those units and nothing else, so the controller itself never needs root;
 - the agents' directories, in `/var/lib/switch-agents/<uid>` (`--agents-dir`);
@@ -256,8 +256,9 @@ and its agents, then removes what the setup made except the agents' directories
 and the releases directory.
 
 Each agent claims a free user from the pool when it is first started, and runs as
-`switch-agent-<uid>@<NN>.service`. systemd restarts an agent host that crashes. The
-agent:
+`switch-agent-<uid>@<NN>.service` (a Codex agent as
+`switch-agent-<uid>-codex@<NN>.service`). systemd restarts an agent host that
+crashes. The agent:
 
 - sees only its own directory, always at `/var/lib/switch-agents/<uid>/agent`,
   whichever user it runs as, with its `home` and its `workspace` in it. The
@@ -273,7 +274,14 @@ agent:
   example `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or give the
   machine a login from Console (see
   [Provider logins given to the machine](#provider-logins-given-to-the-machine)).
-  `doctor` checks the providers the way an agent would see them.
+  `doctor` checks the providers the way an agent would see them;
+- may use at most 75% of the machine's memory (`MemoryMax`) and 4096 processes
+  and threads (`TasksMax`), so one runaway agent is stopped inside its own unit;
+- may make only the system calls in systemd's `@system-service` set; any other
+  fails with `EPERM`. Codex's units also allow `@mount` and `@sandbox`, which
+  the sandbox Codex runs its commands in (a bubblewrap) needs. A setup made by
+  an older release has only the first template, with no filter, and Codex
+  agents run as that until the setup is run again.
 
 Node, the controller and the provider CLIs must be installed outside the home
 directories (`/usr`, `/usr/local` or `/opt`), where the agents can reach them; the
@@ -314,7 +322,15 @@ when there is none. From then on the provider is reported ready with
   Antigravity) is written by the agent host in its own state. The agent runs in
   a process of its own, as a separate user under `--separate-users`, and is
   restarted when the login changes or is withdrawn.
-- Claude can also be given a Vertex AI login: a Google Cloud project, a region,
+- When a login is withdrawn or replaced, or the agent is removed from the
+  machine, the controller removes the login's files from the agent's state and
+  its token from the agent's configuration; an agent host that starts with no
+  login removes any left. A failure to remove one is logged as an error. An
+  OpenCode console login lives in OpenCode's own database, so that database
+  goes with it, and with it the agent's OpenCode sessions.
+- Checking a given login writes it to `login-check/<provider>` in the data
+  directory; that copy is removed as soon as the check is done.
+- Claude and Antigravity can also be given a Vertex AI login: a Google Cloud project, a region,
   and a Google credential, either a service account key (recommended: one for a
   service account that can use only Vertex AI, `roles/aiplatform.user`) or the
   owner's own `gcloud auth application-default login` sign-in, which carries
@@ -323,7 +339,11 @@ when there is none. From then on the provider is reported ready with
   agent's environment gets `CLAUDE_CODE_USE_VERTEX=1`,
   `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and
   `GOOGLE_APPLICATION_CREDENTIALS` pointing at that file, with
-  `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` blanked.
+  `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` blanked. Antigravity (Google's
+  `agy` CLI only, not the retired `antigravity-acp`) gets `AGY_ADC_AUTH=true`,
+  `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_QUOTA_PROJECT` (the project),
+  `GOOGLE_CLOUD_LOCATION` (the region) and the same
+  `GOOGLE_APPLICATION_CREDENTIALS`, with `GEMINI_API_KEY` blanked.
 - Logins are kept in memory only, and fetched again every ten minutes and on
   each `provider.login` and `provider.recheck`. When Switch cannot be reached,
   the login already held is kept.
@@ -626,6 +646,12 @@ session hosts it launches with `process.execPath` run as Node too.
 - On `credential.revoked`, or on any request refused as `controller_revoked`: it
   turns every agent off, stops accepting their tokens, deletes their credentials
   files and the controller credential, and exits with code `3`.
+- On any refusal, or an `evicted` frame, saying `account_suspended` (the account
+  the controller belongs to is suspended): it stops every agent by holding, and
+  saving, its assignment with each agent stopped, so a restart starts nothing
+  either. It keeps its credential and the agents' credentials files, does not
+  exit, and asks Switch again every minute. Once Switch lets it in, the
+  assignment it pulls starts the agents again.
 
 ## What it does not do
 

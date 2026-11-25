@@ -333,7 +333,7 @@ class TestCreateLinkedRoomWriteAuthz:
                     await _is_admin(session, other),
                 )
 
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 404
             assert await svc.list_linked_rooms_for_room(session, source.id) == []
 
 

@@ -1,14 +1,15 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { removeTestRoot } from '../testing/remove-test-root';
 import type { SharedHostOptions } from './shared-host';
 import { SharedState } from './shared-state';
 
 const roots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await removeTestRoot(root);
 });
 
 async function temporary(): Promise<string> {

@@ -596,6 +596,29 @@ def test_can_manage_agents_must_be_true_or_false():
     assert _codes(template) == {"invalid_can_manage_agents"}
 
 
+@pytest.mark.parametrize(
+    ("provider", "written", "expected"),
+    [
+        ("claude", None, True),
+        ("claude", "false", False),
+        # OpenCode's auto mode reviews nothing before a command runs, so a new
+        # OpenCode agent asks unless the template turns auto mode on.
+        ("opencode", None, False),
+        ("opencode", "true", True),
+    ],
+)
+def test_auto_mode_left_out_is_the_providers_default_for_a_new_agent(
+    provider, written, expected
+):
+    line = f"  auto_mode: {written}\n" if written else ""
+    template = (
+        f"agent:\n  name: a\n  instructions: Hi.\n  provider: {provider}\n"
+        "  machine: laptop\n  directory: /srv/a\n" + line
+    )
+    (agent,) = _plan(template).new_agents
+    assert agent.auto_mode is expected
+
+
 def test_auto_mode_must_be_true_or_false():
     template = (
         "agent:\n  name: a\n  instructions: Hi.\n  provider: claude\n"
@@ -671,8 +694,12 @@ agent:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel_type", ["direct", "group"])
+@pytest.mark.parametrize(
+    ("owner_in_it", "refusal"),
+    [(False, "join_unknown_room"), (True, "join_fixed_membership")],
+)
 async def test_a_new_agent_never_joins_a_direct_or_group_conversation(
-    managed, channel_type
+    managed, channel_type, owner_in_it, refusal
 ):
     """Its platform fixes who is in it, however writable its room is: a DM the
     bridge adopted is writable by every member of the workspace."""
@@ -688,6 +715,7 @@ async def test_a_new_agent_never_joins_a_direct_or_group_conversation(
                 transport_room_id="!someones-dm:test.local",
                 name="someones-dm",
                 description="d",
+                owner_id=managed["user_id"] if owner_in_it else None,
                 channel_type=channel_type,
                 write_visibility="public",
             )
@@ -705,7 +733,10 @@ agent:
     stored = await _stored(managed, template, kind="agent")
     with pytest.raises(AgentsNotCreated) as e:
         await _as(managed["agent_id"], run_template, template_id=stored)
-    assert {p.code for p in e.value.problems} == {"join_fixed_membership"}
+    # Someone else's DM or group is hidden from the agent's owner, so it is
+    # not a room the template can name at all; one they are in is refused
+    # for what it is.
+    assert {p.code for p in e.value.problems} == {refusal}
     assert managed["management"].created == []
     assert added == []
 

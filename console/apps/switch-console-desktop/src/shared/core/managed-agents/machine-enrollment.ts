@@ -4,6 +4,12 @@
  * dialog, so both say the same thing.
  */
 
+/**
+ * Whether a device other than the one the server runs on could enroll with
+ * it, as the server says, with its reason when not.
+ */
+export type RemoteDevices = { supported: boolean; reason: string | null };
+
 /** A one-time enrollment code and where the machine enrolls with it. */
 export type MachineEnrollment = {
   code: string;
@@ -17,7 +23,30 @@ export type MachineEnrollment = {
    * is the one this Console reaches it at, which another machine may not.
    */
   fallback: boolean;
+  /** What the server says about other devices enrolling; null from a server too old to say. */
+  remoteDevices: RemoteDevices | null;
 };
+
+/**
+ * Why no other device could enroll with this code, to show in place of the
+ * commands, or null when the commands can work. The server's own answer comes
+ * first; failing that (an older server, or one with no public address, which
+ * leaves the address to this Console), an address on this computer's loopback
+ * interface is one no other device reaches.
+ */
+export function enrollmentRefusal(
+  enrollment: Pick<MachineEnrollment, 'serverUrl' | 'loopback' | 'fallback' | 'remoteDevices'>
+): string | null {
+  if (enrollment.remoteDevices?.supported === false)
+    return (
+      enrollment.remoteDevices.reason ??
+      'This server says no other device can reach it, so none can be added.'
+    );
+  if (!enrollment.loopback) return null;
+  if (enrollment.fallback)
+    return `This server has no public address set, and this Console reaches it at ${enrollment.serverUrl}, which only this computer can reach. Set GATEWAY_PUBLIC_URL on the server to an address other devices reach, such as this computer's network IP or name.`;
+  return `This server's public address is ${enrollment.serverUrl}, which only the computer it runs on can reach. Set GATEWAY_PUBLIC_URL to an address other devices reach, such as that computer's network IP or name.`;
+}
 
 /** The longest name and description a machine can enroll with. */
 export const MAX_MACHINE_NAME = 200;

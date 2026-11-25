@@ -17,6 +17,7 @@ import {
   descriptionColumn,
   nameColumn,
   ownerColumn,
+  RESOURCE_SEARCH_LABEL,
   resourceSearchText,
   useRefetchOnRefresh,
 } from "./resourceList";
@@ -29,13 +30,14 @@ const NOUN = { one: "package", other: "packages" };
 
 const SELECT_FILTERS: SelectFilter[] = [{ field: "owner_name", label: "Owner", allLabel: "All owners" }];
 
-const SEARCH = { label: "Search packages", text: resourceSearchText };
+const SEARCH = { label: RESOURCE_SEARCH_LABEL, text: resourceSearchText };
 
 const packagePath = (pkg: { id: string }) => `/resources/packages/${pkg.id}`;
 
 export default function PackagesTab({ refreshKey }: Props) {
   const navigate = useNavigate();
-  const { session } = useAuth();
+  const { session, capabilities } = useAuth();
+  const administers = capabilities.administersWorkspace;
   const { data, error, loading, refetch } = useLoad(loadPackages);
   useRefetchOnRefresh(refreshKey, refetch);
   const rows = useMemo(() => data ?? [], [data]);
@@ -67,10 +69,15 @@ export default function PackagesTab({ refreshKey }: Props) {
           selectFilters={SELECT_FILTERS}
           initialSort={{ field: "created_at", sort: "desc" }}
           emptyState={
-            <TableEmptyState title="No packages yet">
-              Yours and the public ones in {workspace} show here. Create one to bundle references and
-              documents for a room.
-            </TableEmptyState>
+            // An admin is shown everyone's; anyone else their own and the
+            // public ones.
+            administers ? (
+              <TableEmptyState title={`No packages in ${workspace} yet`}>Create one to bundle references and documents for a room.</TableEmptyState>
+            ) : (
+              <TableEmptyState title="No packages yet">
+                Yours and the public ones in {workspace} show here. Create one to bundle references and documents for a room.
+              </TableEmptyState>
+            )
           }
           onRowClick={(params) => navigate(packagePath(params.row))}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}

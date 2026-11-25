@@ -21,10 +21,20 @@ export type AgentProviderDefinition = {
   docUrl: string;
   /** What to tell someone to install, where the product name alone would be ambiguous. */
   cliLabel: string;
+  /** The bare product name, without the vendor `name` may carry: "Codex". */
+  shortName: string;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /** The Switch gateway's known-agent type, sent when an agent registers. */
   knownAgentType: string;
+  /** Whether the provider runtime can review tool calls automatically. */
+  supportsAutoMode: boolean;
+  /**
+   * Whether a new agent on this provider starts in auto mode: false where
+   * nothing reviews an action before it runs in auto mode. Read it through
+   * `newAgentPermissions`.
+   */
+  newAgentAutoMode: boolean;
 };
 
 type Catalogue = {
@@ -109,6 +119,10 @@ export function getProvider(id: string): AgentProviderDefinition | undefined {
   return loaded().byId.get(id);
 }
 
+export function providerSupportsAutoMode(id: string): boolean {
+  return getProvider(id)?.supportsAutoMode === true;
+}
+
 /** A registered provider's definition; throws for an id the catalogue does not have. */
 export function requireProvider(id: string): AgentProviderDefinition {
   const provider = getProvider(id);
@@ -130,6 +144,17 @@ export function isValidProviderId(value: unknown): value is AgentProviderId {
 export function asAgentProviderId(value: string): AgentProviderId {
   if (isValidProviderId(value)) return value;
   throw new Error(`unknown agent provider '${value}'`);
+}
+
+/**
+ * Whether turning auto mode on for `id` lets every action run without anyone
+ * reviewing it first, commands included: the providers a new agent does not
+ * start in auto mode on. False for an id this build does not know, which an
+ * agent row from a newer install can hold; the settings that show this still
+ * render for it.
+ */
+export function autoModeIsUnreviewed(id: AgentProviderId): boolean {
+  return getProvider(id)?.newAgentAutoMode === false;
 }
 
 /**

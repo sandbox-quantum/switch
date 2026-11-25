@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.orm import Session
 
 from switch_core.bridges.collaboration.install import MessagingInstallError
 from switch_core.bridges.collaboration.install_service import ClaimLink
@@ -54,7 +55,11 @@ def _room(
     *, owner_id: str | None = None, read: str = "public", write: str = "public"
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        owner_id=owner_id, read_visibility=read, write_visibility=write
+        owner_id=owner_id,
+        read_visibility=read,
+        write_visibility=write,
+        channel_type=None,
+        external_channel_id=None,
     )
 
 
@@ -120,6 +125,11 @@ class _Session:
 
     def __init__(self) -> None:
         self.added: list[Any] = []
+        # The audit helpers hand each event to the security stream through
+        # the session's transaction events; one that never commits writes
+        # nothing.
+        self.sync_session = Session()
+        self.sync_session.begin()
 
     def add(self, row: Any) -> None:
         self.added.append(row)

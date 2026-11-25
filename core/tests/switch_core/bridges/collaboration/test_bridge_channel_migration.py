@@ -108,6 +108,9 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
         def set_interaction_handler(self, handler: Any) -> None:
             return None
 
+        def set_takeback_handlers(self, **handlers: Any) -> None:
+            return None
+
         async def start(self, **kwargs: Any) -> None:
             started.append("started")
             assert installed, "the handler must be installed before start()"
@@ -125,6 +128,9 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
     bridge._create_agent_identities = _noop  # type: ignore[assignment,method-assign]
     bridge._identity_task = None
     bridge._member_sync_tasks = set()
+    bridge._member_sync_pending = {}
+    bridge._member_sync_everything = False
+    bridge._member_sync_running = False
 
     asyncio.run(CollaborationCore.start(bridge))
 

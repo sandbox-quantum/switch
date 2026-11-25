@@ -54,7 +54,7 @@ export default function KeyDialog({
   return (
     <Dialog open onClose={busy ? undefined : onClose} maxWidth="xs" fullWidth>
       <DialogTitle>
-        {replacing ? `Replace your ${connection.name} keys` : `Add your ${connection.name} keys`}
+        {replacing ? `Replace your ${connection.name} keys` : `Connect ${connection.name}`}
       </DialogTitle>
       <DialogContent>
         <Stack spacing={2}>
@@ -111,7 +111,7 @@ export default function KeyDialog({
           onClick={() => void save()}
           startIcon={busy ? <CircularProgress size={16} /> : undefined}
         >
-          {replacing ? "Replace keys" : "Add keys"}
+          {replacing ? "Replace keys" : "Connect"}
         </Button>
       </DialogActions>
     </Dialog>

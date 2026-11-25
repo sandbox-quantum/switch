@@ -8,7 +8,8 @@ one summary table. Each set reports right, wrong (the wrong agent, or an agent
 when nobody should answer) and missed (nobody when an agent should answer),
 and the precision of deliveries.
 
-DECISION_SERVICE_TOKEN and ANTHROPIC_API_KEY are read from the environment when set.
+DECISION_SERVICE_TOKEN, ANTHROPIC_API_KEY and GEMINI_DECISION_API_KEY are read from
+the environment when set; a backend key is sent only with the matching --backend.
 """
 
 import argparse
@@ -16,6 +17,7 @@ import json
 import os
 import statistics
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -123,6 +125,29 @@ def summary(results: dict[str, Tally]) -> str:
     return "\n".join(lines)
 
 
+# The per-request key header each backend takes, and the variable it is read from.
+BACKEND_KEYS = {
+    "anthropic": ("X-Decision-Anthropic-Key", "ANTHROPIC_API_KEY"),
+    "gemini_decision": ("X-Decision-Gemini-Key", "GEMINI_DECISION_API_KEY"),
+}
+
+
+def request_headers(
+    backend: str | None, model: str | None, env: Mapping[str, str]
+) -> dict[str, str]:
+    headers = {}
+    if token := env.get("DECISION_SERVICE_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
+    if backend:
+        headers["X-Decision-Backend"] = backend
+        header, var = BACKEND_KEYS.get(backend, (None, None))
+        if header and var and env.get(var):
+            headers[header] = env[var]
+    if model:
+        headers["X-Decision-Model"] = model
+    return headers
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://localhost:8230")
@@ -136,19 +161,11 @@ def main() -> int:
     ap.add_argument(
         "--backend",
         default=None,
-        help="sent as X-Decision-Backend (default, anthropic, bedrock)",
+        help="sent as X-Decision-Backend (default, anthropic, bedrock, gemini_decision)",
     )
     ap.add_argument("--model", default=None, help="sent as X-Decision-Model")
     args = ap.parse_args()
-    headers = {}
-    if token := os.environ.get("DECISION_SERVICE_TOKEN"):
-        headers["Authorization"] = f"Bearer {token}"
-    if args.backend:
-        headers["X-Decision-Backend"] = args.backend
-        if args.backend == "anthropic" and os.environ.get("ANTHROPIC_API_KEY"):
-            headers["X-Decision-Anthropic-Key"] = os.environ["ANTHROPIC_API_KEY"]
-    if args.model:
-        headers["X-Decision-Model"] = args.model
+    headers = request_headers(args.backend, args.model, os.environ)
     files = [HERE / f for f in STANDARD] if args.all else [Path(args.file)]
     results = {}
     with httpx.Client(headers=headers, timeout=120) as client:

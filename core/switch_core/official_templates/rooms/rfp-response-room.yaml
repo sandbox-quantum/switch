@@ -99,6 +99,7 @@ resources:
     name: "RFP - {rfp}"
     description: "RFP response coordination for {rfp}, due {deadline}. Section tracking, drafting, and assembly."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [rfp_coordinator, response_drafter]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

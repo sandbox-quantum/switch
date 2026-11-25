@@ -28,9 +28,10 @@ from switch_core.db.models import (
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management.advanced_config import validate_advanced_config
+from switch_core.management.device_identity import DEVICE_ID_PATTERN
 from switch_core.management.sealed_logins import PublicKey, key_id
 from switch_core.process_lease import ProcessLeases
-from switch_core.providers.registry import AgentProviderId
+from switch_core.providers.registry import AgentProviderId, with_new_agent_auto_mode
 
 Provider = AgentProviderId
 ControllerKind = Literal["console", "daemon", "ec2"]
@@ -86,9 +87,11 @@ class DefinitionV1(_GatewayBody):
     advanced_config: dict[str, Any] = Field(default_factory=dict)
     instructions: str = ""
     # The provider's own automatic review: safe actions run, risky ones still
-    # ask. A stored definition without the key predates it and reads as off
-    # (`stored_definition`).
-    auto_mode: bool = True
+    # ask. A body without it gets its provider's default for a new agent
+    # (`_auto_mode_from_provider`); the False here only stands in for a body
+    # whose provider is invalid, which is refused anyway. A stored definition
+    # without the key predates it and reads as off (`stored_definition`).
+    auto_mode: bool = False
     # Bypass: every permission check skipped. Wins over `auto_mode`.
     auto_approve: bool = False
     directory: str | None = None
@@ -96,6 +99,11 @@ class DefinitionV1(_GatewayBody):
     # `isolated`: it runs as a process of its own (a systemd unit on a cloud
     # machine, which runs every agent isolated).
     isolation: Isolation = "shared"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _auto_mode_from_provider(cls, data: Any) -> Any:
+        return with_new_agent_auto_mode(data)
 
     @field_validator("instructions")
     @classmethod
@@ -149,6 +157,9 @@ class ControllerDescription(_ControllerBody):
     )
     platform: Platform
     version: str
+    # Which machine, OS account and data folder it runs from (`management/device_identity.py`);
+    # absent from a controller that cannot tell, or is older than this field.
+    device_id: str | None = Field(default=None, pattern=DEVICE_ID_PATTERN)
 
     @field_validator("name")
     @classmethod
@@ -197,6 +208,11 @@ class MachineStatus(_StatusBody):
     # The absolute directory the controller makes agents' workspaces in. A
     # controller older than this field does not send it.
     workspaces_dir: str | None = None
+    # Which machine, OS account and data folder it runs from (`management/device_identity.py`),
+    # kept as the controller's `device_hash` and not in its stored status.
+    # Checked where it is used, not here: a malformed one must not cost the
+    # rest of the report.
+    device_id: str | None = None
 
 
 class ProviderStatus(_StatusBody):
@@ -341,6 +357,8 @@ class ConsoleControllerRequest(_GatewayBody):
     platform: Platform
     version: str
     public_key: PublicKey | None = None
+    # As a controller enrolling by code says it (`ControllerDescription`).
+    device_id: str | None = Field(default=None, pattern=DEVICE_ID_PATTERN)
 
     @field_validator("name")
     @classmethod
@@ -463,12 +481,15 @@ def assignment_entry(
 
     In an archived workspace every agent is assigned stopped, whatever its
     owner set, and kept: the controller stops it and starts it again once the
-    workspace is restored, where leaving it out would have it removed."""
+    workspace is restored, where leaving it out would have it removed. A
+    suspended agent is assigned stopped the same way, until its suspension is
+    lifted (`accounts/suspension.py`)."""
     definition = row.definition
+    stopped = workspace_archived or agent.suspended_at is not None
     return {
         "agent_id": row.agent_id,
         "revision": row.revision,
-        "desired_state": "stopped" if workspace_archived else row.desired_state,
+        "desired_state": "stopped" if stopped else row.desired_state,
         "definition": {
             "name": agent.name,
             "display_name": agent.display_name,

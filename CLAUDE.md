@@ -48,7 +48,7 @@ uv sync --project core           # install/update Python dependencies
 
 # Local dev infrastructure (Docker Compose)
 just init-env                    # first-time setup — generate .env with random secrets
-just up                          # start the supporting stack (Postgres, Mattermost) in Docker
+just up                          # start the supporting stack (Postgres) in Docker
 just run                         # run switch-core locally (:8000)
 just down                        # stop the supporting stack
 
@@ -175,10 +175,10 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   page, one line each) and fetch the pages you need, or add the docs MCP server
   at https://docs.switchagents.ai/mcp. Their Internals section covers
   architecture and the agent protocol.
-- `docs/official/` — an offline copy of those docs, for when you cannot reach
-  the site. Generated and synced daily by `.github/workflows/docs-sync.yml`, so
-  it can trail the site by a day; edit the source in the docs repository, never
-  here. `docs/README.md` explains the sync.
+- For offline use, `just docs` downloads
+  https://docs.switchagents.ai/llms-full.txt (the whole site in one file) to
+  `docs/llms-full.txt`, which is gitignored. The docs are not copied into this
+  repository; edit them in the docs repository.
 - `docs/old/ARCHITECTURE.md` — historical system overview from when Switch ran
   on Matrix. Much of it no longer matches the code; read it for background only.
 - `docs/old/api/AGENT_PROTOCOL.md` — the original design of the agent↔Switch

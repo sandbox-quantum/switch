@@ -6,7 +6,9 @@
  * made in the page's workspace: the page is re-read before the dialog
  * closes, and a re-read that fails says so on the profile. A connection made
  * with a pasted token says what the token reaches in place of a level, and
- * one the vendor refused offers to paste a new one.
+ * one the vendor refused offers to paste a new one. An app that is not set
+ * up is offered to whoever the server says may set it up, at the page the
+ * server's dashboard keeps it on.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, useEffect, useState } from 'react';
@@ -27,6 +29,7 @@ const workspaces = vi.hoisted(() => ({
 const switchServers = vi.hoisted(() => ({
   openGitHubInstallation: vi.fn(),
   openGatewayPage: vi.fn(),
+  connectorAppManagement: vi.fn(),
 }));
 const modalHost = vi.hoisted(() => ({
   show: (_id: string, _args: unknown): void => {
@@ -34,6 +37,12 @@ const modalHost = vi.hoisted(() => ({
   },
 }));
 const gatewayLayout = vi.hoisted(() => ({ v2: false }));
+const opened = vi.hoisted(() => vi.fn(async (_url: string, _failure: string) => true));
+
+vi.mock('@renderer/lib/open-external', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/lib/open-external')>()),
+  openExternalUrl: opened,
+}));
 const featureFlags = vi.hoisted(() => ({
   get: vi.fn(async () => ({
     success: true,
@@ -57,7 +66,10 @@ vi.mock('@renderer/lib/ipc', () => ({
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { idOnServerInScope: () => 'workspace' },
+  workspacesStore: {
+    idOnServerInScope: () => 'workspace',
+    onServerInScope: () => ({ id: 'workspace', tenantId: 't1' }),
+  },
 }));
 
 const admin = vi.hoisted(() => ({ administers: false, operator: false }));
@@ -266,6 +278,8 @@ beforeEach(() => {
   for (const mock of Object.values(workspaces)) mock.mockReset();
   for (const mock of Object.values(switchServers)) mock.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
+  opened.mockClear();
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: null, inDashboard: null });
 });
 
 afterEach(async () => {
@@ -302,6 +316,10 @@ function grid(page: HTMLElement): HTMLElement | null {
   );
 }
 
+function comingSoonGrid(page: HTMLElement): HTMLElement | null {
+  return page.querySelector<HTMLElement>('[role="group"][aria-label="Coming soon connectors"]');
+}
+
 it("shows the workspace's catalog, everything on Discover and what the person has on Yours", async () => {
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   const page = await render();
@@ -313,13 +331,40 @@ it("shows the workspace's catalog, everything on Discover and what the person ha
   );
   expect(button(/^Example/, grid(page)!)).toBeDefined();
   expect(page.querySelector('button[aria-label="Connect Example"]')).not.toBeNull();
-  expect(button(/^Linear/, grid(page)!)?.disabled).toBe(true);
-  expect(button(/^Linear/, grid(page)!)?.textContent).toMatch(/Coming soon/);
+  expect(button(/^Linear/, grid(page)!)).toBeUndefined();
+  expect(button(/^Linear/, comingSoonGrid(page)!)?.disabled).toBe(true);
+  expect(button(/^Linear/, comingSoonGrid(page)!)?.textContent).toMatch(/Coming soon/);
 
   await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
   await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeUndefined());
   expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
   expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
+
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Discover"]')!.click());
+  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeDefined());
+  expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
+});
+
+it("lists the ones that can't be used here last in their section", async () => {
+  workspaces.getServiceConnections.mockResolvedValue([
+    entry({ slug: 'atlassian', name: 'Atlassian', workspace_enabled: false }),
+    entry({
+      slug: 'github',
+      name: 'GitHub',
+      connectable: false,
+      unavailable_reason: 'Not set up.',
+    }),
+    entry({ slug: 'example', name: 'Example' }),
+    entry({ slug: 'linear', name: 'Linear', enabled: false, status: 'coming_soon' }),
+  ]);
+  const page = await render();
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  const names = [...grid(page)!.querySelectorAll('button')]
+    .map((b) => b.textContent ?? '')
+    .filter((text) => /^(Atlassian|GitHub|Example)/.test(text))
+    .map((text) => text.match(/^(Atlassian|GitHub|Example)/)![1]);
+  expect(names).toEqual(['Example', 'Atlassian', 'GitHub']);
+  expect(page.querySelector('#connectors-built')?.textContent).toMatch(/^Supported/);
 });
 
 it('stays on the tab the person picks', async () => {
@@ -354,6 +399,122 @@ it('marks a service the server cannot use with its reason, without offering to c
   expect(page.querySelector('button[aria-label="Connect GitHub"]')).toBeNull();
 });
 
+const pressed = (page: HTMLElement, name: string) =>
+  page.querySelector(`button[aria-label="${name}"]`)?.getAttribute('aria-pressed');
+
+async function search(page: HTMLElement, text: string): Promise<void> {
+  const input = page.querySelector<HTMLInputElement>('input[aria-label="Search connectors"]')!;
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    set.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function openYours(): Promise<HTMLElement> {
+  const page = await render();
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Yours')).toBe('true'));
+  return page;
+}
+
+it('ends Yours with a way to the rest of the catalog on Discover', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  const more = button(/^Browse all connectors$/, grid(page)!);
+  expect(more).toBeDefined();
+  await act(async () => more!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
+  expect(button(/^Example/, grid(page)!)).toBeDefined();
+});
+
+it('shows no trailing card when Discover has nothing more', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(
+    CATALOG.filter((item) => item.status !== 'coming_soon').map((item) => ({
+      ...item,
+      status: 'connected' as const,
+    }))
+  );
+  const page = await openYours();
+  expect(button(/Browse all connectors/, grid(page)!)).toBeUndefined();
+});
+
+it('says what Discover has when a search on Yours matches nothing connected', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  await search(page, 'github');
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('None of your connectors match “github”.')
+  );
+  expect(page.textContent).not.toContain('No connector matches');
+  await act(async () => button(/^Search Discover for/, page)!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
+  expect(page.querySelector<HTMLInputElement>('input[aria-label="Search connectors"]')!.value).toBe(
+    'github'
+  );
+  expect(button(/^GitHub/, grid(page)!)).toBeDefined();
+});
+
+it('offers the search on Discover when Yours has some matches too', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  // Every fixture says "Example access": Atlassian on Yours, the rest on Discover.
+  await search(page, 'access');
+  await vi.waitFor(() =>
+    expect(button(/^Search Discover for “access”$/, grid(page)!)).toBeDefined()
+  );
+  expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
+});
+
+it('says no connector matches only when nothing anywhere does', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  await search(page, 'zzz');
+  await vi.waitFor(() => expect(page.textContent).toContain('No connector matches “zzz”.'));
+  expect(button(/^Search Discover for/, page)).toBeUndefined();
+});
+
+it('keeps the badge of a connection that needs attention on Yours', async () => {
+  workspaces.getServiceConnections.mockResolvedValue([
+    ...CATALOG,
+    entry({ slug: 'datadog', name: 'Datadog', status: 'needs_reauthorization' }),
+  ]);
+  const page = await openYours();
+  await vi.waitFor(() => expect(button(/^Datadog/, grid(page)!)).toBeDefined());
+  expect(button(/^Datadog/, grid(page)!)!.textContent).toMatch(/reauthori|Reconnect|sign in/i);
+});
+
+it('says when a search on Yours finds only a coming soon service on Discover', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  await search(page, 'linear');
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('None of your connectors match “linear”.')
+  );
+  await act(async () => button(/^Search Discover for/, page)!.click());
+  await vi.waitFor(() => expect(button(/^Linear/, comingSoonGrid(page)!)).toBeDefined());
+});
+
+it('offers a way to Discover from an empty Yours', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(
+    CATALOG.map((item) =>
+      item.status === 'connected' ? { ...item, status: 'not_connected' as const } : item
+    )
+  );
+  const page = await openYours();
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('You have not connected anything yet.')
+  );
+  await act(async () => button(/^Browse all connectors$/, page)!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
+});
+
 const NOT_SET_UP = entry({
   slug: 'example',
   name: 'Example',
@@ -379,18 +540,26 @@ it("offers the server's operator to set up an app that is not set up, on the car
   const setUp = page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]');
   expect(setUp).not.toBeNull();
   await act(async () => setUp!.click());
-  expect(navigation.view()).toBe('admin');
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+  expect(navigation.view()).toBe('settings');
+  expect(navigation.params()).toEqual({
+    serverId: 'server',
+    tab: 'connector-apps',
+    app: 'example',
+  });
 
   navigation.navigate('connectors', { connector: 'example' });
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
   expect(button(/^Connect to Switch$/, page)).toBeUndefined();
   await act(async () => button(/^Set up$/, page)!.click());
-  expect(navigation.view()).toBe('admin');
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+  expect(navigation.view()).toBe('settings');
+  expect(navigation.params()).toEqual({
+    serverId: 'server',
+    tab: 'connector-apps',
+    app: 'example',
+  });
 });
 
-it('sends Set up to Admin apps for a server Console does not list', async () => {
+it('sends Set up to Connector apps in Settings for a server Console does not list', async () => {
   admin.operator = true;
   server.servesGateway = true;
   server.listed = false;
@@ -400,15 +569,20 @@ it('sends Set up to Admin apps for a server Console does not list', async () => 
     page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
   );
   expect(switchServers.openGatewayPage).not.toHaveBeenCalled();
-  expect(navigation.view()).toBe('admin');
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+  expect(navigation.view()).toBe('settings');
+  expect(navigation.params()).toEqual({
+    serverId: 'server',
+    tab: 'connector-apps',
+    app: 'example',
+  });
 });
 
-it("opens the gateway's connector apps to set an app up on a server with a web gateway", async () => {
+it("opens the gateway's connector apps under Platform on a server that does not say who may set them up", async () => {
   admin.operator = true;
   server.servesGateway = true;
   gatewayLayout.v2 = true;
   const page = await discover([NOT_SET_UP]);
+  expect(switchServers.connectorAppManagement).toHaveBeenCalledWith('workspace');
   const connectorApps = {
     serverId: 'server',
     url: 'https://switch.example.com/platform/connectors',
@@ -433,6 +607,7 @@ it('opens connector apps at the path a gateway in the current layout serves', as
   server.servesGateway = true;
   const page = await discover([NOT_SET_UP]);
   const connectorApps = { serverId: 'server', url: 'https://switch.example.com/connectors' };
+  expect(switchServers.connectorAppManagement).toHaveBeenCalledWith('workspace');
 
   await act(async () =>
     page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
@@ -444,6 +619,106 @@ it('opens connector apps at the path a gateway in the current layout serves', as
   await act(async () => button(/^Set up$/, page)!.click());
   expect(switchServers.openGatewayPage).toHaveBeenCalledTimes(2);
   expect(switchServers.openGatewayPage).toHaveBeenLastCalledWith(connectorApps);
+});
+
+it('offers Set up to an org admin the server says may, in Organization settings', async () => {
+  admin.administers = true;
+  server.servesGateway = true;
+  gatewayLayout.v2 = true;
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: true, inDashboard: true });
+  const page = await discover([NOT_SET_UP]);
+  const connectorApps = {
+    serverId: 'server',
+    url: 'https://switch.example.com/settings/org/connector-apps?workspace=t1',
+  };
+
+  expect(button(/^Example/, grid(page)!)!.textContent).toMatch(/Needs setup/);
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).toHaveBeenCalledWith(connectorApps);
+
+  navigation.navigate('connectors', { connector: 'example' });
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
+  await act(async () => button(/^Set up$/, page)!.click());
+  expect(switchServers.openGatewayPage).toHaveBeenCalledTimes(2);
+  expect(switchServers.openGatewayPage).toHaveBeenLastCalledWith(connectorApps);
+});
+
+it("offers Set up to an org admin the server says may, at the old layout's page", async () => {
+  admin.administers = true;
+  server.servesGateway = true;
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: true, inDashboard: true });
+  const page = await discover([NOT_SET_UP]);
+  const connectorApps = { serverId: 'server', url: 'https://switch.example.com/connectors' };
+
+  expect(switchServers.connectorAppManagement).toHaveBeenCalledWith('workspace');
+  expect(button(/^Example/, grid(page)!)!.textContent).toMatch(/Needs setup/);
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).toHaveBeenCalledWith(connectorApps);
+});
+
+it("sends anyone else on a one-organization server to their organization's admin", async () => {
+  server.servesGateway = true;
+  gatewayLayout.v2 = true;
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: false, inDashboard: true });
+  const page = await discover([NOT_SET_UP]);
+  const organizationAdmin =
+    'An admin of your organization sets it up in Organization settings › Connector apps.';
+
+  const card = button(/^Example/, grid(page)!)!;
+  expect(card.textContent).toMatch(/Unavailable/);
+  expect(card.textContent).toContain(organizationAdmin);
+  expect(card.textContent).not.toContain('switch-connector-apps');
+  expect(page.querySelector('button[aria-label="Set up Example"]')).toBeNull();
+  expect(switchServers.openGatewayPage).not.toHaveBeenCalled();
+});
+
+it('names the command, with no Set up, to anyone the server says may not set apps up', async () => {
+  admin.administers = true;
+  server.servesGateway = true;
+  gatewayLayout.v2 = true;
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: false, inDashboard: false });
+  const page = await discover([NOT_SET_UP]);
+  const command =
+    'Whoever runs your Switch server sets up its app with the switch-connector-apps command, where Switch runs.';
+
+  const card = button(/^Example/, grid(page)!)!;
+  expect(card.textContent).toMatch(/Unavailable/);
+  expect(card.textContent).toContain(command);
+  expect(page.querySelector('button[aria-label="Set up Example"]')).toBeNull();
+
+  await act(async () => card.click());
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
+  expect(page.textContent).toContain(command);
+  expect(button(/^Set up$/, page)).toBeUndefined();
+  expect(switchServers.openGatewayPage).not.toHaveBeenCalled();
+});
+
+it('says when it cannot check who may set apps up, and leaves Set up to the operator', async () => {
+  admin.operator = true;
+  server.servesGateway = true;
+  gatewayLayout.v2 = true;
+  switchServers.connectorAppManagement.mockRejectedValue(new Error('session read failed'));
+  const page = await discover([NOT_SET_UP]);
+
+  expect(page.textContent).toContain("Couldn't check who can set up connector apps");
+  expect(page.textContent).toContain('session read failed');
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).toHaveBeenCalledWith({
+    serverId: 'server',
+    url: 'https://switch.example.com/platform/connectors',
+  });
+
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: true, inDashboard: true });
+  await act(async () => button(/^Retry$/, page)!.click());
+  await vi.waitFor(() =>
+    expect(page.textContent).not.toContain("Couldn't check who can set up connector apps")
+  );
 });
 
 it('tells anyone else who sets the app up, with no button to press', async () => {
@@ -778,7 +1053,7 @@ it('offers an admin the way to the workspace switches, and nobody else', async (
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   let page = await render();
   await vi.waitFor(() => expect(grid(page)).not.toBeNull());
-  expect(button(/Manage in Admin/, page)).toBeUndefined();
+  expect(button(/Manage in Settings/, page)).toBeUndefined();
   expect(page.querySelector('button[aria-label="Workspace"]')).toBeNull();
   await act(async () => root!.unmount());
   root = null;
@@ -786,10 +1061,10 @@ it('offers an admin the way to the workspace switches, and nobody else', async (
 
   admin.administers = true;
   page = await render();
-  await vi.waitFor(() => expect(button(/Manage in Admin/, page)).toBeDefined());
-  await act(async () => button(/Manage in Admin/, page)!.click());
-  expect(navigation.view()).toBe('admin');
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'connectors' });
+  await vi.waitFor(() => expect(button(/Manage in Settings/, page)).toBeDefined());
+  await act(async () => button(/Manage in Settings/, page)!.click());
+  expect(navigation.view()).toBe('settings');
+  expect(navigation.params()).toEqual({ serverId: 'server', tab: 'connectors' });
 });
 
 const PASTED_TOKEN = {
@@ -924,4 +1199,20 @@ it('says what a pasted token reaches only while it works', async () => {
   expect(page.querySelector('header')!.textContent).not.toContain(
     'Reaches what your token allows.'
   );
+});
+
+it('offers a connector request on Discover only, opening the issue form', async () => {
+  const page = await discover(CATALOG);
+
+  const request = button(/^Request a connector$/, page);
+  expect(request).toBeDefined();
+  await act(async () => request!.click());
+  expect(opened).toHaveBeenCalledWith(
+    'https://github.com/sandbox-quantum/switch/issues/new?template=connector_request.yml',
+    'Could not open the connector request form'
+  );
+
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Yours')).toBe('true'));
+  expect(button(/^Request a connector$/, page)).toBeUndefined();
 });

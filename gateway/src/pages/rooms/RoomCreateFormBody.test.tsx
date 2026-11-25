@@ -13,6 +13,7 @@ vi.mock("../../data/hooks", () => ({
   useAgents: vi.fn(),
   useBridges: vi.fn(),
   useBridgeUsers: vi.fn(),
+  useMyIdentities: vi.fn(),
   useRoomGroups: vi.fn(),
   useRoomAgentCandidates: vi.fn(),
 }));
@@ -49,6 +50,7 @@ function chooseBridge(name: string) {
 beforeEach(() => {
   vi.mocked(hooks.useAgents).mockReturnValue(result([agent]));
   vi.mocked(hooks.useBridgeUsers).mockReturnValue(result([]));
+  vi.mocked(hooks.useMyIdentities).mockReturnValue(result([]) as never);
   vi.mocked(hooks.useRoomGroups).mockReturnValue(result([]));
   // The server's invite rule lets the viewer put the agent in a new room.
   vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue(result({ agent_ids: [agent.id] }) as never);
@@ -138,5 +140,30 @@ describe("New room: why Create is disabled", () => {
 
     expect(screen.getByText("Telegram can't create a channel or link an existing one from here.")).toBeTruthy();
     expect(create().disabled).toBe(true);
+  });
+});
+
+describe("New room: lists that could not be loaded", () => {
+  it("says so, rather than offering no agents and no messaging apps", () => {
+    vi.mocked(hooks.useAgents).mockReturnValue({ data: null, loading: false, error: "Not authenticated", refetch: vi.fn() });
+    vi.mocked(hooks.useBridges).mockReturnValue({ data: null, loading: false, error: "500 Internal Server Error", refetch: vi.fn() });
+    render(<RoomCreateFormBody />);
+
+    expect(screen.getByText("Couldn't load the agents: Not authenticated")).toBeTruthy();
+    expect(screen.getByText("Couldn't load the messaging apps: 500 Internal Server Error")).toBeTruthy();
+  });
+
+  it("says nothing of a messaging app's people before one is chosen", () => {
+    vi.mocked(hooks.useBridgeUsers).mockReturnValue({ data: null, loading: false, error: "Failed to fetch data", refetch: vi.fn() });
+    showForm();
+
+    expect(screen.queryByText(/Couldn't load the messaging app's people/)).toBeNull();
+  });
+
+  it("says nothing of the room groups to someone who may not file a room in one", () => {
+    vi.mocked(hooks.useRoomGroups).mockReturnValue({ data: null, loading: false, error: "Forbidden", refetch: vi.fn() });
+    showForm();
+
+    expect(screen.queryByText(/Couldn't load the room groups/)).toBeNull();
   });
 });

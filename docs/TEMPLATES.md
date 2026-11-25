@@ -183,8 +183,7 @@ bridge:
 **Switch Console.** A room whose `bridge` is `Switch Console` is on no
 messaging app. The person who runs the template is in it, so it shows up in
 their Switch Console chats; when an agent runs the template, that's the
-agent's owner. It names no `users`, and it needs the server's `group_chats`
-flag: without it the value is refused. A `bridge` param offers it after the
+agent's owner. It names no `users`. A `bridge` param offers it after the
 messaging apps, and `$first` never picks it, so a template gets it only by
 naming it, as a value or in a chain (`default: [Switch Console, $first]`).
 
@@ -385,7 +384,10 @@ controller; `isolated` runs it as a process of its own.
 
 **`auto_mode`**. Auto mode: the provider's own automatic review decides
 which actions need approval, so safe ones run without asking and risky ones
-still ask a person. Default `true`.
+still ask a person. Default `true`, except for `opencode`: OpenCode's auto
+mode has no review and runs every command without asking, so an OpenCode
+agent defaults to `false` and asks before each action. Set `true` for one only
+when that is what its owner wants.
 
 **`auto_approve`**. Bypass: the agent runs every tool without any permission
 check. It overrides `auto_mode`, and is unsafe. Default `false`.
@@ -687,7 +689,7 @@ Switch, under `official:` ids (`official:switch-expert`), first in every
 listing, to people and agents alike. Their source is in the repository
 (`core/switch_core/official_templates/`, the Switch expert copied from
 `switch-expert/`); where a template has a version for servers without agent
-management, the `agent_management` feature flag picks which one is served.
+management, Switch Console serves it to those older servers.
 Nobody can change or delete an official template: save a copy under another
 name to change it.
 

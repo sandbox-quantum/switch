@@ -1,6 +1,6 @@
 import { Alert } from "@mui/material";
 
-/** What both layouts' organization Users say above the table: why the
+/** What organization Users says above the table: why the
  * platform operator sees nothing, or may only make an admin; and, where the
  * members come from the organization's account settings (a directory such as
  * WorkOS), what changing them here does. */
@@ -52,7 +52,7 @@ export default function OrganizationUsersNotices({
         <Alert severity="info">
           This organization's users, and who is its admin, come from your organization's
           account settings. Add people and make someone an organization admin there; the change
-          shows here shortly. Removing someone here, or making an admin a member, takes effect at
+          shows here shortly. Removing someone here, or making an admin a Viewer, takes effect at
           once but lasts only while the account settings agree: they are read again at the
           person's next sign-in and once a day. Make the same change there to keep it.
         </Alert>

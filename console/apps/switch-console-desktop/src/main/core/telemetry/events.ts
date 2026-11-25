@@ -143,6 +143,7 @@ export type TelemetryCliFailure =
   | 'permission_denied'
   | 'command_failed'
   | 'process_open_failed'
+  | 'missing_prerequisite'
   | 'not_detected_after_install'
   | 'not_detected_after_update'
   | 'still_present'
@@ -188,7 +189,23 @@ export type TelemetryBridgePlatform =
   | 'unknown'
   | (string & { readonly [platformKeyBrand]: true });
 
-export type TelemetryBridgeFailure = 'none' | 'unauthenticated' | 'forbidden' | 'invalid' | 'error';
+/**
+ * Why connecting a messaging app failed. `unreachable` is the server's host
+ * known to be down before anything was asked of it.
+ */
+export type TelemetryBridgeFailure =
+  | 'none'
+  | 'unauthenticated'
+  | 'forbidden'
+  | 'invalid'
+  | 'unreachable'
+  | 'error';
+
+/**
+ * How a messaging app was connected: `credentials`, its own app's tokens
+ * pasted in; `app_install`, the server's own app approved in the browser.
+ */
+export type TelemetryBridgeMethod = 'credentials' | 'app_install';
 
 /**
  * How linking a messaging account came out. `pending` is a link the server is
@@ -255,6 +272,13 @@ export type TelemetryChatKind = 'direct' | 'group' | 'unknown';
 
 /** Whom a message named: nobody, an agent, a person, or both. Never which. */
 export type TelemetryChatMentions = 'none' | 'agent' | 'person' | 'both';
+
+/**
+ * Whether a message went to the person's own switch-buddy, in a direct chat.
+ * `unknown` when the chat could not be read to say: the chats list does not
+ * hold it and the server's own list could not be read in time.
+ */
+export type TelemetryToBuddy = 'yes' | 'no' | 'unknown';
 
 /** How a room came to be made: the Create room dialog, or a template run. */
 export type TelemetryRoomCreateSource = 'dialog' | 'template';
@@ -353,11 +377,11 @@ export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 
 
 /**
  * Which setting was changed. The keys of the app's settings, and nothing else,
- * less the two the app writes as it goes rather than a person setting them:
+ * less the one the app writes as it goes rather than a person setting it:
  * `telemetry`, which the first-run notice records the moment it is shown and
- * whose own answer is `telemetry_consent_changed`, and `onboarding`.
+ * whose own answer is `telemetry_consent_changed`.
  */
-export type TelemetrySettingKey = Exclude<AppSettingsKeyName, 'telemetry' | 'onboarding'>;
+export type TelemetrySettingKey = Exclude<AppSettingsKeyName, 'telemetry'>;
 
 /** How a search ended. The search's own union, reused rather than restated. */
 export type TelemetrySearchStatus = SearchStatus;
@@ -546,9 +570,14 @@ export type TelemetryEventMap = {
   update_install_started: {
     outcome: 'failure';
   };
-  /** A messaging platform was connected to a server. */
+  /**
+   * A messaging platform was connected to a server. An app install finishes in
+   * the browser, so its success is reported when the new connection shows up
+   * while Switch Console waits for it; one never finished reports nothing.
+   */
   bridge_connected: {
     bridge_platform: TelemetryBridgePlatform;
+    method: TelemetryBridgeMethod;
     outcome: TelemetryOutcome;
     failure_reason: TelemetryBridgeFailure;
   };
@@ -721,6 +750,12 @@ export type TelemetryEventMap = {
   managed_server_action: {
     action: TelemetryManagedServerAction;
     target: 'local' | 'remote';
+    /**
+     * `user`: someone asked for it. `automatic`: Switch Console did it by
+     * itself, starting a server that was running when it last quit, or
+     * bringing one up to date at launch.
+     */
+    trigger: 'user' | 'automatic';
     outcome: TelemetryOutcome;
     failure_reason: TelemetryManagedServerFailure;
     docker_available: TelemetryDockerAvailability;
@@ -744,14 +779,17 @@ export type TelemetryEventMap = {
   };
   /**
    * A message was sent in a chat. Nothing of the message: whether it carried
-   * files, whether it was a thread reply, and whether it named an agent or a
-   * person — never which.
+   * files, whether it was a thread reply, whether it named an agent or a
+   * person — never which — and whether it went to the person's own
+   * switch-buddy in a direct chat (`to_buddy`), the last step of the first
+   * run's funnel.
    */
   chat_message_sent: {
     server_kind: TelemetryServerKind;
     has_attachment: boolean;
     in_thread: boolean;
     mentions: TelemetryChatMentions;
+    to_buddy: TelemetryToBuddy;
     outcome: TelemetryOutcome;
     failure_reason: TelemetryChatFailure;
   };
@@ -792,6 +830,7 @@ export type TelemetryEventMap = {
   add_server_step: RendererTelemetryEvents['add_server_step'];
   onboarding_page: RendererTelemetryEvents['onboarding_page'];
   buddy_step: RendererTelemetryEvents['buddy_step'];
+  home_action: RendererTelemetryEvents['home_action'];
   /** A screen failed. A count, with nothing of what failed or where. */
   renderer_crashed: RendererTelemetryEvents['renderer_crashed'];
   /**
@@ -896,7 +935,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   update_download_started: [],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],
-  bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
+  bridge_connected: ['bridge_platform', 'method', 'outcome', 'failure_reason'],
   bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
   bridge_identity_confirmed: ['bridge_platform', 'link_kind'],
@@ -948,6 +987,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'has_attachment',
     'in_thread',
     'mentions',
+    'to_buddy',
     'outcome',
     'failure_reason',
   ],
@@ -959,13 +999,21 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   host_setup_step: ['step_kind', 'agent_type', 'action', 'outcome'],
   host_onboarded: ['outcome', 'picked_from_ssh_config'],
   host_removed: ['outcome'],
-  managed_server_action: ['action', 'target', 'outcome', 'failure_reason', 'docker_available'],
+  managed_server_action: [
+    'action',
+    'target',
+    'trigger',
+    'outcome',
+    'failure_reason',
+    'docker_available',
+  ],
   view_opened: ['view_id'],
   command_executed: ['command_id', 'invoked_by'],
   deeplink_opened: ['resolved', 'cold_start'],
   add_server_step: ['step', 'choice', 'first_run'],
   onboarding_page: ['page', 'path'],
   buddy_step: ['action', 'provider'],
+  home_action: ['action', 'chip'],
   renderer_crashed: [],
   telemetry_consent_changed: ['source', 'install_kind'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };

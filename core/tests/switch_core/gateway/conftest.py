@@ -43,6 +43,7 @@ from switch_core.gateway.chats import (
     chat_error_response,
     router,
 )
+from switch_core.gateway.dependencies import get_config
 from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning.postgres import PostgresProvisioning
@@ -331,15 +332,14 @@ def _chat_service(
         usage_store=UsageStore(),
         id_server_name="switch.test",
         media_max_bytes=1024,
-        agent_chats_enabled=True,
-        group_chats_enabled=True,
         buddy_slack_handoff_enabled=True,
         connections=connections,
         trust_client=NullTrustClient(),
         message_observer=message_observer,
         telemetry=telemetry,
     )
-    room_service.on_room_agents_changed(service.sync_room)
+    room_service.use_chats(service)
+    room_service.on_room_agents_changed(service.sync_rooms)
     return service, room_service
 
 
@@ -382,6 +382,8 @@ async def chats(
             return user
 
     app.dependency_overrides[get_current_user] = user_from_header
+    # No feature flags: the commands every server has.
+    app.dependency_overrides[get_config] = lambda: SimpleNamespace(feature_flags={})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://switch.test"
     ) as client:

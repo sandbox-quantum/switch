@@ -51,7 +51,6 @@ import {
   type UpgradeJournal,
   upgradeState,
 } from './managed-upgrade';
-import { readMattermostEnabled, stopMattermost, writeMattermostEnabled } from './native/mattermost';
 import {
   type DockerExport,
   exportDockerStack,
@@ -62,8 +61,6 @@ import {
   discardNativeData,
   nativeCoreFailureLine,
   type NativeStartOptions,
-  type NativeStartResult,
-  nativeMattermostLauncher,
   nativeStackRunning,
   nativeStartedAt,
   readNativeDeployedVersion,
@@ -110,8 +107,6 @@ function initialStatus(): LocalServerStatus {
   return {
     phase: 'stopped',
     runtime: null,
-    mattermost: null,
-    mattermostState: null,
     notice: null,
     checked: false,
     upgrade: null,
@@ -170,73 +165,6 @@ export class LocalServerService {
 
   detectDocker(): Promise<DockerAvailability> {
     return new LocalServerHost().detectDocker();
-  }
-
-  /** Counts starts and stops, so a Mattermost bring-up that a later stop or
-   * start overtook does not report into the status of a server it is no longer
-   * part of. */
-  private mattermostRun = 0;
-
-  /**
-   * Bring Mattermost up beside a native server that is already running and in
-   * use. Its outcome lands on the status; a failure leaves the server running
-   * and says why, rather than failing a start that has already succeeded.
-   */
-  private async runMattermost(
-    bringUp: NonNullable<NativeStartResult['bringUpMattermost']>
-  ): Promise<void> {
-    const run = this.mattermostRun;
-    const current = () => run === this.mattermostRun && this.status.phase === 'running';
-    try {
-      await bringUp((message) => log.info(`local-switch-server: ${message}`));
-      if (current()) this.setStatus({ mattermostState: 'running' });
-    } catch (error) {
-      log.error('local-switch-server: Mattermost did not start', { error: String(error) });
-      if (!current()) return;
-      this.setStatus({
-        mattermostState: 'failed',
-        notice: `The server is running, but Mattermost could not be set up: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      });
-    }
-  }
-
-  /**
-   * Turn Mattermost on or off for a native server: brought up or stopped now
-   * when the server is running, and at its next start when it is not.
-   */
-  async setMattermost(enabled: boolean): Promise<void> {
-    if ((await this.runtime()) !== 'native') {
-      throw new Error(
-        'Mattermost can only be turned on or off for a server that runs without Docker.'
-      );
-    }
-    await writeMattermostEnabled(localServerDir(), enabled);
-    this.setStatus({ mattermost: enabled });
-    // A running server takes the change now: Mattermost runs on its own and
-    // registers itself, so nothing about the server needs restarting.
-    if (this.status.phase !== 'running' || this.busy) return;
-    const layout = nativeLayout(localServerDir());
-    this.mattermostRun++;
-    if (!enabled) {
-      this.setStatus({ mattermostState: 'off', notice: null });
-      await stopMattermost(layout, false);
-      return;
-    }
-    const host: ServerHost = new LocalServerHost();
-    try {
-      const bringUp = await nativeMattermostLauncher(
-        host,
-        layout,
-        this.checkoutRootForStart(),
-        (line) => events.emit(localServerLogChannel, { line })
-      );
-      this.setStatus({ mattermostState: 'starting', notice: null });
-      void this.runMattermost(bringUp);
-    } finally {
-      host.dispose();
-    }
   }
 
   /** How the server runs, read off its directory and recorded on the status. */
@@ -350,7 +278,6 @@ export class LocalServerService {
       this.setStatus({ checkoutBuild: await this.readCheckoutBuild(host) });
       const native = (await this.runtime()) === 'native';
       const layout = nativeLayout(localServerDir());
-      if (native) this.setStatus({ mattermost: await readMattermostEnabled(localServerDir()) });
       const managed = await getManagedServer();
       if (!managed) return;
       const running = native ? await nativeStackRunning(layout) : await isStackRunning(host);
@@ -496,10 +423,9 @@ export class LocalServerService {
       }
 
       if (alive === false) {
-        // Only a line that says what went wrong: a process that was killed
-        // leaves none, and its last ordinary log line would read as a reason.
-        const line = native ? await nativeCoreFailureLine(layout) : null;
-        const reason = line !== null && /(Error|Exception|FATAL)\b/.test(line) ? line : null;
+        // How it exited, and the exception it died of when it died of one —
+        // never an earlier error in its log that it ran on past.
+        const reason = native ? await nativeCoreFailureLine(layout) : null;
         if (overtaken()) return;
         const where = native ? ` (full log: ${path.join(layout.logs, 'switch-core.log')})` : '';
         await this.markLost(
@@ -537,7 +463,6 @@ export class LocalServerService {
       error,
       message: null,
       notice: null,
-      mattermostState: null,
       deployedTelemetry: null,
       adminPages: null,
     });
@@ -644,16 +569,13 @@ export class LocalServerService {
       // A move records the new runtime only once it has worked: until then the
       // Docker server is the one this directory holds.
       if (native && !move) await writeLocalRuntime(localServerDir(), 'native');
-      this.mattermostRun++;
       const layout = nativeLayout(localServerDir());
-      let bringUpMattermost: NativeStartResult['bringUpMattermost'] = null;
       let result: StartLocalServerResult;
       let moveFailure: string | null = null;
       if (move) {
         const moved = await this.moveOffDocker(host, layout, common);
         if (moved.kind === 'moved') {
           result = moved.result;
-          bringUpMattermost = moved.bringUpMattermost;
         } else {
           // The Docker server is as it was; it starts as before, and the move
           // is tried again at a later start.
@@ -662,15 +584,12 @@ export class LocalServerService {
           result = await startStack({ ...common, lease: null });
         }
       } else if (native) {
-        const started = await startNativeStack({
+        result = await startNativeStack({
           ...common,
           layout,
-          mattermost: await readMattermostEnabled(localServerDir()),
           bundleRoot: localServerBundleRoot(),
           importFrom: null,
         });
-        result = started.result;
-        bringUpMattermost = started.bringUpMattermost;
       } else {
         // `compose up` leaves a container that is running alone, however hung
         // it is, so a server that stopped answering is stopped first. The
@@ -729,9 +648,7 @@ export class LocalServerService {
               ? `Could not move this server off Docker, so it is still running on Docker: ` +
                 `${moveFailure} Its data is safe; Switch Console tries again at the next start.`
               : result.warning,
-          mattermostState: bringUpMattermost ? 'starting' : ranNative ? 'off' : null,
         });
-        if (bringUpMattermost) void this.runMattermost(bringUpMattermost);
         await writeStartAtLaunch(localServerDir(), true);
         if (updatedTo !== null) await recordLocalActivity('updated', updatedTo);
         await recordLocalActivity('started', null);
@@ -740,7 +657,7 @@ export class LocalServerService {
           for (const listener of this.upgradeListeners) listener(result.serverId);
         }
       }
-      reportManagedServerStart('local', result);
+      reportManagedServerStart('local', activate ? 'user' : 'automatic', result);
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -748,7 +665,7 @@ export class LocalServerService {
       this.setStatus({ phase: 'error', error: message });
       this.failUpgrade(message);
       await recordLocalActivity('start-failed', message);
-      reportManagedServerStartThrew('local');
+      reportManagedServerStartThrew('local', activate ? 'user' : 'automatic');
       return { kind: 'error', message, failure: 'unexpected' };
     } finally {
       host.dispose();
@@ -767,14 +684,9 @@ export class LocalServerService {
   private async moveOffDocker(
     host: ServerHost,
     layout: NativeLayout,
-    common: Omit<NativeStartOptions, 'layout' | 'mattermost' | 'bundleRoot' | 'importFrom'>
+    common: Omit<NativeStartOptions, 'layout' | 'bundleRoot' | 'importFrom'>
   ): Promise<
-    | {
-        kind: 'moved';
-        result: StartLocalServerResult;
-        bringUpMattermost: NativeStartResult['bringUpMattermost'];
-      }
-    | { kind: 'failed'; reason: string }
+    { kind: 'moved'; result: StartLocalServerResult } | { kind: 'failed'; reason: string }
   > {
     common.onMessage('Moving the server off Docker…');
     let exported: DockerExport;
@@ -785,25 +697,21 @@ export class LocalServerService {
       return { kind: 'failed', reason: errorMessage(error) };
     }
     try {
-      // A Docker server always ran Mattermost; the moved one keeps it.
-      await writeMattermostEnabled(localServerDir(), true);
-      const started = await startNativeStack({
+      const result = await startNativeStack({
         ...common,
         layout,
-        mattermost: true,
         bundleRoot: localServerBundleRoot(),
         importFrom: exported,
       });
-      if (started.result.kind !== 'started') {
-        const reason =
-          started.result.kind === 'error' ? started.result.message : started.result.kind;
+      if (result.kind !== 'started') {
+        const reason = result.kind === 'error' ? result.message : result.kind;
         await this.abandonMove(layout);
         return { kind: 'failed', reason: `${reason} (export kept in ${exported.dir})` };
       }
       await writeLocalRuntime(localServerDir(), 'native');
       this.setStatus({ runtime: 'native' });
       log.info(`local-switch-server: moved the server off Docker; export kept in ${exported.dir}`);
-      return { kind: 'moved', ...started };
+      return { kind: 'moved', result };
     } catch (error) {
       log.error('local-switch-server: moving the server off Docker failed', { error });
       await this.abandonMove(layout);
@@ -873,7 +781,6 @@ export class LocalServerService {
         phase: 'stopping',
         message: native ? 'Stopping the server…' : 'Stopping containers…',
       });
-      this.mattermostRun++;
       if (native) await stopNativeStack(nativeLayout(localServerDir()), localServerBundleRoot());
       else await stopStack(host, null);
       const upgrade = this.status.upgrade;
@@ -884,7 +791,6 @@ export class LocalServerService {
         deployedTelemetry: null,
         adminPages: null,
         notice: null,
-        mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
       await recordLocalActivity('stopped', null);
@@ -916,7 +822,6 @@ export class LocalServerService {
         deployedTelemetry: null,
         adminPages: null,
         notice: null,
-        mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
       await recordLocalActivity('stopped', null);
@@ -944,7 +849,6 @@ export class LocalServerService {
       if (server) await deleteAgentsForServer(server.id);
       if ((await this.runtime()) === 'native') {
         this.setStatus({ phase: 'stopping', message: 'Deleting the server and its data…' });
-        this.mattermostRun++;
         await resetNativeStack(host, nativeLayout(localServerDir()), localServerBundleRoot());
       } else {
         this.setStatus({ phase: 'stopping', message: 'Destroying containers and data…' });
@@ -964,7 +868,6 @@ export class LocalServerService {
         deployedTelemetry: null,
         adminPages: null,
         notice: null,
-        mattermostState: null,
         deployedVersion: null,
         drift: null,
         upgrade: null,

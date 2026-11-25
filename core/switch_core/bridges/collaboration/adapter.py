@@ -39,11 +39,15 @@ from switch_core.bridges.collaboration.models import (
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
+    InboundChannelRemoved,
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageDeleted,
+    InboundMessageEdited,
     InboundUserJoin,
     InboundUserLeave,
+    KnownUserLabel,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -626,6 +630,13 @@ class PlatformAdapter(ABC):
     #: exists and while one is stopped.
     supports_directory_search: ClassVar[bool] = True
 
+    #: What the account search can find a person by here, as its field's
+    #: placeholder. Only what the search really matches: offering email where
+    #: it never matches sends people hunting for an address that finds
+    #: nobody. `account_search_hint` is what is shown, for an adapter whose
+    #: answer depends on what the connection was granted.
+    directory_search_hint: ClassVar[str] = "Your name or handle"
+
     #: Whether this platform can make a private channel from Switch.
     #:
     #: Reported per connection so a room form offers "New private channel"
@@ -772,6 +783,17 @@ class PlatformAdapter(ABC):
         # includes every message once the session or the bridge is gone.
         self._resolve_activity: (
             Callable[[str, str], Awaitable[ActivitySnapshot | None]] | None
+        ) = None
+        # Set by set_takeback_handlers. Called when a post is deleted or edited
+        # on the platform, or a channel deleted or archived there.
+        self._on_message_deleted: (
+            Callable[[InboundMessageDeleted], Awaitable[None]] | None
+        ) = None
+        self._on_message_edited: (
+            Callable[[InboundMessageEdited], Awaitable[None]] | None
+        ) = None
+        self._on_channel_removed: (
+            Callable[[InboundChannelRemoved], Awaitable[None]] | None
         ) = None
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
@@ -1016,6 +1038,20 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        """The text a person pastes into a message to run command `name` here.
+
+        The one place a platform's command syntax is spelled, so Console, the
+        link-code instructions and the bridge's own notices cannot drift
+        apart. Only a form that works pasted whole as a message counts: a
+        slash command a platform only runs when picked from its own menu is
+        not one.
+        """
+        return f"!{name} {argument}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
@@ -1029,6 +1065,21 @@ class PlatformAdapter(ABC):
         while showing the code, with or without a running adapter.
         """
         return f"Post `!link-account {code}` from that account in any channel Switch is in."
+
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        """How to unlink the Switch user `name` from a chat account here, as
+        the rest of "If that isn't you, …", in Markdown.
+
+        Told after a link is confirmed by tapping a number in a message from
+        the bot, where the account ran no command and the conversation may
+        not take one (Slack's is read only), so it names the platform's own
+        command form and somewhere it reaches Switch, as
+        `link_code_instructions` does for a code.
+        """
+        return f"post `!unlink-account {name}` from this account in any channel Switch is in"
 
     @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
@@ -1308,6 +1359,40 @@ class PlatformAdapter(ABC):
         nothing to recognise and nothing to repair.
         """
         return False
+
+    async def sees_only_replies_and_commands(self, channel_id: str) -> bool:
+        """Whether this channel hands the bot only replies to its own messages,
+        mentions of it and commands, so a typed `!command` or a mention of an
+        agent never arrives. False by default: most platforms deliver every
+        message in a channel the bot is in."""
+        return False
+
+    async def agent_greeting(
+        self, channel_id: str, agent_name: str, greeting: str
+    ) -> str:
+        """What an agent's join greeting says in this channel. The room's line
+        ("tag @agent when you need me") by default; a platform where tagging
+        an agent does not reach it in this channel says what does."""
+        return greeting
+
+    def take_further_refs(self, message_ref: str) -> list[str]:
+        """The platform's other posts for the message just posted as
+        `message_ref`, when it had to split it to fit: a reply to any of them
+        is a reply to that message. Asked once, right after the post; [] for a
+        platform that posts every message whole, which is this default."""
+        return []
+
+    def account_search_hint(self) -> str:
+        """The placeholder for this connection's account search."""
+        return self.directory_search_hint
+
+    def known_user_label(
+        self, external_user_id: str, external_username: str
+    ) -> KnownUserLabel:
+        """How a person Switch has seen is named in an account search that
+        falls back to those people. Default: the stored name, which is their
+        handle."""
+        return KnownUserLabel(display_name=external_username, has_handle=True)
 
     def render_app_mention(self, token: str) -> str:
         """Render a mention of the Switch app itself, given the platform's own
@@ -2139,6 +2224,22 @@ class PlatformAdapter(ABC):
         only Teams saves types it could not verify."""
         return None
 
+    def set_feature_flags(self, flags: Mapping[str, bool]) -> None:
+        """Install the deployment's feature flags, which decide the in-room
+        commands a platform's own command list offers
+        (`commands.commands_for`). Set by the lifecycle before the adapter
+        starts."""
+        self._feature_flags = flags
+
+    @property
+    def feature_flags(self) -> Mapping[str, bool]:
+        flags: Mapping[str, bool] | None = getattr(self, "_feature_flags", None)
+        if flags is None:
+            raise RuntimeError(
+                f"{type(self).__name__} read the feature flags before they were set"
+            )
+        return flags
+
     def set_outbound_policy(self, policy: OutboundPolicy) -> None:
         """Install the policy for anything this adapter fetches from a URL a
         tenant or agent chose. Set by the lifecycle before the adapter starts."""
@@ -2256,6 +2357,74 @@ class PlatformAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_takeback_handlers(
+        self,
+        *,
+        on_message_deleted: Callable[[InboundMessageDeleted], Awaitable[None]],
+        on_message_edited: Callable[[InboundMessageEdited], Awaitable[None]],
+        on_channel_removed: Callable[[InboundChannelRemoved], Awaitable[None]],
+    ) -> None:
+        """Install the callbacks for what is taken back on the platform: a post
+        deleted or edited, a channel deleted or archived. The room's copy
+        follows (`retention/platform_deletes.py`).
+
+        An adapter reports these through `report_message_deleted`,
+        `report_message_edited` and `report_channel_removed`, for whichever its
+        platform delivers to a bot. One that delivers none (Telegram never
+        tells a bot a message was deleted) reports nothing, and says so in its
+        docstring."""
+        self._on_message_deleted = on_message_deleted
+        self._on_message_edited = on_message_edited
+        self._on_channel_removed = on_channel_removed
+
+    async def report_message_deleted(self, channel_id: str, message_ref: str) -> None:
+        """Tell the bridge a post was deleted on the platform. `message_ref` in
+        the form `InboundMessage.message_ref` carried when it came in."""
+        if self._on_message_deleted is None:
+            logger.debug(
+                "%s: no handler for the deletion of %s in %s",
+                type(self).__name__,
+                message_ref,
+                channel_id,
+            )
+            return
+        await self._on_message_deleted(
+            InboundMessageDeleted(channel_id=channel_id, message_ref=message_ref)
+        )
+
+    async def report_message_edited(
+        self, channel_id: str, message_ref: str, content: str
+    ) -> None:
+        """Tell the bridge a post now says `content`. Only for a change to its
+        words: a platform that reports a link preview or a reaction as an
+        edit is filtered by its adapter, not here."""
+        if self._on_message_edited is None:
+            logger.debug(
+                "%s: no handler for the edit of %s in %s",
+                type(self).__name__,
+                message_ref,
+                channel_id,
+            )
+            return
+        await self._on_message_edited(
+            InboundMessageEdited(
+                channel_id=channel_id, message_ref=message_ref, content=content
+            )
+        )
+
+    async def report_channel_removed(self, channel_id: str, *, deleted: bool) -> None:
+        """Tell the bridge a channel was deleted (`deleted`) or archived."""
+        if self._on_channel_removed is None:
+            logger.debug(
+                "%s: no handler for the removal of channel %s",
+                type(self).__name__,
+                channel_id,
+            )
+            return
+        await self._on_channel_removed(
+            InboundChannelRemoved(channel_id=channel_id, deleted=deleted)
+        )
 
     def set_channel_rename_handler(
         self, handler: Callable[[str, str, str], Awaitable[None]]

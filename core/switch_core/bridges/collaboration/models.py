@@ -162,6 +162,20 @@ class DirectoryUser(BaseModel):
     username: str
     display_name: str
     email: str | None = None
+    # False where the platform gave this person no handle and `username` is
+    # one Switch made up to address them by (a Telegram account without a
+    # username), so it is not shown as if it were theirs.
+    has_handle: bool = True
+
+
+@dataclass(frozen=True)
+class KnownUserLabel:
+    """How a person Switch has seen is shown in an account search: the name
+    the platform shows for them, and whether their stored name is a handle
+    they chose rather than one Switch made up."""
+
+    display_name: str
+    has_handle: bool
 
 
 class InboundMessage(BaseModel):
@@ -193,6 +207,12 @@ class InboundMessage(BaseModel):
     # delivers another bot's posts, and Teams does not mark them, so both leave
     # this False and their cards accept the answer.
     sender_is_app: bool = False
+    # The message is a reply to one the Switch app posted: an agent's message,
+    # a card or a notice. Set by a platform where a reply is addressed to the
+    # one message it answers (Telegram), so it reaches the agent that posted
+    # that message as a mention would, even where the platform delivers the
+    # bot nothing else. False everywhere replies are threads.
+    replies_to_app: bool = False
     # Content keys for the room message, beside its body.
     extra_content: dict[str, object] = {}
 
@@ -334,6 +354,33 @@ class InboundAppJoin(BaseModel):
     # inviter, the Teams user who added it). Its linked Switch user owns the
     # room the channel becomes.
     added_by_external_user_id: str | None = None
+
+
+class InboundMessageDeleted(BaseModel):
+    """A post was deleted on the platform, by its author or a moderator.
+
+    `message_ref` is in the form `InboundMessage.message_ref` uses, so it
+    names the post the bridge recorded when the message came in."""
+
+    channel_id: str
+    message_ref: str
+
+
+class InboundMessageEdited(BaseModel):
+    """A post's words were changed on the platform. `content` is the whole new
+    text, as `InboundMessage.content` would carry it."""
+
+    channel_id: str
+    message_ref: str
+    content: str
+
+
+class InboundChannelRemoved(BaseModel):
+    """A channel was taken away on the platform: deleted, or archived where the
+    platform can bring an archived channel back (`deleted` False)."""
+
+    channel_id: str
+    deleted: bool
 
 
 class BridgeInstallLink(BaseModel):

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const setSessionCookie = vi.hoisted(() => vi.fn());
+const reauthenticateManagedServer = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   managedServerHostBlocked: () => null,
@@ -11,7 +12,7 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
 vi.mock('./servers-store', () => ({ getSessionCookie, setSessionCookie }));
 vi.mock('./auth', () => ({
   refreshSession: vi.fn(),
-  reauthenticateManagedServer: vi.fn(),
+  reauthenticateManagedServer,
   extractAuthCookie: (setCookies: string[]) =>
     setCookies.map((c) => /^switch_auth=([^;]*)/.exec(c)?.[1]).find(Boolean) ?? null,
 }));
@@ -23,11 +24,14 @@ const {
   deleteApiKey,
   deleteMyAccount,
   fetchMyApiKeys,
+  mintBrowserHandoff,
   resetMyTestAccount,
   revealApiKey,
   updateMyName,
 } = await import('./gateway-client');
 const { onSessionEnded } = await import('./session-ended');
+const { clearAssertedTenant, setAssertedTenant } =
+  await import('@main/core/workspaces/asserted-tenant');
 
 const SERVER = {
   id: 'srv-1',
@@ -288,5 +292,70 @@ describe('a session the server has ended', () => {
     } finally {
       stop();
     }
+  });
+});
+
+describe('a sign-in link for the browser', () => {
+  it('asks for one with this session, for the page to open', async () => {
+    fetchMock.mockImplementation(async () =>
+      response(201, { path: '/auth/handoff#code=abc', expires_at: '2026-11-17T10:00:00Z' })
+    );
+
+    await expect(mintBrowserHandoff(SERVER, '/rooms/r1?workspace=t1#docs')).resolves.toEqual({
+      path: '/auth/handoff#code=abc',
+      expiresAt: '2026-11-17T10:00:00Z',
+    });
+    expect(lastCall()).toEqual({
+      url: 'https://switch.example.com/gateway/auth/handoff',
+      method: 'POST',
+      body: { next: '/rooms/r1?workspace=t1#docs' },
+    });
+    const [, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Cookie).toMatch(/^switch_auth=/);
+  });
+
+  it('raises what a server from before it answers, for the caller to read', async () => {
+    fetchMock.mockImplementation(async () => response(404, { detail: 'Not Found' }));
+
+    await expect(mintBrowserHandoff(SERVER, '/')).rejects.toMatchObject({
+      kind: 'http',
+      status: 404,
+    });
+  });
+
+  it('asks a managed server Console holds no session for in the workspace a lease asserts', async () => {
+    const managed = { ...(SERVER as object), id: 'srv-local', managed: true } as never;
+    const minted = makeJwt(2 * 60 * 60);
+    const scoped = makeJwt(3 * 60 * 60);
+    let stored: string | null = null;
+    getSessionCookie.mockImplementation(async () => stored);
+    setSessionCookie.mockImplementation(async (_id: string, cookie: string) => {
+      stored = cookie;
+    });
+    reauthenticateManagedServer.mockImplementation(async () => {
+      stored = minted;
+      return minted;
+    });
+    fetchMock.mockImplementation(async (url: string) =>
+      url.endsWith('/tenants/t1/switch')
+        ? response(200, {}, [`switch_auth=${scoped}; Path=/; HttpOnly`])
+        : response(201, { path: '/auth/handoff#code=abc', expires_at: '2026-11-17T10:00:00Z' })
+    );
+    setAssertedTenant('srv-local', 't1');
+    try {
+      await mintBrowserHandoff(managed, '/rooms/r1');
+    } finally {
+      clearAssertedTenant('srv-local');
+    }
+
+    expect(reauthenticateManagedServer).toHaveBeenCalledExactlyOnceWith(managed);
+    const calls = fetchMock.mock.calls.map(([url, init]) => [
+      url,
+      (init as RequestInit & { headers: Record<string, string> }).headers.Cookie,
+    ]);
+    expect(calls).toEqual([
+      ['https://switch.example.com/gateway/tenants/t1/switch', `switch_auth=${minted}`],
+      ['https://switch.example.com/gateway/auth/handoff', `switch_auth=${scoped}`],
+    ]);
   });
 });

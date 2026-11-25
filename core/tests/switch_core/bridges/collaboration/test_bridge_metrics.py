@@ -10,13 +10,17 @@ message a person sent that nobody received.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
+from switch_core.bridges.collaboration.collaboration_core import (
+    MEMBERSHIP_EVENTS_AT_ONCE,
+    CollaborationCore,
+)
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
 BRIDGE_TENANT = "tenant-bridge"
@@ -38,6 +42,7 @@ def _bridge() -> CollaborationCore:
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
     bridge._room_tenants = {}
+    bridge._membership_slots = asyncio.Semaphore(MEMBERSHIP_EVENTS_AT_ONCE)
     return bridge
 
 

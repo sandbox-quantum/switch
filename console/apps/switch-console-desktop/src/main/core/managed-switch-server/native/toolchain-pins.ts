@@ -91,6 +91,12 @@ export function uvArchive(platform: NativePlatform): PinnedArchive {
  * listed in `pg-symlinks.json` to be recreated after extraction.
  */
 export const POSTGRES_VERSION = '16.14.0-beta.17';
+
+/** The Visual C++ runtime DLLs the portable Windows PostgreSQL links against,
+ * with `vcruntime140_1.dll`, which `msvcp140.dll` itself loads. A clean
+ * Windows has none of them until some app installs the Redistributable, so
+ * the bundle ships them next to the binaries. */
+export const VC_RUNTIME_DLLS = ['vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'] as const;
 export const POSTGRES_MAJOR = 16;
 
 const POSTGRES_PACKAGES: Partial<Record<NativePlatform, { pkg: string; integrity: string }>> = {

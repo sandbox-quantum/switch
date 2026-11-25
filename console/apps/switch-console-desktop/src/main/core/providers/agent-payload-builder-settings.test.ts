@@ -58,8 +58,11 @@ const catalogued = (id: string) => ({
   description: '',
   docUrl: '',
   cliLabel: id,
+  shortName: id,
   loginCommand: id,
   knownAgentType: id,
+  supportsAutoMode: true,
+  newAgentAutoMode: true,
 });
 
 beforeEach(() => {

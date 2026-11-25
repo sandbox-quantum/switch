@@ -4,21 +4,21 @@ import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import type { RuntimeMode } from '../adapter';
+import { dirMode } from '../host/host-permissions';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
 import { replaceFile } from '../host/replace-file';
+import type { CodexSandboxMode } from './protocol';
 
 /**
- * A managed agent's Codex configuration with the sandbox its sessions run
- * in: Codex's default is read-only, which on a machine with no Codex
- * configuration of its own leaves an agent unable to write in its own
- * directory. An agent that bypasses permissions gets full access, any other
- * (auto mode included) may write in its workspace; a `sandbox_mode` the
- * configuration already names is kept.
+ * The sandbox a managed agent's sessions fall back to when neither the
+ * execution host's Codex configuration nor the agent's names one. Codex's own
+ * default is read-only, which on a machine with no Codex configuration (a
+ * cloud machine the agent controller runs on, say) leaves an agent unable to
+ * write in its own directory: an agent that bypasses permissions gets full
+ * access, any other (auto mode included) may write in its workspace.
  */
-export function withManagedCodexSandbox(config: string, runtimeMode: RuntimeMode): string {
-  if ('sandbox_mode' in parse(config)) return config;
-  const mode = runtimeMode === 'full-access' ? 'danger-full-access' : 'workspace-write';
-  return `sandbox_mode = "${mode}"\n${config}`;
+export function managedCodexSandbox(runtimeMode: RuntimeMode): CodexSandboxMode {
+  return runtimeMode === 'full-access' ? 'danger-full-access' : 'workspace-write';
 }
 
 /**
@@ -28,21 +28,31 @@ export function withManagedCodexSandbox(config: string, runtimeMode: RuntimeMode
  * session with no login of its own is handed it as it starts
  * (`CodexKeyringLogin`). A copy the session already has is left alone, since
  * Codex may still read it.
+ *
+ * The session's `sandbox_mode` is the host configuration's when it names one,
+ * then the agent's, then `defaultSandbox` (null leaves Codex's own default).
+ * The host's comes first so that a machine its owner set to `read-only` stays
+ * read-only whatever the agent's permission settings (CHOO-4118).
  */
 export async function prepareCodexSessionHome(input: {
   root: string;
   sessionId: string;
   sourceHome: string;
   config: string;
+  defaultSandbox: CodexSandboxMode | null;
 }): Promise<{ home: string; keyringLogin: boolean }> {
   const key = createHash('sha256').update(input.sessionId).digest('hex');
   const home = join(input.root, key);
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  await chmod(home, 0o700);
+  await mkdir(home, { recursive: true, mode: dirMode(0o700) });
+  await chmod(home, dirMode(0o700));
   const keyringLogin = !(await hasCodexAuthFile(input.sourceHome));
   if (!keyringLogin) await copyCodexAuthenticationOnce(home, input.sourceHome);
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
-  const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
+  const hostConfig = sourceConfig ? parse(sourceConfig) : {};
+  const config = { ...hostConfig, ...parse(input.config) };
+  if ('sandbox_mode' in hostConfig) config.sandbox_mode = hostConfig.sandbox_mode;
+  else if (!('sandbox_mode' in config) && input.defaultSandbox)
+    config.sandbox_mode = input.defaultSandbox;
   // The session host registers its own `switch` server; an entry of that name
   // in the user's config would be merged into it rather than replaced.
   const servers = config.mcp_servers as Record<string, unknown> | undefined;

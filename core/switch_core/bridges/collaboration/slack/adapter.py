@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import time
+import traceback
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -242,6 +243,23 @@ _REACTION: dict[ActivityMark, str] = {
     "working": "eyes",
     "queued": "hourglass_flowing_sand",
 }
+
+
+def _granted_scopes(headers: Any) -> frozenset[str] | None:
+    """A token's scopes from the `x-oauth-scopes` header Slack sends with a
+    Web API answer, or None when it sent none."""
+    if not headers:
+        return None
+    for key, value in dict(headers).items():
+        if str(key).lower() == "x-oauth-scopes":
+            raw = value[0] if isinstance(value, list) and value else value
+            return frozenset(s.strip() for s in str(raw).split(",") if s.strip())
+    return None
+
+
+def _spaceless(text: str) -> str:
+    """`text` for matching a name: case folded, with every space dropped."""
+    return "".join(text.casefold().split())
 
 
 def _retry_after_seconds(error: SlackApiError) -> int:
@@ -551,6 +569,31 @@ def _prompt_button(prompt: DirectPrompt, position: int, label: str) -> dict[str,
     return button
 
 
+# Said, to the person alone, when a button press or a slash command reached
+# this app but could not be acted on. It says nothing of why: what went wrong
+# is in the server's log, and a reason shown here could carry what it must not.
+COULD_NOT_PROCESS = (
+    "Switch couldn't process that. Try again in a moment. If you were linking "
+    "your account, type `/link-account` with the code Switch Console shows you."
+)
+
+
+def _failure_without_message(error: BaseException) -> str:
+    """An exception's type and where it was raised, without its message.
+
+    Logged for a press or an account command that failed. Its message is left
+    out because it can carry what the person sent: a link code, a prompt's
+    token, or a database error quoting either as a bound parameter.
+    """
+    # Where each frame is, not its source line, which a test (or a line that
+    # builds a message) could quote the value in.
+    frames = " <- ".join(
+        f"{frame.filename}:{frame.lineno} in {frame.name}"
+        for frame in reversed(traceback.extract_tb(error.__traceback__))
+    )
+    return f"{type(error).__name__} at {frames}"
+
+
 # The ids Slack gives an app's bot, under which an app's posts with no user are
 # bridged. A person's id starts with U or W, but so does a bot user's.
 _SLACK_BOT_ID = re.compile(r"^B[A-Z0-9]+$")
@@ -654,6 +697,9 @@ class SlackAdapter(PlatformAdapter):
         self._bot_user_id: str = ""
         self._bot_id: str = ""
         self._team_id: str = ""
+        # The bot token's scopes as Slack listed them when the adapter
+        # started, or None when Slack did not say.
+        self._granted_scopes: frozenset[str] | None = None
         self._tenant_id: str | None = None
         self._user_cache: dict[str, SlackUser] = {}
         # Whether each Slack user seen in a channel's member list is a bot (an
@@ -767,6 +813,7 @@ class SlackAdapter(PlatformAdapter):
         # workspace id on an Enterprise Grid org. Agent group lookup uses
         # the authenticated team identity rather than the configured org.
         self._team_id = str(auth.get("team_id", ""))
+        self._granted_scopes = _granted_scopes(auth.headers)
         logger.info(
             "Slack adapter authenticated as %s (workspace %s)",
             auth.get("user", ""),
@@ -2160,17 +2207,46 @@ class SlackAdapter(PlatformAdapter):
             )
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Slack runs a slash command typed or pasted as the whole message, and
+        # passes its tail through as free text.
+        return f"/{name} {argument}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
         # A slash command reaches the app from any conversation, including a
         # person's message to themselves, and is answered only to them. The
         # typed form is for a workspace whose app predates the command.
-        return (
+        instructions = (
             f"Type `/link-account {code}` from that account anywhere in Slack: "
             "a message to yourself works, and only you see the reply. If Slack "
             f"doesn't know the command, post `!link-account {code}` in a "
             "channel Switch is in."
+        )
+        # An app the workspace made itself is only as complete as it was made,
+        # and only one server should hold its token. Either can leave a tap
+        # reaching nobody here, so both are named as possibilities.
+        if connection_config.get("event_delivery", "socket_mode") != "webhook":
+            instructions += (
+                " If tapping a number in Switch's message does nothing, one "
+                "possible cause is the Slack app's Interactivity being off: "
+                "whoever set up the app can turn it on by pasting this "
+                "connection's manifest on the app's App Manifest page. Another "
+                "is a second Switch server using the same app token."
+            )
+        return instructions
+
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        return (
+            f"type `/unlink-account {name}` anywhere in Slack (a message to "
+            "yourself works)"
         )
 
     def adapt_icon_url(self, icon_url: str) -> str:
@@ -3981,8 +4057,16 @@ class SlackAdapter(PlatformAdapter):
                 await self._handle_channel_renamed(event)
             elif event_subtype in ("channel_leave", "group_leave"):
                 await self._handle_member_left_channel(event)
+            elif event_subtype == "message_deleted":
+                await self._handle_message_deleted(event)
+            elif event_subtype == "message_changed":
+                await self._handle_message_changed(event)
             else:
                 await self._handle_message_event(event)
+        elif event_type in self._CHANNEL_REMOVED_EVENTS:
+            await self._handle_channel_removed(
+                event, deleted=self._CHANNEL_REMOVED_EVENTS[event_type]
+            )
         elif event_type == "member_joined_channel":
             await self._handle_member_joined_channel(event)
         elif event_type == "member_left_channel":
@@ -4044,6 +4128,7 @@ class SlackAdapter(PlatformAdapter):
             message = payload.get("message") or {}
             if card_ref is not None:
                 self._pressed_cards.setdefault(card_ref, []).append(message)
+            thread_ref = f"{channel_id}:{thread_ts}" if thread_ts else None
             try:
                 await self._on_interaction(
                     InboundInteraction(
@@ -4054,8 +4139,20 @@ class SlackAdapter(PlatformAdapter):
                         action_id=action_id,
                         value=value,
                         message_ref=message_ref,
-                        thread_ref=f"{channel_id}:{thread_ts}" if thread_ts else None,
+                        thread_ref=thread_ref,
                     )
+                )
+            except Exception as error:
+                # Slack never sends a press again, so a press that fails here
+                # is otherwise lost without a word to whoever made it.
+                logger.error(
+                    "Could not act on a button press by %s in %s: %s",
+                    user_id,
+                    channel_id,
+                    _failure_without_message(error),
+                )
+                await self.tell_actor(
+                    channel_id, user_id, user.name, thread_ref, COULD_NOT_PROCESS
                 )
             finally:
                 if card_ref is not None:
@@ -4129,7 +4226,8 @@ class SlackAdapter(PlatformAdapter):
     # Message subtypes we still treat as real posts. file_share carries uploaded
     # attachments; thread_broadcast is a thread reply also sent to the channel;
     # bot_message is a post from a third-party Slack app (e.g. Datadog alerts).
-    # Everything else (edits, deletes, channel-join system messages, …) is skipped.
+    # Every other subtype (system lines such as a channel's purpose changing) is
+    # skipped; edits and deletions are routed before they reach this.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
 
     # The system line Slack posts into a channel when someone renames it,
@@ -4138,6 +4236,72 @@ class SlackAdapter(PlatformAdapter):
     # them channels. Read off the message subscriptions the app already has,
     # where the `channel_rename` event would need one more and a reinstall.
     _RENAME_SUBTYPES = frozenset({"channel_name", "group_name"})
+
+    # A channel deleted (True) or archived (False). "group_*" is a private
+    # channel from before Slack made them channels.
+    _CHANNEL_REMOVED_EVENTS: ClassVar[dict[str, bool]] = {
+        "channel_deleted": True,
+        "group_deleted": True,
+        "channel_archive": False,
+        "group_archive": False,
+    }
+
+    async def _handle_channel_removed(
+        self, event: dict[str, object], *, deleted: bool
+    ) -> None:
+        channel_id = event.get("channel")
+        if not isinstance(channel_id, str) or not channel_id:
+            logger.warning(
+                "Slack %s event without a channel, skipping", event.get("type")
+            )
+            return
+        await self.report_channel_removed(channel_id, deleted=deleted)
+
+    async def _handle_message_deleted(self, event: dict[str, object]) -> None:
+        """A post deleted in Slack. A deleted file is reported by Slack only
+        as `file_deleted`, naming a file id Switch does not keep, so it is
+        followed only when Slack also changes or deletes the post it was in."""
+        channel_id = str(event.get("channel") or "")
+        deleted_ts = str(event.get("deleted_ts") or "")
+        if not channel_id or not deleted_ts:
+            logger.warning(
+                "Slack message_deleted event without a channel or deleted_ts, skipping"
+            )
+            return
+        await self.report_message_deleted(channel_id, f"{channel_id}:{deleted_ts}")
+
+    def _is_own_post(self, message: dict[str, object]) -> bool:
+        """Whether the bridge's own bot wrote `message` (loop prevention).
+        Third-party apps' posts carry a `bot_id` too and are still bridged:
+        only this bridge's bot, matched on user id or `bot_id`, is its own."""
+        return bool(
+            (self._bot_user_id and message.get("user") == self._bot_user_id)
+            or (self._bot_id and message.get("bot_id") == self._bot_id)
+        )
+
+    async def _handle_message_changed(self, event: dict[str, object]) -> None:
+        """A post changed in Slack. Slack reports a link unfurling, a file or a
+        thread reply being added as a change too; only a change to its words is
+        reported. A thread root deleted while it has replies stays as a
+        `tombstone` and is reported as deleted."""
+        channel_id = str(event.get("channel") or "")
+        message = event.get("message")
+        if not channel_id or not isinstance(message, dict) or not message.get("ts"):
+            logger.warning(
+                "Slack message_changed event without a channel or message, skipping"
+            )
+            return
+        message_ref = f"{channel_id}:{message['ts']}"
+        if message.get("subtype") == "tombstone":
+            await self.report_message_deleted(channel_id, message_ref)
+            return
+        if self._is_own_post(message):
+            return
+        text = self._post_text(message)
+        previous = event.get("previous_message")
+        if isinstance(previous, dict) and self._post_text(previous) == text:
+            return
+        await self.report_message_edited(channel_id, message_ref, text)
 
     async def _handle_channel_renamed(self, event: dict[str, object]) -> None:
         channel_id = str(event.get("channel") or "")
@@ -4155,12 +4319,7 @@ class SlackAdapter(PlatformAdapter):
             )
 
     async def _handle_message_event(self, event: dict[str, object]) -> None:
-        # Skip only our own posts (loop prevention). Messages from third-party
-        # apps/bots carry a bot_id too, but we still bridge those — only the
-        # bridge's own bot (matched on user id or bot_id) is dropped.
-        if event.get("user") == self._bot_user_id or (
-            self._bot_id and event.get("bot_id") == self._bot_id
-        ):
+        if self._is_own_post(event):
             return
         subtype = event.get("subtype")
         if subtype and subtype not in self._ALLOWED_SUBTYPES:
@@ -4196,11 +4355,7 @@ class SlackAdapter(PlatformAdapter):
         """Route a post `_handle_message_event` let through to the command or
         message callback."""
         user_id = str(event.get("user", ""))
-        text = str(event.get("text", ""))
-        if not text.strip():
-            # App posts (e.g. Datadog) often carry no top-level text — the body
-            # lives in Block Kit blocks or legacy attachments.
-            text = self._extract_rich_text(event)
+        text = self._post_text(event)
         slack_channel_type = str(event.get("channel_type", ""))
         channel_type = self._to_channel_type(slack_channel_type)
 
@@ -4331,18 +4486,29 @@ class SlackAdapter(PlatformAdapter):
             # was run. A visible "Running" post would show a link code to the
             # channel, and fails outright where the app is not a member.
             if self._on_command:
-                await self._on_command(
-                    InboundCommand(
-                        channel_id=channel_id,
-                        channel_type=channel_type,
-                        sender_id=user_id,
-                        sender_name=user.name,
-                        command=command,
-                        args=args,
-                        channel_name=channel_name,
-                        reply_ref=str(payload.get("response_url", "")) or None,
-                    )
+                inbound = InboundCommand(
+                    channel_id=channel_id,
+                    channel_type=channel_type,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    command=command,
+                    args=args,
+                    channel_name=channel_name,
+                    reply_ref=str(payload.get("response_url", "")) or None,
                 )
+                try:
+                    await self._on_command(inbound)
+                except Exception as error:
+                    # Slack never sends a slash command again, so one that
+                    # fails here is otherwise answered with nothing at all.
+                    logger.error(
+                        "Could not act on /%s from %s in %s: %s",
+                        command,
+                        user_id,
+                        channel_id,
+                        _failure_without_message(error),
+                    )
+                    await self.answer_command(inbound, COULD_NOT_PROCESS)
             return
 
         # Post the visible "Running …" message as the app and use it as the
@@ -4471,6 +4637,15 @@ class SlackAdapter(PlatformAdapter):
 
     # ── User resolution ──────────────────────────────────────────────────────
 
+    def _post_text(self, message: dict[str, object]) -> str:
+        """A post's words as `InboundMessage.content` carries them."""
+        text = str(message.get("text", ""))
+        if not text.strip():
+            # App posts (e.g. Datadog) often carry no top-level text — the body
+            # lives in Block Kit blocks or legacy attachments.
+            text = self._extract_rich_text(message)
+        return text
+
     def _extract_rich_text(self, event: dict[str, object]) -> str:
         """Recover the readable body of an app post that has no top-level text.
 
@@ -4534,19 +4709,29 @@ class SlackAdapter(PlatformAdapter):
 
         return "\n".join(p.strip() for p in parts if str(p).strip())
 
+    def account_search_hint(self) -> str:
+        """Email matches only when the app may read addresses, which an app
+        made from Switch's manifest may not."""
+        if self._granted_scopes is not None and "users:read.email" in (
+            self._granted_scopes
+        ):
+            return "Your name, handle or email"
+        return "Your name or handle"
+
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Find workspace members by handle, real name or email.
 
         Slack has no server-side user search, so this pages `users.list` and
-        filters locally. Deactivated accounts and bots are dropped — a bot is
-        not a person who can own an agent. `email` is only present when the
-        app holds the `users:read.email` scope; without it the field is simply
-        absent rather than the search failing.
+        filters locally, with spaces ignored on both sides so "M M" finds
+        "MM" and the other way round. Deactivated accounts and bots are
+        dropped — a bot is not a person who can own an agent. `email` is only
+        present when the app holds the `users:read.email` scope; without it
+        the field is simply absent rather than the search failing.
         """
         if not self._web_client:
             raise RuntimeError("Slack adapter is not started")
 
-        needle = query.strip().lower()
+        needle = _spaceless(query)
         if not needle:
             return []
 
@@ -4571,12 +4756,11 @@ class SlackAdapter(PlatformAdapter):
                 real_name = profile.get("real_name", "") or member.get("real_name", "")
                 display_name = profile.get("display_name", "") or real_name or handle
                 email = profile.get("email") or None
-                haystack = " ".join(
-                    part.lower()
+                if not any(
+                    needle in _spaceless(part)
                     for part in (handle, real_name, display_name, email or "")
                     if part
-                )
-                if needle not in haystack:
+                ):
                     continue
                 matches.append(
                     DirectoryUser(

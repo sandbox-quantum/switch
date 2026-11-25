@@ -99,6 +99,7 @@ resources:
     name: "Event - {event}"
     description: "Event planning for {event} on {date}. Logistics, speaker coordination, and attendee tracking."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [event_coordinator, attendee_analyst]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

@@ -19,7 +19,7 @@ import pytest
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.clients.admin_messages import SENDER_IS_APP_MARKER
+from switch_core.clients.admin_messages import SAID_FOR_AGENT_FLAG, SENDER_IS_APP_MARKER
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
@@ -156,11 +156,13 @@ async def _room_with_posts(
     posts: list[tuple[datetime, bool]],
     sender_type: str = "user",
     agent_replies: bool = False,
+    agent_reply: dict[str, object] | None = None,
 ) -> None:
     """A room with an agent in it, where one person posts at each
     `(sent_at, as_app)`; with `agent_replies`, the agent answers each a
-    minute later. `sender_type` is the person's client: `user` on a messaging
-    platform, `member` in Switch Console."""
+    minute later, with `agent_reply` as its content when given. `sender_type`
+    is the person's client: `user` on a messaging platform, `member` in
+    Switch Console."""
     suffix = uuid.uuid4().hex[:8]
     async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
         identity = Client(
@@ -189,7 +191,13 @@ async def _room_with_posts(
                 content[SENDER_IS_APP_MARKER] = True
             said = [(identity, sent_at, content)]
             if agent_replies:
-                said.append((agent, sent_at + timedelta(minutes=1), {"body": "hi"}))
+                said.append(
+                    (
+                        agent,
+                        sent_at + timedelta(minutes=1),
+                        agent_reply or {"body": "hi"},
+                    )
+                )
             for sender, at, said_content in said:
                 seq += 1
                 session.add(
@@ -292,6 +300,28 @@ class TestCountingAPeriod:
         assert counts.turn_human_to_agent == 2
         assert counts.turn_agent_to_human == 1
         assert counts.turn_agent_to_agent == 0
+
+    async def test_what_switch_says_for_an_agent_is_not_counted(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A greeting or notice Switch posts under the agent's name, answering
+        a person, is neither the agent active nor a turn nor a message."""
+        start, end = _at("2026-11-02T00:00:00"), _at("2026-11-03T00:00:00")
+        await _room_with_posts(
+            session_factory,
+            posts=[(start + timedelta(hours=1), False)],
+            agent_replies=True,
+            agent_reply={
+                "body": "Hi! I'm agent — how can I help?",
+                SAID_FOR_AGENT_FLAG: True,
+            },
+        )
+
+        counts = await _counted(session_factory, start, end)
+
+        assert counts.agent_active == 0
+        assert counts.message_count == 1
+        assert counts.turn_human_to_agent == 0
 
 
 class _RecordingSink:

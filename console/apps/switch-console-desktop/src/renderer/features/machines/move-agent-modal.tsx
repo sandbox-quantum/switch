@@ -22,7 +22,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { ManagedAgentView, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import { MachineIcon, TonePill } from './machine-marks';
-import { machineKindLabel, type MoveTarget, moveTarget } from './machine-state';
+import { machineKindLabel, type MoveTarget, moveTarget, namesakeLabel } from './machine-state';
 
 type Props = BaseModalProps<void> & { agent: ManagedAgentView };
 
@@ -114,6 +114,7 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
                 key={machine.id}
                 machine={machine}
                 target={target}
+                namesake={namesakeLabel(machine, machines.data ?? [], new Date())}
                 picked={chosen === machine.id}
                 onPick={() => setPicked(machine.id)}
               />
@@ -148,11 +149,14 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
 function TargetRow({
   machine,
   target,
+  namesake,
   picked,
   onPick,
 }: {
   machine: OwnedMachine;
   target: MoveTarget;
+  /** When it was last seen, where another of the owner's devices has its name (`namesakeLabel`). */
+  namesake: string | null;
   picked: boolean;
   onPick: () => void;
 }) {
@@ -190,6 +194,7 @@ function TargetRow({
           </span>
           {!thisComputer && <TonePill tone="idle" dot={false} label={machineKindLabel(machine)} />}
           <TonePill tone={online ? 'ok' : 'problem'} label={online ? 'Online' : 'Offline'} />
+          {namesake && <span className="shrink-0 text-xs text-foreground-muted">{namesake}</span>}
         </span>
         <span className={cn('mt-0.5 block truncate text-xs', LINE_TEXT[target.tone])}>
           {target.line}

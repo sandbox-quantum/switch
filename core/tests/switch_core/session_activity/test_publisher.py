@@ -52,6 +52,7 @@ from .bridge_fixtures import (
     RefusedForGood,
     RefusedForNow,
     make_bridged_room,
+    wait_until_not_none,
 )
 from .conftest import AGENT, make_room, pick
 
@@ -980,7 +981,12 @@ async def test_a_press_on_a_turns_message_finds_its_turn(
 ):
     await _turn(service, bridged.room_id, "running", 1)
     [posted] = await platform.wait_for(1)
-    target = await publisher.stop_target(bridged.channel_id, posted.ref)
+    # The row `stop_target` looks up is written just after the message that
+    # shows it, not with it (`_begin_turn`), so a slow machine may still be
+    # catching up to it the instant after `wait_for` sees the message itself.
+    target = await wait_until_not_none(
+        lambda: publisher.stop_target(bridged.channel_id, posted.ref)
+    )
     assert target is not None
     assert (target.agent_id, target.session_id, target.room_id) == (
         AGENT,

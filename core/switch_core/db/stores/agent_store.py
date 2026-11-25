@@ -137,6 +137,33 @@ class AgentStore:
             )
         ) or 0
 
+    async def count_owned_by(self, session: AsyncSession, owner_id: str) -> int:
+        """How many agents `owner_id` owns in the bound tenant, children
+        included: a member's agents, as their agent list shows them."""
+        return (
+            await session.scalar(
+                select(func.count())
+                .select_from(Agent)
+                .where(
+                    Agent.tenant_id == require_tenant_id(), Agent.owner_id == owner_id
+                )
+            )
+        ) or 0
+
+    async def holders_of_keys(
+        self, session: AsyncSession, key_ids: Collection[str]
+    ) -> dict[str, Agent]:
+        """The agent whose row points at each of `key_ids`, by key id, whatever
+        the key's type: an agent's own key, which it signs in with, or one
+        retired while the agent stays. Either goes with its agent, and deleting
+        it first would fail on the row's reference."""
+        if not key_ids:
+            return {}
+        agents = await session.scalars(
+            select(Agent).where(Agent.api_key_id.in_(list(key_ids)))
+        )
+        return {agent.api_key_id: agent for agent in agents}
+
     async def get_by_owner(self, session: AsyncSession, owner_id: str) -> list[Agent]:
         """Every agent `owner_id` owns in the bound tenant.
 

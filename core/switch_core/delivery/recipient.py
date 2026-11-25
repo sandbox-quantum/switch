@@ -32,6 +32,7 @@ from sqlalchemy import select
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import ORGANIZATION_ADMIN_TENANT_ROLE, TENANT_ADMIN_ROLES
 from switch_core.bridges.agent.commands import (
+    AGENT_GREETING_KEY,
     AGENT_GREETINGS,
     COMMANDS_BY_NAME,
     _addressed_by_name_or_role,
@@ -57,6 +58,7 @@ from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
     AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
+    SAID_FOR_AGENT_FLAG,
     SENDER_IS_APP_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
@@ -1190,6 +1192,7 @@ class AgentRecipient:
             )
             return
         opening = opening_message_for(meta, self.agent.id)
+        extra_content: dict[str, object] = {SAID_FOR_AGENT_FLAG: True}
         if opening is not None:
             greeting = opening
         elif meta.console_chat:
@@ -1198,8 +1201,13 @@ class AgentRecipient:
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
+            extra_content[AGENT_GREETING_KEY] = True
         await self.actor.send_message(
-            self._room.room_id, greeting, format="markdown", metered=False
+            self._room.room_id,
+            greeting,
+            format="markdown",
+            metered=False,
+            extra_content=extra_content,
         )
 
     # ── Commands ──────────────────────────────────────────────────────────────
@@ -1392,6 +1400,7 @@ class AgentRecipient:
             format=format,
             thread_root_id=thread_root_id,
             metered=False,
+            extra_content={SAID_FOR_AGENT_FLAG: True},
         )
 
     async def _resolve_room_meta(self, transport_room_id: str) -> RoomMeta | None:
@@ -1808,7 +1817,10 @@ class AgentRecipient:
         if decision.allowed:
             try:
                 await self._budget_guard.require_within(
-                    session, tenant_id=self.tenant_id, agent_id=agent.id
+                    session,
+                    tenant_id=self.tenant_id,
+                    agent_id=agent.id,
+                    room_id=meta.room_id,
                 )
             except BudgetExceeded as exc:
                 refusal = str(exc)
@@ -2012,6 +2024,7 @@ _FOLLOW_UPS: dict[ConversationRoute, FollowUp] = {
     ConversationRoute.THREAD_FOLLOW_UP: "thread_follow_up",
     ConversationRoute.CHANNEL_FOLLOW_UP: "channel_follow_up",
     ConversationRoute.MAIN_AGENT: "main_agent",
+    ConversationRoute.ONE_TO_ONE: "one_to_one",
 }
 
 

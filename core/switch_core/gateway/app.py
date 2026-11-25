@@ -36,10 +36,13 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.admission import GatewayAdmission
+from switch_core.gateway.agent_key_rotation import router as agent_key_rotation_router
 from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.browser_handoff import router as browser_handoff_router
 from switch_core.gateway.changes import router as changes_router
 from switch_core.gateway.chats import chat_error_response
 from switch_core.gateway.chats import router as chats_router
@@ -58,6 +61,7 @@ from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
 )
+from switch_core.gateway.moderation import router as moderation_router
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.organization_connector_apps import (
@@ -85,11 +89,14 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.room_schedules import router as room_schedules_router
+from switch_core.gateway.rooms import auto_route_router as room_auto_route_router
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
 )
 from switch_core.gateway.service_flows import router as service_flows_router
+from switch_core.gateway.stream_caps import GatewayStreamCaps
+from switch_core.gateway.suspension import router as suspension_router
 from switch_core.gateway.teams_placements import router as teams_placements_router
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
@@ -244,6 +251,26 @@ def create_gateway_app(
     origins = allowed_origins(config)
     log_origin_setup(config, origins)
     app.add_middleware(OriginCheckMiddleware, allowed=origins)
+    # Outside everything but admission, which lets streams through: a stream
+    # refused here does no other work.
+    app.add_middleware(
+        GatewayStreamCaps,
+        per_caller=config.gateway_streams_per_caller,
+        per_process=config.gateway_streams_per_process,
+        keyring=config.keyring,
+    )
+    # Last, so outermost: a request turned away does no other work.
+    app.add_middleware(
+        GatewayAdmission,
+        limit=config.gateway_requests_at_once,
+        per_caller=config.gateway_requests_per_caller,
+        read_timeout=config.gateway_read_statement_timeout,
+        keyring=config.keyring,
+        # The only bearer token a gateway route takes (`hosted_controller.py`).
+        controller_token=app.state.hosted_controller_settings.token.get_secret_value()
+        if app.state.hosted_controller_settings
+        else None,
+    )
 
     app.add_exception_handler(RequestValidationError, validation_error_response)
     app.add_exception_handler(SessionError, session_error_response)
@@ -252,12 +279,16 @@ def create_gateway_app(
         agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
     )
     app.include_router(auth_router, tags=["auth"])
+    app.include_router(browser_handoff_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(workos_sign_in_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(organizations_router, tags=["organizations"])
     app.include_router(organization_workspaces_router, tags=["organizations"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
+    if config.decision_routing_enabled:
+        app.include_router(room_auto_route_router, prefix="/rooms", tags=["rooms"])
+    app.include_router(moderation_router, tags=["moderation"])
     app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
@@ -276,12 +307,15 @@ def create_gateway_app(
     app.include_router(packages_router, tags=["packages"])
     app.include_router(templates_router, tags=["templates"])
     app.include_router(ownership_router, tags=["ownership"])
+    app.include_router(suspension_router, tags=["suspension"])
+    app.include_router(agent_key_rotation_router, tags=["agents"])
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])
     app.include_router(organization_guardrails_router, tags=["organizations"])
     app.include_router(workspace_guardrails_router, tags=["trust-settings"])
-    app.include_router(decision_settings_router, tags=["decision-settings"])
+    if config.decision_routing_enabled:
+        app.include_router(decision_settings_router, tags=["decision-settings"])
     app.include_router(feature_flags_router, tags=["feature-flags"])
     app.include_router(
         messaging_installs_router,

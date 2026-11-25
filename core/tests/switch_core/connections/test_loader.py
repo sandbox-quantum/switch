@@ -17,12 +17,36 @@ from switch_core.connections.loader import (
 
 PLACEHOLDERS = {
     "asana",
+    "amplitude",
+    "azure-devops",
+    "bigquery",
     "bitbucket",
-    "new-relic",
-    "salesforce",
     "box",
+    "calendly",
     "canva",
+    "clickup",
+    "cloudflare",
+    "dropbox",
+    "grafana",
+    "hubspot",
+    "intercom",
+    "launchdarkly",
+    "marketo",
+    "miro",
+    "monday",
+    "new-relic",
+    "pagerduty",
+    "pendo",
+    "salesforce",
+    "servicenow",
+    "shopify",
+    "snowflake",
+    "stripe",
+    "supabase",
+    "trello",
     "vercel",
+    "zendesk",
+    "zoom",
 }
 
 
@@ -622,6 +646,17 @@ def test_rejects_a_skill_whose_name_differs_from_the_slug(catalog_copy):
     path = catalog_copy / "github" / "skill" / "SKILL.md"
     path.write_text(path.read_text().replace("name: github", "name: git"))
     with pytest.raises(CatalogError, match="frontmatter"):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_category_outside_the_list(catalog_copy):
+    path = catalog_copy / "asana" / "connection.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "category: Project management", "category: Task tracking"
+        )
+    )
+    with pytest.raises(CatalogError, match="(?s)asana is invalid.*category"):
         load_catalog(catalog_copy)
 
 

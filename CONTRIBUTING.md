@@ -22,8 +22,7 @@ just run                 # run switch-core locally (:8000)
 just gateway-dev         # run the gateway frontend (separate terminal)
 ```
 
-`just up` starts the **supporting services** in Docker — PostgreSQL and
-Mattermost. You run **switch-core** and the **gateway** yourself so you get
+`just up` starts the **supporting services** in Docker — PostgreSQL. You run **switch-core** and the **gateway** yourself so you get
 hot-reload while developing: `just run` (switch-core on `:8000`) and
 `just gateway-dev` (the frontend), each in its own terminal. Stop the stack with
 `just down`, or `just reset` to also wipe the volumes.
@@ -65,13 +64,12 @@ Run `just` with no arguments to list every recipe. The most-used ones:
 | `gateway/` | Operator dashboard frontend (Node/Vite) |
 | `console/` | The Switch Console desktop app |
 | `deploy/` | Deployment assets — Docker Compose stacks (`local/`), the Helm chart (`remote/`) and shared images |
-| `docs/` | `official/` — the published documentation synced into the repo (generated, edit the docs repository); `old/` — internal architecture, protocol and bridge references |
+| `docs/` | `old/` — internal architecture, protocol and bridge references (the published documentation lives at [docs.switchagents.ai](https://docs.switchagents.ai)) |
 | `switch-expert/` | Instructions and knowledge for an agent that answers questions about Switch |
 | `justfile` | Repo-root task runner (drives all code trees) |
 
 The [Internals](https://docs.switchagents.ai/switch-rooms/internals) section of
-the published docs explains how Switch works (an offline copy is in
-[`docs/official/internals/`](docs/official/internals/index.md)). [`docs/old/ARCHITECTURE.md`](docs/old/ARCHITECTURE.md) is an older overview from
+the published docs explains how Switch works. [`docs/old/ARCHITECTURE.md`](docs/old/ARCHITECTURE.md) is an older overview from
 when Switch ran on Matrix, and much of it is out of date.
 [`docs/old/GATEWAY_OIDC_SETUP.md`](docs/old/GATEWAY_OIDC_SETUP.md) covers
 setting up bring-your-own OIDC sign-in for the gateway, including the WorkOS

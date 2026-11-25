@@ -11,9 +11,23 @@ does when there is none or it fails.
 ## Turning it on for a server
 
 Auto-route needs two feature flags, `follow_the_conversation` and
-`decision_routing`, in `FEATURE_FLAGS_ENABLED`. With the flag off nothing is
-ever sent to a decision service, `!auto-route` says the feature is off, and
-the room toggle shows it unavailable.
+`decision_routing`, in `FEATURE_FLAGS_ENABLED`. With the flag off the server
+offers nothing of auto-route, so a deployment can run a release that has it
+without anyone seeing it:
+
+- nothing is ever sent to a decision service;
+- the decision settings routes (`/gateway/decision-settings`, its `/test`) and
+  `PUT /gateway/rooms/{id}/auto-route` are not mounted, so they answer 404;
+- a room's detail carries no `auto_route`, so Console and the dashboard show
+  no auto-route section;
+- Console offers no **Settings → Message routing**;
+- `!auto-route` is not a command: it gets "Unknown command", and it is missing
+  from `!help`, Console chat's command list, the Slack manifest Switch offers
+  for a team's own app, and the Discord and Telegram command menus.
+
+Turning the flag off deletes nothing. A workspace's choice of backend and each
+room's auto-route and triage agent are kept, and apply again once the flag is
+back on.
 
 ## The server default
 
@@ -25,13 +39,13 @@ has not chosen one:
 | `DECISION_ENDPOINT_URL` | The decision service. Its base URL (`http://host:8230`) or its `/decide` URL both work. The bundled Helm chart (`decision.enabled`) and the compose `decision` profile set it. |
 | `DECISION_API_KEY` | Sent as the bearer token, when the service requires one. |
 | `DECISION_TIMEOUT_SECONDS` | How long one decision may take (default 5), for every workspace's backend. |
-| `DECISION_BEDROCK_ENABLED` | Whether a workspace may choose Haiku on Amazon Bedrock (default off). Bedrock runs in the server's decision service on the server's own AWS credentials, which is why the operator has to allow it. |
+| `DECISION_BEDROCK_ENABLED` | Whether a workspace may choose Haiku on Amazon Bedrock (default off), read only when the decision service doesn't list its backends in `/health` (one older than the release that reads them). A service that lists them decides alone; see "What a workspace is offered". |
 | `DECISION_PENDING_MAX_AGE_SECONDS` | How long a message may wait for a decision, across a restart or an outage, before it is dropped rather than answered late (default 120). |
 | `DECISION_SWEEP_CONCURRENCY` | How many workspaces' waiting decisions each process's sweep settles at once (default 4, 1 to 64). |
 
 With no `DECISION_ENDPOINT_URL`, there is no server default: auto-route is
-unavailable in every workspace until its admins choose a backend, and Haiku is
-not offered (it runs in the server's decision service).
+unavailable in every workspace until its admins choose a backend, and none of
+the models the server's decision service runs is offered.
 
 ### The model behind the server default
 
@@ -69,25 +83,63 @@ confidence usually just under the 0.6 threshold.
 ## Each workspace's choice
 
 A workspace's admins (its owners and admins, and the server operator) choose
-in Switch Console → Admin → Decision routing. Switch stores one row per
+in Switch Console → Settings → Message routing. Switch stores one row per
 workspace (`decision_settings`); no row means the server default.
 
-- **Server default**: whatever the server is configured with. "Use server
-  default" deletes the workspace's row.
+- **Server default**: whatever the server is configured with, named by the
+  model its decision service runs ("Server default: Qwen3 235B (Bedrock)").
+  "Use server default" deletes the workspace's row.
+- **The server's self-hosted model** (`self_hosted`): the model the server's
+  decision service runs on its own model server (`X-Decision-Backend:
+  systemone`). Room context stays with the server.
+- **Gemini** (`gemini`): Gemini in the server's decision service
+  (`gemini_decision`), which falls back to another model when Gemini is slow
+  if its operator configured one; Console names the fallback and after how
+  long.
+- **Claude Haiku (Bedrock)** (`haiku_bedrock`): Haiku on Amazon Bedrock, on the
+  server's AWS credentials; no key is stored.
+- **Claude Haiku with your Anthropic key** (`haiku_anthropic`): the
+  workspace's Anthropic key, sent per request to the server's decision
+  service, which calls Anthropic with it.
+- **Your own endpoint** (`endpoint`): the workspace's own decision service, a
+  URL and an optional key sent as its bearer token. That workspace's room
+  context goes there, by its admin's choice; no other workspace is affected.
 - **None**: auto-route is off in the workspace's rooms, even with a server
   default. Rooms behave as they do without it.
-- **Self-hosted endpoint**: the workspace's own decision service, a URL and an
-  optional key sent as its bearer token. That workspace's room context goes
-  there, by its admin's choice; no other workspace is affected.
-- **Haiku (Anthropic API)**: the workspace's Anthropic key, sent per request
-  to the server's decision service, which calls Anthropic with it.
-- **Haiku on Bedrock**: offered only where the operator set
-  `DECISION_BEDROCK_ENABLED`; no key is stored.
 - **Confidence threshold**: between 0 and 1, sent to the service as the
-  confidence it needs to name an agent. Empty leaves it to the service. Where
-  the service picks by lead instead (`DECISION_MIN_LEAD`, see the decision
-  service's README), a workspace threshold puts that workspace's decisions
-  back on the threshold.
+  confidence it needs to name an agent. Empty leaves it to the service, which
+  applies the threshold of the backend that answered; Console shows that
+  default beside the field. Where the service picks by lead instead
+  (`DECISION_MIN_LEAD`, see the decision service's README), a workspace
+  threshold puts that workspace's decisions back on the threshold.
+
+### What a workspace is offered
+
+The choices that run in the server's decision service are offered as that
+service says. switch-core reads the service's `/health` when an admin opens,
+saves or tests the page (kept for 15 seconds):
+
+1. **It lists `backends`**: a choice is offered iff its backend is listed
+   (`systemone`, `gemini_decision`, `bedrock`, `anthropic`), and the labels,
+   models, default thresholds and fallbacks Console shows come from there.
+   `DECISION_BEDROCK_ENABLED` is not read.
+2. **It answers without `backends`** (a decision service older than this):
+   Haiku with a workspace's key is offered, Haiku on Bedrock only with
+   `DECISION_BEDROCK_ENABLED`, and neither the self-hosted model nor Gemini.
+3. **It can't be read** (unreachable, an error status such as the 503 a
+   service answers while its model server is down, or a body that isn't its
+   health): nothing new is offered, a saved choice can be kept and re-saved,
+   and the page says why. Test still runs, since it shows for itself whether
+   the backend answers.
+
+Deciding a message never reads `/health`. A saved choice the service has
+stopped running is a failed decision (counted, and told to the room as
+below), not a quiet switch to another model.
+
+A saved choice this release doesn't know (a newer release wrote it, during a
+rolling deploy or before a rollback) turns auto-route off in that workspace,
+with a warning in the log and on the page, rather than sending its rooms
+anywhere it didn't choose.
 
 A saved key is encrypted under the server's keys (`SECRET_KEYS`, re-encrypted
 on rotation like every other stored secret) and only its last four characters
@@ -102,7 +154,8 @@ that saved it at once, the others within a few seconds.
 question, nothing from any room) against the values entered, saved or not, and
 shows the pick, the confidence and the time it took, or why it failed: not
 reachable, timed out, key refused, an answer that is not a decision, a backend
-the service cannot run, or nothing to test.
+the service cannot run (or doesn't list), or nothing to test. It works for
+every choice, the server default included.
 
 The same settings are served by the gateway API, for that workspace's admins
 only: `GET`, `PUT` and `DELETE /gateway/decision-settings`, and
@@ -113,8 +166,9 @@ only: `GET`, `PUT` and `DELETE /gateway/decision-settings`, and
 `!auto-route on` and the auto-route toggle on the room page (Console and the
 gateway, `PUT /gateway/rooms/{id}/auto-route`) set the same switch. Turning it
 on is refused, with the reason and who can fix it, where it cannot act: the
-flag is off, or the workspace resolves to no backend. A room's detail reports
-`auto_route: {on, available, reason, fallback_agent, fallback_agent_name}`.
+workspace resolves to no backend. A room's detail reports
+`auto_route: {on, available, reason, fallback_agent, fallback_agent_name}`,
+or null on a server with the flag off.
 
 ### Who can change it
 
@@ -198,6 +252,7 @@ under `decision`, and over OTLP they are `decision.*` attributes:
 | `reason` | Why it reached nobody, in words. |
 | `backend`, `candidates` | Which kind of backend was asked, and about how many agents. |
 | `model`, `model_choice`, `confidence`, `threshold` | What the model picked and how sure it was, against the threshold. |
+| `answered_by` | The decision service's own name for the backend that answered (`bedrock_openai`, `systemone`, `gemini_decision`, `bedrock`, ...), when it says: with `gemini`, `bedrock` means its fallback answered. |
 | `latency_ms`, `model_ms`, `wait_ms` | The whole request as Switch timed it; the model's own time as the backend reported it; and the time from the person's message to this record. |
 | `failure` | Why the backend gave no usable answer, when it did not. |
 

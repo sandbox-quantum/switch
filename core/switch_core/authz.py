@@ -158,6 +158,22 @@ def owns(principal: Principal, owner_id: str | None) -> bool:
     return owner_id is not None and owner_id == principal.id
 
 
+def can_read_in_package(
+    principal: Principal, item: Authorizable, package_owner_id: str
+) -> bool:
+    """Whether a reference or document in a package is handed out, with what
+    is in it, to `principal`, who may read the package.
+
+    A package shares what its own owner put in it of theirs, private or not.
+    Anything else in it keeps its own rule (`can`'s read): someone else's
+    item, readable when it was added and private since, is not re-shared by
+    whoever owns the package, however widely they open the package.
+    """
+    return (item.owner_id is not None and item.owner_id == package_owner_id) or can(
+        principal, "read", item
+    )
+
+
 def can_manage(principal: Principal, owner_id: str | None) -> bool:
     """Owner-or-admin check for entities that have no visibility model.
 
@@ -272,16 +288,17 @@ def can_delete_api_key(
     owner_id: str | None,
     key_type: str,
     *,
-    an_agent_signs_in_with_it: bool,
+    an_agent_holds_it: bool,
 ) -> bool:
     """Whether `principal` may delete an API key: their own, or, administering
-    the workspace, anyone's key for adding agents; never one an agent still
-    signs in with. That key goes with its agent; once the agent is deleted,
-    what is left of it may go too."""
+    the workspace, anyone's key for adding agents or retired one; never one an
+    agent still holds, as its own key or a retired one (`AgentStore.holders_of_keys`).
+    That key goes with its agent; once the agent is deleted, what is left of it
+    may go too."""
     reaches = owns(principal, owner_id) or (
         principal.is_admin and key_type in ADMIN_REMOVABLE_KEY_TYPES
     )
-    return reaches and not an_agent_signs_in_with_it
+    return reaches and not an_agent_holds_it
 
 
 def require_group_filing(is_admin: bool) -> None:

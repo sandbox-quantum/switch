@@ -119,6 +119,7 @@ def _room(room_id: str, name: str) -> SimpleNamespace:
         description="d",
         transport_room_id="!m:x",
         archived_at=None,
+        frozen_at=None,
         bridge_id=None,
     )
 

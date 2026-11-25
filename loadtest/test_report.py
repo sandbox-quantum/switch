@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Stats  # noqa: E402
-from report import pct, phase_summary  # noqa: E402
+from report import bulk_verdict, pct, phase_summary  # noqa: E402
 
 
 def test_p99_is_the_nearest_rank_not_the_maximum():
@@ -33,3 +33,84 @@ def test_a_dropped_controller_socket_is_one_error_however_many_agents_it_carried
     }
     s = phase_summary(phase, stats, [], [1000])
     assert s["errors"] == 1 and s["controller_drops"] == 1 and s["detached"] == 20
+
+
+def test_the_busiest_pod_and_console_re_reads_are_counted_per_window():
+    stats = Stats(phase="idle@60")
+    stats.console_refresh("idle@60", 0.5, 61, 0)
+    stats.console_refresh("idle@60", 2.5, 61, 3)
+    samples = [
+        {"kind": "db", "phase": "idle@60", "app_total": 50, "app_active": 30,
+         "app_idle_tx": 10, "db_total": 60, "lock_waits": 0, "app_busy_client_max": 12},
+        {"kind": "db", "phase": "idle@60", "app_total": 80, "app_active": 40,
+         "app_idle_tx": 30, "db_total": 90, "lock_waits": 0, "app_busy_client_max": 40},
+    ]  # fmt: skip
+    phase = {
+        "name": "idle@60",
+        "scenario": "idle",
+        "seconds": 60.0,
+        "agents": 60,
+        "pool_ceiling": 40,
+    }
+    s = phase_summary(phase, stats, samples, [60])
+    assert (s["pool_busy_pod_max"], s["pool_ceiling"], s["pool_full"]) == (40, 40, True)
+    assert s["console_refreshes"] == 2 and s["console_requests"] == 122
+    assert s["console_refresh_ms_p99"] == 2500.0 and s["console_errors"] == 3
+    assert s["errors"] == 3
+
+
+def test_a_pool_within_a_tenth_of_its_ceiling_is_full_and_one_with_none_known_is_not():
+    stats = Stats(phase="idle@60")
+    base = {"name": "idle@60", "scenario": "idle", "seconds": 60.0, "agents": 60}
+
+    def full(busy: int, ceiling: int | None) -> bool:
+        sample = {"kind": "db", "phase": "idle@60", "app_total": 10, "app_active": 5,
+                  "app_idle_tx": 1, "db_total": 12, "lock_waits": 0,
+                  "app_busy_client_max": busy}  # fmt: skip
+        phase = {**base, "pool_ceiling": ceiling} if ceiling else base
+        return phase_summary(phase, stats, [sample], [60])["pool_full"]
+
+    assert full(36, 40) and full(39, 40)
+    assert not full(35, 40)
+    assert not full(39, None)
+
+
+def _bulk_window(clicks: list[dict], stats: Stats | None = None) -> dict:
+    phase = {
+        "name": "admin-bulk@200",
+        "scenario": "admin-bulk",
+        "seconds": 120.0,
+        "agents": 200,
+        "bulk": clicks,
+    }
+    return phase_summary(phase, stats or Stats(phase="admin-bulk@200"), [], [200])
+
+
+def test_an_admin_bulk_window_passes_when_every_click_changed_its_rooms():
+    s = _bulk_window(
+        [
+            {"rooms": 200, "status": 200, "ms": 900.0, "changed": 200, "skipped": 0},
+            {"rooms": 26, "status": 200, "ms": 300.0, "changed": 26, "skipped": 0},
+        ]
+    )
+    assert s["bulk"] == {
+        "clicks": 2,
+        "rooms": 226,
+        "changed": 226,
+        "failed_clicks": 0,
+        "click_ms_max": 900.0,
+    }
+    assert bulk_verdict(s) == []
+
+
+def test_an_admin_bulk_window_fails_on_a_failed_click_or_errors_beside_it():
+    stats = Stats(phase="admin-bulk@200")
+    stats.event("drop", "a1", why="1011")
+    s = _bulk_window(
+        [{"rooms": 200, "status": 500, "ms": 30000.0, "error": "timeout"}], stats
+    )
+    assert bulk_verdict(s) == [
+        "1 clicks failed",
+        "0 of 200 rooms changed",
+        "1 errors in the agents' traffic",
+    ]

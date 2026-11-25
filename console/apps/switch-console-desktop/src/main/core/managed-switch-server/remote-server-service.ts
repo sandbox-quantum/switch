@@ -859,7 +859,7 @@ export class RemoteServerService {
         this.removedHere.delete(sshHost);
         await this.record(sshHost, host, 'started');
       }
-      reportManagedServerStart('remote', result);
+      reportManagedServerStart('remote', activate ? 'user' : 'automatic', result);
       return result;
     } catch (error) {
       host?.dispose();
@@ -876,7 +876,7 @@ export class RemoteServerService {
       log.error(`remote-switch-server: start failed for ${sshHost}`, { error });
       this.setStatus(sshHost, { phase: 'error', error: message });
       this.failUpgrade(sshHost, message);
-      reportManagedServerStartThrew('remote');
+      reportManagedServerStartThrew('remote', activate ? 'user' : 'automatic');
       return { kind: 'error', message, failure: 'unexpected' };
     } finally {
       this.busy.delete(sshHost);

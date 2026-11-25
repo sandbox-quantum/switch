@@ -78,6 +78,35 @@ export interface AgentSummary {
   createdAt: string;
 }
 
+/** A room an agent is a member of, as the gateway lists an agent's rooms. */
+export interface AgentRoomMembership {
+  roomId: string;
+  roomName: string;
+  archived: boolean;
+  status: string;
+  roomRole: string | null;
+}
+
+interface RawAgentRoomMembership {
+  room_id: string;
+  room_name: string;
+  archived: boolean;
+  status: string;
+  room_role: string | null;
+}
+
+function toAgentRoomMembership(
+  row: RawAgentRoomMembership,
+): AgentRoomMembership {
+  return {
+    roomId: row.room_id,
+    roomName: row.room_name,
+    archived: row.archived,
+    status: row.status,
+    roomRole: row.room_role,
+  };
+}
+
 /**
  * One event off the agent-facing notification stream.
  *
@@ -500,17 +529,49 @@ export class SwitchClient {
   }
 
   /**
-   * `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator.
-   * The account signs in with `password` for as long as it lasts, so it goes to the run's issued secrets.
+   * `POST /gateway/auth/signup` — a new account, made the way a person makes
+   * one, and a client already signed in as it with the session signing up
+   * opened. Sign-up puts the account in the server's default workspace as a
+   * plain member. Its password and session go to the run's issued secrets.
+   *
+   * This is the only way the harness makes an account, so a server that
+   * refuses sign-up fails here, saying what it needs.
    */
-  async createUser(params: {
-    name: string;
+  async signUp(params: {
     email: string;
     password: string;
-    role: "user" | "admin";
-  }): Promise<{ id: string }> {
+    displayName: string;
+  }): Promise<{ id: string; client: SwitchClient }> {
     this.issued.record(params.password);
-    return this.gateway<{ id: string }>("POST", "/users", params);
+    let signedUp: { parsed: unknown; response: Response };
+    try {
+      signedUp = await this.rawRequest("POST", "/gateway/auth/signup", {
+        body: {
+          email: params.email,
+          password: params.password,
+          display_name: params.displayName,
+        },
+      });
+    } catch (error) {
+      if (error instanceof SwitchHttpError && (error.status === 403 || error.status === 429)) {
+        throw new Error(
+          `The server refused to sign up ${params.email} (${error.status}: ${errorDetail(error.body)}). ` +
+            "The harness makes its own accounts by signing up, as a person does, so the server " +
+            "must allow it: GATEWAY_SIGNUP_ENABLED=true, with password sign-in on, no gateway " +
+            "OIDC sign-in and GATEWAY_SIGNUP_MODE=default_tenant, and GATEWAY_SIGNUP_MAX_PER_HOUR " +
+            "above what a run signs up. The ephemeral stack (scripts/ephemeral-stack.sh) starts " +
+            "its server that way.",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    const cookie = sessionCookieFrom(signedUp.response);
+    if (!cookie) throw new Error("Signing up returned no switch_auth cookie.");
+    this.issued.record(cookie.slice("switch_auth=".length));
+    const client = this.as(params.email, params.password);
+    client.gatewayCookie = cookie;
+    return { id: (signedUp.parsed as { id: string }).id, client };
   }
 
   /**
@@ -973,6 +1034,17 @@ export class SwitchClient {
     return this.gateway("PUT", `/rooms/${roomId}/auto-route`, body);
   }
 
+  /** `PATCH /gateway/rooms/{room_id}`: change who can read the room. */
+  async setRoomReadVisibility(
+    roomId: string,
+    readVisibility: "public" | "private",
+  ): Promise<RoomDetail> {
+    const row = await this.gateway<RawRoom>("PATCH", `/rooms/${roomId}`, {
+      read_visibility: readVisibility,
+    });
+    return toRoomDetail(row);
+  }
+
   async deleteRoom(roomId: string): Promise<void> {
     await this.gateway("DELETE", `/rooms/${roomId}`);
   }
@@ -1370,6 +1442,29 @@ export class SwitchClient {
     return body.code;
   }
 
+  /** `GET /gateway/agents/{agent_id}`: the rooms the agent's detail lists. */
+  async agentDetailRooms(agentId: string): Promise<AgentRoomMembership[]> {
+    const detail = await this.gateway<{ rooms: RawAgentRoomMembership[] }>(
+      "GET",
+      `/agents/${encodeURIComponent(agentId)}`,
+    );
+    return detail.rooms.map(toAgentRoomMembership);
+  }
+
+  /** `GET /gateway/agents/rooms`: several agents' rooms in one request, keyed by agent id. */
+  async roomsOfAgents(
+    agentIds: string[],
+  ): Promise<{ agentId: string; rooms: AgentRoomMembership[] }[]> {
+    const query = new URLSearchParams(agentIds.map((id) => ["agent_id", id]));
+    const rows = await this.gateway<
+      { agent_id: string; rooms: RawAgentRoomMembership[] }[]
+    >("GET", `/agents/rooms?${query}`);
+    return rows.map((row) => ({
+      agentId: row.agent_id,
+      rooms: row.rooms.map(toAgentRoomMembership),
+    }));
+  }
+
   async listAgents(): Promise<AgentSummary[]> {
     const rows = await this.gateway<
       { id: string; name: string; created_at: string }[]
@@ -1503,9 +1598,13 @@ export class SwitchClient {
     return check.refusal;
   }
 
-  /** `DELETE /gateway/users/{user_id}` — the deployment operator deletes someone's whole account. */
-  async deleteUser(userId: string): Promise<void> {
-    await this.gateway<unknown>("DELETE", `/users/${encodeURIComponent(userId)}`);
+  /**
+   * `DELETE /gateway/auth/me` — delete the signed-in account everywhere on
+   * the server, confirmed by typing `email`, which must be the account's own.
+   * Its sessions stop working, this client's included.
+   */
+  async deleteMyAccount(email: string): Promise<void> {
+    await this.gateway<unknown>("DELETE", "/auth/me", { email });
   }
 
   /**
@@ -1514,14 +1613,6 @@ export class SwitchClient {
    */
   async endMySessions(): Promise<void> {
     await this.gateway<unknown>("POST", "/auth/sessions/revoke");
-  }
-
-  /** `POST /gateway/users/{user_id}/sessions/revoke` — the deployment operator signs someone out of every device. */
-  async endUserSessions(userId: string): Promise<void> {
-    await this.gateway<unknown>(
-      "POST",
-      `/users/${encodeURIComponent(userId)}/sessions/revoke`,
-    );
   }
 
   /** `GET /gateway/tenants/{tenant_id}/retention` — how long the workspace keeps messages; null days is forever. */
@@ -1636,9 +1727,9 @@ export class SwitchClient {
     });
   }
 
-  /** `GET /gateway/operator/workspaces` — every workspace on the server, platform operator only. */
-  async operatorWorkspaces(): Promise<{ id: string; name: string }[]> {
-    return this.gateway<{ id: string; name: string }[]>("GET", "/operator/workspaces");
+  /** `GET /gateway/tenants` — the workspaces the signed-in account belongs to, and its role in each. */
+  async workspaces(): Promise<WorkspaceMembership[]> {
+    return this.gateway<WorkspaceMembership[]>("GET", "/tenants");
   }
 
   /** `GET /gateway/auth/session` — the signed-in account's own id. */

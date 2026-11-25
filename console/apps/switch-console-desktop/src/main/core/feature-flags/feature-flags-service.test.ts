@@ -45,6 +45,15 @@ describe('FeatureFlagsService', () => {
     expect(h.service.get('a').flags).not.toHaveProperty('not.a.console.flag');
   });
 
+  it('reads decision routing, off on a server that does not send it', async () => {
+    const h = harness([server('on'), server('older')]);
+    h.responses.set('on', [{ key: 'decision_routing', enabled: true }]);
+    h.responses.set('older', [{ key: 'service_connections', enabled: true }]);
+    await h.service.refreshAll();
+    expect(h.service.get('on').flags.decision_routing).toBe(true);
+    expect(h.service.get('older').flags.decision_routing).toBe(false);
+  });
+
   it('reports a change seen on a later poll, and nothing when nothing changed', async () => {
     const h = harness([server('a')]);
     await h.service.refreshAll();

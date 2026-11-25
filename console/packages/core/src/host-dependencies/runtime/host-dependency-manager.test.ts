@@ -157,6 +157,32 @@ describe('HostDependencyManager install', () => {
     });
   });
 
+  it('logs everything a failed install printed, and its exit code', async () => {
+    const output = 'Downloading…\nError: first line\nsecond line of the same error';
+    const runInstallCommand = vi.fn(async () =>
+      err({
+        type: 'command-failed' as const,
+        message: 'Install command failed.',
+        output,
+        exitCode: 1,
+      })
+    );
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const manager = new HostDependencyManager(missingCtx, {
+      dependencies: TEST_DEPENDENCIES,
+      runInstallCommand,
+      logger,
+    });
+
+    const result = await manager.install('codex');
+
+    expect(result.success).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[HostDependencyManager] Failed to install codex: Install command failed.',
+      { type: 'command-failed', exitCode: 1, output }
+    );
+  });
+
   it('returns an error result for unknown dependency ids', async () => {
     const manager = new HostDependencyManager(missingCtx, { dependencies: TEST_DEPENDENCIES });
 

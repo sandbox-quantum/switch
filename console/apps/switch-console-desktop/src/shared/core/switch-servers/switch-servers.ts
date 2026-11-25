@@ -26,6 +26,18 @@ export function urlOrigin(url: string): string | null {
 }
 
 /**
+ * A server's address as a person reads it: its host and port, without the
+ * scheme or a path. The URL as given when it does not parse.
+ */
+export function urlHost(url: string): string {
+  try {
+    return new URL(url.trim()).host || url;
+  } catch {
+    return url;
+  }
+}
+
+/**
  * Whether two Switch API endpoints name the same server. This is how an agent's
  * on-disk `SWITCH_API_ENDPOINT` is matched to a registered server, so the main
  * process and the renderer must agree on it: the renderer decides which discovered
@@ -190,7 +202,7 @@ export type UpdateServerResult = {
   propagation: ServerApiUrlPropagation;
 };
 
-/** Which login methods a gateway offers — read unauthenticated from
+/** Authentication and account capabilities — read unauthenticated from
  * `GET /gateway/auth/config` so the UI shows the right options. */
 export type SwitchAuthConfig = {
   passwordLoginEnabled: boolean;
@@ -205,6 +217,8 @@ export type SwitchAuthConfig = {
   /** Whether anyone may create an account with an email and password. False
    * for a server predating the field. */
   signupEnabled: boolean;
+  /** Whether this server allows test-account resets. False on older servers. */
+  testAccountResetEnabled: boolean;
 };
 
 /** What a switch-core says about itself to an authenticated client (CHOO-1865).
@@ -528,6 +542,12 @@ export type RoomAutoRoute = {
   /** That agent's name, for display; null when there is none, or from a
    * server that predates it. */
   fallbackAgentName: string | null;
+  /** The room's assigned agent (`!assign-agent`), which gets every message
+   * first, so auto-route can't be turned on while it is set; null when none,
+   * or from a server that predates it. */
+  assignedAgent: string | null;
+  /** That agent's name, for display. */
+  assignedAgentName: string | null;
 };
 
 /** A change to a room's auto-route setting (`PUT /rooms/{id}/auto-route`);
@@ -636,6 +656,11 @@ export type RemoteAgentRoom = {
   status: string;
   /** The room-scoped role the agent currently holds, or null. */
   roomRole: string | null;
+  /**
+   * Whether the agent has had a turn in this room: someone addressed it there
+   * and it took the message up. False from a server that does not say.
+   */
+  answeredHere?: boolean;
 };
 
 /** A room group on a server (mirrors the gateway `RoomGroupDetail`). Used to
@@ -661,9 +686,8 @@ export type RemoteBridge = {
   isDefault: boolean;
   /**
    * Whether the deployment registered this bridge itself rather than a person
-   * connecting it — on a local server, what marks its bundled Mattermost. Null
-   * on a server predating the field, where nothing says either way; read it
-   * through `bundledMattermostBridge`, not directly.
+   * connecting it. Null on a server predating the field, where nothing says
+   * either way.
    */
   preconfigured: boolean | null;
   /**
@@ -698,6 +722,14 @@ export type RemoteBridge = {
    * before Telegram had one.
    */
   directorySearchSupported: boolean;
+  /**
+   * What the account search can find a person by on this connection, as its
+   * placeholder ("Your name or handle"): only what really matches, so Slack
+   * offers email only when the app may read addresses. A server predating
+   * the field gets `DEFAULT_DIRECTORY_SEARCH_HINT`, which every platform
+   * matches.
+   */
+  directorySearchHint: string;
   /**
    * Plain-text description of something only the platform's side can fix —
    * the organisation's admin withdrew approval, or blocked the app outright.
@@ -746,6 +778,13 @@ export type RemoteBridge = {
   /** That address, or null where the connection takes none or the server has
    * no public origin configured (`MESSAGING_PUBLIC_URL`) to build it from. */
   webhookUrl: string | null;
+  /**
+   * The commands a person is told to type here, by command name
+   * (`invite-agent`, `link-account`), spelled as this platform takes them,
+   * with `{agent}` and `{code}` to fill in. Read through `typedCommand`.
+   * Empty on a server predating the field.
+   */
+  commands: Record<string, string>;
 };
 
 /**
@@ -794,26 +833,6 @@ export type ConnectedChat = {
   externalId: string;
   connectedAt: string;
 };
-
-/**
- * How to sign in to a managed deployment's bundled Mattermost directly — in a
- * browser or the desktop Mattermost client, on the machine running it
- * (CHOO-1787). The stack publishes onto loopback, so nothing off that machine
- * can reach the URL.
- *
- * `unavailable` carries the reason in words a user can act on, and is the only
- * alternative to real values: the credentials are per-deployment and generated,
- * so a plausible-looking default would be worse than saying nothing.
- */
-export type BundledChatSignIn =
-  | {
-      kind: 'available';
-      /** Origin to paste into the Mattermost client's "server URL" field. */
-      url: string;
-      username: string;
-      password: string;
-    }
-  | { kind: 'unavailable'; reason: string };
 
 /**
  * One credential field a bridge type needs, projected from the JSON Schema the
@@ -983,6 +1002,26 @@ export type TrustSettings = {
 /** Outcome of loading Switch Trust's settings (`GET /trust-settings`).
  * Admin-only (a deployment operator, not a workspace admin), so a signed-in
  * non-operator gets `forbidden` rather than an empty form. */
+/** The Switch Trust policy that checks a workspace's messages, as anyone in
+ * it may read it (`GET /workspace/guardrails`). Its organization's admins
+ * connect it; nobody else changes it. */
+export type WorkspaceGuardrails = {
+  /** Something checks the workspace's messages. */
+  checking: boolean;
+  policyId: string | null;
+  /** Switch Trust's name for the policy, when it gave one. */
+  policyName: string | null;
+  /** Where the policy is shown on Switch Trust, when Switch can link there. */
+  policyUrl: string | null;
+};
+
+export type FetchWorkspaceGuardrailsResult =
+  | { kind: 'loaded'; guardrails: WorkspaceGuardrails }
+  /** The server predates per-organization guardrails. */
+  | { kind: 'unsupported' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'error'; message: string };
+
 export type FetchTrustSettingsResult =
   | { kind: 'loaded'; settings: TrustSettings }
   /** A server that has each organization set its own policy, which no longer
@@ -1024,10 +1063,31 @@ export type ClearTrustSettingsResult =
 
 /**
  * Who decides an untagged message in a workspace's auto-route rooms: nobody
- * (`none`), a self-hosted decision endpoint, or Haiku run inside the server's
- * decision service, through the Anthropic API or Amazon Bedrock.
+ * (`none`), the workspace's own decision endpoint, or a model run inside the
+ * server's decision service (`DecisionServiceChoice`).
  */
-export type DecisionBackend = 'none' | 'endpoint' | 'haiku_anthropic' | 'haiku_bedrock';
+export type DecisionBackend =
+  | 'none'
+  | 'endpoint'
+  | 'haiku_anthropic'
+  | 'haiku_bedrock'
+  | 'self_hosted'
+  | 'gemini';
+
+/** The choices that run inside the server's decision service: Haiku with the
+ * workspace's Anthropic key, Haiku on Amazon Bedrock, the service's own
+ * self-hosted model, and Gemini (with the fallback the service applies). */
+export type DecisionServiceChoice = 'haiku_anthropic' | 'haiku_bedrock' | 'self_hosted' | 'gemini';
+
+/** A backend as the server's decision service describes it: its model, the
+ * label people see, the confidence threshold it uses when the workspace sets
+ * none, and what it falls back to when it is slow. */
+export type DecisionBackendInfo = {
+  label: string;
+  model: string;
+  threshold: number | null;
+  fallback: { backend: string; model: string; label: string; afterS: number } | null;
+};
 
 /**
  * A workspace's decision routing settings (`GET /decision-settings`), read for
@@ -1051,6 +1111,9 @@ export type DecisionSettings = {
   /** Null while the workspace uses the server default. */
   workspace: {
     backend: DecisionBackend;
+    /** A saved choice this server's version doesn't know (a newer one saved
+     * it): `backend` then reads `none`, which is what applies. */
+    unrecognizedBackend: string | null;
     endpoint: string | null;
     threshold: number | null;
     hasApiKey: boolean;
@@ -1058,10 +1121,31 @@ export type DecisionSettings = {
     apiKeyUnreadable: boolean;
     updatedAt: string;
   } | null;
-  serverDefault: { configured: boolean; endpoint: string | null; hasApiKey: boolean };
-  /** Which Haiku backends the server can run: both need its decision service,
-   * and Bedrock also its operator's say-so. */
-  options: { haikuAnthropic: boolean; haikuBedrock: boolean };
+  serverDefault: {
+    configured: boolean;
+    endpoint: string | null;
+    hasApiKey: boolean;
+    /** The default backend as the decision service describes it; null when
+     * there is none, it can't be read, or the server predates this. */
+    info: DecisionBackendInfo | null;
+  };
+  /**
+   * Which choices run by the server's decision service a workspace may newly
+   * save, and how the service describes each one it lists. `source` says
+   * where that came from: the service's own list (`service`), the server's
+   * configuration for a service that lists none (`configuration`), nowhere
+   * because the service couldn't be read (`unavailable`: only what is saved
+   * is offered, and `note` says why), or no service at all (`none`).
+   */
+  options: {
+    haikuAnthropic: boolean;
+    haikuBedrock: boolean;
+    selfHosted: boolean;
+    gemini: boolean;
+    details: Partial<Record<DecisionServiceChoice, DecisionBackendInfo>>;
+    source: 'service' | 'configuration' | 'unavailable' | 'none';
+    note: string | null;
+  };
 };
 
 /**
@@ -1121,7 +1205,8 @@ export type DecisionTestErrorCode =
   | 'key_refused'
   | 'bad_answer'
   | 'backend_unavailable'
-  | 'not_configured';
+  | 'not_configured'
+  | 'refused';
 
 /** One sample decision run against unsaved values: the pick (null for none),
  * its confidence and latency, or why it failed. */
@@ -1165,6 +1250,10 @@ export type IdentityClaimant = {
   verified: boolean;
 };
 
+/** The account-search placeholder for a server that does not say its own:
+ * what every platform's search matches. */
+export const DEFAULT_DIRECTORY_SEARCH_HINT = 'Your name or handle';
+
 /**
  * Someone found in a messaging platform's own user directory (mirrors the
  * gateway `DirectoryUserSummary`).
@@ -1179,6 +1268,10 @@ export type BridgeDirectoryUser = {
   username: string;
   displayName: string;
   email: string | null;
+  /** False when `username` is a handle Switch made up for someone the
+   * platform gave none (a Telegram account without a username), so it is not
+   * shown as theirs. True for a server predating the field. */
+  hasHandle: boolean;
   /** The `ExternalUser` row id when Switch has already seen this person, else
    * null. Present rows are reused on claim rather than duplicated. */
   knownExternalUserId: string | null;
@@ -1258,6 +1351,12 @@ export type LinkedIdentity = {
   bridgeType: string;
   externalUserId: string;
   externalUsername: string;
+  /** How to name the account when `externalUsername` is a handle Switch made
+   * up for someone the platform gave none (a Telegram account without a
+   * username): their name as the platform shows it, with `hasHandle` false.
+   * Both absent from a server predating them, which means a real handle. */
+  externalDisplayName?: string;
+  hasHandle?: boolean;
   /** False for a link made before links had to be confirmed: it works, and its
    * owner is asked to confirm it with a code. */
   verified: boolean;
@@ -1276,6 +1375,12 @@ export type PendingIdentity = {
   bridgeType: string;
   externalUserId: string;
   externalUsername: string;
+  /** How to name the account when `externalUsername` is a handle Switch made
+   * up for someone the platform gave none (a Telegram account without a
+   * username): their name as the platform shows it, with `hasHandle` false.
+   * Both absent from a server predating them, which means a real handle. */
+  externalDisplayName?: string;
+  hasHandle?: boolean;
   /** Who started the link, when it was someone else (an admin). */
   requestedByName: string | null;
   /** When the last code issued stops working; null when none has been. */
@@ -1543,6 +1648,13 @@ export type BridgePerson = {
   linkedUserIds: string[];
   /** The first of those users' names, to show beside the username; null when nobody has. */
   linkedName: string | null;
+  /** When Switch first saw the account; null on a server predating the field. */
+  firstSeenAt: string | null;
+  /** How to name them where `username` is a handle Switch made up (a
+   * Telegram account without a username), with `hasHandle` false. Absent
+   * from a server predating them, which means a real handle. */
+  displayName?: string;
+  hasHandle?: boolean;
 };
 
 /** A bridged room's channel, as the New room dialog asks for it. */

@@ -7,6 +7,7 @@ existing agent, partial updates, unmanaging, and revocation.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
 import httpx
@@ -16,7 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_icon import generated_icon_url, new_icon_url
 from switch_core.connections.broker import Principal, ServiceError
-from switch_core.db.models import AgentController
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    AgentController,
+    Tenant,
+    TenantMember,
+)
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.management.gateway_routes import router as gateway_router
@@ -303,6 +309,43 @@ class TestManagedAgents:
         assert agent.metadata_["known_agent_type"] == "codex"
         assert agent.metadata_["known_agent_options"]["auto_session"] is True
         assert agent.metadata_["known_agent_options"]["repo_dir"] == "/srv/example"
+
+    @pytest.mark.parametrize(
+        ("provider_name", "expected"), [("claude", True), ("opencode", False)]
+    )
+    async def test_auto_mode_left_out_is_the_providers_default_for_a_new_agent(
+        self, harness: Harness, provider_name: str, expected: bool
+    ) -> None:
+        # OpenCode's auto mode reviews nothing before a command runs, so a new
+        # OpenCode agent asks unless its owner turns auto mode on.
+        owner = await add_member(harness.session_factory, "ada")
+        body = definition(provider_name)
+        del body["auto_mode"]
+        async with harness.client() as client:
+            response = await create_managed_agent(
+                client,
+                owner,
+                name="builder",
+                controller_id=None,
+                definition_body=body,
+            )
+        assert response.status_code == 201, response.text
+        assert response.json()["definition"]["auto_mode"] is expected
+
+    async def test_an_opencode_agent_keeps_auto_mode_its_owner_asks_for(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            response = await create_managed_agent(
+                client,
+                owner,
+                name="builder",
+                controller_id=None,
+                definition_body=definition("opencode", auto_mode=True),
+            )
+        assert response.status_code == 201, response.text
+        assert response.json()["definition"]["auto_mode"] is True
 
     async def test_an_additional_provider_needs_its_flag_for_a_new_agent(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1218,3 +1261,76 @@ class TestWhatTheOwnerMayDo:
         # nothing, which its `revoked_at` says.
         assert revoked["revoked_at"] is not None
         assert (revoked["can_edit"], revoked["can_remove"]) == (True, True)
+
+
+class TestControllerRestart:
+    """A restart of the controller process, queued like a provider recheck and
+    only ever for the asking person's own controller in the workspace asked in."""
+
+    @staticmethod
+    async def _ask(
+        client: httpx.AsyncClient, cookies: dict[str, str], controller_id: str, **extra
+    ) -> httpx.Response:
+        return await client.post(
+            "/gateway/management/operations",
+            json={
+                "controller_id": controller_id,
+                "kind": "controller.restart",
+                **extra,
+            },
+            cookies=cookies,
+        )
+
+    async def test_the_owner_queues_a_restart_for_their_controller(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            asked = await self._ask(client, cookies_for(ada), controller.controller_id)
+        assert asked.status_code in (200, 201), asked.text
+        assert asked.json()["kind"] == "controller.restart"
+        assert asked.json()["agent_id"] is None
+
+    async def test_another_users_controller_is_not_found(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            asked = await self._ask(client, cookies_for(bob), controller.controller_id)
+        assert asked.status_code == 404, asked.text
+
+    async def test_a_controller_in_another_workspace_is_not_found(
+        self, harness: Harness
+    ) -> None:
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with harness.session_factory() as session:
+            session.add(
+                Tenant(id=other, slug=other, name="Lab", organization_id=TENANT_ZERO_ID)
+            )
+            await session.commit()
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.session_factory() as session:
+            session.add(TenantMember(tenant_id=other, user_id=ada.id, role="member"))
+            await session.commit()
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada, tenant_id=other)
+            asked = await self._ask(client, cookies_for(ada), controller.controller_id)
+        assert asked.status_code == 404, asked.text
+
+    async def test_an_unknown_controller_is_not_found(self, harness: Harness) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            asked = await self._ask(client, cookies_for(ada), "no-such-controller")
+        assert asked.status_code == 404, asked.text
+
+    async def test_it_takes_no_agent_and_no_params(self, harness: Harness) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            with_params = await self._ask(
+                client, cookies_for(ada), controller.controller_id, params={"x": 1}
+            )
+        assert with_params.status_code == 422, with_params.text

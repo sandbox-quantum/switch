@@ -58,6 +58,7 @@ import {
   fetchRoomRoles,
   fetchRoomSchedules,
   fetchRooms,
+  fetchRoomsOfAgents,
   fetchTemplateDetail,
   fetchTemplateRuns,
   fetchTemplates,
@@ -256,6 +257,14 @@ import {
 import { getActiveWorkspaceId, listWorkspaces, setActiveWorkspaceId } from './workspaces-store';
 
 /** A bridge result's discriminant as a code. Never the message beside it. */
+/** Connecting a messaging app that threw: a host known to be down, or anything else. */
+function bridgeErrorReason(error: unknown): TelemetryBridgeFailure {
+  return error instanceof HostUnreachableError ? 'unreachable' : 'error';
+}
+
+/** App installs already reported as connected, by workspace and connection. */
+const reportedInstalls = new Set<string>();
+
 function bridgeFailureReason(kind: string): TelemetryBridgeFailure {
   switch (kind) {
     case 'created':
@@ -586,7 +595,7 @@ export const workspacesController = createRPCController({
 
   listBridges: (workspaceId: string): Promise<RemoteBridge[]> =>
     withReachableWorkspaceSession(workspaceId, async (server) =>
-      withResolvedHomeUrls(server, await fetchBridges(server))
+      withResolvedHomeUrls(await fetchBridges(server))
     ),
 
   listBridgeTypes: (workspaceId: string): Promise<RemoteBridgeType[]> =>
@@ -610,10 +619,54 @@ export const workspacesController = createRPCController({
     ),
 
   /** Returns the platform's consent URL for the renderer to open in the browser. */
-  beginMessagingAppInstall: (params: { workspaceId: string; platform: string }): Promise<string> =>
-    withReachableWorkspaceSession(params.workspaceId, (server) =>
-      beginMessagingAppInstall(server, params.platform)
-    ),
+  beginMessagingAppInstall: async (params: {
+    workspaceId: string;
+    platform: string;
+  }): Promise<string> => {
+    try {
+      return await withReachableWorkspaceSession(params.workspaceId, (server) =>
+        beginMessagingAppInstall(server, params.platform)
+      );
+    } catch (error) {
+      trackEvent('bridge_connected', {
+        bridge_platform: bridgePlatformOfType(params.platform),
+        method: 'app_install',
+        outcome: 'failure',
+        failure_reason: bridgeErrorReason(error),
+      });
+      throw error;
+    }
+  },
+
+  /**
+   * The connection an app install made has shown up (the install finishes in
+   * the browser, so this is the first Switch Console sees of it). Reported
+   * once per connection, and only for one the server lists.
+   */
+  messagingAppInstalled: (params: { workspaceId: string; bridgeId: string }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, async (server) => {
+      const key = `${params.workspaceId}\u0000${params.bridgeId}`;
+      if (reportedInstalls.has(key)) return;
+      // Claimed before the read, so a second call while it is under way stops here.
+      reportedInstalls.add(key);
+      let bridge: { type: string } | undefined;
+      try {
+        bridge = (await fetchBridges(server)).find((b) => b.id === params.bridgeId);
+      } catch (error) {
+        reportedInstalls.delete(key);
+        throw error;
+      }
+      if (!bridge) {
+        reportedInstalls.delete(key);
+        return;
+      }
+      trackEvent('bridge_connected', {
+        bridge_platform: bridgePlatformOfType(bridge.type),
+        method: 'app_install',
+        outcome: 'success',
+        failure_reason: 'none',
+      });
+    }),
 
   /** A one-time link and code that connect a chat; the chat itself is where it lands. */
   beginChatClaim: (params: { workspaceId: string; platform: string }): Promise<ChatClaim> =>
@@ -643,33 +696,38 @@ export const workspacesController = createRPCController({
    * or returned to the renderer — the server stores them. Keep it that way: do
    * not log `params` here.
    */
-  createBridge: (params: CreateBridgeParams): Promise<CreateBridgeResult> =>
-    withReachableWorkspaceSession(params.workspaceId, async (server) => {
-      const platform = bridgePlatformOfType(params.bridgeType);
-      let result: CreateBridgeResult;
-      try {
-        result = await createBridgeOnServer(server, {
+  createBridge: async (params: CreateBridgeParams): Promise<CreateBridgeResult> => {
+    const platform = bridgePlatformOfType(params.bridgeType);
+    let result: CreateBridgeResult;
+    try {
+      // An unreachable host throws before the session's work starts, and is a
+      // failed connect too.
+      result = await withReachableWorkspaceSession(params.workspaceId, (server) =>
+        createBridgeOnServer(server, {
           bridgeType: params.bridgeType,
           displayName: params.displayName,
           connectionConfig: params.connectionConfig,
           setAsDefault: params.setAsDefault,
           channelCreationEnabled: params.channelCreationEnabled,
-        });
-      } catch (error) {
-        trackEvent('bridge_connected', {
-          bridge_platform: platform,
-          outcome: 'failure',
-          failure_reason: 'error',
-        });
-        throw error;
-      }
+        })
+      );
+    } catch (error) {
       trackEvent('bridge_connected', {
         bridge_platform: platform,
-        outcome: result.kind === 'created' ? 'success' : 'failure',
-        failure_reason: bridgeFailureReason(result.kind),
+        method: 'credentials',
+        outcome: 'failure',
+        failure_reason: bridgeErrorReason(error),
       });
-      return result;
-    }),
+      throw error;
+    }
+    trackEvent('bridge_connected', {
+      bridge_platform: platform,
+      method: 'credentials',
+      outcome: result.kind === 'created' ? 'success' : 'failure',
+      failure_reason: bridgeFailureReason(result.kind),
+    });
+    return result;
+  },
 
   /**
    * Edit a bridge's operator-controlled switches — today, only whether the
@@ -1020,6 +1078,15 @@ export const workspacesController = createRPCController({
 
   listAgentRooms: (params: { workspaceId: string; agentId: string }): Promise<RemoteAgentRoom[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchAgentRooms(server, params.agentId)),
+
+  /** Several agents' rooms in one read; null from a server that answers one agent at a time. */
+  listRoomsOfAgents: (params: {
+    workspaceId: string;
+    agentIds: string[];
+  }): Promise<Record<string, RemoteAgentRoom[]> | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomsOfAgents(server, params.agentIds)
+    ),
 
   listRoomRoles: (params: { workspaceId: string; roomId: string }): Promise<RemoteRoomRole[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchRoomRoles(server, params.roomId)),
@@ -1513,19 +1580,30 @@ export const workspacesController = createRPCController({
    * current server holds the link pending until a code is posted from the
    * account, and the result carries that code. */
   claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> => {
-    const result = await withReachableWorkspaceSession(params.workspaceId, (server) =>
-      claimIdentityOnServer(server, {
-        bridgeId: params.bridgeId,
-        externalUserId: params.externalUserId,
-        username: params.username,
-      })
-    );
-    const outcome: TelemetryIdentityClaimOutcome =
-      result.kind === 'claimed' ? 'success' : result.kind === 'pending' ? 'pending' : 'failure';
     // Reported after the lease, not inside it: the platform lookup takes a lease
     // of its own, and the bridge is still there to read afterwards.
-    reportWithBridge(bridgePlatformOf(params.workspaceId, params.bridgeId), (bridge_platform, at) =>
-      trackEventAt('bridge_identity_claimed', { bridge_platform, outcome }, at)
+    const report = (outcome: TelemetryIdentityClaimOutcome) =>
+      reportWithBridge(
+        bridgePlatformOf(params.workspaceId, params.bridgeId),
+        (bridge_platform, at) =>
+          trackEventAt('bridge_identity_claimed', { bridge_platform, outcome }, at)
+      );
+    let result: ClaimIdentityResult;
+    try {
+      result = await withReachableWorkspaceSession(params.workspaceId, (server) =>
+        claimIdentityOnServer(server, {
+          bridgeId: params.bridgeId,
+          externalUserId: params.externalUserId,
+          username: params.username,
+        })
+      );
+    } catch (error) {
+      // A refusal or a server error the claim throws, or a host known to be down.
+      report('failure');
+      throw error;
+    }
+    report(
+      result.kind === 'claimed' ? 'success' : result.kind === 'pending' ? 'pending' : 'failure'
     );
     return result;
   },

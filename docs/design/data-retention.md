@@ -43,8 +43,9 @@ Messages are numbered per room (`messages.seq`), and every delivery cursor is a
 position in that sequence. New numbers came from "highest existing + 1", so a
 room whose messages had all been deleted would have started again at 1. Every
 cursor already past that point would then have silently skipped the new
-messages. `rooms.seq_floor` records the highest live position retention has
-deleted, and numbering continues above whichever is higher. Reconstructed
+messages. `rooms.seq_floor` records the highest live position deleted
+(retention, erasure, a platform deletion), and numbering continues above
+whichever is higher. Reconstructed
 history (negative `seq`) never moves the floor.
 
 Other effects of deleting old messages, all already handled:
@@ -77,6 +78,75 @@ deleted, which nothing cleaned up before.
 A blob is only a candidate once it is a day old. A file is uploaded before the
 message that carries it, in a separate transaction. A blob named by a chat
 upload that is staged but not yet sent is never a candidate.
+
+### Deletions and edits on chat platforms are followed
+
+Switch's copy of a message follows what is done to it where it was written
+(`retention/platform_deletes.py`, called by each bridge's `CollaborationCore`).
+
+- **A deleted post** deletes its room message at once: every file of a
+  multi-file post, their attachment rows, the record of which platform post
+  carried it, the copies stored as events for agents (`agent_events`), a
+  question still waiting for the decision service, a multi-file post still
+  assembling, and the stored files nothing else refers to. The files go
+  without the sweep's day of grace, as erasing a person's do, because they are
+  known to have been attached.
+- **Only what was written on that platform follows it.** A post the bridge
+  made for a message written in Switch (an agent's reply, a card) is the copy,
+  not the original, and deleting it on the platform leaves the room message
+  alone. The bridge deletes its own posts too (typing notices, answered
+  cards), and platforms report those like any other deletion. A post is
+  recognised as written on the platform by its sender: the person's identity
+  on that bridge.
+- **An edited post** has its message's words replaced in place, and the words
+  in the agents' copies too; the old words are not kept. The content is
+  stamped `com.switch.edited_at`. The row keeps its `seq`, so no reader is
+  handed it a second time: an agent that already received it keeps what it
+  received, and anyone reading from then on reads only the new words. An edit
+  addresses no one afresh. The new words pass Switch Trust as a new message
+  would; words it refuses are not stored, and nor are the withdrawn ones, so
+  the message is deleted. An edit to a post Switch never stored (one Switch
+  Trust blocked, or from before the channel was bridged) changes nothing and
+  never writes a new message.
+- **A deleted channel** takes every message of its room with it, whoever
+  wrote them, in batches of 1000 each in its own transaction, and the room is
+  unlinked from the channel and kept as a room of Switch alone. A room has one
+  channel, so the room is wholly the channel's copy. **An archived channel**
+  only unlinks the room: archiving can be undone on Slack and Mattermost, and
+  linking the room again relays from then on.
+- **Numbering.** A deleted post usually leaves a gap in the middle of its
+  room, as erasing a person already does. Readers page on `seq > cursor`, so a
+  gap is skipped like any row they never had, and `rooms.seq_floor` is raised
+  as retention raises it, so a deleted newest row's number is never given out
+  again.
+
+What each platform reports:
+
+| Platform | Post deleted | Post edited | Channel deleted | Channel archived |
+|---|---|---|---|---|
+| Slack | `message_deleted`; a thread root left as a `tombstone` | `message_changed` whose words changed | `channel_deleted`, `group_deleted` | `channel_archive`, `group_archive` |
+| Mattermost | `post_deleted` | `post_edited` | `channel_deleted`, when the channel is gone | `channel_deleted`, when the channel is still there |
+| Discord | a message deleted, one or in bulk | a message edit whose words changed | a channel deleted; a thread deleted, for a room bound to it | none (a thread archiving itself is not followed) |
+| Microsoft Teams | Graph `deleted`, or `updated` with `deletedDateTime`; Bot Framework `messageDelete` | Graph `updated` with `lastEditedDateTime`; Bot Framework `messageUpdate` (`editMessage`) | Bot Framework `conversationUpdate` `channelDeleted` | none |
+| Telegram | never reported to a bot | `edited_message`, `edited_channel_post` | never reported to a bot | none |
+
+Not followed:
+
+- **A deletion the bridge never hears of.** Telegram reports none. A Slack
+  file deleted on its own is reported only by a file id, which Switch does not
+  keep. Platforms do not replay what happened while a bridge was down.
+- **A deleted Discord thread's posts.** A Discord thread is a thread of its
+  parent channel's room, and Discord sends no deletion for each of its posts,
+  so they stay in the room.
+- **Microsoft Teams chats** are followed only through Bot Framework, for
+  chats the bot is in; Graph subscribes to channels alone. An archived or
+  deleted team is not followed.
+- **What a reader already has.** Switch Console keeps showing a deleted or
+  edited message until it reads the room again; nothing tells it to yet. An
+  agent keeps what it received in its own transcript, on a machine Switch
+  does not control.
+- **Session activity lines** may quote the message. They are pruned after 7
+  days.
 
 ### Leftover operational records
 
@@ -287,23 +357,74 @@ Nothing waits for the customer to empty anything first.
 
 1. **Outside Switch first.** Every service sign-in is removed and revoked at
    its vendor with the tokens issued on it, and each cloud machine of an
-   account the purge deletes is set to be deleted. While a machine is still
-   being torn down or a token is still live at its vendor, the purge says so,
-   deletes nothing and exits 3; the same command, run again, carries on.
+   account the purge deletes is set to be deleted with its disk's retention
+   ended (`retain_until` set to now), so the hosted controller deletes the
+   data volume at once rather than after `HOSTED_DISK_RETENTION_DAYS`. A
+   machine its owner had already deleted keeps a later date at the
+   controller, which never brings a deleted machine's date forward on its
+   own; the purge sends `expedite_deletion` with it, the one request it
+   honours to take an earlier date. While
+   a machine is still being torn down or a token is still live at its
+   vendor, the purge says so, deletes nothing and exits 3; the same command,
+   run again, carries on. The controller reports a machine `deleted` only
+   once its instance is terminated and its data volume is gone (or was never
+   created), so a purge that goes on past this step has left no disk behind.
 2. **A record of the run**, in the server's audit log
-   (`organization.purge_started`), naming the accounts it is to delete.
-3. **Every workspace**, in its own transaction, with everything in it. Just
+   (`organization.purge_started`), naming the accounts it is to delete, the
+   WorkOS users of the people involved, and every room id of every workspace,
+   so a resumed run can still clean up outside after the rows are gone.
+3. **Switch Trust**, which keeps the messages it checked under the room
+   they were sent in (`x-agent-session-id`). When the organization connected
+   a Switch Trust policy, each room of each workspace is sent for deletion
+   with that policy's endpoint and key, the credentials its checks used.
+   Those settings are deleted with the organization's rows, so this happens
+   before any row goes: if any deletion fails, the purge stops here with
+   nothing in Switch deleted and exits 1, and the same command, run again,
+   retries it. A run resumed after an earlier one deleted the organization has
+   no settings left: the rooms an earlier run recorded deleting there
+   (`organization.purge_trust`) are done, and for any other the tool can no
+   longer delete anything there, so it lists those room ids for a person to
+   have deleted and exits 4. The deletion call,
+   `DELETE {endpoint}/guardrails/sessions/{room id}` with 404 meaning
+   nothing is held, is provisional: Switch Trust has not published a
+   deletion API yet, and `HttpTrustClient.delete_session` is the one place
+   to change when it does. Rooms deleted before the purge are not sent, as
+   their ids are gone. An organization with no policy sent nothing there,
+   and the outcome says so.
+4. **Every workspace**, in its own transaction, with everything in it. Just
    before, its live messaging installs are ended as disconnecting them does
    (Slack's bot token revoked, a Teams organization withdrawn from, a Telegram
    chat left). After, the processes running its agents, clients, bridges and
    machines are told: agents' connections close and their cached keys go at
    once, as when an agent is deleted.
-4. **The organization's own rows**, except its audit log, which outlives it
+5. **The organization's own rows**, except its audit log, which outlives it
    as a workspace's does. The server's audit log records the purge.
-5. **Every account that belonged to nothing else**: no membership of another
+6. **Every account that belonged to nothing else**: no membership of another
    workspace or organization and no rows left in one. Others keep their
    account and lose only what was here; the server's administrator account is
    always kept. Each deletion, or failure, is recorded on its own.
+7. **WorkOS**, with the server's `WORKOS_API_KEY`
+   (`accounts/workos_offboarding.py`). The WorkOS environment may be shared
+   with other products, so only what Switch alone had there goes. Each
+   person's membership of the organization's WorkOS organization is removed,
+   in any status. A WorkOS user is deleted only when no account here signs
+   in as it any more and, those memberships gone, it is a member of no
+   organization in the environment; anyone still in another organization is
+   kept, and the outcome says so. The WorkOS organization is deleted only
+   when nobody is left in it in any status and it has no SSO connection or
+   directory. Without the key nothing at WorkOS changes: the command lists
+   the organization, users and memberships to remove there and exits 4.
+Steps 3 and 7 run on every run, the resumed ones included, and each
+records what it did (`organization.purge_trust`, `organization.purge_workos`).
+Every deletion there treats 404 as done, so a failure is retried by running
+the command again.
+
+The command ends with a receipt: the accounts deleted, the service sign-ins
+revoked, the messaging installs ended, the cloud machines deleted, what was
+done at WorkOS and Switch Trust, and that backups still hold the
+organization for up to 37 days (below). Exit codes: `0` done, `1` refused or
+something failed (run again), `3` waiting outside Switch (run again later),
+`4` done but WorkOS or Switch Trust left for a person to clean up.
 
 A run that stops part-way is finished by running the command again. The
 record of each started run brings back the accounts found through workspaces
@@ -314,10 +435,7 @@ A cloud machine whose owner keeps their account is not torn down: it loses
 the organization's workspaces and is prepared again without them.
 
 The workspaces' audit history stays for two years, as for any deleted
-workspace. Nothing at WorkOS is changed, because the WorkOS environment may be
-shared with other products: the command prints the WorkOS organization and
-users to remove there, for whoever owns it. Copies on chat platforms stay, as
-always.
+workspace. Copies on chat platforms stay, as always.
 
 The server's default workspace refuses the purge. The command refuses a
 database connection that row-level security does not bind, since the service
@@ -347,18 +465,36 @@ setting, because the log protects the operator as well as the customer.
   than the workspace's and outlives the organization: nothing purges it.
 
 The runtime role has `UPDATE` and `DELETE` revoked on the audit tables, so a
-compromised process cannot erase its tracks. The purge therefore runs on the
-schema owner's connection (`DB_OWNER_USER` and `DB_OWNER_PASSWORD`). A
-deployment without one runs it on the runtime connection, which works only
-where that role owns the schema; otherwise switch-core logs an error at
-startup saying the history will not be purged, and each pass logs the
-refusal.
+compromised process cannot erase its tracks, and the serving process is not
+given the schema owner's password. The purge is therefore a database function,
+`purge_deleted_workspace_audit_history()` (`db/audit_history_ddl.py`), which
+the retention pass calls on its ordinary runtime connection:
+
+- It is `SECURITY DEFINER` and owned by the schema owner, so it deletes as the
+  owner of `audit_events`. Row-level security does not apply to the table's
+  owner (nothing sets `force row level security`), so it reaches every
+  tenant's rows with none bound.
+- It takes no arguments. The horizon is written into its body and the time is
+  the database's `now()`, so a caller cannot widen what it deletes: holding
+  `EXECUTE` on it allows only what the retention pass would do anyway, and the
+  runtime role still cannot delete an audit row any other way.
+- Its `search_path` is pinned (`pg_catalog, public, pg_temp`), `EXECUTE` is
+  revoked from `PUBLIC`, and the runtime role is granted it with the other
+  functions in the schema when the grants are re-issued.
+
+Because the horizon is part of the function, changing
+`AUDIT_HISTORY_HORIZON` needs a migration that replaces the function. Startup
+refuses to serve if the function is missing, is not `SECURITY DEFINER`, or the
+runtime role may not execute it.
 
 ### Backups and logs
 
-Deleted rows remain in database backups until those backups expire. A
-deployment's backup retention should be documented alongside its message
-retention, and restoring a backup should be followed by a retention pass, which
+Deleted rows remain in database backups until those backups expire. On the
+hosted service the nightly dumps and point-in-time restore keep them for up
+to 37 days, so a purged organization is gone from every copy 37 days after
+the purge; restoring a backup within that time brings it back, and the purge
+is then run again. A deployment's backup retention should be documented
+alongside its message retention, and restoring a backup should be followed by a retention pass, which
 happens on its own within the hour. Application logs do not include message
 bodies by default. Any change that starts logging them should be treated as
 personal-data processing.

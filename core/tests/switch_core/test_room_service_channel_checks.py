@@ -39,7 +39,11 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.room_service import RoomCreateConfig, RoomService
+from switch_core.room_service import (
+    PUBLIC_NO_LINKED_ACCOUNT,
+    RoomCreateConfig,
+    RoomService,
+)
 
 DIRECTORY_ID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
 CHANNEL_ACCOUNT = "29:1a2b3c-channel-account"
@@ -106,6 +110,9 @@ class _Lifecycle:
 
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
+
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
 
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: object
@@ -725,3 +732,89 @@ async def test_a_platform_refusing_the_creator_of_a_public_channel_is_reported(
             "error": "the platform would not add you to the channel",
         }
     ]
+
+
+# ── No choice made and no linked account: a public channel, said so ─────────
+
+
+def _unchosen(bridge_id: str, owner_id: str | None) -> RoomCreateConfig:
+    return _private(bridge_id, owner_id).model_copy(update={"channel_type": None})
+
+
+@pytest.mark.parametrize("needs_owner", [False, True])
+@pytest.mark.parametrize(
+    "config",
+    [_unchosen],
+    ids=["omitted"],
+)
+async def test_no_choice_and_no_linked_account_makes_a_public_room_and_says_why(
+    session_factory: async_sessionmaker[AsyncSession],
+    needs_owner: bool,
+    config: Any,
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[])
+    adapter = _FlowAdapter(needs_owner=needs_owner)
+    core = _FlowCore(adapter, known={})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        config(bridge_id, user_id)
+    )
+
+    # Public on both counts: never a private channel with a public room.
+    assert adapter.created == [
+        {"channel_type": "channel_public", "owner_external_id": None}
+    ]
+    assert result.room.channel_type == "channel_public"
+    assert result.room.read_visibility == "public"
+    (note,) = result.failed_attachments
+    assert note["id"] == PUBLIC_NO_LINKED_ACCOUNT
+    assert "Link your account to make it private" in note["error"]
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"channel_type": "channel_private"},
+        {"channel_type": None, "read_visibility": "private"},
+        # A template that requires a private channel (`require_private`).
+        {"channel_type": "channel_private", "from_template": True},
+        # Any template's room: a run shows no choice, so it never falls back.
+        {"channel_type_is_default": True, "from_template": True},
+        {"channel_type": None, "from_template": True},
+    ],
+    ids=[
+        "private-channel",
+        "private-room",
+        "template-requires-private",
+        "template-default",
+        "template-omitted",
+    ],
+)
+async def test_asking_for_private_without_a_linked_account_is_still_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+    update: dict[str, Any],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[])
+    adapter = _Adapter(needs_owner=False)
+    config = _private(bridge_id, user_id).model_copy(update=update)
+
+    with pytest.raises(PrivateChannelOwnerMissing):
+        await _service(session_factory, bridge_id, adapter).create_room(config)
+
+    assert adapter.created == []
+
+
+async def test_no_choice_with_a_linked_account_is_still_private(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _FlowAdapter(needs_owner=False)
+    core = _FlowCore(adapter, known={})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        _unchosen(bridge_id, user_id)
+    )
+
+    assert adapter.created[0]["channel_type"] == "channel_private"
+    assert result.room.read_visibility == "private"
+    assert result.failed_attachments == []

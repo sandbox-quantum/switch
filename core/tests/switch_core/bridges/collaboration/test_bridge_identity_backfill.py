@@ -44,6 +44,9 @@ class _FakeAdapter:
     def set_activity_resolver(self, resolver: Any) -> None:
         pass
 
+    def set_takeback_handlers(self, **handlers: Any) -> None:
+        return None
+
     async def start(self, **kwargs: Any) -> None:
         self.started = True
 
@@ -63,6 +66,9 @@ def _core(provision: Any) -> tuple[CollaborationCore, _FakeAdapter]:
     core._agent_view = None  # type: ignore[attr-defined]
     core._channel_type_refresh_task = None  # type: ignore[attr-defined]
     core._member_sync_tasks = set()  # type: ignore[attr-defined]
+    core._member_sync_pending = {}  # type: ignore[attr-defined]
+    core._member_sync_everything = False  # type: ignore[attr-defined]
+    core._member_sync_running = False  # type: ignore[attr-defined]
 
     async def _noop() -> None:
         return None

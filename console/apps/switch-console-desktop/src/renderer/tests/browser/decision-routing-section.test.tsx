@@ -34,8 +34,69 @@ const SERVER_DEFAULT: DecisionSettings = {
     reason: null,
   },
   workspace: null,
-  serverDefault: { configured: true, endpoint: 'http://decision:8230', hasApiKey: false },
-  options: { haikuAnthropic: true, haikuBedrock: false },
+  serverDefault: {
+    configured: true,
+    endpoint: 'http://decision:8230',
+    hasApiKey: false,
+    info: null,
+  },
+  options: {
+    haikuAnthropic: true,
+    haikuBedrock: false,
+    selfHosted: false,
+    gemini: false,
+    details: {},
+    source: 'configuration',
+    note: null,
+  },
+};
+
+/** A server whose decision service lists its backends and describes them. */
+const LISTED: DecisionSettings = {
+  ...SERVER_DEFAULT,
+  serverDefault: {
+    ...SERVER_DEFAULT.serverDefault,
+    info: { label: 'Qwen3 235B (Bedrock)', model: 'qwen3-235b', threshold: 0.89, fallback: null },
+  },
+  options: {
+    haikuAnthropic: true,
+    haikuBedrock: true,
+    selfHosted: true,
+    gemini: true,
+    source: 'service',
+    note: null,
+    details: {
+      self_hosted: {
+        label: 'vllm-sr d3-mini (self-hosted)',
+        model: 'vllm-sr/d3-mini',
+        threshold: 0.56,
+        fallback: null,
+      },
+      gemini: {
+        label: 'Gemini (gemini-decision-1)',
+        model: 'gemini-decision-1',
+        threshold: 0.8,
+        fallback: {
+          backend: 'bedrock',
+          model: 'claude-haiku',
+          label: 'Claude Haiku (Bedrock)',
+          afterS: 1.5,
+        },
+      },
+      haiku_bedrock: {
+        label: 'Claude Haiku (Bedrock)',
+        model: 'claude-haiku',
+        threshold: 0.65,
+        fallback: null,
+      },
+      haiku_anthropic: {
+        label: 'Claude Haiku (Anthropic)',
+        model: 'claude-haiku',
+        threshold: 0.65,
+        fallback: null,
+      },
+    },
+  },
 };
 
 const OWN_HAIKU: DecisionSettings = {
@@ -50,6 +111,7 @@ const OWN_HAIKU: DecisionSettings = {
   },
   workspace: {
     backend: 'haiku_anthropic',
+    unrecognizedBackend: null,
     endpoint: null,
     threshold: 0.4,
     hasApiKey: true,
@@ -67,10 +129,10 @@ const NO_SERVICE: DecisionSettings = {
     threshold: null,
     available: false,
     reason:
-      'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Decision routing.',
+      'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Settings → Message routing.',
   },
-  serverDefault: { configured: false, endpoint: null, hasApiKey: false },
-  options: { haikuAnthropic: false, haikuBedrock: false },
+  serverDefault: { configured: false, endpoint: null, hasApiKey: false, info: null },
+  options: { ...SERVER_DEFAULT.options, haikuAnthropic: false, source: 'none' },
 };
 
 let container: HTMLDivElement | null = null;
@@ -140,20 +202,129 @@ function field(el: HTMLElement, id: string): HTMLInputElement {
   return input;
 }
 
+it('names the server default and every choice as the decision service describes them', async () => {
+  const el = await render(LISTED);
+
+  expect(el.textContent).toContain('This workspace uses the server default: Qwen3 235B (Bedrock).');
+  expect(choices(el)).toEqual([
+    'Server default: Qwen3 235B (Bedrock)',
+    'vllm-sr d3-mini (self-hosted)',
+    'Gemini, with Claude Haiku if slow',
+    'Claude Haiku (Bedrock)',
+    'Claude Haiku with your Anthropic key',
+    'Your own endpoint',
+    'None',
+  ]);
+  expect(el.textContent).toContain('Falls back to Claude Haiku (Bedrock) after 1.5 s.');
+  expect(el.textContent).toContain('Model qwen3-235b, threshold 0.89 by default.');
+  expect(el.textContent).not.toContain('isn’t offered');
+});
+
+it('shows the threshold a choice uses by default beside the workspace’s own', async () => {
+  const el = await render(LISTED);
+
+  await choose(el, 'vllm-sr d3-mini (self-hosted)');
+  expect(field(el, 'decision-threshold').placeholder).toBe('Default (0.56)');
+  expect(el.textContent).toContain('Leave blank for this choice’s default, 0.56.');
+  await choose(el, 'Gemini, with Claude Haiku if slow');
+  expect(field(el, 'decision-threshold').placeholder).toBe('Default (0.8)');
+  expect(el.querySelector('#decision-key')).toBeNull();
+});
+
+it('saves and tests a choice the decision service runs, with no key', async () => {
+  const stored: DecisionSettings = {
+    ...LISTED,
+    source: 'workspace',
+    effective: {
+      backend: 'gemini',
+      endpoint: null,
+      threshold: null,
+      available: true,
+      reason: null,
+    },
+    workspace: {
+      backend: 'gemini',
+      unrecognizedBackend: null,
+      endpoint: null,
+      threshold: null,
+      hasApiKey: false,
+      apiKeyLast4: null,
+      apiKeyUnreadable: false,
+      updatedAt: '2026-11-20T10:00:00Z',
+    },
+  };
+  switchServers.updateDecisionSettings.mockResolvedValue({ kind: 'saved', settings: stored });
+  switchServers.testDecisionSettings.mockResolvedValue({
+    kind: 'tested',
+    outcome: {
+      ok: true,
+      agent: 'deploy-bot',
+      modelChoice: 'deploy-bot',
+      confidence: 0.93,
+      latencyMs: 640,
+      backend: 'gemini',
+      error: null,
+    },
+  });
+  const el = await render(LISTED);
+  await choose(el, 'Gemini, with Claude Haiku if slow');
+
+  await act(async () => button(el, 'Test').click());
+  expect(switchServers.testDecisionSettings).toHaveBeenCalledWith({
+    workspaceId: 'ws-1',
+    backend: 'gemini',
+    threshold: null,
+  });
+  await act(async () => button(el, 'Save').click());
+
+  expect(switchServers.updateDecisionSettings).toHaveBeenCalledWith({
+    workspaceId: 'ws-1',
+    backend: 'gemini',
+    threshold: null,
+  });
+  await vi.waitFor(() =>
+    expect(el.textContent).toContain(
+      'This workspace’s own setting applies: Gemini, with Claude Haiku if slow. The server default is Qwen3 235B (Bedrock).'
+    )
+  );
+});
+
+it('says when the decision service can’t be read, offering only what is saved', async () => {
+  const el = await render({
+    ...OWN_HAIKU,
+    workspace: { ...OWN_HAIKU.workspace!, backend: 'self_hosted', hasApiKey: false },
+    effective: { ...OWN_HAIKU.effective, backend: 'self_hosted' },
+    options: {
+      ...SERVER_DEFAULT.options,
+      haikuAnthropic: false,
+      source: 'unavailable',
+      note: 'Switch couldn’t read which backends its decision service offers (its health check answered with status 503), so only what is saved is offered until it can. Try again shortly.',
+    },
+  });
+
+  expect(choices(el)).toEqual([
+    'Use server default',
+    'Self-hosted model',
+    'Your own endpoint',
+    'None',
+  ]);
+  expect(el.textContent).toContain('status 503');
+});
+
 it('says the server default applies, what it is, and offers Haiku but not Bedrock', async () => {
   const el = await render(SERVER_DEFAULT);
 
   expect(switchServers.getDecisionSettings).toHaveBeenCalledWith('ws-1');
   expect(el.textContent).toContain(
-    'This workspace uses the server default: self-hosted decision service (http://decision:8230).'
+    'This workspace uses the server default: this server’s decision service (http://decision:8230).'
   );
   expect(choices(el)).toEqual([
     'Use server default',
+    'Claude Haiku with your Anthropic key',
+    'Your own endpoint',
     'None',
-    'Self-hosted endpoint',
-    'Haiku (Anthropic API)',
   ]);
-  expect(el.textContent).toContain('Haiku on Bedrock isn’t offered');
+  expect(el.textContent).toContain('Claude Haiku on Bedrock isn’t offered');
   // Nothing to save while the server default is chosen and applies.
   expect(button(el, 'Save').disabled).toBe(true);
   expect(
@@ -164,7 +335,7 @@ it('says the server default applies, what it is, and offers Haiku but not Bedroc
 it('explains why Haiku is missing, and why auto-route is unavailable, on a server without a decision service', async () => {
   const el = await render(NO_SERVICE);
 
-  expect(choices(el)).toEqual(['Use server default', 'None', 'Self-hosted endpoint']);
+  expect(choices(el)).toEqual(['Use server default', 'Your own endpoint', 'None']);
   expect(el.textContent).toContain('this server has none configured');
   expect(el.textContent).toContain('none — this server has no decision service configured');
   expect(el.querySelector('[role="alert"]')?.textContent).toContain(
@@ -176,7 +347,9 @@ it('explains why Haiku is missing, and why auto-route is unavailable, on a serve
 it('shows the workspace’s own setting and a stored key only by its last four characters', async () => {
   const el = await render(OWN_HAIKU);
 
-  expect(el.textContent).toContain('This workspace’s own setting applies: Haiku (Anthropic API).');
+  expect(el.textContent).toContain(
+    'This workspace’s own setting applies: Claude Haiku with your Anthropic key.'
+  );
   expect(el.textContent).toContain('(set, ending in AwcA)');
   expect(field(el, 'decision-key').value).toBe('');
   expect(field(el, 'decision-threshold').value).toBe('0.4');
@@ -208,6 +381,7 @@ it('saves a self-hosted endpoint, then shows what the server stored', async () =
     },
     workspace: {
       backend: 'endpoint',
+      unrecognizedBackend: null,
       endpoint: 'https://decide.example',
       threshold: 0.5,
       hasApiKey: false,
@@ -219,7 +393,7 @@ it('saves a self-hosted endpoint, then shows what the server stored', async () =
   switchServers.updateDecisionSettings.mockResolvedValue({ kind: 'saved', settings: stored });
   const el = await render(SERVER_DEFAULT);
 
-  await choose(el, 'Self-hosted endpoint');
+  await choose(el, 'Your own endpoint');
   expect(button(el, 'Save').disabled).toBe(true);
   await type(field(el, 'decision-endpoint'), 'https://decide.example');
   await type(field(el, 'decision-threshold'), '0.5');
@@ -233,7 +407,7 @@ it('saves a self-hosted endpoint, then shows what the server stored', async () =
   });
   await vi.waitFor(() =>
     expect(el.textContent).toContain(
-      'This workspace’s own setting applies: Self-hosted endpoint (https://decide.example).'
+      'This workspace’s own setting applies: Your own endpoint (https://decide.example).'
     )
   );
   expect(el.textContent).toContain('Saved.');
@@ -245,7 +419,7 @@ it('holds a threshold outside 0 to 1, and shows a refusal from the server in its
     message: 'threshold: Input should be less than or equal to 1',
   });
   const el = await render(SERVER_DEFAULT);
-  await choose(el, 'Self-hosted endpoint');
+  await choose(el, 'Your own endpoint');
   await type(field(el, 'decision-endpoint'), 'https://decide.example');
 
   await type(field(el, 'decision-threshold'), '1.5');
@@ -291,7 +465,7 @@ it('tests the unsaved values and shows the pick, confidence and latency', async 
     },
   });
   const el = await render(SERVER_DEFAULT);
-  await choose(el, 'Self-hosted endpoint');
+  await choose(el, 'Your own endpoint');
   await type(field(el, 'decision-endpoint'), 'https://decide.example');
 
   await act(async () => button(el, 'Test').click());
@@ -382,7 +556,7 @@ it('shows why a test failed, saving nothing', async () => {
     },
   });
   const el = await render(SERVER_DEFAULT);
-  await choose(el, 'Haiku (Anthropic API)');
+  await choose(el, 'Claude Haiku with your Anthropic key');
   await type(field(el, 'decision-key'), 'sk-wrong');
 
   await act(async () => button(el, 'Test').click());

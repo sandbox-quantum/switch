@@ -6,6 +6,7 @@
  * of whichever layout the server's gateway has on, for the workspace Console
  * is in.
  */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -27,6 +28,8 @@ const state = vi.hoisted(() => ({
   openPage: vi.fn(),
   start: vi.fn(),
   confirms: [] as { title: string; confirmLabel?: string; onSuccess: () => void }[],
+  workspaceAdmin: false,
+  decisionRouting: false,
 }));
 
 const LOCAL = vi.hoisted(() => ({
@@ -78,7 +81,24 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
     }),
   },
 }));
-vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useAnyServerFeatureFlag: () => false }));
+vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
+  useAnyServerFeatureFlag: () => false,
+  useFeatureFlags: () => ({ service_connections: false, decision_routing: state.decisionRouting }),
+}));
+vi.mock('@renderer/features/switch-servers/workspace-admin', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/features/switch-servers/workspace-admin')>()),
+  administersWorkspaceInScope: () => state.workspaceAdmin,
+}));
+// Preferences, where a page the server does not offer falls back to, needs the
+// app's providers; only that it is the page shown matters here.
+vi.mock('@renderer/features/settings/components/ThemeCard', () => ({
+  default: () => 'Theme card',
+}));
+vi.mock('@renderer/features/settings/pages/admin-pages', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/features/settings/pages/admin-pages')>()),
+  // Stands in for the page, which asks the server for its decision routing.
+  DecisionRoutingSettingsPage: () => 'Decision routing page',
+}));
 vi.mock('@renderer/utils/logger', () => ({ log: { warn: state.warn } }));
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
@@ -125,7 +145,10 @@ vi.mock('@renderer/features/settings/pages/system-status-page', () => ({
   SystemStatusSettingsPage: () => null,
 }));
 
-import { SettingsPage } from '@renderer/features/settings/components/SettingsPage';
+import {
+  SettingsPage,
+  type SettingsPageTab,
+} from '@renderer/features/settings/components/SettingsPage';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;
@@ -140,6 +163,8 @@ beforeEach(() => {
   state.openPage.mockReset();
   state.start.mockReset();
   state.confirms.length = 0;
+  state.workspaceAdmin = false;
+  state.decisionRouting = false;
 });
 
 afterEach(async () => {
@@ -149,11 +174,18 @@ afterEach(async () => {
   root = null;
 });
 
-async function render() {
+async function render(tab: SettingsPageTab = 'account') {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<SettingsPage tab="account" onTabChange={() => {}} />));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () =>
+    root!.render(
+      <QueryClientProvider client={client}>
+        <SettingsPage tab={tab} onTabChange={() => {}} />
+      </QueryClientProvider>
+    )
+  );
 }
 
 function link(label = 'Workspace settings'): HTMLElement | undefined {
@@ -267,4 +299,23 @@ it('logs nothing when the flags are read', async () => {
   await act(async () => link()?.click());
   expect(state.openPage).toHaveBeenCalled();
   expect(state.warn).not.toHaveBeenCalled();
+});
+
+it('offers no Message routing on a server without auto-route, even asked for it', async () => {
+  state.workspaceAdmin = true;
+  state.decisionRouting = false;
+  await render('decision-routing');
+
+  expect(link('Message routing')).toBeUndefined();
+  expect(document.body.textContent).not.toContain('Decision routing page');
+  expect(document.body.textContent).toContain('Theme card');
+});
+
+it('offers Message routing to a workspace admin where the server has auto-route', async () => {
+  state.workspaceAdmin = true;
+  state.decisionRouting = true;
+  await render('decision-routing');
+
+  expect(link('Message routing')).toBeDefined();
+  expect(document.body.textContent).toContain('Decision routing page');
 });

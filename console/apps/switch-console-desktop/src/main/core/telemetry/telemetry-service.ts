@@ -4,8 +4,9 @@ import { log } from '@main/lib/logger';
 import { resolveTelemetryConfig, type TelemetryDisabledReason } from './config';
 import { isTelemetryAllowed } from './consent';
 import type { TelemetryEventMap, TelemetryEventName } from './events';
-import { getInstallId } from './install-id';
+import { forgetInstallId, getInstallId } from './install-id';
 import type { TelemetryInternal } from './internal-account';
+import { coarseOsVersion } from './os-version';
 import { buildOtlpPayload, postTelemetryEvent, TelemetrySendError } from './relay-client';
 import { TelemetrySession } from './session';
 
@@ -38,6 +39,12 @@ class TelemetryService {
    * consent has to stop the next event, not the next launch. Both refusals
    * return before anything is built or opened, so consent off means no request
    * is made at all.
+   *
+   * The gate is read a second time immediately before the request, with no
+   * await in between, because building the payload awaits the database and the
+   * app version: an opt-out landing in that gap must still stop this event.
+   * That second refusal also forgets the id, which the build may just have
+   * minted, so an opt-out never leaves one behind.
    */
   async track<K extends TelemetryEventName>(
     name: K,
@@ -73,7 +80,7 @@ class TelemetryService {
       clientId: await getInstallId(),
       appVersion: await this.resolveVersion(),
       osType: OS_TYPES[process.platform] ?? 'other',
-      osVersion: release(),
+      osVersion: coarseOsVersion(process.platform, release()),
       build: resolution.config.build,
       telemetryEnv: resolution.config.telemetryEnv,
       internal: await this.resolveInternal(),
@@ -81,6 +88,10 @@ class TelemetryService {
       sessionId,
     });
 
+    if (!(await isTelemetryAllowed())) {
+      await forgetInstallId();
+      return;
+    }
     await postTelemetryEvent(payload, resolution.config);
   }
 
@@ -128,6 +139,17 @@ class TelemetryService {
 }
 
 export const telemetryService = new TelemetryService();
+
+/**
+ * Delete the install id if sharing is off.
+ *
+ * Turning sharing off deletes it at the moment of the change; this covers a
+ * refusal that left one behind — given in a version that kept the id, or whose
+ * delete failed. Run at boot.
+ */
+export async function forgetInstallIdWithoutConsent(): Promise<void> {
+  if (!(await isTelemetryAllowed())) await forgetInstallId();
+}
 
 /**
  * Record that something happened, and get on with the work.

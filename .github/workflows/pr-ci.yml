@@ -115,7 +115,8 @@ jobs:
             decision:
               - *shared
               - 'decision/**'
-            # The morning report, tested with its own dependencies, not core's.
+            # The morning report, tested with its own dependencies, not core's,
+            # and the monitors' checks, which apply.sh relies on.
             observability:
               - *shared
               - 'deploy/observability/**'
@@ -317,7 +318,15 @@ jobs:
           python-version: '3.12'
           enable-cache: true
 
-      # The script's own dependencies, read from its header, plus pytest.
+      # Needs no secrets: priorities, tags, security routing and placeholders.
+      # A deployment's own tooling applies the same file with apply.sh.
+      - name: Check monitors.json
+        working-directory: deploy/observability
+        run: python3 check_monitors.py monitors.json
+
+      # The script's own dependencies, read from its header, plus pytest. This
+      # also runs test_monitors.py, which drives apply.sh in DRY_RUN to check
+      # its routing and that it refuses missing handles and placeholders.
       - name: pytest
         working-directory: deploy/observability
         run: uv run --no-project --with-requirements daily_report.py --with pytest pytest -q
@@ -434,13 +443,20 @@ jobs:
       - name: Test shared
         run: pnpm --filter @switch-console/shared run test
 
+      # maxWorkers: capped here, not in the packages' own vitest config, so
+      # Linux and macOS (the `console` job, and anyone running `pnpm test`
+      # locally) keep full parallelism. These suites start real child
+      # processes and temp directories per test; windows-latest's runner
+      # cannot take as many of those at once as its CPU count suggests, and
+      # overcommitting them is what turned into a pile of unrelated tests
+      # timing out together rather than any one of them being slow on its own.
       - name: Test agent-providers
         if: ${{ !cancelled() }}
-        run: pnpm --filter @switch-console/agent-providers run test
+        run: pnpm --filter @switch-console/agent-providers run test --maxWorkers=50%
 
       - name: Test agent-controller
         if: ${{ !cancelled() }}
-        run: pnpm --filter @switch-console/agent-controller run test
+        run: pnpm --filter @switch-console/agent-controller run test --maxWorkers=50%
 
       - name: Test Console's embedded controller and Windows launching
         if: ${{ !cancelled() }}
@@ -548,22 +564,17 @@ jobs:
       lane: fast
       agent_type: claude-code
 
-  # The gateway as each role, in both layouts: the role matrix
+  # The gateway as each role: the role matrix
   # (gateway/src/routes/roleMatrix.ts) checked against what a real account in
   # each role is shown. Not a required check yet.
   e2e-browser:
-    name: E2E browser lane (${{ matrix.gateway_layout }} layout)
+    name: E2E browser lane
     needs: changes
     if: ${{ needs.changes.outputs.e2e_browser == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        gateway_layout: [current, v2]
     uses: ./.github/workflows/e2e.yml
     with:
       lane: browser
       agent_type: claude-code
-      gateway_layout: ${{ matrix.gateway_layout }}
 
   migration-heads-on-merge:
     name: Migration heads on merge

@@ -66,8 +66,12 @@ describe('a provider added as a plugin and a runtime', () => {
       description: 'A made-up agent CLI.',
       docUrl: 'https://dummy.example.com',
       cliLabel: 'Dummy CLI',
+      shortName: 'Dummy',
       loginCommand: 'dummy-agent login',
       knownAgentType: 'dummy',
+      // Its plugin does not say it lacks the CLI's own auto mode.
+      supportsAutoMode: true,
+      newAgentAutoMode: true,
     });
     expect(knownAgentTypeForProvider('dummy')).toBe('dummy');
   });
@@ -110,6 +114,7 @@ describe('a provider added as a plugin and a runtime', () => {
         cloud: false,
         workspacesDir: null,
         os: null,
+        lastSeenAt: null,
         local: null,
       },
       allFeatureFlagsOff()

@@ -126,16 +126,40 @@ environment's app itself, to test against.
    approving admin is shown them (`TEAMS_APP_PRIVACY_URL`,
    `TEAMS_APP_TERMS_URL`, https).
 9. **Name (optional).** `TEAMS_APP_NAME`, up to 30 characters, is the app's
-   name in Teams; unset, it is "Agent Switch". Give each non-production
-   environment's app its own — "Agent Switch (dev)" — so an organisation that
+   name in Teams; unset, it is "Switch Rooms". Give each non-production
+   environment's app its own — "Switch Rooms (dev)" — so an organisation that
    approves more than one, ours included, can tell them apart. Name the Entra
    app registration to match. Set it before the first approval: an
    organisation takes a new name only with a newer app package.
 10. **Publisher verification** (Partner Center). Without it, Microsoft's
     approval screen shows the app as unverified, which makes IT teams more
-    likely to refuse. A Teams Store listing also requires it.
+    likely to refuse. Some organisations block unverified multi-tenant apps
+    outright, so their admins cannot approve it at all. A Teams Store listing
+    also requires it. Do it before the first organisation approves, for the
+    reason given under the partner ID below. It needs:
+    - A Microsoft AI Cloud Partner Program account that has finished
+      Microsoft's verification, and its **Partner ID** for the organisation's
+      Partner global account (not a location account).
+    - A **publisher domain** on the app registration (Branding & properties)
+      that matches the domain of the email address the Partner Center account
+      was verified with, or a custom domain verified in our directory.
+    - One person who is an Application Administrator, Cloud Application
+      Administrator or Global Administrator in our directory, and holds an
+      admin role on the Partner Center account, signed in with multi-factor
+      authentication.
 
-All of these are required together; a partial configuration is refused at
+    Then, on the app registration: **Branding & properties → Publisher
+    verification → Add Partner ID to verify publisher**, enter the ID, and
+    save. The approval screen shows the verified badge from then on, for
+    every organisation, with nothing to redeploy.
+11. **Partner ID (optional).** `TEAMS_APP_PARTNER_ID`, the same Partner ID,
+    is written into the app package (`developer.mpnId`), tying the Teams app
+    to the publisher Microsoft verified. Like the name, set it before the
+    first approval: an organisation takes a changed package only when its
+    version is raised.
+
+All of these but the name and the partner ID are required together; a
+partial configuration, a partner ID with no app included, is refused at
 startup. Setting `TEAMS_APP_CLIENT_ID` is what enables the button.
 
 ## What a customer's install produces
@@ -219,7 +243,8 @@ must not disconnect a customer and free their organisation for someone else.
 
 Disconnecting from Switch stops capture in the organisation and takes Switch
 out of every team it is in. Removing the app from the organisation entirely is
-the customer's to do: their Teams admin removes **Agent Switch** in the Teams
+the customer's to do: their Teams admin removes the app (**Switch Rooms**,
+unless `TEAMS_APP_NAME` names it otherwise) in the Teams
 admin center, and their Entra admin deletes the enterprise application.
 
 ## When setup goes wrong

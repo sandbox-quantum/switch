@@ -25,7 +25,13 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({ serverKindOf: () => 'cloud' }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
 
-const { chatFailureReason, chatMentions, reportingChatCall } = await import('./chat-telemetry');
+const {
+  chatFailureReason,
+  chatMentions,
+  chatMessageShape,
+  reportingChatCall,
+  reportingChatCallOn,
+} = await import('./chat-telemetry');
 const { ChatApiError } = await import('./gateway');
 
 const server = { id: 'server' } as SwitchServer;
@@ -64,6 +70,44 @@ describe('chatMentions', () => {
         mentionSpans: [{ kind: 'user', id: 'u1', offset: 0, length: 3 }],
       })
     ).toBe('both');
+  });
+});
+
+describe('chatMessageShape', () => {
+  const base = {
+    uploadIds: [],
+    threadRootId: null,
+    mentionAgentIds: [],
+    mentionUserIds: [],
+    mentionSpans: [],
+    toBuddy: 'no' as const,
+  };
+
+  it('says whether the message went to the person’s own buddy, and nothing of the message', () => {
+    expect(chatMessageShape({ ...base, toBuddy: 'yes' })).toEqual({
+      has_attachment: false,
+      in_thread: false,
+      mentions: 'none',
+      to_buddy: 'yes',
+    });
+    expect(chatMessageShape({ ...base, uploadIds: ['u1'], threadRootId: 'm1' })).toEqual({
+      has_attachment: true,
+      in_thread: true,
+      mentions: 'none',
+      to_buddy: 'no',
+    });
+    expect(chatMessageShape({ ...base, toBuddy: 'unknown' }).to_buddy).toBe('unknown');
+  });
+
+  it('reads anything but a known value as unknown, since the input crosses IPC unvalidated', () => {
+    const unvalidated = (toBuddy: unknown) =>
+      chatMessageShape({ ...base, toBuddy } as unknown as Parameters<typeof chatMessageShape>[0]);
+    expect(unvalidated(true).to_buddy).toBe('unknown');
+    expect(unvalidated('YES').to_buddy).toBe('unknown');
+    expect(unvalidated(undefined).to_buddy).toBe('unknown');
+    expect(
+      chatMessageShape({ threadRootId: null } as unknown as Parameters<typeof chatMessageShape>[0])
+    ).toEqual({ has_attachment: false, in_thread: false, mentions: 'none', to_buddy: 'unknown' });
   });
 });
 
@@ -152,5 +196,79 @@ describe('reportingChatCall', () => {
     await reportingChatCall(server, 'r2', async () => 'posted', emit);
 
     expect(emit.mock.calls.map(([outcome]) => outcome.outcome)).toEqual(['failure', 'success']);
+  });
+});
+
+describe('reportingChatCallOn', () => {
+  const onServerOk = <R>(_id: string, fn: (s: SwitchServer) => Promise<R>) => fn(server);
+
+  it('reports a call that ran once, through reportingChatCall', async () => {
+    const emit = vi.fn();
+    const getServer = vi.fn(async () => server);
+
+    await expect(
+      reportingChatCallOn(
+        { onServer: onServerOk, getServer },
+        'server',
+        null,
+        async () => {
+          throw new GatewayError('network', 'down');
+        },
+        emit
+      )
+    ).rejects.toThrow('down');
+
+    expect(emit).toHaveBeenCalledExactlyOnceWith(
+      { server_kind: 'cloud', outcome: 'failure', failure_reason: 'network' },
+      null
+    );
+    expect(getServer).not.toHaveBeenCalled();
+  });
+
+  it('reports a call that failed on the way to the server', async () => {
+    const emit = vi.fn();
+    const run = vi.fn();
+
+    await expect(
+      reportingChatCallOn(
+        {
+          onServer: async () => {
+            throw new GatewayError('network', 'no route');
+          },
+          getServer: async () => server,
+        },
+        'server',
+        'req-1',
+        run,
+        emit
+      )
+    ).rejects.toThrow('no route');
+
+    expect(run).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledExactlyOnceWith(
+      { server_kind: 'cloud', outcome: 'failure', failure_reason: 'network' },
+      null
+    );
+  });
+
+  it('still throws the call’s own error when the server row is gone too', async () => {
+    const emit = vi.fn();
+
+    await expect(
+      reportingChatCallOn(
+        {
+          onServer: async () => {
+            throw new Error('no workspace for this server');
+          },
+          getServer: async () => null,
+        },
+        'server',
+        null,
+        vi.fn(),
+        emit
+      )
+    ).rejects.toThrow('no workspace');
+
+    expect(emit).not.toHaveBeenCalled();
   });
 });

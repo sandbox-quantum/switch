@@ -1,8 +1,10 @@
 """Who may invite an agent into a room: one rule for every way in.
 
-An agent can be brought into a room three ways: the Gateway's room route
-(Switch Console and the web UI), an agent's `invite_agent_to_room` tool, and
-`!invite-agent` posted in the room. All three ask this module, so they agree.
+An agent can be brought into a room four ways: the Gateway's room routes
+(Switch Console and the web UI), an agent's `invite_agent_to_room` and
+`create_room` tools, `!invite-agent` posted in the room, and a room made from
+a template or YAML document, by a person or an agent (`rooms_yaml`). All of
+them ask this module, so they agree.
 
 The rule: the inviter must be **in the room**, and **allowed to address** the
 agent being invited. An agent sitting in a room sees everything said there, so
