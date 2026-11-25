@@ -30,6 +30,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     HTTPException,
+    Path,
     Query,
     Request,
     Response,
@@ -1498,6 +1499,10 @@ async def remove_organization_member(
 
 # ── Invitations the directory sends ─────────────────────────────────────────
 
+# WorkOS's ids for invitations, the only ids these routes pass on: anything
+# else in the path is refused before the directory is asked.
+INVITATION_ID_PATTERN = r"^invitation_[A-Za-z0-9]{1,64}$"
+
 
 def _invitation_response(
     invitation: DirectoryInvitation,
@@ -1615,7 +1620,7 @@ async def invite_to_organization(
     "/organizations/current/invitations/{invitation_id}/resend", status_code=204
 )
 async def resend_organization_invitation(
-    invitation_id: str,
+    invitation_id: Annotated[str, Path(pattern=INVITATION_ID_PATTERN)],
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
@@ -1652,7 +1657,7 @@ async def resend_organization_invitation(
 
 @router.delete("/organizations/current/invitations/{invitation_id}", status_code=204)
 async def revoke_organization_invitation(
-    invitation_id: str,
+    invitation_id: Annotated[str, Path(pattern=INVITATION_ID_PATTERN)],
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)

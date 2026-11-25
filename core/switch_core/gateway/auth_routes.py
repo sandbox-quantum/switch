@@ -146,7 +146,6 @@ from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
-from switch_core.workos_directory import WorkOSDirectory
 
 logger = logging.getLogger(__name__)
 
@@ -671,10 +670,9 @@ async def _one_workspace_organizations(
 ) -> frozenset[str]:
     """Those of the organizations of `tenants` that keep one workspace, among
     those the caller is `org_admin` of: whom `can_add_workspace` is about.
-    Only the WorkOS directory keeps any, so nothing is read under the local
-    one."""
+    Nothing is read where the directory keeps none."""
     keeping: set[str] = set()
-    if not isinstance(organization_directory, WorkOSDirectory):
+    if not organization_directory.keeps_any_organization():
         return frozenset()
     for organization_id in {
         t.organization_id
@@ -942,11 +940,14 @@ async def delete_my_account(
         raise
     background.add_task(notices.send_all, changes)
     response.delete_cookie("switch_auth", path="/")
-    # Its row went with the account; the browser ends the AuthKit session.
+    # Its row went with the account; its AuthKit session is ended here, and
+    # left to the browser only when WorkOS could not be asked.
     end_session_url = (
         None
         if this_browser is None
-        else identity_sessions.logout_url(this_browser, _sign_out_return(config))
+        else await identity_sessions.end_after_deletion(
+            user.id, this_browser, _sign_out_return(config)
+        )
     )
     return SignOutResponse(ok=True, end_session_url=end_session_url)
 
@@ -1039,7 +1040,9 @@ async def reset_test_account(
     end_session_url = (
         None
         if this_browser is None
-        else identity_sessions.logout_url(this_browser, _sign_out_return(config))
+        else await identity_sessions.end_after_deletion(
+            user_id, this_browser, _sign_out_return(config)
+        )
     )
     response.delete_cookie("switch_auth", path="/")
     return SignOutResponse(ok=True, end_session_url=end_session_url)

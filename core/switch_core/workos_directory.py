@@ -438,6 +438,9 @@ class WorkOSDirectory:
             and self._members is not None
         )
 
+    def keeps_any_organization(self) -> bool:
+        return True
+
     def keeps_members_of(self, organization: Organization) -> bool:
         """Only an organization an operator linked follows WorkOS; any other
         is still Switch's own."""

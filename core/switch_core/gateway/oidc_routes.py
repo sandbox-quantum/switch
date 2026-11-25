@@ -241,7 +241,14 @@ async def _bring_in_organizations(
 # sign-in to continue (an invitation, an organization's own sign-in, a login
 # hint), forwarded to AuthKit's sign-in as they came.
 _FORWARDED = ("invitation_token", "organization_id", "login_hint")
-_FORWARDED_VALUE = re.compile(r"^[A-Za-z0-9_.@+-]{1,512}$")
+# WorkOS's ids and tokens are plain; a login hint is an address, which may hold
+# any printable character but a space (o'brien@…, a+b=c@…), and only goes back
+# to WorkOS, URL-encoded.
+_FORWARDED_VALUE = {
+    "invitation_token": re.compile(r"^[A-Za-z0-9_.@+-]{1,512}$"),
+    "organization_id": re.compile(r"^[A-Za-z0-9_.@+-]{1,512}$"),
+    "login_hint": re.compile(r"^[!-~]{1,320}$"),
+}
 
 
 def _dashboard_location(value: str | None) -> str | None:
@@ -402,7 +409,7 @@ async def oidc_login(
             value = request.query_params.get(name)
             if value is None:
                 continue
-            if not _FORWARDED_VALUE.match(value):
+            if not _FORWARDED_VALUE[name].match(value):
                 raise HTTPException(status_code=400, detail=f"Malformed {name}")
             forwarded[name] = value
         return _authkit_login(

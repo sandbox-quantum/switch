@@ -533,6 +533,24 @@ async def test_signing_out_ends_the_authkit_session_here_and_at_workos(
         assert (await client.get("/auth/me")).status_code == 401
 
 
+async def test_signing_out_of_a_session_already_ended_sends_nowhere(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Ended at WorkOS and noticed here: a logout there would only answer
+    with an error page, so the browser is not sent to one."""
+    ada = await _person(session_factory, "ada-gone@example.test")
+    row_id = await _signed_in(session_factory, ada, "s-gone", datetime.now(UTC))
+    async with session_factory() as session, session.begin():
+        await IdentitySessionStore().end(session, [row_id], datetime.now(UTC))
+    app = _sign_out_app(session_factory, _AuthKitSignOut(set()))
+    token = _cookie(ada, "ada-gone@example.test", row_id)
+    async with _client(app, token) as client:
+        response = await client.post("/auth/logout")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "end_session_url": None}
+    assert 'switch_auth=""' in response.headers["set-cookie"]
+
+
 async def test_an_expired_cookie_still_ends_what_it_stood_on(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

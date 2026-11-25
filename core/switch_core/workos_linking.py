@@ -167,7 +167,9 @@ async def check_from_issuer(
     sign-in's identities are kept under: the identities from before issuers
     were tracked are labelled with it for good (`label_legacy_identities`),
     and one spelt differently (a trailing slash, say) would match neither
-    that sign-in nor the legacy rule if the move were undone."""
+    that sign-in nor the legacy rule if the move were undone. Where every
+    identity predates issuers, nothing can be checked, and it is taken as
+    given."""
     if from_issuer == issuer:
         raise LinkingError(
             f"--from-issuer is the issuer this server signs in under "
@@ -184,7 +186,17 @@ async def check_from_issuer(
                 )
                 if iss is not None
             )
+            legacy = await session.scalar(
+                select(func.count())
+                .select_from(OidcIdentity)
+                .where(OidcIdentity.iss.is_(None))
+            )
     if from_issuer in in_use:
+        return
+    # Every identity from before issuers were tracked, and none since: there
+    # is nothing to check the spelling against, and labelling them is the
+    # only way they sign in again.
+    if not in_use and legacy:
         return
     known = (
         "those in use are " + ", ".join(repr(each) for each in in_use)

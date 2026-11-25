@@ -79,6 +79,14 @@ _LOCK_NOT_AVAILABLE = "55P03"
 # The one workspace of an organization the directory keeps, as the directory
 # names it too; renamed in Switch only.
 DEFAULT_WORKSPACE_NAME = "Default"
+# Why the operator can't create one where the directory makes organizations:
+# it makes one per person, as their own, so one made with the operator's sign-in
+# would be the operator's.
+OPERATOR_CANNOT_CREATE = (
+    "Organizations here are created in the account every Switch product shares, "
+    "one per person, by the person who owns it when they first sign in. An "
+    "operator can't create one for them."
+)
 ONE_WORKSPACE = (
     "This organization is kept in its account settings, where an organization "
     "has one workspace, so no more are added. Rename a workspace rather than "
@@ -128,6 +136,15 @@ def _derive_slug(name: str) -> str:
             detail="Name must contain at least one letter or digit",
         )
     return slug
+
+
+def _slugs_for(name: str, *, directory_named: bool) -> list[str]:
+    """`_slugs`, but for a name the directory chose, which may have no letter
+    or digit a slug can take ("株式会社"), a generic one: the organization
+    already exists there, so refusing its name would refuse every retry."""
+    if not directory_named or _SLUG_INVALID_CHARS.sub("", name.strip().lower()):
+        return _slugs(name)
+    return _slugs("organization")
 
 
 def _slugs(name: str) -> list[str]:
@@ -320,6 +337,8 @@ async def create_organization_for(
     created until the caller has accepted it (`gateway/licenses.py`).
     """
     allowance: User | None = None
+    if caller.is_operator and config.organizations_created_in_directory:
+        raise HTTPException(status_code=409, detail=OPERATOR_CANNOT_CREATE)
     user = await user_store.get(session, caller.id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
@@ -450,7 +469,7 @@ async def record_organization(
     return PlannedOrganization(
         recorded=recorded,
         name=name,
-        organization_slugs=_slugs(name),
+        organization_slugs=_slugs_for(name, directory_named=recorded.name is not None),
         workspace_name=workspace_name,
         workspace_slugs=_slugs(workspace_name),
         setup_answers=setup_answers,
@@ -555,15 +574,12 @@ async def _create_organization_rows(
 
     try:
         tenant = await _create_tenant(
-            client_lifecycle, organization.id, workspace_name, workspace_slugs
+            client_lifecycle,
+            organization.id,
+            workspace_name,
+            workspace_slugs,
+            recorded.workspace_id,
         )
-        if recorded.workspace_id is not None:
-            async with tenant_session(session_factory, tenant.id) as session:
-                bound = await session.get(Tenant, tenant.id)
-                assert bound is not None
-                bound.directory_workspace_id = recorded.workspace_id
-                await session.commit()
-            tenant.directory_workspace_id = recorded.workspace_id
     except BaseException:
         # A failure after the workspace committed leaves it referencing the
         # organization, and the discard is refused; the workspace's own
@@ -608,7 +624,9 @@ async def create_workspace(
     an organization does for its first workspace, so it stays theirs if they
     stop being `org_admin`.
     """
-    tenant = await _create_tenant(client_lifecycle, organization_id, name, _slugs(name))
+    tenant = await _create_tenant(
+        client_lifecycle, organization_id, name, _slugs(name), None
+    )
     await _add_creator(
         session_factory,
         user_store,
@@ -626,10 +644,13 @@ async def _create_tenant(
     organization_id: str,
     name: str,
     slugs: list[str],
+    directory_workspace_id: str | None,
 ) -> Tenant:
     for slug in slugs:
         try:
-            return await client_lifecycle.create_tenant(name, slug, organization_id)
+            return await client_lifecycle.create_tenant(
+                name, slug, organization_id, directory_workspace_id
+            )
         except TenantSlugTaken:
             continue
         except TenantIsolationNotInForce as exc:

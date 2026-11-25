@@ -669,11 +669,13 @@ async def session_is_current(
     async with session_factory() as system_session:
         current = await user_store.session_version(system_session, user_id)
         signed_out = await _signed_out(system_session, session_id)
-    if current != session_version or signed_out:
-        return False
-    if identity_session is None:
-        return True
-    return await identity_sessions_of(connection).still_live(user_id, identity_session)
+        if current != session_version or signed_out:
+            return False
+        if identity_session is None:
+            return True
+        return await identity_sessions_of(connection).live_on(
+            system_session, user_id, identity_session
+        )
 
 
 async def session_still_enters(
@@ -782,6 +784,11 @@ async def signed_in_user(
     if user is None or user.session_version != _session_version(payload):
         return None
     if await _signed_out(session, _session_id(payload)):
+        return None
+    identity_session = identity_session_of(payload)
+    if identity_session is not None and not await identity_sessions_of(request).live_on(
+        session, user.id, identity_session
+    ):
         return None
     return user
 

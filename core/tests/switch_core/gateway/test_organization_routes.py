@@ -80,9 +80,19 @@ class _FakeClientLifecycle:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ) -> Tenant:
         tenant = Tenant(
-            id=str(uuid.uuid4()), name=name, slug=slug, organization_id=organization_id
+            id=str(uuid.uuid4()),
+            name=name,
+            slug=slug,
+            organization_id=organization_id,
+            directory_workspace_id=directory_workspace_id,
         )
         async with tenant_session(self._session_factory, tenant.id) as session:
             await TenantStore().create(session, tenant)

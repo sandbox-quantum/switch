@@ -13,6 +13,7 @@ import json
 import secrets
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import httpx
 import jwt
@@ -180,6 +181,16 @@ def _with(
     app.dependency_overrides[gw_deps.get_organization_directory] = lambda: directory
     app.state.identity_sessions = IdentitySessions(
         session_factory, _authkit(workos), _KEYRING
+    )
+    # A server with organizations created in WorkOS, as this directory makes them.
+    app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
+        keyring=_KEYRING,
+        gateway_cookie_secure=False,
+        gateway_tenant_choice_enabled=False,
+        gateway_signup_mode="open",
+        gateway_max_workspaces_per_user=3,
+        gateway_license_version=None,
+        organizations_created_in_directory=True,
     )
     return app
 

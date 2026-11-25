@@ -435,9 +435,11 @@ async def test_a_deletion_whose_sign_ins_workos_cannot_list_is_refused(
         assert await session.get(User, member) is not None
 
 
-async def test_a_deletion_sends_this_browser_to_end_its_own_sign_in(
+async def test_a_deletion_ends_this_browsers_own_sign_in_at_workos_too(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """Once the account is gone, so a browser that never follows a logout
+    can't sign straight back in to a new account."""
     _, member = await _people(session_factory)
     here = await _authkit_sign_in(session_factory, member, "s-gone-here")
     await _authkit_sign_in(session_factory, member, "s-gone-laptop")
@@ -452,7 +454,30 @@ async def test_a_deletion_sends_this_browser_to_end_its_own_sign_in(
             "DELETE", "/auth/me", json={"email": "leaving@example.invalid"}
         )
     assert deleted.status_code == 200, deleted.text
-    assert workos.revoked == ["s-gone-laptop"]
-    assert "session_id=s-gone-here" in deleted.json()["end_session_url"]
+    # The others before the deletion, this browser's after it.
+    assert workos.revoked == ["s-gone-laptop", "s-gone-here"]
+    assert deleted.json()["end_session_url"] is None
+    async with session_factory() as session:
+        assert await session.get(User, member) is None
+
+
+async def test_a_sign_in_workos_wont_revoke_after_a_deletion_is_left_to_the_browser(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, member = await _people(session_factory)
+    here = await _authkit_sign_in(session_factory, member, "s-stuck-here")
+    workos = _AuthKitSignOut({"s-stuck-here"})
+    workos.refuse = {"s-stuck-here"}
+    app = _app(session_factory)
+    app.state.identity_sessions = IdentitySessions(
+        session_factory, workos, TEST_KEYRING
+    )  # type: ignore[arg-type]
+    async with _authkit_client(app, member, "leaving@example.invalid", here) as client:
+        deleted = await client.request(
+            "DELETE", "/auth/me", json={"email": "leaving@example.invalid"}
+        )
+
+    assert deleted.status_code == 200, deleted.text
+    assert "session_id=s-stuck-here" in deleted.json()["end_session_url"]
     async with session_factory() as session:
         assert await session.get(User, member) is None

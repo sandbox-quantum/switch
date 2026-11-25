@@ -1688,17 +1688,8 @@ class OrganizationInvitationCreateRequest(BaseModel):
     """Someone to invite to an organization kept in a directory, which sends
     the invitation: they join it, and its one workspace, by accepting."""
 
-    email: str
+    email: Email
     role: Literal["member", "org_admin"] = "member"
-
-    @field_validator("email")
-    @classmethod
-    def _address_shaped(cls, value: str) -> str:
-        address = value.strip().lower()
-        local, at, domain = address.partition("@")
-        if not at or not local or "." not in domain or " " in address:
-            raise ValueError("Enter one e-mail address.")
-        return address
 
 
 class OrganizationInvitationResponse(BaseModel):

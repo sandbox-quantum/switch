@@ -1833,10 +1833,20 @@ export async function setUpOrganization(
   name: string,
   answers: OrganizationSetupAnswers,
 ): Promise<TenantMembership> {
-  const created = await jsonRequest<{ workspace: TenantMembership }>("/organizations", "POST", {
-    name,
-    setup_answers: answers,
-  });
+  // Creating it in the shared account can take the server up to 90 seconds,
+  // past the usual request timeout: giving up sooner shows a failure for an
+  // organization that is still being made, and trying again finds it made.
+  const res = await gatewayFetch(
+    `${BASE}/organizations`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, setup_answers: answers }),
+    },
+    LONG_REQUEST_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await failure(res);
+  const created = (await res.json()) as { workspace: TenantMembership };
   return created.workspace;
 }
 

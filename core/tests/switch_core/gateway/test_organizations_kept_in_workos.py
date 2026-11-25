@@ -22,7 +22,11 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.admin_tokens import CREATING_AN_ORGANIZATION, SIGN_IN_ENDED
-from switch_core.gateway.workspace_creation import ONE_WORKSPACE, ONLY_WORKSPACE
+from switch_core.gateway.workspace_creation import (
+    ONE_WORKSPACE,
+    ONLY_WORKSPACE,
+    OPERATOR_CANNOT_CREATE,
+)
 from tests.switch_core.gateway.test_member_changes_with_workos import (
     WORKOS_ORGANIZATION,
     _client_on,
@@ -34,6 +38,7 @@ from tests.switch_core.gateway.test_organization_routes import (
     _KEYRING,
     _app,
     _client,
+    _operator,
     _user,
     _workspaces_created,
 )
@@ -393,3 +398,71 @@ class TestInvitingThroughTheDirectory:
 
         assert refused.status_code == 403
         assert workos.invitation_calls == []
+
+
+class TestWhatIsRefused:
+    async def test_an_invitation_id_that_is_not_one_never_reaches_the_service(
+        self, session_factory
+    ) -> None:
+        """The id goes into auth-gateway's path with the admin's token: `..`
+        would aim that token at another route."""
+        workos = _Accounts()
+        ada, isid = await _signed_in_newcomer(session_factory)
+        async with _client_on(
+            _with(session_factory, workos), ada, None, isid
+        ) as client:
+            created = await client.post("/organizations", json={"name": "Acme"})
+        workspace_id = created.json()["workspace"]["id"]
+
+        async with _client_on(
+            _with(session_factory, workos), ada, workspace_id, isid
+        ) as client:
+            answers = [
+                await client.delete("/organizations/current/invitations/..%2F.."),
+                await client.post(
+                    "/organizations/current/invitations/invitation_1%3Fx=1/resend"
+                ),
+                await client.delete("/organizations/current/invitations/not-an-id"),
+            ]
+
+        assert all(answer.status_code in (404, 422) for answer in answers), [
+            answer.status_code for answer in answers
+        ]
+        assert workos.invitation_calls == []
+
+    async def test_an_operator_does_not_create_one_for_someone_else(
+        self, session_factory
+    ) -> None:
+        """The account service makes one per person, as theirs: one made with
+        the operator's sign-in would be the operator's."""
+        operator_id = await _operator(session_factory)
+        isid = await _signed_in_through_workos(session_factory, operator_id)
+        workos = _Accounts()
+
+        async with _client_on(
+            _with(session_factory, workos), operator_id, None, isid
+        ) as client:
+            refused = await client.post("/organizations", json={"name": "Acme"})
+
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == OPERATOR_CANNOT_CREATE
+        assert workos.created == []
+
+    async def test_a_name_the_directory_chose_in_another_script_still_gets_a_slug(
+        self, session_factory
+    ) -> None:
+        """The account answers with the one the creator made before, here
+        named in Japanese: refusing its slug would refuse every retry."""
+        ada, isid = await _signed_in_newcomer(session_factory)
+        workos = _Accounts()
+        workos.names["anyone"] = "株式会社"
+
+        async with _client_on(
+            _with(session_factory, workos), ada, None, isid
+        ) as client:
+            created = await client.post("/organizations", json={"name": "Acme"})
+
+        assert created.status_code == 201, created.text
+        organization = created.json()["organization"]
+        assert organization["name"] == "株式会社"
+        assert organization["slug"].startswith("organization")

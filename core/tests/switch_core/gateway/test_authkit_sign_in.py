@@ -212,6 +212,16 @@ class TestStartingASignIn:
         assert authorize["invitation_token"] == "Inv1te_Token"
         assert authorize["login_hint"] == "ada@example.test"
 
+    async def test_a_login_hint_any_address_can_be_is_passed_on(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        app = _app(session_factory, _WorkOS(), _config())
+        async with _client(app) as client:
+            authorize = await _start(
+                client, "?login_hint=o%27brien%2Bx%3Dy%40example.test"
+            )
+        assert authorize["login_hint"] == "o'brien+x=y@example.test"
+
     async def test_a_malformed_forwarded_value_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

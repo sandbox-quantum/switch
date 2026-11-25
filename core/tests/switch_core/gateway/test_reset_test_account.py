@@ -326,8 +326,9 @@ async def test_its_sign_ins_at_workos_end_with_it(
 
     assert response.status_code == 200, response.text
     # The other device's sign-in is revoked; this browser goes to end its own.
-    assert workos.revoked == ["s-reset-laptop"]
-    assert "session_id=s-reset-here" in response.json()["end_session_url"]
+    # The others with the account, this browser's after it.
+    assert workos.revoked == ["s-reset-laptop", "s-reset-here"]
+    assert response.json()["end_session_url"] is None
     assert 'switch_auth=""' in response.headers["set-cookie"]
     async with session_factory() as session:
         assert await store.get(session, here) is None

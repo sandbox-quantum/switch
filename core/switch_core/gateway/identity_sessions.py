@@ -142,7 +142,13 @@ class IdentitySessions:
         """`require_live` for a socket or stream asking again, on a short
         session of its own."""
         async with self._session_factory() as db:
-            row = await self._store.get(db, identity_session)
+            return await self.live_on(db, user_id, identity_session)
+
+    async def live_on(
+        self, db: AsyncSession, user_id: str, identity_session: str
+    ) -> bool:
+        """`still_live`, on a session the caller already holds."""
+        row = await self._store.get(db, identity_session)
         if not self._live(row, user_id):
             return False
         assert row is not None
@@ -218,8 +224,17 @@ class IdentitySessions:
         if row.session_id in active:
             metrics().increment(AUTH_IDENTITY_SESSION_CHECKS, {"outcome": "alive"})
             return
-        async with self._session_factory() as db, db.begin():
-            await self._store.end(db, [row.id], datetime.now(UTC))
+        try:
+            async with self._session_factory() as db, db.begin():
+                await self._store.end(db, [row.id], datetime.now(UTC))
+        except Exception:
+            logger.exception(
+                "Could not end identity session %s, which WorkOS no longer lists; "
+                "it is checked again later",
+                row.id,
+            )
+            metrics().increment(AUTH_IDENTITY_SESSION_CHECKS, {"outcome": "failed"})
+            return
         logger.info(
             "Identity session %s of user %s ended at WorkOS; its Switch session "
             "ends with it",
@@ -344,14 +359,16 @@ class IdentitySessions:
         """Sign this browser out of the identity session its cookie stands on:
         mark it ended, so no copy of the cookie stands any more, and answer
         where the browser goes to end it at WorkOS (`return_to` after), or
-        None with no AuthKit to end it at or no such session of this
-        person's."""
+        None with no AuthKit to end it at, no such session of this person's,
+        or one that had ended already."""
         async with self._session_factory() as db, db.begin():
             row = await self._store.get(db, identity_session)
             if row is None or row.user_id != user_id:
                 return None
             await self._store.end(db, [row.id], datetime.now(UTC))
-        if self._authkit is None:
+        # One already ended is already gone at WorkOS, which a logout would
+        # only answer with an error page.
+        if self._authkit is None or row.ended_at is not None:
             return None
         return self._authkit.logout_url(row.session_id, return_to)
 
@@ -381,6 +398,27 @@ class IdentitySessions:
                 row.session_id,
                 user_id,
             )
+
+    async def end_after_deletion(
+        self, user_id: str, row: IdentitySessionRow, return_to: str | None
+    ) -> str | None:
+        """End at WorkOS the session this browser deleted its account from,
+        once the account is gone, so nothing signs straight back in to a new
+        account even if the browser never follows a logout. Answers where the
+        browser goes to end it there itself, only when it could not be
+        revoked here; None once it has ended, or with no AuthKit."""
+        if self._authkit is None:
+            return None
+        _, failed = await self._revoke_active([row])
+        if not failed:
+            return None
+        logger.warning(
+            "Could not revoke WorkOS session %s of deleted user %s; the browser "
+            "is sent to end it",
+            row.session_id,
+            user_id,
+        )
+        return self._authkit.logout_url(row.session_id, return_to)
 
     async def end_all(self, user_id: str, *, keep: str | None) -> int:
         """End every live identity session of this person but `keep` (the one

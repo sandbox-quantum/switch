@@ -40,6 +40,7 @@ import logging
 import time
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import jwt
@@ -85,14 +86,16 @@ class MembersService:
     async def set_role(self, access_token: str, membership_id: str, role: str) -> None:
         await self._call(
             "PATCH",
-            f"/v1/auth/tenants/members/{membership_id}",
+            f"/v1/auth/tenants/members/{quote(membership_id, safe='')}",
             access_token,
             json={"role": role},
         )
 
     async def remove(self, access_token: str, membership_id: str) -> None:
         await self._call(
-            "DELETE", f"/v1/auth/tenants/members/{membership_id}", access_token
+            "DELETE",
+            f"/v1/auth/tenants/members/{quote(membership_id, safe='')}",
+            access_token,
         )
 
     async def invite(
@@ -128,13 +131,15 @@ class MembersService:
 
     async def revoke_invitation(self, access_token: str, invitation_id: str) -> None:
         await self._call(
-            "DELETE", f"/v1/auth/tenants/invitations/{invitation_id}", access_token
+            "DELETE",
+            f"/v1/auth/tenants/invitations/{quote(invitation_id, safe='')}",
+            access_token,
         )
 
     async def resend_invitation(self, access_token: str, invitation_id: str) -> None:
         await self._call(
             "POST",
-            f"/v1/auth/tenants/invitations/{invitation_id}/resend",
+            f"/v1/auth/tenants/invitations/{quote(invitation_id, safe='')}/resend",
             access_token,
         )
 

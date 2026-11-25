@@ -462,10 +462,11 @@ switchCore:
   # (docs/old/workos-directory.md).
   #   local  — this server, in its own tables
   #   workos — the WorkOS environment behind the sign-in, read with
-  #            secrets.workosApiKey. Needs oidc.enabled against that
-  #            environment (either signIn.provider), and signup.mode
-  #            invite_only or open (an organization someone creates under
-  #            open is Switch's own until it is linked).
+  #            secrets.workosApiKey. Needs oidc.enabled with signIn.provider
+  #            workos (AuthKit) against that environment, and signup.mode
+  #            invite_only or open. With membersServiceUrl, an organization
+  #            someone creates is created in WorkOS too and linked; without,
+  #            it is Switch's own until an operator links it.
   organizationDirectory:
     mode: local
     # Member changes made from Switch to a linked organization, sent to the

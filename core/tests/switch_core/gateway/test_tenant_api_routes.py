@@ -107,7 +107,13 @@ class _FakeClientLifecycle:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ) -> Tenant:
         tenant = Tenant(
             id=str(uuid.uuid4()), name=name, slug=slug, organization_id=organization_id
         )
@@ -125,16 +131,28 @@ class _ProvisioningFailsLifecycle(_FakeClientLifecycle):
         super().__init__(session_factory)
         self.calls = 0
 
-    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ) -> Tenant:
         self.calls += 1
-        await super().create_tenant(name, slug, organization_id)
+        await super().create_tenant(name, slug, organization_id, directory_workspace_id)
         raise IntegrityError("INSERT INTO clients ...", None, Exception("duplicate"))
 
 
 class _FailsBeforeTheWorkspaceLifecycle(_FakeClientLifecycle):
     """Fails before writing anything, the way a dropped connection does."""
 
-    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ) -> Tenant:
         raise ConnectionResetError("connection to the database was lost")
 
 

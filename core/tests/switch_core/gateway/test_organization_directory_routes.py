@@ -84,6 +84,9 @@ class _Directory:
         if self.failure is not None:
             raise self.failure
 
+    def keeps_any_organization(self) -> bool:
+        return True
+
     def keeps_members_of(self, organization: Organization) -> bool:
         return True
 
@@ -169,7 +172,13 @@ async def _outsider(session_factory) -> str:
 
 
 class _FailingLifecycle:
-    async def create_tenant(self, name: str, slug: str, organization_id: str):
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ):
         raise RuntimeError("provisioning failed")
 
 

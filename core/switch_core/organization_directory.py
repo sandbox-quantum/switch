@@ -157,6 +157,11 @@ class OrganizationDirectory(Protocol):
         tables are the record."""
         ...
 
+    def keeps_any_organization(self) -> bool:
+        """Whether `keeps_members_of` can be true of any organization here:
+        False lets a caller skip reading organizations to ask."""
+        ...
+
     def keeps_members_of(self, organization: Organization) -> bool:
         """Whether the directory, not Switch, is the record of who is in
         `organization` and who is its `org_admin`: then adding someone or
@@ -260,6 +265,9 @@ class LocalDirectory:
         return NO_DIRECTORY_CHANGE
 
     def sends_changes_for(self, organization: Organization) -> bool:
+        return False
+
+    def keeps_any_organization(self) -> bool:
         return False
 
     def keeps_members_of(self, organization: Organization) -> bool:

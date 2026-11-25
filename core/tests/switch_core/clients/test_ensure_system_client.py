@@ -150,7 +150,10 @@ async def test_a_tenant_created_after_startup_gets_a_working_admin_client(
     await service.ensure_system_client("admin")  # the boot-time call
 
     tenant = await service.create_tenant(
-        name="Acme", slug="acme", organization_id=TENANT_ZERO_ID
+        name="Acme",
+        slug="acme",
+        organization_id=TENANT_ZERO_ID,
+        directory_workspace_id=None,
     )
 
     clients = await _admin_clients(rls_harness.owner)
