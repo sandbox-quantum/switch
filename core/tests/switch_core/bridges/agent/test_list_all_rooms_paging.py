@@ -108,6 +108,24 @@ async def test_a_bad_cursor_or_limit_is_refused(
             await _list(session_factory, limit=limit)
 
 
+@pytest.mark.parametrize(
+    ("payload", "suffix"),
+    [
+        (b'["2026-01-01T00:00:00", "room-id"]', ""),
+        (b'["2026-01-01T00:00:00+00:00", null]', ""),
+        (b'{"2026-01-01T00:00:00+00:00": 1, "room-id": 2}', ""),
+        (b'["2026-01-01T00:00:00+00:00", "room-id"]', "!"),
+    ],
+)
+async def test_cursor_requires_a_well_formed_position(
+    session_factory: async_sessionmaker[AsyncSession], payload: bytes, suffix: str
+) -> None:
+    await _rooms(session_factory)
+    cursor = base64.urlsafe_b64encode(payload).decode() + suffix
+    with pytest.raises(ValueError, match="cursor"):
+        await _list(session_factory, cursor=cursor)
+
+
 async def _tenant_with_rooms(
     owner: async_sessionmaker[AsyncSession], count: int
 ) -> str:

@@ -234,9 +234,23 @@ def _decode_room_cursor(cursor: str) -> tuple[datetime, str]:
     in this tenant's own rooms, so a cursor from elsewhere moves a page and
     reveals nothing."""
     try:
-        created_at, room_id = json.loads(base64.urlsafe_b64decode(cursor.encode()))
-        return datetime.fromisoformat(created_at), str(room_id)
-    except (ValueError, TypeError) as exc:
+        position = json.loads(
+            base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
+        )
+        if not isinstance(position, list) or len(position) != 2:
+            raise ValueError("expected a timestamp and a room ID")
+        created_at, room_id = position
+        if (
+            not isinstance(created_at, str)
+            or not isinstance(room_id, str)
+            or not room_id
+        ):
+            raise ValueError("expected two nonempty string fields")
+        stamp = datetime.fromisoformat(created_at)
+        if stamp.tzinfo is None:
+            raise ValueError("expected a timezone-aware timestamp")
+        return stamp, room_id
+    except ValueError as exc:
         raise ValueError("cursor is not one list_all_rooms returned") from exc
 
 
@@ -4637,6 +4651,7 @@ class AgentCore:
         `include_archived` is set."""
         if not 1 <= limit <= LIST_ALL_ROOMS_MAX:
             raise ValueError(f"limit must be between 1 and {LIST_ALL_ROOMS_MAX}")
+        after = _decode_room_cursor(cursor) if cursor is not None else None
         async with self.session_factory() as session:
             _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
                 session, agent_id
@@ -4646,7 +4661,7 @@ class AgentCore:
                 include_archived=include_archived,
                 name_contains=name_contains,
                 limit=limit + 1,
-                after=_decode_room_cursor(cursor) if cursor is not None else None,
+                after=after,
                 reader_id=owner_id,
                 reader_is_admin=owner_is_admin,
                 member_agent_id=agent_id,
