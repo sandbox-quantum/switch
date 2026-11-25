@@ -266,7 +266,6 @@ from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
 from switch_core.workos_directory import WorkOSDirectory
 from switch_core.workos_mirror import WorkOSMirror, own_workos_mirror
-from switch_core.workos_sign_in import WorkOSOrganizationSignIn
 from switch_core.workspace_archive import WorkspaceArchive
 
 logger = logging.getLogger(__name__)
@@ -1595,19 +1594,6 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         sign_in_issuer=config.gateway_oidc_issuer_url,
     )
     gateway_app.state.organization_apps = organization_apps
-    if config.members_service_url:
-        # Checked set together, under the WorkOS directory
-        # (`_validate_organization_directory`).
-        assert config.workos_api_key is not None
-        assert config.workos_client_id is not None
-        assert config.workos_redirect_url is not None
-        gateway_app.state.workos_sign_in = WorkOSOrganizationSignIn(
-            service_http,
-            config.workos_api_key,
-            config.workos_api_url,
-            config.workos_client_id,
-            config.workos_redirect_url,
-        )
     # Signing in through WorkOS AuthKit, and following the AuthKit sessions
     # sign-ins stand on (`gateway/identity_sessions.py`). The follower is
     # there without AuthKit too, so a cookie that still names an identity
@@ -1615,7 +1601,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # session has ended; it just stops asking WorkOS.
     authkit = authkit_for(config, service_http)
     gateway_app.state.authkit = authkit
-    identity_sessions = IdentitySessions(session_factory, authkit)
+    identity_sessions = IdentitySessions(session_factory, authkit, config.keyring)
     gateway_app.state.identity_sessions = identity_sessions
     gateway_app.state.decision_client = decision_client
     # A connector app the operator saves or removes, put to work in every process.

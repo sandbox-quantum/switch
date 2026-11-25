@@ -59,7 +59,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         gateway_tenant_choice_enabled=False,
         **LOGIN_LIMIT_DEFAULTS,
     )
-    app.state.identity_sessions = IdentitySessions(session_factory, None)
+    app.state.identity_sessions = IdentitySessions(session_factory, None, _KEYRING)
     return app
 
 

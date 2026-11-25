@@ -186,19 +186,16 @@ When several products share one WorkOS environment, one service usually owns
 each customer's account there, and every product changes its members through
 it, so its rules (nobody grants above their own role, the last `org_admin`
 stays) apply once for all of them. Switch can send its changes to such a
-service. Set `MEMBERS_SERVICE_URL` and `WORKOS_REDIRECT_URL` together, with
-`WORKOS_CLIENT_ID`:
+service, with `MEMBERS_SERVICE_URL`:
 
-- `MEMBERS_SERVICE_URL`: the service. Switch calls, with the admin's token,
-  `PATCH /v1/auth/tenants/members/{id}` with `{"role": <slug>}` and
-  `DELETE /v1/auth/tenants/members/{id}`, each acting on the organization
-  the token was issued for, and reads a refusal's `{"error": ...}`. The
-  membership `id` is WorkOS's, which Switch reads with its API key.
-- `WORKOS_CLIENT_ID`: the AuthKit application Switch signs admins in to for
-  that token. With sign-in through AuthKit it is the same application people
-  sign in through.
-- `WORKOS_REDIRECT_URL`: its callback, `.../gateway/auth/workos/callback`,
-  registered on that application.
+- Switch calls it, with the admin's token, `PATCH /v1/auth/tenants/members/{id}`
+  with `{"role": <slug>}` and `DELETE /v1/auth/tenants/members/{id}`, each
+  acting on the organization the token was issued for, and reads a refusal's
+  `{"error": ...}`. The membership `id` is WorkOS's, which Switch reads with
+  its API key.
+- The token is the admin's own, from the AuthKit application people sign in
+  through (`WORKOS_CLIENT_ID`), so the service must accept that
+  application's tokens.
 
 Then, on a linked organization, making a member Org Admin makes them
 `org_admin` in WorkOS, making an Org Admin a Member makes them `viewer`
@@ -207,22 +204,28 @@ lasts. Switch first reads the person's membership from WorkOS and sends only
 what WorkOS needs: someone WorkOS already has as `org_admin` is not made one
 again, someone it holds in another product's role keeps that role when made
 a Member, and someone it no longer lists, or who has no WorkOS identity, is
-changed in Switch alone. Switch uses no credential of its own for the change
-itself: the first time an admin makes one WorkOS needs, the dashboard sends them to sign in to the organization
-through the AuthKit application (usually without a prompt, while their
-AuthKit session lasts) and makes the change on their return. Switch keeps the
-access token that sign-in gives, encrypted in the browser's short-lived
-sign-in cookie, only for as long as the token lasts, and keeps no refresh
-token. A sign-in as another WorkOS user than the one the Switch account signs
-in as, or to another organization, is refused. Switch's own checks still run
-first; the service may refuse by its own rules, and its reason is shown. If
-the token runs out after a demotion or removal has already taken away the
-person's workspace access, the dashboard says so before sending the admin to
-sign in again to finish. If the service refuses a token that has not run
-out, it is not set up to accept this AuthKit application's tokens: Switch
-answers 503, says to make the change in the account settings, and logs an
-error, rather than sending the admin to sign in again. A platform operator restoring an Org Admin can't
-sign in there: unless WorkOS already has that person as `org_admin`, they are
+changed in Switch alone.
+
+Switch uses no credential of its own for the change itself. Each sign-in
+through AuthKit keeps its refresh token, encrypted, with the record of the
+person's AuthKit session; when a change has to reach WorkOS, Switch renews
+from it an access token for that organization alone, good for minutes, and
+keeps the refresh token WorkOS rotates it to. Nothing reaches the browser,
+and the admin never signs in a second time. Ending the session (signing out,
+a revoke, `switch-accounts sign-out`) ends the refresh token with it. When
+WorkOS won't renew it, because the session has ended there or the
+organization wants its own way of signing in (single sign-on, MFA), the
+dashboard sends the admin through the sign-in again, to that organization,
+and makes the change on their return; a session that ended at WorkOS ends
+in Switch too. Switch's own checks still run first; the service may refuse
+by its own rules, and its reason is shown. If a demotion or removal has
+already taken away the person's workspace access when a sign-in is needed,
+the dashboard says so before sending the admin to sign in again to finish.
+If the service refuses a token that has not run out, it is not set up to
+accept this AuthKit application's tokens: Switch answers 503, says to make
+the change in the account settings, and logs an error, rather than sending
+the admin to sign in again. A platform operator restoring an Org Admin is no
+admin there: unless WorkOS already has that person as `org_admin`, they are
 told to have someone made one in the organization's account settings.
 
 Adding someone new to a linked organization from Switch is still refused.

@@ -8,7 +8,7 @@ are kept. The chart refuses the combinations switch-core refuses at startup
 (config.py), so a bad one fails the render instead of a pod. This checks the
 environment each good combination gives switch-core, and the reason each bad
 one names. These are the promises deploy/remote/helm/switch/values.yaml makes
-about `switchCore.signIn` and `passwordLoginEnabled`.
+about `switchCore.signIn`, `passwordLoginEnabled` and member changes.
 
 Needs `helm` on PATH and PyYAML. Run from the repo root:
 
@@ -90,6 +90,29 @@ def check_authkit_with_the_directory() -> None:
     assert env["WORKOS_CLIENT_ID"] == "client_EXAMPLE", env
 
 
+def check_member_changes_need_no_second_sign_in() -> None:
+    env = core_env(
+        [
+            *AUTHKIT,
+            *DIRECTORY,
+            "switchCore.organizationDirectory.membersServiceUrl=https://members.example.test",
+        ]
+    )
+    assert env["MEMBERS_SERVICE_URL"] == "https://members.example.test", env
+    assert "WORKOS_REDIRECT_URL" not in env, env
+
+
+def check_the_second_sign_in_callback_is_refused() -> None:
+    refused(
+        [
+            *AUTHKIT,
+            *DIRECTORY,
+            "switchCore.organizationDirectory.workosRedirectUrl=https://switch.example.test/gateway/auth/workos/callback",
+        ],
+        "workosRedirectUrl is gone",
+    )
+
+
 def check_a_password_form_set_on_under_the_directory_wins() -> None:
     env = core_env([*AUTHKIT, *DIRECTORY, "switchCore.oidc.passwordLoginEnabled=true"])
     assert env["GATEWAY_PASSWORD_LOGIN_ENABLED"] == "true", env
@@ -118,6 +141,8 @@ def check_authkit_without_its_key_is_refused() -> None:
 
 CHECKS = [
     check_authkit_with_the_directory,
+    check_member_changes_need_no_second_sign_in,
+    check_the_second_sign_in_callback_is_refused,
     check_a_password_form_set_on_under_the_directory_wins,
     check_generic_oidc_keeps_the_password_form,
     check_the_directory_refuses_the_connect_sign_in,

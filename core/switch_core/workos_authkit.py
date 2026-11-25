@@ -7,19 +7,22 @@ WorkOS then names the person's AuthKit session, which is shared with every
 other application in the environment, so the gateway can follow it and end it
 (`gateway/identity_sessions.py`).
 
-The gateway keeps no WorkOS token. The code a sign-in brings back is
-exchanged here, on the server, with the application's API key; the person,
-their organization and the session id are read from the answer, and the
-access and refresh tokens are dropped. The access token is decoded only for
-its session id: it came from WorkOS over TLS in answer to a request
-authenticated with the API key, as `workos_sign_in.py` already trusts.
+The code a sign-in brings back is exchanged here, on the server, with the
+application's API key; the person, their organization and the session id are
+read from the answer. The access token is dropped, and decoded only for its
+session id: it came from WorkOS over TLS in answer to a request authenticated
+with the API key. The refresh token is kept, sealed, with the session's record
+(`gateway/identity_sessions.py`): it renews the person's access for one
+organization at a time (`refresh`), for the actions the organization's
+account service takes with the person's own token, so the person signs in
+once. Neither token ever reaches the browser.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlencode
 
@@ -88,6 +91,20 @@ class AuthKitSignIn:
     # Who is really signing in, when this is a WorkOS dashboard user
     # impersonating the person: their email.
     impersonator: str | None
+    # What renews the session's access, scoped to any organization the
+    # person is in (`AuthKit.refresh`). A credential: never logged.
+    refresh_token: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class AuthKitTokens:
+    """What a refresh gives: an access token for one organization, good for
+    minutes, and the refresh token that replaces the one spent. Both are
+    credentials."""
+
+    access_token: str = field(repr=False)
+    refresh_token: str = field(repr=False)
+    expires_at: int
 
 
 ChooseOrganization = Callable[[list[AuthKitOrganization]], Awaitable[str | None]]
@@ -355,6 +372,42 @@ class AuthKit:
                     f"WorkOS answered {path} with an unreadable cursor."
                 )
 
+    async def refresh(self, refresh_token: str, organization_id: str) -> AuthKitTokens:
+        """Renew a session's access for `organization_id`. WorkOS rotates the
+        refresh token, and replaying the one spent within its grace period
+        gives the same answer, so two refreshes at once agree. Raises
+        `AuthKitRefused` when WorkOS refuses: `invalid_grant` for a session
+        that has ended, another code for an organization the session may not
+        act in as it stands."""
+        body = await self._authenticate(
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "organization_id": organization_id,
+            }
+        )
+        if isinstance(body, AuthKitRefused):
+            raise body
+        access_token = body.get("access_token")
+        renewed = body.get("refresh_token")
+        if not isinstance(access_token, str) or not isinstance(renewed, str):
+            raise AuthKitUnavailable("WorkOS answered a refresh with no tokens.")
+        try:
+            claims = jwt.decode(access_token, options={"verify_signature": False})
+        except jwt.PyJWTError as error:
+            raise AuthKitUnavailable(
+                "WorkOS answered a refresh with an unreadable access token."
+            ) from error
+        if claims.get("org_id") != organization_id or not isinstance(
+            claims.get("exp"), int
+        ):
+            raise AuthKitUnavailable(
+                "WorkOS renewed the session for another organization than asked."
+            )
+        return AuthKitTokens(
+            access_token=access_token, refresh_token=renewed, expires_at=claims["exp"]
+        )
+
     async def revoke_session(self, session_id: str) -> None:
         """End an AuthKit session. One WorkOS no longer has counts as ended."""
         path = "/user_management/sessions/revoke"
@@ -372,11 +425,13 @@ def _sign_in_from(body: Mapping[str, Any]) -> AuthKitSignIn:
     )
     user = body.get("user")
     access_token = body.get("access_token")
+    refresh_token = body.get("refresh_token")
     if (
         not isinstance(user, dict)
         or not isinstance(user.get("id"), str)
         or not isinstance(user.get("email"), str)
         or not isinstance(access_token, str)
+        or not isinstance(refresh_token, str)
     ):
         raise unreadable
     try:
@@ -405,4 +460,5 @@ def _sign_in_from(body: Mapping[str, Any]) -> AuthKitSignIn:
             if isinstance(impersonator, dict)
             else None
         ),
+        refresh_token=refresh_token,
     )

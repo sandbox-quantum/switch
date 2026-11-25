@@ -71,6 +71,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.room_store import RoomStore, readable_by
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.admin_tokens import signed_in_admin_token
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     get_authenticated_caller,
@@ -119,10 +120,6 @@ from switch_core.gateway.schemas import (
     WorkspaceCreateRequest,
 )
 from switch_core.gateway.service_connections import service_refusal
-from switch_core.gateway.workos_sign_in_routes import (
-    directory_access_token,
-    directory_subject,
-)
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
     create_organization_for,
@@ -145,6 +142,7 @@ from switch_core.organization_admin_notices import (
 )
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
+    AdminToken,
     DirectoryError,
     DirectorySignInRequired,
     MemberChange,
@@ -154,7 +152,6 @@ from switch_core.organization_issues import (
     organization_wide_issues,
     workspace_issues,
 )
-from switch_core.workos_sign_in import OrganizationToken
 
 router = APIRouter()
 
@@ -963,25 +960,30 @@ async def _ask_directory(
     try:
         await change(organization, *args, member_change)
     except DirectorySignInRequired as error:
-        raise _sign_in_required(error, outcome, access_ended) from None
+        raise _sign_in_required(error, organization, outcome, access_ended) from None
     except DirectoryError as error:
         raise directory_failed(error, outcome) from None
 
 
 def _sign_in_required(
-    error: DirectorySignInRequired, outcome: str, access_ended: bool
+    error: DirectorySignInRequired,
+    organization: Organization,
+    outcome: str,
+    access_ended: bool,
 ) -> HTTPException:
-    """403 the dashboard tells apart by its `error`: it sends the admin to
-    sign in to the organization's WorkOS account and back to make the change
-    again (`gateway/workos_sign_in_routes.py`). With `access_ended`, part of
-    the change was made already, so the dashboard says so before it sends
-    them anywhere."""
+    """403 the dashboard tells apart by its `error`: it sends the admin
+    through the sign-in again, to the directory's organization
+    (`organization_id`) so that its own way of signing in applies, and back to
+    make the change again (`gateway/admin_tokens.py`). With `access_ended`,
+    part of the change was made already, so the dashboard says so before it
+    sends them anywhere."""
     return HTTPException(
         status_code=403,
         detail={
             "error": "directory_sign_in_required",
             "message": f"{error.message} {outcome}",
             "access_ended": access_ended,
+            "organization_id": organization.workos_organization_id,
         },
     )
 
@@ -995,43 +997,59 @@ _OPERATOR_CANNOT_SIGN_IN = (
 )
 
 
+async def _directory_subject(
+    session: AsyncSession,
+    user_store: UserStore,
+    organization_directory: OrganizationDirectory,
+    user_id: str,
+) -> str | None:
+    """The directory's id for `user_id`: their subject under its
+    `identity_issuer`, or None where it has none or they have no identity
+    there. What a change to someone's membership names them by."""
+    if organization_directory.identity_issuer is None:
+        return None
+    return await user_store.oidc_subject(
+        session, user_id, organization_directory.identity_issuer
+    )
+
+
 async def _member_change(
     session: AsyncSession,
     user_store: UserStore,
     organization_directory: OrganizationDirectory,
-    token: OrganizationToken | None,
+    admin_token: AdminToken,
     access: OrganizationAccess,
     organization: Organization,
     user_id: str,
     role: str | None,
 ) -> MemberChange:
     """What giving `user_id` `role` in `organization`, or removing them when
-    `role` is None, needs of the directory, with the admin's token when it
-    was issued for the organization's WorkOS organization. Asked before
+    `role` is None, needs of the directory, with the admin's token for it
+    when it takes the change only from them (`admin_token`). Asked before
     anything is changed and before any lock is taken, so a refusal or a
-    sign-in costs nothing. An operator let in to restore an `org_admin` has
-    no token to sign in for, and is told who can make the change instead."""
-    access_token = (
-        token.access_token
-        if token is not None
-        and token.workos_organization_id == organization.workos_organization_id
-        else None
-    )
-    subject = await directory_subject(
+    sign-in costs nothing. An operator let in to restore an `org_admin` is no
+    admin in the directory, so has no token to give, and is told who can make
+    the change instead."""
+    subject = await _directory_subject(
         session, user_store, organization_directory, user_id
     )
     # Let go of the request's connection while the directory is asked.
     await session.commit()
     try:
         return await organization_directory.prepare_change(
-            organization, subject, role, access_token
+            organization,
+            subject,
+            role,
+            None if access.platform_access else admin_token,
         )
     except DirectorySignInRequired as error:
         if access.platform_access:
             raise HTTPException(
                 status_code=409, detail=_OPERATOR_CANNOT_SIGN_IN
             ) from None
-        raise _sign_in_required(error, NOTHING_CHANGED, access_ended=False) from None
+        raise _sign_in_required(
+            error, organization, NOTHING_CHANGED, access_ended=False
+        ) from None
     except DirectoryError as error:
         raise directory_failed(error, NOTHING_CHANGED) from None
 
@@ -1152,9 +1170,7 @@ async def update_organization_member_role(
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-    directory_token: Annotated[
-        OrganizationToken | None, Depends(directory_access_token)
-    ],
+    admin_token: Annotated[AdminToken, Depends(signed_in_admin_token)],
     notices: Annotated[
         OrganizationAdminNotices, Depends(get_organization_admin_notices)
     ],
@@ -1202,7 +1218,7 @@ async def update_organization_member_role(
             session,
             user_store,
             organization_directory,
-            directory_token,
+            admin_token,
             access,
             organization,
             user_id,
@@ -1328,9 +1344,7 @@ async def remove_organization_member(
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-    directory_token: Annotated[
-        OrganizationToken | None, Depends(directory_access_token)
-    ],
+    admin_token: Annotated[AdminToken, Depends(signed_in_admin_token)],
     notices: Annotated[
         OrganizationAdminNotices, Depends(get_organization_admin_notices)
     ],
@@ -1381,7 +1395,7 @@ async def remove_organization_member(
         session,
         user_store,
         organization_directory,
-        directory_token,
+        admin_token,
         access,
         organization,
         user_id,

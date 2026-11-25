@@ -20,6 +20,7 @@ directory's own record that brings Switch's rows up to date.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -65,9 +66,17 @@ class DirectoryRefusal(DirectoryError):
 
 class DirectorySignInRequired(DirectoryError):
     """The directory takes the change only from the admin as it knows them,
-    and Switch holds no token of theirs for it: they sign in there for the
-    organization (`gateway/workos_sign_in.py`) and try again. Raised before
-    anything is changed."""
+    and the admin's sign-in can't get a token of theirs for it as it stands
+    (`gateway/admin_tokens.py`): they sign in again and try again. Raised
+    before anything is changed."""
+
+
+#: Gets the access token the directory issues the admin making a change, for
+#: the directory's organization it is given, when the change needs one.
+#: Raises `DirectorySignInRequired` when the admin has to sign in again for
+#: one, `DirectoryRefusal` when the directory won't issue them one, and
+#: `DirectoryUnavailable` when it can't be asked.
+AdminToken = Callable[[str], Awaitable[str]]
 
 
 @dataclass(frozen=True)
@@ -100,15 +109,16 @@ class OrganizationDirectory(Protocol):
         organization: Organization,
         subject: str | None,
         role: str | None,
-        access_token: str | None,
+        admin_token: AdminToken | None,
     ) -> MemberChange:
         """What giving the person the directory knows as `subject` the role
         `role` in `organization`, or removing them when `role` is None, needs
         of the directory. Asked before a route changes anything, and before
-        it takes any lock: raises `DirectorySignInRequired` when the directory
-        has to change and takes the change only with a token from the admin,
-        and `access_token` is None; `DirectoryRefusal` when it won't take it
-        at all."""
+        it takes any lock. Where the directory has to change and takes the
+        change only from the admin, `admin_token` gets their token for it,
+        and its errors are raised as they are; with no `admin_token` (an
+        operator, who is no admin there) raises `DirectorySignInRequired`.
+        Raises `DirectoryRefusal` when it won't take the change at all."""
         ...
 
     def sends_changes_for(self, organization: Organization) -> bool:
@@ -179,7 +189,7 @@ class LocalDirectory:
         organization: Organization,
         subject: str | None,
         role: str | None,
-        access_token: str | None,
+        admin_token: AdminToken | None,
     ) -> MemberChange:
         return NO_DIRECTORY_CHANGE
 

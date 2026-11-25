@@ -30,6 +30,7 @@ from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import tenants
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
+    AdminToken,
     DirectoryError,
     DirectoryOrganization,
     DirectoryRefusal,
@@ -69,7 +70,7 @@ class _Directory:
         organization: Organization,
         subject: str | None,
         role: str | None,
-        access_token: str | None,
+        admin_token: AdminToken | None,
     ) -> MemberChange:
         return NO_DIRECTORY_CHANGE
 

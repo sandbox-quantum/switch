@@ -4,15 +4,16 @@ import {
   type OrganizationRole,
   needsOrganizationSignIn,
   organizationSignInUrl,
+  organizationToSignInTo,
   removeOrganizationMember,
   signInAfterAccessEnded,
   updateOrganizationRole,
 } from "../../data/api";
 
-/** A change kept across the sign-in to the organization's WorkOS account it
- * waited on, made again once, on coming back: only in the organization it was
- * made in, and only while the sign-in it waited on could still be coming back
- * (the server keeps a started sign-in for ten minutes). */
+/** A change kept across the sign-in it waited on, made again once, on coming
+ * back: only in the organization it was made in, and only within ten minutes,
+ * long enough to sign in and short enough that a change left behind is not
+ * made by surprise later. */
 export type MemberChange = { userId: string; role: OrganizationRole } | { userId: string; remove: true };
 type PendingChange = { change: MemberChange; organizationId: string; savedAt: number };
 const PENDING_CHANGE_KEY = "switch.pendingOrganizationMemberChange";
@@ -24,10 +25,14 @@ function make(change: MemberChange): Promise<{ warning: string | null }> {
     : updateOrganizationRole(change.userId, change.role);
 }
 
-function signInThenMake(change: MemberChange, organizationId: string): void {
+function signInThenMake(
+  change: MemberChange,
+  organizationId: string,
+  signInTo: string | null,
+): void {
   const pending: PendingChange = { change, organizationId, savedAt: Date.now() };
   window.sessionStorage.setItem(PENDING_CHANGE_KEY, JSON.stringify(pending));
-  window.location.href = organizationSignInUrl(window.location.pathname);
+  window.location.href = organizationSignInUrl(window.location.pathname, signInTo);
 }
 
 function takePendingChange(organizationId: string): MemberChange | null {
@@ -51,9 +56,10 @@ function takePendingChange(organizationId: string): MemberChange | null {
 
 
 /** Making a change to an organization's members, the way organization Users
- * does: where its members come from a directory that wants the admin's own
- * sign-in first, the admin is sent there and the change made again, once, on
- * coming back; a change that already took something away says so first, and
+ * does: where its members come from a directory that takes the change only
+ * with the admin's own sign-in, and theirs has ended or needs doing again,
+ * the admin is sent to sign in and the change made again, once, on coming
+ * back; a change that already took something away says so first, and
  * offers to finish. `onChanged` runs after each change that went through, and
  * `reload` reads the members again (not after the caller stepped down or
  * left, which takes reading them away). */
@@ -75,8 +81,10 @@ export function useMemberChanges({
   const [actionWarning, setActionWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   // A change that ended someone's workspace access and then asked for a
-  // sign-in, for the admin to finish knowingly.
+  // sign-in, for the admin to finish knowingly, and the WorkOS organization
+  // that sign-in is to.
   const [toFinish, setToFinish] = useState<MemberChange | null>(null);
+  const [finishSigningInTo, setFinishSigningInTo] = useState<string | null>(null);
   const { refresh } = useAuth();
 
   const act = useCallback(
@@ -102,10 +110,11 @@ export function useMemberChanges({
         // for one is shown as the failure it is, not sent round again.
         if (needsOrganizationSignIn(err) && !replayed && !asOperator) {
           if (!signInAfterAccessEnded(err)) {
-            signInThenMake(change, organizationId);
+            signInThenMake(change, organizationId, organizationToSignInTo(err));
             return;
           }
           setToFinish(change);
+          setFinishSigningInTo(organizationToSignInTo(err));
         }
         setActionError(err instanceof Error ? err.message : "The change failed");
       } finally {
@@ -130,7 +139,8 @@ export function useMemberChanges({
     actionWarning,
     toFinish,
     /** Send the admin to sign in, then finish the change on coming back. */
-    finish: () => toFinish !== null && signInThenMake(toFinish, organizationId),
+    finish: () =>
+      toFinish !== null && signInThenMake(toFinish, organizationId, finishSigningInTo),
     dismissError: () => {
       setActionError(null);
       setToFinish(null);

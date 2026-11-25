@@ -254,8 +254,13 @@ class TestCompletingASignIn:
             row.provider,
             row.provider_user_id,
             row.session_id,
-            row.followed,
-        ) == (user.id, "workos", "user_ADA", "session_ONE", True)
+        ) == (user.id, "workos", "user_ADA", "session_ONE")
+        # Kept for acting in the person's organization, and only encrypted.
+        assert "refresh-placeholder" not in row.encrypted_refresh_token
+        assert (
+            _config().keyring.decrypt(row.encrypted_refresh_token)
+            == "refresh-placeholder"
+        )
         async with session_factory() as session:
             identity = await session.scalar(
                 select(OidcIdentity).where(OidcIdentity.user_id == user.id)
@@ -453,7 +458,7 @@ class TestCompletingASignIn:
                 provider="workos",
                 provider_user_id="user_OTHER",
                 session_id="session_ONE",
-                followed=True,
+                encrypted_refresh_token="sealed-refresh-token",
                 now=datetime.now(UTC),
             )
             await session.commit()

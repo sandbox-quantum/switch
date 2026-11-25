@@ -2614,22 +2614,29 @@ export function oidcLoginUrl(provider: string | null, next: string | null): stri
   return `${BASE}/auth/oidc/login${search === "" ? "" : `?${search}`}`;
 }
 
-/** Where an admin signs in to their organization's WorkOS account, for the
- * token a change to its members needs, and comes back to `returnTo`. */
-// A dashboard path, and nothing that could leave it: no `//`, which a browser
-// reads as another host. The server checks the same.
-const DASHBOARD_PATH = /^\/(?!\/)[A-Za-z0-9/_.-]*$/;
-
-export function organizationSignInUrl(returnTo: string): string {
-  const path = DASHBOARD_PATH.test(returnTo) ? returnTo : "/organization";
-  return `${BASE}/auth/workos/organization?return_to=${encodeURIComponent(path)}`;
+/** Where an admin signs in again when a change to their organization's
+ * members needs it, and comes back to `next` (the server lands anywhere off
+ * the dashboard on its home instead). With the WorkOS organization the server
+ * named, the sign-in is to it, so its own way of signing in applies. */
+export function organizationSignInUrl(next: string, organizationId: string | null): string {
+  const query = new URLSearchParams({ next });
+  if (organizationId !== null) query.set("organization_id", organizationId);
+  return `${BASE}/auth/oidc/login?${query.toString()}`;
 }
 
 /** The server's answer when a change to a linked organization's members
- * waits on the admin signing in to its WorkOS account. */
+ * waits on the admin signing in again. */
 export function needsOrganizationSignIn(err: unknown): boolean {
   if (!(err instanceof ApiError) || !err.detail || typeof err.detail !== "object") return false;
   return (err.detail as Record<string, unknown>).error === "directory_sign_in_required";
+}
+
+/** The WorkOS organization a sign-in asked for by `needsOrganizationSignIn`
+ * is to, when the server named one. */
+export function organizationToSignInTo(err: unknown): string | null {
+  if (!needsOrganizationSignIn(err)) return null;
+  const named = (err as ApiError & { detail: Record<string, unknown> }).detail.organization_id;
+  return typeof named === "string" ? named : null;
 }
 
 /** Whether the change that asked for a sign-in had already taken away the

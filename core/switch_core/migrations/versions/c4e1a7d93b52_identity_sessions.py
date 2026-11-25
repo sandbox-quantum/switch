@@ -1,10 +1,12 @@
 """identity sessions: the AuthKit sessions gateway sign-ins stand on
 
 `identity_sessions` records, for a sign-in through WorkOS AuthKit, the
-person's session at WorkOS, so the gateway can follow it and end it
-(`db/models.py`'s `IdentitySession`). A global table, like `users` and
-`oidc_identities`: no tenant column and no row-level security policy
-(`db/rls_ddl.py`'s `GLOBAL_TABLES`). Its rows go with the account.
+person's session at WorkOS, so the gateway can follow it and end it, and the
+session's refresh token, encrypted, so the gateway can act for the person in
+their organization's account (`db/models.py`'s `IdentitySession`). A global
+table, like `users` and `oidc_identities`: no tenant column and no row-level
+security policy (`db/rls_ddl.py`'s `GLOBAL_TABLES`). Its rows go with the
+account.
 
 `browser_handoffs.identity_session` carries the identity session of the
 Switch Console session that minted a sign-in link to the browser session it
@@ -45,7 +47,7 @@ def upgrade() -> None:
         sa.Column("provider", sa.Text(), nullable=False),
         sa.Column("provider_user_id", sa.Text(), nullable=False),
         sa.Column("session_id", sa.Text(), nullable=False),
-        sa.Column("followed", sa.Boolean(), nullable=False),
+        sa.Column("encrypted_refresh_token", sa.Text(), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

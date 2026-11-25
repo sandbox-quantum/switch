@@ -4,9 +4,10 @@ When several products share one WorkOS environment, one service owns each
 customer's account there and every product changes its members through it,
 so each product's rules (nobody grants above their own role, the last
 `org_admin` stays) apply in one place. Switch calls it with the admin's own
-WorkOS access token for the organization (`gateway/workos_sign_in.py`), never
-a credential of its own: the service sees who acted and decides by their
-live role there, as it does for its own product.
+WorkOS access token for the organization, renewed from their sign-in for the
+change (`gateway/admin_tokens.py`), never a credential of its own: the
+service sees who acted and decides by their live role there, as it does for
+its own product.
 
 The calls, each acting on the organization the token was issued for and on
 a membership by its WorkOS id (`workos_directory.py` reads it with the API
@@ -39,8 +40,8 @@ logger = logging.getLogger(__name__)
 MEMBERS_SERVICE_TIMEOUT_SECONDS = 10.0
 
 SIGN_IN_AGAIN = (
-    "Your sign-in to your organization's account has ended. Confirm it again "
-    "to change the organization's members."
+    "Your access to your organization's account ran out. Sign in again to "
+    "change the organization's members."
 )
 
 # The service checks a token without asking WorkOS, so a 401 for one that has
@@ -121,7 +122,7 @@ class MembersService:
 def _ran_out(access_token: str) -> bool:
     """Whether the token's own expiry has passed. Read unverified, for which
     answer to give only: the token is the one WorkOS gave the admin
-    (`workos_sign_in.py`), and the service is what verifies it."""
+    (`gateway/admin_tokens.py`), and the service is what verifies it."""
     try:
         expires_at = jwt.decode(access_token, options={"verify_signature": False})[
             "exp"

@@ -96,13 +96,12 @@ def test_workos_with_the_default_tenant_is_refused() -> None:
         )
 
 
-CHANGES = dict(
-    members_service_url="https://members.example.test",
-    workos_redirect_url="https://switch.example.test/gateway/auth/workos/callback",
-)
+CHANGES = dict(members_service_url="https://members.example.test")
 
 
-def test_changes_sent_to_workos_are_accepted_with_all_three_settings() -> None:
+def test_changes_sent_to_workos_need_only_the_members_service() -> None:
+    """The admin's token comes from their own sign-in, so there is no second
+    sign-in, and no callback for one, to configure."""
     config: SwitchConfig = _config(
         organization_directory="workos",
         workos_api_key="sk_test_example",  # gitleaks:allow
@@ -110,17 +109,6 @@ def test_changes_sent_to_workos_are_accepted_with_all_three_settings() -> None:
         **CHANGES,
     )
     assert config.members_service_url == "https://members.example.test"
-
-
-@pytest.mark.parametrize("missing", ["members_service_url", "workos_redirect_url"])
-def test_the_members_service_and_its_callback_are_set_together(missing: str) -> None:
-    with pytest.raises(ValidationError, match="set together"):
-        _config(
-            organization_directory="workos",
-            workos_api_key="sk_test_example",  # gitleaks:allow
-            **OIDC,
-            **{key: value for key, value in CHANGES.items() if key != missing},
-        )
 
 
 def test_workos_with_authkit_sign_in_is_accepted() -> None:

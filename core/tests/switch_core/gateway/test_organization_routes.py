@@ -18,7 +18,6 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from starlette.middleware.sessions import SessionMiddleware
 
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_OWNER_MARKER_META_KEY,
@@ -53,6 +52,7 @@ from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import organizations, workspace_creation
 from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.organization_workspaces import (
     router as organization_workspaces_router,
@@ -60,9 +60,6 @@ from switch_core.gateway.organization_workspaces import (
 from switch_core.gateway.organizations import LAST_ORGANIZATION_ADMIN_REFUSAL
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
-from switch_core.gateway.workos_sign_in_routes import (
-    router as workos_sign_in_router,
-)
 from switch_core.keys import Keyring
 from switch_core.organization_admin_notices import OrganizationAdminNotices
 from switch_core.organization_directory import LocalDirectory
@@ -131,11 +128,7 @@ def _app(
         api_key_cache=SimpleNamespace(invalidate=lambda key_hash: None)
     )
     app.state.sign_in_flows = SignInFlows(session_factory, _KEYRING)
-    app.state.workos_sign_in = None
-    app.include_router(workos_sign_in_router)
-    # As the gateway has it: the sign-in cookie holds a WorkOS organization
-    # token (`workos_sign_in_routes.py`).
-    app.add_middleware(SessionMiddleware, secret_key="test-sign-in-cookie")
+    app.state.identity_sessions = IdentitySessions(session_factory, None, _KEYRING)
     app.state.service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=_KEYRING,

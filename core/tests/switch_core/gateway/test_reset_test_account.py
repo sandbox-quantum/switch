@@ -82,7 +82,7 @@ def _app(
     overrides[gw_deps.get_session_factory] = lambda: session_factory
     overrides[gw_deps.get_user_store] = lambda: UserStore()
     overrides[gw_deps.get_identity_sessions] = lambda: IdentitySessions(
-        session_factory, None
+        session_factory, None, TEST_KEYRING
     )
     overrides[gw_deps.get_organization_store] = lambda: OrganizationStore()
     overrides[gw_deps.get_agent_store] = lambda: AgentStore()
@@ -286,7 +286,7 @@ async def test_its_sign_ins_at_workos_end_with_it(
             provider="workos",
             provider_user_id="user_RESET",
             session_id="s-reset-here",
-            followed=True,
+            encrypted_refresh_token="sealed-refresh-token",
             now=datetime.now(UTC),
         )
         elsewhere = await store.record(
@@ -295,13 +295,13 @@ async def test_its_sign_ins_at_workos_end_with_it(
             provider="workos",
             provider_user_id="user_RESET",
             session_id="s-reset-laptop",
-            followed=True,
+            encrypted_refresh_token="sealed-refresh-token",
             now=datetime.now(UTC),
         )
         await session.commit()
     workos = _AuthKitSignOut({"s-reset-here", "s-reset-laptop"})
     app, _, _ = _app(session_factory, enabled=True)
-    follower = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    follower = IdentitySessions(session_factory, workos, TEST_KEYRING)  # type: ignore[arg-type]
     app.state.identity_sessions = follower
     app.dependency_overrides[gw_deps.get_identity_sessions] = lambda: follower
     token = create_jwt(

@@ -548,19 +548,6 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/organizations/current/connector-apps/{service}": delete(
         f"{G}/organizations/current/connector-apps/github", org_admin()
     ),
-    "GET /gateway/auth/workos/organization": get(
-        f"{G}/auth/workos/organization",
-        anyone(ok=404),
-        why="An organization admin's; this server sends nothing to WorkOS, and says so first.",
-        return_to="/organization",
-    ),
-    "GET /gateway/auth/workos/callback": get(
-        f"{G}/auth/workos/callback",
-        anyone(ok=404),
-        why="Your own sign-in coming back; this server sends nothing to WorkOS.",
-        code="matrix",
-        state="matrix",
-    ),
     # ── Operator ─────────────────────────────────────────────────────────
     "POST /gateway/auth/sessions/revoke": post(
         f"{G}/auth/sessions/revoke",

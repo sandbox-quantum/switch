@@ -85,7 +85,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         gateway_tenant_choice_enabled=False,
         **LOGIN_LIMIT_DEFAULTS,
     )
-    app.state.identity_sessions = IdentitySessions(session_factory, None)
+    app.state.identity_sessions = IdentitySessions(session_factory, None, _KEYRING)
     return app
 
 
@@ -657,7 +657,7 @@ async def test_a_browser_opened_from_an_authkit_sign_in_ends_when_that_sign_in_d
             provider="workos",
             provider_user_id="user_ADA",
             session_id="session_CONSOLE",
-            followed=True,
+            encrypted_refresh_token="sealed-refresh-token",
             now=datetime.now(UTC),
         )
         await session.commit()
@@ -693,6 +693,7 @@ async def test_signing_out_in_a_browser_console_opened_leaves_its_authkit_sign_i
             "https://api.workos.test",
             "client_EXAMPLE",
         ),
+        _KEYRING,
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
@@ -710,7 +711,7 @@ async def test_signing_out_in_a_browser_console_opened_leaves_its_authkit_sign_i
             provider="workos",
             provider_user_id="user_ADA",
             session_id="session_CONSOLE",
-            followed=True,
+            encrypted_refresh_token="sealed-refresh-token",
             now=datetime.now(UTC),
         )
         await session.commit()

@@ -390,3 +390,105 @@ async def test_a_refused_revoke_is_raised() -> None:
         await _authkit(
             lambda request: httpx.Response(403, json={"code": "forbidden"})
         ).revoke_session("session_A")
+
+
+def organization_token(organization_id: str | None) -> str:
+    claims: dict[str, object] = {
+        "sub": "user_A",
+        "sid": "session_A",
+        "exp": 4_000_000_000,
+    }
+    if organization_id is not None:
+        claims["org_id"] = organization_id
+    return jwt.encode(
+        claims, "test-signing-key-long-enough-for-hs256", algorithm="HS256"
+    )
+
+
+async def test_a_sign_in_keeps_its_refresh_token_out_of_sight() -> None:
+    sign_in = await _authkit(
+        lambda request: httpx.Response(200, json=authenticated())
+    ).authenticate(
+        code="c",
+        verifier="v",
+        ip_address=None,
+        user_agent=None,
+        choose_organization=_never,
+    )
+    assert sign_in.refresh_token == "refresh-placeholder"
+    assert "refresh-placeholder" not in repr(sign_in)
+
+
+async def test_a_sign_in_with_no_refresh_token_is_unreadable() -> None:
+    body = authenticated()
+    del body["refresh_token"]
+    with pytest.raises(AuthKitUnavailable):
+        await _authkit(lambda request: httpx.Response(200, json=body)).authenticate(
+            code="c",
+            verifier="v",
+            ip_address=None,
+            user_agent=None,
+            choose_organization=_never,
+        )
+
+
+async def test_a_refresh_renews_access_for_the_organization_asked() -> None:
+    sent: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/user_management/authenticate"
+        sent.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json=authenticated(
+                access_token=organization_token("org_B"), refresh_token="rotated"
+            ),
+        )
+
+    tokens = await _authkit(handler).refresh("kept-refresh", "org_B")
+
+    assert sent == [
+        {
+            "client_id": CLIENT_ID,
+            "client_secret": KEY,
+            "grant_type": "refresh_token",
+            "refresh_token": "kept-refresh",
+            "organization_id": "org_B",
+        }
+    ]
+    assert tokens.access_token == organization_token("org_B")
+    assert tokens.refresh_token == "rotated"
+    assert tokens.expires_at == 4_000_000_000
+    assert "rotated" not in repr(tokens)
+    assert tokens.access_token not in repr(tokens)
+
+
+@pytest.mark.parametrize("organization_id", [None, "org_OTHER"])
+async def test_a_refresh_for_another_organization_than_asked_is_not_used(
+    organization_id: str | None,
+) -> None:
+    with pytest.raises(AuthKitUnavailable, match="another organization"):
+        await _authkit(
+            lambda request: httpx.Response(
+                200,
+                json=authenticated(access_token=organization_token(organization_id)),
+            )
+        ).refresh("kept-refresh", "org_B")
+
+
+async def test_a_refused_refresh_says_why() -> None:
+    with pytest.raises(AuthKitRefused) as refused:
+        await _authkit(
+            lambda request: httpx.Response(
+                400,
+                json={"error": "invalid_grant", "error_description": "Session ended."},
+            )
+        ).refresh("kept-refresh", "org_B")
+    assert refused.value.code == "invalid_grant"
+
+
+async def test_a_refresh_workos_is_too_busy_for_can_be_tried_again() -> None:
+    with pytest.raises(AuthKitUnavailable):
+        await _authkit(lambda request: httpx.Response(503)).refresh(
+            "kept-refresh", "org_B"
+        )

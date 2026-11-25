@@ -61,7 +61,7 @@ def _app(
     app = FastAPI()
     app.include_router(router)
     app.state.sign_in_flows = _SignInFlows()
-    app.state.identity_sessions = IdentitySessions(session_factory, None)
+    app.state.identity_sessions = IdentitySessions(session_factory, None, TEST_KEYRING)
     overrides = app.dependency_overrides
     overrides[gw_deps.get_session] = _session_dep
     overrides[gw_deps.get_system_session] = _session_dep
@@ -318,7 +318,7 @@ async def _authkit_sign_in(
             provider="workos",
             provider_user_id="user_LEAVING",
             session_id=session_id,
-            followed=True,
+            encrypted_refresh_token="sealed-refresh-token",
             now=datetime.now(UTC),
         )
         await session.commit()
@@ -365,7 +365,9 @@ async def test_a_refused_deletion_ends_no_sign_in(
     laptop = await _authkit_sign_in(session_factory, only_admin, "s-del-laptop")
     workos = _AuthKitSignOut({"s-del-here", "s-del-laptop"})
     app = _app(session_factory)
-    app.state.identity_sessions = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    app.state.identity_sessions = IdentitySessions(
+        session_factory, workos, TEST_KEYRING
+    )  # type: ignore[arg-type]
     async with _authkit_client(
         app, only_admin, "only-admin@example.invalid", here
     ) as client:
@@ -390,7 +392,9 @@ async def test_a_deletion_refused_late_keeps_this_browser_signed_in(
     laptop = await _authkit_sign_in(session_factory, member, "s-late-laptop")
     workos = _AuthKitSignOut({"s-late-here", "s-late-laptop"})
     app = _app(session_factory)
-    app.state.identity_sessions = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    app.state.identity_sessions = IdentitySessions(
+        session_factory, workos, TEST_KEYRING
+    )  # type: ignore[arg-type]
 
     async def refused_under_lock(*_args: Any, **_kwargs: Any) -> Any:
         raise AccountDeletionRefused("You're the only organization admin of Acme.")
@@ -417,7 +421,9 @@ async def test_a_deletion_whose_sign_ins_workos_cannot_list_is_refused(
     workos = _AuthKitSignOut({"s-list-here", "s-list-laptop"})
     workos.fail = AuthKitUnavailable("WorkOS answered 503.")
     app = _app(session_factory)
-    app.state.identity_sessions = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    app.state.identity_sessions = IdentitySessions(
+        session_factory, workos, TEST_KEYRING
+    )  # type: ignore[arg-type]
     async with _authkit_client(app, member, "leaving@example.invalid", here) as client:
         deleted = await client.request(
             "DELETE", "/auth/me", json={"email": "leaving@example.invalid"}
@@ -438,7 +444,9 @@ async def test_a_deletion_sends_this_browser_to_end_its_own_sign_in(
     await _authkit_sign_in(session_factory, member, "s-ran-out")
     workos = _AuthKitSignOut({"s-gone-here", "s-gone-laptop"})
     app = _app(session_factory)
-    app.state.identity_sessions = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    app.state.identity_sessions = IdentitySessions(
+        session_factory, workos, TEST_KEYRING
+    )  # type: ignore[arg-type]
     async with _authkit_client(app, member, "leaving@example.invalid", here) as client:
         deleted = await client.request(
             "DELETE", "/auth/me", json={"email": "leaving@example.invalid"}

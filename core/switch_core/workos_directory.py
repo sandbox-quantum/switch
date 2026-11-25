@@ -44,6 +44,7 @@ from switch_core.db.models import Organization, User
 from switch_core.members_service import MembersService
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
+    AdminToken,
     DirectoryMembership,
     DirectoryOrganization,
     DirectoryRefusal,
@@ -71,9 +72,7 @@ NOT_FROM_SWITCH_YET = (
 NOT_IN_THE_ACCOUNT = (
     "They are not a member of your organization's account; add them there first."
 )
-SIGN_IN_FIRST = (
-    "Confirm your sign-in to your organization's account to change its members."
-)
+SIGN_IN_FIRST = "Sign in through your organization's account to change its members."
 # The WorkOS role of a member Switch makes a Member: the least a member of a
 # shared organization can be.
 MEMBER_ROLE_IN_WORKOS = "viewer"
@@ -369,7 +368,7 @@ class WorkOSDirectory:
         organization: Organization,
         subject: str | None,
         role: str | None,
-        access_token: str | None,
+        admin_token: AdminToken | None,
     ) -> MemberChange:
         """Nothing for an organization nobody linked. Through the members
         service, WorkOS changes only where it has to: making someone Org Admin
@@ -401,9 +400,12 @@ class WorkOSDirectory:
         membership_id, workos_role = membership
         if role is not None and (workos_role == ORGANIZATION_ADMIN_ROLE) == promoting:
             return NO_DIRECTORY_CHANGE
-        if access_token is None:
+        if admin_token is None:
             raise DirectorySignInRequired(SIGN_IN_FIRST)
-        return MemberChange(access_token=access_token, membership_id=membership_id)
+        return MemberChange(
+            access_token=await admin_token(workos_organization_id),
+            membership_id=membership_id,
+        )
 
     def sends_changes_for(self, organization: Organization) -> bool:
         return (

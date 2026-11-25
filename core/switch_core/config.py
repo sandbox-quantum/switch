@@ -535,14 +535,12 @@ class SwitchConfig(BaseSettings):
     # Changes made from Switch to a linked organization's members, sent to
     # the service every product in the WorkOS environment changes them
     # through (`members_service.py`), with the admin's own WorkOS access
-    # token. All three or none; unset, Switch takes nothing to WorkOS,
-    # refuses what grants, and what it takes away lasts only until WorkOS is
-    # read again. `WORKOS_CLIENT_ID` is the AuthKit application Switch signs
-    # admins in to for that token, and `WORKOS_REDIRECT_URL` its callback
-    # (`.../gateway/auth/workos/callback`), registered on that application.
+    # token, renewed from their sign-in (`gateway/admin_tokens.py`). Unset,
+    # Switch takes nothing to WorkOS, refuses what grants, and what it takes
+    # away lasts only until WorkOS is read again. `WORKOS_CLIENT_ID` is the
+    # AuthKit application people sign in through.
     members_service_url: str | None = None
     workos_client_id: str | None = None
-    workos_redirect_url: str | None = None
 
     # Outbound mail for invitations addressed to an e-mail. Setting the host
     # turns it on; any SMTP relay works. Unset, an addressed invitation is
@@ -1834,14 +1832,6 @@ class SwitchConfig(BaseSettings):
             raise ValueError(
                 "ORGANIZATION_DIRECTORY=workos cannot be combined with "
                 "GATEWAY_SIGNUP_MODE=default_tenant; use invite_only or open."
-            )
-        changes = (self.members_service_url, self.workos_redirect_url)
-        if 0 < sum(1 for value in changes if value) < len(changes):
-            raise ValueError(
-                "MEMBERS_SERVICE_URL and WORKOS_REDIRECT_URL are set together: "
-                "changes to a linked organization's members go to the members "
-                "service with a token from the AuthKit application's sign-in, "
-                "which comes back to WORKOS_REDIRECT_URL."
             )
         return self
 

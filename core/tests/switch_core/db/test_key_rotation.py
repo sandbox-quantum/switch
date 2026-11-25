@@ -26,6 +26,7 @@ from switch_core.db.models import (
     ApiKey,
     Client,
     CollaborationBridge,
+    IdentitySession,
     MessagingInstall,
     Organization,
     OrganizationAppCredential,
@@ -360,6 +361,49 @@ async def test_a_value_no_key_opens_stops_the_boot(
     monkeypatch.setattr(encrypted_json, "_keyring", too_early)
     with pytest.raises(UndecryptableError):
         await reencrypt_stored_secrets(rls_harness.restricted, too_early, [tenant_id])
+
+
+async def test_a_kept_refresh_token_ends_up_under_the_current_key(
+    rls_harness: RLSHarness,
+) -> None:
+    """An identity session belongs to a person, not a tenant, and is
+    rewritten once by the global pass; an ended one keeps nothing to
+    rewrite."""
+    _, user_id = await _tenant_with_user(rls_harness.owner)
+    async with rls_harness.owner() as session:
+        for row_id, session_id, kept, ended_at in (
+            ("isid-live", "session_LIVE", _legacy_encrypt("refresh-live"), None),
+            ("isid-ended", "session_ENDED", "", datetime.now(UTC)),
+        ):
+            session.add(
+                IdentitySession(
+                    id=row_id,
+                    user_id=user_id,
+                    provider="workos",
+                    provider_user_id="user_EXAMPLE",
+                    session_id=session_id,
+                    encrypted_refresh_token=kept,
+                    ended_at=ended_at,
+                )
+            )
+        await session.commit()
+
+    await reencrypt_stored_secrets(rls_harness.restricted, _NEW, [])
+
+    live = await _raw(
+        rls_harness.owner, "identity_sessions", "encrypted_refresh_token", "isid-live"
+    )
+    assert isinstance(live, str) and live.startswith(_NEW.current_prefix())
+    assert _NEW.decrypt(live) == "refresh-live"
+    assert (
+        await _raw(
+            rls_harness.owner,
+            "identity_sessions",
+            "encrypted_refresh_token",
+            "isid-ended",
+        )
+        == ""
+    )
 
 
 async def test_the_global_trust_settings_key_is_reencrypted_with_no_tenants(

@@ -16,10 +16,14 @@ revoked, its password reset, timed out, or signed out of elsewhere; so did
 every session of a user WorkOS no longer has. Its row is marked ended and the
 next request on that cookie gets 401. WorkOS being unreachable or busy never
 ends a session: it is kept, logged and counted, and asked again later. Nor
-does WorkOS refusing the API key, which is logged as an error.
+does WorkOS refusing the API key, which is logged as an error. Following a
+session means asking WorkOS with the application's API key, never
+refreshing anything.
 
-The gateway keeps no WorkOS token, so following a session means asking
-WorkOS with the application's API key, never refreshing anything.
+The session's refresh token is kept too, encrypted with the row, for what an
+organization's account service takes only from the person themselves
+(`organization_token`): renewed for that one organization when it is needed,
+and replaced with the token WorkOS rotates it to.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import NoReturn
 
 import httpx
 from fastapi import HTTPException
@@ -39,6 +44,7 @@ from switch_core.db.stores.identity_session_store import (
     IdentitySessionRow,
     IdentitySessionStore,
 )
+from switch_core.keys import Keyring
 from switch_core.observability.catalogue import AUTH_IDENTITY_SESSION_CHECKS
 from switch_core.observability.metrics import metrics
 from switch_core.workos_authkit import (
@@ -61,6 +67,32 @@ _SPREAD_SECONDS = 60
 _CONCURRENT_CHECKS = 4
 
 SIGN_IN_ENDED = "Your sign-in has ended. Sign in again."
+
+# What WorkOS answers a renewal for an organization whose policy the session
+# does not meet as it stands: signing in again, through the organization's
+# own methods, gets one. (`invalid_grant`, a refresh token that is no longer
+# good, is told apart by whether the session itself is still alive.)
+_SIGN_IN_AGAIN_FOR = frozenset(
+    {
+        "sso_required",
+        "mfa_enrollment",
+        "mfa_challenge",
+        "organization_authentication_methods_required",
+    }
+)
+
+
+class SignInEnded(Exception):
+    """The identity session a request stands on has ended, here or at
+    WorkOS: the person signs in again."""
+
+
+class OrganizationSignInRequired(Exception):
+    """The identity session is alive, but WorkOS won't renew the person's
+    access for the organization from what is kept of it: the organization
+    wants a sign-in its own way (single sign-on, MFA), or the refresh token
+    kept was spent by a renewal whose answer was lost. Signing in again gets
+    one."""
 
 
 def authkit_for(config: SwitchConfig, http: httpx.AsyncClient) -> AuthKit | None:
@@ -86,9 +118,11 @@ class IdentitySessions:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         authkit: AuthKit | None,
+        keyring: Keyring,
     ) -> None:
         self._session_factory = session_factory
         self._authkit = authkit
+        self._keyring = keyring
         self._store = IdentitySessionStore()
         self._checks = asyncio.Semaphore(_CONCURRENT_CHECKS)
         self._tasks: set[asyncio.Task[None]] = set()
@@ -132,7 +166,7 @@ class IdentitySessions:
         return row is not None and row.user_id == user_id and row.ended_at is None
 
     def _follow(self, row: IdentitySessionRow) -> None:
-        if self._authkit is None or not row.followed:
+        if self._authkit is None:
             return
         now = datetime.now(UTC)
         if row.checked_at > now - CHECK_EVERY - _spread(row.id):
@@ -205,6 +239,91 @@ class IdentitySessions:
             row.user_id,
         )
         metrics().increment(AUTH_IDENTITY_SESSION_CHECKS, {"outcome": "ended"})
+
+    # ── Acting for the person ────────────────────────────────────────────────
+
+    async def organization_token(
+        self, user_id: str, identity_session: str, workos_organization_id: str
+    ) -> str:
+        """An access token WorkOS issues this person for
+        `workos_organization_id`, good for minutes, renewed from the refresh
+        token kept with the identity session their cookie stands on, which is
+        replaced with the one WorkOS rotates it to.
+
+        Raises `SignInEnded` when that session has ended, here or at WorkOS
+        (whose refusal ends it here too), and `OrganizationSignInRequired`
+        when it is alive but WorkOS won't renew it for the organization as it
+        stands. Raises `AuthKitRefused` when WorkOS refuses for another
+        reason, such as a person not in the organization, and
+        `AuthKitUnavailable` when it can't be asked."""
+        authkit = self._authkit
+        if authkit is None:
+            raise RuntimeError(
+                "An organization token was asked for where nobody signs in "
+                "through WorkOS AuthKit"
+            )
+        async with self._session_factory() as db:
+            row = await self._store.get(db, identity_session)
+            sealed = await self._store.refresh_token(db, identity_session)
+        if not self._live(row, user_id) or sealed is None:
+            raise SignInEnded(SIGN_IN_ENDED)
+        assert row is not None
+        for attempt in range(2):
+            try:
+                tokens = await authkit.refresh(
+                    self._keyring.decrypt(sealed), workos_organization_id
+                )
+            except AuthKitRefused as refused:
+                if refused.code in _SIGN_IN_AGAIN_FOR:
+                    raise OrganizationSignInRequired(refused.message) from refused
+                if refused.code != "invalid_grant":
+                    raise
+                # Another renewal may have spent this token first, and kept
+                # the one WorkOS rotated it to: renew from that instead.
+                async with self._session_factory() as db:
+                    kept = await self._store.refresh_token(db, row.id)
+                if attempt == 0 and kept is not None and kept != sealed:
+                    sealed = kept
+                    continue
+                await self._refresh_token_refused(row, refused)
+            async with self._session_factory() as db, db.begin():
+                await self._store.replace_refresh_token(
+                    db,
+                    row.id,
+                    spent=sealed,
+                    renewed=self._keyring.encrypt(tokens.refresh_token),
+                )
+            return tokens.access_token
+        raise AssertionError("unreachable: the loop returns or raises")
+
+    async def _refresh_token_refused(
+        self, row: IdentitySessionRow, refused: AuthKitRefused
+    ) -> NoReturn:
+        """WorkOS no longer takes the session's refresh token: the session
+        has ended there, so end it here too and raise `SignInEnded`, or it is
+        still alive and the token kept was spent, so raise
+        `OrganizationSignInRequired`. Asking WorkOS which may raise
+        `AuthKitError`."""
+        authkit = self._authkit
+        assert authkit is not None
+        if row.session_id in await authkit.active_session_ids(row.provider_user_id):
+            logger.warning(
+                "WorkOS refused the kept refresh token of identity session %s, "
+                "which is still alive there; its person signs in again to act "
+                "in an organization: %s",
+                row.id,
+                refused.message,
+            )
+            raise OrganizationSignInRequired(refused.message) from refused
+        async with self._session_factory() as db, db.begin():
+            await self._store.end(db, [row.id], datetime.now(UTC))
+        logger.info(
+            "Identity session %s of user %s ended at WorkOS, found renewing it; "
+            "its Switch session ends with it",
+            row.id,
+            row.user_id,
+        )
+        raise SignInEnded(SIGN_IN_ENDED) from refused
 
     # ── Ending them ──────────────────────────────────────────────────────────
 

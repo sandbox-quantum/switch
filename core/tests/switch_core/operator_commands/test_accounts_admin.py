@@ -52,7 +52,7 @@ from switch_core.gateway.invite_mail import AdminChangeEmail
 from switch_core.operator_commands import CommandRefused
 from switch_core.tenant_context import tenant_scope
 from switch_core.workos_authkit import AuthKitUnavailable
-from tests.conftest import RLSHarness
+from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.accounts.test_account_deletion import (
     ADMIN_EMAIL,
     _agent,
@@ -82,7 +82,7 @@ async def _identity_session(
             provider="workos",
             provider_user_id="user_ACCOUNT",
             session_id=session_id,
-            followed=True,
+            encrypted_refresh_token="sealed-refresh-token",
             now=datetime.now(UTC),
         )
         await session.commit()
@@ -98,7 +98,7 @@ async def _identity_live(rls_harness: RLSHarness, row_id: str) -> bool:
 def _no_authkit(rls_harness: RLSHarness) -> IdentitySessions:
     """The accounts' identity sessions on a server that does not sign in
     through WorkOS AuthKit."""
-    return IdentitySessions(rls_harness.restricted, None)
+    return IdentitySessions(rls_harness.restricted, None, TEST_KEYRING)
 
 
 async def _account(
@@ -296,7 +296,7 @@ class TestSignOut:
 
         await sign_out(
             rls_harness.restricted,
-            IdentitySessions(rls_harness.restricted, workos),  # type: ignore[arg-type]
+            IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
             user.email,
         )
 
@@ -314,7 +314,7 @@ class TestSignOut:
         with pytest.raises(CommandRefused, match="1 of its sign-ins at WorkOS"):
             await sign_out(
                 rls_harness.restricted,
-                IdentitySessions(rls_harness.restricted, workos),  # type: ignore[arg-type]
+                IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
                 user.email,
             )
 
@@ -334,7 +334,7 @@ class TestSignOut:
         with pytest.raises(CommandRefused, match="1 of its sign-ins at WorkOS"):
             await sign_out(
                 rls_harness.restricted,
-                IdentitySessions(rls_harness.restricted, workos),  # type: ignore[arg-type]
+                IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
                 user.email,
             )
 
@@ -427,7 +427,7 @@ class TestDelete:
             await delete_account(
                 deletion,
                 rls_harness.restricted,
-                IdentitySessions(rls_harness.restricted, workos),  # type: ignore[arg-type]
+                IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
                 plan,
             )
 
@@ -450,7 +450,7 @@ class TestDelete:
             await delete_account(
                 deletion,
                 rls_harness.restricted,
-                IdentitySessions(rls_harness.restricted, workos),  # type: ignore[arg-type]
+                IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
                 plan,
             )
 
@@ -472,7 +472,7 @@ class TestDelete:
         await delete_account(
             deletion,
             rls_harness.restricted,
-            IdentitySessions(rls_harness.restricted, workos),  # type: ignore[arg-type]
+            IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
             plan,
         )
 

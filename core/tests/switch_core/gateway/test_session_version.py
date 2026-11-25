@@ -52,7 +52,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: _USER_STORE
     app.dependency_overrides[gw_deps.get_identity_sessions] = lambda: IdentitySessions(
-        session_factory, None
+        session_factory, None, _KEYRING
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,

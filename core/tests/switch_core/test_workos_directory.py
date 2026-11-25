@@ -216,7 +216,7 @@ class TestChangesFromSwitch:
 
         for change in (
             directory.join(linked, "u", "member"),  # type: ignore[arg-type]
-            directory.prepare_change(linked, "user_u", "org_admin", "admin-token"),  # type: ignore[arg-type]
+            directory.prepare_change(linked, "user_u", "org_admin", _no_token),  # type: ignore[arg-type]
         ):
             with pytest.raises(DirectoryRefusal):
                 await change
@@ -229,7 +229,7 @@ class TestChangesFromSwitch:
 
         for role in ("member", None):
             assert (
-                await directory.prepare_change(linked, "user_u", role, None)  # type: ignore[arg-type]
+                await directory.prepare_change(linked, "user_u", role, _no_token)  # type: ignore[arg-type]
                 == NO_DIRECTORY_CHANGE
             )
 
@@ -312,11 +312,20 @@ LINKED = SimpleNamespace(workos_organization_id="org_a")
 TOKEN = "admin-token"
 
 
+async def _admin_token(workos_organization_id: str) -> str:
+    assert workos_organization_id == "org_a"
+    return TOKEN
+
+
+async def _no_token(workos_organization_id: str) -> str:
+    raise AssertionError("a change WorkOS needs nothing for asked for a token")
+
+
 async def _change(
     directory: WorkOSDirectory, subject: str | None, role: str | None
 ) -> None:
     """Prepare the change and make it, as a route does."""
-    change = await directory.prepare_change(LINKED, subject, role, TOKEN)  # type: ignore[arg-type]
+    change = await directory.prepare_change(LINKED, subject, role, _admin_token)  # type: ignore[arg-type]
     if role is None:
         await directory.remove(LINKED, "bob", change)  # type: ignore[arg-type]
     else:
@@ -333,9 +342,18 @@ class TestChangesThroughTheMembersService:
             LINKED,  # type: ignore[arg-type]
             "user_bob",
             "org_admin",
-            TOKEN,
+            _admin_token,
         ) == MemberChange(access_token=TOKEN, membership_id="om_bob")
         assert directory.sends_changes_for(LINKED)  # type: ignore[arg-type]
+
+    async def test_the_admins_sign_in_failing_is_raised_as_it_is(self) -> None:
+        directory = _with_members({"user_bob": ("om_bob", "viewer")}, [])
+
+        async def ended(workos_organization_id: str) -> str:
+            raise DirectorySignInRequired("Your sign-in has ended.")
+
+        with pytest.raises(DirectorySignInRequired, match="has ended"):
+            await directory.prepare_change(LINKED, "user_bob", "org_admin", ended)  # type: ignore[arg-type]
 
     async def test_an_organization_nobody_linked_needs_nothing(self) -> None:
         directory = _with_members({}, [])
@@ -345,7 +363,7 @@ class TestChangesThroughTheMembersService:
                 SimpleNamespace(workos_organization_id=None),  # type: ignore[arg-type]
                 "user_bob",
                 "org_admin",
-                None,
+                _no_token,
             )
             == NO_DIRECTORY_CHANGE
         )
@@ -385,7 +403,7 @@ class TestChangesThroughTheMembersService:
             directory = _with_members({"user_bob": ("om_bob", listed_as)}, [])
 
             assert (
-                await directory.prepare_change(LINKED, "user_bob", role, None)  # type: ignore[arg-type]
+                await directory.prepare_change(LINKED, "user_bob", role, _no_token)  # type: ignore[arg-type]
                 == NO_DIRECTORY_CHANGE
             )
 
@@ -405,7 +423,7 @@ class TestChangesThroughTheMembersService:
 
         for role in ("member", None):
             assert (
-                await directory.prepare_change(LINKED, "user_bob", role, None)  # type: ignore[arg-type]
+                await directory.prepare_change(LINKED, "user_bob", role, _no_token)  # type: ignore[arg-type]
                 == NO_DIRECTORY_CHANGE
             )
 
@@ -416,11 +434,11 @@ class TestChangesThroughTheMembersService:
 
         for role in ("member", None):
             assert (
-                await directory.prepare_change(LINKED, None, role, None)  # type: ignore[arg-type]
+                await directory.prepare_change(LINKED, None, role, _no_token)  # type: ignore[arg-type]
                 == NO_DIRECTORY_CHANGE
             )
         with pytest.raises(DirectoryRefusal, match="add them there first"):
-            await directory.prepare_change(LINKED, None, "org_admin", TOKEN)  # type: ignore[arg-type]
+            await directory.prepare_change(LINKED, None, "org_admin", _no_token)  # type: ignore[arg-type]
 
     async def test_someone_workos_does_not_list_cannot_be_made_org_admin(
         self,
@@ -428,7 +446,7 @@ class TestChangesThroughTheMembersService:
         directory = _with_members({}, [])
 
         with pytest.raises(DirectoryRefusal, match="add them there first"):
-            await directory.prepare_change(LINKED, "user_bob", "org_admin", TOKEN)  # type: ignore[arg-type]
+            await directory.prepare_change(LINKED, "user_bob", "org_admin", _no_token)  # type: ignore[arg-type]
 
     async def test_adding_someone_is_still_refused(self) -> None:
         directory = _with_members({}, [])

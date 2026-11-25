@@ -36,7 +36,7 @@ async def _record(
     user_id: str,
     session_id: str,
     *,
-    followed: bool = True,
+    refresh_token: str = "sealed-refresh-token",
     now: datetime = NOW,
 ) -> str:
     async with session_factory() as session:
@@ -46,7 +46,7 @@ async def _record(
             provider="workos",
             provider_user_id=_workos_user(user_id),
             session_id=session_id,
-            followed=followed,
+            encrypted_refresh_token=refresh_token,
             now=now,
         )
         await session.commit()
@@ -61,16 +61,63 @@ async def test_a_live_session_signed_in_to_again_is_the_same_row(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     user_id = await _user(session_factory)
-    first = await _record(session_factory, user_id, "session_A", followed=False)
+    first = await _record(
+        session_factory, user_id, "session_A", refresh_token="sealed-first"
+    )
     later = NOW + timedelta(minutes=3)
-    again = await _record(session_factory, user_id, "session_A", now=later)
+    again = await _record(
+        session_factory, user_id, "session_A", refresh_token="sealed-later", now=later
+    )
     assert again == first
     async with session_factory() as session:
         row = await IdentitySessionStore().get(session, first)
+        kept = await IdentitySessionStore().refresh_token(session, first)
     assert row is not None
     assert row.checked_at == later
-    assert row.followed
     assert row.provider_user_id == _workos_user(user_id)
+    # The latest sign-in's refresh token: WorkOS gave it the newest one.
+    assert kept == "sealed-later"
+
+
+async def test_a_renewed_refresh_token_replaces_only_the_one_it_spent(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Of two renewals from the same token, the first to finish is kept."""
+    user_id = await _user(session_factory)
+    row_id = await _record(
+        session_factory, user_id, "session_R", refresh_token="sealed-1"
+    )
+    store = IdentitySessionStore()
+    async with session_factory() as session:
+        assert await store.replace_refresh_token(
+            session, row_id, spent="sealed-1", renewed="sealed-2"
+        )
+        assert not await store.replace_refresh_token(
+            session, row_id, spent="sealed-1", renewed="sealed-2b"
+        )
+        await session.commit()
+        assert await store.refresh_token(session, row_id) == "sealed-2"
+
+
+async def test_an_ended_session_keeps_no_refresh_token_to_renew(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await _user(session_factory)
+    row_id = await _record(
+        session_factory, user_id, "session_E", refresh_token="sealed-1"
+    )
+    store = IdentitySessionStore()
+    async with session_factory() as session:
+        await store.end(session, [row_id], NOW)
+        assert await store.refresh_token(session, row_id) is None
+        assert not await store.replace_refresh_token(
+            session, row_id, spent="sealed-1", renewed="sealed-2"
+        )
+        await session.commit()
+        ended = await session.get(IdentitySession, row_id)
+        assert ended is not None
+        await session.refresh(ended)
+        assert ended.encrypted_refresh_token == ""
 
 
 async def test_an_ended_session_handed_out_again_gets_a_new_row(
@@ -104,7 +151,7 @@ async def test_a_session_live_under_someone_else_is_refused(
                 provider="workos",
                 provider_user_id=_workos_user(eve),
                 session_id="session_C",
-                followed=True,
+                encrypted_refresh_token="sealed-refresh-token",
                 now=NOW,
             )
 
@@ -122,7 +169,7 @@ async def test_a_session_live_under_another_provider_user_is_refused(
                 provider="workos",
                 provider_user_id="user_SOMEONE_ELSE",
                 session_id="session_C2",
-                followed=True,
+                encrypted_refresh_token="sealed-refresh-token",
                 now=NOW,
             )
 

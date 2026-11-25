@@ -93,7 +93,7 @@ def _app(
         gateway_password_login_enabled=True,
         gateway_tenant_choice_enabled=False,
     )
-    follower = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    follower = IdentitySessions(session_factory, workos, _KEYRING)  # type: ignore[arg-type]
     app.state.identity_sessions = follower
     return app, follower
 
@@ -124,7 +124,7 @@ async def _signed_in(
             provider="workos",
             provider_user_id=_workos_user(user_id),
             session_id=session_id,
-            followed=True,
+            encrypted_refresh_token="sealed-refresh-token",
             now=checked_at,
         )
         await session.commit()

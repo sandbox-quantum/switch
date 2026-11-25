@@ -255,6 +255,17 @@ version of their own to them without also giving them a release of their own.
   there: a person joins an organization by its invitation. Wherever password
   login is off, `GATEWAY_ADMIN_PASSWORD` is no longer stored on the admin
   account.
+- **Admins change a linked organization's members with their own sign-in.**
+  Switch keeps each AuthKit sign-in's refresh token, encrypted with the
+  record of its session, and renews from it a token for the organization
+  only when a change has to reach WorkOS, so admins no longer sign in to the
+  organization a second time. When WorkOS won't renew it (the session ended,
+  or the organization wants its own single sign-on or MFA), the dashboard
+  sends the admin through the sign-in again, to that organization, and makes
+  the change on their return. `WORKOS_REDIRECT_URL` and the
+  `/gateway/auth/workos/...` routes are gone: the Helm chart refuses
+  `switchCore.organizationDirectory.workosRedirectUrl`, and its callback can
+  come off the AuthKit application.
 - **A message in a busy chat no longer costs every member's Console stream a
   database pass of its own at the same instant.** Chat stream passes hold at
   most a quarter of the process's database pool at once, and a pass over that
@@ -337,11 +348,9 @@ version of their own to them without also giving them a release of their own.
   sign-ins at WorkOS could not be ended.** Every Switch session has ended by
   then, so the dashboard signs out and says how many WorkOS sign-ins are
   left, rather than claiming the sign-out failed.
-- **`MEMBERS_SERVICE_URL` and `WORKOS_REDIRECT_URL` go together, with
-  `WORKOS_CLIENT_ID`.** `WORKOS_CLIENT_ID` on its own is now valid, for
-  sign-in through AuthKit. In the Helm chart,
-  `switchCore.organizationDirectory.workosClientId` may be left empty when
-  `switchCore.signIn.workosClientId` names the application.
+- **`WORKOS_CLIENT_ID` on its own is valid**, for sign-in through AuthKit.
+  In the Helm chart, `switchCore.organizationDirectory.workosClientId` may be
+  left empty when `switchCore.signIn.workosClientId` names the application.
 
 #### Removed
 - **The server-side connectors' table, and the keys they left behind.**

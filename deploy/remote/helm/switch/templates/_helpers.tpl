@@ -1361,7 +1361,9 @@ render instead of a pod.
 */}}
 {{- define "switch.organizationDirectoryEnv" -}}
 {{- $directory := .Values.switchCore.organizationDirectory }}
-{{- $changes := list $directory.membersServiceUrl $directory.workosRedirectUrl | compact }}
+{{- if $directory.workosRedirectUrl }}
+{{- fail "switchCore.organizationDirectory.workosRedirectUrl is gone: member changes use the admin's own sign-in, so there is no second sign-in to come back to. Remove it, and its redirect URI from the AuthKit application." }}
+{{- end }}
 {{- if not (has $directory.mode (list "local" "workos")) }}
 {{- fail (printf "switchCore.organizationDirectory.mode must be local or workos. Got %q." $directory.mode) }}
 {{- end }}
@@ -1375,22 +1377,14 @@ render instead of a pod.
 {{- if eq .Values.switchCore.signup.mode "default_tenant" }}
 {{- fail "switchCore.organizationDirectory.mode workos cannot be combined with switchCore.signup.mode default_tenant; use invite_only or open." }}
 {{- end }}
-{{- if and $changes (lt (len $changes) 2) }}
-{{- fail "switchCore.organizationDirectory.membersServiceUrl and workosRedirectUrl are set together, or not at all." }}
-{{- end }}
-{{- if and $changes (not (include "switch.workosClientId" .)) }}
-{{- fail "switchCore.organizationDirectory.membersServiceUrl needs the AuthKit application admins sign in to for its token: organizationDirectory.workosClientId, or signIn.workosClientId with signIn.provider workos." }}
-{{- end }}
 - name: ORGANIZATION_DIRECTORY
   value: "workos"
-{{- if $changes }}
+{{- with $directory.membersServiceUrl }}
 - name: MEMBERS_SERVICE_URL
-  value: {{ $directory.membersServiceUrl | quote }}
-- name: WORKOS_REDIRECT_URL
-  value: {{ $directory.workosRedirectUrl | quote }}
+  value: {{ . | quote }}
 {{- end }}
-{{- else if or $changes $directory.workosClientId }}
-{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are for mode workos." }}
+{{- else if or $directory.membersServiceUrl $directory.workosClientId }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl and workosClientId are for mode workos." }}
 {{- end }}
 {{- include "switch.workosEnv" . }}
 {{- end }}

@@ -35,6 +35,7 @@ from switch_core.db.models import (
     ApiKey,
     CollaborationBridge,
     DecisionSettings,
+    IdentitySession,
     MachineWorkspace,
     MessagingInstall,
     OrganizationAppCredential,
@@ -77,12 +78,13 @@ _ORGANIZATION_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
 )
 # In tables no tenant holds (`db/rls_ddl.py`, GLOBAL_TABLES), one row set for
 # the whole deployment (`trust_settings`, `service_oauth_clients`,
-# `service_app_credentials`): rewritten
-# once, in a session bound to no tenant, rather than once per tenant.
+# `service_app_credentials`, `identity_sessions`): rewritten once, in a
+# session bound to no tenant, rather than once per tenant.
 _GLOBAL_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (TrustSettings, "api_key_encrypted"),
     (ServiceOAuthClient, "encrypted_secret"),
     (ServiceAppCredential, "encrypted_secrets"),
+    (IdentitySession, "encrypted_refresh_token"),
 )
 
 

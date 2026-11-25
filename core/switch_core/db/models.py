@@ -519,18 +519,20 @@ class IdentitySession(Base):
     shared with every other application in its environment: the gateway
     follows it, so a session ended there (revoked, its password reset, timed
     out) ends the Switch session that came from it, and signing out of Switch
-    ends it there too (`gateway/identity_sessions.py`). Nothing of the
-    provider's is kept but its session id and the user id it lists that
-    session under (`provider_user_id`): no token.
+    ends it there too (`gateway/identity_sessions.py`). Of the provider's,
+    Switch keeps the session id, the user id it lists that session under
+    (`provider_user_id`), and the session's refresh token, encrypted
+    (`encrypted_refresh_token`). That renews the person's access for one
+    organization at a time, for what the organization's account service takes
+    only from the person themselves (`IdentitySessions.organization_token`);
+    WorkOS rotates it on every renewal, so it is replaced each time, and it is
+    emptied when the session ends.
 
     The session cookie names a row by `id` (its `isid` claim), never by the
     provider's `session_id`, so a session id the provider hands back after a
     sign-out gets a new row and the cookies from before stay ended. At most
     one live row per provider session, hence the partial unique index.
 
-    `followed` is false for the sessions an admin's member-change sign-in
-    makes (`gateway/workos_sign_in_routes.py`), which no cookie stands on: they
-    are kept only so that ending all of someone's sessions reaches them.
     `signed_in_at` is the latest sign-in that made or reused the row, which a
     session cookie can stand on for at most 14 days after, so retention
     prunes on it (`IdentitySessionStore.prune`); `checked_at` is when the
@@ -558,7 +560,7 @@ class IdentitySession(Base):
     # sessions are listed under there; `user_id` is Switch's account.
     provider_user_id: Mapped[str] = mapped_column(Text, nullable=False)
     session_id: Mapped[str] = mapped_column(Text, nullable=False)
-    followed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    encrypted_refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

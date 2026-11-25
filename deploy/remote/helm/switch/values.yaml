@@ -466,16 +466,11 @@ switchCore:
     mode: local
     # Member changes made from Switch to a linked organization, sent to the
     # service the WorkOS environment's members are changed through, with the
-    # admin's own WorkOS token. membersServiceUrl and workosRedirectUrl
-    # together, with an AuthKit application here or in signIn.workosClientId;
-    # workos mode only.
+    # admin's own WorkOS token, renewed from their sign-in; workos mode only.
     membersServiceUrl: ""
-    # The AuthKit application admins sign in to for that token. With
-    # signIn.provider workos, leave it empty: signIn.workosClientId serves both.
+    # The AuthKit application people sign in through. Leave it empty:
+    # signIn.workosClientId names it, and this, if set, must match.
     workosClientId: ""
-    # Its callback, <gatewayPublicUrl>/gateway/auth/workos/callback, registered
-    # on that application.
-    workosRedirectUrl: ""
   # Answer a person with several workspaces and none selected with a 409 that
   # lists them, rather than a 403. The gateway UI does not need it; turn it on
   # once every API client authenticating against this deployment handles it.

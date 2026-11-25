@@ -9,7 +9,7 @@ import re
 import secrets
 import time
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -52,6 +52,7 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.login_limits import client_address
 from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
+from switch_core.keys import Keyring
 from switch_core.organization_directory import (
     DirectoryUnavailable,
     OrganizationDirectory,
@@ -299,6 +300,15 @@ class _Pending:
 
 
 @dataclass(frozen=True)
+class _ProviderSession:
+    """The WorkOS AuthKit session a sign-in stands on: its id, and the
+    refresh token that renews it (a credential, kept encrypted)."""
+
+    session_id: str
+    refresh_token: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class _Identity:
     """Who the identity provider says signed in."""
 
@@ -311,7 +321,7 @@ class _Identity:
     # matched on their subject alone; AuthKit's never are.
     match_legacy: bool
     # The provider session the sign-in stands on (WorkOS AuthKit only).
-    provider_session: str | None
+    provider_session: _ProviderSession | None
 
 
 # ── Starting a sign-in ───────────────────────────────────────────────────────
@@ -554,7 +564,10 @@ async def _authkit_identity(
             email_verified=signed_in.email_verified,
             name=signed_in.name or signed_in.email.split("@")[0],
             match_legacy=False,
-            provider_session=signed_in.session_id,
+            provider_session=_ProviderSession(
+                session_id=signed_in.session_id,
+                refresh_token=signed_in.refresh_token,
+            ),
         ),
         pending,
     )
@@ -743,9 +756,10 @@ async def _provision(
 
 
 async def _record_identity_session(
-    session: AsyncSession, user: User, identity: _Identity
+    session: AsyncSession, keyring: Keyring, user: User, identity: _Identity
 ) -> str | None:
-    if identity.provider_session is None:
+    provider_session = identity.provider_session
+    if provider_session is None:
         return None
     try:
         row_id = await IdentitySessionStore().record(
@@ -753,8 +767,8 @@ async def _record_identity_session(
             user_id=user.id,
             provider="workos",
             provider_user_id=identity.sub,
-            session_id=identity.provider_session,
-            followed=True,
+            session_id=provider_session.session_id,
+            encrypted_refresh_token=keyring.encrypt(provider_session.refresh_token),
             now=datetime.now(UTC),
         )
     except IdentitySessionConflict as exc:
@@ -800,7 +814,9 @@ async def oidc_callback(
             identity = await _oidc_identity(request, config)
         _require_verified(config, identity)
         user, created = await _provision(request, config, session, user_store, identity)
-        identity_session = await _record_identity_session(session, user, identity)
+        identity_session = await _record_identity_session(
+            session, config.keyring, user, identity
+        )
     except SignInError as error:
         sign_in_failed(
             request, method=method, reason=error.code, user_id=None, tenant_id=None

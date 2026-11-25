@@ -36,7 +36,6 @@ class IdentitySessionRow:
     provider: str
     provider_user_id: str
     session_id: str
-    followed: bool
     checked_at: datetime
     ended_at: datetime | None
 
@@ -48,7 +47,6 @@ def _row(session: IdentitySession) -> IdentitySessionRow:
         provider=session.provider,
         provider_user_id=session.provider_user_id,
         session_id=session.session_id,
-        followed=session.followed,
         checked_at=session.checked_at,
         ended_at=session.ended_at,
     )
@@ -63,20 +61,20 @@ class IdentitySessionStore:
         provider: str,
         provider_user_id: str,
         session_id: str,
-        followed: bool,
+        encrypted_refresh_token: str,
         now: datetime,
     ) -> str:
-        """The row for a sign-in the provider just made, as its id.
+        """The row for a sign-in the provider just made, as its id, keeping
+        the refresh token the sign-in brought.
 
         A live row for the same provider session is reused when it is the same
         person's: the provider has just said the session is alive, so it is
         checked as of now, signed in on as of now (which keeps it from
-        retention while the new cookie can stand on it), and followed once a
-        cookie stands on it. A live row
-        for someone else is refused: one provider session is one person. An
-        ended row is never brought back, so a cookie from before a sign-out
-        stays ended even when the provider hands the same session out again;
-        a new row is made instead.
+        retention while the new cookie can stand on it), and given the new
+        refresh token. A live row for someone else is refused: one provider
+        session is one person. An ended row is never brought back, so a cookie
+        from before a sign-out stays ended even when the provider hands the
+        same session out again; a new row is made instead.
         """
         for attempt in range(2):
             live = await session.scalar(
@@ -96,7 +94,7 @@ class IdentitySessionStore:
                     )
                 live.checked_at = now
                 live.signed_in_at = now
-                live.followed = live.followed or followed
+                live.encrypted_refresh_token = encrypted_refresh_token
                 await session.flush()
                 return live.id
             row = IdentitySession(
@@ -104,7 +102,7 @@ class IdentitySessionStore:
                 provider=provider,
                 provider_user_id=provider_user_id,
                 session_id=session_id,
-                followed=followed,
+                encrypted_refresh_token=encrypted_refresh_token,
                 created_at=now,
                 signed_in_at=now,
                 checked_at=now,
@@ -126,6 +124,38 @@ class IdentitySessionStore:
     ) -> IdentitySessionRow | None:
         row = await session.get(IdentitySession, row_id)
         return None if row is None else _row(row)
+
+    async def refresh_token(self, session: AsyncSession, row_id: str) -> str | None:
+        """The encrypted refresh token of a live session, or None when it has
+        ended or there is no such session."""
+        token: str | None = await session.scalar(
+            select(IdentitySession.encrypted_refresh_token).where(
+                IdentitySession.id == row_id, IdentitySession.ended_at.is_(None)
+            )
+        )
+        return token
+
+    async def replace_refresh_token(
+        self, session: AsyncSession, row_id: str, *, spent: str, renewed: str
+    ) -> bool:
+        """Keep `renewed` in place of `spent`, the encrypted refresh token a
+        renewal used, unless the session has ended or another renewal already
+        replaced it; answers whether this one did. Conditional, so of renewals
+        made at once from the same token, across every process, the first to
+        finish is kept."""
+        result = cast(
+            CursorResult[Any],
+            await session.execute(
+                update(IdentitySession)
+                .where(
+                    IdentitySession.id == row_id,
+                    IdentitySession.ended_at.is_(None),
+                    IdentitySession.encrypted_refresh_token == spent,
+                )
+                .values(encrypted_refresh_token=renewed)
+            ),
+        )
+        return result.rowcount == 1
 
     async def claim_check(
         self,
@@ -156,7 +186,8 @@ class IdentitySessionStore:
     async def end(
         self, session: AsyncSession, row_ids: list[str], now: datetime
     ) -> int:
-        """Mark these sessions ended, if they are not already. Returns how
+        """Mark these sessions ended, if they are not already, dropping the
+        refresh token each kept: nothing renews an ended session. Returns how
         many this ended."""
         if not row_ids:
             return 0
@@ -167,7 +198,7 @@ class IdentitySessionStore:
                 .where(
                     IdentitySession.id.in_(row_ids), IdentitySession.ended_at.is_(None)
                 )
-                .values(ended_at=now)
+                .values(ended_at=now, encrypted_refresh_token="")
             ),
         )
         return result.rowcount

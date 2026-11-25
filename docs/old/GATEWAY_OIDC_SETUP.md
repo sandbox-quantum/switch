@@ -317,9 +317,9 @@ dashboard, on that application:
 
 1. Note its client id and create an API key under it.
 2. **Redirect URIs:** `https://<dashboard host>/gateway/auth/oidc/callback`.
-   Add `https://<dashboard host>/gateway/auth/workos/callback` too where
-   member changes go to a members service (`docs/old/workos-directory.md`),
-   which uses the same application.
+   An application set up for an earlier release may also list
+   `/gateway/auth/workos/callback`, for a second sign-in member changes no
+   longer use: remove it.
 3. **Sign-out URIs:** `https://<dashboard host>/login`, as the default. Switch
    sends it as the place to come back to after ending a session, and WorkOS
    accepts only one listed here.
@@ -329,9 +329,10 @@ dashboard, on that application:
    Switch, and Switch forwards what WorkOS adds (an invitation, an
    organization, a login hint) to the sign-in it starts.
 5. **Session policy:** set the inactivity timeout to at least the maximum
-   session length. Switch keeps no WorkOS token to refresh, and WorkOS counts
-   inactivity from the last refresh, so a shorter inactivity timeout signs
-   out people who are using Switch. Switch's own session lasts at most 14
+   session length. Switch renews a session's tokens only when an admin
+   changes a linked organization's members, not as people use Switch, and
+   WorkOS counts inactivity from the last renewal, so a shorter inactivity
+   timeout signs out people who are using Switch. Switch's own session lasts at most 14
    days, so a maximum session length above that changes nothing for Switch.
 
 Initiate login and default sign-out URIs take one value per application, so

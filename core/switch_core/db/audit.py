@@ -193,8 +193,9 @@ class OrganizationAuditAction(StrEnum):
     DIRECTORY_CONFLICT = "organization.directory_conflict"
     # An operator made the organization follow one in the directory.
     LINKED_TO_DIRECTORY = "organization.linked_to_directory"
-    # Someone finished signing in to the organization's directory to act as
-    # one of its admins (`gateway/workos_sign_in_routes.py`).
+    # Someone finished a second sign-in to the organization's directory to
+    # act as one of its admins. No longer recorded: kept so the events
+    # recorded before can still be read.
     DIRECTORY_SIGN_IN = "organization.directory_sign_in"
 
 

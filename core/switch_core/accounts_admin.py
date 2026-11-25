@@ -224,7 +224,9 @@ async def identity_sessions(
     """The accounts' WorkOS AuthKit sessions (`gateway/identity_sessions.py`),
     ended at WorkOS where the server signs people in through AuthKit."""
     async with guarded_async_client(config.outbound_policy, timeout=20) as http:
-        yield IdentitySessions(session_factory, authkit_for(config, http))
+        yield IdentitySessions(
+            session_factory, authkit_for(config, http), config.keyring
+        )
 
 
 async def sign_out(
