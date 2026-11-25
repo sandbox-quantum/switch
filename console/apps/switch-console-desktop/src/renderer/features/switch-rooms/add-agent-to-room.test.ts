@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { rememberBuddyChat, rememberedBuddy } from '@renderer/features/switch-buddy/buddy-chat';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import { addAgentToRoom, mayAddToRoom } from './add-agent-to-room';
 
@@ -41,6 +42,20 @@ describe('addAgentToRoom', () => {
     });
     calls.addRoomAgents.mockRejectedValueOnce(new Error('refused'));
     await expect(addAgentToRoom(calls, input)).rejects.toThrow('refused');
+  });
+
+  it('stops counting the buddy’s direct chat as the buddy’s alone, whichever API added the agent', async () => {
+    const now = Date.now();
+    rememberBuddyChat('s', 'buddy-direct', 'buddy', now);
+    rememberBuddyChat('s', 'buddy-group', 'buddy', now);
+    const direct = { ...group, roomId: 'buddy-direct', channelType: 'direct' } as ChatSummary;
+
+    // A direct chat goes through the rooms API and reports no changed chat.
+    await addAgentToRoom(api(direct), { ...input, roomId: 'buddy-direct' });
+    await addAgentToRoom(api(group), { ...input, roomId: 'buddy-group' });
+
+    expect(rememberedBuddy('s', 'buddy-direct', now)).toBeNull();
+    expect(rememberedBuddy('s', 'buddy-group', now)).toBeNull();
   });
 });
 

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from switch_core.bridges.agent.commands import AGENT_GREETING_KEY
+from switch_core.clients.admin_messages import SAID_FOR_AGENT_FLAG
 from switch_core.delivery.recipient import AgentRecipient, opening_message_for
 
 
@@ -154,16 +155,21 @@ async def test_the_usual_join_line_is_marked_so_a_bridge_can_say_how_to_reach_th
     # "tag @agent"; the bridge rewrites the line it can recognise.
     send_message = _Recorder()
     await AgentRecipient.greet(_fake_self(send_message))  # type: ignore[arg-type]
-    assert send_message.calls[0]["extra_content"] == {AGENT_GREETING_KEY: True}
+    assert send_message.calls[0]["extra_content"] == {
+        AGENT_GREETING_KEY: True,
+        SAID_FOR_AGENT_FLAG: True,
+    }
 
 
 @pytest.mark.asyncio
-async def test_a_written_or_direct_greeting_is_not_marked() -> None:
+async def test_a_written_or_direct_greeting_is_not_marked_as_the_usual_line() -> None:
+    """Each is still marked as Switch's, not the agent's: usage telemetry does
+    not count a greeting as the agent talking."""
     written = _Recorder()
     await AgentRecipient.greet(
         _fake_self(written, agent_greeting={"agent_id": "agent-1", "body": "Welcome!"})  # type: ignore[arg-type]
     )
     direct = _Recorder()
     await AgentRecipient.greet(_fake_self(direct, is_direct=True))  # type: ignore[arg-type]
-    assert written.calls[0]["extra_content"] is None
-    assert direct.calls[0]["extra_content"] is None
+    assert written.calls[0]["extra_content"] == {SAID_FOR_AGENT_FLAG: True}
+    assert direct.calls[0]["extra_content"] == {SAID_FOR_AGENT_FLAG: True}

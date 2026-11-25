@@ -62,9 +62,11 @@ A condition reads one param: "{param}" (true when it has a value) or
   model: text | "{param}"        # optional; the provider's default if absent
   advanced_config: {key: value}  # optional; see get_advanced_config(provider)
   isolation: shared | isolated   # optional; default shared
-  auto_mode: true | false        # optional; default true (false for Cursor). The provider's own
-                                 # review: safe actions run, risky ones ask
-  auto_approve: true | false     # optional; default false (true for Cursor). Bypass: no
+  auto_mode: true | false        # optional; default true (false for opencode,
+                                 # whose auto mode has no review, and for
+                                 # cursor, which has none). The provider's
+                                 # own review: safe actions run, risky ones ask
+  auto_approve: true | false     # optional; default false (true for cursor). Bypass: no
                                  # permission checks at all; overrides auto_mode
   can_manage_agents: true | false  # optional; default false. It may create
                                  # agents on the deployer's machines

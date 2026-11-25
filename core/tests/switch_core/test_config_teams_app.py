@@ -218,19 +218,38 @@ def test_a_privacy_page_that_is_not_https_raises() -> None:
         _config(**_without(teams_app_privacy_url="http://switch.example/privacy"))
 
 
-def test_the_app_is_called_agent_switch_unless_named() -> None:
-    assert _config(**_APP).teams_app_name == "Agent Switch"
+def test_the_app_is_called_switch_rooms_unless_named() -> None:
+    assert _config(**_APP).teams_app_name == "Switch Rooms"
 
 
 def test_an_environment_can_name_its_app() -> None:
-    config = _config(**_APP, teams_app_name="Agent Switch (dev)")
-    assert config.teams_app_name == "Agent Switch (dev)"
+    config = _config(**_APP, teams_app_name="Switch Rooms (dev)")
+    assert config.teams_app_name == "Switch Rooms (dev)"
 
 
 @pytest.mark.parametrize(
     "name",
-    ["", " Agent Switch", "Agent Switch ", "A name far too long for a Teams app"],
+    ["", " Switch Rooms", "Switch Rooms ", "A name far too long for a Teams app"],
 )
 def test_a_name_teams_would_refuse_is_refused_at_startup(name: str) -> None:
     with pytest.raises(ValueError, match="TEAMS_APP_NAME must be 1 to 30"):
         _config(**_APP, teams_app_name=name)
+
+
+def test_a_partner_id_is_kept() -> None:
+    assert _config(**_APP, teams_app_partner_id="1234567").teams_app_partner_id == (
+        "1234567"
+    )
+
+
+@pytest.mark.parametrize("partner_id", ["12345678901", "12a4567", "１２３"])
+def test_a_partner_id_teams_would_refuse_is_refused_at_startup(
+    partner_id: str,
+) -> None:
+    with pytest.raises(ValueError, match="TEAMS_APP_PARTNER_ID must be"):
+        _config(**_APP, teams_app_partner_id=partner_id)
+
+
+def test_a_partner_id_with_no_app_is_a_partial_config() -> None:
+    with pytest.raises(ValueError, match="Partial distributed Teams app config"):
+        _config(teams_app_partner_id="1234567")

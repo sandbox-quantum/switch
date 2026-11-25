@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { TelemetrySettingKey } from '@main/core/telemetry/events';
+import { forgetInstallId } from '@main/core/telemetry/install-id';
 import { launchInstallKind } from '@main/core/telemetry/launch-history';
 import { trackBackgroundEvent, trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
@@ -113,6 +114,16 @@ export const appSettingsController = createRPCController({
     const before = await valueBefore(key);
 
     await appSettingsService.update(key, value);
+
+    // The setting is saved either way, so a failed delete is reported rather
+    // than failing the toggle; the boot sweep tries again.
+    if (key === 'telemetry' && !(value as TelemetrySettings).enabled) {
+      await forgetInstallId().catch((error: unknown) => {
+        log.error('telemetry: could not delete the install id after sharing was turned off', {
+          error,
+        });
+      });
+    }
 
     void reportChange(key, before);
     if (previousTelemetry) void reportConsent(previousTelemetry, value as TelemetrySettings);

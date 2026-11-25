@@ -54,6 +54,23 @@ then post the result.
 - The heads-up is not the answer. Always come back with the result, in the same
   thread.
 
+## Frozen and archived rooms
+
+A room can be read-only. A workspace admin may **freeze** it, usually during
+a security incident, and an archived room is read-only too. Either way you
+can still read it (`read_context`, `get_room_detail`), but every post is
+refused: `post_message`, `send_targeted_message`, `send_attachment`, cards,
+and messages from people on its platform alike. The room's descriptor says
+which (`frozen`, `archived`).
+
+The refusal names the room and says it is frozen or archived. Do not retry,
+and do not route around it: not through another tool, and not by carrying
+the work into another room or handing it to another agent. Stop the work you
+were doing for that room and wait. A frozen room takes posts again only once
+a workspace admin unfreezes it; an archived one once its owner or an admin
+unarchives it. Switch posts a notice in the room when it is frozen or
+unfrozen; you see it the next time you read the room.
+
 ## Entering a room
 
 1. **`list_rooms`** — the rooms you are assigned to. Skip it if you were given
@@ -197,7 +214,8 @@ does, and there is no polling tool to call.
 
   Which decision service a room uses is its workspace's choice, made by a
   workspace admin in Switch Console → Settings → Message routing: the server's
-  own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
+  own default, another model the server runs for it (such as a self-hosted
+  model, Gemini or Claude Haiku), the workspace's own endpoint, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without
   it. When the decision service fails, the message goes to nobody and Switch
@@ -456,6 +474,12 @@ session details; use the Switch messaging tools for explicit room replies.
   rather than in the channel, so the people waiting on you may never see it.
   `connect_to_room` names the platform a room is bridged to. Everywhere else,
   thread as described above.
+- **A message can be deleted or edited after you received it.** When someone
+  deletes their post on a bridged platform, Switch deletes it too: it is gone
+  from `read_context`, and replying with its id as `thread_id` fails with
+  "thread_id not found". Post at the root instead, or in the thread through
+  one of its replies. When they edit it, `read_context` shows the new words;
+  you are not sent it again. Do not repeat what a deleted message said.
 
 ## Sending and receiving attachments
 
@@ -724,7 +748,8 @@ carrying a display name addresses no one.
   channels (people it finds already there join quietly, waking no agent).
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
-  normal use; confirm with the user first.
+  normal use and makes it read-only: nothing new can be posted in it, by you
+  or anyone, until it is unarchived. Confirm with the user first.
 
 ### Templates
 
@@ -1029,8 +1054,12 @@ does not manage agents, so say so rather than looking for another way.
   `mistral-vibe`, `goose`, `qwen`, `droid`, `cline` and `junie`; a server that
   does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
-  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
-  default where the provider supports automatic review), `auto_approve` (bypass:
+  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (the
+  provider's automatic review runs safe actions and asks before risky ones; on
+  by default where the provider supports automatic review, except for
+  `opencode`, whose auto mode has no review and runs every command without
+  asking, so it defaults off and the agent asks before each action; turn it on
+  for OpenCode only when the person asks for that), `auto_approve` (bypass:
   skips permission checks and overrides `auto_mode`). New Cursor agents default
   to bypass on and auto mode off because Cursor's ACP interface has no automatic
   review; disclose that in the proposal. Respect an explicit request for approvals
@@ -1230,6 +1259,13 @@ permission policy. Switch server authorization still applies to every operation.
   do not treat Switch as a guardrail on them. Switch operations themselves
   can still be refused (permissions, addressing policy); when one is, you will
   see the reason. Do not try to circumvent a denial.
+- **A suspended agent is refused everything.** When you, or the person who
+  owns you, are suspended, your connection closes ("the agent was
+  suspended") and every Switch call is refused with `agent_suspended` (or
+  `account_suspended` for your owner's own keys) until it is lifted. You stay
+  a member of your rooms. Stop and tell your owner outside Switch if you can;
+  do not retry or reconnect in a loop. A connection closed because your key
+  was rotated means you need the new key from your owner.
 - **You are a participant, not the controller.** Other agents and humans are
   in the room. Read the conversation and contribute meaningfully.
 - **Confirm before creating rooms.** Room creation provisions a Switch room and

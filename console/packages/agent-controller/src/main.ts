@@ -91,7 +91,9 @@ import {
   unavailableInstaller,
 } from './self-update';
 import {
+  AGENT_SANDBOXES,
   assertControllerCanRunSeparateUsers,
+  codexTemplateInstalled,
   DEFAULT_AGENT_USERS,
   ensureReleases,
   findSeparateUsersConfig,
@@ -669,6 +671,11 @@ async function runCommand(args: string[]): Promise<number> {
           to: store.identity()?.server,
         });
     }
+    const codexTemplate = separateUsers ? await codexTemplateInstalled(separateUsers.uid) : false;
+    if (separateUsers && !codexTemplate)
+      log.warn(
+        'The setup has no unit template for Codex agents, so they run as the one other agents do. Run the setup again to give each its own.'
+      );
     const exit = await runController(
       {
         store,
@@ -682,6 +689,7 @@ async function runCommand(args: string[]): Promise<number> {
                 env: process.env,
                 log,
                 now: Date.now,
+                codexTemplate,
               })
             : new AgentRuntimes(
                 new InProcessRuntime({
@@ -745,6 +753,7 @@ async function statusCommand(args: string[]): Promise<number> {
           env: process.env,
           log: createLogger({ level: 'error', write: (line) => process.stderr.write(line) }),
           now: Date.now,
+          codexTemplate: await codexTemplateInstalled(separateUsers.uid),
         })
       : null;
     const out: string[] = [`Data directory: ${dataDir}`];
@@ -1108,6 +1117,7 @@ async function doctorCommand(args: string[]): Promise<number> {
           env: process.env,
           log: createLogger({ level: 'error', write: (line) => process.stderr.write(line) }),
           now: Date.now,
+          codexTemplate: await codexTemplateInstalled(separateUsers.uid),
         })
       : null;
     const checks = await runDoctor({
@@ -1279,11 +1289,16 @@ export async function main(argv: string[]): Promise<number> {
 /** What systemd says of an agent's unit, for a shell without the agents' group. */
 async function unitSummary(config: SeparateUsersConfig, slot: number | null): Promise<string> {
   if (slot === null) return 'no agent user claimed';
-  const unit = separateUserNames(config.uid).agentUnit(slot);
-  const state = await systemctl(['is-active', unit]).catch(
-    (error: { stdout?: string }) => error.stdout ?? 'unknown'
-  );
-  return `${unit} is ${state.trim()}`;
+  const names = separateUserNames(config.uid);
+  const summaries: string[] = [];
+  for (const sandbox of AGENT_SANDBOXES) {
+    const unit = names.agentUnit(slot, sandbox);
+    const state = await systemctl(['is-active', unit]).catch(
+      (error: { stdout?: string }) => error.stdout ?? 'unknown'
+    );
+    summaries.push(`${unit} is ${state.trim()}`);
+  }
+  return summaries.join(', ');
 }
 
 /** The separate-users setup this data directory has, or none: Windows has no Linux users. */

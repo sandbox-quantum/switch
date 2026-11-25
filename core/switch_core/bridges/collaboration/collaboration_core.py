@@ -45,9 +45,12 @@ from switch_core.bridges.collaboration.models import (
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
+    InboundChannelRemoved,
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageDeleted,
+    InboundMessageEdited,
     InboundUserJoin,
     InboundUserLeave,
     OutboundAttachment,
@@ -94,6 +97,8 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL, RENEW_EVERY_SECONDS
 from switch_core.provisioning import Provisioning
+from switch_core.retention.platform_deletes import PlatformDeletions
+from switch_core.room_read_only import RoomReadOnly
 from switch_core.room_service import RoomCreateConfig
 from switch_core.room_wide_mention import is_room_wide_mention
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
@@ -167,6 +172,9 @@ _InboundEventT = TypeVar(
     InboundUserJoin,
     InboundUserLeave,
     InboundAppJoin,
+    InboundMessageDeleted,
+    InboundMessageEdited,
+    InboundChannelRemoved,
 )
 
 # How long to wait for a freshly-invited external-user human actor to actually join a
@@ -334,6 +342,21 @@ def _post_source(bridge_id: str, channel_id: str, message_ref: str) -> str:
     return f"{bridge_id}\x1f{channel_id}\x1f{message_ref}"
 
 
+def _read_only_notice(refused: RoomReadOnly) -> str:
+    """What a person is told when their room took no post from them."""
+    if refused.state == "frozen":
+        return (
+            "🧊 Your message was not delivered: a workspace admin has frozen "
+            "this room in Switch, so nothing new can be posted in it until "
+            "they unfreeze it. Agents can't see your message."
+        )
+    return (
+        "Your message was not delivered: this room is archived in Switch, so "
+        "nothing new can be posted in it. Its owner or a workspace admin can "
+        "unarchive it. Agents can't see your message."
+    )
+
+
 class CollaborationCore:
     # Tests assemble a CollaborationCore with `__new__`; these read as "not wired",
     # and the bridge as held here, as it is in a deployment of one process.
@@ -401,6 +424,7 @@ class CollaborationCore:
         )
         self._max_attachment_bytes = max_attachment_bytes
         self._trust_client = trust_client
+        self._platform_deletions = PlatformDeletions()
 
         self._channel_to_room: dict[str, tuple[str, str]] = {}
         self._room_to_channel: dict[tuple[str, str], str] = {}
@@ -663,6 +687,17 @@ class CollaborationCore:
         self._adapter.set_channel_type_handler(self._record_channel_type)
         self._adapter.set_channel_rename_handler(self._handle_channel_named)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
+        self._adapter.set_takeback_handlers(
+            on_message_deleted=self._traced(
+                "message_deleted", self._handle_message_deleted
+            ),
+            on_message_edited=self._traced(
+                "message_edited", self._handle_message_edited
+            ),
+            on_channel_removed=self._traced(
+                "channel_removed", self._handle_channel_removed
+            ),
+        )
         # A bridge on a shared connection that started before the connection
         # was up is attached later (when it comes up, or on its first event).
         # Provisioning that ran at start unattached would have failed, so it is
@@ -1557,7 +1592,13 @@ class CollaborationCore:
 
     async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
         """Write a platform message into its room as its sender, and return
-        the event it became, or None when it was not relayed."""
+        the event it became, or None when it was not relayed.
+
+        A room that is frozen or archived takes no posts
+        (`room_read_only.py`): the router refuses the row, and the sender is
+        told their message did not reach the room (`_tell_read_only`), as
+        they are told of a Switch Trust block.
+        """
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
             msg.channel_id,
@@ -1670,6 +1711,7 @@ class CollaborationCore:
         if not msg.attachments:
             check = await check_message(
                 self._trust_client,
+                self._session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 content=content,
@@ -1690,7 +1732,7 @@ class CollaborationCore:
                     check.policy_id,
                     transport_room_id,
                 )
-                await self._post_trust_notice(
+                await self._post_sender_notice(
                     msg,
                     "🚫 Your message was blocked by Switch Trust and was not "
                     "delivered to the room. You can still see it, but agents "
@@ -1704,18 +1746,22 @@ class CollaborationCore:
             if annotation is not None:
                 content = f"{content}\n\n{annotation}"
             _mark_sending()
-            with writes_derived_from(
-                human_actor.client_id,
-                _post_source(self._bridge_id, msg.channel_id, msg.message_ref),
-            ):
-                event_id = await human_actor.send_message(
-                    transport_room_id,
-                    content,
-                    format="markdown",
-                    thread_root_id=thread_root_id,
-                    metered=True,
-                    extra_content=_inbound_extra_content(msg, check),
-                )
+            try:
+                with writes_derived_from(
+                    human_actor.client_id,
+                    _post_source(self._bridge_id, msg.channel_id, msg.message_ref),
+                ):
+                    event_id = await human_actor.send_message(
+                        transport_room_id,
+                        content,
+                        format="markdown",
+                        thread_root_id=thread_root_id,
+                        metered=True,
+                        extra_content=_inbound_extra_content(msg, check),
+                    )
+            except RoomReadOnly as refused:
+                await self._tell_read_only(msg, refused)
+                return None
             if event_id is None:
                 logger.error(
                     "[BRIDGE-IN] failed to relay message from %s into room %s — "
@@ -1731,7 +1777,7 @@ class CollaborationCore:
             if check.redacted_content is not None:
                 redaction_notice = trust_redaction_notice(check)
                 if redaction_notice is not None:
-                    await self._post_trust_notice(
+                    await self._post_sender_notice(
                         msg, redaction_notice, AdminMessageType.TRUST_REDACTED
                     )
             if annotation is not None:
@@ -1744,7 +1790,7 @@ class CollaborationCore:
                     if check.outcome == "alerted"
                     else AdminMessageType.TRUST_ERRORED
                 )
-                await self._post_trust_notice(msg, annotation, notice_type)
+                await self._post_sender_notice(msg, annotation, notice_type)
             # Record the correlation so a later reply (either direction) threads.
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
@@ -1763,6 +1809,7 @@ class CollaborationCore:
             files = [(a.data, a.filename, a.mimetype) for a in msg.attachments]
             files_check_task = check_attachments(
                 self._trust_client,
+                self._session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 files=files,
@@ -1772,6 +1819,7 @@ class CollaborationCore:
                 caption_check, files_check = await asyncio.gather(
                     check_message(
                         self._trust_client,
+                        self._session_factory,
                         tenant_id=tenant_id,
                         role="user",
                         content=content,
@@ -1810,7 +1858,7 @@ class CollaborationCore:
                     "delivered to the room. You can still see it, but agents "
                     "can't access it."
                 )
-            await self._post_trust_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
+            await self._post_sender_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
             return None
         if caption_check is not None and caption_check.redacted_content is not None:
             content = caption_check.redacted_content
@@ -1850,24 +1898,28 @@ class CollaborationCore:
             )
             # Numbered from the post and the file's place in it, as the text
             # above is, so a second delivery of the post writes no file twice.
-            with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
-                event_id = await human_actor.send_media(
-                    transport_room_id,
-                    media_uri,
-                    attachment.filename,
-                    attachment.mimetype,
-                    len(attachment.data),
-                    msgtype=msgtype,
-                    caption=caption if index == 0 else None,
-                    thread_root_id=thread_root_id,
-                    group=(
-                        {"id": group_id, "index": index, "total": total}
-                        if group_id is not None
-                        else None
-                    ),
-                    metered=True,
-                    extra_content=_inbound_extra_content(msg, caption_check),
-                )
+            try:
+                with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
+                    event_id = await human_actor.send_media(
+                        transport_room_id,
+                        media_uri,
+                        attachment.filename,
+                        attachment.mimetype,
+                        len(attachment.data),
+                        msgtype=msgtype,
+                        caption=caption if index == 0 else None,
+                        thread_root_id=thread_root_id,
+                        group=(
+                            {"id": group_id, "index": index, "total": total}
+                            if group_id is not None
+                            else None
+                        ),
+                        metered=True,
+                        extra_content=_inbound_extra_content(msg, caption_check),
+                    )
+            except RoomReadOnly as refused:
+                await self._tell_read_only(msg, refused)
+                return None
             if event_id is None:
                 logger.error(
                     "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
@@ -1884,14 +1936,14 @@ class CollaborationCore:
             if caption_check is not None and caption_check.redacted_content is not None:
                 redaction_notice = trust_redaction_notice(caption_check)
                 if redaction_notice is not None:
-                    await self._post_trust_notice(
+                    await self._post_sender_notice(
                         msg, redaction_notice, AdminMessageType.TRUST_REDACTED
                     )
             if trust_notes:
                 flagged = files_check.flagged or (
                     caption_check is not None and caption_check.outcome == "alerted"
                 )
-                await self._post_trust_notice(
+                await self._post_sender_notice(
                     msg,
                     "\n".join(trust_notes),
                     AdminMessageType.TRUST_ALERTED
@@ -1905,11 +1957,23 @@ class CollaborationCore:
             )
         return first_event_id
 
-    async def _post_trust_notice(
+    async def _tell_read_only(self, msg: InboundMessage, refused: RoomReadOnly) -> None:
+        logger.warning(
+            "[BRIDGE-IN] message from %s in channel %s not relayed: the room is %s",
+            msg.sender_name,
+            msg.channel_id,
+            refused.state,
+        )
+        await self._post_sender_notice(
+            msg, _read_only_notice(refused), AdminMessageType.ROOM_READ_ONLY
+        )
+
+    async def _post_sender_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
     ) -> None:
-        """Tell the sender, and only the sender, what Switch Trust did with
-        their message: blocked, redacted, flagged, or not fully checked.
+        """Tell the sender, and only the sender, what happened to their
+        message: what Switch Trust did with it (blocked, redacted, flagged, or
+        not fully checked), or that its room takes no posts.
 
         Each of these is about what one person wrote, so it goes to them the
         way the platform allows (`private_notice_delivery`). Where it has no
@@ -1930,7 +1994,7 @@ class CollaborationCore:
         if msg.channel_type != "direct":
             if no_one_to_reach:
                 logger.info(
-                    "The Switch Trust %s notice for %s goes in channel %s: an "
+                    "The %s notice for %s goes in channel %s: an "
                     "app or a shared account has no one person to tell",
                     message_type.value,
                     msg.sender_name,
@@ -1939,7 +2003,7 @@ class CollaborationCore:
             elif delivery == "in_channel":
                 logger.warning(
                     "%s has no way to reach one person privately: posting the "
-                    "Switch Trust %s notice for %s in channel %s, where "
+                    "%s notice for %s in channel %s, where "
                     "everyone in it sees it",
                     self._adapter.platform_name,
                     message_type.value,
@@ -1962,7 +2026,7 @@ class CollaborationCore:
                 except PrivateNoticeRefused as refused:
                     logger.warning(
                         "%s would not let the bot reach %s privately (%s): "
-                        "posting the Switch Trust %s notice in channel %s "
+                        "posting the %s notice in channel %s "
                         "instead, where everyone in it sees it",
                         self._adapter.platform_name,
                         msg.sender_name,
@@ -1972,7 +2036,7 @@ class CollaborationCore:
                     )
                 except Exception:
                     logger.warning(
-                        "Could not send the Switch Trust %s notice to %s by %s: "
+                        "Could not send the %s notice to %s by %s: "
                         "posting it in channel %s instead, where everyone in it "
                         "sees it",
                         message_type.value,
@@ -1990,7 +2054,7 @@ class CollaborationCore:
             )
         except Exception:
             logger.warning(
-                "Could not post a Switch Trust notice to channel %s",
+                "Could not post a sender notice to channel %s",
                 msg.channel_id,
                 exc_info=True,
             )
@@ -2154,6 +2218,16 @@ class CollaborationCore:
                 event_id = await human_actor.send_event(
                     transport_room_id, "com.switch.command", content
                 )
+        except RoomReadOnly as refused:
+            logger.warning(
+                "Command %s from %s in channel %s not run: the room is %s",
+                cmd.command,
+                cmd.sender_name,
+                cmd.channel_id,
+                refused.state,
+            )
+            await self._adapter.answer_command(cmd, _read_only_notice(refused))
+            return
         except TransportError as exc:
             logger.error(
                 "Failed to bridge command %s into %s: %s",
@@ -2359,6 +2433,173 @@ class CollaborationCore:
             new_id,
             "This chat has been given a new id by the platform. Its Switch room "
             "has been moved onto it, so messages here reach the agents again.",
+        )
+
+    # ── Taken back on the platform ───────────────────────────────────────────
+
+    async def _handle_message_deleted(self, event: InboundMessageDeleted) -> None:
+        """A post was deleted on the platform: delete the room's copy of it.
+
+        Only a post a person wrote there (`PlatformDeletions.find_post`); one
+        the bridge posted for a message written in Switch is left alone, and so
+        is a post the bridge never relayed."""
+        room_ids = self._channel_to_room.get(event.channel_id)
+        if room_ids is None:
+            return
+        room_id = room_ids[0]
+        async with (
+            tenant_session(
+                self._session_factory, await self._room_tenant(room_id)
+            ) as session,
+            session.begin(),
+        ):
+            message = await self._platform_deletions.find_post(
+                session,
+                bridge_id=self._bridge_id,
+                room_id=room_id,
+                external_post_id=event.message_ref,
+            )
+            if message is None:
+                logger.debug(
+                    "[BRIDGE-IN] %s deleted in channel %s carries no message "
+                    "written there; nothing to delete",
+                    event.message_ref,
+                    event.channel_id,
+                )
+                return
+            deleted = await self._platform_deletions.delete_post(session, message)
+        logger.info(
+            "[BRIDGE-IN] %s was deleted in channel %s: deleted %d message(s) "
+            "from room %s",
+            event.message_ref,
+            event.channel_id,
+            len(deleted.event_ids),
+            room_id,
+        )
+
+    async def _handle_message_edited(self, event: InboundMessageEdited) -> None:
+        """A post was edited on the platform: the room's copy says the new words
+        instead of the old, in place, and nobody is handed it again. An edit
+        does not address anyone afresh.
+
+        The new words pass Switch Trust as a new message would. Words it
+        refuses are not kept, and nor are the old ones, which the author has
+        withdrawn: the message is deleted.
+
+        A post that carries no message a person wrote there (the bridge's own
+        posts among them) is looked up first, so its edits never reach Switch
+        Trust: they are not a person's words."""
+        room_ids = self._channel_to_room.get(event.channel_id)
+        if room_ids is None:
+            return
+        room_id = room_ids[0]
+        tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            written_there = await self._platform_deletions.find_post(
+                session,
+                bridge_id=self._bridge_id,
+                room_id=room_id,
+                external_post_id=event.message_ref,
+            )
+        if written_there is None:
+            logger.debug(
+                "[BRIDGE-IN] %s edited in channel %s carries no message "
+                "written there; nothing to change",
+                event.message_ref,
+                event.channel_id,
+            )
+            return
+        content = self._adapter.translate_inbound(event.content)
+        check = await check_message(
+            self._trust_client,
+            self._session_factory,
+            tenant_id=tenant_id,
+            role="user",
+            content=content,
+            room_id=room_id,
+        )
+        refused = check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        )
+        if check.redacted_content is not None:
+            content = check.redacted_content
+        annotation = trust_annotation(check)
+        if annotation is not None:
+            content = f"{content}\n\n{annotation}"
+        async with (
+            tenant_session(self._session_factory, tenant_id) as session,
+            session.begin(),
+        ):
+            message = await self._platform_deletions.find_post(
+                session,
+                bridge_id=self._bridge_id,
+                room_id=room_id,
+                external_post_id=event.message_ref,
+            )
+            if message is None:
+                logger.debug(
+                    "[BRIDGE-IN] %s edited in channel %s was deleted while its "
+                    "new text was checked; nothing to change",
+                    event.message_ref,
+                    event.channel_id,
+                )
+                return
+            if refused:
+                await self._platform_deletions.delete_post(session, message)
+            else:
+                await self._platform_deletions.replace_text(
+                    session, message, content, edited_at_ms=int(time.time() * 1000)
+                )
+        if refused:
+            logger.warning(
+                "[BRIDGE-IN] %s was edited in channel %s and Switch Trust refused "
+                "the new text (outcome=%s, policy=%s): its message is deleted "
+                "from room %s",
+                event.message_ref,
+                event.channel_id,
+                check.outcome,
+                check.policy_id,
+                room_id,
+            )
+            return
+        logger.info(
+            "[BRIDGE-IN] %s was edited in channel %s: its message in room %s "
+            "now says the new text",
+            event.message_ref,
+            event.channel_id,
+            room_id,
+        )
+
+    async def _handle_channel_removed(self, event: InboundChannelRemoved) -> None:
+        """A channel was deleted or archived on the platform: its room is
+        unlinked from it, and kept as a room of Switch alone.
+
+        A deleted channel takes every message of its room with it, whoever
+        wrote them: the room was the channel's copy, and a room has one
+        channel. An archived one takes none, since the platform can bring it
+        back: only the link goes, as when someone unlinks the room by hand,
+        and linking it again later relays from then on."""
+        lock = self._channel_locks.setdefault(event.channel_id, asyncio.Lock())
+        async with lock:
+            room_ids = self._channel_to_room.get(event.channel_id)
+            if room_ids is None:
+                return
+            room_id = room_ids[0]
+            tenant_id = await self._room_tenant(room_id)
+            deleted = 0
+            if event.deleted:
+                deleted = await self._platform_deletions.delete_room_messages(
+                    self._session_factory, tenant_id, room_id
+                )
+            await self._room_service.unlink_bridge_from_room(room_id)
+        self._room_service.room_changed(tenant_id, room_id)
+        logger.warning(
+            "Channel %s was %s on %s: room %s is no longer linked to it%s",
+            event.channel_id,
+            "deleted" if event.deleted else "archived",
+            self._adapter.platform_name,
+            room_id,
+            f", and its {deleted} message(s) were deleted" if event.deleted else "",
         )
 
     # ── Auto-room creation ────────────────────────────────────────────────────

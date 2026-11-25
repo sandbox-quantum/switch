@@ -123,8 +123,8 @@ async def grant_runtime_role(owner: AsyncConnection, role: str) -> None:
     **The two revokes are what make the grant mean something.** Without them
     `EXECUTE` on the tenant lookups stays at the `PUBLIC` default a new
     function is created with, so every role with `CONNECT` on this database
-    can resolve which tenant any user, credential, client, room, bridge or
-    connector belongs to — see `db/tenant_lookup.py` on what that discloses.
+    can resolve which tenant any user, credential, client, room or bridge
+    belongs to — see `db/tenant_lookup.py` on what that discloses.
     Revoking from `PUBLIC` and granting to `role` by name replaces "callable
     by anyone" with "callable by the process".
 
@@ -157,7 +157,10 @@ async def grant_runtime_role(owner: AsyncConnection, role: str) -> None:
     the tables the role may not change once written: it gets `SELECT` and
     `INSERT` there and nothing else, so a compromised or buggy process can add
     to a tenant's, an organization's or the server's history but not rewrite
-    it. The
+    it. The one deletion it can cause is the purge of a workspace deleted
+    more than two years ago, through `purge_deleted_workspace_audit_history()`
+    (`db/audit_history_ddl.py`), whose `EXECUTE` comes from the blanket grant
+    above and which takes nothing from its caller that could widen it. The
     revoke follows the blanket grant on every boot, so the next boot puts it
     back if anything granted more in between.
 
@@ -514,8 +517,8 @@ async def _refuse_public_execute(connection: AsyncConnection) -> None:
             f"PUBLIC holds EXECUTE on {public}, so every role with CONNECT on "
             "this database can call the tenant lookups (db/tenant_lookup.py) "
             "— enumerate every tenant, and resolve any user, credential, "
-            "client, room, bridge or connector it can name to the tenant that "
-            "owns it. That is the default a CREATE FUNCTION leaves behind, so "
+            "client, room or bridge it can name to the tenant that owns it. "
+            "That is the default a CREATE FUNCTION leaves behind, so "
             "either the boot grants have never run against this database "
             "(configure DB_OWNER_USER / DB_OWNER_PASSWORD) or something has "
             "granted EXECUTE back to PUBLIC since. Revoke it: REVOKE EXECUTE "

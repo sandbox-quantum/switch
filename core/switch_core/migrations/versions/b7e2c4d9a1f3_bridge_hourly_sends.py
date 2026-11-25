@@ -12,7 +12,7 @@ as it stood when this migration was written, copied rather than imported for
 the reason ``265ed188ad6f`` gives.
 
 Revision ID: b7e2c4d9a1f3
-Revises: f3a9c1d7e2b4
+Revises: a9d3e6f1c2b7
 Create Date: 2026-11-06 12:00:00.000000
 
 """
@@ -23,7 +23,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b7e2c4d9a1f3"
-down_revision: str | None = "f3a9c1d7e2b4"
+down_revision: str | None = "a9d3e6f1c2b7"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

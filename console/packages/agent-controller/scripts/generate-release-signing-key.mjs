@@ -8,9 +8,10 @@ import { generateKeyPairSync } from 'node:crypto';
  * Prints, on stdout, the entry to add to TRUSTED_RELEASE_KEYS in
  * src/release-keys.ts, the matching line for install.sh's TRUSTED RELEASE KEYS
  * block, and the private key as PKCS#8 PEM, which goes into the
- * CONTROLLER_RELEASE_SIGNING_KEY GitHub Actions secret and nowhere else. Run
- * it on a machine you trust and do not keep the private key in a file. See
- * "Release signing" in RELEASING.md.
+ * CONTROLLER_RELEASE_SIGNING_KEY secret of the `controller-signing` GitHub
+ * environment and nowhere else (never a repository secret, which a workflow
+ * on any branch can read). Run it on a machine you trust and do not keep the
+ * private key in a file. See "Release signing" in RELEASING.md.
  */
 const id = process.argv[2];
 if (!id || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) {
@@ -32,7 +33,8 @@ process.stdout.write(
     "# 2. Add between install.sh's BEGIN/END TRUSTED RELEASE KEYS lines, inside the quotes:",
     `${id} ${spki}`,
     '',
-    '# 3. Store as the CONTROLLER_RELEASE_SIGNING_KEY GitHub Actions secret (then discard):',
+    "# 3. Store as CONTROLLER_RELEASE_SIGNING_KEY in the 'controller-signing' environment (then discard):",
+    '#    gh secret set CONTROLLER_RELEASE_SIGNING_KEY --env controller-signing',
     pem.trimEnd(),
     '',
   ].join('\n')

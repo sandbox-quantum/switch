@@ -30,6 +30,7 @@ from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
 from switch_core.bridges.collaboration.teams.auth import TokenRequestRefused
 from switch_core.bridges.collaboration.teams.install import TeamsAppInstaller
+from switch_core.config import SwitchConfig
 from switch_core.db.models import MessagingInstall, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
@@ -37,6 +38,7 @@ from switch_core.gateway.auth import require_tenant_admin
 from switch_core.gateway.dependencies import (
     get_bridge_store,
     get_collab_lifecycle,
+    get_config,
     get_install_service,
     get_install_store,
     get_session,
@@ -64,6 +66,11 @@ class TeamPlacements(BaseModel):
     # can be downloaded for a Teams admin to upload.
     in_catalog: bool
     catalog_problem: str | None
+
+
+def get_teams_app_name(config: Annotated[SwitchConfig, Depends(get_config)]) -> str:
+    """What the app is called in this deployment's organisations' Teams."""
+    return config.teams_app_name
 
 
 async def _connection(
@@ -186,6 +193,7 @@ async def add_to_team(
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
+    teams_app_name: Annotated[str, Depends(get_teams_app_name)],
     _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> Response:
     adapter, install = await _connection(
@@ -205,8 +213,8 @@ async def add_to_team(
                     "Switch cannot add itself to a team until it knows where the "
                     "app is in your organisation's Teams app list. Once a Teams "
                     "admin has uploaded it, add it to any one team from Teams "
-                    "(Apps, Built for your org, Agent Switch) and Switch can add "
-                    "it to the rest; or have a Global Administrator approve "
+                    f"(Apps, Built for your org, {teams_app_name}) and Switch can "
+                    "add it to the rest; or have a Global Administrator approve "
                     "Switch again, so Switch puts it in the list itself."
                 ),
             )

@@ -52,7 +52,7 @@ export default function OrganizationUsersNotices({
         <Alert severity="info">
           This organization's users, and who is its admin, come from your organization's
           account settings. Add people and make someone an organization admin there; the change
-          shows here shortly. Removing someone here, or making an admin a member, takes effect at
+          shows here shortly. Removing someone here, or making an admin a Viewer, takes effect at
           once but lasts only while the account settings agree: they are read again at the
           person's next sign-in and once a day. Make the same change there to keep it.
         </Alert>

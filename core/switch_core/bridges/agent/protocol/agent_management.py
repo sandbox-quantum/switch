@@ -38,7 +38,8 @@ class NewManagedAgent:
     """A managed agent an agent asks to have created for its owner.
 
     `machine` is the machine's id, or its exact name among the owner's
-    machines that are not revoked."""
+    machines that are not revoked. `auto_mode` None is the provider's default
+    for a new agent (`providers.registry.new_agent_auto_mode`)."""
 
     name: str
     description: str
@@ -50,7 +51,7 @@ class NewManagedAgent:
     advanced_config: dict[str, Any]
     instructions: str
     directory: str | None
-    auto_mode: bool
+    auto_mode: bool | None
     auto_approve: bool
     isolation: str
     start: bool

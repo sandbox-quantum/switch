@@ -3,6 +3,7 @@ import type { z } from 'zod';
 import {
   ControllerApiError,
   type ControllerClient,
+  isAccountSuspended,
   isCredentialRefused,
   isRevoked,
   isTakenOver,
@@ -109,6 +110,18 @@ export type ControllerStreamOptions = {
   initialBackoffMs: number;
   /** The longest reconnect wait, before jitter of up to half of it is taken off. */
   maxBackoffMs: number;
+  /**
+   * The wait between tries while the controller's owner is suspended, before
+   * jitter of up to half of it is taken off: long, since only lifting the
+   * suspension lets it in, and short enough that it is back soon after.
+   */
+  suspendedRetryMs: number;
+  /**
+   * Switch refused the controller, or ended its connection, because its owner
+   * is suspended. Called on each such refusal; the stream keeps trying every
+   * `suspendedRetryMs`, and `onConnected` says it is let in again.
+   */
+  onSuspended: (message: string) => void;
   /** Jitter source in [0, 1); injectable for tests. */
   random: () => number;
   /** Takes the agents' operations as calls while a socket that takes them is open. */
@@ -154,6 +167,8 @@ type Attempt = {
   attachedAt: number;
   /** The server closed the socket because it is restarting. */
   restarting: boolean;
+  /** The controller's owner is suspended: the next try waits `suspendedRetryMs`. */
+  suspended: boolean;
 };
 
 type Message = { event: string; data: unknown };
@@ -178,7 +193,10 @@ type Message = { event: string; data: unknown };
  * `'upgrade_required'` when the server refuses this controller's protocol and
  * `'credential_invalid'` when it knows no controller by this credential (the
  * server marks both not retryable, and retrying them used to spin forever),
- * and with `'stopped'` when `signal` fires. Any other `evicted` opens a new connection.
+ * and with `'stopped'` when `signal` fires. A refusal or an `evicted` saying
+ * `account_suspended` (the controller's owner is suspended) ends nothing: it is
+ * told to `onSuspended`, and the stream tries again every `suspendedRetryMs`
+ * until Switch lets it in. Any other `evicted` opens a new connection.
  */
 export function runControllerStream(options: ControllerStreamOptions): Promise<StreamEnding> {
   return new ControllerStream(options).run();
@@ -200,6 +218,7 @@ class ControllerStream {
         ending: null,
         attachedAt: 0,
         restarting: false,
+        suspended: false,
       };
       const stop = () => attempt.abort.abort();
       signal.addEventListener('abort', stop, { once: true });
@@ -221,7 +240,11 @@ class ControllerStream {
           else if (isTakenOver(error)) attempt.ending = 'taken_over';
           else if (isUpgradeRequired(error)) attempt.ending = 'upgrade_required';
           else if (isCredentialRefused(error)) attempt.ending = 'credential_invalid';
-          else {
+          else if (isAccountSuspended(error)) {
+            attempt.suspended = true;
+            this.held = null;
+            this.options.onSuspended(errorMessage(error));
+          } else {
             const reason = attempt.abort.signal.reason;
             failure = errorMessage(reason instanceof IdleTimeout ? reason : error);
           }
@@ -241,16 +264,18 @@ class ControllerStream {
       const wait =
         toldMs !== null
           ? toldMs
-          : attempt.restarting
-            ? RESTART_RETRY_MS + Math.round(this.options.random() * RESTART_RETRY_JITTER_MS)
-            : Math.round(this.backoff * (0.5 + this.options.random() * 0.5));
+          : attempt.suspended
+            ? Math.round(this.options.suspendedRetryMs * (0.5 + this.options.random() * 0.5))
+            : attempt.restarting
+              ? RESTART_RETRY_MS + Math.round(this.options.random() * RESTART_RETRY_JITTER_MS)
+              : Math.round(this.backoff * (0.5 + this.options.random() * 0.5));
       if (failure !== null)
         log.warn('The controller socket is down; reconnecting.', {
           error: failure,
           retryInMs: wait,
         });
       await delay(wait, undefined, { signal }).catch(() => {});
-      if (!attempt.restarting && toldMs === null)
+      if (!attempt.restarting && !attempt.suspended && toldMs === null)
         this.backoff = Math.min(this.backoff * 2, this.options.maxBackoffMs);
     }
     return 'stopped';
@@ -418,6 +443,12 @@ class ControllerStream {
         'Another instance of this controller took its connection over; this one stops. Run one controller per data directory.'
       );
       attempt.ending = 'taken_over';
+      return true;
+    }
+    if (frame.data.code === 'account_suspended') {
+      attempt.suspended = true;
+      this.held = null;
+      this.options.onSuspended(frame.data.reason);
       return true;
     }
     this.options.log.warn('Switch ended the controller connection; opening a new one.', {

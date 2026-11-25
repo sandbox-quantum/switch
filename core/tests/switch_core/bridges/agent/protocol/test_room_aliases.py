@@ -123,6 +123,7 @@ def _room(**overrides: Any) -> SimpleNamespace:
         "read_visibility": "public",
         "write_visibility": "public",
         "archived_at": None,
+        "frozen_at": None,
         "metadata_": None,
     }
     base.update(overrides)

@@ -384,7 +384,10 @@ controller; `isolated` runs it as a process of its own.
 
 **`auto_mode`**. Auto mode: the provider's own automatic review decides
 which actions need approval, so safe ones run without asking and risky ones
-still ask a person. Default `true`.
+still ask a person. Default `true`, except for `opencode`: OpenCode's auto
+mode has no review and runs every command without asking, so an OpenCode
+agent defaults to `false` and asks before each action. Set `true` for one only
+when that is what its owner wants.
 
 **`auto_approve`**. Bypass: the agent runs every tool without any permission
 check. It overrides `auto_mode`, and is unsafe. Default `false`.

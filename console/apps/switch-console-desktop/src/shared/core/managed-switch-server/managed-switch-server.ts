@@ -149,6 +149,10 @@ export type DeployedTelemetry =
       /** Whether it sends to the relay this build reports to. A stack set up by
        * an older build may name none and run on its own version's default. */
       endpointCurrent: boolean;
+      /** Whether this build lets the servers it starts share at all. One run
+       * from source never does, whatever the toggle says, as it sends nothing
+       * itself. */
+      buildShares: boolean;
     }
   | { known: false; reason: string };
 

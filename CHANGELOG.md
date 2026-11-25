@@ -52,7 +52,59 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.32.2] - 2026-11-25
+
+#### Changed
+- **The distributed Teams app is called "Switch Rooms" unless
+  `TEAMS_APP_NAME` names it otherwise** (it was "Agent Switch"). Its package
+  is version 1.1.0, so an organisation that approved the old one is given it
+  when its admin approves again. Its publisher is now SandboxAQ, the company
+  Partner Center verifies, its website is the Switch docs rather than the
+  GitHub repository, and its description calls the app by the name this
+  deployment gave it.
+- **`TEAMS_APP_PARTNER_ID`** (chart: `switchCore.teamsApp.partnerId`) names the
+  publisher's Microsoft partner ID in the distributed Teams app's package, once
+  publisher verification is done in Partner Center. Optional; anything but up
+  to 10 digits is refused at startup, and the chart refuses an unquoted value.
+- **`ORGANIZATION_DIRECTORY=workos` now works with `GATEWAY_SIGNUP_MODE=open`.**
+  Someone signing in with no workspace may then create an organization of
+  their own. It is kept in Switch, not in WorkOS, and follows WorkOS only
+  once an operator links it with `switch-link-workos`. `default_tenant` is
+  still refused with the WorkOS directory, by the server and by the Helm
+  chart.
+
 #### Security
+- **Controllers move to a new release signing key with this release.** Upgrade
+  every deployment through 0.32.2 so its controllers pick up the new key; a
+  controller that skips this release has to be reinstalled. Fresh installs from
+  0.32.2's `install.sh` refuse its own package — use the next release, or an
+  older `install.sh`.
+- **Cloud machines install security updates daily and reboot within 7
+  days.** The machine image (`deploy/hosted/machine`) turns on
+  unattended-upgrades for Ubuntu's security updates, restarts updated
+  services itself except the agent controllers, agents and boot service, and
+  reboots once a reboot has been pending for 6 days, in the 07:00 UTC hour,
+  or at any hour after 7 days. The reboot ends the machine's agent sessions
+  without asking; its disks are kept and its controllers start again. Takes
+  effect for machines made from an image baked from this release.
+- **A new OpenCode agent is created with auto mode off.** OpenCode's auto mode
+  has no review of its own and runs every command without asking, so a
+  managed OpenCode agent created without saying whether it runs in auto mode,
+  through the management API, a template run (`auto_mode` left out of the
+  template or the request) or an agent's `create_agent`, now starts asking its
+  owner. Other providers keep their defaults, and asking for auto mode
+  explicitly still turns it on. Agents already created keep their stored
+  setting; `list_managed_agents` shows each one's `auto_mode`, and
+  `update_agent_detail` or the agent's settings turn it off.
+- **The pre-tool-call mediation route is removed.** `POST
+  /agents/{agent_id}/mediation/pre-tool-call` answered `proceed` for any tool
+  attached to the agent, judging by its name alone, and the retired Claude
+  Code connector plugin turned that into skipping Claude Code's own permission
+  prompt. Bash, Edit and Write are attached by default, so in a session
+  connected to a room, text from anyone who could post there could lead to
+  commands nobody approved. Copies of that plugin still installed now get a
+  404, which they treat as no decision, so Claude Code asks as it normally
+  would. Claude Code agents no longer advertise tool-call mediation.
 - **One client can no longer take a process's database pool.** Gateway
   requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
   at once, leaving the rest to its own work, such as renewing its lease,
@@ -65,8 +117,91 @@ version of their own to them without also giving them a release of their own.
   statement timeout stops is answered 503. Requests turned away are counted in
   `switch.http.gateway_turned_away`, on the dashboard beside the other
   refusals.
+- **One person can no longer hold unbounded live streams.** The chats feed,
+  the activity feed and the change-notice socket stay open for as long as
+  Console or a tab runs, and nothing bounded how many one caller opened. One
+  signed-in person in one workspace (else one address) now holds at most
+  `GATEWAY_STREAMS_PER_CALLER` (16) of each kind per process: a newer one
+  closes their oldest of that kind, or is refused 429 while that oldest is
+  under 30 seconds old. A process holds at most `GATEWAY_STREAMS_PER_PROCESS`
+  (4000) of every kind together, past which a new one is refused 503 with a
+  `Retry-After` of 2 to 10 seconds. `switch.http.gateway_streams.*` counts
+  them, on the dashboard beside the requests turned away.
 
 #### Added
+- **The decision service can use open-weights models on Amazon Bedrock.**
+  `DECISION_BACKEND=bedrock_openai` (or a request's `X-Decision-Backend:
+  bedrock_openai` with `DECISION_BEDROCK_OPENAI_ENABLED=1`) asks Qwen3 235B
+  A22B Instruct 2507 (`DECISION_BEDROCK_OPENAI_MODEL`) in
+  `DECISION_BEDROCK_OPENAI_REGION` (eu-central-1), scoring every option from
+  the first token's letter probabilities. On 260 labelled real decisions it
+  scored 0.962 at a threshold of 0.89, answering in 0.23 s at the median.
+- **A request can choose the service's own model server.** With
+  `DECISION_SYSTEMONE_ENABLED=1`, `SYSTEMONE_URL` and
+  `DECISION_SYSTEMONE_MODEL`, `X-Decision-Backend: systemone` asks it, for
+  example vllm-sr d3-mini on vLLM.
+- **Each decision backend can have a threshold of its own**
+  (`DECISION_THRESHOLD_<BACKEND>`), applied to the backend that answered; a
+  workspace's own threshold still wins.
+- **Fallbacks per backend.** `DECISION_FALLBACKS=gemini_decision:bedrock`
+  races Haiku against Gemini whenever Gemini is used, as the default or
+  because a workspace chose it; `bedrock_openai` can be a fallback too.
+- **The decision service's `/health` lists what each choice gets**
+  (`backends`: model, a label for people, threshold and fallback), so
+  Switch Console can offer only what the service has.
+- **Workspaces can choose the decision service's self-hosted model, or
+  Gemini with its fallback, and Settings → Message routing names every choice
+  by its model.** Two more choices a workspace admin can save: `self_hosted`
+  (the model the server's decision service runs on its own model server, asked
+  as `X-Decision-Backend: systemone`) and `gemini` (Gemini in that service, as
+  `gemini_decision`, which applies whatever fallback its operator configured).
+  Which of the choices that run in the decision service are offered now comes
+  from the backends the service lists in its `/health`, read when an admin
+  opens, saves or tests the page and kept for 15 seconds; the gateway's
+  `GET /decision-settings` returns how the service describes the server
+  default and each choice (label, model, default threshold, fallback). A
+  service that lists no backends (one older than this release) is offered as
+  before: Haiku with a workspace's key, and Haiku on Bedrock only with
+  `DECISION_BEDROCK_ENABLED`. One that can't be read offers only what is saved,
+  and the page says why. Migration `c18f5ebeef66` widens the check on
+  `decision_settings.backend` (expand only). A saved choice a release doesn't
+  know, written by a newer one, turns auto-route off in that workspace with a
+  warning rather than failing. `switch.decision.*` and the `decision_made` /
+  `decision_failed` events gain the backend labels `self_hosted` and `gemini`,
+  and the `Decision routing:` record names the service's own backend that
+  answered (`answered_by`), so a fallback's answer can be told apart.
+- **What someone deletes or edits in a bridged chat is deleted or edited in
+  Switch too.** When a person deletes their post in Slack, Discord,
+  Mattermost or Microsoft Teams, its room message goes at once, with its
+  files and the copies agents were sent. When they edit it, the room message
+  says the new words in place; agents are not sent it again, and the new words
+  pass Switch Trust like a new message (words it refuses delete the message).
+  Edits in Telegram are followed too, but Telegram never tells a bot about a
+  deletion. A channel deleted on its platform takes every message of its room
+  with it and leaves the room unlinked; an archived channel only unlinks the
+  room, since archiving can be undone. Posts the bridge made for messages
+  written in Switch are left alone. A Slack app must subscribe to four more
+  events (`channel_deleted`, `channel_archive`, `group_deleted`,
+  `group_archive`) and be reinstalled for channel removals to arrive. A Teams
+  bridge replaces its channel subscriptions with ones notified of deletions
+  when it next starts, and a Teams edit can no longer arrive in the room as a
+  new message.
+- **The WorkOS directory mirror reports whether it is keeping up.** With
+  `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
+  `switch.workos.cursor_age` (seconds since it last read WorkOS's events
+  through), `switch.workos.recheck.oldest_age` (how long an organization has
+  been waiting for a full recheck) and `switch.workos.full_check.age`
+  (seconds since every linked organization was last checked in full).
+  `deploy/observability/` adds three monitors on them, imported with
+  `WORKOS_DIRECTORY=1`, and a dashboard section. A removal made in WorkOS
+  that isn't reaching Switch now raises an alert instead of going unnoticed.
+- **A WorkOS organization deleted while Switch follows it is counted and
+  alerted on, and no longer checked.** `switch.workos.organization_deleted`
+  counts each one, with a monitor of its own, and the mirror stops checking
+  that organization against WorkOS, where it used to retry it on every pass.
+  The Switch organization keeps its members, rooms and agents, and its
+  admins still see the "organization deleted" notice. Delete it with
+  `switch-purge-organization`, as `docs/old/workos-directory.md` describes.
 - **The decision service can race a fallback backend.** With
   `DECISION_FALLBACK_BACKEND=bedrock`, a decision on the service's default
   backend that has no answer after `DECISION_FALLBACK_AFTER_S` (2 s), or that
@@ -77,7 +212,119 @@ version of their own to them without also giving them a release of their own.
   coarser confidences); a workspace's own threshold still holds for both. A
   workspace that chose its backend gets that backend alone. Off unless set.
 
+#### Changed
+- **A message in a busy chat no longer costs every member's Console stream a
+  database pass of its own at the same instant.** Chat stream passes hold at
+  most a quarter of the process's database pool at once, and a pass over that
+  waits holding no connection. The new rows of a room are read and rendered once
+  and handed to every stream its message woke, so each stream reads only what
+  its own person may see. A stream woken by its rooms passes at most every
+  200 ms, sending what came in meanwhile together.
+- **A request that names a backend with a fallback now races it.** Before,
+  only a request on the default backend raced its fallback;
+  `DECISION_FALLBACK_BACKEND` now means the default backend's fallback
+  however it is chosen.
+- **A deleted workspace's audit history is purged without the schema owner's
+  credentials.** The two-year purge now runs on the ordinary runtime
+  connection through a database function owned by the schema owner, so the
+  serving process no longer needs `DB_OWNER_USER` and `DB_OWNER_PASSWORD` for
+  it; the runtime role still cannot delete audit rows itself. switch-core
+  refuses to start if the function is missing or the runtime role may not
+  execute it.
+- **`switch-purge-organization` also cleans up outside Switch.** A cloud
+  machine's disk is deleted straight away rather than kept for its retention
+  period, and the purge goes on only once the disk is gone. With the
+  server's `WORKOS_API_KEY` it then takes the organization out of WorkOS:
+  each person's membership goes, a WorkOS user goes only if no other
+  organization in the environment still has them, and the WorkOS
+  organization goes only once nobody else is in it. Without the key it lists
+  what to remove there and exits 4. Where the organization connected a
+  Switch Trust policy, it first asks Switch Trust, with that policy's
+  settings, to delete what it holds for each of the organization's rooms,
+  before anything in Switch is deleted; if any of those deletions fails it
+  stops there, deleting nothing, and running it again retries them. A run
+  resumed after the organization was deleted can no longer reach Switch
+  Trust, lists those rooms for a person to have deleted there, and exits 4. Every step outside Switch is recorded in the server's audit log
+  and retried by running the command again, and the command ends with a
+  receipt of what was done outside Switch and a reminder that backups keep
+  the organization for up to 37 days.
+- **Member changes that also apply in Switch Trust ask first.** On an
+  organization whose members come from WorkOS and whose changes are sent
+  there, making someone Org Admin, making an Org Admin a Viewer, and removing
+  someone each open a confirmation that says what the change also does in
+  Switch Trust, which reads the same membership: an Org Admin there has
+  billing permissions, a demotion makes the person a Viewer there and drops
+  the role they had, and a removal takes them out of the organization there
+  and revokes their API keys. Cancelling sends nothing. A change made again
+  after the sign-in it waited on is not asked about twice. On such an
+  organization the lower organization role is shown as Viewer, the name
+  Switch Trust uses, and Org admin as Org Admin; the stored role is unchanged.
+  Organizations kept in Switch are unaffected.
+
+#### Removed
+- **The server-side connectors' table, and the keys they left behind.**
+  Upgrading drops `server_connectors` and its tenant lookup, a release after
+  the connectors themselves were removed. Each registration key a connector
+  made, including those of connectors removed earlier, and the key of each
+  agent one registered, is retired: it no longer authenticates and is listed
+  under **Retired keys** on the gateway's API keys page, where it can be
+  deleted once no agent holds it. The agents stay: the upgrade log names each
+  as `workspace/agent`, and the gateway shows them with the type
+  `server-side:opencode`. Delete them from the gateway; they can also be
+  transferred to another owner now, and no longer stop a workspace being
+  deleted. Dropping the table briefly locks `api_keys` and `tenants`, for at
+  most `DB_MIGRATION_LOCK_TIMEOUT`, so upgrade at a quiet time.
+- **The rest of the mediation routes.** `POST
+  /agents/{agent_id}/mediation/pre-llm-request`, `post-tool-result` and
+  `post-llm-response` are gone and answer 404. No client called them: the
+  first checked a model against the agent's attached models, and the other
+  two always answered `ok`. A connector plugin copy still installed that calls
+  `post-tool-result` treats the 404 as no change to the tool's output, as it
+  did any failed call.
+
 #### Fixed
+- **What Switch says under an agent's name no longer counts as the agent
+  talking.** An agent's join greeting, a Switch Console chat's opening line,
+  notices of something done on its behalf and its answers to room commands
+  are marked as Switch's, and the usage snapshot and period counts leave
+  them out, as they do Switch's admin notices and the platform's own
+  messages (template kickoffs, scheduled messages). An agent added to a room
+  and never run is no longer active for a week, and `message_count` matches
+  `message_sent` again.
+- **Usage telemetry names every agent runtime Switch offers.**
+  `known_agent_type` was `other` for every runtime but Claude Code, Codex and
+  OpenCode; Antigravity, Cursor, DeepSeek Harness, Pi, Copilot, Kiro, Mistral
+  Vibe, Goose, Qwen, Droid, Cline and Junie are now reported by name.
+- **`console_member_added` counts only people added from Switch Console.**
+  People named when a room is made from the dashboard, a template or an
+  agent's tool were counted as Console adds too; they are still a
+  `room_users_added`.
+- **Taking someone out of a Switch Console chat is a `room_users_removed`**,
+  as adding them was already a `room_users_added`.
+- **A person or agent added to or taken out of a chat is reported once**, even
+  when two requests for the same change overlap: only the one that made the
+  change reports it, and `room_agents_added` counts the agents actually put
+  in.
+- **The room-moderation command no longer touches the server's reporting
+  start.** It set up telemetry as the server does at boot, so run without
+  telemetry switched on it cleared when reporting began, and the server's
+  next period counts came out partial or not at all.
+- **`invitation_accepted` is sent once the join commits**, not before a
+  directory that can still refuse it.
+- **A command typed in a Switch Console chat is no longer a message.** A
+  `!reset` or other command sent from Console was reported as `message_sent`
+  and metered as a message toward the workspace's message usage; one typed on
+  a messaging platform never was.
+- **A full database pool no longer makes a pod drop everything it holds.**
+  Each switch-core process renews its lease on a database connection of its
+  own, outside the shared pool. Before, the renewal borrowed from the same
+  pool as requests and streams, so when they filled it the renewal timed out,
+  the lease lapsed, and the pod stopped its owned work and put every agent
+  and controller it held offline. Each process now holds one more
+  connection, which the boot-time connection budget counts.
+- **The decision service is ready behind vLLM.** A model server whose
+  `/health` answers 200 with an empty body counts as healthy; before, the
+  service reported 503 while `/decide` worked.
 - **The decision service's default Bedrock model is a valid id:**
   `us.anthropic.claude-haiku-5-5` (EU regions need
   `eu.anthropic.claude-haiku-5-5` in `DECISION_BEDROCK_MODEL`). The old
@@ -689,6 +936,14 @@ version of their own to them without also giving them a release of their own.
   you're left in with no workspace.**
 
 #### Changed
+- **The dashboard's Connectors page lists coming soon services in their own
+  section**, under the ones people can use, with a count for each, and
+  the catalog lists 24 more of them. Its All tab is now Discover, where the
+  page always opens, as in Switch Console. Yours ends with a card that opens
+  Discover, and a search there that matches nothing connected offers to search
+  Discover instead, keeping the search.
+  Discover ends with a link to request a connector on GitHub. A connector's category must now be
+  one of a fixed list.
 - **The dashboard has one layout: the one built behind `gateway_v2`.**
   Home, Agents, Rooms, Templates, Connectors and Resources on the rail, and
   Workspace and Organization settings as their own areas, on every server. The earlier layout's
@@ -4713,12 +4968,88 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+
+- **Settings → Message routing names the server default and each choice by
+  its model, and offers the server's self-hosted model and Gemini.** The
+  server default reads, for instance, "Server default: Qwen3 235B (Bedrock)";
+  the choices are the server's self-hosted model, Gemini (with the model it
+  falls back to when slow, and after how long), Claude Haiku on Bedrock,
+  Claude Haiku with your Anthropic key, your own endpoint and none, each
+  offered where the server's decision service runs it. Each choice shows its
+  model and the confidence threshold it uses by default, and the threshold
+  field shows the one that applies when left blank. When the server can't
+  read its decision service, the page says so and keeps the saved choice.
+  "Self-hosted endpoint" is now "Your own endpoint".
+
+#### Security
+
+- **A new OpenCode agent asks before it acts.** OpenCode's auto mode has no
+  review of its own: it answers every permission request itself, so with it
+  on, anyone who can post in the agent's rooms could have commands run on its
+  owner's machine. New OpenCode agents now start with auto mode off, wherever
+  they are created (the new-agent form, a template, or attaching an agent
+  already set up in a folder), and ask before each command and edit. Auto mode
+  is still there for an owner who turns it on, and the switch now says that
+  every action, commands included, then runs without asking. Agents on other
+  providers keep their defaults. Existing agents keep their settings: check
+  an OpenCode agent's **Auto mode** switch in its settings and turn it off if
+  it should ask.
+
+#### Changed
+
+- **The usage-data identifier changes every 30 days and is deleted when you
+  stop sharing.** Usage data is tagged with a random identifier that is now
+  replaced every 30 days; turning sharing off stops sending at once, including
+  an event already being prepared, and deletes the identifier, so turning it
+  back on starts an unrelated one. The operating system version sent is cut
+  down to its major version. The app no longer calls the data anonymous: it
+  is pseudonymous, and the consent text says so.
+- **A message to switch-buddy can be counted again.** `chat_message_sent`
+  carries `to_buddy`: `yes` when the message went to the person's own
+  switch-buddy, in a direct chat with it alone, from that chat, the box on
+  Home or the first run's cards; `no` otherwise; `unknown` when the chat
+  could not be read to say. It is
+  the last step of the first run's funnel, after `agent_created` with
+  `entry_point` `switch_buddy`. 0.41.0 dropped `buddy_message_sent` saying the
+  Switch server's `message_sent` would count these, but a server event belongs
+  to a different Amplitude user than the install, so no funnel could join the
+  two, and it cannot tell a message to the buddy from any other. Filter on
+  `outcome` `success`; how many messages someone sent their buddy is
+  Amplitude's to count from these events.
+
 #### Fixed
 
+- **Connecting a messaging app through its own install is counted.**
+  `bridge_connected` gains `method` (`credentials` or `app_install`): an
+  install that started and failed is reported, and one that finished is
+  reported when its connection shows up. Before, only pasted-in tokens were
+  counted, though disconnecting either kind was.
+- **A local or remote server Switch Console starts by itself is told apart.**
+  `managed_server_action` gains `trigger`: `user` when someone asked, and
+  `automatic` for a server started at launch because it was running when the
+  app last quit, or brought up to date then. Before, those counted as starts
+  someone asked for.
+- **Failures on the way to the server are counted.** Connecting a messaging
+  app while the server's host is known to be down reports `unreachable`; an
+  account link the server refuses by throwing, a single sign-on whose
+  settings can't be read, and a chat action whose workspace session can't be
+  had report a failure instead of nothing.
+- **A Switch server started by Switch Console run from source no longer
+  shares usage data**, matching the app, which sends nothing from source.
+- **An installation updated from before the first-run pages is told about
+  usage data.** It never saw those pages, so it is shown the notice over the
+  app, with the switch to turn sharing off, until it is answered.
 - **Creating an agent no longer flashes "An agent called … already exists
   on this server".** The form checked the name against the server's agent
   list, which picks up the new agent before the dialog closes, so for a moment
   it reported its own agent as a clash.
+- **Changing an agent's definition on Windows no longer fails with "EPERM"
+  while its sessions run.** The agent's host re-read the agent's `config.json`
+  every 30 seconds to check its granted services, and on Windows a read in
+  progress refuses the rename that replaces the file. The check now uses the
+  definition the host last read, which it re-reads whenever the file is
+  replaced.
 
 ### [0.41.1] - 2026-11-18
 
@@ -4988,6 +5319,12 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Connectors page lists coming soon services in their own section**,
+  under the ones people can use, with a count for each. Yours ends with a
+  "Browse all connectors" card that opens Discover, and a search there that
+  matches nothing connected offers to search Discover instead, keeping the
+  search, rather than saying "No connector matches". Discover ends with a
+  link to request a connector on GitHub.
 - **Set up for a connector's app goes to whoever may set it up.** Console
   asks the server who may set up its connector apps, whichever layout its
   dashboard uses. Set up opens Organization settings › Connector apps in the
@@ -7374,6 +7711,16 @@ tags; see RELEASING.md.
 
 ### [Unreleased]
 
+#### Security
+- **A managed Codex agent keeps the host's own Codex sandbox.** The
+  controller used to give every Codex session a sandbox of its own,
+  `danger-full-access` under Bypass permissions and `workspace-write`
+  otherwise, which replaced the `sandbox_mode` set in the host's
+  `~/.codex/config.toml`: a host set to `read-only` ran writable sessions.
+  The host's setting now wins, then the agent's, and only a host that names
+  none gets that default. Auto mode still narrows `danger-full-access` to
+  `workspace-write`, so Codex's own review still sees requests.
+
 #### Added
 - **Says which machine, OS account and data folder it runs from.**
   Enrolling, and every status report, carry `device_id`: a SHA-256 of the
@@ -7444,6 +7791,21 @@ tags; see RELEASING.md.
   offer them, while the socket is down, and when as many calls are in flight
   as Switch takes. A call the socket closes on is answered 502, as a request
   whose connection drops.
+- **Agents running as users of their own get resource limits and a system
+  call filter.** Each agent's unit may use at most 75% of the machine's memory
+  and 4096 processes and threads, and may make only the system calls in
+  systemd's `@system-service` set; any other fails with `EPERM`. Codex agents
+  run as a second template, `switch-agent-<uid>-codex@.service`, which also
+  allows the mount and sandboxing calls Codex's own sandbox needs. Run the
+  setup again to install both; until then Codex agents run as the one
+  template there is.
+- **A provider login given to the machine leaves no copy behind.** When the
+  login is withdrawn or replaced, or the agent is removed, the controller
+  removes its files from the agent's state and its token from the agent's
+  configuration, and an agent host that starts with no login removes any
+  left. A failure is logged as an error. The copy written to check a login is
+  removed once the check is done. An OpenCode console login lives in
+  OpenCode's database, which goes with it.
 
 #### Fixed
 - **A Claude Code login that is there but does not work is reported as not

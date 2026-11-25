@@ -62,6 +62,8 @@ async def build_telemetry(
     config: SwitchConfig,
     session_factory: async_sessionmaker[AsyncSession],
     version: str | None,
+    *,
+    keeps_deployment_state: bool,
 ) -> tuple[TelemetryService, datetime | None, httpx.AsyncClient | None]:
     """The telemetry service, the deployment's install date, and its HTTP client.
 
@@ -70,6 +72,13 @@ async def build_telemetry(
 
     Resolved even when telemetry is off, so a deployment that opts in later
     already has the id it was assigned at install.
+
+    `keeps_deployment_state` is true for the server, which records when
+    reporting was switched on and settles milestones from evidence at boot.
+    A command run beside it reports what it does and leaves both alone: run
+    with a configuration other than the server's, it would otherwise clear or
+    restart the server's reporting start, and the server's next periods would
+    come out partial or not at all.
     """
     try:
         generated_id, installed_at = await load_deployment_identity(session_factory)
@@ -103,29 +112,31 @@ async def build_telemetry(
     # cannot be copied between deployments and carries the install date.
     client_id = config.deployment_id or generated_id
 
-    try:
-        enabled_since, switched_on = await record_telemetry_switch(
-            session_factory, enabled=config.telemetry_enabled
-        )
-    except Exception:
-        # Not fatal, and not a reason to stop reporting: without it, events
-        # about the past are dated no earlier than the install alone.
-        logger.error(
-            "Could not record when product telemetry was switched on; events "
-            "about the past this run are clamped to the install date only.",
-            exc_info=True,
-        )
-        enabled_since, switched_on = None, False
-    # Before any service that reports a milestone is built.
-    await settle_from_evidence(
-        session_factory,
-        lambda: _milestones_passed(
+    enabled_since: datetime | None = None
+    if keeps_deployment_state:
+        try:
+            enabled_since, switched_on = await record_telemetry_switch(
+                session_factory, enabled=config.telemetry_enabled
+            )
+        except Exception:
+            # Not fatal, and not a reason to stop reporting: without it, events
+            # about the past are dated no earlier than the install alone.
+            logger.error(
+                "Could not record when product telemetry was switched on; events "
+                "about the past this run are clamped to the install date only.",
+                exc_info=True,
+            )
+            enabled_since, switched_on = None, False
+        # Before any service that reports a milestone is built.
+        await settle_from_evidence(
             session_factory,
-            enabled=config.telemetry_enabled,
-            enabled_since=enabled_since,
-        ),
-        switched_on=switched_on,
-    )
+            lambda: _milestones_passed(
+                session_factory,
+                enabled=config.telemetry_enabled,
+                enabled_since=enabled_since,
+            ),
+            switched_on=switched_on,
+        )
 
     if not config.telemetry_enabled:
         logger.info(

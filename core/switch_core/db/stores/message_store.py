@@ -4,6 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     ColumnElement,
+    and_,
     bindparam,
     delete,
     func,
@@ -19,6 +20,8 @@ from switch_core.db.id_lists import any_of
 from switch_core.db.models import Message, MessageAttachment, Room, require_tenant_id
 from switch_core.db.notify_ddl import SET_WRITER_ANNOUNCES
 from switch_core.db.raw import RawStatement
+from switch_core.messages.row import text_field
+from switch_core.transport.content import edited_content
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,10 @@ class DeletedMessages:
     uris: set[str]
     #: The rooms they were deleted from.
     room_ids: set[str]
+
+
+def _nothing_deleted() -> DeletedMessages:
+    return DeletedMessages(event_ids=[], message_keys=set(), uris=set(), room_ids=set())
 
 
 class MessageStore:
@@ -247,6 +254,69 @@ class MessageStore:
             session, Message.sender_id == transport_user_id, limit=limit
         )
 
+    async def delete_posts(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        transport_event_ids: Collection[str],
+        *,
+        limit: int,
+    ) -> DeletedMessages:
+        """Delete up to `limit` of the messages in `room_id` named by
+        `transport_event_ids`, with every other file of a multi-file post one
+        of them belongs to, since the files of one post are one message to
+        whoever reads it (`attachments.py`).
+
+        For a post deleted where it was written. Usually a row in the middle
+        of the room, which leaves a gap in its numbering: readers page on
+        `seq > cursor`, so a gap is skipped like any row a reader never had,
+        and `_delete_where` keeps a deleted newest row's number from being
+        given out again. See `_delete_where` for the rest.
+        """
+        if not transport_event_ids:
+            return _nothing_deleted()
+        ids = list(transport_event_ids)
+        group_id = Message.content[ATTACHMENT_GROUP_KEY]["id"].astext
+        groups = select(group_id).where(
+            Message.room_id == room_id,
+            Message.transport_event_id.in_(ids),
+            group_id.is_not(None),
+        )
+        return await self._delete_where(
+            session,
+            and_(
+                Message.room_id == room_id,
+                or_(Message.transport_event_id.in_(ids), group_id.in_(groups)),
+            ),
+            limit=limit,
+        )
+
+    async def delete_room_messages(
+        self, session: AsyncSession, room_id: str, *, limit: int
+    ) -> DeletedMessages:
+        """Delete up to `limit` of the oldest messages in `room_id`, with their
+        attachments, leaving the room itself. See `_delete_where`."""
+        return await self._delete_where(
+            session, Message.room_id == room_id, limit=limit
+        )
+
+    async def replace_body(
+        self, session: AsyncSession, message: Message, body: str, *, edited_at_ms: int
+    ) -> None:
+        """Replace what a stored message says with `body`, in place.
+
+        For a post its author edited where it was written. The row keeps its
+        place in the room, so no reader is handed it a second time: one that
+        has read it keeps what it read, and one that reads it from now on
+        reads only the new words. The old ones are not kept anywhere, which is
+        the point. See `edited_content` for the content it gets.
+        """
+        content = edited_content(message.content, body, edited_at_ms=edited_at_ms)
+        message.content = content
+        message.body = text_field(content.get("body"))
+        message.formatted_body = text_field(content.get("formatted_body"))
+        await session.flush()
+
     async def _delete_where(
         self, session: AsyncSession, condition: ColumnElement[bool], *, limit: int
     ) -> DeletedMessages:
@@ -284,9 +354,7 @@ class MessageStore:
             )
         ).all()
         if not rows:
-            return DeletedMessages(
-                event_ids=[], message_keys=set(), uris=set(), room_ids=set()
-            )
+            return _nothing_deleted()
         message_ids = [r.id for r in rows]
         uris = set(
             (

@@ -3,6 +3,19 @@ import type * as WorkspaceSession from '@main/core/workspaces/workspace-session'
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 
 const fetchMe = vi.hoisted(() => vi.fn());
+const probeGateway = vi.hoisted(() => vi.fn());
+const MockGatewayError = vi.hoisted(
+  () =>
+    class GatewayError extends Error {
+      constructor(
+        readonly kind: string = 'http',
+        message = '',
+        readonly status?: number
+      ) {
+        super(message);
+      }
+    }
+);
 const getServer = vi.hoisted(() => vi.fn());
 const isManagedServerRunning = vi.hoisted(() => vi.fn());
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
@@ -113,7 +126,8 @@ vi.mock('./gateway-client', () => ({
   fetchRoomRoles: vi.fn(),
   fetchRooms: vi.fn(),
   registerKnownAgent: vi.fn(),
-  GatewayError: class GatewayError extends Error {},
+  probeGateway,
+  GatewayError: MockGatewayError,
 }));
 vi.mock('./server-address', () => ({
   assertServerAddress,
@@ -189,6 +203,39 @@ describe('getConnectionStatus', () => {
     expect(isManagedServerRunning).not.toHaveBeenCalled();
     expect(fetchMe).toHaveBeenCalledOnce();
   });
+
+  it('reads a server the session was refused by as signed out, without asking again', async () => {
+    getServer.mockResolvedValue(server({ managed: false }));
+    fetchMe.mockRejectedValue(new MockGatewayError('unauthorized', 'expired', 401));
+
+    const status = await switchServersController.getConnectionStatus('srv');
+
+    expect(status).toEqual({ serverId: 'srv', connected: false, user: null });
+    expect(probeGateway).not.toHaveBeenCalled();
+  });
+
+  it('asks a never-signed-in server whether it answers before calling it signed out', async () => {
+    getServer.mockResolvedValue(server({ managed: false }));
+    fetchMe.mockRejectedValue(new MockGatewayError('unauthorized', 'Not signed in'));
+    probeGateway.mockResolvedValue(undefined);
+
+    const status = await switchServersController.getConnectionStatus('srv');
+
+    expect(status).toEqual({ serverId: 'srv', connected: false, user: null });
+    expect(probeGateway).toHaveBeenCalledOnce();
+  });
+
+  it('fails the status read of a never-signed-in server that does not answer', async () => {
+    getServer.mockResolvedValue(server({ managed: false }));
+    fetchMe.mockRejectedValue(new MockGatewayError('unauthorized', 'Not signed in'));
+    const unreachable = new MockGatewayError(
+      'network',
+      "Can't reach x: the address doesn't resolve."
+    );
+    probeGateway.mockRejectedValue(unreachable);
+
+    await expect(switchServersController.getConnectionStatus('srv')).rejects.toBe(unreachable);
+  });
 });
 
 describe('gateway calls on an unreachable host', () => {
@@ -261,6 +308,20 @@ describe('an action a server whose host has gone down cannot take', () => {
       server_kind: 'remote_managed',
       outcome: 'failure',
       failure_reason: 'invalid_credentials',
+    });
+  });
+
+  it('reports a single sign-on whose sign-in settings could not be read', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    fetchAuthConfig.mockRejectedValue(new Error('502 from the server'));
+
+    await expect(switchServersController.oidcLogin('srv', null)).rejects.toThrow('502');
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'oidc',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'failed',
     });
   });
 

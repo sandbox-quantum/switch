@@ -218,6 +218,7 @@ def test_notification_decrypts_and_delivers_message() -> None:
     }
     item = {
         "clientState": "s3cr3t",
+        "changeType": "created",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
 
@@ -256,6 +257,7 @@ def test_notification_sets_self_mention_token_for_bot_mention() -> None:
     }
     item = {
         "clientState": "s3cr3t",
+        "changeType": "created",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
     _run(adapter.receive_notification(item))
@@ -287,6 +289,7 @@ def test_notification_no_self_mention_token_for_human_mention() -> None:
     }
     item = {
         "clientState": "s3cr3t",
+        "changeType": "created",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
     _run(adapter.receive_notification(item))
@@ -315,6 +318,7 @@ def test_graph_message_attachment_is_disclosed() -> None:
     }
     item = {
         "clientState": "s3cr3t",
+        "changeType": "created",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
 
@@ -334,6 +338,7 @@ def test_notification_rejects_bad_client_state() -> None:
 
     item = {
         "clientState": "WRONG",
+        "changeType": "created",
         "encryptedContent": _encrypt_like_graph({"id": "m1"}, cert),
     }
     _run(adapter.receive_notification(item))
@@ -356,6 +361,7 @@ def test_own_bot_message_is_not_delivered() -> None:
     }
     item = {
         "clientState": "s3cr3t",
+        "changeType": "created",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
     _run(adapter.receive_notification(item))
@@ -378,6 +384,7 @@ def test_graph_capture_dedupes_with_bot_framework_path() -> None:
     }
     item = {
         "clientState": "s3cr3t",
+        "changeType": "created",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
     _run(adapter.receive_notification(item))
@@ -423,6 +430,7 @@ def test_a_mention_heard_both_ways_reaches_the_room_once() -> None:
         adapter._channel_type["19:c@thread.tacv2"] = "channel_public"
         notification = {
             "clientState": "s3cr3t",
+            "changeType": "created",
             "encryptedContent": _encrypt_like_graph(_graph_message("m-1"), cert),
         }
         steps = [
@@ -461,6 +469,7 @@ def test_an_encrypted_notification_with_no_key_to_open_it_is_dropped_loudly(
         adapter.receive_notification(
             {
                 "clientState": "s3cr3t",
+                "changeType": "created",
                 "encryptedContent": _encrypt_like_graph(_graph_message("m-2"), cert),
             }
         )
@@ -486,6 +495,7 @@ def test_reply_sets_root_id_from_reply_to_id() -> None:
     }
     item = {
         "clientState": "s3cr3t",
+        "changeType": "created",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
     _run(adapter.receive_notification(item))
@@ -506,6 +516,7 @@ def test_system_event_message_is_ignored() -> None:
     }
     item = {
         "clientState": "s3cr3t",
+        "changeType": "created",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
     _run(adapter.receive_notification(item))
@@ -645,16 +656,19 @@ def test_adopt_existing_subscriptions_deletes_stale_and_keeps_current() -> None:
                 "id": "CUR",
                 "resource": "teams/t/channels/19:keep@thread.tacv2/messages",
                 "notificationUrl": current,
+                "changeType": "created,updated,deleted",
             },
             {
                 "id": "OLD",
                 "resource": "teams/t/channels/19:stale@thread.tacv2/messages",
                 "notificationUrl": "https://dead.example/api/teams/notifications",
+                "changeType": "created,updated,deleted",
             },
             {
                 "id": "OTHER",
                 "resource": "users/u/messages",
                 "notificationUrl": "https://x.example",
+                "changeType": "created,updated,deleted",
             },
         ]
     )
@@ -679,6 +693,7 @@ def test_adopt_existing_subscriptions_records_a_readable_expiry() -> None:
                 "id": "CUR",
                 "resource": "teams/t/channels/19:keep@thread.tacv2/messages",
                 "notificationUrl": current,
+                "changeType": "created,updated,deleted",
                 "expirationDateTime": "2026-01-01T00:00:00Z",
             }
         ]

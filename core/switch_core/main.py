@@ -27,9 +27,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+from starlette.types import ASGIApp
 from uvicorn.main import STARTUP_FAILURE
 
 from switch_core.accounts.organization_purge import OrganizationPurge
+from switch_core.accounts.suspension import SuspensionEffects
 from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -96,6 +98,7 @@ from switch_core.bridges.collaboration.webhooks import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.service import ChatService
 from switch_core.chats.signals import ChatSignals
+from switch_core.chats.stream_reads import chat_stream_slots_for
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
@@ -122,8 +125,8 @@ from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
-    app_connect_args,
     create_engine_from_config,
+    create_lease_engine,
     create_session_factory,
     create_unpooled_engine,
 )
@@ -231,7 +234,7 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
-from switch_core.retention.audit_history import check_purge_privilege
+from switch_core.retention.audit_history import check_purge_function
 from switch_core.retention.erasure import ErasureService, erasure_loop
 from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
@@ -284,6 +287,29 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 # regardless. Anything with a deadline of its own must fit inside it — see
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
 _FORCED_EXIT_GRACE_SECONDS = 3.0
+
+
+def uvicorn_config(app: ASGIApp, config: SwitchConfig) -> uvicorn.Config:
+    """How the server listens. A request's client address is taken from
+    `X-Forwarded-For` only when it comes from `FORWARDED_ALLOW_IPS`, the
+    ingress in front of this server; the access log, sign-in events and the
+    refusal breaker all read the address this resolves."""
+    trusted = [entry.strip() for entry in config.forwarded_allow_ips.split(",")]
+    if "*" in trusted:
+        logger.warning(
+            "FORWARDED_ALLOW_IPS is '*': every caller's X-Forwarded-For is "
+            "believed, so client addresses in the access log and security "
+            "events can be forged. Set it to the ingress's address range."
+        )
+    return uvicorn.Config(
+        app,
+        host=config.server_host,
+        port=config.server_port,
+        log_level="info",
+        log_config=None,
+        proxy_headers=True,
+        forwarded_allow_ips=config.forwarded_allow_ips,
+    )
 
 
 class _Server(uvicorn.Server):
@@ -726,28 +752,6 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     return True
 
 
-async def _audit_history_sessions(
-    config: SwitchConfig,
-    engine: AsyncEngine,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> tuple[AsyncEngine | None, async_sessionmaker[AsyncSession]]:
-    """The sessions the retention pass purges deleted workspaces' audit history
-    on: the schema owner's, where configured, since the runtime role may not
-    delete audit rows; the runtime ones otherwise. Says at startup, as an
-    error, when the chosen role cannot (`retention/audit_history.py`).
-
-    Returns the owner's engine, for the caller to dispose of, or None."""
-    owner_url = config.owner_database_url
-    if owner_url is None:
-        await check_purge_privilege(engine, owner=False)
-        return None, session_factory
-    owner_engine = create_async_engine(
-        owner_url, poolclass=NullPool, connect_args=app_connect_args(config)
-    )
-    await check_purge_privilege(owner_engine, owner=True)
-    return owner_engine, create_session_factory(owner_engine)
-
-
 async def run(config: SwitchConfig, process_id: str) -> bool:
     """Serve until shutdown. Returns whether the server started: False when the
     app's startup failed, which uvicorn logs and then returns from `serve()`
@@ -773,9 +777,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     instrument_queries(engine)
     pool_watermark = install_pool_watermark(engine)
     install_hold_timer(engine)
-    history_engine, history_sessions = await _audit_history_sessions(
-        config, engine, session_factory
-    )
+    await check_purge_function(engine)
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -806,12 +808,18 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     # This process's row in `switch_core_processes`, claimed before anything
     # can record a connection against it and held until the process drains.
-    # What another process reads to know this one is alive.
+    # What another process reads to know this one is alive. Renewed on a
+    # connection of its own, outside the pool, so requests and streams that
+    # fill the pool cannot make it lapse and drop everything this process
+    # holds (`create_lease_engine`).
+    lease_engine = create_lease_engine(config)
+    instrument_queries(lease_engine)
     process_lease = ProcessLease(
         process_id=process_id,
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in config.keyring.keys],
+        renewal_session_factory=create_session_factory(lease_engine),
     )
     await process_lease.renew()
     logger.info("Claimed switch-core process lease %s", process_id)
@@ -906,7 +914,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # ── Product telemetry ────────────────────────────────────────────────────
     # Before the services that report through it, switched on or not.
     telemetry, installed_at, telemetry_http = await build_telemetry(
-        config, session_factory, switch_core_version()
+        config, session_factory, switch_core_version(), keeps_deployment_state=True
     )
     message_telemetry = MessageTelemetry(
         telemetry=telemetry, session_factory=session_factory
@@ -1357,6 +1365,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         trust_client=trust_client,
         message_observer=message_telemetry,
         telemetry=telemetry,
+        stream_slots=chat_stream_slots_for(config.db_pool_size, config.db_max_overflow),
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
@@ -1365,7 +1374,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     room_service.on_room_agents_changed(chat_service.sync_rooms)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
-    protocol.set_member_adder(chat_service.add_member, chat_service.require_can_join)
+    protocol.set_member_adder(chat_service.admit_member, chat_service.require_can_join)
     chat_service.on_agent_room_changed(room_changes.rooms_changed)
     room_service.on_room_changed(chat_service.room_changed, chat_service.rooms_changed)
 
@@ -1553,6 +1562,15 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # What suspending an agent or a person, or lifting it, sets going once it
+    # commits (`gateway/suspension.py`).
+    gateway_app.state.suspension_effects = SuspensionEffects(
+        session_factory=session_factory,
+        connections=protocol.connections,
+        api_key_cache=protocol.api_key_cache,
+        broker=service_broker,
+        management=management.service if management is not None else None,
+    )
     # A bus skips signals carrying its own process id, as acted on locally
     # already; the purge acts on nothing here, so it signals under its own id
     # for this process to hear too, as the CLI does.
@@ -1571,6 +1589,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         signals=purge_signals,
         controller_removed=controller_removal_publisher(purge_signals),
         admin_email=config.gateway_admin_email,
+        sign_in_issuer=config.gateway_oidc_issuer_url,
     )
     gateway_app.state.organization_apps = organization_apps
     if config.members_service_url:
@@ -1598,29 +1617,28 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
     protocol.install_service = install_service
+    workos_mirror: WorkOSMirror | None = None
     if isinstance(organization_directory, WorkOSDirectory):
         # Checked present with the directory (`_validate_organization_directory`).
         assert config.gateway_oidc_issuer_url is not None
-        own_workos_mirror(
-            ownership,
-            WorkOSMirror(
-                session_factory,
-                organization_directory,
-                MirrorDependencies(
-                    revocation=AccessRevocation(
-                        agent_store=agent_store,
-                        api_key_store=api_key_store,
-                        broker=service_broker,
-                        protocol=protocol,
-                        sign_in_flows=gateway_app.state.sign_in_flows,
-                    ),
-                    organization_store=organization_store,
-                    user_store=user_store,
+        workos_mirror = WorkOSMirror(
+            session_factory,
+            organization_directory,
+            MirrorDependencies(
+                revocation=AccessRevocation(
+                    agent_store=agent_store,
+                    api_key_store=api_key_store,
+                    broker=service_broker,
+                    protocol=protocol,
+                    sign_in_flows=gateway_app.state.sign_in_flows,
                 ),
-                OwnershipLeaseStore(),
-                config.gateway_oidc_issuer_url,
+                organization_store=organization_store,
+                user_store=user_store,
             ),
+            OwnershipLeaseStore(),
+            config.gateway_oidc_issuer_url,
         )
+        own_workos_mirror(ownership, workos_mirror)
 
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
@@ -1657,6 +1675,8 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
             )
+            if workos_mirror is not None:
+                metrics().register_observer(workos_mirror.readings)
             decision_task = None
             if config.decision_routing_enabled:
                 pending_gauge = PendingDecisionGauge(
@@ -1692,9 +1712,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                     switch_buddy=config.feature_flags[SWITCH_BUDDY],
                 ).run(tenant_ids)
             )
-            data_retention_task = asyncio.create_task(
-                retention_loop(session_factory, history_sessions)
-            )
+            data_retention_task = asyncio.create_task(retention_loop(session_factory))
             erasure_task = asyncio.create_task(
                 erasure_loop(
                     session_factory,
@@ -1725,8 +1743,6 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
                 await _stop_tasks(data_retention_task, erasure_task)
-                if history_engine is not None:
-                    await history_engine.dispose()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 shared_connections_task.cancel()
@@ -1861,13 +1877,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # deployment with an install date.
     await telemetry.report_installed()
 
-    server_config = uvicorn.Config(
-        agent_bridge_app,
-        host=config.server_host,
-        port=config.server_port,
-        log_level="info",
-        log_config=None,
-    )
+    server_config = uvicorn_config(agent_bridge_app, config)
     server = _Server(server_config)
 
     loop = asyncio.get_event_loop()
@@ -2506,6 +2516,7 @@ def _distributed_teams_app(
                 messaging_public_url=config.messaging_public_url,
                 privacy_url=config.teams_app_privacy_url,
                 terms_url=config.teams_app_terms_url,
+                partner_id=config.teams_app_partner_id,
             ),
         )
     )

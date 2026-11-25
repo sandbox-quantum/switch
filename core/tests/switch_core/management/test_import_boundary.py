@@ -22,6 +22,11 @@ _ALLOWED_IMPORTERS = {
     # Builds the module when the agent_management feature flag is on, hands its
     # authenticator to the bearer middleware, and installs its routes.
     "switch_core.main",
+    # The operator's suspension command, a process of its own like main: it
+    # names the assignment and controller signals so the running servers stop
+    # a suspended agent on its device, and disconnect a suspended person's
+    # devices. Nothing in the serving process imports it.
+    "switch_core.suspension_admin",
 }
 
 

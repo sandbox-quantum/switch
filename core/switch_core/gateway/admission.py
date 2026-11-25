@@ -72,8 +72,10 @@ RETRY_AFTER_S = 1
 _LOG_EVERY_S = 60.0
 
 # Routes that stay open for as long as their client is there, relative to the
-# gateway's mount. They wait for news holding no connection.
-_STREAMS = frozenset({"/chats/events", "/chats/activity/events"})
+# gateway's mount, by the name their metrics carry. They wait for news holding
+# no connection; how many one caller and this process hold is bounded instead
+# (`gateway/stream_caps.py`).
+STREAMS = {"/chats/events": "chat_events", "/chats/activity/events": "chat_activity"}
 _READS = frozenset({"GET", "HEAD"})
 
 
@@ -127,6 +129,29 @@ class _Line:
         return self.running == 0 and not self.waiting
 
 
+def caller_key(
+    scope: Scope, keyring: Keyring, controller_auth: bytes | None = None
+) -> str:
+    """Who a request or socket is counted against: the person its session
+    cookie names, once the signature checks out, else the cloud controller
+    when it carries that controller's exact `Authorization` header, else the
+    address it came from. Any other bearer token counts as its address, so a
+    client can't make itself new callers by sending made-up tokens."""
+    token = HTTPConnection(scope).cookies.get("switch_auth")
+    if token:
+        subject = session_subject(token, keyring)
+        if subject is not None:
+            return f"user:{subject}"
+    if controller_auth is not None:
+        for name, value in scope.get("headers", []):
+            if name == b"authorization" and secrets.compare_digest(
+                value, controller_auth
+            ):
+                return "cloud-controller"
+    client = scope.get("client")
+    return f"address:{client[0] if client else 'unknown'}"
+
+
 async def writes_on_get() -> None:
     """Marks a GET route that writes, so it runs without the read timeout.
 
@@ -169,22 +194,10 @@ class GatewayAdmission:
 
     def caller(self, scope: Scope) -> str:
         """Who a request's turns are counted against."""
-        token = HTTPConnection(scope).cookies.get("switch_auth")
-        if token:
-            subject = session_subject(token, self._keyring)
-            if subject is not None:
-                return f"user:{subject}"
-        if self._controller_auth is not None:
-            for name, value in scope.get("headers", []):
-                if name == b"authorization" and secrets.compare_digest(
-                    value, self._controller_auth
-                ):
-                    return "cloud-controller"
-        client = scope.get("client")
-        return f"address:{client[0] if client else 'unknown'}"
+        return caller_key(scope, self._keyring, self._controller_auth)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or route_path(scope) in _STREAMS:
+        if scope["type"] != "http" or route_path(scope) in STREAMS:
             await self.app(scope, receive, send)
             return
         caller = self.caller(scope)

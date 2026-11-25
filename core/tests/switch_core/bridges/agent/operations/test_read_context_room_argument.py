@@ -13,6 +13,7 @@ reach and not privilege.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -40,6 +41,8 @@ from switch_core.db.models import TENANT_ZERO_ID, room_agents
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.logging_context import structured_fields
+from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 from tests.db_buffer import db_buffer_on, say, seed_member
 from tests.session_counting import CountingSessionFactory
 
@@ -432,3 +435,48 @@ async def test_a_failed_read_catches_up_on_nothing(
         await read_context()
 
     assert await _unread(protocol, CONNECTED_ROOM) == 1
+
+
+def _room_reads(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    return [
+        structured_fields(record)
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER_NAME
+        and structured_fields(record)["switch"]["event"] == "security.agent.room_read"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_each_read_is_a_security_event_naming_the_agent_and_room(
+    protocol: _Protocol,
+    connected: None,
+    caller: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One line per read, so a log monitor can count the distinct rooms one
+    agent reads."""
+    caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+    await read_context()
+    await read_context(room_id=OTHER_ROOM)
+
+    reads = _room_reads(caplog)
+    assert [r["switch"]["room_id"] for r in reads] == [CONNECTED_ROOM, OTHER_ROOM]
+    assert {r["switch"]["agent_id"] for r in reads} == {AGENT}
+    assert [r["security_details"] for r in reads] == [
+        {"connected": True},
+        {"connected": False},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_read_is_not_logged_as_a_read(
+    protocol: _Protocol,
+    connected: None,
+    caller: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+    with pytest.raises(PermissionError):
+        await read_context(room_id="room-strangers")
+
+    assert _room_reads(caplog) == []

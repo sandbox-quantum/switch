@@ -123,7 +123,7 @@ class ClaudeCodeKnownAgent(KnownAgent):
         return IntegrationProfile(
             connection_model=connection_model,
             message_exchange=True,
-            pre_invocation_mediation=["tool_calls"],
+            pre_invocation_mediation=[],
             post_invocation_mediation=[],
             event_reporting=["tool_calls"],
             # Reset / compact / interrupt work only on a session that Switch

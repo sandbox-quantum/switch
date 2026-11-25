@@ -49,6 +49,10 @@ export type ServerSignIn = {
    * this is the only place that failure is visible — `config` may be a stale
    * answer from before the endpoint broke, or null if it never succeeded. */
   configCheckFailed: boolean;
+  /** Why that read failed, while `configCheckFailed` holds: for a server that
+   * cannot be reached, the address and the reason ("Can't reach host: the
+   * address doesn't resolve."). */
+  configFailure: string | null;
   /** Whether a sign-in-options read is in flight right now — checked before
    * `configCheckFailed` so a fresh retry after a failure is not reported as
    * still failing while it is still running. */
@@ -165,6 +169,7 @@ export function useServerSignIn(serverId: string): ServerSignIn {
   return {
     config: switchServersStore.authConfigFor(serverId),
     configCheckFailed: switchServersStore.authConfigCheckFailed(serverId),
+    configFailure: switchServersStore.authConfigFailure(serverId),
     configChecking: switchServersStore.authConfigChecking(serverId),
     mode,
     setMode: (next) => {
@@ -268,7 +273,7 @@ export const ServerSignInFields = observer(function ServerSignInFields({
     return (
       <p className="text-sm text-foreground-muted">
         {signIn.configCheckFailed && !signIn.configChecking
-          ? 'Could not check sign-in options.'
+          ? (signIn.configFailure ?? 'Could not check sign-in options.')
           : 'Checking sign-in options…'}
       </p>
     );
