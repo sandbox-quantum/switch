@@ -14,8 +14,9 @@ read one of two ways, and both are in the field while people update:
   that route answers 404, which counts as an error: a run in this mode is
   there to measure the route, not to fall back quietly.
 
-Every window here is signed in as the run's admin, who owns the run's agents,
-as a person's Console tracks the agents they own.
+Every window is signed in as a person of its own, an admin of the run's
+workspace (`people.py`), so the gateway's per-person limits count each window
+as the separate person it stands for.
 """
 
 from __future__ import annotations

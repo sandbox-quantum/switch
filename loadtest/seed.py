@@ -98,10 +98,10 @@ class Admin:
             "POST", "/auth/login", json={"email": email, "password": password}
         )
         if r.status_code != 200:
-            raise RuntimeError(f"admin sign-in refused: HTTP {r.status_code}")
+            raise RuntimeError(f"sign-in refused: HTTP {r.status_code}")
         self._cookie = r.cookies.get("switch_auth")
         if not self._cookie:
-            raise RuntimeError("admin sign-in returned no switch_auth cookie")
+            raise RuntimeError("sign-in returned no switch_auth cookie")
 
     async def use_workspace(self, name: str, create: bool = True) -> dict:
         """Bind this session to the admin's workspace called `name`, made as
@@ -142,6 +142,17 @@ class Admin:
             if r.status_code != 200:
                 raise _fail("putting the admin's own workspace back", r)
         return {"id": workspace["id"], "name": name, "made": not named}
+
+    async def use_workspace_id(self, workspace_id: str) -> None:
+        """Bind this session to the workspace `workspace_id`, which the
+        account is already in."""
+        r = await self.call("POST", f"/tenants/{workspace_id}/switch")
+        if r.status_code != 200:
+            raise _fail("switching to the run's workspace", r)
+        cookie = r.cookies.get("switch_auth")
+        if not cookie:
+            raise RuntimeError("switching workspace returned no switch_auth cookie")
+        self._cookie = cookie
 
     async def refuse_bridges(self) -> None:
         """Refuse a workspace with an active bridge: each bridge gives every
