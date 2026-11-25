@@ -148,6 +148,12 @@ interface State {
    * ends it. Undefined until the turn's first prompt has been sent.
    */
   latestPrompt: number | undefined;
+  /**
+   * The running turn's prompts in the order sent, each with its answer once
+   * it has one: a steered prompt the agent rejects hands the turn back to the
+   * one before it.
+   */
+  turnPrompts: Array<{ seq: number; answer?: PromptAnswer }>;
   /** How many `session/prompt` requests the session has sent. */
   prompts: number;
   queue: ProviderSendTurnInput[];
@@ -177,6 +183,13 @@ interface State {
   cleanup: (() => Promise<void>) | undefined;
   /** The removal of what `launch` prepared, once it has begun. */
   tidied: Promise<void> | undefined;
+}
+
+/** How the agent answered one `session/prompt`. */
+type PromptAnswer = { reason: string } | { error: unknown };
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -253,6 +266,7 @@ export class AcpAdapter implements ProviderAdapter {
       turn: null,
       steering: this.capabilities.steering,
       latestPrompt: undefined,
+      turnPrompts: [],
       prompts: 0,
       queue: [],
       items: new Map(),
@@ -442,6 +456,7 @@ export class AcpAdapter implements ProviderAdapter {
     if (!input) return;
     state.turn = input.turnId;
     state.latestPrompt = undefined;
+    state.turnPrompts = [];
     state.interrupted = false;
     state.refusedRequest = false;
     state.messageId = randomUUID();
@@ -454,49 +469,77 @@ export class AcpAdapter implements ProviderAdapter {
 
   /**
    * Ends turn `turnId` with the answer to one of its prompts, unless a later
-   * prompt has been sent into it since: that one's answer ends it instead.
+   * prompt has been sent into it since: that one's answer ends it instead. A
+   * steered prompt the agent rejects outright was never taken into the turn,
+   * so the turn goes back to the prompt before it, and ends with that one's
+   * answer, already in or still to come, rather than failing.
    */
   private settle(
     state: State,
     turnId: string,
     prompt: Promise<{ seq: number; stopReason: Promise<string> }>
   ): void {
-    let seq: number | undefined;
-    const current = () =>
-      state.turn === turnId && (seq === undefined || seq === state.latestPrompt);
+    let entry: { seq: number; answer?: PromptAnswer } | undefined;
+    const answered = (answer: PromptAnswer) => {
+      if (state.turn !== turnId) return;
+      if (!entry) {
+        // The turn's first prompt failed before it was sent.
+        this.finish(state, answer);
+        return;
+      }
+      entry.answer = answer;
+      if (entry.seq !== state.latestPrompt) return;
+      const index = state.turnPrompts.indexOf(entry);
+      if ('error' in answer && index > 0 && !state.interrupted) {
+        state.turnPrompts.splice(index, 1);
+        const previous = state.turnPrompts[index - 1]!;
+        state.latestPrompt = previous.seq;
+        this.emit(state, {
+          type: 'runtime.warning',
+          message: `${this.hooks.label} did not take the message sent mid-turn (${errorText(answer.error)}); it was not delivered, and the turn carries on.`,
+        });
+        if (previous.answer) this.finish(state, previous.answer);
+        return;
+      }
+      this.finish(state, answer);
+    };
     void prompt
       .then((sent) => {
-        seq = sent.seq;
+        entry = state.turnPrompts.find((sentPrompt) => sentPrompt.seq === sent.seq);
         return sent.stopReason;
       })
       .then(
-        (reason) => {
-          if (!current()) return;
-          // `cancelled` answers our own `session/cancel`, or follows a request
-          // someone cancelled or declined; an agent that cancels unasked (Junie,
-          // when every model refuses it) has failed.
-          const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
-          this.complete(
-            state,
-            interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
-            interrupted
-              ? 'Interrupted.'
-              : reason === 'end_turn'
-                ? undefined
-                : reason === 'cancelled'
-                  ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
-                  : `${this.hooks.label} stopped: ${reason}`
-          );
-        },
-        (error: unknown) => {
-          if (!current()) return;
-          this.complete(
-            state,
-            state.interrupted ? 'interrupted' : 'error',
-            state.interrupted ? 'Interrupted.' : String(error)
-          );
-        }
+        (reason) => answered({ reason }),
+        (error: unknown) => answered({ error })
       );
+  }
+
+  /** Ends the running turn with the answer to its latest prompt. */
+  private finish(state: State, answer: PromptAnswer): void {
+    if ('error' in answer) {
+      this.complete(
+        state,
+        state.interrupted ? 'interrupted' : 'error',
+        state.interrupted ? 'Interrupted.' : String(answer.error)
+      );
+      return;
+    }
+    const { reason } = answer;
+    // `cancelled` answers our own `session/cancel`, or follows a request
+    // someone cancelled or declined; an agent that cancels unasked (Junie,
+    // when every model refuses it) has failed.
+    const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
+    this.complete(
+      state,
+      interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
+      interrupted
+        ? 'Interrupted.'
+        : reason === 'end_turn'
+          ? undefined
+          : reason === 'cancelled'
+            ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
+            : `${this.hooks.label} stopped: ${reason}`
+    );
   }
 
   private async run(
@@ -518,6 +561,7 @@ export class AcpAdapter implements ProviderAdapter {
   ): { seq: number; stopReason: Promise<string> } {
     const seq = ++state.prompts;
     state.latestPrompt = seq;
+    state.turnPrompts.push({ seq });
     const stopReason = state.client
       .request<{ stopReason: string }>('session/prompt', { sessionId: state.nativeId, prompt })
       .then((result) => result.stopReason);
