@@ -533,6 +533,7 @@ def test_switch_buddy_runs_adaptive_interview_and_starts_with_one_agent():
     assert "Offer one focused agent first." in text
     assert "Start with one agent in one room, not a multi-agent room template" in text
     assert "the private room you'll create for it" in text
+    assert "break the proposal into 2–3 short blocks separated by blank lines" in text
     assert (
         "if `list_machines` shows other ready providers on that machine, name them"
         in text
@@ -541,6 +542,10 @@ def test_switch_buddy_runs_adaptive_interview_and_starts_with_one_agent():
     assert "offer a concrete schedule right in the proposal" in text
     assert "hint at richer multi-agent setups once this one is working" in text
     assert "wait for them to say they're done, then re-check `get_my_context`" in text
+    assert (
+        "invite them to say when it's connected; always re-check `get_my_context`"
+        in text
+    )
 
 
 def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
