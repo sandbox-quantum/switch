@@ -29,6 +29,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentIdentityConflict,
     PlatformAdapter,
+    RefusalKind,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -133,6 +134,12 @@ _RATE_LIMIT_DEFAULT_DELAY = 30
 # These responses confirm that Slack rejected the format before publication.
 # Never retry an uncertain delivery as another message merely to change format.
 _BLOCK_FORMAT_ERRORS = {"invalid_blocks", "invalid_blocks_format", "block_mismatch"}
+_SLACK_UNCERTAIN_POST_ERRORS = {
+    "internal_error",
+    "fatal_error",
+    "request_timeout",
+    "service_unavailable",
+}
 
 
 def _publication_metadata(blocks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -469,6 +476,63 @@ _SLACK_AUTH_ERROR_CODES = frozenset(
 )
 
 
+# Slack's error codes for a send that sending again will not change: the
+# channel is gone or closed to the app, the message itself is refused, or the
+# app may not post. https://api.slack.com/methods/chat.postMessage#errors
+_SLACK_REFUSED_FOR_GOOD = _SLACK_AUTH_ERROR_CODES | frozenset(
+    {
+        "channel_not_found",
+        "is_archived",
+        "msg_too_long",
+        "no_text",
+        "invalid_blocks",
+        "invalid_blocks_format",
+        "invalid_attachments",
+        "too_many_attachments",
+        "invalid_arguments",
+        "restricted_action",
+        "restricted_action_read_only_channel",
+        "restricted_action_thread_only_channel",
+        "restricted_action_non_threadable_channel",
+        "cannot_reply_to_message",
+        "missing_scope",
+        "ekm_access_denied",
+        "team_access_not_granted",
+        "method_deprecated",
+        "deprecated_endpoint",
+    }
+)
+# Codes for a refusal that clears by itself or by someone else's hand
+# (Slack's own trouble, a rate limit), worth sending again for as long as the
+# caller is willing. A code in neither set is worth a few attempts.
+_SLACK_REFUSED_FOR_NOW = frozenset(
+    {
+        "ratelimited",
+        "rate_limited",
+        "internal_error",
+        "fatal_error",
+        "service_unavailable",
+        "request_timeout",
+        "timeout",
+    }
+)
+
+
+def _slack_refusal_kind(exc: SlackApiError) -> RefusalKind:
+    """How Slack refused a send, read from its error code: see `RefusalKind`.
+    A refusal with no readable code (an empty 502, a proxy's error page) or
+    an HTTP 429 or 5xx is "transient"."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int) and (status == 429 or status >= 500):
+        return "transient"
+    code = _slack_response_field(exc, "error")
+    if not isinstance(code, str) or code in _SLACK_REFUSED_FOR_NOW:
+        return "transient"
+    if code in _SLACK_REFUSED_FOR_GOOD:
+        return "permanent"
+    return "bounded"
+
+
 def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     """`auth_failed` for a rejected token, `platform_error` for everything else
     Slack refuses a call for (rate limits, a missing scope, an outage). Both
@@ -614,6 +678,21 @@ class SlackAdapter(PlatformAdapter):
         if isinstance(exc, SlackApiError):
             return _slack_failure_reason(exc)
         return None
+
+    @classmethod
+    def classify_refusal(cls, exc: BaseException) -> RefusalKind:
+        """Read Slack's refusal out of the chain: `RichContentFailed` carries
+        it as its cause. A throttle is "transient"; a `SlackApiError` is
+        judged by its code (`_slack_refusal_kind`); anything else, such as a
+        dropped connection, is "transient"."""
+        seen: BaseException | None = exc
+        while seen is not None:
+            if isinstance(seen, RichContentThrottled):
+                return "transient"
+            if isinstance(seen, SlackApiError):
+                return _slack_refusal_kind(seen)
+            seen = seen.__cause__
+        return "transient"
 
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
@@ -885,8 +964,9 @@ class SlackAdapter(PlatformAdapter):
         room_wide_mention: bool = False,
     ) -> str | None:
         if not self._web_client:
-            logger.error("Cannot send message: Slack client not connected")
-            return None
+            raise BridgeOperationError(
+                "Cannot send a message: the Slack client is not connected"
+            )
 
         agent = await self.agent_rendering(sender_name)
         try:
@@ -901,13 +981,13 @@ class SlackAdapter(PlatformAdapter):
                 unfurl_links=False,
                 unfurl_media=False,
             )
-            ts = result.get("ts", "")
-            return f"{channel_id}:{ts}" if ts else None
         except SlackApiError as e:
             logger.error(
                 "Failed to send message to Slack channel %s: %s", channel_id, e
             )
-            return None
+            raise
+        ts = result.get("ts", "")
+        return f"{channel_id}:{ts}" if ts else None
 
     def _reply_thread_ts(
         self, channel_id: str, thread_root_id: str | None, room_wide_mention: bool
@@ -1011,17 +1091,21 @@ class SlackAdapter(PlatformAdapter):
         thread_root_id: str | None,
         *,
         reply_broadcast: bool,
-    ) -> str | None:
+    ) -> str:
         """Post a Block Kit message, for what plain text cannot carry.
 
         Slack-only and deliberately not on `PlatformAdapter`: blocks are
         Slack's own shape, and the platforms that need something like them need
         something different. `text` is what a notification and a client that
         will not render the blocks are left with, so it has to stand alone.
+
+        A refusal raises Slack's `SlackApiError`, as `send_message` does, so
+        the caller can tell an archived channel from an outage.
         """
         if not self._web_client:
-            logger.error("Cannot post blocks: Slack client not connected")
-            return None
+            raise BridgeOperationError(
+                "Cannot post blocks: the Slack client is not connected"
+            )
 
         thread_ts = (
             self._parse_message_ref(thread_root_id)[1]
@@ -1063,14 +1147,7 @@ class SlackAdapter(PlatformAdapter):
             return f"{channel_id}:{ts}"
         except SlackApiError as e:
             logger.error("Failed to post blocks to Slack channel %s: %s", channel_id, e)
-            if e.response.get("error") in {
-                "internal_error",
-                "fatal_error",
-                "request_timeout",
-                "service_unavailable",
-            }:
-                raise
-            return None
+            raise
 
     async def find_request_card(
         self,
@@ -1218,23 +1295,29 @@ class SlackAdapter(PlatformAdapter):
             if ref is not None:
                 return ref
         message = self._render_rich(content)
-        ref = await self.post_blocks(
-            channel_id,
-            agent_name,
-            message.text,
-            message.blocks,
-            thread_root_id,
-            # A question threaded under a channel-root message would otherwise
-            # be seen only by whoever opens the thread: show it in the channel
-            # too. Same message, so its buttons and later edits still work.
-            reply_broadcast=isinstance(content, RequestCard) and content.asked_at_root,
-        )
-        if ref is None:
-            raise RichContentFailed(
-                f"Slack did not accept the message in channel {channel_id}.",
-                text=message.text,
+        try:
+            return await self.post_blocks(
+                channel_id,
+                agent_name,
+                message.text,
+                message.blocks,
+                thread_root_id,
+                # A question threaded under a channel-root message would otherwise
+                # be seen only by whoever opens the thread: show it in the channel
+                # too. Same message, so its buttons and later edits still work.
+                reply_broadcast=isinstance(content, RequestCard)
+                and content.asked_at_root,
             )
-        return ref
+        except SlackApiError as e:
+            # Slack's own failures may have posted the message after all, so
+            # they reach the caller as they are rather than as a refusal.
+            if _slack_response_field(e, "error") in _SLACK_UNCERTAIN_POST_ERRORS:
+                raise
+            raise RichContentFailed(
+                f"Slack did not accept the message in channel {channel_id} "
+                f"({_slack_response_field(e, 'error') or 'no error code'}).",
+                text=message.text,
+            ) from e
 
     async def update_rich(
         self,
