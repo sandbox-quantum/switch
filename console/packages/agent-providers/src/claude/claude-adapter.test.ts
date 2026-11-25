@@ -845,6 +845,36 @@ describe('ClaudeAdapter turn attribution', () => {
     expect(recorder.ofType('runtime.error')[0]?.message).toBe(notice);
   });
 
+  it('fails a turn the CLI ended with a synthetic usage-limit notice on a plain success result', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'long task' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    const notice = "You've hit your 5-hour limit · resets 8:40am";
+    const synthetic = assistantMessage('msg-limit', [{ type: 'text', text: notice }]);
+    query.emit({ ...synthetic, message: { ...synthetic.message, model: '<synthetic>' } });
+    query.emit(resultMessage([String(sent?.uuid)], { is_error: false, result: notice }));
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe(notice);
+    expect(done.usageLimit).toEqual({ resetsAt: null });
+    expect(recorder.ofType('runtime.error')[0]?.message).toBe(notice);
+  });
+
+  it('keeps a turn completed when the model itself replies in the usage-limit wording', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    const reply = "You've hit your daily limit";
+    const message = assistantMessage('msg-1', [{ type: 'text', text: reply }]);
+    query.emit({ ...message, message: { ...message.message, model: 'claude-sonnet-4-5' } });
+    query.emit(resultMessage([String(sent?.uuid)], { is_error: false, result: reply }));
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('completed');
+    expect(done.usageLimit).toBeUndefined();
+  });
+
   it('fails a turn whose result reports the usage limit, without a reset time it was not given', async () => {
     const { sdk, adapter, recorder } = await startSession();
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
