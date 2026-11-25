@@ -40,7 +40,7 @@ from switch_core.clients.admin_messages import (
     PLATFORM_MARKER,
     platform_on_behalf_of,
 )
-from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.clients.mentions import mention_regex, mentionable_text
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -65,7 +65,7 @@ def named_agents(
     For display only: it reads no pill, role or room type, so it says who a
     message visibly names rather than who it addresses.
     """
-    text = strip_emphasis(body)
+    text = mentionable_text(body)
     named = {
         agent_id
         for agent_id, name in names.items()
@@ -140,7 +140,7 @@ MENTIONS_KEY = "com.switch.mentions"
 
 def addressable_text(body: str, content: Mapping[str, object]) -> str:
     """`body` less the `@name` spans that name people (`MENTIONS_KEY`)."""
-    text = strip_emphasis(body)
+    text = mentionable_text(body)
     mentions = content.get(MENTIONS_KEY)
     if not isinstance(mentions, dict):
         return text

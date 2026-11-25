@@ -88,6 +88,7 @@ from switch_core.bridges.collaboration.slack.avatar import (
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 from switch_core.bridges.collaboration.slack.ui_blocks import ui_spec_to_blocks
 from switch_core.chat_account_links import ACCOUNT_COMMANDS
+from switch_core.clients.mentions import sub_outside_inline_code
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -4084,7 +4085,9 @@ class SlackAdapter(PlatformAdapter):
             group_id = self._agent_group_ids.get(username.casefold())
             return f"<!subteam^{group_id}>" if group_id else match.group(0)
 
-        return re.sub(r"@([A-Za-z0-9][A-Za-z0-9._-]*)", _replace, content)
+        return sub_outside_inline_code(
+            r"@([A-Za-z0-9][A-Za-z0-9._-]*)", _replace, content
+        )
 
     # ── Event handling ───────────────────────────────────────────────────────
 
