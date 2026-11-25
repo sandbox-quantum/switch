@@ -321,7 +321,10 @@ version of their own to them without also giving them a release of their own.
   so nothing could try it again. The refusal now reaches the bridge as an
   error, and Slack's refusals are told apart: one that can clear (a rate
   limit, an outage) from one that cannot (an archived or missing channel, a
-  message too long). The session activity messages use the same distinction.
+  message too long). The session activity messages use the same distinction,
+  so an agent's activity in an archived channel is no longer posted again
+  every few minutes for as long as Switch runs. A Slack card that cannot be
+  posted is reported as a failed send too.
 - **A full database pool no longer makes a pod drop everything it holds.**
   Each switch-core process renews its lease on a database connection of its
   own, outside the shared pool. Before, the renewal borrowed from the same

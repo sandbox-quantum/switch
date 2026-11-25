@@ -134,6 +134,12 @@ _RATE_LIMIT_DEFAULT_DELAY = 30
 # These responses confirm that Slack rejected the format before publication.
 # Never retry an uncertain delivery as another message merely to change format.
 _BLOCK_FORMAT_ERRORS = {"invalid_blocks", "invalid_blocks_format", "block_mismatch"}
+_SLACK_UNCERTAIN_POST_ERRORS = {
+    "internal_error",
+    "fatal_error",
+    "request_timeout",
+    "service_unavailable",
+}
 
 
 def _publication_metadata(blocks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1085,17 +1091,21 @@ class SlackAdapter(PlatformAdapter):
         thread_root_id: str | None,
         *,
         reply_broadcast: bool,
-    ) -> str | None:
+    ) -> str:
         """Post a Block Kit message, for what plain text cannot carry.
 
         Slack-only and deliberately not on `PlatformAdapter`: blocks are
         Slack's own shape, and the platforms that need something like them need
         something different. `text` is what a notification and a client that
         will not render the blocks are left with, so it has to stand alone.
+
+        A refusal raises Slack's `SlackApiError`, as `send_message` does, so
+        the caller can tell an archived channel from an outage.
         """
         if not self._web_client:
-            logger.error("Cannot post blocks: Slack client not connected")
-            return None
+            raise BridgeOperationError(
+                "Cannot post blocks: the Slack client is not connected"
+            )
 
         thread_ts = (
             self._parse_message_ref(thread_root_id)[1]
@@ -1137,14 +1147,7 @@ class SlackAdapter(PlatformAdapter):
             return f"{channel_id}:{ts}"
         except SlackApiError as e:
             logger.error("Failed to post blocks to Slack channel %s: %s", channel_id, e)
-            if e.response.get("error") in {
-                "internal_error",
-                "fatal_error",
-                "request_timeout",
-                "service_unavailable",
-            }:
-                raise
-            return None
+            raise
 
     async def find_request_card(
         self,
@@ -1292,23 +1295,29 @@ class SlackAdapter(PlatformAdapter):
             if ref is not None:
                 return ref
         message = self._render_rich(content)
-        ref = await self.post_blocks(
-            channel_id,
-            agent_name,
-            message.text,
-            message.blocks,
-            thread_root_id,
-            # A question threaded under a channel-root message would otherwise
-            # be seen only by whoever opens the thread: show it in the channel
-            # too. Same message, so its buttons and later edits still work.
-            reply_broadcast=isinstance(content, RequestCard) and content.asked_at_root,
-        )
-        if ref is None:
-            raise RichContentFailed(
-                f"Slack did not accept the message in channel {channel_id}.",
-                text=message.text,
+        try:
+            return await self.post_blocks(
+                channel_id,
+                agent_name,
+                message.text,
+                message.blocks,
+                thread_root_id,
+                # A question threaded under a channel-root message would otherwise
+                # be seen only by whoever opens the thread: show it in the channel
+                # too. Same message, so its buttons and later edits still work.
+                reply_broadcast=isinstance(content, RequestCard)
+                and content.asked_at_root,
             )
-        return ref
+        except SlackApiError as e:
+            # Slack's own failures may have posted the message after all, so
+            # they reach the caller as they are rather than as a refusal.
+            if _slack_response_field(e, "error") in _SLACK_UNCERTAIN_POST_ERRORS:
+                raise
+            raise RichContentFailed(
+                f"Slack did not accept the message in channel {channel_id} "
+                f"({_slack_response_field(e, 'error') or 'no error code'}).",
+                text=message.text,
+            ) from e
 
     async def update_rich(
         self,
