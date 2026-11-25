@@ -227,6 +227,12 @@ class Tenant(Base):
         ForeignKey("users.id", ondelete="SET NULL", name="fk_tenants_archived_by"),
         nullable=True,
     )
+    # The directory's id for this workspace, for the one workspace of an
+    # organization the directory keeps (its WorkOS organization records it):
+    # what a rename made here would be matched to there.
+    directory_workspace_id: Mapped[str | None] = mapped_column(
+        Text, unique=True, nullable=True
+    )
 
 
 class TenantMember(Base):

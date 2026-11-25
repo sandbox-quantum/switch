@@ -31,6 +31,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.identity_session_store import IdentitySessionStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.admin_tokens import (
+    CHANGING_MEMBERS,
     NOT_THROUGH_WORKOS,
     SIGN_IN_AGAIN,
     SIGN_IN_ENDED,
@@ -55,7 +56,7 @@ WORKOS_ORGANIZATION = "org_EXAMPLE"
 SIGNING_KEY = "x" * 40
 
 
-def _access_token(organization_id: str, expires_in: int = 300) -> str:
+def _access_token(organization_id: str | None, expires_in: int = 300) -> str:
     return jwt.encode(
         {
             "sub": "user_admin",
@@ -120,7 +121,7 @@ class _WorkOS:
         self.refreshes.append(
             {
                 "refresh_token": grant["refresh_token"],
-                "organization_id": grant["organization_id"],
+                "organization_id": grant.get("organization_id"),
             }
         )
         if grant["refresh_token"] in self.spent:
@@ -134,8 +135,8 @@ class _WorkOS:
             200,
             json={
                 "user": {"id": "user_admin", "email": "admin@example.test"},
-                "organization_id": grant["organization_id"],
-                "access_token": _access_token(grant["organization_id"]),
+                "organization_id": grant.get("organization_id"),
+                "access_token": _access_token(grant.get("organization_id")),
                 "refresh_token": f"refresh-{len(self.refreshes) + 1}",
             },
         )
@@ -225,7 +226,7 @@ async def _signed_in_through_workos(
 
 
 def _client_on(
-    app: FastAPI, user_id: str, tenant_id: str, identity_session: str
+    app: FastAPI, user_id: str, tenant_id: str | None, identity_session: str
 ) -> httpx.AsyncClient:
     token = create_jwt(
         user_id,
@@ -483,7 +484,9 @@ class TestWhenTheTokenCannotBeRenewed:
         assert response.status_code == 403
         detail = response.json()["detail"]
         assert detail["error"] == "directory_sign_in_required"
-        assert detail["message"].startswith(SIGN_IN_ENDED)
+        assert detail["message"].startswith(
+            SIGN_IN_ENDED.format(doing=CHANGING_MEMBERS)
+        )
         # So the sign-in again is to the organization, its own way.
         assert detail["organization_id"] == WORKOS_ORGANIZATION
         assert "Nothing was changed." in detail["message"]
@@ -505,7 +508,9 @@ class TestWhenTheTokenCannotBeRenewed:
         assert response.status_code == 403
         detail = response.json()["detail"]
         assert detail["error"] == "directory_sign_in_required"
-        assert detail["message"].startswith(SIGN_IN_AGAIN)
+        assert detail["message"].startswith(
+            SIGN_IN_AGAIN.format(doing=CHANGING_MEMBERS)
+        )
         assert isid is not None
         assert await _kept(session_factory, isid) == ("refresh-1", None)
 
@@ -518,7 +523,9 @@ class TestWhenTheTokenCannotBeRenewed:
         response, isid = await self._demote(session_factory, workos)
 
         assert response.status_code == 403
-        assert response.json()["detail"]["message"].startswith(SIGN_IN_AGAIN)
+        assert response.json()["detail"]["message"].startswith(
+            SIGN_IN_AGAIN.format(doing=CHANGING_MEMBERS)
+        )
         assert isid is not None
         assert await _kept(session_factory, isid) == ("refresh-1", None)
 
@@ -531,7 +538,10 @@ class TestWhenTheTokenCannotBeRenewed:
         response, _ = await self._demote(session_factory, workos)
 
         assert response.status_code == 409
-        assert "won't let you change its members" in response.json()["detail"]
+        assert (
+            "won't let you change the organization's members"
+            in response.json()["detail"]
+        )
 
     async def test_workos_out_of_reach_changes_nothing(self, session_factory) -> None:
         workos = _WorkOS({})
@@ -554,7 +564,9 @@ class TestWhenTheTokenCannotBeRenewed:
         assert response.status_code == 403
         detail = response.json()["detail"]
         assert detail["error"] == "directory_sign_in_required"
-        assert detail["message"].startswith(NOT_THROUGH_WORKOS)
+        assert detail["message"].startswith(
+            NOT_THROUGH_WORKOS.format(doing=CHANGING_MEMBERS)
+        )
         assert workos.refreshes == []
 
 

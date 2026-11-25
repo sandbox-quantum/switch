@@ -1,12 +1,14 @@
-"""The signed-in admin's own access to their organization's account, for the
-changes its account service takes only from them (`members_service.py`).
+"""The signed-in person's own access to their organization's account, for
+what its account service takes only from them (`members_service.py`):
+changing its members, and creating it.
 
 An admin signs in once, through WorkOS AuthKit, and that sign-in's refresh
 token is kept with the identity session their cookie stands on
 (`gateway/identity_sessions.py`). When a change needs the admin's token for
 the organization, it is renewed from there for that organization alone
 (`IdentitySessions.organization_token`), so nobody is sent to sign in a
-second time to change members. What can go wrong is answered in the
+second time to change members; creating an organization renews one on no
+organization yet. What can go wrong is answered in the
 directory's terms (`organization_directory.py`), so the route says it as it
 says any other directory failure: a sign-in that has ended, or one WorkOS
 won't renew for the organization as it stands, is `DirectorySignInRequired`,
@@ -22,7 +24,12 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from switch_core.db.models import User
-from switch_core.gateway.auth import get_current_user, session_identity
+from switch_core.gateway.auth import (
+    AuthenticatedCaller,
+    get_authenticated_caller,
+    get_current_user,
+    session_identity,
+)
 from switch_core.gateway.dependencies import get_identity_sessions
 from switch_core.gateway.identity_sessions import (
     IdentitySessions,
@@ -31,6 +38,7 @@ from switch_core.gateway.identity_sessions import (
 )
 from switch_core.organization_directory import (
     AdminToken,
+    CreatorToken,
     DirectoryRefusal,
     DirectorySignInRequired,
     DirectoryUnavailable,
@@ -39,22 +47,52 @@ from switch_core.workos_authkit import AuthKitRefused, AuthKitUnavailable
 
 logger = logging.getLogger(__name__)
 
-NOT_THROUGH_WORKOS = (
-    "You didn't sign in through your organization's account. Sign in through "
-    "it to change the organization's members."
-)
-SIGN_IN_ENDED = (
-    "Your sign-in has ended. Sign in again to change the organization's members."
-)
-SIGN_IN_AGAIN = (
-    "Your organization's account needs you to sign in again before you change "
-    "its members."
-)
-REFUSED = (
-    "Your organization's account won't let you change its members as you're "
-    "signed in now."
-)
-UNREACHABLE = "Your organization's account could not be reached."
+CHANGING_MEMBERS = "change the organization's members"
+CREATING_AN_ORGANIZATION = "create an organization"
+
+NOT_THROUGH_WORKOS = "Your sign-in can't {doing}. Sign in again to do it."
+SIGN_IN_ENDED = "Your sign-in has ended. Sign in again to {doing}."
+SIGN_IN_AGAIN = "Sign in again to {doing}: your account asks for it."
+REFUSED = "Your account won't let you {doing} as you're signed in now."
+UNREACHABLE = "Your account could not be reached to {doing}."
+
+
+async def _renew(
+    identity_sessions: IdentitySessions,
+    user_id: str,
+    identity_session: str | None,
+    workos_organization_id: str | None,
+    doing: str,
+) -> str:
+    """The person's token from `IdentitySessions.organization_token`, its
+    failures said in the directory's terms, for `doing`."""
+    if identity_session is None:
+        raise DirectorySignInRequired(NOT_THROUGH_WORKOS.format(doing=doing))
+    try:
+        return await identity_sessions.organization_token(
+            user_id, identity_session, workos_organization_id
+        )
+    except SignInEnded as error:
+        raise DirectorySignInRequired(SIGN_IN_ENDED.format(doing=doing)) from error
+    except OrganizationSignInRequired as error:
+        raise DirectorySignInRequired(SIGN_IN_AGAIN.format(doing=doing)) from error
+    except AuthKitRefused as error:
+        logger.warning(
+            "WorkOS refused to renew user %s's access for %s (%s): %s",
+            user_id,
+            workos_organization_id or "no organization",
+            error.code,
+            error.message,
+        )
+        raise DirectoryRefusal(REFUSED.format(doing=doing)) from error
+    except AuthKitUnavailable as error:
+        logger.warning(
+            "Could not renew user %s's access for %s: %s",
+            user_id,
+            workos_organization_id or "no organization",
+            error.message,
+        )
+        raise DirectoryUnavailable(UNREACHABLE.format(doing=doing)) from error
 
 
 def signed_in_admin_token(
@@ -68,32 +106,33 @@ def signed_in_admin_token(
     identity_session = session_identity(request)
 
     async def renew(workos_organization_id: str) -> str:
-        if identity_session is None:
-            raise DirectorySignInRequired(NOT_THROUGH_WORKOS)
-        try:
-            return await identity_sessions.organization_token(
-                user.id, identity_session, workos_organization_id
-            )
-        except SignInEnded as error:
-            raise DirectorySignInRequired(SIGN_IN_ENDED) from error
-        except OrganizationSignInRequired as error:
-            raise DirectorySignInRequired(SIGN_IN_AGAIN) from error
-        except AuthKitRefused as error:
-            logger.warning(
-                "WorkOS refused to renew user %s's access for organization %s (%s): %s",
-                user.id,
-                workos_organization_id,
-                error.code,
-                error.message,
-            )
-            raise DirectoryRefusal(REFUSED) from error
-        except AuthKitUnavailable as error:
-            logger.warning(
-                "Could not renew user %s's access for organization %s: %s",
-                user.id,
-                workos_organization_id,
-                error.message,
-            )
-            raise DirectoryUnavailable(UNREACHABLE) from error
+        return await _renew(
+            identity_sessions,
+            user.id,
+            identity_session,
+            workos_organization_id,
+            CHANGING_MEMBERS,
+        )
+
+    return renew
+
+
+def signed_in_creator_token(
+    request: Request,
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+) -> CreatorToken:
+    """What gets the signed-in person's token on no organization yet, for
+    creating one, when the directory asks for it."""
+    identity_session = session_identity(request)
+
+    async def renew() -> str:
+        return await _renew(
+            identity_sessions,
+            caller.id,
+            identity_session,
+            None,
+            CREATING_AN_ORGANIZATION,
+        )
 
     return renew

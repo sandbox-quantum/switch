@@ -16,6 +16,12 @@ key, before any lock is taken):
 - `PATCH {url}/v1/auth/tenants/members/{id}` with `{"role": <slug>}`;
 - `DELETE {url}/v1/auth/tenants/members/{id}`.
 
+And one acting on no organization yet: `POST {url}/v1/auth/tenants` with
+`{"name": <name>}` creates the customer's account, a WorkOS organization with
+the caller its `org_admin` and one workspace recorded on it, and answers
+`{"org_id": <id>}`. Each person creates one: asked again, it answers with the
+one they made before, whatever its name.
+
 A refusal comes back as `{"error": <reason>}`.
 """
 
@@ -38,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 # Bounds every call: a route holds locks while it waits.
 MEMBERS_SERVICE_TIMEOUT_SECONDS = 10.0
+# Creating an account sets up the customer's cloud resources before it
+# answers, which the service itself allows a minute for; nothing is locked
+# meanwhile.
+TENANT_CREATION_TIMEOUT_SECONDS = 90.0
 
 SIGN_IN_AGAIN = (
     "Your access to your organization's account ran out. Sign in again to "
@@ -71,6 +81,28 @@ class MembersService:
             "DELETE", f"/v1/auth/tenants/members/{membership_id}", access_token
         )
 
+    async def create_tenant(self, access_token: str, name: str) -> str:
+        """Create the caller's account named `name`, or find the one they
+        created before, and answer its WorkOS organization's id."""
+        response = await self._call(
+            "POST",
+            "/v1/auth/tenants",
+            access_token,
+            json={"name": name},
+            timeout=TENANT_CREATION_TIMEOUT_SECONDS,
+        )
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        organization_id = body.get("org_id") if isinstance(body, dict) else None
+        if not isinstance(organization_id, str) or not organization_id:
+            raise DirectoryUnavailable(
+                "The members service created the organization but didn't say "
+                "which it is."
+            )
+        return organization_id
+
     async def _call(
         self,
         method: str,
@@ -78,14 +110,15 @@ class MembersService:
         access_token: str,
         *,
         json: dict[str, str] | None = None,
-    ) -> None:
+        timeout: float = MEMBERS_SERVICE_TIMEOUT_SECONDS,
+    ) -> httpx.Response:
         try:
             response = await self._http.request(
                 method,
                 f"{self._url}{path}",
                 json=json,
                 headers={"Authorization": f"Bearer {access_token}"},
-                timeout=MEMBERS_SERVICE_TIMEOUT_SECONDS,
+                timeout=timeout,
             )
         except httpx.HTTPError as error:
             raise DirectoryUnavailable(
@@ -117,6 +150,7 @@ class MembersService:
             raise DirectoryUnavailable(
                 f"The members service answered {response.status_code}."
             )
+        return response
 
 
 def _ran_out(access_token: str) -> bool:

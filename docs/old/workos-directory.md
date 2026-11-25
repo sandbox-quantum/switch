@@ -230,6 +230,33 @@ told to have someone made one in the organization's account settings.
 
 Adding someone new to a linked organization from Switch is still refused.
 
+## Creating an organization
+
+With `MEMBERS_SERVICE_URL` set, an organization someone creates in Switch
+(`POST /organizations`, the dashboard's onboarding) is created through the
+service first, with the creator's own token renewed from their sign-in as
+above, on no organization yet: `POST /v1/auth/tenants` with `{"name": ...}`
+creates the customer's account, a WorkOS organization with the creator its
+`org_admin`, and answers its id. Switch reads that organization back with its
+API key and links it at once: the customer id from its `tenant_id` metadata,
+the WorkOS organization's own name, and the id of the one workspace the
+service records in its `workspaces` metadata. The service creates one account
+per person and answers a second request with the first, whatever its name, so
+Switch uses the name WorkOS has, and refuses with 409, naming it, when it
+already follows that organization. Creating an account can take a minute
+while the service sets up the customer's resources; Switch waits up to 90
+seconds. If Switch then can't create its own rows, nothing is taken back from
+WorkOS (the service deletes no account): creating it again links the same
+one.
+
+A linked organization has exactly one workspace, as the other products
+sharing the environment have it. It is created with the organization, named
+`Default` whatever was asked, keeps the service's id for it
+(`tenants.directory_workspace_id`), and can be renamed in Switch, which the
+service does not hear of yet. Adding a workspace to a linked organization is
+refused, and so is deleting its only workspace. An organization linked
+earlier with several workspaces keeps them.
+
 ## When a customer leaves
 
 Deleting a customer's organization in WorkOS doesn't delete anything in
@@ -255,8 +282,7 @@ waiting for something outside Switch; run the same command again later.
 On a linked organization's Organization page, the Members section says that
 its members and Org Admins come from the organization's account settings
 (WorkOS). With changes sent to WorkOS (above), it offers every change but
-adding someone, and says the admin may be asked to confirm their sign-in
-there. Without, it does not offer making a member Org Admin; removing someone
+adding someone, and says the admin may be asked to sign in again. Without, it does not offer making a member Org Admin; removing someone
 or making an Org Admin a Member is still offered: it ends their access at
 once, and the page says it lasts only until WorkOS is read again (their next
 sign-in, or the daily check) unless the same change is made there. The
@@ -272,6 +298,8 @@ anyone new to it.
   WorkOS (above), making someone Org Admin is refused too, and a removal or
   demotion changes only Switch; whatever WorkOS still grants comes back at
   the next sign-in or check.
-- A new organization created on the server, by an operator or by someone
-  signing up under `open`, is Switch's own until it is linked. Creating it in
-  WorkOS too is not built.
+- Without `MEMBERS_SERVICE_URL`, a new organization created on the server,
+  by an operator or by someone signing up under `open`, is Switch's own until
+  it is linked.
+- A workspace renamed in Switch keeps its old name in the service's records,
+  which have no way to rename it yet.

@@ -92,9 +92,11 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.admin_tokens import signed_in_creator_token
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     AuthenticatedSession,
+    every_workspace_of,
     get_authenticated_caller,
     get_authenticated_session,
     get_authenticated_user_id,
@@ -194,8 +196,10 @@ from switch_core.gateway.schemas import (
 from switch_core.gateway.service_connections import service_refusal
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
+    ONLY_WORKSPACE,
     create_organization_for,
     directory_failed,
+    keeps_one_workspace,
     refuse_a_workspace_name_taken,
 )
 from switch_core.invitation_revocation import revoke_invitations_made_by
@@ -204,7 +208,11 @@ from switch_core.organization_access import (
     removal_heir,
     remove_membership,
 )
-from switch_core.organization_directory import DirectoryError, OrganizationDirectory
+from switch_core.organization_directory import (
+    CreatorToken,
+    DirectoryError,
+    OrganizationDirectory,
+)
 from switch_core.private_channel_rooms import PrivateChannelRooms, notice_poster
 from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_after_commit, emit_safely
@@ -504,6 +512,7 @@ async def create_tenant(
     ],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    creator_token: Annotated[CreatorToken, Depends(signed_in_creator_token)],
 ) -> TenantMembershipResponse:
     """`POST /organizations` under its old name, kept for one release for
     clients that still call it: an organization and its first workspace, both
@@ -520,6 +529,7 @@ async def create_tenant(
         organization_directory,
         client_lifecycle,
         config,
+        creator_token,
         name=req.name,
         workspace_name=req.name,
         signed_in=session_signed_in(request),
@@ -639,9 +649,13 @@ async def delete_tenant(
     user: Annotated[User, Depends(get_current_user)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
-    """Delete the bound workspace, once it has been emptied.
+    """Delete the bound workspace, once it has been emptied. Not the only
+    workspace of an organization that keeps one (`keeps_one_workspace`).
 
     Its admins only, by their own admin membership: not the deployment
     operator's bypass, and not an organization admin acting as one, since
@@ -667,6 +681,18 @@ async def delete_tenant(
         raise HTTPException(
             status_code=400, detail="That name doesn't match this workspace."
         )
+    organization = (
+        None
+        if tenant.organization_id is None
+        else await session.get(Organization, tenant.organization_id)
+    )
+    if (
+        organization is not None
+        and keeps_one_workspace(organization_directory, organization)
+        and [t.id for t in await every_workspace_of(session_factory, organization.id)]
+        == [tenant_id]
+    ):
+        raise HTTPException(status_code=409, detail=ONLY_WORKSPACE)
     try:
         key_hashes = await delete_workspace(session, tenant_id, user.id, user.id)
     except WorkspaceDeletionRefused as refused:

@@ -135,3 +135,49 @@ class TestRefusals:
 
         with pytest.raises(DirectoryUnavailable, match="its host does not resolve"):
             await _service(handler).remove(TOKEN, "om_1")
+
+
+class TestCreatingAnAccount:
+    async def test_it_is_created_with_the_creators_token_and_answers_its_organization(
+        self,
+    ) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(201, json={"org_id": "org_NEW"})
+
+        created = await _service(handler).create_tenant(TOKEN, "Acme")
+
+        assert created == "org_NEW"
+        [request] = seen
+        assert (request.method, request.url.path) == ("POST", "/v1/auth/tenants")
+        assert request.headers["Authorization"] == f"Bearer {TOKEN}"
+        assert json.loads(request.content) == {"name": "Acme"}
+
+    async def test_a_name_it_refuses_says_why(self) -> None:
+        with pytest.raises(DirectoryRefusal, match="64 characters or fewer"):
+            await _service(
+                lambda request: httpx.Response(
+                    422, json={"error": "name must be 64 characters or fewer"}
+                )
+            ).create_tenant(TOKEN, "A" * 70)
+
+    async def test_an_answer_naming_no_organization_is_unavailable(self) -> None:
+        with pytest.raises(DirectoryUnavailable, match="didn't say which"):
+            await _service(lambda request: httpx.Response(201, json={})).create_tenant(
+                TOKEN, "Acme"
+            )
+
+    async def test_it_is_given_the_time_creating_takes(self) -> None:
+        timeouts: list[object] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            timeouts.append(request.extensions["timeout"])
+            return httpx.Response(201, json={"org_id": "org_NEW"})
+
+        await _service(handler).create_tenant(TOKEN, "Acme")
+
+        assert timeouts == [
+            {"connect": 90.0, "read": 90.0, "write": 90.0, "pool": 90.0}
+        ]

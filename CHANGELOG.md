@@ -266,6 +266,15 @@ version of their own to them without also giving them a release of their own.
   `/gateway/auth/workos/...` routes are gone: the Helm chart refuses
   `switchCore.organizationDirectory.workosRedirectUrl`, and its callback can
   come off the AuthKit application.
+- **Organizations created in Switch are created in WorkOS too, with one
+  workspace.** With `MEMBERS_SERVICE_URL` set, creating an organization goes
+  through the members service with the creator's own token, and Switch links
+  the WorkOS organization it makes at once, so the account exists in every
+  product sharing the environment. The service makes one per person: asked
+  again it answers with the first, which Switch refuses with 409 when it
+  already follows it. A linked organization has exactly one workspace,
+  `Default`, which can be renamed in Switch but not deleted; adding another
+  is refused. Organizations linked earlier keep the workspaces they have.
 - **A message in a busy chat no longer costs every member's Console stream a
   database pass of its own at the same instant.** Chat stream passes hold at
   most a quarter of the process's database pool at once, and a pass over that

@@ -30,10 +30,21 @@ from switch_core.db.models import Organization, User
 @dataclass(frozen=True)
 class DirectoryOrganization:
     """What a new organization is known by in the directory, kept on its
-    `organizations` row. Both None for an organization Switch keeps itself."""
+    `organizations` row: all None for an organization Switch keeps itself.
+    `name` is the directory's name for it, which can differ from the name
+    asked for when the directory answers with one the creator made before;
+    `workspace_id` is the directory's id for the organization's one
+    workspace, kept on the workspace Switch makes for it."""
 
     workos_organization_id: str | None
     customer_id: str | None
+    name: str | None
+    workspace_id: str | None
+
+
+NOT_IN_A_DIRECTORY = DirectoryOrganization(
+    workos_organization_id=None, customer_id=None, name=None, workspace_id=None
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,10 @@ class DirectorySignInRequired(DirectoryError):
     (`gateway/admin_tokens.py`): they sign in again and try again. Raised
     before anything is changed."""
 
+
+#: Gets the access token the directory issues the person creating an
+#: organization, on no organization yet. Raises as `AdminToken` does.
+CreatorToken = Callable[[], Awaitable[str]]
 
 #: Gets the access token the directory issues the admin making a change, for
 #: the directory's organization it is given, when the change needs one.
@@ -143,10 +158,12 @@ class OrganizationDirectory(Protocol):
         ...
 
     async def create_organization(
-        self, creator: User, name: str
+        self, creator: User, name: str, creator_token: CreatorToken
     ) -> DirectoryOrganization:
         """Record a new organization named `name`, with `creator` its
-        `org_admin`, before its rows are written."""
+        `org_admin`, before its rows are written. Where the directory takes it
+        only from the creator, `creator_token` gets their token for it, and
+        its errors are raised as they are."""
         ...
 
     async def discard_organization(self, organization: DirectoryOrganization) -> None:
@@ -205,9 +222,9 @@ class LocalDirectory:
         return None
 
     async def create_organization(
-        self, creator: User, name: str
+        self, creator: User, name: str, creator_token: CreatorToken
     ) -> DirectoryOrganization:
-        return DirectoryOrganization(workos_organization_id=None, customer_id=None)
+        return NOT_IN_A_DIRECTORY
 
     async def discard_organization(self, organization: DirectoryOrganization) -> None:
         return None

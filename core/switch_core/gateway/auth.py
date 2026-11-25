@@ -1459,8 +1459,12 @@ def describe_session_state(
     tenants_isolated: bool,
     can_manage_connector_apps: bool,
     connector_apps_in_dashboard: bool,
+    one_workspace_organizations: frozenset[str],
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
+    `one_workspace_organizations` are those of the caller's organizations
+    that have exactly one workspace, never added to
+    (`workspace_creation.keeps_one_workspace`).
 
     Follows its order exactly — a claim is honoured only if it names one of
     `tenants`, or is the workspace the platform operator entered
@@ -1508,7 +1512,8 @@ def describe_session_state(
         can_add_workspace=tenants_isolated
         and tenant is not None
         and tenant.organization_role == ORGANIZATION_ADMIN_ROLE
-        and refusal(False) is None,
+        and refusal(False) is None
+        and tenant.organization_id not in one_workspace_organizations,
         invite_email_enabled=config.invite_email_enabled,
         can_manage_connector_apps=can_manage_connector_apps,
         connector_apps_in_dashboard=connector_apps_in_dashboard,

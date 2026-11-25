@@ -71,7 +71,10 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.room_store import RoomStore, readable_by
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.admin_tokens import signed_in_admin_token
+from switch_core.gateway.admin_tokens import (
+    signed_in_admin_token,
+    signed_in_creator_token,
+)
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     get_authenticated_caller,
@@ -122,9 +125,12 @@ from switch_core.gateway.schemas import (
 from switch_core.gateway.service_connections import service_refusal
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
+    ONE_WORKSPACE,
     create_organization_for,
     create_workspace,
     directory_failed,
+    directory_sign_in_required,
+    keeps_one_workspace,
     lock_workspace_allowance,
     refuse_a_workspace_name_taken,
 )
@@ -143,6 +149,7 @@ from switch_core.organization_admin_notices import (
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
     AdminToken,
+    CreatorToken,
     DirectoryError,
     DirectorySignInRequired,
     MemberChange,
@@ -474,6 +481,7 @@ async def create_organization(
     ],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    creator_token: Annotated[CreatorToken, Depends(signed_in_creator_token)],
 ) -> OrganizationCreateResponse:
     """Create an organization with its first workspace. The caller becomes the
     organization's `org_admin` and the workspace's `admin`, and their session
@@ -495,6 +503,7 @@ async def create_organization(
         organization_directory,
         client_lifecycle,
         config,
+        creator_token,
         name=req.name,
         workspace_name=req.workspace_name or req.name,
         signed_in=session_signed_in(request),
@@ -689,6 +698,9 @@ async def create_organization_workspace(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> TenantMembershipResponse:
@@ -700,11 +712,17 @@ async def create_organization_workspace(
     refused where the deployment allows none, but not by `invite_only`
     sign-up, which governs who comes onto the server rather than what an
     organization adds. The platform operator is exempt, as everywhere.
+    Refused, 409, for an organization that keeps one workspace
+    (`keeps_one_workspace`).
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
     organization_id = access.organization_id
+    if keeps_one_workspace(
+        organization_directory, await _organization(session, organization_id)
+    ):
+        raise HTTPException(status_code=409, detail=ONE_WORKSPACE)
     await refuse_a_workspace_name_taken(
         session, session_factory, organization_id, req.name, renaming=None
     )
@@ -971,20 +989,11 @@ def _sign_in_required(
     outcome: str,
     access_ended: bool,
 ) -> HTTPException:
-    """403 the dashboard tells apart by its `error`: it sends the admin
-    through the sign-in again, to the directory's organization
-    (`organization_id`) so that its own way of signing in applies, and back to
-    make the change again (`gateway/admin_tokens.py`). With `access_ended`,
-    part of the change was made already, so the dashboard says so before it
-    sends them anywhere."""
-    return HTTPException(
-        status_code=403,
-        detail={
-            "error": "directory_sign_in_required",
-            "message": f"{error.message} {outcome}",
-            "access_ended": access_ended,
-            "organization_id": organization.workos_organization_id,
-        },
+    return directory_sign_in_required(
+        error,
+        workos_organization_id=organization.workos_organization_id,
+        outcome=outcome,
+        access_ended=access_ended,
     )
 
 

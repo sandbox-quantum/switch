@@ -35,7 +35,8 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
-from switch_core.db.models import TENANT_ZERO_ID, ExternalUser, User
+from switch_core.db.models import TENANT_ZERO_ID, ExternalUser, Organization, User
+from switch_core.db.session_scope import organization_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -89,6 +90,7 @@ from switch_core.gateway.dependencies import (
     get_external_user_store,
     get_identity_sessions,
     get_organization_admin_notices,
+    get_organization_directory,
     get_organization_store,
     get_protocol,
     get_resource_service,
@@ -127,12 +129,15 @@ from switch_core.gateway.schemas import (
     SignupMachine,
     SignupRequest,
     SignupResponse,
+    TenantMembershipResponse,
     UpdateMeRequest,
 )
 from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
+from switch_core.gateway.workspace_creation import keeps_one_workspace
 from switch_core.observability.catalogue import AUTH_SIGN_IN_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.organization_admin_notices import OrganizationAdminNotices
+from switch_core.organization_directory import OrganizationDirectory
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
@@ -590,6 +595,9 @@ async def session_state(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
 ) -> SessionStateResponse:
     """Who is signed in, which workspace this session is in, and — when it
     is in none — what would get it into one.
@@ -619,7 +627,27 @@ async def session_state(
         can_manage_connector_apps=await deployment_manager(session_factory, user)
         is not None,
         connector_apps_in_dashboard=await connector_apps_in_dashboard(session_factory),
+        one_workspace_organizations=await _one_workspace_organizations(
+            session_factory, organization_directory, tenants
+        ),
     )
+
+
+async def _one_workspace_organizations(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    tenants: list[TenantMembershipResponse],
+) -> frozenset[str]:
+    """Those of the organizations of `tenants` that keep one workspace."""
+    keeping: set[str] = set()
+    for organization_id in {t.organization_id for t in tenants if t.organization_id}:
+        async with organization_session(session_factory, organization_id) as session:
+            organization = await session.get(Organization, organization_id)
+        if organization is not None and keeps_one_workspace(
+            organization_directory, organization
+        ):
+            keeping.add(organization_id)
+    return frozenset(keeping)
 
 
 @router.get("/auth/me")

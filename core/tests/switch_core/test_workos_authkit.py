@@ -492,3 +492,18 @@ async def test_a_refresh_workos_is_too_busy_for_can_be_tried_again() -> None:
         await _authkit(lambda request: httpx.Response(503)).refresh(
             "kept-refresh", "org_B"
         )
+
+
+async def test_a_refresh_for_no_organization_takes_the_session_as_it_stands() -> None:
+    sent: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(
+            200, json=authenticated(access_token=organization_token(None))
+        )
+
+    tokens = await _authkit(handler).refresh("kept-refresh", None)
+
+    assert "organization_id" not in sent[0]
+    assert tokens.refresh_token == "refresh-placeholder"

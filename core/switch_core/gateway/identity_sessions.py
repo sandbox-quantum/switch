@@ -243,12 +243,13 @@ class IdentitySessions:
     # ── Acting for the person ────────────────────────────────────────────────
 
     async def organization_token(
-        self, user_id: str, identity_session: str, workos_organization_id: str
+        self, user_id: str, identity_session: str, workos_organization_id: str | None
     ) -> str:
         """An access token WorkOS issues this person for
-        `workos_organization_id`, good for minutes, renewed from the refresh
-        token kept with the identity session their cookie stands on, which is
-        replaced with the one WorkOS rotates it to.
+        `workos_organization_id` (with None, for the person as the session
+        stands, to act on no organization yet), good for minutes, renewed from
+        the refresh token kept with the identity session their cookie stands
+        on, which is replaced with the one WorkOS rotates it to.
 
         Raises `SignInEnded` when that session has ended, here or at WorkOS
         (whose refusal ends it here too), and `OrganizationSignInRequired`

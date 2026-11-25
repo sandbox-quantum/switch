@@ -8,6 +8,7 @@ from switch_core.db.models import Organization, OrganizationMember, User
 
 # Postgres's default name for `organizations.slug`'s unique constraint.
 _SLUG_CONSTRAINT = "organizations_slug_key"
+_DIRECTORY_CONSTRAINT = "organizations_workos_organization_id_key"
 
 
 class OrganizationSlugTaken(Exception):
@@ -16,6 +17,18 @@ class OrganizationSlugTaken(Exception):
     def __init__(self, slug: str) -> None:
         super().__init__(f"Organization slug {slug!r} is taken")
         self.slug = slug
+
+
+class OrganizationFollowedAlready(Exception):
+    """Another organization follows the same one in the directory. Nothing
+    was written."""
+
+    def __init__(self, workos_organization_id: str) -> None:
+        super().__init__(
+            f"An organization already follows WorkOS organization "
+            f"{workos_organization_id!r}"
+        )
+        self.workos_organization_id = workos_organization_id
 
 
 def _violated_constraint(err: IntegrityError) -> str | None:
@@ -36,15 +49,22 @@ class OrganizationStore:
     ) -> Organization:
         """Insert `organization`, on a session bound to its own id.
 
-        A taken slug raises `OrganizationSlugTaken`; every other integrity
-        error propagates as it is.
+        A taken slug raises `OrganizationSlugTaken`, and a directory
+        organization another already follows `OrganizationFollowedAlready`;
+        every other integrity error propagates as it is.
         """
         session.add(organization)
         try:
             await session.flush()
         except IntegrityError as err:
-            if _violated_constraint(err) == _SLUG_CONSTRAINT:
+            violated = _violated_constraint(err)
+            if violated == _SLUG_CONSTRAINT:
                 raise OrganizationSlugTaken(organization.slug) from err
+            if violated == _DIRECTORY_CONSTRAINT:
+                assert organization.workos_organization_id is not None
+                raise OrganizationFollowedAlready(
+                    organization.workos_organization_id
+                ) from err
             raise
         return organization
 

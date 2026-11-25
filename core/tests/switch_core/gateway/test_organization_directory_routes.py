@@ -31,6 +31,7 @@ from switch_core.gateway import tenants
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
     AdminToken,
+    CreatorToken,
     DirectoryError,
     DirectoryOrganization,
     DirectoryRefusal,
@@ -86,11 +87,14 @@ class _Directory:
         return True
 
     async def create_organization(
-        self, creator: User, name: str
+        self, creator: User, name: str, creator_token: CreatorToken
     ) -> DirectoryOrganization:
         self._answer("create", creator.id, name)
         return DirectoryOrganization(
-            workos_organization_id="org_EXAMPLE", customer_id="customer-example"
+            workos_organization_id="org_EXAMPLE",
+            customer_id="customer-example",
+            name=None,
+            workspace_id=None,
         )
 
     async def discard_organization(self, organization: DirectoryOrganization) -> None:

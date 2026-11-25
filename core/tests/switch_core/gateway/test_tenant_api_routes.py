@@ -84,6 +84,7 @@ from switch_core.gateway.auth import (
     create_jwt,
     decode_jwt,
 )
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.gateway.invite_mail import (
     InviteEmail,
     InviteEmailFailed,
@@ -198,6 +199,7 @@ def _app(
         client_lifecycle or _FakeClientLifecycle(session_factory)
     )
     app.state.sign_in_flows = SignInFlows(session_factory, _KEYRING)
+    app.state.identity_sessions = IdentitySessions(session_factory, None, _KEYRING)
     app.state.service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=_KEYRING,

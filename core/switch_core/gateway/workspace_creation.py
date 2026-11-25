@@ -34,6 +34,7 @@ from switch_core.db.audit import (
 from switch_core.db.models import Organization, Tenant, User
 from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.organization_store import (
+    OrganizationFollowedAlready,
     OrganizationSlugTaken,
     OrganizationStore,
 )
@@ -53,9 +54,11 @@ from switch_core.gateway.schemas import (
     TenantMembershipResponse,
 )
 from switch_core.organization_directory import (
+    CreatorToken,
     DirectoryError,
     DirectoryOrganization,
     DirectoryRefusal,
+    DirectorySignInRequired,
     OrganizationDirectory,
 )
 from switch_core.telemetry import emit_safely
@@ -70,6 +73,26 @@ _SLUG_INVALID_CHARS = re.compile(r"[^a-z0-9]+")
 _SLUG_ATTEMPTS = 4
 
 _LOCK_NOT_AVAILABLE = "55P03"
+
+# The one workspace of an organization the directory keeps, as the directory
+# names it too; renamed in Switch only.
+DEFAULT_WORKSPACE_NAME = "Default"
+ONE_WORKSPACE = (
+    "This organization is kept in its account settings, where it has one "
+    "workspace. Rename that workspace rather than add another."
+)
+ONLY_WORKSPACE = (
+    "This is the organization's only workspace, kept for as long as the "
+    "organization is. Rename it rather than delete it."
+)
+
+
+def keeps_one_workspace(
+    organization_directory: OrganizationDirectory, organization: Organization
+) -> bool:
+    """Whether `organization` has exactly one workspace, never added to or
+    deleted: one the directory keeps, as every product sharing it has it."""
+    return organization_directory.keeps_members_of(organization)
 
 
 def _derive_slug(name: str) -> str:
@@ -94,6 +117,30 @@ def _slugs(name: str) -> list[str]:
     return [base] + [
         f"{base}-{secrets.token_hex(2)}" for _ in range(_SLUG_ATTEMPTS - 1)
     ]
+
+
+def directory_sign_in_required(
+    error: DirectorySignInRequired,
+    *,
+    workos_organization_id: str | None,
+    outcome: str,
+    access_ended: bool,
+) -> HTTPException:
+    """403 the dashboard tells apart by its `error`: it sends the person
+    through the sign-in again, to the directory's organization when there is
+    one (`organization_id`) so that its own way of signing in applies, and
+    back to do it again (`gateway/admin_tokens.py`). With `access_ended`,
+    part of a change was made already, so the dashboard says so before it
+    sends them anywhere."""
+    return HTTPException(
+        status_code=403,
+        detail={
+            "error": "directory_sign_in_required",
+            "message": f"{error.message} {outcome}",
+            "access_ended": access_ended,
+            "organization_id": workos_organization_id,
+        },
+    )
 
 
 def directory_failed(error: DirectoryError, outcome: str) -> HTTPException:
@@ -230,6 +277,7 @@ async def create_organization_for(
     organization_directory: OrganizationDirectory,
     client_lifecycle: ClientLifecycleService,
     config: SwitchConfig,
+    creator_token: CreatorToken,
     *,
     name: str,
     workspace_name: str,
@@ -265,9 +313,17 @@ async def create_organization_for(
             organization_directory,
             client_lifecycle,
             user,
+            creator_token,
             name,
             workspace_name,
         )
+    except DirectorySignInRequired as error:
+        raise directory_sign_in_required(
+            error,
+            workos_organization_id=None,
+            outcome=NOTHING_CHANGED,
+            access_ended=False,
+        ) from None
     except DirectoryError as error:
         raise directory_failed(error, NOTHING_CHANGED) from None
     if allowance is not None:
@@ -310,6 +366,7 @@ async def create_organization(
     organization_directory: OrganizationDirectory,
     client_lifecycle: ClientLifecycleService,
     creator: User,
+    creator_token: CreatorToken,
     name: str,
     workspace_name: str,
 ) -> tuple[Organization, Tenant]:
@@ -321,11 +378,24 @@ async def create_organization(
     row keeps what the directory knows it by; a `DirectoryError` there leaves
     nothing written. If Switch's rows then cannot be created, for any reason,
     the directory is asked to discard it again.
+
+    An organization the directory keeps has exactly one workspace, named
+    `DEFAULT_WORKSPACE_NAME` whatever was asked, which keeps the directory's
+    id for it, and the directory's name for the organization: asked again, it
+    answers with the one the creator made before. One an organization here
+    already follows is refused, as the directory allows each person one.
     """
     # Both names are checked before anything is written.
+    _slugs(workspace_name)
+    _slugs(name)
+    recorded = await organization_directory.create_organization(
+        creator, name, creator_token
+    )
+    if recorded.workos_organization_id is not None:
+        name = recorded.name or name
+        workspace_name = DEFAULT_WORKSPACE_NAME
     workspace_slugs = _slugs(workspace_name)
     organization_slugs = _slugs(name)
-    recorded = await organization_directory.create_organization(creator, name)
     try:
         return await _create_organization_rows(
             session_factory,
@@ -339,6 +409,13 @@ async def create_organization(
             workspace_name,
             workspace_slugs,
         )
+    except OrganizationFollowedAlready:
+        # The directory answered with the one the creator made before, which
+        # an organization here follows already: nothing was made to discard.
+        raise DirectoryRefusal(
+            f"You've already created an organization, {name}, and each person "
+            "creates one."
+        ) from None
     except BaseException:
         try:
             await organization_directory.discard_organization(recorded)
@@ -391,6 +468,13 @@ async def _create_organization_rows(
         tenant = await _create_tenant(
             client_lifecycle, organization.id, workspace_name, workspace_slugs
         )
+        if recorded.workspace_id is not None:
+            async with tenant_session(session_factory, tenant.id) as session:
+                bound = await session.get(Tenant, tenant.id)
+                assert bound is not None
+                bound.directory_workspace_id = recorded.workspace_id
+                await session.commit()
+            tenant.directory_workspace_id = recorded.workspace_id
     except BaseException:
         # A failure after the workspace committed leaves it referencing the
         # organization, and the discard is refused; the workspace's own

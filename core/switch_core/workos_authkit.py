@@ -372,20 +372,21 @@ class AuthKit:
                     f"WorkOS answered {path} with an unreadable cursor."
                 )
 
-    async def refresh(self, refresh_token: str, organization_id: str) -> AuthKitTokens:
-        """Renew a session's access for `organization_id`. WorkOS rotates the
-        refresh token, and replaying the one spent within its grace period
-        gives the same answer, so two refreshes at once agree. Raises
-        `AuthKitRefused` when WorkOS refuses: `invalid_grant` for a session
-        that has ended, another code for an organization the session may not
-        act in as it stands."""
-        body = await self._authenticate(
-            {
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "organization_id": organization_id,
-            }
-        )
+    async def refresh(
+        self, refresh_token: str, organization_id: str | None
+    ) -> AuthKitTokens:
+        """Renew a session's access: for `organization_id`, or with None for
+        the person themselves, as the session stands (for an action on no
+        organization yet, such as creating one). WorkOS rotates the refresh
+        token, and replaying the one spent within its grace period gives the
+        same answer, so two refreshes at once agree. Raises `AuthKitRefused`
+        when WorkOS refuses: `invalid_grant` for a token it no longer takes,
+        another code for an organization the session may not act in as it
+        stands."""
+        grant = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+        if organization_id is not None:
+            grant["organization_id"] = organization_id
+        body = await self._authenticate(grant)
         if isinstance(body, AuthKitRefused):
             raise body
         access_token = body.get("access_token")
@@ -398,9 +399,11 @@ class AuthKit:
             raise AuthKitUnavailable(
                 "WorkOS answered a refresh with an unreadable access token."
             ) from error
-        if claims.get("org_id") != organization_id or not isinstance(
-            claims.get("exp"), int
-        ):
+        if not isinstance(claims.get("exp"), int):
+            raise AuthKitUnavailable(
+                "WorkOS answered a refresh with an access token that never expires."
+            )
+        if organization_id is not None and claims.get("org_id") != organization_id:
             raise AuthKitUnavailable(
                 "WorkOS renewed the session for another organization than asked."
             )

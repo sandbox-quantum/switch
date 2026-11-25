@@ -44,7 +44,9 @@ from switch_core.db.models import Organization, User
 from switch_core.members_service import MembersService
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
+    NOT_IN_A_DIRECTORY,
     AdminToken,
+    CreatorToken,
     DirectoryMembership,
     DirectoryOrganization,
     DirectoryRefusal,
@@ -64,6 +66,8 @@ _PAGE = 100
 # `organizations.customer_id` when an organization is linked, never trusted
 # to link one.
 CUSTOMER_ID_KEY = "tenant_id"
+# The metadata key a customer's account records its workspaces under, as JSON.
+WORKSPACES_KEY = "workspaces"
 
 NOT_FROM_SWITCH_YET = (
     "This organization's members are managed in your organization's account "
@@ -81,6 +85,25 @@ MEMBER_ROLE_IN_WORKOS = "viewer"
 _KNOWN_WORKOS_ROLES = frozenset(
     {ORGANIZATION_ADMIN_ROLE, MEMBER_ROLE_IN_WORKOS, "admin", "editor"}
 )
+
+
+def workspace_id_of(organization: dict[str, Any]) -> str | None:
+    """The id of the one workspace a customer's account records on its WorkOS
+    organization (`WORKSPACES_KEY`, a JSON list of `{"id", "name"}`), or None
+    if it records none Switch can read."""
+    metadata = organization.get("metadata")
+    listed = metadata.get(WORKSPACES_KEY) if isinstance(metadata, dict) else None
+    if not isinstance(listed, str):
+        return None
+    try:
+        workspaces = json.loads(listed)
+    except ValueError:
+        return None
+    if not isinstance(workspaces, list) or not workspaces:
+        return None
+    first = workspaces[0]
+    workspace_id = first.get("id") if isinstance(first, dict) else None
+    return workspace_id if isinstance(workspace_id, str) and workspace_id else None
 
 
 def customer_id_of(organization: dict[str, Any]) -> str | None:
@@ -419,12 +442,37 @@ class WorkOSDirectory:
         return organization.workos_organization_id is not None
 
     async def create_organization(
-        self, creator: User, name: str
+        self, creator: User, name: str, creator_token: CreatorToken
     ) -> DirectoryOrganization:
-        return DirectoryOrganization(workos_organization_id=None, customer_id=None)
+        """Through the members service, the customer's account in WorkOS,
+        created with the creator's own token and read back with the API key:
+        its name (that of the one they made before, if they did), its
+        customer and its one workspace. Without the service, Switch's own
+        until an operator links it."""
+        if self._members is None:
+            return NOT_IN_A_DIRECTORY
+        workos_organization_id = await self._members.create_tenant(
+            await creator_token(), name
+        )
+        organization = await self.organization(workos_organization_id)
+        listed_name = organization.get("name")
+        return DirectoryOrganization(
+            workos_organization_id=workos_organization_id,
+            customer_id=customer_id_of(organization),
+            name=listed_name if isinstance(listed_name, str) and listed_name else None,
+            workspace_id=workspace_id_of(organization),
+        )
 
     async def discard_organization(self, organization: DirectoryOrganization) -> None:
-        return None
+        """Nothing is taken back from WorkOS: the service deletes no account.
+        Creating it again finds the same one, and links it then."""
+        if organization.workos_organization_id is not None:
+            logger.warning(
+                "WorkOS organization %s was created for an organization Switch "
+                "then failed to create; it is left in WorkOS, and creating the "
+                "organization again links it",
+                organization.workos_organization_id,
+            )
 
     async def join(self, organization: Organization, user_id: str, role: str) -> None:
         if organization.workos_organization_id is None:
