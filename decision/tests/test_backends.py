@@ -822,6 +822,25 @@ def test_decide_via_gemini_uses_the_lead_rule(monkeypatch):
     assert abs(body["lead"] - 0.073) < 1e-9 and body["reason"] == ""
 
 
+@pytest.mark.parametrize(
+    "scores",
+    [
+        {"deploy-bot": 1.4, "nobody": 0.2},
+        {"deploy-bot": 0.3, "nobody": -0.4},
+        {"deploy-bot": True, "nobody": 0.2},
+    ],
+)
+def test_decide_via_gemini_rejects_invalid_probabilities(monkeypatch, scores):
+    tc = _client(
+        monkeypatch,
+        lambda _: httpx.Response(200, json=_gemini_answer("deploy-bot", scores)),
+    )
+    monkeypatch.setattr(app_module, "settings", _gemini_settings(min_lead=0.05))
+    response = tc.post("/decide", json=_payload())
+    assert response.status_code == 502
+    assert response.json()["error_kind"] == "model_server_error"
+
+
 def test_decide_via_gemini_nobody_on_top_is_nobody(monkeypatch):
     tc = _client(
         monkeypatch,
