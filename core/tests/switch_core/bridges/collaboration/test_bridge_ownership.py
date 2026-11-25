@@ -27,6 +27,7 @@ from sqlalchemy.pool import NullPool
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -912,6 +913,82 @@ class TestHandingOver:
             "heard after",
         ]
 
+    async def test_a_post_read_back_after_it_was_handled_is_not_handled_again(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The read-back hands on again what the last holder heard just
+        before it let go. Its rows are written once, and what handling a post
+        does besides (a card answer, a Switch Trust check and its notice, an
+        upload) does not run again either."""
+        handled: list[str] = []
+        handle = CollaborationCore._handle_inbound_message
+
+        async def counting(core: CollaborationCore, msg: InboundMessage) -> str | None:
+            handled.append(msg.message_ref)
+            return await handle(core, msg)
+
+        monkeypatch.setattr(CollaborationCore, "_handle_inbound_message", counting)
+        await _reading(session_factory, bridge)
+        holder, other = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await platform.say(user_id="U1", text="heard", ref="m1")
+        await holder.stop()
+        platform.say_unheard(user_id="U1", text="missed", ref="m2")
+        await other.ownership.balance()
+        taken = other.bridges.get(bridge.bridge_id)
+        assert taken is not None
+        await _eventually(lambda: _read_back_by(platform, taken.adapter) is not None)
+
+        assert handled == ["m1", "m2"]
+        person = await _person(session_factory, bridge)
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "heard",
+            "missed",
+        ]
+
+    async def test_a_bridge_turned_back_on_reads_nothing_back(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """What was said while a bridge was paused is not bridged in when it
+        is turned back on: nobody wanted it heard."""
+        await _reading(session_factory, bridge)
+        await _boot_two(postgres_url, session_factory, processes)
+
+        await _set_status(session_factory, bridge, "inactive")
+        for process in processes:
+            await process.bridges.reconcile_bridge(bridge.bridge_id)
+        await _eventually(lambda: platform.listening == [])
+        platform.say_unheard(user_id="U1", text="said while paused", ref="m1")
+        await _set_status(session_factory, bridge, "active")
+        for process in processes:
+            await process.bridges.reconcile_bridge(bridge.bridge_id)
+        await _eventually(lambda: len(platform.listening) == 1)
+        await platform.say(user_id="U1", text="said once on", ref="m2")
+
+        person = await _person(session_factory, bridge)
+        await _eventually_bodies(session_factory, bridge, person, ["said once on"])
+        holder = next(p for p in processes if p.bridges.holds(bridge.bridge_id))
+        restarted = holder.bridges.get(bridge.bridge_id)
+        assert restarted is not None
+        await asyncio.sleep(0.5)
+        assert _read_back_by(platform, restarted.adapter) is None
+        assert await _room_bodies(session_factory, bridge.room_id, person) == [
+            "said once on"
+        ]
+
     async def test_what_is_said_as_delivery_settles_is_read_back_again(
         self,
         postgres_url: str,
@@ -1194,6 +1271,29 @@ async def _reading(
             .values(type=READING_CHAT)
         )
         await session.commit()
+
+
+async def _set_status(
+    session_factory: async_sessionmaker[AsyncSession], bridge: _Bridge, status: str
+) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(CollaborationBridge)
+            .where(CollaborationBridge.id == bridge.bridge_id)
+            .values(status=status)
+        )
+        await session.commit()
+
+
+async def _eventually_bodies(
+    session_factory: async_sessionmaker[AsyncSession],
+    bridge: _Bridge,
+    person: str,
+    bodies: list[str],
+) -> None:
+    async with asyncio.timeout(TIMEOUT):
+        while await _room_bodies(session_factory, bridge.room_id, person) != bodies:
+            await asyncio.sleep(0.05)
 
 
 async def _person(

@@ -761,7 +761,7 @@ class CollaborationCore:
         )
         await self._adapter.start(
             on_message=self._traced(
-                "message", self._held_for_read_back(self._handle_inbound_message)
+                "message", self._held_for_read_back(self._handle_post)
             ),
             on_command=self._traced(
                 "command", self._held_for_read_back(self._handle_inbound_command)
@@ -1843,6 +1843,56 @@ class CollaborationCore:
             else _LOBBY_HELLO
         )
         await self._adapter.admin_message(msg.channel_id, notice, thread_root_id)
+
+    async def _handle_post(self, msg: InboundMessage) -> str | None:
+        """`_handle_inbound_message`, once for each post, however often it is
+        handed on: read back after the bridge moved, or sent again by the
+        platform.
+
+        A copy of a post handled all the way through returns the event it
+        became and does nothing else, so a card answer, a guidance reply, a
+        Switch Trust check and its notice, or an upload does not run twice. A
+        copy of a post whose handling failed or is still under way is handled
+        again, as before, and its rows are written once (`_post_source`).
+        """
+        receipt_id = await self._take_post(msg)
+        if receipt_id is None:
+            logger.info(
+                "[BRIDGE-IN] post %s in channel %s was handled already; not "
+                "handling it again",
+                msg.message_ref,
+                msg.channel_id,
+            )
+            return await self._event_for_external_post(msg.message_ref)
+        relayed = await self._handle_inbound_message(msg)
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            await self._receipts.mark_handled(session, receipt_id=receipt_id)
+            await self._receipts.prune(session)
+            await session.commit()
+        return relayed
+
+    async def _take_post(self, msg: InboundMessage) -> str | None:
+        """The receipt this copy of a post is handled under, or None when a
+        copy before it was handled all the way through. Claimed and committed
+        before any of the handling, so a copy that comes after it is refused."""
+        source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            receipt = await self._receipts.claim(
+                session, platform=self._bridge_type, external_event_id=source
+            )
+            if receipt is not None:
+                await session.commit()
+                return receipt.id
+            taken = await self._receipts.find(
+                session, platform=self._bridge_type, external_event_id=source
+            )
+        if taken is None or taken.handled_at is not None:
+            return None
+        return taken.id
 
     async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
         """Write a platform message into its room as its sender, and return

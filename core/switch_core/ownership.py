@@ -199,14 +199,16 @@ class OwnedKind:
 
     async def drop(self, key: str) -> None:
         """This process will not run `key` any more: stop it here now if it
-        runs, and let go of its lease. For work being deleted, which must be
-        stopped before its rows go."""
+        runs, and forget its lease unless another process holds it. For work
+        being deleted or turned off, which must be stopped before its rows go.
+        Forgotten rather than let go of, so work turned back on later starts
+        afresh rather than as a take-over (`Fence.unheld_since`)."""
         self._wanted.discard(key)
         self._placed_with.pop(key, None)
         async with self._ownership.balancing():
             if key in self._held:
                 await self._stop_held([key])
-                await self._ownership.release(self.name, [key])
+            await self._ownership.forget(self.name, [key])
 
     def lost(self, fence: Fence) -> None:
         """The work found its lease taken over: stop it at the next balance."""
@@ -244,7 +246,7 @@ class OwnedKind:
         for key, claim in sorted(claimed.items()):
             # Dropped while the claim was in flight: give it straight back.
             if key not in self._wanted:
-                await self._ownership.release(self.name, [key])
+                await self._ownership.forget(self.name, [key])
                 continue
             fence = Fence(
                 kind=self.name,
@@ -527,6 +529,14 @@ class Ownership:
     async def release(self, kind: str, keys: Sequence[str]) -> None:
         async with self._session_factory() as session:
             await self._store.release(
+                session, kind=kind, keys=keys, process_id=self.process_id
+            )
+            await session.commit()
+        self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
+
+    async def forget(self, kind: str, keys: Sequence[str]) -> None:
+        async with self._session_factory() as session:
+            await self._store.forget(
                 session, kind=kind, keys=keys, process_id=self.process_id
             )
             await session.commit()

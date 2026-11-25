@@ -532,6 +532,22 @@ class TestUnheldSince:
             assert fence.unheld_since is not None
             assert before <= fence.unheld_since <= after
 
+    async def test_work_dropped_and_wanted_again_says_nothing(
+        self, two: tuple[_Process, _Process]
+    ) -> None:
+        # A bridge paused, or removed, and later turned back on: not a
+        # take-over, so nothing said while it was off is read back.
+        a, _b = two
+        await a.ownership.balance()
+        key = sorted(a.runs())[0]
+
+        await a.kind.drop(key)
+        a.started.clear()
+        a.kind.want(key)
+        await a.ownership.balance()
+
+        assert [fence.unheld_since for fence in a.started if fence.key == key] == [None]
+
     async def test_work_of_a_holder_that_died_says_its_last_renewal(
         self,
         session_factory: async_sessionmaker[AsyncSession],

@@ -199,10 +199,13 @@ _MATTERMOST_REFUSALS = (
     ContentTooLarge,
 )
 
-# How far an attachment has got, in the order Mattermost draws its parts. A
-# part that would draw above one already there goes in a new attachment.
 # How many posts a read-back asks Mattermost for at a time, newest first.
 _READ_BACK_PAGE = 200
+
+# Failed connections in a row after which a bridge's read-back stops waiting
+# for that bot's socket (`listening`): a bot that cannot connect would
+# otherwise hold it up, and every live post with it.
+_GIVE_UP_LISTENING_AFTER = 3
 
 
 def _posts_since(driver: Any, channel_id: str, since_ms: int) -> list[dict[str, Any]]:
@@ -229,6 +232,8 @@ def _posts_since(driver: Any, channel_id: str, since_ms: int) -> list[dict[str, 
         page += 1
 
 
+# How far an attachment has got, in the order Mattermost draws its parts. A
+# part that would draw above one already there goes in a new attachment.
 _TITLE, _TEXT, _FIELDS, _IMAGE, _ACTIONS, _CLOSED = range(6)
 _TABLE_ALIGN = {"left": ":---", "center": ":---:", "right": "---:"}
 
@@ -719,9 +724,11 @@ class MattermostAdapter(PlatformAdapter):
         self._seen_post_ids: OrderedDict[str, None] = OrderedDict()
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
-        # The bots whose socket has said hello, read by `listening`; written
-        # from each socket's own thread.
+        # The bots whose socket has said hello since the adapter started, and
+        # each bot's failed connections in a row, read by `listening`;
+        # written from each socket's own thread.
         self._listening_bots: set[str] = set()
+        self._failed_connections: dict[str, int] = {}
         self._listening_lock = threading.Lock()
 
         # (agent_name, post_id) currently carrying the working reaction. A
@@ -2437,11 +2444,31 @@ class MattermostAdapter(PlatformAdapter):
         return props
 
     def listening(self) -> bool:
-        """Whether every agent's bot has its socket open, the sockets being
-        where Mattermost delivers posts (`SupportsReadBack`)."""
+        """Whether every agent's bot has opened its socket, the sockets being
+        where Mattermost delivers posts (`SupportsReadBack`). Opened once is
+        enough: a socket that drops later reconnects on its own. A bot that
+        failed to connect `_GIVE_UP_LISTENING_AFTER` times in a row is not
+        waited for."""
         bots = {str(bot.get("user_id") or "") for bot in self._agent_bots.values()}
         with self._listening_lock:
-            return bool(bots) and bots <= self._listening_bots
+            return bool(bots) and all(
+                bot in self._listening_bots
+                or self._failed_connections.get(bot, 0) >= _GIVE_UP_LISTENING_AFTER
+                for bot in bots
+            )
+
+    def _connection_failed(self, bot_id: str, agent_name: str) -> None:
+        with self._listening_lock:
+            failed = self._failed_connections.get(bot_id, 0) + 1
+            self._failed_connections[bot_id] = failed
+        if failed == _GIVE_UP_LISTENING_AFTER:
+            logger.warning(
+                "Mattermost bot %s failed to connect %d times in a row; a "
+                "read-back no longer waits for it, and posts only it would "
+                "hear are missed until it connects",
+                agent_name,
+                failed,
+            )
 
     async def read_back(self, since: datetime, channel_ids: Collection[str]) -> int:
         """Hand on, in order, what people posted in these channels after
@@ -3523,14 +3550,13 @@ class MattermostAdapter(PlatformAdapter):
                 except Exception as e:
                     reason = str(e)
                     backoff_next = min(backoff * 2, 30)
+                    self._connection_failed(bot_id, name)
                 else:
                     # It returns only once an established connection closed.
                     reason = "connection closed"
                     backoff, backoff_next = 2, 2
                 finally:
                     _close_loop(ws_loop)
-                    with self._listening_lock:
-                        self._listening_bots.discard(bot_id)
                 if stopped.is_set():
                     break
                 logger.debug(
@@ -3912,10 +3938,10 @@ class MattermostAdapter(PlatformAdapter):
 
         if event_type == "hello":
             # The socket is open: Mattermost greets each one as it does.
+            bot_id = str((event.get("broadcast") or {}).get("user_id") or "")
             with self._listening_lock:
-                self._listening_bots.add(
-                    str((event.get("broadcast") or {}).get("user_id") or "")
-                )
+                self._listening_bots.add(bot_id)
+                self._failed_connections.pop(bot_id, None)
             return
 
         if event_type == "user_added":

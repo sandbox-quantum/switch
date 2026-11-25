@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, bindparam, text, update
+from sqlalchemy import BigInteger, bindparam, delete, or_, text, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.types import Text
 
@@ -129,6 +129,31 @@ class OwnershipLeaseStore:
                 OwnershipLease.process_id == process_id,
             )
             .values(process_id=None, changed_at=text("now()"))
+        )
+
+    async def forget(
+        self,
+        session: AsyncSession,
+        *,
+        kind: str,
+        keys: Collection[str],
+        process_id: str,
+    ) -> None:
+        """Delete the rows of `keys` no other process holds: work no longer
+        wanted, such as a bridge paused or removed. Its next claim, if it
+        comes back, finds no row, so it does not read back what was said while
+        it was off (`Claim.unheld_since`)."""
+        if not keys:
+            return
+        await session.execute(
+            delete(OwnershipLease).where(
+                OwnershipLease.kind == kind,
+                OwnershipLease.key.in_(list(keys)),
+                or_(
+                    OwnershipLease.process_id.is_(None),
+                    OwnershipLease.process_id == process_id,
+                ),
+            )
         )
 
     async def release_all(self, session: AsyncSession, process_id: str) -> None:

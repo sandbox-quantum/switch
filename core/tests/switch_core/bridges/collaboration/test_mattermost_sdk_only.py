@@ -988,6 +988,31 @@ async def test_a_bridge_listens_once_every_agents_bot_said_hello() -> None:
     assert adapter.listening()
 
 
+async def test_a_bridge_listens_on_after_a_socket_drops() -> None:
+    """The socket reconnects on its own; a read-back waiting on every bot
+    would otherwise start over each time one drops."""
+    adapter = _adapter("worker")
+    hello = {"event": "hello", "data": {}, "broadcast": {"user_id": "bot-worker"}}
+    await adapter._ws_handler(json.dumps(hello), "worker")
+
+    adapter._connection_failed("bot-worker", "worker")
+
+    assert adapter.listening()
+
+
+async def test_a_bridge_stops_waiting_for_a_bot_that_cannot_connect() -> None:
+    adapter = _adapter("worker", "other")
+    hello = {"event": "hello", "data": {}, "broadcast": {"user_id": "bot-worker"}}
+    await adapter._ws_handler(json.dumps(hello), "worker")
+
+    for _ in range(mattermost_adapter._GIVE_UP_LISTENING_AFTER - 1):
+        adapter._connection_failed("bot-other", "other")
+    assert not adapter.listening()
+
+    adapter._connection_failed("bot-other", "other")
+    assert adapter.listening()
+
+
 async def test_a_bridge_with_no_bot_does_not_listen() -> None:
     adapter = _adapter("worker")
     adapter._agent_bots.clear()
