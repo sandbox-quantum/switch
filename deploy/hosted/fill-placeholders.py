@@ -6,7 +6,7 @@
         --agents-subnet <cidr> [--agents-subnet <cidr> ...] --zone <zone> [--zone <zone> ...] \\
         --box-image <repo@sha256:...> [--previous-box-image <repo@sha256:...> ...] \\
         --controller-image <repo@sha256:...> --pause-image <repo@sha256:...> \\
-        --kubernetes-service-ip <ip> --ca-cert <file.pem> --daily-calls <n>
+        --kubernetes-service-ip <ip> --squid-ip <ip> --ca-cert <file.pem> --daily-calls <n>
 
 Reads `k8s/*.yaml`, `box/priorityclass-switch-box.yaml` and
 `egress/egress-proxy-networkpolicy.yaml` from beside this script, and writes filled copies, with the same names,
@@ -27,6 +27,10 @@ What each value is (see `k8s/README.md`):
   --pause-image         the placeholder pod's image, by digest
   --kubernetes-service-ip  the cluster's `kubernetes` Service address (`kubectl get svc kubernetes -n default`),
                         which the cluster services' NetworkPolicies allow (the files carry the test cluster's)
+  --squid-ip            the egress proxy Service's fixed address, inside --cluster-service-cidr and free. Boxes have
+                        no DNS, so they reach squid by this address. A Service's address can't change once made:
+                        on a cluster that already has squid, give its current one (`kubectl -n egress-proxy get
+                        svc squid -o jsonpath='{.spec.clusterIP}'`)
   --ca-cert             a PEM file: the CA that signs the Switch server's certificate (its public CA if it's
                         publicly trusted). The box provisioner refuses to start without one.
   --daily-calls         every box's daily ceiling on AI calls through its gateway, a whole number from 1. A box
@@ -192,8 +196,18 @@ def checked(args: argparse.Namespace) -> dict[str, object]:
         "controller": _image(args.controller_image, "--controller-image"),
         "pause": _image(args.pause_image, "--pause-image"),
         "kubernetes": _ip(args.kubernetes_service_ip, "--kubernetes-service-ip"),
+        "squid": _squid_ip(args.squid_ip, cluster["--cluster-service-cidr"]),
         "ca": ca.strip(),
     }
+
+
+def _squid_ip(value: str, service_cidr: str) -> str:
+    ip = _ip(value, "--squid-ip")
+    if ipaddress.ip_address(ip) not in ipaddress.ip_network(service_cidr):
+        raise Refused(
+            f"--squid-ip {ip} is not in --cluster-service-cidr {service_cidr}"
+        )
+    return ip
 
 
 def _replace_once(text: str, old: str, new: str, name: str) -> str:
@@ -251,6 +265,7 @@ def fill(name: str, text: str, v: dict[str, object]) -> str:
         "__DAILY_CALLS__": v["daily_calls"],
         "__CLUSTER_VPC_CIDR__": v["vpc"],
         "__CLUSTER_SERVICE_CIDR__": v["service"],
+        "__SQUID_IP__": v["squid"],
     }
     for placeholder, value in simple.items():
         text = text.replace(placeholder, str(value))
@@ -274,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--controller-image", required=True)
     parser.add_argument("--pause-image", required=True)
     parser.add_argument("--kubernetes-service-ip", required=True)
+    parser.add_argument("--squid-ip", required=True)
     parser.add_argument("--ca-cert", required=True)
     parser.add_argument("--daily-calls", required=True)
     parser.add_argument("--cluster-vpc-cidr", required=True)

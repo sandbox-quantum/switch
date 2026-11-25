@@ -41,6 +41,7 @@ def _run(
         "--pause-image": PAUSE,
         "--ca-cert": str(ca),
         "--kubernetes-service-ip": "10.100.0.1",
+        "--squid-ip": "172.20.198.221",
         "--daily-calls": "300",
         "--cluster-vpc-cidr": "10.64.0.0/16",
         "--cluster-service-cidr": "172.20.0.0/16",

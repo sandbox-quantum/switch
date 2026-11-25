@@ -46,7 +46,7 @@ spec:
         - switch-egress-lists
         env:
         - name: SWITCH_EGRESS_PROXY
-          value: squid.egress-proxy.svc:3128
+          value: __SQUID_IP__:3128
         - name: SWITCH_EGRESS_DEFAULT_PARTS
           value: github
         - name: SWITCH_EGRESS_DEFAULT_SPLIT

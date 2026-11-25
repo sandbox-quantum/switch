@@ -509,18 +509,9 @@ def box_objects(action: ProvisionAction, config: OperatorConfig) -> list[tuple[s
         "spec": {
             "podSelector": {},
             "policyTypes": ["Egress"],
+            # No DNS: a box reaches the server and squid by address, and squid resolves every name the box asks
+            # for, so no lookup leaves the box (a lookup is a way out that nothing else watches).
             "egress": [
-                {
-                    "to": [
-                        {
-                            "namespaceSelector": {
-                                "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}
-                            },
-                            "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
-                        }
-                    ],
-                    "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
-                },
                 {
                     "to": [{"ipBlock": {"cidr": f"{config.server_ip}/32"}}],
                     "ports": [{"protocol": "TCP", "port": 443}],

@@ -417,29 +417,21 @@ spec:
     message: default-deny must deny everything, in and out
   - expression: |-
       object.metadata.name != 'agent-egress' || (
-        variables.types == ['Egress'] && variables.e.size() == 3 &&
+        variables.types == ['Egress'] && variables.e.size() == 2 &&
         variables.e[?0].?to.orValue([]).size() == 1 &&
-        variables.e[?0].?to[?0].?namespaceSelector.?matchLabels.orValue({}) == {'kubernetes.io/metadata.name': 'kube-system'} &&
-        !variables.e[?0].?to[?0].?namespaceSelector.?matchExpressions.hasValue() &&
-        variables.e[?0].?to[?0].?podSelector.?matchLabels.orValue({}) == {'k8s-app': 'kube-dns'} &&
-        !variables.e[?0].?to[?0].?podSelector.?matchExpressions.hasValue() && !variables.e[?0].?to[?0].?ipBlock.hasValue() &&
-        variables.e[?0].?ports.orValue([]).size() == 2 &&
-        variables.e[?0].?ports.orValue([]).all(p, p.?port.orValue(0) == 53 && p.?protocol.orValue('') in ['UDP', 'TCP'] && !has(p.endPort)) &&
-        variables.e[?0].?ports[?0].?protocol.orValue('') != variables.e[?0].?ports[?1].?protocol.orValue('') &&
+        variables.e[?0].?to[?0].?ipBlock.?cidr.orValue('') == '__SERVER_IP__/32' && !variables.e[?0].?to[?0].?ipBlock.?except.hasValue() &&
+        !variables.e[?0].?to[?0].?namespaceSelector.hasValue() && !variables.e[?0].?to[?0].?podSelector.hasValue() &&
+        variables.e[?0].?ports.orValue([]).size() == 1 && variables.e[?0].?ports[?0].?protocol.orValue('') == 'TCP' &&
+        variables.e[?0].?ports[?0].?port.orValue(0) == 443 && !variables.e[?0].?ports[?0].?endPort.hasValue() &&
         variables.e[?1].?to.orValue([]).size() == 1 &&
-        variables.e[?1].?to[?0].?ipBlock.?cidr.orValue('') == '__SERVER_IP__/32' && !variables.e[?1].?to[?0].?ipBlock.?except.hasValue() &&
-        !variables.e[?1].?to[?0].?namespaceSelector.hasValue() && !variables.e[?1].?to[?0].?podSelector.hasValue() &&
+        variables.e[?1].?to[?0].?namespaceSelector.?matchLabels.orValue({}) == {'kubernetes.io/metadata.name': 'egress-proxy'} &&
+        !variables.e[?1].?to[?0].?namespaceSelector.?matchExpressions.hasValue() &&
+        variables.e[?1].?to[?0].?podSelector.?matchLabels.orValue({}) == {'app': 'squid'} &&
+        !variables.e[?1].?to[?0].?podSelector.?matchExpressions.hasValue() && !variables.e[?1].?to[?0].?ipBlock.hasValue() &&
         variables.e[?1].?ports.orValue([]).size() == 1 && variables.e[?1].?ports[?0].?protocol.orValue('') == 'TCP' &&
-        variables.e[?1].?ports[?0].?port.orValue(0) == 443 && !variables.e[?1].?ports[?0].?endPort.hasValue() &&
-        variables.e[?2].?to.orValue([]).size() == 1 &&
-        variables.e[?2].?to[?0].?namespaceSelector.?matchLabels.orValue({}) == {'kubernetes.io/metadata.name': 'egress-proxy'} &&
-        !variables.e[?2].?to[?0].?namespaceSelector.?matchExpressions.hasValue() &&
-        variables.e[?2].?to[?0].?podSelector.?matchLabels.orValue({}) == {'app': 'squid'} &&
-        !variables.e[?2].?to[?0].?podSelector.?matchExpressions.hasValue() && !variables.e[?2].?to[?0].?ipBlock.hasValue() &&
-        variables.e[?2].?ports.orValue([]).size() == 1 && variables.e[?2].?ports[?0].?protocol.orValue('') == 'TCP' &&
-        variables.e[?2].?ports[?0].?port.orValue(0) == 3128 && !variables.e[?2].?ports[?0].?endPort.hasValue())
-    message: 'agent-egress must be exactly the template''s: DNS, the test server on
-      443, the proxy on 3128'
+        variables.e[?1].?ports[?0].?port.orValue(0) == 3128 && !variables.e[?1].?ports[?0].?endPort.hasValue())
+    message: 'agent-egress must be exactly the template''s: the test server on 443
+      and the proxy on 3128, nothing else (no DNS)'
   variables:
   - expression: "!object.?spec.?podSelector.?matchLabels.hasValue() && !object.?spec.?podSelector.?matchExpressions.hasValue()"
     name: emptySelector

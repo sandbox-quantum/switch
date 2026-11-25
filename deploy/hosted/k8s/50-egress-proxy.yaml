@@ -433,6 +433,8 @@ metadata:
   name: squid
   namespace: egress-proxy
 spec:
+  # A fixed address, so boxes reach squid without a name lookup (they have no DNS). Immutable once made.
+  clusterIP: __SQUID_IP__
   internalTrafficPolicy: Cluster
   ipFamilies:
   - IPv4

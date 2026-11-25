@@ -978,7 +978,7 @@ data:
       "server_url": "https://__SERVER_IP__",
       "image": "__BOX_IMAGE__",
       "storage_class": "gp3",
-      "proxy_host": "squid.egress-proxy.svc",
+      "proxy_host": "__SQUID_IP__",
       "proxy_port": 3128,
       "zones": [
         "__ZONE__"
