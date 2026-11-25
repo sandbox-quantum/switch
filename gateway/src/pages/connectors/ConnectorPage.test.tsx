@@ -919,6 +919,27 @@ describe("connecting by pasting a token in place of a sign-in", () => {
       expect(within(dialog).queryByText(/connect it from Switch Console/)).toBeNull();
     });
 
+    it("asks someone signed in through an App that is gone to connect with a token", async () => {
+      const reason =
+        "GitHub was connected through an app that is no longer set up on this server. Connect it again with a personal access token.";
+      signedIn();
+      server({
+        ...noApp(),
+        status: "needs_reauthorization",
+        method: "oauth",
+        external_identity: "ada-gh",
+        can_revoke: true,
+        reconnect_code: "sign_in_unavailable",
+        reconnect_reason: reason,
+      });
+      renderPage("github");
+
+      expect(await screen.findByText(reason)).toBeTruthy();
+      expect(screen.queryByText(/fresh sign-in/)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Use a token" }));
+      expect(await screen.findByRole("dialog", { name: "Connect GitHub with a personal access token" })).toBeTruthy();
+    });
+
     it("offers whoever manages connector apps the way to set the App up", async () => {
       signedIn({ connectorApps: true });
       server(noApp());

@@ -177,8 +177,10 @@ export const connectionCatalogEntrySchema = z.object({
   /**
    * Why the connection must be reconnected, as a code to act on and the
    * sentence to show, where its status says it must; null otherwise and from
-   * a server that predates them. `token_refused` asks for a new pasted
-   * credential, made the way the connection was.
+   * a server that predates them. `token_refused` and `token_never_expires`
+   * ask for a new pasted credential, made the way the connection was, and
+   * `sign_in_unavailable` for one in place of a sign-in this server can no
+   * longer make.
    */
   reconnect_code: z.string().nullable(),
   reconnect_reason: z.string().nullable(),

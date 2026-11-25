@@ -1334,6 +1334,10 @@ describe('the paste step', () => {
     expect(pasteAgainMethod({ ...refused, method: 'keys', paste: [token] })).toBeNull();
     expect(pasteAgainMethod({ ...refused, reconnect_code: 'choices_missing' })).toBeNull();
     expect(pasteAgainMethod({ ...refused, reconnect_code: null })).toBeNull();
+    expect(pasteAgainMethod({ ...refused, reconnect_code: 'token_never_expires' })).toBe('token');
+    expect(
+      pasteAgainMethod({ ...refused, method: 'oauth', reconnect_code: 'sign_in_unavailable' })
+    ).toBe('token');
   });
 });
 

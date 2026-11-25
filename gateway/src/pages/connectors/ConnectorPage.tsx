@@ -454,10 +454,13 @@ export default function ConnectorPage() {
     offersChoices(connection) &&
     (way === "web" || (way === "paste" && connection.sign_in_unavailable_reason !== null));
   // What a pasted connection is replaced with: pasted the same way where
-  // that is still offered here, else the first way that is.
+  // that is still offered here, else the first way that is. So is a sign-in
+  // through an app this server no longer has, which only a token mends.
   const replaceWith = isPasted(connection)
     ? (connection.paste.find((way) => way.method === connection.method) ?? connection.paste[0] ?? null)
-    : null;
+    : connection.reconnect_code === "sign_in_unavailable"
+      ? (connection.paste[0] ?? null)
+      : null;
 
   return (
     <Stack spacing={4}>
@@ -529,7 +532,13 @@ export default function ConnectorPage() {
             )}
             {connected && replaceWith && (
               <Button variant={broken ? "contained" : "outlined"} onClick={() => setPasteDialog("replace")}>
-                {replaceWith.method === "token" ? "Replace token" : "Replace keys"}
+                {isPasted(connection)
+                  ? replaceWith.method === "token"
+                    ? "Replace token"
+                    : "Replace keys"
+                  : replaceWith.method === "token"
+                    ? "Use a token"
+                    : "Use keys"}
               </Button>
             )}
             {!connected && way === "console" && (
@@ -668,7 +677,7 @@ export default function ConnectorPage() {
       {pasteDialog && (
         <PasteDialog
           connection={connection}
-          replacing={pasteDialog === "replace"}
+          replacing={pasteDialog === "replace" && isPasted(connection)}
           onClose={() => setPasteDialog(null)}
           onSaved={(warning) => {
             setPasteDialog(null);

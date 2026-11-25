@@ -349,14 +349,23 @@ export function pasteReady(
 }
 
 /**
- * The method to paste a new credential with, for a connection whose pasted
- * one the service refused (`token_refused`): its own, where the server still
- * offers it; null otherwise, and for any other connection.
+ * The method to paste a new credential with: for a connection whose pasted
+ * one the service refused (`token_refused`) or this server no longer takes
+ * (`token_never_expires`), its own, where the server still offers it; for
+ * one signed in through an app this server no longer has
+ * (`sign_in_unavailable`), the first it offers. Null otherwise, and for any
+ * other connection.
  */
 export function pasteAgainMethod(
   connection: Pick<ConnectionCatalogEntry, 'reconnect_code' | 'method' | 'paste'>
 ): PasteMethodName | null {
-  if (connection.reconnect_code !== 'token_refused') return null;
+  if (connection.reconnect_code === 'sign_in_unavailable')
+    return connection.paste[0]?.method ?? null;
+  if (
+    connection.reconnect_code !== 'token_refused' &&
+    connection.reconnect_code !== 'token_never_expires'
+  )
+    return null;
   return connection.paste.find((offered) => offered.method === connection.method)?.method ?? null;
 }
 

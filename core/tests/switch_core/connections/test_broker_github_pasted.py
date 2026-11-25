@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.connections.adapters import ConnectionSecret
 from switch_core.connections.adapters import github as github_adapter
 from switch_core.connections.adapters.github import GitHubAdapter
 from switch_core.connections.broker import (
@@ -32,7 +33,7 @@ from switch_core.providers.github import (
     TokenOwner,
 )
 from tests.conftest import TEST_KEYRING
-from tests.switch_core.connections.standing import connection_status
+from tests.switch_core.connections.standing import connection_status, reconnect_reason
 from tests.switch_core.connections.test_broker import _issue, _refused, _user
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
@@ -81,6 +82,7 @@ def _broker(
     app: tuple[AsyncMock, AsyncMock] | None,
     *,
     allow_non_expiring_keys: bool,
+    read_only: bool = False,
 ) -> ServiceBroker:
     """`app` is the App's connections and signer; None for a server with no
     App set up."""
@@ -91,7 +93,7 @@ def _broker(
         catalog=CATALOG,
         adapters={
             "github": GitHubAdapter(
-                CATALOG["github"].definition, connections, signer, read_only=False
+                CATALOG["github"].definition, connections, signer, read_only=read_only
             )
         },
         organization_apps=None,
@@ -350,8 +352,18 @@ class TestIssue:
 
         refused = await _refused(strict, session_factory, agent.id)
 
-        assert (refused.status_code, refused.code) == (403, "forbidden")
+        assert (refused.status_code, refused.code) == (409, "connector_revoked")
         assert "no expiration date" in refused.message
+        # Its owner is asked for a token that ends, not left with one that
+        # shows as working.
+        async with session_factory() as session:
+            connection = await STORE.get_connection(session, owner.id, "github")
+        assert connection is not None
+        assert connection.error_code == "token_never_expires"
+        assert await connection_status(strict, connection) == "needs_reauthorization"
+        code, reason = await reconnect_reason(strict, connection) or ("", "")
+        assert code == "token_never_expires"
+        assert "Make one in GitHub with an expiration date" in reason
 
     async def test_a_grant_made_through_the_app_is_refused_on_a_token(
         self, broker, session_factory, fake
@@ -436,3 +448,216 @@ class TestWithoutTheApp:
 
         assert warning is not None
         assert "cannot revoke" in warning
+
+
+async def _signed_in(
+    broker: ServiceBroker,
+    session_factory: async_sessionmaker[AsyncSession],
+    owner: User,
+) -> str | None:
+    """`owner` signs in through the App, as GitHub account 1001."""
+    async with session_factory() as session:
+        return await broker.connect(
+            session,
+            user_id=owner.id,
+            service="github",
+            consent="write",
+            granted_scopes=[],
+            account_id="1001",
+            external_identity="ada-gh",
+            secret=ConnectionSecret(
+                {
+                    "access_token": "test-access-token",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=8)).timestamp(),
+                    "refresh_token": "test-refresh-token",
+                    "refresh_expires_at": (
+                        datetime.now(UTC) + timedelta(days=180)
+                    ).timestamp(),
+                }
+            ),
+            oauth_client_id="test-client",
+            method="oauth",
+            choices={},
+        )
+
+
+async def _pasted(
+    broker: ServiceBroker,
+    session_factory: async_sessionmaker[AsyncSession],
+    owner: User,
+) -> str | None:
+    """`owner` pastes `PAT` for GitHub, in place of what they had."""
+    checked = await _check(broker, PAT)
+    async with session_factory() as session:
+        return await broker.connect(
+            session,
+            user_id=owner.id,
+            service="github",
+            consent=KEY_CONSENT,
+            granted_scopes=[],
+            account_id=checked.account_id,
+            external_identity=checked.label,
+            secret=checked.secret,
+            oauth_client_id=None,
+            method="token",
+            choices=checked.choices,
+        )
+
+
+async def _grants(
+    session_factory: async_sessionmaker[AsyncSession], agent: Agent
+) -> list[str]:
+    async with session_factory() as session:
+        return [grant.service for grant in await STORE.list_grants(session, agent.id)]
+
+
+class TestReadOnlyApp:
+    """A server whose App lets agents only read: a pasted token does not go
+    through the App, so the App's permissions do not bound it."""
+
+    @pytest.fixture
+    def broker(self, session_factory, app) -> ServiceBroker:
+        return _broker(
+            session_factory, app, allow_non_expiring_keys=False, read_only=True
+        )
+
+    async def test_a_token_that_writes_is_granted_and_handed_out(
+        self, broker, session_factory, fake
+    ) -> None:
+        owner, agent = await _connected(broker, session_factory)
+
+        grant = await _grant(broker, session_factory, owner, agent)
+        token = await _issue(broker, session_factory, agent.id)
+
+        assert grant.access == "write"
+        assert token.token == PAT
+
+
+class TestSwitchingWays:
+    """Moving between the App's sign-in and a pasted token for the same
+    GitHub account drops the grants, whose shape no longer fits, and names
+    the agents to grant GitHub again."""
+
+    async def test_pasting_a_token_drops_the_app_grants(
+        self, broker, session_factory, fake
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _user(session, "ada")
+            agent = await add_agent(session, name="planner", owner_id=owner.id)
+            await session.commit()
+        assert await _signed_in(broker, session_factory, owner) is None
+        async with session_factory() as session:
+            await STORE.save_grant(
+                session,
+                agent_id=agent.id,
+                owner_id=owner.id,
+                service="github",
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources={"installation_id": 1, "repository_ids": [2]},
+                account_id="1001",
+                created_by=owner.id,
+            )
+            await session.commit()
+
+        warning = await _pasted(broker, session_factory, owner)
+
+        assert warning is not None
+        assert "Grant GitHub again to these agents: planner." in warning
+        assert await _grants(session_factory, agent) == []
+
+    async def test_signing_in_drops_the_token_grants(
+        self, broker, session_factory, fake
+    ) -> None:
+        owner, agent = await _connected(broker, session_factory)
+        await _grant(broker, session_factory, owner, agent)
+
+        warning = await _signed_in(broker, session_factory, owner)
+
+        assert warning is not None
+        assert "Grant GitHub again to these agents: planner." in warning
+        assert await _grants(session_factory, agent) == []
+
+    async def test_a_new_token_keeps_the_grants(
+        self, broker, session_factory, fake
+    ) -> None:
+        owner, agent = await _connected(broker, session_factory)
+        await _grant(broker, session_factory, owner, agent)
+
+        warning = await _pasted(broker, session_factory, owner)
+
+        assert warning is None or "Grant GitHub again" not in warning
+        assert await _grants(session_factory, agent) == ["github"]
+
+
+class TestAppTakenAway:
+    """A server whose App was taken away after someone signed in through it:
+    that connection needs connecting again, with a token."""
+
+    async def test_a_sign_in_must_be_connected_again_with_a_token(
+        self, session_factory, app, fake
+    ) -> None:
+        with_app = _broker(session_factory, app, allow_non_expiring_keys=False)
+        async with session_factory() as session:
+            owner = await _user(session, "ada")
+            agent = await add_agent(session, name="planner", owner_id=owner.id)
+            await session.commit()
+        await _signed_in(with_app, session_factory, owner)
+        without = _broker(session_factory, None, allow_non_expiring_keys=False)
+
+        async with session_factory() as session:
+            connection = await STORE.get_connection(session, owner.id, "github")
+        assert connection is not None
+        assert await connection_status(without, connection) == "needs_reauthorization"
+        code, reason = await reconnect_reason(without, connection) or ("", "")
+        assert code == "sign_in_unavailable"
+        assert "personal access token" in reason
+        async with session_factory() as session:
+            fresh = await session.get(Agent, agent.id)
+            assert fresh is not None
+            with pytest.raises(ServiceError) as caught:
+                await without.set_grant(
+                    session,
+                    agent=fresh,
+                    actor_id=owner.id,
+                    service="github",
+                    access=None,
+                    tool_mode=None,
+                    tools=None,
+                    resources={},
+                )
+        assert (caught.value.status_code, caught.value.code) == (
+            409,
+            "connector_revoked",
+        )
+
+    async def test_a_grant_made_through_it_is_refused_with_why(
+        self, session_factory, app, fake
+    ) -> None:
+        with_app = _broker(session_factory, app, allow_non_expiring_keys=False)
+        async with session_factory() as session:
+            owner = await _user(session, "ada")
+            agent = await add_agent(session, name="planner", owner_id=owner.id)
+            await session.commit()
+        await _signed_in(with_app, session_factory, owner)
+        async with session_factory() as session:
+            await STORE.save_grant(
+                session,
+                agent_id=agent.id,
+                owner_id=owner.id,
+                service="github",
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources={"installation_id": 1, "repository_ids": [2]},
+                account_id="1001",
+                created_by=owner.id,
+            )
+            await session.commit()
+        without = _broker(session_factory, None, allow_non_expiring_keys=False)
+
+        refused = await _refused(without, session_factory, agent.id)
+
+        assert refused.code == "connector_revoked"
+        assert "no longer set up on this server" in refused.message

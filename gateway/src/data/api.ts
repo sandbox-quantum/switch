@@ -3714,7 +3714,9 @@ export interface ServiceConnection {
    * empty where the service takes none here. */
   paste: ServicePasteMethod[];
   /** Why the connection must be reconnected, where it must: `token_refused`
-   * asks for a new pasted credential. */
+   * and `token_never_expires` ask for a new pasted credential, and
+   * `sign_in_unavailable` for one in place of a sign-in this server can no
+   * longer make. */
   reconnect_code: string | null;
   reconnect_reason: string | null;
   /** The level the person allowed when connecting; null while not connected. */

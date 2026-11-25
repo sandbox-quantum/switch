@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import secrets
+from dataclasses import dataclass
 from typing import Annotated, cast
 from urllib.parse import urlencode
 
@@ -142,18 +143,32 @@ async def workspace_app(
     return app_for_workspace(request, await broker.organization_app(session, "github"))
 
 
+@dataclass(frozen=True)
+class WorkspaceGitHubApp:
+    """The GitHub App a workspace signs in through, where it can: `app` is
+    None where no App is set up for it, or the one that applies can't be
+    used, and `problem` then says why a sign-in through it is refused (None
+    where no App is set up at all, so GitHub connects only with a pasted
+    token)."""
+
+    app: GitHubConnections | None
+    problem: str | None
+
+
 async def workspace_app_if_set_up(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-) -> GitHubConnections | None:
-    """`workspace_app`, or None where neither the workspace's organization
-    nor the server set up a GitHub App, so GitHub connects only with a pasted
-    token."""
+) -> WorkspaceGitHubApp:
+    """`workspace_app`, without refusing: a pasted token works whatever
+    becomes of the App, so only a sign-in through it is refused."""
     app = await broker.organization_app(session, "github")
     if app is None and request.app.state.github_connections is None:
-        return None
-    return app_for_workspace(request, app)
+        return WorkspaceGitHubApp(None, None)
+    try:
+        return WorkspaceGitHubApp(app_for_workspace(request, app), None)
+    except HTTPException as refused:
+        return WorkspaceGitHubApp(None, str(refused.detail))
 
 
 def get_sign_in_flows(request: Request) -> SignInFlows:
@@ -722,7 +737,7 @@ async def connection(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    github: Annotated[GitHubConnections | None, Depends(workspace_app_if_set_up)],
+    github: Annotated[WorkspaceGitHubApp, Depends(workspace_app_if_set_up)],
 ) -> dict:
     return await connection_status(user.id, session, broker, github)
 
@@ -731,12 +746,12 @@ async def connection_status(
     user_id: str,
     session: AsyncSession,
     broker: ServiceBroker,
-    github: GitHubConnections | None,
+    github: WorkspaceGitHubApp,
 ) -> dict:
     """The person's GitHub link and every repository the App lets them reach.
-    With no App (`github` None) there is nothing to install: `install_url` is
+    With no App it can use there is nothing to install: `install_url` is
     null, and only a pasted token connects it."""
-    install_url = None if github is None else github.install_url
+    install_url = None if github.app is None else github.app.install_url
     try:
         token = await broker.connection_access_token(session, user_id, "github")
     except ServiceError as error:
@@ -764,10 +779,12 @@ async def connection_status(
             "install_url": install_url,
             "can_revoke": True,
         }
-    if github is None:
-        raise HTTPException(503, broker.server_availability("github") or "")
+    if github.app is None:
+        raise HTTPException(
+            503, github.problem or broker.server_availability("github") or ""
+        )
     try:
-        reach = await github.repositories(token)
+        reach = await github.app.repositories(token)
     except GitHubAuthorizationError as error:
         raise HTTPException(422, str(error)) from None
     except GitHubError as error:

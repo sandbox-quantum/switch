@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import exists, func, select, text
+from sqlalchemy import exists, func, select, text, true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
@@ -164,6 +164,14 @@ CLIENT_REPLACED = "client_replaced"
 # Why a connection needs reconnecting: the vendor refused the credential the
 # owner pasted.
 TOKEN_REFUSED = "token_refused"
+# Why a connection needs reconnecting: the token the owner pasted has no
+# expiration date, which this server no longer allows
+# (`ALLOW_NON_EXPIRING_KEYS` was on when it was pasted).
+TOKEN_NEVER_EXPIRES = "token_never_expires"
+# Why a connection needs reconnecting: it signed in through an app this
+# server no longer has, though a pasted credential connects the service
+# (GitHub whose App was taken away).
+SIGN_IN_UNAVAILABLE = "sign_in_unavailable"
 # Why a connection needs reconnecting: it was made with a pasted credential
 # this server no longer takes (one that never expires, which it no longer
 # allows).
@@ -228,12 +236,33 @@ class _Choice:
     source: AppSource
 
 
+def _paste_only(adapter: ServiceAdapter | None) -> bool:
+    """Whether `adapter` takes only a pasted credential, with no app to sign
+    in through (GitHub with no App set up)."""
+    return isinstance(adapter, GitHubAdapter) and not adapter.app_set_up
+
+
 def _app_choice(choice: _Choice) -> _Choice:
     """`choice` as it stands for signing in: without an adapter where its
     adapter takes only a pasted credential (GitHub with no App set up)."""
-    if isinstance(choice.adapter, GitHubAdapter) and not choice.adapter.app_set_up:
+    if _paste_only(choice.adapter):
         return _Choice(None, choice.problem, choice.source)
     return choice
+
+
+def _sign_in_gone(
+    connection: ServiceConnection, adapter: ServiceAdapter | None
+) -> bool:
+    """Whether `connection` signed in through an app this server no longer
+    has, where only a pasted credential connects its service now."""
+    return not _pasted(connection) and _paste_only(adapter)
+
+
+def _through_missing_app(name: str) -> str:
+    return (
+        f"{name} was connected through an app that is no longer set up on this "
+        "server. Connect it again with a personal access token."
+    )
 
 
 def _client_replaced(
@@ -299,6 +328,11 @@ class ServiceStanding:
         """Whether `connection` signed in through a client this workspace no
         longer uses for the service, so it must reconnect."""
         return _client_replaced(connection, self.adapter)
+
+    def sign_in_gone(self, connection: ServiceConnection) -> bool:
+        """Whether `connection` signed in through an app this workspace no
+        longer has, so it must be connected again with a pasted credential."""
+        return _sign_in_gone(connection, self.adapter)
 
 
 @dataclass(frozen=True)
@@ -524,6 +558,8 @@ def _lapsed(name: str, connection: ServiceConnection) -> str:
         return _through_replaced_client(name)
     if connection.error_code == TOKEN_REFUSED:
         return _pasted_refused(name, connection.method)
+    if connection.error_code == TOKEN_NEVER_EXPIRES:
+        return _pasted_token_never_expires(name)
     return f"The {name} sign-in was revoked or has lapsed."
 
 
@@ -656,6 +692,14 @@ class ServiceBroker:
         self._catalog = catalog
         # The server's adapters, by service.
         self._adapters = adapters
+        # GitHub without an App, for a workspace whose organization saved one
+        # that can't be used: a pasted token goes through no App, so it still
+        # connects GitHub there, while signing in is refused with the reason.
+        self._paste_only: dict[str, ServiceAdapter] = {
+            slug: GitHubAdapter(entry.definition, None, None, read_only=False)
+            for slug, entry in catalog.items()
+            if entry.definition.adapter == "github" and entry.definition.auth.paste
+        }
         # Organizations' own apps, with `organization_connector_apps` on.
         self._organization_apps = organization_apps
         # Organizations' service settings count with the same flag as their
@@ -776,7 +820,10 @@ class ServiceBroker:
         is bound to the workspace."""
         app = await self.organization_app(session, service)
         if app is not None:
-            return _Choice(app.adapter, app.problem, "organization")
+            adapter = app.adapter
+            if adapter is None:
+                adapter = self._paste_only.get(service)
+            return _Choice(adapter, app.problem, "organization")
         return _Choice(self._adapters.get(service), None, "server")
 
     async def organization_app(
@@ -992,6 +1039,9 @@ class ServiceBroker:
         missing = self._choices_refusal(connection)
         if missing is not None:
             raise _reconnect(name, missing, "agent")
+        standing = await self.standing(session, service)
+        if standing.sign_in_gone(connection):
+            raise _reconnect(name, _through_missing_app(name), "agent")
         refusal = self._method_refusal(entry.definition, connection.method)
         if refusal is not None:
             raise ServiceError(403, FORBIDDEN, refusal, retryable=False)
@@ -1013,7 +1063,9 @@ class ServiceBroker:
             if grant.access == "write"
             else "read"
         )
-        read_only = self.read_only(await self.standing(session, service), service)
+        # A pasted token does not go through the App, so the App's own
+        # permissions do not bound it.
+        read_only = None if _pasted(connection) else self.read_only(standing, service)
         if access == "write" and read_only is not None:
             raise ServiceError(403, FORBIDDEN, read_only, retryable=False)
         if access == "write" and connection.consent != "write":
@@ -1437,6 +1489,8 @@ class ServiceBroker:
                 raise _MustReconnect(_lapsed(name, connection))
             if _client_replaced(connection, adapter):
                 raise await self._replaced_client(session, owner_id, service)
+            if _sign_in_gone(connection, adapter):
+                raise _MustReconnect(_through_missing_app(name))
             if self.method_withdrawn(connection):
                 raise _MustReconnect(_through_withdrawn_method(name))
             missing = self._choices_refusal(connection)
@@ -1553,12 +1607,15 @@ class ServiceBroker:
             raise _MustReconnect(str(error)) from None
         except ServiceAdapterError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=False) from None
-        await session.commit()
         if ends == "never" and not self._allow_non_expiring_keys:
-            # Pasted while the server allowed such tokens.
-            raise ServiceError(
-                403, FORBIDDEN, _pasted_token_never_expires(name), retryable=False
+            # Pasted while the server allowed such tokens: its owner must
+            # paste one with an expiration date.
+            await self._store.mark_needs_reauthorization(
+                session, owner_id, service, TOKEN_NEVER_EXPIRES
             )
+            await session.commit()
+            raise _MustReconnect(_pasted_token_never_expires(name))
+        await session.commit()
         return AccessToken(token, None)
 
     async def _replaced_client(
@@ -1843,6 +1900,7 @@ class ServiceBroker:
             return "not_connected"
         if connection.status == "active" and (
             standing.client_replaced(connection)
+            or standing.sign_in_gone(connection)
             or self.method_withdrawn(connection)
             or self.scopes_changed(connection)
             or self._choices_refusal(connection) is not None
@@ -1894,13 +1952,17 @@ class ServiceBroker:
         this server no longer takes), `scopes_changed` (this server now asks
         for other access than the sign-in granted), `choices_missing` (made
         before the service asked for a choice it now needs: a site),
-        `client_replaced`,
-        `refresh_refused` and `sign_in_refused`."""
+        `client_replaced`, `sign_in_unavailable` (signed in through an app this
+        server no longer has: a pasted credential is needed),
+        `token_never_expires` (a pasted token with no expiration date, which
+        this server no longer allows), `refresh_refused` and `sign_in_refused`."""
         if self.connection_status(standing, connection) != "needs_reauthorization":
             return None
         entry = self._catalog.get(connection.service)
         name = connection.service if entry is None else entry.definition.name
         if connection.status == "active":
+            if standing.sign_in_gone(connection):
+                return SIGN_IN_UNAVAILABLE, _through_missing_app(name)
             if self.method_withdrawn(connection):
                 return METHOD_NOT_OFFERED, _through_withdrawn_method(name)
             missing = self._choices_refusal(connection)
@@ -1920,6 +1982,8 @@ class ServiceBroker:
                 f"{_pasted_refused(name, connection.method)} Paste "
                 f"{_paste_again(connection.method)}."
             )
+        if code == TOKEN_NEVER_EXPIRES:
+            return code, _pasted_token_never_expires(name)
         return code, _lapsed(name, connection)
 
     def replace_adapter(self, service: str, adapter: ServiceAdapter | None) -> None:
@@ -2062,6 +2126,7 @@ class ServiceBroker:
             connection.status != "active"
             or self.method_withdrawn(connection)
             or _scopes_changed(connection, entry)
+            or standing.sign_in_gone(connection)
         ):
             raise ServiceError(
                 409,
@@ -2092,7 +2157,7 @@ class ServiceBroker:
                 )
             access = _consent(connection)
         level_name: AccessLevel = access or "read"
-        read_only = self.read_only(standing, service)
+        read_only = None if _pasted(connection) else self.read_only(standing, service)
         if level_name == "write" and read_only is not None:
             raise ServiceError(403, FORBIDDEN, read_only, retryable=False)
         if level_name == "write" and connection.consent != "write":
@@ -2403,8 +2468,17 @@ class ServiceBroker:
         previous = await self._store.get_connection(session, user_id, service)
         replaced = None if previous is None else self._signed_in(previous)
         replaced_account = "" if previous is None else previous.account_id
-        # The grants that give no access now (`grant_account_changed`), as
-        # the grant lists mark them: made for another account.
+        # A grant on a pasted token names no repositories, and one on a
+        # sign-in names those it reaches, so neither stands on the other:
+        # switching between them drops the grants.
+        method_switched = (
+            previous is not None
+            and not _passes_through(entry)
+            and _pasted(previous) != (method != "oauth")
+        )
+        # The grants that give no access now: every one where the way of
+        # connecting changed, else those made for another account
+        # (`grant_account_changed`), as the grant lists mark them.
         regrant = list(
             await session.scalars(
                 select(func.coalesce(Agent.display_name, Agent.name))
@@ -2417,7 +2491,9 @@ class ServiceBroker:
                     ServiceGrant.tenant_id == require_tenant_id(),
                     ServiceGrant.owner_id == user_id,
                     ServiceGrant.service == service,
-                    ServiceGrant.account_id != account_id,
+                    true()
+                    if method_switched
+                    else ServiceGrant.account_id != account_id,
                 )
                 .order_by(Agent.name)
             )
@@ -2440,7 +2516,9 @@ class ServiceBroker:
             method=method,
             choices=choices,
         )
-        if previous is not None and replaced_account != account_id:
+        if method_switched:
+            await self._store.delete_grants(session, user_id, service)
+        elif previous is not None and replaced_account != account_id:
             # The grants were made for the old account and no longer stand:
             # an agent host drops a token it holds when the revision moves.
             await self._store.bump_grants(session, user_id, service)
@@ -2451,7 +2529,11 @@ class ServiceBroker:
             action=AuditAction.SERVICE_CONNECTED,
             target_type="user",
             target_id=user_id,
-            details={"service": service, "relinked": previous is not None},
+            details={
+                "service": service,
+                "relinked": previous is not None,
+                "grants_dropped": len(regrant) if method_switched else 0,
+            },
         )
         await session.commit()
 

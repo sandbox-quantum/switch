@@ -441,9 +441,12 @@ export function ManagedGitHubStep({
                 onClick={onContinue}
                 disabled={
                   busy ||
-                  !connection.installations.some(
-                    (installation) => installation.repositories.length > 0
-                  )
+                  // A token reaches what it does, with no installations; a
+                  // sign-in needs a repository chosen first.
+                  (!withToken &&
+                    !connection.installations.some(
+                      (installation) => installation.repositories.length > 0
+                    ))
                 }
               >
                 Continue to agent

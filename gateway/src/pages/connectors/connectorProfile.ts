@@ -124,10 +124,17 @@ export const CONSOLE_CONNECT_NOTE =
 
 /** Said under "Connected as" when the connection no longer works; null while it does. */
 export function brokenLine(
-  connection: Pick<ServiceConnection, "status" | "auth_type" | "web_sign_in" | "method" | "reconnect_reason">,
+  connection: Pick<
+    ServiceConnection,
+    "status" | "auth_type" | "web_sign_in" | "method" | "reconnect_code" | "reconnect_reason"
+  >,
 ): string | null {
   if (connection.status === "active" || connection.status === "not_connected") return null;
   if (connection.auth_type === "api_key") return "Its key needs replacing before agents can use it again.";
+  // Signed in through an app this server no longer has: no sign-in can mend
+  // it, only a pasted token.
+  if (connection.reconnect_code === "sign_in_unavailable" && connection.reconnect_reason)
+    return connection.reconnect_reason;
   if (isPasted(connection))
     return (
       connection.reconnect_reason ??

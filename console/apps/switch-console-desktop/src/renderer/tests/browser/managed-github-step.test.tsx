@@ -308,6 +308,42 @@ it('with no App on the server, shows the App as not set up and starts on the tok
   expect(onUseToken).toHaveBeenCalledOnce();
 });
 
+it('in onboarding, continues to the agent once a token connects GitHub', async () => {
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'connected',
+    method: 'token',
+    login: 'example-user',
+    install_url: null,
+    installations: [],
+  });
+  const onContinue = vi.fn();
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () =>
+    root!.render(
+      <Dialog open>
+        <DialogContent>
+          <ManagedGitHubStep
+            serverId="server"
+            onBack={() => {}}
+            onSkip={() => {}}
+            onContinue={onContinue}
+            onUseToken={() => {}}
+            appUnavailable={null}
+          />
+        </DialogContent>
+      </Dialog>
+    )
+  );
+
+  await vi.waitFor(() => expect(button(/continue to agent/i, dialog())).toBeDefined());
+  // A token reaches what it does: there are no repositories to choose first.
+  expect(button(/continue to agent/i, dialog())!.disabled).toBe(false);
+  await act(async () => button(/continue to agent/i, dialog())!.click());
+  expect(onContinue).toHaveBeenCalledOnce();
+});
+
 it('without a token in its place, offers the App alone', async () => {
   switchServers.getGitHubConnection.mockResolvedValue({
     status: 'not_connected',

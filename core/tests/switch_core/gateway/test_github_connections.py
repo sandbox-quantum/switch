@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select, update
 
+from switch_core.connections.adapters import github as github_adapter
 from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
 from switch_core.connections.broker import SWITCHED_OFF, ServiceBroker
 from switch_core.connections.loader import CATALOG
@@ -39,7 +40,12 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.github_connections import APP_CHANGED, router
 from switch_core.keys import Keyring
-from switch_core.providers.github import GitHubConnections, GitHubError, GitHubReach
+from switch_core.providers.github import (
+    GitHubConnections,
+    GitHubError,
+    GitHubReach,
+    TokenOwner,
+)
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 from switch_core.tenant_context import tenant_scope
 
@@ -1312,6 +1318,61 @@ class TestOrganizationsApp:
 
         assert refused.status_code == 503
         assert refused.json()["detail"] == problem
+
+    async def test_a_token_works_where_the_organizations_app_is_unusable(
+        self, github_app, monkeypatch
+    ) -> None:
+        _, server_github, identity, factory = github_app
+        problem = "Your organization's GitHub app can't be used: it is broken."
+        app = _process(
+            server_github,
+            identity,
+            factory,
+            False,
+            _Organizations(_saved(None, problem)),
+        )
+        broker: ServiceBroker = app.state.service_broker
+        monkeypatch.setattr(
+            github_adapter,
+            "token_owner",
+            AsyncMock(return_value=TokenOwner(1001, "ada-gh", expires=True)),
+        )
+
+        async with await _client(app) as client:
+            before = await client.get(BASE)
+            async with factory() as session:
+                standing = await broker.standing(session, "github")
+                checked = await broker.check_paste(
+                    session, "github", "token", {"pat": "github_pat_SYNTHETIC"}, {}
+                )
+            async with factory() as session:
+                await broker.connect(
+                    session,
+                    user_id=identity["user"].id,
+                    service="github",
+                    consent="write",
+                    granted_scopes=[],
+                    account_id=checked.account_id,
+                    external_identity=checked.label,
+                    secret=checked.secret,
+                    oauth_client_id=None,
+                    method="token",
+                    choices={},
+                )
+            after = await client.get(BASE)
+
+        # Signing in is refused with the organization's reason; the token,
+        # which goes through no App, connects GitHub and reads as connected.
+        assert standing.unavailable is None
+        assert standing.sign_in_unavailable is not None
+        assert standing.sign_in_unavailable.reason == problem
+        assert before.status_code == 200, before.text
+        assert before.json()["install_url"] is None
+        assert after.status_code == 200, after.text
+        assert (after.json()["status"], after.json()["method"]) == (
+            "connected",
+            "token",
+        )
 
     async def test_a_sign_in_begun_under_another_app_is_refused_at_authorize(
         self, github_app
