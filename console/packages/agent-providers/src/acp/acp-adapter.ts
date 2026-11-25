@@ -201,7 +201,14 @@ export class AcpAdapter implements ProviderAdapter {
     private readonly options: AcpAdapterOptions
   ) {
     this.provider = hooks.provider;
-    this.capabilities = hooks.capabilities;
+    // Steering follows the executable too: what a session advertises for a
+    // mid-turn message is read from here, so a runtime that cannot steer
+    // says so rather than having each steer refused.
+    const binaryPath = options.binaryPath ?? hooks.defaultBinary;
+    this.capabilities = {
+      ...hooks.capabilities,
+      steering: hooks.capabilities.steering && (hooks.steersRunningTurn?.(binaryPath) ?? true),
+    };
     this.logger = options.logger ?? noopLogger;
   }
 
@@ -244,7 +251,7 @@ export class AcpAdapter implements ProviderAdapter {
       nativeId: '',
       client,
       turn: null,
-      steering: hooks.capabilities.steering && (hooks.steersRunningTurn?.(binaryPath) ?? true),
+      steering: this.capabilities.steering,
       latestPrompt: undefined,
       prompts: 0,
       queue: [],

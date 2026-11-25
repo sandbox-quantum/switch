@@ -24,7 +24,7 @@ describe('buildWatcherTemplate', () => {
     ['codex', 'steer'],
     ['opencode', 'steer'],
     ['cursor', 'queue'],
-    ['antigravity', 'queue'],
+    ['antigravity', 'steer'],
   ] as const)('advertises what %s does with a message sent mid-turn', (provider, input) => {
     const template = buildWatcherTemplate({
       agentId: 'agent-1',

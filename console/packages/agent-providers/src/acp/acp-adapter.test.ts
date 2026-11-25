@@ -862,6 +862,15 @@ it('queues a message sent mid-turn without an expected turn when the session can
   ]);
 });
 
+it('advertises steering only for an executable that steers', () => {
+  expect(createAcpAdapter(antigravityAcp, {}).capabilities.steering).toBe(true);
+  expect(
+    createAcpAdapter(antigravityAcp, { binaryPath: '/home/me/.local/bin/antigravity-acp' })
+      .capabilities.steering
+  ).toBe(false);
+  expect(createAcpAdapter(dummy, {}).capabilities.steering).toBe(false);
+});
+
 it('steers Antigravity through agy, and not through the retired antigravity-acp', () => {
   expect(antigravityAcp.capabilities.steering).toBe(true);
   expect(antigravityAcp.steersRunningTurn?.('/usr/local/bin/agy')).toBe(true);
