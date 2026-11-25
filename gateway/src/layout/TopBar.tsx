@@ -79,6 +79,7 @@ function WorkspaceCrumbs({
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
+  const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
 
   const tenant = session?.tenant ?? null;
   const currentOrganizationId = tenant?.organization_id ?? null;
@@ -103,10 +104,16 @@ function WorkspaceCrumbs({
   }, [currentOrganizationId, renames]);
 
   const switchWorkspace = async (tenantId: string) => {
+    if (switchingWorkspace) return;
+    // A successful response replaces the session cookie and leaves this page.
+    // Keep one selection in flight, or a second response can replace it again.
+    setSwitchingWorkspace(true);
+    setSwitchError(null);
     setAnchor(null);
     try {
       await switchTo(tenantId);
     } catch (err) {
+      setSwitchingWorkspace(false);
       setSwitchError(err instanceof Error ? err.message : "Could not switch workspace");
     }
   };
@@ -139,6 +146,9 @@ function WorkspaceCrumbs({
         color="inherit"
         aria-haspopup="menu"
         aria-expanded={anchor !== null}
+        aria-busy={switchingWorkspace}
+        loading={switchingWorkspace}
+        loadingPosition="end"
         onClick={(e: MouseEvent<HTMLElement>) => setAnchor(e.currentTarget)}
         endIcon={<ExpandMoreOutlined sx={{ fontSize: 18 }} />}
         sx={{ ...CRUMB_TEXT, px: 1, textTransform: "none", minWidth: 0 }}
