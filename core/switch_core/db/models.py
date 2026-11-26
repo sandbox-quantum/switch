@@ -395,6 +395,14 @@ class User(Base):
             "(suspended_at IS NULL) = (suspended_by_role IS NULL)",
             name="ck_users_suspension_complete",
         ),
+        CheckConstraint(
+            "(team_survey IS NULL) = (team_survey_answered_at IS NULL)",
+            name="ck_users_team_survey_complete",
+        ),
+        CheckConstraint(
+            "(license_accepted_version IS NULL) = (license_accepted_at IS NULL)",
+            name="ck_users_license_acceptance_complete",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -436,6 +444,18 @@ class User(Base):
     )
     suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     suspended_by_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The person's answers to "Tell us about your team" (`gateway/team_survey.py`),
+    # asked once where the dashboard onboards people.
+    team_survey: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    team_survey_answered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # The last license this person accepted, named by a digest of its text
+    # (`gateway/license_acceptance.py`), so a changed license is asked again.
+    license_accepted_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    license_accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 # Changing a password or losing the server-admin role ends every session. As

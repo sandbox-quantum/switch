@@ -58,6 +58,7 @@ from switch_core.gateway.github_connections import router as github_connections_
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
 from switch_core.gateway.hosted_machines import router as hosted_machines_router
 from switch_core.gateway.invite_mail import InviteMailer
+from switch_core.gateway.license_acceptance import router as license_router
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
 )
@@ -97,6 +98,7 @@ from switch_core.gateway.service_connections import (
 from switch_core.gateway.service_flows import router as service_flows_router
 from switch_core.gateway.stream_caps import GatewayStreamCaps
 from switch_core.gateway.suspension import router as suspension_router
+from switch_core.gateway.team_survey import router as team_survey_router
 from switch_core.gateway.teams_placements import router as teams_placements_router
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
@@ -282,6 +284,8 @@ def create_gateway_app(
     app.include_router(browser_handoff_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(workos_sign_in_router, tags=["auth"])
+    app.include_router(team_survey_router, tags=["auth"])
+    app.include_router(license_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(organizations_router, tags=["organizations"])
     app.include_router(organization_workspaces_router, tags=["organizations"])
