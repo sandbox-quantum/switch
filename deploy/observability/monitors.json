@@ -926,30 +926,6 @@
     "priority": 4
   },
   {
-    "name": "[Switch REPLACE-WITH-ENV] AI provider logins missing or expired on cloud machines",
-    "type": "query alert",
-    "query": "min(last_30m):max:switch.hosted.provider_login_problems{service:REPLACE-WITH-SERVICE} > 0",
-    "message": "{{#is_alert}}For 30 minutes, {{value}} AI provider login(s) on cloud machines have been missing or expired, so agents using them can't run.\n\n**Check:** which providers on the dashboard; the person who owns the machine needs to give the login again in Switch Console.{{/is_alert}}{{#is_recovery}}Recovered: no missing or expired AI provider logins on cloud machines.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": [
-      "service:REPLACE-WITH-SERVICE",
-      "env:REPLACE-WITH-ENV",
-      "team:switch",
-      "tier:now",
-      "category:ops"
-    ],
-    "options": {
-      "notify_no_data": false,
-      "renotify_interval": 60,
-      "notify_audit": false,
-      "require_full_window": false,
-      "include_tags": true,
-      "thresholds": {
-        "critical": 0
-      }
-    },
-    "priority": 4
-  },
-  {
     "name": "[Switch REPLACE-WITH-ENV] Cloud machines slow to start",
     "type": "query alert",
     "query": "min(last_30m):p95:switch.hosted.provision_seconds{service:REPLACE-WITH-SERVICE} > 600",
