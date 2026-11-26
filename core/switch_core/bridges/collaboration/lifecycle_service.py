@@ -345,6 +345,13 @@ class CollaborationBridgeLifecycleService:
         # starts at once would build two adapters, and the one overwritten
         # would go on listening with nothing left to stop it.
         self._bridge_locks: dict[str, asyncio.Lock] = {}
+        # Every read of the bridges' rows takes a stamp as it begins, and so
+        # does every register, restart and remove made here. What runs here
+        # for a bridge was settled by the newest of those that has acted on
+        # it (`_stamped`); an older read that finishes later leaves it alone,
+        # whatever order they finish in.
+        self._stamps = 0
+        self._stamped: dict[str, int] = {}
         # Why the last take-over of each bridge failed to start it, for
         # `register` to raise: the ownership logs the failure and goes on.
         self._failed_take_overs: dict[str, Exception] = {}
@@ -1101,6 +1108,7 @@ class CollaborationBridgeLifecycleService:
         try:
             # Which process holds it is settled first, so it starts once, in
             # the form it will run here.
+            self._newer(bridge.id, self._stamp())
             self._want(bridge)
             await self._owned.settle()
             failed = self._failed_take_overs.pop(bridge.id, None)
@@ -1140,6 +1148,18 @@ class CollaborationBridgeLifecycleService:
         )
         self._announce(bridge.id)
         return bridge
+
+    def _stamp(self) -> int:
+        self._stamps += 1
+        return self._stamps
+
+    def _newer(self, bridge_id: str, stamp: int) -> bool:
+        """Whether a read or change stamped `stamp` is newer than what settled
+        the bridge here, recording it as what settles it now if so."""
+        if stamp < self._stamped.get(bridge_id, 0):
+            return False
+        self._stamped[bridge_id] = stamp
+        return True
 
     def _bridge_lock(self, bridge_id: str) -> asyncio.Lock:
         lock = self._bridge_locks.get(bridge_id)
@@ -1860,6 +1880,7 @@ class CollaborationBridgeLifecycleService:
         is inert until the bridge is rebuilt."""
         # Asked for explicitly, so a bridge refused before is tried again.
         self._refused_rows.pop(bridge_id, None)
+        self._newer(bridge_id, self._stamp())
         await self.stop(bridge_id, reason="restart")
         await self.start(bridge_id)
         logger.info("Restarted collaboration bridge %s", bridge_id)
@@ -1992,6 +2013,7 @@ class CollaborationBridgeLifecycleService:
     async def reconcile_bridge(self, bridge_id: str) -> None:
         """Bring this process's copy of one bridge in line with its row, after
         another process registered, edited or removed it."""
+        stamp = self._stamp()
         tenant_id = await tenant_of_collaboration_bridge(
             self._session_factory, bridge_id
         )
@@ -1999,17 +2021,22 @@ class CollaborationBridgeLifecycleService:
         if tenant_id is not None:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 bridge = await self._bridge_store.get(session, bridge_id)
-        await self._reconcile_row(bridge_id, bridge)
+        await self._reconcile_row(bridge_id, bridge, stamp)
 
     async def reconcile_all(self) -> None:
         """`reconcile_bridge` for every bridge stored or running here, reading
-        the rows one tenant at a time."""
+        the rows one tenant at a time.
+
+        A bridge settled here by a newer read or change than this one is left
+        alone: the rows are older than that (a bridge registered while they
+        were read would read as removed)."""
+        stamp = self._stamp()
         rows: dict[str, CollaborationBridge] = {}
         for tenant_id in await all_tenant_ids(self._session_factory):
             async with tenant_session(self._session_factory, tenant_id) as session:
                 rows.update(
                     (bridge.id, bridge)
-                    for bridge in await self._bridge_store.get_active(session)
+                    for bridge in await self._serving(session, tenant_id)
                 )
         # `_started` too: a bridge that crashed is out of `_bridges` but still
         # counted as expected (`crashed`, `running_count`), so once its row is
@@ -2020,7 +2047,7 @@ class CollaborationBridgeLifecycleService:
         )
         for bridge_id in sorted(bridge_ids):
             try:
-                await self._reconcile_row(bridge_id, rows.get(bridge_id))
+                await self._reconcile_row(bridge_id, rows.get(bridge_id), stamp)
             except Exception:
                 logger.warning(
                     "Could not bring collaboration bridge %s in line with its "
@@ -2029,8 +2056,14 @@ class CollaborationBridgeLifecycleService:
                     exc_info=True,
                 )
 
+    async def _serving(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[CollaborationBridge]:
+        """The tenant's active bridges."""
+        return await self._bridge_store.get_active(session)
+
     async def _reconcile_row(
-        self, bridge_id: str, bridge: CollaborationBridge | None
+        self, bridge_id: str, bridge: CollaborationBridge | None, stamp: int
     ) -> None:
         """Bring this process's copy of a bridge in line with its row.
 
@@ -2043,7 +2076,7 @@ class CollaborationBridgeLifecycleService:
         deployment of one process. A crash on a passing failure is the
         exception, tried again by `_retry_after_crash`.
         """
-        if self._owned.stopping:
+        if self._owned.stopping or not self._newer(bridge_id, stamp):
             return
         if bridge is None or bridge.status != "active":
             self._refused_rows.pop(bridge_id, None)
@@ -2160,6 +2193,7 @@ class CollaborationBridgeLifecycleService:
             )
         # Held here or not, let go of it: no process is to take it over. A
         # quiet copy waiting to start finds it no longer wanted.
+        self._newer(bridge_id, self._stamp())
         await self._owned.drop(bridge_id)
         await self.stop(bridge_id)
         async with self._session_factory() as session:

@@ -537,6 +537,117 @@ def test_send_message_threads_under_explicit_root() -> None:
     assert ref == "C123:999.9"
 
 
+class _RefusingWebClient(_FakeWebClient):
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+    async def chat_postMessage(self, **kwargs: Any) -> dict[str, str]:
+        self.calls.append(kwargs)
+        raise SlackApiError(self.error, response={"ok": False, "error": self.error})
+
+
+def test_a_send_slack_refuses_raises_for_the_caller() -> None:
+    """Returned as None, the refusal looked like a post the platform took
+    nothing of, so the bridge let the message go without trying it again."""
+    adapter = _adapter()
+    adapter._web_client = _RefusingWebClient("ratelimited")  # type: ignore[assignment]
+
+    with pytest.raises(SlackApiError) as refused:
+        _run(adapter.send_message("C123", "agent-bot", "hi", thread_root_id=None))
+
+    assert SlackAdapter.classify_refusal(refused.value) == "transient"
+
+
+@pytest.mark.parametrize(
+    "send",
+    [
+        lambda adapter: adapter.post_blocks(
+            "C123", "agent-bot", "hi", [], None, reply_broadcast=False
+        ),
+        lambda adapter: adapter.admin_message("C123", "hi"),
+    ],
+    ids=["card", "system message"],
+)
+def test_a_card_or_system_message_slack_refuses_raises_for_the_caller(
+    send: Any,
+) -> None:
+    """Cards and system messages go through the same retry as an agent's
+    message, which only sees a refusal that is raised."""
+    adapter = _adapter()
+    adapter._web_client = _RefusingWebClient("ratelimited")  # type: ignore[assignment]
+
+    with pytest.raises(SlackApiError) as refused:
+        _run(send(adapter))
+
+    assert SlackAdapter.classify_refusal(refused.value) == "transient"
+
+
+@pytest.mark.parametrize(
+    "send",
+    [
+        lambda adapter: adapter.post_blocks(
+            "C123", "agent-bot", "hi", [], None, reply_broadcast=False
+        ),
+        lambda adapter: adapter.admin_message("C123", "hi"),
+    ],
+    ids=["card", "system message"],
+)
+def test_a_card_or_system_message_with_no_client_raises(send: Any) -> None:
+    adapter = _adapter()
+    adapter._web_client = None
+
+    with pytest.raises(BridgeOperationError):
+        _run(send(adapter))
+
+
+def test_a_send_with_no_client_raises() -> None:
+    adapter = _adapter()
+    adapter._web_client = None
+
+    with pytest.raises(BridgeOperationError):
+        _run(adapter.send_message("C123", "agent-bot", "hi", thread_root_id=None))
+
+
+class _Response:
+    """A response with a status and no readable body, as slack_sdk hands
+    over for an empty 502 or a proxy's error page."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+@pytest.mark.parametrize(
+    ("refusal", "kind"),
+    [
+        (SlackApiError("is_archived", {"error": "is_archived"}), "permanent"),
+        (
+            SlackApiError("channel_not_found", {"error": "channel_not_found"}),
+            "permanent",
+        ),
+        (SlackApiError("msg_too_long", {"error": "msg_too_long"}), "permanent"),
+        (SlackApiError("token_revoked", {"error": "token_revoked"}), "permanent"),
+        (SlackApiError("not_in_channel", {"error": "not_in_channel"}), "bounded"),
+        (SlackApiError("ratelimited", {"error": "ratelimited"}), "transient"),
+        (SlackApiError("internal_error", {"error": "internal_error"}), "transient"),
+        (SlackApiError("bad gateway", _Response(502)), "transient"),
+        (SlackApiError("no body", {}), "transient"),
+        (TimeoutError("read timed out"), "transient"),
+    ],
+)
+def test_a_refusal_is_judged_by_slacks_error_code(
+    refusal: BaseException, kind: str
+) -> None:
+    assert SlackAdapter.classify_refusal(refusal) == kind
+
+
+def test_a_refusal_is_read_through_its_cause() -> None:
+    wrapped = RuntimeError("the card was not posted")
+    wrapped.__cause__ = SlackApiError("is_archived", {"error": "is_archived"})
+
+    assert SlackAdapter.classify_refusal(wrapped) == "permanent"
+
+
 def test_send_message_top_level_has_no_thread_ts() -> None:
     adapter = _adapter()
     fake = _FakeWebClient()
@@ -1518,3 +1629,55 @@ def test_backtick_wrapped_command_from_bot_is_not_run() -> None:
 
     # An agent posting a `!command` reference must never trigger it.
     assert commands == []
+
+
+# ── Text translation ─────────────────────────────────────────────────────────
+
+
+def test_an_enterprise_grid_mention_from_slack_reads_as_the_name() -> None:
+    adapter = _adapter()
+    adapter._user_cache["W0CAROL"] = SlackUser(name="carol", display_name="carol")
+
+    assert adapter.translate_inbound("hi <@W0CAROL>") == "hi @carol"
+
+
+@pytest.mark.parametrize("ending", [".", "...", "-", "_"])
+def test_a_mention_ending_a_sentence_is_still_a_mention(ending: str) -> None:
+    adapter = _adapter()
+    adapter._remember_mention_target("alice", "U0ALICE")
+
+    assert adapter.translate_outbound(f"thanks @alice{ending}") == (
+        f"thanks <@U0ALICE>{ending}"
+    )
+
+
+def test_a_name_with_a_dot_inside_is_mentioned_whole() -> None:
+    adapter = _adapter()
+    adapter._remember_mention_target("bob.smith", "U0BOB")
+    adapter._remember_mention_target("bob", "U0OTHER")
+
+    assert adapter.translate_outbound("cc @bob.smith.") == "cc <@U0BOB>."
+
+
+def test_a_link_with_parentheses_in_its_url_is_one_slack_link() -> None:
+    adapter = _adapter()
+
+    assert (
+        adapter.translate_outbound(
+            "see [Mercury](https://en.example.org/wiki/Mercury_(planet))"
+        )
+        == "see <https://en.example.org/wiki/Mercury_(planet)|Mercury>"
+    )
+
+
+def test_slack_markup_written_in_a_body_is_shown_not_parsed() -> None:
+    """Only the translation writes Slack markup: a body that spells out a
+    mention or a link shows it as text."""
+    adapter = _adapter()
+
+    sent = adapter.translate_outbound("try <@U0JANE> or <https://a.example|b> & c")
+
+    assert sent == "try &lt;@U0JANE> or &lt;https://a.example|b> &amp; c"
+    assert adapter.translate_inbound(sent) == (
+        "try <@U0JANE> or <https://a.example|b> & c"
+    )

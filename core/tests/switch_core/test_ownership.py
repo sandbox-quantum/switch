@@ -427,6 +427,45 @@ class TestHandingOver:
         assert a.runs() == a_had
         assert everywhere.overlaps == []
 
+    async def test_a_process_back_from_suspending_lets_go_of_what_moved(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+    ) -> None:
+        """It suspends and renews again before its lease reads as lapsed, and
+        another process joined meanwhile: the keys that now belong to the
+        other are let go of, not left held by rows nothing runs."""
+        a = _process(session_factory, everywhere)
+        await a.lease.renew()
+        for key in KEYS:
+            a.kind.want(key)
+        await a.ownership.balance()
+        assert a.runs() == set(KEYS)
+
+        a.lease._renewed_at = time.monotonic() - LEASE_TTL.total_seconds()
+        await a.ownership.balance()
+        assert a.runs() == set()
+
+        b = _process(session_factory, everywhere)
+        await b.lease.renew()
+        for key in KEYS:
+            b.kind.want(key)
+        await b.ownership.balance()
+        assert b.runs() == set()
+
+        await a.lease.renew()
+        await a.ownership.balance()
+        await b.ownership.balance()
+
+        live = sorted([a.process_id, b.process_id])
+        b_share = {key for key in KEYS if owner_of(KIND, key, live) == b.process_id}
+        assert b.runs() == b_share
+        assert a.runs() == set(KEYS) - b_share
+        assert await _holders(session_factory) == {
+            key: b.process_id if key in b_share else a.process_id for key in KEYS
+        }
+        assert everywhere.overlaps == []
+
     async def test_work_dropped_here_is_stopped_and_let_go_of(
         self,
         session_factory: async_sessionmaker[AsyncSession],

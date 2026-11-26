@@ -57,6 +57,14 @@ class _LiveClientLifecycle(FakeClientLifecycle):
     def get(self, client_id: str) -> _FakeActor | None:
         return self.actors.get(client_id)
 
+    async def rename(  # type: ignore[override]
+        self, tenant_id: str, client_id: str, display_name: str
+    ) -> _FakeActor | None:
+        actor = self.actors.get(client_id)
+        if actor is not None:
+            await actor.set_display_name(display_name)
+        return actor
+
 
 @dataclass
 class _FakeAdapter:

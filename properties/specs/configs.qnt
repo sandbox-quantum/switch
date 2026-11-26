@@ -147,3 +147,170 @@ module mutant_write_without_token {
     PROCS = Set(1, 2), MAX_NOW = 4, BUGS = Set("write-without-token")
   ).* from "./ownership"
 }
+
+// The untimed lease: three processes and two faults, so one outlives them
+// however they fall (two dying, one losing its lease twice, a death and a
+// shutdown).
+module lease_eventual {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set()
+  ).* from "./ownership_eventual"
+}
+
+// Four processes and three faults: nightly.
+module lease_eventual_deep {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3, 4), MAX_FAULTS = 3, BUGS = Set()
+  ).* from "./ownership_eventual"
+}
+
+module mutant_lapsed_holder_kept {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("lapsed-holder-kept")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_eventual_claim_ignores_holder {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("claim-ignores-holder")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_no_suspend {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("no-suspend")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_renews_after_death {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("renews-after-death")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_live_ignores_lapse {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("live-ignores-lapse")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_owner_excludes_self {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("owner-excludes-self")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_no_handoff {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("no-handoff")
+  ).* from "./ownership_eventual"
+}
+
+module mutant_keeps_rows_on_resume {
+  import ownership_eventual(
+    PROCS = Set(1, 2, 3), MAX_FAULTS = 2, BUGS = Set("keeps-rows-on-resume")
+  ).* from "./ownership_eventual"
+}
+
+// The signals model, one family a check: what a process holds and re-reads
+// (`view`), the held cache (`cache`), and the room wake-up (`room`). One
+// process holding the row, changes made by it or by one not modelled, two
+// changes or rows, and one reconnect.
+
+module signals_view {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set()
+  ).* from "./signals"
+}
+
+module signals_cache {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set()
+  ).* from "./signals"
+}
+
+module signals_room {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("room"), MAX_VERSION = 0, MAX_ROWS = 2,
+    MAX_CONN = 2, MAX_CLOCK = 0, BUGS = Set()
+  ).* from "./signals"
+}
+
+module mutant_view_acts_on_payload {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("view-acts-on-payload")
+  ).* from "./signals"
+}
+
+module mutant_no_resync {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("no-resync")
+  ).* from "./signals"
+}
+
+module mutant_no_recheck {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("no-recheck")
+  ).* from "./signals"
+}
+
+module mutant_cache_acts_on_payload {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set("cache-acts-on-payload")
+  ).* from "./signals"
+}
+
+module mutant_hold_survives_reconnect {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set("hold-survives-reconnect")
+  ).* from "./signals"
+}
+
+module mutant_no_generation {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set("no-generation")
+  ).* from "./signals"
+}
+
+module mutant_no_wake_on_reconnect {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("room"), MAX_VERSION = 0, MAX_ROWS = 2,
+    MAX_CONN = 2, MAX_CLOCK = 0, BUGS = Set("no-wake-on-reconnect")
+  ).* from "./signals"
+}
+
+module mutant_reads_announced_row {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("room"), MAX_VERSION = 0, MAX_ROWS = 2,
+    MAX_CONN = 2, MAX_CLOCK = 0, BUGS = Set("reads-announced-row")
+  ).* from "./signals"
+}
+
+module mutant_ttl_from_store {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("cache"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 3, BUGS = Set("ttl-from-store")
+  ).* from "./signals"
+}
+
+module mutant_applies_overtaken_reread {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("applies-overtaken-reread")
+  ).* from "./signals"
+}
+
+module mutant_skips_if_changed_since {
+  import signals(
+    PROCS = Set(1), FAMILIES = Set("view"), MAX_VERSION = 2, MAX_ROWS = 0,
+    MAX_CONN = 2, MAX_CLOCK = 4, BUGS = Set("skips-if-changed-since")
+  ).* from "./signals"
+}

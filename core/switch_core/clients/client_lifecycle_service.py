@@ -156,6 +156,11 @@ class ClientLifecycleService:
         # (`reconcile_tenant`), which the periodic re-check compares with the
         # table's before reading every client again (`recheck_all`).
         self._fingerprints: dict[str, Fingerprint] = {}
+        # One re-read of a tenant's clients at a time, from its read through
+        # what it applies, and a rename served here in turn with them: a
+        # re-read that read a row before a change and applied after it would
+        # put the old state back, and no signal would come to correct it.
+        self._tenant_locks: dict[str, asyncio.Lock] = {}
 
     def add_agents_changed_listener(self, listener: AgentsChangedListener) -> None:
         self._agents_changed_listeners.append(listener)
@@ -409,14 +414,15 @@ class ClientLifecycleService:
         (an agent's description edited elsewhere sends none), so whatever
         keeps per-agent state reads every agent again.
         """
-        running_before = self._running_in(tenant_id, scope=None)
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            records, fingerprint = await self._client_store.get_running(
-                session, tenant_id, self._NOT_RUN_HERE
-            )
-        changed = await self._apply(tenant_id, records, running_before, scope=None)
-        last = self._fingerprints.get(tenant_id)
-        self._fingerprints[tenant_id] = fingerprint
+        async with self._rereading(tenant_id):
+            running_before = self._running_in(tenant_id, scope=None)
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                records, fingerprint = await self._client_store.get_running(
+                    session, tenant_id, self._NOT_RUN_HERE
+                )
+            changed = await self._apply(tenant_id, records, running_before, scope=None)
+            last = self._fingerprints.get(tenant_id)
+            self._fingerprints[tenant_id] = fingerprint
         if last is not None and last != fingerprint:
             self._agents_changed(tenant_id, None)
         elif changed:
@@ -438,17 +444,35 @@ class ClientLifecycleService:
         scope = frozenset(client_ids)
         if not scope:
             return
-        running_before = self._running_in(tenant_id, scope=scope)
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            records = [
-                record
-                for record in await self._client_store.get_many(
-                    session, tenant_id, scope
-                )
-                if record.type not in self._NOT_RUN_HERE
-            ]
-        await self._apply(tenant_id, records, running_before, scope=scope)
+        async with self._rereading(tenant_id):
+            running_before = self._running_in(tenant_id, scope=scope)
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                records = [
+                    record
+                    for record in await self._client_store.get_many(
+                        session, tenant_id, scope
+                    )
+                    if record.type not in self._NOT_RUN_HERE
+                ]
+            await self._apply(tenant_id, records, running_before, scope=scope)
         self._agents_changed(tenant_id, scope)
+
+    def _rereading(self, tenant_id: str) -> asyncio.Lock:
+        return self._tenant_locks.setdefault(tenant_id, asyncio.Lock())
+
+    async def rename(
+        self, tenant_id: str, client_id: str, display_name: str
+    ) -> Actor[ClientConfig] | None:
+        """Give the copy here, if one runs, the name its row was just renamed
+        to, and return it.
+
+        In turn with the tenant's re-reads, so one that read the row before
+        the rename committed cannot put the old name back after it."""
+        async with self._rereading(tenant_id):
+            actor = self._clients.get(client_id)
+            if actor is not None:
+                await actor.set_display_name(display_name)
+            return actor
 
     def _running_in(self, tenant_id: str, *, scope: frozenset[str] | None) -> list[str]:
         """The clients of `tenant_id` running here that a read of `scope`

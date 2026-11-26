@@ -154,7 +154,14 @@ shared claimant is a hint, not proof of a shared person.
    - stops the client that stood in for the person;
    - in one transaction: drops their name and the words they typed from
      approval answers (`answered_by` becomes `erased`; the options they picked
-     stay, as the agent's record of what it was told), takes their name out of
+     stay, as the agent's record of what it was told), replaces their name on
+     the cards they answered on their chat app with `erased` (the bridge keeps
+     it on the card's own post mapping, `bridge_message_map.card_answer`,
+     which belongs to the agent's message, with their transport id beside it,
+     which goes too; the button they pressed stays. An answer recorded before
+     the id was is matched by their username, so one the platform showed under
+     another display name keeps it),
+     takes their name out of
      the names of direct rooms they were in, deletes the identity row (claims
      go by cascade), its room memberships and its client, and only then
      deletes anything they sent meanwhile. Deleting the client waits for any
@@ -202,6 +209,9 @@ sent deleted, nothing would show a placeholder anyway.
   platform, so the pair is the platform's data, not Switch's record of them.
 - **Channel room names.** Only direct rooms are named after a person. A
   channel's name is the platform's.
+- **Usage counters** (`tenant_usage`) keep the id of the client that stood in
+  for them, which their posts were counted under. The client is deleted, so the
+  id names nothing, and the counts stay right.
 
 **Members who wrote from Switch Console.** A member chatting from Switch
 Console writes through a member client (`type = 'member'`) of their own,
@@ -223,9 +233,16 @@ for whom no client row is left. The People list shows them under "Disconnected
 app", named by the display names their messages carry, and an erasure request
 names them by that sender id (`former_sender_ids`). Erasing one deletes their
 messages, files, bridge post mappings and agent event copies, scrubs their approval
-answers, and replaces their names in the direct rooms among the rooms their
-messages were deleted from, since their memberships went with their client.
-There is no identity left to delete and no bridge to tell. Listing them scans
+answers, and replaces their names in their direct rooms. Their memberships went
+with their client, and disconnecting the app detached its rooms, clearing their
+bridge and channel type, so a room says what it was only through
+`detached_from` in its metadata, which detaching writes: the bridge it was on
+and its channel type there. Their direct rooms are those detached from the
+bridge named in their sender id that were direct, whether or not they wrote in
+them. A room detached before `detached_from` was written is found only among
+the rooms their messages were deleted from. Their card answers went with the
+bridge's post mappings. There is no identity left to delete and no bridge to
+tell. Listing them scans
 the tenant's messages, which is fine for an admin-only page opened rarely; an
 index on the sender's shape would be the fix if it is not.
 

@@ -33,11 +33,11 @@ from switch_core.bridges.collaboration.discord.connection import DiscordConnecti
 from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
 from switch_core.db.models import Client, CollaborationBridge, SwitchCoreProcess
 from switch_core.process_lease import LEASE_TTL
-from tests.switch_core.bridges.collaboration.test_bridge_ownership import (
-    _Process,
+from tests.switch_core.bridges.collaboration.bridge_processes import (
+    Process,
 )
-from tests.switch_core.bridges.collaboration.test_bridge_ownership import (
-    _process as _bridge_process,
+from tests.switch_core.bridges.collaboration.bridge_processes import (
+    process_on as _bridge_process,
 )
 
 TIMEOUT = 10.0
@@ -94,7 +94,7 @@ class _Connection:
 
 @dataclass
 class _WithGateway:
-    process: _Process
+    process: Process
     gateway: DiscordGatewayClient
     connection: _Connection
     # How many times the gateway has tried to attach the bridges.

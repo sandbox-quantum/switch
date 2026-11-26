@@ -2,8 +2,9 @@
 
 It does what `properties/specs/delivery.qnt` models: transactions that write a
 room row and number events for the agents it is for, held open or committed in
-whatever order Hypothesis picks; agents joining and leaving; retention; a
-client of an agent resuming. The invariants are the model's, checked against
+whatever order Hypothesis picks; agents joining and leaving; an agent's
+addressing policy shutting the sender out and letting them back in;
+retention; a client of an agent resuming. The invariants are the model's, checked against
 the database after every step, and the names below follow the model's state.
 
 An operation that takes a lock another is holding really waits: it runs as a
@@ -41,6 +42,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switch_core.addressing import owner_only_policy
 from switch_core.bridges.agent.protocol.agent_connections import (
     POSITIONS_PROTOCOL_REVISION,
     AgentConnection,
@@ -62,6 +64,7 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.provisioning.postgres import PostgresProvisioning
@@ -101,6 +104,8 @@ SHOULD_REACH = (
 # scenario tests reach each of them every run, and the `nightly` profile has to.
 SHOULD_REACH_AT_SCALE = (
     "a leave waits for a lock",
+    "a mention is refused by a policy",
+    "a policy changes after a row was for the agent",
     "retention runs over events",
     "the process restarts",
 )
@@ -132,6 +137,15 @@ class Operation:
 class Post(Operation):
     room: str = ""
     addressed: frozenset[str] = frozenset()
+    # The agents it names whose policy shut the sender out when it was decided.
+    refused: frozenset[str] = frozenset()
+    # An agent joined the room while it waited for the room's lock, so the
+    # router decides it again under the lock: the agents refused by the
+    # policies then. Which decision's policies it applies is the router's to
+    # choose; either is a decision at the write, as long as one applies to
+    # the whole row.
+    joined_while_waiting: bool = False
+    refused_at_lock: frozenset[str] | None = None
     gate: asyncio.Future[str] | None = None
     seq: int = 0
     # The events it numbered, read in its own transaction before it ends: after
@@ -151,12 +165,19 @@ class Leave(Operation):
 
 @dataclass
 class Row:
-    """A committed row, and what the router did with it."""
+    """A committed row, and what the router did with it: the agents it
+    addressed and was allowed to, the own event it stored for each by number,
+    those of them in the room throughout, and when it committed."""
 
     seq: int
     addressed: frozenset[str]
-    stored: frozenset[str]
+    numbers: dict[str, int]
     stable: frozenset[str]
+    tick: int
+
+    @property
+    def stored(self) -> frozenset[str]:
+        return frozenset(self.numbers)
 
 
 class Delivery(RuleBasedStateMachine):
@@ -204,6 +225,13 @@ class Delivery(RuleBasedStateMachine):
         self.sources: dict[str, list[tuple[str, int]]] = {a: [] for a in AGENTS}
         self.position: dict[str, int] = dict.fromkeys(AGENTS, 0)
         self.accounted: dict[str, set[int]] = {a: set() for a in AGENTS}
+        # The agents whose policy shuts the sender out; when each agent left
+        # each room, by the tick of the step that saw it; the events retention
+        # deleted, by agent and number.
+        self.restricted: set[str] = set()
+        self.tick = 0
+        self.left_at: dict[tuple[str, str], list[int]] = {}
+        self.expired: set[tuple[str, int]] = set()
 
         self.posts: dict[int, Post] = {}
         self.leaves: dict[str, Leave] = {}
@@ -359,10 +387,14 @@ class Delivery(RuleBasedStateMachine):
         """A transaction that writes a row to `room` for the agents `addressed`
         names, and holds it, uncommitted, once it is written."""
         assert writer not in self.posts
+        refused = addressed & self.restricted
+        if refused:
+            note("a mention is refused by a policy")
         post = Post(
             kind="post",
             room=room,
             addressed=addressed,
+            refused=frozenset(refused),
             stable=set(self.members[room])
             - {agent for agent, leave in self.leaves.items() if leave.room == room},
         )
@@ -406,6 +438,8 @@ class Delivery(RuleBasedStateMachine):
                         )
                     ).all()
                 ]
+                if post.joined_while_waiting:
+                    post.refused_at_lock = post.addressed & frozenset(self.restricted)
                 post.state = "parked"
                 assert post.gate is not None
                 decision = await post.gate
@@ -445,11 +479,28 @@ class Delivery(RuleBasedStateMachine):
         names = {agent.id: name for name, (agent, _) in self.agents.items()}
         stored = post.stored
         note(f"a commit stores events for {len(stored)} of the agents")
+        names_stored = {names[agent_id] for agent_id, _ in stored}
+        decisions = [post.refused]
+        if post.refused_at_lock is not None:
+            note("a join lands while a post waits for the lock")
+            decisions.append(post.refused_at_lock)
+        allowed = next(
+            (
+                post.addressed - refused
+                for refused in decisions
+                if post.stable & (post.addressed - refused)
+                <= names_stored
+                <= post.addressed - refused
+            ),
+            post.addressed - post.refused,
+        )
+        self.tick += 1
         row = Row(
             seq=post.seq,
-            addressed=post.addressed,
-            stored=frozenset(names[agent_id] for agent_id, _ in stored),
-            stable=frozenset(post.stable & post.addressed),
+            addressed=allowed,
+            numbers={names[agent_id]: number for agent_id, number in stored},
+            stable=frozenset(post.stable & allowed),
+            tick=self.tick,
         )
         self.rows[post.room].append(row)
         self.committed_seqs[post.room].append(post.seq)
@@ -490,6 +541,8 @@ class Delivery(RuleBasedStateMachine):
                 continue
             del self.leaves[agent]
             note("an agent is removed from a room")
+            self.tick += 1
+            self.left_at.setdefault((agent, leave.room), []).append(self.tick)
             self.members[leave.room].discard(agent)
             self.owed[agent] = {
                 number: source
@@ -505,6 +558,9 @@ class Delivery(RuleBasedStateMachine):
         client = self.agents[agent][1]
         self.run(self._join(client, self.agents[agent][0], self.rooms[room]))
         self.members[room].add(agent)
+        for post in self.posts.values():
+            if post.room == room and post.state == "running":
+                post.joined_while_waiting = True
 
     # ── Retention ─────────────────────────────────────────────────────────────
 
@@ -534,7 +590,58 @@ class Delivery(RuleBasedStateMachine):
                 )
             )
             await session.commit()
+        before = await self._events_by_age()
         await self.buffer.expire(TENANT_ZERO_ID)
+        # Retention reads the clock when it runs, so its cutoff is a moment
+        # later than the one placed above. What it deleted is what it may
+        # delete: events older than the window when it finished.
+        after = await self._events_by_age()
+        oldest_kept = datetime.now(UTC) - timedelta(seconds=RETENTION_SECONDS)
+        self.expired |= {
+            event
+            for event, created_at in before.items()
+            if event not in after and created_at < oldest_kept
+        }
+
+    async def _events_by_age(self) -> dict[tuple[str, int], datetime]:
+        names = {agent.id: name for name, (agent, _) in self.agents.items()}
+        async with tenant_session(self.session_factory, TENANT_ZERO_ID) as session:
+            return {
+                (names[agent_id], number): created_at
+                for agent_id, number, created_at in (
+                    await session.execute(
+                        select(
+                            AgentEventRow.agent_id,
+                            AgentEventRow.seq,
+                            AgentEventRow.created_at,
+                        )
+                    )
+                ).all()
+            }
+
+    # ── Addressing ────────────────────────────────────────────────────────────
+
+    def set_policy(self, agent: str, restricted: bool) -> None:
+        """Shut the sender out of addressing `agent` (only its owner may), or
+        open it to anyone again, as the gateway does."""
+        if any(agent in row.stored for rows in self.rows.values() for row in rows):
+            note("a policy changes after a row was for the agent")
+        self.run(self._set_policy(agent, restricted))
+        if restricted:
+            self.restricted.add(agent)
+        else:
+            self.restricted.discard(agent)
+
+    async def _set_policy(self, agent: str, restricted: bool) -> None:
+        async with tenant_session(self.session_factory, TENANT_ZERO_ID) as session:
+            await AgentStore().update(
+                session,
+                self.agents[agent][0].id,
+                addressing_policy=owner_only_policy([]).model_dump()
+                if restricted
+                else None,
+            )
+            await session.commit()
 
     # ── A client reading ──────────────────────────────────────────────────────
 
@@ -692,7 +799,22 @@ class Delivery(RuleBasedStateMachine):
             for agent_id, seq, room_id, room_seq in events
         }
 
-        # delivery.decided-at-write
+        # delivery.decided-at-write: no event but those decided at the write,
+        # and none of those taken away but by retention or a leave.
+        kept = {(agent, room, room_seq) for agent, room, room_seq, _ in retained}
+        for room_name in ROOMS:
+            for written in self.rows[room_name]:
+                for agent, number in written.numbers.items():
+                    if (agent, room_name, written.seq) in kept:
+                        continue
+                    left = any(
+                        tick > written.tick
+                        for tick in self.left_at.get((agent, room_name), [])
+                    )
+                    assert left or (agent, number) in self.expired, (
+                        f"{agent}'s event {number} for {room_name} row {written.seq} is "
+                        "gone, though neither retention nor a leave took it"
+                    )
         for agent, room, room_seq, number in retained:
             row = next((r for r in self.rows[room] if r.seq == room_seq), None)
             assert row is not None, f"{agent} has event {number} for no row"
@@ -818,6 +940,18 @@ class Delivery(RuleBasedStateMachine):
         absentees = self._absentees()
         agent, room = absentees[pick % len(absentees)]
         self.join(agent, room)
+
+    # One agent at a time shuts the sender out, so that rows for both agents
+    # stay as common as the runs need them.
+    @precondition(lambda self: not self.restricted)
+    @rule(agent=st.sampled_from(AGENTS))
+    def restrict_policy(self, agent: str) -> None:
+        self.set_policy(agent, True)
+
+    @precondition(lambda self: bool(self.restricted))
+    @rule()
+    def open_policy(self) -> None:
+        self.set_policy(next(iter(self.restricted)), False)
 
     @precondition(lambda self: any(self.owed.values()))
     @rule(choice=st.integers(min_value=0, max_value=20))

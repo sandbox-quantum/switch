@@ -220,6 +220,89 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A cached controller token or room membership no longer outlives its TTL
+  after a slow read.** The TTL counted from when the read was stored, so a
+  change missed while the read was in flight could be served for the TTL plus
+  however long the read took. It now counts from when the read began.
+- **A machine whose connections changed quickly no longer stays online after
+  it has gone.** When a machine opened a new connection, attached and opened
+  another before switch-core had recorded the first change, the record that
+  its earlier connection was taken over could be dropped. The machine and its
+  agents then read as online until it connected again.
+- **A machine whose server came back after an outage reads as connected again
+  everywhere.** When a switch-core process stopped renewing its lease for a
+  while and then recovered, the other processes kept showing the machines it
+  held, and their agents, as offline until something about those machines
+  changed. They now read them again on their next periodic check.
+- **A message the platform refuses is tried again instead of being lost.** When
+  Slack, Mattermost or another platform answered a message from Switch with an
+  error, the bridge logged it and never posted it, even after a deploy handed
+  the bridge to another process. It is now tried again after 2, 10 and 60
+  seconds, and if the bridge is handed over meanwhile the next process posts
+  it. Later messages in the same room wait behind it, so a reply is not posted
+  before the message it answers. A message that still fails after that, or
+  that the platform refuses for good, is given up on, with an error in the
+  log. The same goes for the files of a multi-file message posted incomplete
+  because the rest did not arrive in time.
+- **Slack mentions and links come through as written.** A mention at the end
+  of a sentence ("thanks @alice.") is now a real Slack mention, a mention of
+  someone on an Enterprise Grid org reads as their name in the room rather
+  than a raw id, and a link whose address has parentheses in it (an
+  encyclopedia page such as `Mercury_(planet)`) is no longer cut short. Text
+  an agent writes that happens to look like Slack's own markup, such as
+  `<@U123>`, is shown as written instead of becoming a mention or a link.
+- **A change made in one process reaches the others within a bound.** A
+  re-read a signal queues now gives up after 15 seconds and is tried again,
+  so one stuck on the database no longer holds up every change behind it.
+- **A connector app saved in the dashboard is no longer briefly replaced by
+  the one before it.** A re-read of the app already under way when an
+  administrator saved a new one could finish last and put the older app back
+  on that server until the next re-check. A service's app is now resolved
+  one read at a time.
+- **A managed agent no longer shows as present in a room it just left.** A
+  slow re-read of an agent's memberships could put back a room it had left
+  (or drop one it had joined) after this process applied the change, so its
+  controller was told the old room list and the agent showed as present
+  there until the next re-check. Which messages reach the agent was not
+  affected.
+- **A messaging app connected during a re-check is no longer stopped by it.**
+  The periodic re-check of messaging apps read their rows, then compared them
+  with the apps running here, so an app connected while it read looked removed
+  and was stopped until the next re-check. A slow re-read of an app's rooms
+  could likewise map a room again that was just unbridged. Neither now acts
+  over a newer change or a re-read that began after it.
+- **A slow re-read of a workspace's clients no longer undoes a newer change.**
+  A re-check or resync that read the clients before a rename or deletion, and
+  finished after it, could put an agent's old name back, or start again a
+  deleted client with no agent behind it, until the next re-check. A
+  workspace's re-reads and renames now take turns.
+- **A message Slack refuses is no longer treated as delivered.** When Slack
+  answered a message from Switch with an error (a rate limit, an archived
+  channel), the bridge logged it and moved on as if Slack had taken nothing,
+  so nothing could try it again. The refusal now reaches the bridge as an
+  error, and Slack's refusals are told apart: one that can clear (a rate
+  limit, an outage) from one that cannot (an archived or missing channel, a
+  message too long). This covers an agent's messages, its cards, and
+  Switch's own notices in the channel. The session activity messages use the
+  same distinction.
+- **Erasing a person takes their name off the cards they answered.** A card
+  pressed on a chat app now reads "erased" as its answerer once they are
+  erased; which button was pressed stays. A card answer now records who
+  pressed by id as well as by the name the platform showed. One answered
+  before this release is found by the person's username, which misses an
+  answer shown under a different display name.
+- **Erasing someone from a disconnected chat app takes their name off their
+  direct rooms.** Disconnecting an app detached its rooms in a way erasure
+  could no longer recognise, so their name stayed on every direct room,
+  including ones they wrote in. A detached room now remembers which app it was
+  on and that it was a direct chat, and erasure finds it whether or not they
+  wrote in it. Rooms detached before this release are found as before, by the
+  messages they wrote there.
+- **Work no longer stays unowned after a server recovers from a short
+  stall.** A server whose lease renewals stalled stopped its work but kept its
+  claims, so work that had meanwhile moved to another server, such as a
+  bridged workspace, could not start there until the first server restarted.
+  A recovered server now lets its claims go and takes back only its share.
 - **Removing someone from a workspace, or leaving it, says who receives what
   they owned.** Their rooms, packages, references, reference types, library
   documents and templates pass to another admin, and until now nothing said

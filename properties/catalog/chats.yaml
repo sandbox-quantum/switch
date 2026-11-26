@@ -9,8 +9,14 @@ properties:
     levels: [code, system]
     owner: platform
     status: proposed
+    gaps:
+      system: no lane reads chats through the routes as people come and go
     notes: >
-      `chats/service.py`.
+      `chats/service.py`. The code-level machine (`chats_machine.py`) checks
+      `require_member` on every read step and `reads_room` for every person and
+      chat after every step, against workspace role, membership and whether
+      the chat is archived. `readable_rooms` does not check the workspace role
+      itself; its callers do first.
   - id: chats.owned-sync-reversible
     title: Owned-room sync takes back only what it gave
     statement: >
@@ -21,7 +27,20 @@ properties:
     formality: semi-formal
     levels: [code]
     owner: platform
-    status: proposed
+    status: checked
+    notes: >
+      The machine keeps why each membership exists (lasting, or held for
+      owning an agent) through chats created, left, invited to and removed
+      from, agents added, removed and handed over, chats archived and
+      restored, and people leaving the workspace and coming back. After every
+      step, the membership rows and the `ChatOwnerGrant` marks must match it.
+      A creator who left their chat still manages it (adds agents, invites),
+      because managing follows the room's owner, not its membership.
+      `sync_owned_rooms` does nothing for someone outside the workspace, and
+      rejoining does not sync. That leaves no stale membership only because
+      the removal route refuses anyone who still owns an agent: they hand
+      their agents on first, while still a member, and that syncs them. The
+      machine removes only people who own no agent, for the same reason.
   - id: chats.streams-close-on-sign-out
     title: Signing out closes a person's streams
     statement: >
@@ -32,3 +51,21 @@ properties:
     levels: [system, ui]
     owner: platform
     status: proposed
+    gaps:
+      ui: >
+        the explore lane drives only the gateway app, which opens none of these
+        streams (Switch Console's main process does), and it cannot sign out
+    notes: >
+      "Sessions end" means every session minted before the account's session
+      version was bumped: signing out of every device, the operator ending
+      someone's sessions, a password change, or deleting the account. Signing
+      out of one browser (`/auth/logout`) only drops that browser's cookie and
+      is outside this. The streams re-check their session on a timer: the
+      change socket (`gateway/changes.py`) at each 25-second ping, closing with
+      4401, and the chat event and activity streams (`gateway/chats.py`) every
+      30 seconds, ending the response. So "close" is bounded, not immediate.
+      An ended session reopening any of them gets a 401, at the handshake for
+      the socket. The fast-lane scenario `streams-close-on-sign-out` holds all
+      three open on two devices, ends the sessions both ways, waits for each
+      to be ended by the server, checks the reopen is refused, and checks
+      someone else's socket stays open.

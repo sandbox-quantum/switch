@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.db.models import (
     ApprovalRequest,
+    BridgeMessageMap,
     Client,
     ClientRoom,
     CollaborationBridge,
@@ -51,7 +52,10 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.bridge_message_map_store import CARD_ANSWERER_ID
 from switch_core.db.stores.retention_store import UNREFERENCED_BLOB
+from switch_core.db.stores.room_store import DETACHED_FROM, DIRECT_ROOM_DESCRIPTION
+from switch_core.ui_spec import answerer_name
 
 #: What `answered_by` reads once the person who answered has been erased.
 ERASED_ANSWERER = "erased"
@@ -82,7 +86,7 @@ STALE_RUNNING = timedelta(minutes=10)
 #: so this tells a person's messages apart once their identity rows are gone.
 HUMAN_SENDER_PATTERN = (
     r"^@switch-([a-z]+)-"
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
 )
 _HUMAN_SENDER = re.compile(HUMAN_SENDER_PATTERN)
 
@@ -128,6 +132,8 @@ class FormerParticipant:
     sender_id: str
     names: list[str]
     platform: str
+    #: The bridge they were seen on, read off their transport id; it is gone.
+    bridge_id: str
     message_count: int
 
 
@@ -284,6 +290,7 @@ class ErasureStore:
                     sender_id=sender_id,
                     names=sorted(n for n in names if n),
                     platform=match.group(1),
+                    bridge_id=match.group(2),
                     message_count=int(count),
                 )
             )
@@ -532,33 +539,81 @@ class ErasureStore:
             ClientRoom.tenant_id == require_tenant_id(),
             ClientRoom.client_id == person.client_id,
         )
-        return await self._scrub_direct_rooms(
-            session, Room.id.in_(member_of), [person.username]
+        return await self._scrub_rooms(
+            session,
+            Room.id.in_(member_of) & (Room.channel_type == "direct"),
+            [person.username],
         )
 
     async def scrub_former_direct_rooms(
-        self, session: AsyncSession, room_ids: Collection[str], names: Collection[str]
+        self,
+        session: AsyncSession,
+        participant: FormerParticipant,
+        room_ids: Collection[str],
     ) -> int:
-        """Take a former participant's names out of the direct rooms among
-        `room_ids`, the rooms their messages were deleted from. Their room
-        memberships went with their client, so these are what is left to say
-        which rooms were theirs."""
-        if not room_ids or not names:
+        """Take a former participant's names out of the direct rooms that were
+        theirs. Their memberships went with their client, and disconnecting
+        the app detached its rooms, so a room is found by what is left: it was
+        a direct chat on their bridge (`DETACHED_FROM`), whether or not they
+        wrote in it. A room detached before that was recorded is found among
+        `room_ids`, the rooms their messages were deleted from, if what
+        detaching left still says it was a direct chat: the description the
+        bridge gave a direct room it adopted (`DIRECT_ROOM_DESCRIPTION`). A
+        group channel detached then is left alone, even one named after
+        them."""
+        if not participant.names:
             return 0
-        return await self._scrub_direct_rooms(
-            session, Room.id.in_(list(room_ids)), list(names)
+        detached = Room.metadata_[DETACHED_FROM]
+        was_theirs = (detached["bridge_id"].astext == participant.bridge_id) & (
+            detached["channel_type"].astext == "direct"
+        )
+        wrote_in = Room.id.in_(list(room_ids)) & or_(
+            Room.channel_type == "direct",
+            (Room.bridge_id.is_(None))
+            & (Room.channel_type.is_(None))
+            & or_(Room.metadata_.is_(None), ~Room.metadata_.has_key(DETACHED_FROM))
+            & Room.description.contains(DIRECT_ROOM_DESCRIPTION),
+        )
+        return await self._scrub_rooms(
+            session, or_(was_theirs, wrote_in), participant.names
         )
 
-    async def _scrub_direct_rooms(
+    async def scrub_card_answers(self, session: AsyncSession, person: Person) -> int:
+        """Replace this person's name on the cards they answered on their chat
+        app with `ERASED_ANSWERER`, and drop their id beside it. The bridge
+        records an answer on the card's own mapping, which is an agent's
+        message and outlives them; which button was pressed stays.
+
+        An answer names its answerer by transport id (`CARD_ANSWERER_ID`) as
+        well as by the display name the platform showed, which Switch keeps
+        nowhere else. One recorded before the id was is found by their
+        username, which is the display name on most platforms."""
+        answer = BridgeMessageMap.card_answer
+        result = await session.execute(
+            update(BridgeMessageMap)
+            .where(
+                BridgeMessageMap.tenant_id == require_tenant_id(),
+                BridgeMessageMap.bridge_id == person.bridge_id,
+                or_(
+                    answer[CARD_ANSWERER_ID].astext == person.transport_user_id,
+                    ~answer.has_key(CARD_ANSWERER_ID)
+                    & (answer["by"].astext == answerer_name(person.username)),
+                ),
+            )
+            .values(
+                card_answer=answer.op("-")(CARD_ANSWERER_ID).op("||")(
+                    cast_({"by": ERASED_ANSWERER}, JSONB)
+                )
+            )
+        )
+        return _rowcount(result)
+
+    async def _scrub_rooms(
         self, session: AsyncSession, which: Any, names: list[str]
     ) -> int:
         rooms = (
             await session.execute(
-                select(Room).where(
-                    Room.tenant_id == require_tenant_id(),
-                    Room.channel_type == "direct",
-                    which,
-                )
+                select(Room).where(Room.tenant_id == require_tenant_id(), which)
             )
         ).scalars()
         scrubbed = 0

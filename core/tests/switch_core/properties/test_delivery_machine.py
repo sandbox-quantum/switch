@@ -17,6 +17,7 @@ from tests.switch_core.properties.delivery_machine import (
     SHOULD_REACH_AT_SCALE,
     machine_on,
 )
+from tests.switch_core.properties.shards import Shard
 
 
 @pytest.mark.property("bus.room-seq-dense")
@@ -25,16 +26,17 @@ from tests.switch_core.properties.delivery_machine import (
 @pytest.mark.property("delivery.addressed-exactly-once")
 @pytest.mark.property("delivery.no-silent-loss")
 @pytest.mark.property("delivery.no-events-after-leave")
-def test_delivery_keeps_its_properties(postgres_schema: str) -> None:
+def test_delivery_keeps_its_properties(postgres_schema: str, shard: Shard) -> None:
     COVERAGE.clear()
-    run_state_machine_as_test(machine_on(postgres_schema))
-    required = SHOULD_REACH
-    if settings.get_current_profile_name() == "nightly":
-        required = SHOULD_REACH + SHOULD_REACH_AT_SCALE
-    unreached = [what for what in required if COVERAGE[what] == 0]
+    run_state_machine_as_test(
+        machine_on(postgres_schema), settings=shard.of(settings())
+    )
+    # Reached by every run, a shard of the nightly search included.
+    unreached = [what for what in SHOULD_REACH if COVERAGE[what] == 0]
     assert not unreached, (
         f"the run never reached {unreached}; it reached {dict(COVERAGE)}"
     )
+    shard.reached(COVERAGE, SHOULD_REACH_AT_SCALE)
 
 
 @pytest.mark.property("delivery.no-silent-loss")
@@ -102,3 +104,48 @@ def test_event_is_not_stored_for_an_agent_that_left_after_the_decision(
     finally:
         machine.teardown()
     assert COVERAGE["a leave waits for a lock"] >= 1
+
+
+@pytest.mark.parametrize("restricted_first", [True, False])
+def test_a_row_decided_again_under_the_lock_uses_the_policy_then(
+    postgres_schema: str, restricted_first: bool
+) -> None:
+    """A transaction decides a row for alpha, then waits for the room's lock.
+    Meanwhile alpha's policy changes and beta joins the room, so the router
+    decides the row again under the lock. Its events must follow one of the
+    two decisions, whole."""
+    COVERAGE.clear()
+    machine = machine_on(postgres_schema)()
+    try:
+        machine.begin_leave("beta", "r1")
+        machine.check_all()
+        if not restricted_first:
+            machine.set_policy("alpha", True)
+        machine.begin_post(1, "r1", frozenset())
+        machine.begin_post(2, "r1", frozenset({"alpha"}))
+        machine.set_policy("alpha", restricted_first)
+        machine.join("beta", "r1")
+        machine.end_post(1, "commit")
+        machine.end_post(2, "commit")
+        machine.check_all()
+    finally:
+        machine.teardown()
+    assert COVERAGE["a join lands while a post waits for the lock"] == 1
+
+
+def test_a_row_is_not_for_an_agent_whose_policy_shuts_the_sender_out(
+    postgres_schema: str,
+) -> None:
+    """A row naming two agents is for only the one whose policy lets the
+    sender in, and opening the other's policy later does not make it theirs."""
+    COVERAGE.clear()
+    machine = machine_on(postgres_schema)()
+    try:
+        machine.set_policy("alpha", True)
+        machine.begin_post(1, "r1", frozenset({"alpha", "beta"}))
+        machine.end_post(1, "commit")
+        machine.set_policy("alpha", False)
+        machine.check_all()
+        assert machine.rows["r1"][0].stored == {"beta"}
+    finally:
+        machine.teardown()

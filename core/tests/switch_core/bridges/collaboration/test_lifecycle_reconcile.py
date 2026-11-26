@@ -53,6 +53,18 @@ async def _edit(
         await session.commit()
 
 
+async def _set_status(
+    session_factory: async_sessionmaker[AsyncSession], bridge_id: str, status: str
+) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(CollaborationBridge)
+            .where(CollaborationBridge.id == bridge_id)
+            .values(status=status)
+        )
+        await session.commit()
+
+
 async def test_a_running_bridge_is_left_alone_until_its_row_changes(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
@@ -84,6 +96,116 @@ async def test_a_running_bridge_is_left_alone_until_its_row_changes(
         await service.reconcile_bridge(bridge_id)
         await asyncio.sleep(0)
         assert starts == [bridge_id, bridge_id]
+    finally:
+        await service.stop_all()
+
+
+async def test_a_bridge_registered_during_a_recheck_keeps_running(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-check that read the rows before a bridge was registered here must
+    not stop it on finding no row for it: the rows are older than the
+    registration, and nothing would start it again until the next re-check."""
+    monkeypatch.setattr(lifecycle_module, "STOP_GRACE_SECONDS", 0.01)
+    await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+
+    async def run(bridge_id: str, *_: object) -> None:
+        await asyncio.Event().wait()
+
+    service._run_bridge = run  # type: ignore[method-assign]
+    read, release = asyncio.Event(), asyncio.Event()
+    serving = service._serving
+
+    async def read_then_wait(session: AsyncSession, tenant_id: str) -> object:
+        rows = await serving(session, tenant_id)
+        read.set()
+        await release.wait()
+        return rows
+
+    service._serving = read_then_wait  # type: ignore[method-assign,assignment]
+    try:
+        recheck = asyncio.create_task(service.reconcile_all())
+        await asyncio.wait_for(read.wait(), 10)
+
+        # As `register` does: the row commits, then the bridge is wanted,
+        # settled and started here.
+        bridge_id = await _bridge(session_factory)
+        async with session_factory() as session:
+            row = await session.get(CollaborationBridge, bridge_id)
+        assert row is not None
+        service._newer(bridge_id, service._stamp())
+        service._want(row)
+        await service._owned.settle()
+        await service.start(bridge_id)
+        release.set()
+        await asyncio.wait_for(recheck, 10)
+
+        assert bridge_id in service._bridges
+    finally:
+        await service.stop_all()
+
+
+async def test_the_recheck_that_began_last_wins_whichever_finishes_first(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A periodic re-check read the bridge as retired, then it was put back
+    and a re-read for that began. The re-check finishing first and stopping
+    the bridge must not keep the newer re-read from starting it again."""
+    monkeypatch.setattr(lifecycle_module, "STOP_GRACE_SECONDS", 0.01)
+    bridge_id = await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+
+    async def run(bridge_id: str, *_: object) -> None:
+        await asyncio.Event().wait()
+
+    service._run_bridge = run  # type: ignore[method-assign]
+    await service.reconcile_all()
+    assert bridge_id in service._bridges
+    older_read, older_release = asyncio.Event(), asyncio.Event()
+    newer_read, newer_release = asyncio.Event(), asyncio.Event()
+    serving = service._serving
+    get = service._bridge_store.get
+
+    async with session_factory() as session:
+        row = await session.get(CollaborationBridge, bridge_id)
+    assert row is not None
+    bridge_tenant = row.tenant_id
+
+    async def serving_then_wait(session: AsyncSession, tenant_id: str) -> object:
+        rows = await serving(session, tenant_id)
+        if tenant_id == bridge_tenant:
+            older_read.set()
+            await older_release.wait()
+        return rows
+
+    async def get_then_wait(session: AsyncSession, wanted: str) -> object:
+        row = await get(session, wanted)
+        newer_read.set()
+        await newer_release.wait()
+        return row
+
+    service._serving = serving_then_wait  # type: ignore[method-assign,assignment]
+    service._bridge_store.get = get_then_wait  # type: ignore[method-assign,assignment]
+    try:
+        await _set_status(session_factory, bridge_id, "inactive")
+        older = asyncio.create_task(service.reconcile_all())
+        await asyncio.wait_for(older_read.wait(), 10)
+        await _set_status(session_factory, bridge_id, "active")
+        newer = asyncio.create_task(service.reconcile_bridge(bridge_id))
+        await asyncio.wait_for(newer_read.wait(), 10)
+
+        older_release.set()
+        await asyncio.wait_for(older, 10)
+        assert bridge_id not in service._bridges
+        newer_release.set()
+        await asyncio.wait_for(newer, 10)
+
+        assert bridge_id in service._bridges
     finally:
         await service.stop_all()
 

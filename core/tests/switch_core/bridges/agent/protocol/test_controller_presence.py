@@ -109,7 +109,7 @@ def _go_live(
     )
     presence.attach_stream(conn)
     for agent_id, rooms in agent_rooms:
-        presence.set_rooms(agent_id, rooms)
+        presence.rooms_read(agent_id, rooms, presence.room_mark())
     return conn
 
 
@@ -766,6 +766,58 @@ class TestMembership:
         presence.unbind("agent", "unassigned")
         assert presence.rooms("agent") == set()
         assert presence.live_rooms("agent") == set()
+
+    def test_rooms_read_keep_what_a_join_or_leave_since_made_them(self) -> None:
+        """Rooms read from the memberships before a join or a leave here
+        are older than it: the room it changed keeps what it made it."""
+        registry = AgentConnectionRegistry()
+        presence = registry.controllers
+        _bind(registry, "agent")
+        _go_live(registry, ("agent", {ROOM}))
+        mark = presence.room_mark()
+        presence.room_left("agent", ROOM)
+        presence.room_joined("agent", ELSEWHERE)
+
+        presence.rooms_read("agent", {ROOM, "third"}, mark)
+
+        assert presence.rooms("agent") == {ELSEWHERE, "third"}
+
+    def test_the_read_that_began_last_wins_whichever_finishes_first(
+        self,
+    ) -> None:
+        """Two reads of the agent's memberships: the older found it in the
+        room, the newer did not. In either order of finishing, the newer
+        read's answer is kept."""
+        for older_first in (True, False):
+            registry = AgentConnectionRegistry()
+            presence = registry.controllers
+            _bind(registry, "agent")
+            _go_live(registry, ("agent", set()))
+            older = presence.room_mark()
+            newer = presence.room_mark()
+            reads = [(older, True), (newer, False)]
+            for mark, member in reads if older_first else reversed(reads):
+                presence.room_read("agent", ROOM, member=member, mark=mark)
+
+            assert presence.rooms("agent") == set(), older_first
+
+    def test_a_join_or_leave_while_the_rooms_are_read_at_attach_is_kept(
+        self,
+    ) -> None:
+        """The attach reads the agent's rooms before any are kept for it. A
+        join and a leave committed here meanwhile are newer than that read,
+        and settle their rooms whether or not the read saw them."""
+        registry = AgentConnectionRegistry()
+        presence = registry.controllers
+        _bind(registry, "agent")
+        mark = presence.room_mark()
+        presence.room_joined("agent", ROOM)
+        presence.room_joined("agent", "unread")
+        presence.room_left("agent", ELSEWHERE)
+
+        presence.rooms_read("agent", {ROOM, ELSEWHERE, "third"}, mark)
+
+        assert presence.rooms("agent") == {ROOM, "unread", "third"}
 
     def test_lapse_detach_and_revoke_take_it_out_of_every_room(self) -> None:
         registry = AgentConnectionRegistry()

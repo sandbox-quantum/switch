@@ -49,7 +49,7 @@ export type Prerequisite =
   | 'controller';
 
 const OPERATION = /^[a-z][a-z0-9_]*$/;
-const ROUTE = /^(GET|POST|PUT|PATCH|DELETE) \/\S*$/;
+const ROUTE = /^(GET|POST|PUT|PATCH|DELETE|WS) \/\S*$/;
 const ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /** Every problem with a header, so a bad one is fixed in one pass. Empty when it is valid. */

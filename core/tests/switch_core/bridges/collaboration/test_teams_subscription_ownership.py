@@ -30,11 +30,11 @@ from switch_core.bridges.collaboration.teams.adapter import (
 )
 from switch_core.db.models import Client, CollaborationBridge, Room
 from switch_core.db.stores.room_store import RoomStore
-from tests.switch_core.bridges.collaboration.test_bridge_ownership import (
-    _Process,
+from tests.switch_core.bridges.collaboration.bridge_processes import (
+    Process,
 )
-from tests.switch_core.bridges.collaboration.test_bridge_ownership import (
-    _process as _bridge_process,
+from tests.switch_core.bridges.collaboration.bridge_processes import (
+    process_on as _bridge_process,
 )
 from tests.switch_core.bridges.collaboration.test_teams_capture_repair import (
     _config,
@@ -179,8 +179,8 @@ async def two(
     session_factory: async_sessionmaker[AsyncSession],
     graph: _Graph,
     teams: _Teams,
-) -> AsyncIterator[tuple[_Process, _Process]]:
-    started: list[_Process] = []
+) -> AsyncIterator[tuple[Process, Process]]:
+    started: list[Process] = []
     try:
         for _ in range(2):
             process = await _bridge_process(postgres_url, session_factory)
@@ -209,22 +209,20 @@ async def _eventually(check: Callable[[], bool]) -> None:
             await asyncio.sleep(0.02)
 
 
-def _holder(
-    two: tuple[_Process, _Process], bridge_id: str
-) -> tuple[_Process, _Process]:
+def _holder(two: tuple[Process, Process], bridge_id: str) -> tuple[Process, Process]:
     a, b = two
     holders = [p for p in (a, b) if p.bridges.holds(bridge_id)]
     assert len(holders) == 1
     return (a, b) if holders[0] is a else (b, a)
 
 
-def _adapter(process: _Process, bridge_id: str) -> TeamsAdapter:
+def _adapter(process: Process, bridge_id: str) -> TeamsAdapter:
     adapter = process.bridges.get_adapter(bridge_id)
     assert isinstance(adapter, TeamsAdapter)
     return adapter
 
 
-def _graph_of(process: _Process, bridge_id: str) -> _GraphClient:
+def _graph_of(process: Process, bridge_id: str) -> _GraphClient:
     client = _adapter(process, bridge_id)._graph
     assert isinstance(client, _GraphClient)
     return client
@@ -238,7 +236,7 @@ class TestOnlyTheHolder:
         return graph
 
     async def test_adopts_and_renews_the_subscriptions(
-        self, two: tuple[_Process, _Process], teams: _Teams, graph: _Graph
+        self, two: tuple[Process, Process], teams: _Teams, graph: _Graph
     ) -> None:
         holder, quiet = _holder(two, teams.bridge_id)
         held = _graph_of(holder, teams.bridge_id)
@@ -256,7 +254,7 @@ class TestOnlyTheHolder:
 
 class TestWebhooksReachingTheQuietProcess:
     async def test_a_channel_made_through_it_is_subscribed_once_by_the_holder(
-        self, two: tuple[_Process, _Process], teams: _Teams, graph: _Graph
+        self, two: tuple[Process, Process], teams: _Teams, graph: _Graph
     ) -> None:
         holder, quiet = _holder(two, teams.bridge_id)
 
@@ -269,7 +267,7 @@ class TestWebhooksReachingTheQuietProcess:
         assert _graph_of(quiet, teams.bridge_id).created == []
 
     async def test_a_subscription_needing_renewal_is_renewed_by_the_holder(
-        self, two: tuple[_Process, _Process], teams: _Teams, graph: _Graph
+        self, two: tuple[Process, Process], teams: _Teams, graph: _Graph
     ) -> None:
         holder, quiet = _holder(two, teams.bridge_id)
         held = _graph_of(holder, teams.bridge_id)

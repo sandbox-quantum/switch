@@ -39,6 +39,10 @@ class ReadTicket:
     # The signal bus's listening connection when the read began, or None if
     # it was not listening then.
     listening: int | None
+    # When the read began, on the monotonic clock. An entry's TTL counts from
+    # here: a signal missed while the read was in flight is bounded by the TTL,
+    # not by the TTL and however long the read took.
+    taken_at: float
 
 
 @dataclass
@@ -84,7 +88,11 @@ class HeldRows:
         self._bus = bus
 
     def ticket(self) -> ReadTicket:
-        return ReadTicket(generation=self._generation, listening=self._listening())
+        return ReadTicket(
+            generation=self._generation,
+            listening=self._listening(),
+            taken_at=time.monotonic(),
+        )
 
     def invalidated(self) -> None:
         """Something was dropped: no read in flight may store what it read."""
@@ -129,13 +137,15 @@ class HeldRows:
         tenant_id: str,
         key: K,
         value: V,
-        held_under: int | None,
+        ticket: ReadTicket,
     ) -> None:
+        """Keep what `ticket`'s read found, for the TTL from when the read
+        began, and past it under the connection that listened through it."""
         entries[key] = Entry(
             tenant_id=tenant_id,
             value=value,
-            expires_at=time.monotonic() + self._ttl,
-            held_under=held_under,
+            expires_at=ticket.taken_at + self._ttl,
+            held_under=self.held_under(ticket),
         )
         entries.move_to_end(key)
         while len(entries) > bound:

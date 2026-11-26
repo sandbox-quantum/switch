@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentIdentityConflict,
     PlatformAdapter,
+    RefusalKind,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -445,6 +446,70 @@ _SLACK_AUTH_ERROR_CODES = frozenset(
 )
 
 
+# An `&` that does not start one of the three entities Slack decodes.
+_SLACK_BARE_AMPERSAND = re.compile(r"&(?!(?:amp|lt|gt);)")
+
+# A Markdown link's destination: no space, and parentheses only in balanced
+# pairs, as in an encyclopedia's `Mercury_(planet)`.
+_LINK_DESTINATION = r"(?:[^()\s]|\([^()\s]*\))+"
+
+# Slack's error codes for a send that sending again will not change: the
+# channel is gone or closed to the app, the message itself is refused, or the
+# app may not post. https://api.slack.com/methods/chat.postMessage#errors
+_SLACK_REFUSED_FOR_GOOD = _SLACK_AUTH_ERROR_CODES | frozenset(
+    {
+        "channel_not_found",
+        "is_archived",
+        "msg_too_long",
+        "no_text",
+        "invalid_blocks",
+        "invalid_blocks_format",
+        "invalid_attachments",
+        "too_many_attachments",
+        "invalid_arguments",
+        "restricted_action",
+        "restricted_action_read_only_channel",
+        "restricted_action_thread_only_channel",
+        "restricted_action_non_threadable_channel",
+        "cannot_reply_to_message",
+        "missing_scope",
+        "ekm_access_denied",
+        "team_access_not_granted",
+        "method_deprecated",
+        "deprecated_endpoint",
+    }
+)
+# Codes for a refusal that clears by itself or by someone else's hand
+# (Slack's own trouble, a rate limit), worth sending again for as long as the
+# caller is willing. A code in neither set is worth a few attempts.
+_SLACK_REFUSED_FOR_NOW = frozenset(
+    {
+        "ratelimited",
+        "rate_limited",
+        "internal_error",
+        "fatal_error",
+        "service_unavailable",
+        "request_timeout",
+        "timeout",
+    }
+)
+
+
+def _slack_refusal_kind(exc: SlackApiError) -> RefusalKind:
+    """How Slack refused a send, read from its error code: see `RefusalKind`.
+    A refusal with no readable code (an empty 502, a proxy's error page) or
+    an HTTP 429 or 5xx is "transient"."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int) and (status == 429 or status >= 500):
+        return "transient"
+    code = _slack_response_field(exc, "error")
+    if not isinstance(code, str) or code in _SLACK_REFUSED_FOR_NOW:
+        return "transient"
+    if code in _SLACK_REFUSED_FOR_GOOD:
+        return "permanent"
+    return "bounded"
+
+
 def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     """`auth_failed` for a rejected token, `platform_error` for everything else
     Slack refuses a call for (rate limits, a missing scope, an outage). Both
@@ -548,6 +613,21 @@ class SlackAdapter(PlatformAdapter):
         if isinstance(exc, SlackApiError):
             return _slack_failure_reason(exc)
         return None
+
+    @classmethod
+    def classify_refusal(cls, exc: BaseException) -> RefusalKind:
+        """Read Slack's refusal out of the chain: `RichContentFailed` carries
+        it as its cause. A throttle is "transient"; a `SlackApiError` is
+        judged by its code (`_slack_refusal_kind`); anything else, such as a
+        dropped connection, is "transient"."""
+        seen: BaseException | None = exc
+        while seen is not None:
+            if isinstance(seen, RichContentThrottled):
+                return "transient"
+            if isinstance(seen, SlackApiError):
+                return _slack_refusal_kind(seen)
+            seen = seen.__cause__
+        return "transient"
 
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
@@ -811,8 +891,9 @@ class SlackAdapter(PlatformAdapter):
         room_wide_mention: bool = False,
     ) -> str | None:
         if not self._web_client:
-            logger.error("Cannot send message: Slack client not connected")
-            return None
+            raise BridgeOperationError(
+                "Cannot send a message: the Slack client is not connected"
+            )
 
         agent = await self.agent_rendering(sender_name)
         try:
@@ -827,13 +908,13 @@ class SlackAdapter(PlatformAdapter):
                 unfurl_links=False,
                 unfurl_media=False,
             )
-            ts = result.get("ts", "")
-            return f"{channel_id}:{ts}" if ts else None
         except SlackApiError as e:
             logger.error(
                 "Failed to send message to Slack channel %s: %s", channel_id, e
             )
-            return None
+            raise
+        ts = result.get("ts", "")
+        return f"{channel_id}:{ts}" if ts else None
 
     def _reply_thread_ts(
         self, channel_id: str, thread_root_id: str | None, room_wide_mention: bool
@@ -946,8 +1027,9 @@ class SlackAdapter(PlatformAdapter):
         will not render the blocks are left with, so it has to stand alone.
         """
         if not self._web_client:
-            logger.error("Cannot post blocks: Slack client not connected")
-            return None
+            raise BridgeOperationError(
+                "Cannot post blocks: the Slack client is not connected"
+            )
 
         thread_ts = (
             self._parse_message_ref(thread_root_id)[1]
@@ -989,14 +1071,7 @@ class SlackAdapter(PlatformAdapter):
             return f"{channel_id}:{ts}"
         except SlackApiError as e:
             logger.error("Failed to post blocks to Slack channel %s: %s", channel_id, e)
-            if e.response.get("error") in {
-                "internal_error",
-                "fatal_error",
-                "request_timeout",
-                "service_unavailable",
-            }:
-                raise
-            return None
+            raise
 
     async def find_request_card(
         self,
@@ -2058,8 +2133,9 @@ class SlackAdapter(PlatformAdapter):
         # speaking, not an agent. message_type is available for future
         # per-type tweaks (e.g. richer self-mention guidance).
         if not self._web_client:
-            logger.error("Cannot post admin message: Slack client not connected")
-            return None
+            raise BridgeOperationError(
+                "Cannot post an admin message: the Slack client is not connected"
+            )
 
         thread_ts: str | None = None
         if thread_root_id:
@@ -2083,7 +2159,7 @@ class SlackAdapter(PlatformAdapter):
             logger.error(
                 "Failed to post admin message to Slack channel %s: %s", channel_id, e
             )
-            return None
+            raise
 
     async def send_attachment(
         self,
@@ -3398,7 +3474,16 @@ class SlackAdapter(PlatformAdapter):
     # ── Translation ──────────────────────────────────────────────────────────
 
     def _render_outbound(self, content: str) -> str:
-        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
+        """`content` as mrkdwn, its `<` and `&` escaped first so that only
+        what the translation writes can mention or link.
+
+        An entity already in `content` is left as it is: a label escaped by
+        `escape_label_for_body` is inlined into bodies this translates, and
+        escaping it again would show the entity. So a body that writes
+        `&amp;` itself shows `&` on Slack. `>` is left alone, so a quote
+        stays a quote; without a `<` it opens nothing."""
+        escaped = _SLACK_BARE_AMPERSAND.sub("&amp;", content).replace("<", "&lt;")
+        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(escaped))
 
     def defuse_mass_mentions(self, text: str) -> str:
         """Escape Slack's own channel-wide syntax; defuse the words as prose.
@@ -3547,13 +3632,26 @@ class SlackAdapter(PlatformAdapter):
         pick the agent from autocomplete. The group is empty, so rendering the
         mention notifies nobody. Unknown names are left as plain text."""
 
-        def _replace(match: re.Match[str]) -> str:
-            username = match.group(1)
+        def _mention(username: str) -> str | None:
             user_id = self._username_to_id.get(username.casefold())
             if user_id:
                 return f"<@{user_id}>"
             group_id = self._agent_group_ids.get(username.casefold())
-            return f"<!subteam^{group_id}>" if group_id else match.group(0)
+            return f"<!subteam^{group_id}>" if group_id else None
+
+        def _replace(match: re.Match[str]) -> str:
+            # A name may hold `.`, `-` and `_`, but one ending a sentence is
+            # punctuation: "thanks @alice." mentions alice.
+            username = match.group(1)
+            trailing = ""
+            while username:
+                mention = _mention(username)
+                if mention is not None:
+                    return mention + trailing
+                if username[-1] not in "._-":
+                    break
+                username, trailing = username[:-1], username[-1] + trailing
+            return match.group(0)
 
         return re.sub(r"@([A-Za-z0-9][A-Za-z0-9._-]*)", _replace, content)
 
@@ -4267,7 +4365,8 @@ class SlackAdapter(PlatformAdapter):
         # command escapes its text — as `<@U123|username>`. Accept the optional
         # `|label` so escaped slash-command mentions (including the bridge bot's
         # own id, used as its room alias) resolve the same as message mentions.
-        message = re.sub(r"<@(U[A-Z0-9]+)(?:\|[^>]+)?>", _replace_mention, message)
+        # `U…` ids, and `W…` ones on an Enterprise Grid org.
+        message = re.sub(r"<@([UW][A-Z0-9]+)(?:\|[^>]+)?>", _replace_mention, message)
         return self._translate_usergroup_mentions(message)
 
     def _translate_usergroup_mentions(self, message: str) -> str:
@@ -4334,8 +4433,8 @@ class SlackAdapter(PlatformAdapter):
         text = re.sub(r"^#{1,6}\s+(.+)$", _convert_heading, text, flags=re.MULTILINE)
         text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
         text = re.sub(r"~~(.+?)~~", r"~\1~", text)
-        text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"<\2|\1>", text)
-        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)
+        text = re.sub(rf"!\[([^\]]*)\]\(({_LINK_DESTINATION})\)", r"<\2|\1>", text)
+        text = re.sub(rf"\[([^\]]+)\]\(({_LINK_DESTINATION})\)", r"<\2|\1>", text)
         text = re.sub(r"^[-*_]{3,}\s*$", "───", text, flags=re.MULTILINE)
 
         for i, block in enumerate(code_blocks):

@@ -9,14 +9,14 @@ properties:
     formality: semi-formal
     levels: [code]
     owner: platform
-    status: proposed
-    gaps:
-      code: the controller-stream machine does not yet attach or detach agents mid-stream or let retention pass a cursor
+    status: checked
     notes: >
       What `session.addressed-reaches-controller` does not cover: that property
       holds the stream's delivery for the agents it opened with. These are two
       more steps of the same machine (`controller_stream_machine.py`), not a
-      checker of their own.
+      checker of their own: moving an agent to another controller and back
+      while the stream is open, and retention deleting an agent's events under
+      the open stream or under a confirmed position.
   - id: controller.takeover-fenced
     title: A controller connection that was taken over is fenced
     statement: >
@@ -27,7 +27,24 @@ properties:
     levels: [code, system]
     owner: platform
     status: proposed
+    gaps:
+      system: waits on the two-replica lane
     notes: >
-      `taken_over` in `management/connection_ledger.py`. A different mechanism
-      from `lease.fenced-takeover` (the ledger, not ownership tokens), with the
-      same shape.
+      A different mechanism from `lease.fenced-takeover` (the controller's row
+      and each process's presence, not ownership tokens), with the same shape.
+      Checked at the code level by `takeover_machine.py`. Two processes share
+      Postgres, each with its own presence, ledger and signal bus. The
+      controller opens and attaches through either, to its newest connection or
+      an older one. Ledger flushes are held so their writes land late. An
+      attach naming a replaced connection is refused, as `taken_over` by a
+      process that held it, and the current connection is never refused as
+      `taken_over`. Once its process has heard, a beat on a replaced connection
+      is refused as `taken_over`. A socket taken over is sent `evicted
+      taken_over` and nothing after it. Once everything is written, the row
+      names the newest connection where its socket is. A socket taken over
+      partway through a delivery pass finishes that pass, so it can be sent
+      events asked after the takeover before its eviction. The machine allows
+      that one pass: it costs a duplicate delivery to a socket that is going.
+      Socket calls are not fenced by connection, only by the controller's
+      token, so a call on a socket taken over is answered until the socket
+      closes. They are not checked here.

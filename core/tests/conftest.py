@@ -335,8 +335,8 @@ class RLSHarness:
     restricted_engine: AsyncEngine
 
 
-@pytest_asyncio.fixture
-async def rls_harness(postgres_schema: str) -> AsyncIterator[RLSHarness]:
+@contextlib.asynccontextmanager
+async def restricted_role(postgres_schema: str) -> AsyncIterator[RLSHarness]:
     """A session factory connected as a role row-level security applies to.
 
     `session_factory` connects as the container's superuser — the same shape
@@ -450,6 +450,14 @@ async def rls_harness(postgres_schema: str) -> AsyncIterator[RLSHarness]:
                 text("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC")
             )
         await owner_engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def rls_harness(postgres_schema: str) -> AsyncIterator[RLSHarness]:
+    """A session factory connected as a role row-level security applies to,
+    per test (`restricted_role`)."""
+    async with restricted_role(postgres_schema) as harness:
+        yield harness
 
 
 @pytest.fixture

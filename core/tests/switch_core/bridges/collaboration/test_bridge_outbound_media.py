@@ -6,6 +6,7 @@ from typing import Any
 
 from switch_core.bridges.collaboration.adapter import MessagePartlySent
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
+from switch_core.clients.workspace_consumer import RelayFailed
 from switch_core.transport import (
     DownloadResult,
     InboundMedia,
@@ -28,6 +29,7 @@ def _media_event(
     group: dict[str, Any] | None = None,
     mimetype: str = "image/png",
     event_id: str = "$media-event",
+    seq: int = 0,
 ) -> InboundMedia:
     content: dict[str, Any] = {
         "msgtype": msgtype,
@@ -48,6 +50,7 @@ def _media_event(
         event_id=event_id,
         sender=sender,
         timestamp=1700000000000,
+        seq=seq,
         content=content,
         body=body,
         sender_name=sender_name,
@@ -162,12 +165,17 @@ def _fake_bridge(
         CollaborationCore._cancel_outbound_group_flush.__get__(ns)
     )
     ns._relay_outbound_group = CollaborationCore._relay_outbound_group.__get__(ns)
+    ns._relay_outbound_group_again = (
+        CollaborationCore._relay_outbound_group_again.__get__(ns)
+    )
     ns._relay_outbound_media = CollaborationCore._relay_outbound_media.__get__(ns)
     ns._counted_outbound = CollaborationCore._counted_outbound.__get__(ns)
     ns._flush_incomplete_outbound_group = (
         CollaborationCore._flush_incomplete_outbound_group.__get__(ns)
     )
-    ns._flush_outbound_group = CollaborationCore._flush_outbound_group.__get__(ns)
+    ns._disclose_incomplete_group = (
+        CollaborationCore._disclose_incomplete_group.__get__(ns)
+    )
     ns._partly_posted = CollaborationCore._partly_posted
 
     async def _download_media(uri: str) -> DownloadResult:
@@ -177,8 +185,20 @@ def _fake_bridge(
 
     released: list[str] = []
     ns.released = released
+    held_back: list[tuple[str, int, Any]] = []
+    ns.held_back = held_back
+
+    async def relay_held_back(room_id: str, seq: int, relay: Any) -> None:
+        """As the workspace consumer does, short of holding: try it once, and
+        keep it for the test to try again if it fails."""
+        try:
+            await relay()
+        except Exception:
+            held_back.append((room_id, seq, relay))
+
     ns.client = SimpleNamespace(
         running=True,
+        relay_held_back=relay_held_back,
         transport=SimpleNamespace(
             download_media=_download_media, held_back_released=released.append
         ),
@@ -351,6 +371,48 @@ async def test_grouped_attachments_relay_as_one_platform_post() -> None:
     assert bridge._outbound_groups == {}
 
 
+async def test_a_group_whose_post_failed_is_posted_whole_when_tried_again() -> None:
+    """The last file posts the group, so its failure names the group's first
+    row for the workspace consumer to hold from, and a retry that posts every
+    file, not the last one alone."""
+    bridge = _fake_bridge()
+    posting = bridge._adapter.send_attachments
+    refusals = [RuntimeError("the platform refused the post")]
+
+    async def refuse_once(*args: Any, **kwargs: Any) -> Any:
+        if refusals:
+            raise refusals.pop()
+        return await posting(*args, **kwargs)
+
+    bridge._adapter.send_attachments = refuse_once
+    names = ["cat.png", "notes.md", "data.csv"]
+    failed: RelayFailed | None = None
+    for index, name in enumerate(names):
+        try:
+            await CollaborationCore.handle_outbound_media(
+                bridge,
+                _room(),
+                _media_event(
+                    body="three files" if index == 0 else name,
+                    filename=name if index == 0 else None,
+                    event_id=f"$part-{index}",
+                    group={"id": "grp-1", "index": index, "total": 3},
+                    seq=10 + index,
+                ),
+                bridge.client,
+            )
+        except RelayFailed as error:
+            failed = error
+
+    assert failed is not None and failed.hold_from == 10
+    assert bridge._adapter.batches == []
+
+    await failed.retry()
+
+    (batch,) = bridge._adapter.batches
+    assert [f.filename for f in batch["files"]] == names
+
+
 async def test_incomplete_group_is_flushed_with_a_disclosed_notice() -> None:
     """A group that never completes must still reach the platform, flagged —
     never silently held forever."""
@@ -384,6 +446,54 @@ async def test_incomplete_group_is_flushed_with_a_disclosed_notice() -> None:
     assert bridge._outbound_groups == {}
     # Posted, so the bridge's progress in the room may move past it.
     assert bridge.released == ["!room:s"]
+
+
+async def test_an_incomplete_group_the_platform_refuses_is_held_and_tried_again() -> (
+    None
+):
+    """The timeout posts from a task of its own, so a refusal there reaches
+    nobody unless the workspace consumer is handed the post to hold, from the
+    group's first row, and try again, once, with one notice."""
+    import switch_core.bridges.collaboration.collaboration_core as bc
+
+    bridge = _fake_bridge()
+    posting = bridge._adapter.send_attachments
+    refusals = [RuntimeError("the platform is unavailable")]
+
+    async def refuse_once(*args: Any, **kwargs: Any) -> Any:
+        if refusals:
+            raise refusals.pop()
+        return await posting(*args, **kwargs)
+
+    bridge._adapter.send_attachments = refuse_once
+    original = bc.OUTBOUND_GROUP_TIMEOUT_SECONDS
+    bc.OUTBOUND_GROUP_TIMEOUT_SECONDS = 0.01
+    try:
+        await CollaborationCore.handle_outbound_media(
+            bridge,
+            _room(),
+            _media_event(
+                msgtype="m.file",
+                body="only.md",
+                mimetype="text/markdown",
+                group={"id": "grp-4", "index": 0, "total": 3},
+                seq=20,
+            ),
+            bridge.client,
+        )
+        await asyncio.sleep(0.1)
+    finally:
+        bc.OUTBOUND_GROUP_TIMEOUT_SECONDS = original
+
+    assert bridge._adapter.batches == []
+    ((room_id, seq, relay),) = bridge.held_back
+    assert (room_id, seq) == ("!room:s", 20)
+
+    await relay()
+
+    (batch,) = bridge._adapter.batches
+    assert [f.filename for f in batch["files"]] == ["only.md"]
+    assert (batch["caption"] or "").count("1 of 3") == 1
 
 
 async def test_an_incomplete_group_is_left_to_the_next_holder_once_stopped() -> None:

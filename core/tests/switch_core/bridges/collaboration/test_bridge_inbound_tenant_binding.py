@@ -60,6 +60,9 @@ def _bridge() -> CollaborationCore:
     bridge._bridge_type = "mattermost"
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
+    bridge._mapping_stamps = 0
+    bridge._mapping_stamped = {}
+    bridge._reloaded_stamp = 0
     bridge._room_tenants = {}
     bridge._session_factory = _ExplodingSessionFactory()  # type: ignore[assignment]
     return bridge

@@ -1182,9 +1182,8 @@ class AgentCore:
             await session.refresh(agent)
             identity = agent_identity(agent)
 
-        actor = self.client_lifecycle.get(agent.client_id)
+        actor = await self.client_lifecycle.rename(tenant_id, agent.client_id, new_name)
         if actor is not None:
-            await actor.set_display_name(new_name)
             # The running agent decides whether a message addresses it from the
             # row it holds, so it has to hold the renamed one now, not after
             # the next message that already matched its old name.

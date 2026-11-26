@@ -137,6 +137,11 @@ class ControllerSignals:
             str, tuple[Fingerprint, frozenset[str]]
         ] = {}
         self._connections_seen: dict[str, set[str]] = {}
+        # The controllers of each tenant held by another process, as that
+        # read left them here. Something else here can forget them (the lease
+        # watch, `forget_processes`), and a re-check that finds them changed
+        # reads the tenant again, however unchanged its rows and leases are.
+        self._held_elsewhere_seen: dict[str, frozenset[str]] = {}
         # Controllers, by (tenant id, controller id), whose bindings another
         # process changed and this one has still to read.
         self._bindings_owed = bus.pending_work(
@@ -271,6 +276,7 @@ class ControllerSignals:
         """Read the controller's row again and act on it here."""
         for _ in range(_READ_ATTEMPTS):
             mark = self._presence.connection_mark()
+            room_mark = self._presence.room_mark()
             async with tenant_session(self._session_factory, tenant_id) as session:
                 controller = await self._controllers.get(
                     session, tenant_id, controller_id
@@ -282,7 +288,7 @@ class ControllerSignals:
             if self._presence.connection_changed_since(controller_id, mark):
                 # Changed here while it was read: what was read may be older.
                 continue
-            self._apply_connection(controller, leases, rooms)
+            self._apply_connection(controller, leases, rooms, room_mark)
             return
 
     async def read_connections(self, *, check_first: bool = False) -> None:
@@ -303,6 +309,7 @@ class ControllerSignals:
             tenant_ids = await all_tenant_ids(self._session_factory)
         for tenant_id in tenant_ids:
             mark = self._presence.connection_mark()
+            room_mark = self._presence.room_mark()
             async with tenant_session(self._session_factory, tenant_id) as session:
                 leases = await read_leases(session, self._processes)
                 holding = frozenset(
@@ -314,6 +321,8 @@ class ControllerSignals:
                 if (
                     check_first
                     and last is not None
+                    and self._held_elsewhere_now(tenant_id)
+                    == self._held_elsewhere_seen.get(tenant_id)
                     and last
                     == (
                         await self._controllers.connections_fingerprint(
@@ -346,9 +355,19 @@ class ControllerSignals:
                     # Changed here while it was read; read it again on its own.
                     await self._read_connection(tenant_id, controller.id)
                     continue
-                self._apply_connection(controller, leases, rooms[controller.id])
+                self._apply_connection(
+                    controller, leases, rooms[controller.id], room_mark
+                )
+            self._held_elsewhere_seen[tenant_id] = self._held_elsewhere_now(tenant_id)
         for controller_id in elsewhere - seen:
             self._presence.held_elsewhere(controller_id, None)
+
+    def _held_elsewhere_now(self, tenant_id: str) -> frozenset[str]:
+        return frozenset(
+            controller_id
+            for controller_id in self._connections_seen.get(tenant_id, ())
+            if self._presence.holder_elsewhere(controller_id) is not None
+        )
 
     async def _rooms_if_held_elsewhere(
         self,
@@ -388,6 +407,7 @@ class ControllerSignals:
         controller: AgentController | ControllerConnection,
         leases: ProcessLeases,
         rooms: dict[str, set[str]],
+        room_mark: int,
     ) -> None:
         local = self._presence.current_connection(controller.id)
         if local is not None and controller.open_connection_id is not None:
@@ -403,7 +423,7 @@ class ControllerSignals:
             controller.id, self._held_elsewhere(controller, leases)
         )
         for agent_id, agent_rooms in rooms.items():
-            self._presence.set_rooms(agent_id, agent_rooms)
+            self._presence.rooms_read(agent_id, agent_rooms, room_mark)
 
     # ── Acting here ───────────────────────────────────────────────────────────
 

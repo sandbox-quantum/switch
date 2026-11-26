@@ -6,13 +6,15 @@
     python3 properties/specs/run.py mutants           # every mutant must be caught
     python3 properties/specs/run.py                   # verify and mutants
 
-`verify` has TLC search every state `delivery.qnt` and `ownership.qnt` can reach in the bounds
+`verify` has TLC search every state `delivery.qnt`, `ownership.qnt` and `signals.qnt` can reach in the bounds
 `configs.qnt` gives a module, and checks each invariant in all of them. It is
 exhaustive in those bounds and says nothing about more rooms, agents, rows or
-writers. `mutants` does the same on a module with one behaviour that is not in
-the code switched on, and expects the named invariant to be violated: an
-invariant that holds on a system with that bug could not have caught it. Both
-need `quint` and Java.
+writers. `ownership_eventual.qnt` is checked the same way for a temporal
+property (`TEMPORAL`): over every run, under the fairness it states.
+`mutants` does the same on a module with one behaviour that is not in the code
+switched on, and expects the named property to be violated: a property that
+holds on a system with that bug could not have caught it. Both need `quint` and
+Java.
 """
 
 from __future__ import annotations
@@ -37,6 +39,19 @@ INVARIANTS = [
 
 LEASE_INVARIANTS = ["NoOverlap", "FencedTakeover"]
 
+LEASE_TEMPORAL = ["OwnershipEventual"]
+
+# Properties checked as temporal formulas (`--temporal`), over whole runs and
+# under the fairness each states, rather than as invariants of every state.
+TEMPORAL = set(LEASE_TEMPORAL)
+
+SIGNAL_INVARIANTS = [
+    "NoWrongAnswerPastBound",
+    "LossOnlyDelays",
+    "NoStrandedRow",
+    "ReadsEveryRow",
+]
+
 # Modules in configs.qnt whose every invariant must hold, with those it names,
 # and the ones that take minutes.
 CHECKS = [
@@ -44,10 +59,15 @@ CHECKS = [
     ("retention", INVARIANTS),
     ("recipients", INVARIANTS),
     ("lease", LEASE_INVARIANTS),
+    ("signals_view", SIGNAL_INVARIANTS),
+    ("signals_cache", SIGNAL_INVARIANTS),
+    ("signals_room", SIGNAL_INVARIANTS),
+    ("lease_eventual", LEASE_TEMPORAL),
 ]
 DEEP_CHECKS = [
     ("recipients_deep", INVARIANTS),
     ("lease_deep", LEASE_INVARIANTS),
+    ("lease_eventual_deep", LEASE_TEMPORAL),
 ]
 
 # (module in configs.qnt, the invariant it must violate)
@@ -65,6 +85,25 @@ MUTANTS = [
     ("mutant_release_before_stop", "NoOverlap"),
     ("mutant_stop_at_full_lease", "NoOverlap"),
     ("mutant_write_without_token", "FencedTakeover"),
+    ("mutant_view_acts_on_payload", "LossOnlyDelays"),
+    ("mutant_no_resync", "LossOnlyDelays"),
+    ("mutant_no_recheck", "NoWrongAnswerPastBound"),
+    ("mutant_applies_overtaken_reread", "LossOnlyDelays"),
+    ("mutant_skips_if_changed_since", "LossOnlyDelays"),
+    ("mutant_cache_acts_on_payload", "NoWrongAnswerPastBound"),
+    ("mutant_hold_survives_reconnect", "NoWrongAnswerPastBound"),
+    ("mutant_no_generation", "NoWrongAnswerPastBound"),
+    ("mutant_ttl_from_store", "NoWrongAnswerPastBound"),
+    ("mutant_no_wake_on_reconnect", "NoStrandedRow"),
+    ("mutant_reads_announced_row", "ReadsEveryRow"),
+    ("mutant_lapsed_holder_kept", "OwnershipEventual"),
+    ("mutant_eventual_claim_ignores_holder", "OwnershipEventual"),
+    ("mutant_no_suspend", "OwnershipEventual"),
+    ("mutant_renews_after_death", "OwnershipEventual"),
+    ("mutant_live_ignores_lapse", "OwnershipEventual"),
+    ("mutant_owner_excludes_self", "OwnershipEventual"),
+    ("mutant_no_handoff", "OwnershipEventual"),
+    ("mutant_keeps_rows_on_resume", "OwnershipEventual"),
 ]
 
 
@@ -72,7 +111,12 @@ def check(module: str, invariants: list[str]) -> tuple[str, str]:
     """What `quint verify` concluded for a module, from the JSON it writes with
     `--out` rather than from what it prints: `ok`, `violation`, or `error` when
     it concluded nothing (a type error, a crash of TLC or Java, a changed
-    format), with whatever it said."""
+    format), with whatever it said. A module's properties are all invariants
+    or all temporal (`TEMPORAL`)."""
+    temporal = [name for name in invariants if name in TEMPORAL]
+    if temporal and len(temporal) != len(invariants):
+        return "error", f"{module} mixes invariants and temporal properties"
+    flag = "--temporal" if temporal else "--invariant"
     with tempfile.TemporaryDirectory() as work:
         report = Path(work) / "report.json"
         run = subprocess.run(
@@ -83,7 +127,7 @@ def check(module: str, invariants: list[str]) -> tuple[str, str]:
                 f"--main={module}",
                 "--init=init",
                 "--step=step",
-                f"--invariant={','.join(invariants)}",
+                f"{flag}={','.join(invariants)}",
                 f"--out={report}",
                 str(SPECS / "configs.qnt"),
             ],

@@ -12,8 +12,6 @@ properties:
     owner: platform
     status: proposed
     gaps:
-      model: signals.qnt is not written yet
-      code: no machine over the revocations yet
       system: waits on the two-replica lane
     notes: >
       One property with one checker parameterised by what is revoked, since the
@@ -23,4 +21,10 @@ properties:
       (`ControllerAuthCache`), the room access cache (`RoomAccessCache`), room
       membership (`transport/membership_signals.py`) and the connector broker
       (`connections/broker.py`). Security-relevant: a revoked controller or a
-      removed member must not keep access through a cache.
+      removed member must not keep access through a cache. The code-level
+      machine (`revocation_machine.py`) runs two processes on one database,
+      severs their listening connections for real, and covers all four. A
+      cache must refuse within the TTL once it missed a revocation; a copy
+      that re-reads (room membership) must agree once it has resynced or
+      re-checked; the broker, which keeps no grant in memory, must agree at
+      once.

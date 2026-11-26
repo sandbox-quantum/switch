@@ -69,6 +69,21 @@ def test_entries_expire_after_the_ttl(clock: _Clock) -> None:
     assert cache.agent("t1", "a1") is None
 
 
+def test_the_ttl_counts_from_when_the_read_began(clock: _Clock) -> None:
+    cache = ControllerAuthCache(ttl_seconds=5, max_entries=8)
+    ticket = cache.ticket()
+    clock.now += 3
+    cache.put_controller(_principal(), ticket)
+    cache.put_agents("t1", [_agent()], ticket)
+
+    clock.now += 1.9
+    assert cache.controller("t1", "c1") == _principal()
+    assert cache.agent("t1", "a1") is not None
+    clock.now += 0.2
+    assert cache.controller("t1", "c1") is None
+    assert cache.agent("t1", "a1") is None
+
+
 def test_an_entry_is_keyed_by_its_tenant(clock: _Clock) -> None:
     cache = ControllerAuthCache(ttl_seconds=5, max_entries=8)
     cache.put_controller(_principal(), cache.ticket())

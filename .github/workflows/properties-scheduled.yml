@@ -69,10 +69,33 @@ jobs:
           path: build/properties/http
           if-no-files-found: ignore
 
+  # One runner per test file in core/tests/switch_core/properties, each with
+  # its own time limit, so the run takes as long as the slowest machine rather
+  # than all of them; within a runner the machine's search is split into shards
+  # run side by side. A new test file there needs its entry here.
   state-machines:
-    name: State machines, nightly profile
+    name: State machines, nightly profile (${{ matrix.machine }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        machine:
+          - addressing_oracle
+          - agent_surface
+          - bridge_machine
+          - broker
+          - chats
+          - controller_stream_machine
+          - delivery_machine
+          - erasure_sweep
+          - history_checker
+          - http_surface
+          - lease_presence_machine
+          - ownership_machine
+          - refresh
+          - revocation
+          - takeover_machine
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -86,18 +109,22 @@ jobs:
       - name: Sync dependencies
         run: uv sync --project core
 
-      # The run id makes each saved key new and the prefix restores the newest.
-      # Entries are small and the cache evicts the least recently used past its
-      # quota, so they are not pruned here.
+      # The run id makes each saved key new and the prefix restores the newest,
+      # this machine's first. Entries are small and the cache evicts the least
+      # recently used past its quota, so they are not pruned here.
       - name: Restore what Hypothesis found before
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .hypothesis
-          key: hypothesis-${{ github.run_id }}
-          restore-keys: hypothesis-
+          key: hypothesis-${{ matrix.machine }}-${{ github.run_id }}
+          restore-keys: |
+            hypothesis-${{ matrix.machine }}-
+            hypothesis-
 
-      - name: Run the machines, then check their assertions
-        run: properties/run-machine.sh nightly
+      - name: Run the machine, then check its assertions
+        run: >
+          properties/run-machine.sh nightly
+          core/tests/switch_core/properties/test_${{ matrix.machine }}.py
 
       # Saved even when the run failed: a counterexample is what to replay first.
       - name: Save what Hypothesis found
@@ -105,4 +132,4 @@ jobs:
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .hypothesis
-          key: hypothesis-${{ github.run_id }}
+          key: hypothesis-${{ matrix.machine }}-${{ github.run_id }}
