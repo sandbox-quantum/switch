@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { Origin, ServerEvent } from '@switch-console/shared/session-v1';
+import type { Origin, ServerEvent, ToolCall, ToolDetail } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { TokenUsage } from '../events';
 import { Journal } from './journal';
@@ -44,6 +44,12 @@ export type ActivityRow = {
    * takes every other row.
    */
   delivery?: 'steered' | 'queued';
+  /**
+   * On tool activity: the call and, once it ended, its result. Left out when
+   * the provider said nothing of the call, so a server that predates it takes
+   * the row.
+   */
+  detail?: ToolDetail;
 };
 
 export type UsageRow = {
@@ -72,6 +78,10 @@ export type RequestOpening = {
   room_id: string | null;
   thread_id: string | null;
   expires_at: string | null;
+  /** The tool call an approval asks to run; left out when unknown. */
+  tool?: ToolCall;
+  /** A plan-mode approval's plan; left out otherwise. */
+  plan?: string;
 };
 
 export type Report =
@@ -184,6 +194,7 @@ export class ActivityReporter {
               ...place(item.turnId, item.kind === 'user-message' ? item.origin : null),
               occurred_at: event.occurredAt,
               ...(item.kind === 'user-message' && item.delivery ? { delivery: item.delivery } : {}),
+              ...(item.kind === 'tool-activity' && item.detail ? { detail: item.detail } : {}),
             },
           },
         ];
@@ -252,6 +263,10 @@ export class ActivityReporter {
               room_id,
               thread_id,
               expires_at: request.expiresAt,
+              ...(content.kind === 'approval' && content.tool ? { tool: content.tool } : {}),
+              ...(content.kind === 'approval' && content.plan !== undefined
+                ? { plan: content.plan }
+                : {}),
             },
           },
         ];

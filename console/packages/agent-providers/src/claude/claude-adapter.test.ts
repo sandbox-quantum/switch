@@ -1557,6 +1557,33 @@ describe('ClaudeAdapter connector tools', () => {
     });
   });
 
+  it('passes the reason a person gave for declining to the agent', async () => {
+    const { sdk, adapter, recorder } = await startWithConnectors('approval-required');
+    const decision = sdk.canUseTool()(
+      'mcp__atlassian__add_comment',
+      { body: 'hi' },
+      toolOptions('t1')
+    );
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.tool).toEqual({ name: 'mcp__atlassian__add_comment', input: { body: 'hi' } });
+    expect(opened).not.toHaveProperty('plan');
+    await adapter.respondToRequest(SESSION, opened.requestId, 'decline', 'Wrong ticket.');
+    expect(await decision).toEqual({
+      behavior: 'deny',
+      message: 'The user declined this request: Wrong ticket.',
+    });
+  });
+
+  it("puts a plan-mode approval's plan on its request", async () => {
+    const { sdk, adapter, recorder } = await startWithConnectors('approval-required');
+    const decision = sdk.canUseTool()('ExitPlanMode', { plan: '1. Build' }, toolOptions('t1'));
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.tool).toEqual({ name: 'ExitPlanMode', input: { plan: '1. Build' } });
+    expect(opened.plan).toBe('1. Build');
+    await adapter.respondToRequest(SESSION, opened.requestId, 'accept');
+    expect(await decision).toEqual({ behavior: 'allow' });
+  });
+
   it('keeps "allow for this session" to the session', async () => {
     const { sdk, adapter, recorder } = await startWithConnectors('auto-accept-edits');
     const rule = {

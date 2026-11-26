@@ -579,6 +579,91 @@ it.each([false, true])('reports child activity (older Core=%s)', async (olderCor
   }
 });
 
+it.each([false, true])("reports a tool step's detail (older Core=%s)", async (olderCore) => {
+  const host = await start({ rooms: true });
+  host.switchCore.state.refusesDetail = olderCore;
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'run the tests') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const turnId = host.turns[0]!.turnId;
+    const tool = {
+      id: 'bash-1',
+      type: 'command_execution',
+      status: 'in_progress',
+      title: 'pytest',
+      toolName: 'Bash',
+      payload: { command: 'pytest' },
+    };
+    host.emit({ type: 'item.started', turnId, item: tool });
+    host.emit({
+      type: 'item.completed',
+      turnId,
+      item: { ...tool, status: 'failed', text: '1 failed' },
+    });
+    const rows = () =>
+      host.switchCore.calls.filter((call) => {
+        const row = call.body as { title?: string; status?: string; detail?: unknown } | null;
+        return (
+          call.path.endsWith('/activity') &&
+          row?.title === 'pytest' &&
+          (!olderCore || !('detail' in row))
+        );
+      });
+    await until(() => expect(rows().at(-1)?.body).toMatchObject({ status: 'failed' }));
+    if (olderCore) expect(rows().at(-1)?.body).not.toHaveProperty('detail');
+    else
+      expect(rows().at(-1)?.body).toHaveProperty('detail', {
+        tool: { name: 'Bash', input: { command: 'pytest' } },
+        result: { isError: true, text: '1 failed' },
+        truncated: false,
+      });
+  } finally {
+    await host.stop();
+  }
+});
+
+it.each([false, true])(
+  "reports an approval's tool call and plan (older Core=%s)",
+  async (olderCore) => {
+    const host = await start({ rooms: true });
+    host.switchCore.state.refusesApprovalTool = olderCore;
+    try {
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'make a plan') });
+      await until(() => expect(host.turns).toHaveLength(1));
+      host.emit({
+        type: 'request.opened',
+        turnId: host.turns[0]!.turnId,
+        requestId: 'plan-1',
+        requestType: 'tool_approval',
+        title: 'Accept this plan?',
+        options: [
+          { decision: 'accept', label: 'Go' },
+          { decision: 'decline', label: 'Keep planning' },
+        ],
+        tool: { name: 'ExitPlanMode', input: { plan: '1. Build' } },
+        plan: '1. Build',
+      });
+      const opens = () =>
+        host.switchCore.calls.filter(
+          (call) => call.method === 'POST' && call.path.endsWith('/approvals')
+        );
+      await until(() => expect(opens().length).toBeGreaterThanOrEqual(olderCore ? 2 : 1));
+      const sent = opens().at(-1)!.body as Record<string, unknown>;
+      expect(sent.title).toBe('Accept this plan?');
+      if (olderCore) {
+        expect(sent).not.toHaveProperty('tool');
+        expect(sent).not.toHaveProperty('plan');
+      } else
+        expect(sent).toMatchObject({
+          tool: { name: 'ExitPlanMode', input: { plan: '1. Build' } },
+          plan: '1. Build',
+        });
+    } finally {
+      await host.stop();
+    }
+  }
+);
+
 it('names itself to its parent, which makes its tool calls, before the provider starts', async () => {
   const host = await start();
   try {

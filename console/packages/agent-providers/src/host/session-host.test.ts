@@ -1475,6 +1475,7 @@ it('applies an answer Switch recorded for an approval, once', async () => {
     answer: '1',
     answers: null,
     answeredBy: '@person:test',
+    reason: null,
   };
 
   expect(await host.applyApprovalOutcome(outcome)).toBe(true);
@@ -1492,6 +1493,56 @@ it('applies an answer Switch recorded for an approval, once', async () => {
   });
 });
 
+it('passes the reason a person gave for declining to the provider', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('turn'));
+  await openApproval(emit, host);
+
+  expect(
+    await host.applyApprovalOutcome({
+      requestId: 'permission',
+      kind: 'approval',
+      state: 'answered',
+      answer: '1',
+      answers: null,
+      answeredBy: 'user:alice',
+      reason: 'Use the staging bucket.',
+    })
+  ).toBe(true);
+
+  expect(adapter.respondToRequest).toHaveBeenCalledExactlyOnceWith(
+    'session',
+    'permission',
+    'decline',
+    'Use the staging bucket.'
+  );
+});
+
+it('publishes the tool call and plan an approval names', async () => {
+  const { host, emit } = await start('claude');
+  await host.command(message('turn'));
+  emit({
+    type: 'request.opened',
+    turnId: 'turn',
+    requestId: 'plan',
+    requestType: 'tool_approval',
+    title: 'Accept this plan?',
+    options: [
+      { decision: 'accept', label: 'Go' },
+      { decision: 'decline', label: 'Keep planning' },
+    ],
+    tool: { name: 'ExitPlanMode', input: { plan: '1. Build' } },
+    plan: '1. Build',
+  });
+  await until(() =>
+    expect(host.snapshot().requests[0]?.content).toMatchObject({
+      kind: 'approval',
+      tool: { name: 'ExitPlanMode', input: { plan: '1. Build' } },
+      plan: '1. Build',
+    })
+  );
+});
+
 it('declines an approval Switch says expired, without interrupting the turn', async () => {
   const { host, adapter, emit } = await start('claude');
   await host.command(message('turn'));
@@ -1505,6 +1556,7 @@ it('declines an approval Switch says expired, without interrupting the turn', as
       answer: null,
       answers: null,
       answeredBy: null,
+      reason: null,
     })
   ).toBe(true);
 
@@ -1542,6 +1594,7 @@ it('leaves an approval already answered another way alone', async () => {
       answer: '1',
       answers: null,
       answeredBy: '@person:test',
+      reason: null,
     })
   ).toBe(false);
   expect(adapter.respondToRequest).toHaveBeenCalledExactlyOnceWith(
@@ -1592,6 +1645,7 @@ it('answers questions with what Switch recorded for them', async () => {
       answer: null,
       answers,
       answeredBy: '@person:test',
+      reason: null,
     })
   ).toBe(true);
 
@@ -1618,6 +1672,7 @@ it('refuses answers Switch recorded that the questions never offered', async () 
       answer: null,
       answers: [{ questionId: 'colour', selectedOptionIds: ['colour:9'], customText: null }],
       answeredBy: '@person:test',
+      reason: null,
     })
   ).rejects.toThrow('INVALID_ANSWER');
   await expect(
@@ -1628,6 +1683,7 @@ it('refuses answers Switch recorded that the questions never offered', async () 
       answer: '0',
       answers: null,
       answeredBy: '@person:test',
+      reason: null,
     })
   ).rejects.toThrow('INVALID_ANSWER');
   expect(adapter.respondToUserInput).not.toHaveBeenCalled();
@@ -1647,6 +1703,7 @@ it('closes questions Switch says expired without answering them or interrupting 
       answer: null,
       answers: null,
       answeredBy: null,
+      reason: null,
     })
   ).toBe(true);
 
@@ -2103,7 +2160,7 @@ it('times reasoning only from a real start: Codex has one, Claude does not', asy
   expect(untimed?.completedAt).toEqual(expect.any(String));
 });
 
-it('keeps tool input and output off the event stream, the journal and the snapshot', async () => {
+it("keeps tool input and output to the tool item's bounded detail", async () => {
   const { host, emit, root } = await start('claude');
   const published: unknown[] = [];
   host.onPublished((event) => published.push(event.body));
@@ -2121,10 +2178,17 @@ it('keeps tool input and output off the event stream, the journal and the snapsh
   await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   await host.barrier();
   const journal = await readFile(join(root, 'events.jsonl'), 'utf8');
-  for (const text of [journal, JSON.stringify(published), JSON.stringify(host.snapshot())]) {
-    expect(text).not.toContain('PRIVATE-INPUT');
-    expect(text).not.toContain('PRIVATE OUTPUT');
-  }
+  // Never in the summary a messaging platform shows: only in the detail.
+  const item = host.snapshot().items.find((each) => each.kind === 'tool-activity');
+  expect(item).toMatchObject({ title: 'Read', text: '' });
+  expect(item?.detail).toEqual({
+    tool: { name: 'Read', input },
+    result: { isError: false, text: 'PRIVATE OUTPUT', files: [input.file_path] },
+    truncated: false,
+  });
+  const { detail: _detail, ...summary } = item!;
+  expect(JSON.stringify(summary)).not.toMatch(/PRIVATE/);
+  expect(journal).toContain('"detail"');
   expect(host.reasoning(['turn']).tools).toEqual([
     {
       turnId: 'turn',

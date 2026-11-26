@@ -1,11 +1,25 @@
-import type { HostBody, Item, Origin, Session } from '@switch-console/shared/session-v1';
-import type { ProviderRuntimeEvent } from '../events';
+import type {
+  HostBody,
+  Item,
+  Origin,
+  Session,
+  ToolCall,
+  ToolDetail,
+} from '@switch-console/shared/session-v1';
+import type { ProviderItem, ProviderRuntimeEvent } from '../events';
 import type { Redactions } from '../host/redaction';
+import { payloadInput } from '../host/tool-detail-buffer';
 
 type TurnContext = { commandId: string | null; origin: Origin | null };
 
 /** As much text as one published item carries; longer text goes in `:part:` items after it. */
 export const ITEM_PART_CHARACTERS = 4096;
+/**
+ * The most a tool's detail takes of one published event, which is capped at
+ * 64 KiB with the item's title and text around it. Longer strings are cut
+ * until it fits, and the detail says it was.
+ */
+export const TOOL_DETAIL_BYTES = 24 * 1024;
 
 /**
  * `item` with `text`, as the items it is published as: the first under the
@@ -16,13 +30,104 @@ export const ITEM_PART_CHARACTERS = 4096;
 export function itemParts(item: Item, text: string, minimum: number): Item[] {
   const characters = Array.from(text);
   const count = Math.max(1, Math.ceil(characters.length / ITEM_PART_CHARACTERS), minimum);
-  return Array.from({ length: count }, (_, index) => ({
-    ...structuredClone(item),
-    itemId: index === 0 ? item.itemId : `${item.itemId}:part:${index}`,
-    text: characters
-      .slice(index * ITEM_PART_CHARACTERS, (index + 1) * ITEM_PART_CHARACTERS)
-      .join(''),
-  }));
+  return Array.from({ length: count }, (_, index) => {
+    const part: Item = {
+      ...structuredClone(item),
+      itemId: index === 0 ? item.itemId : `${item.itemId}:part:${index}`,
+      text: characters
+        .slice(index * ITEM_PART_CHARACTERS, (index + 1) * ITEM_PART_CHARACTERS)
+        .join(''),
+    };
+    // The detail is the item's, carried once, by its first part.
+    if (index > 0) delete part.detail;
+    return part;
+  });
+}
+
+const ENDED_ITEM = new Set(['completed', 'failed', 'declined']);
+const DIFF_START = /^(diff --git |--- |@@ )/;
+
+/**
+ * What a tool step called and, once it ended, what came back: the provider's
+ * structured payload as the tool's input (the tool_use input for Claude Code;
+ * the vendor's item for others), its tool name, and its output text. A file
+ * change whose output reads as a unified diff gives it as `diff`. Undefined
+ * when the provider says nothing of the call.
+ */
+export function toolDetail(
+  item: ProviderItem,
+  previous: ToolDetail | undefined
+): ToolDetail | undefined {
+  const given = item.payload ? payloadInput(item.payload) : undefined;
+  const input =
+    given === undefined || given === null
+      ? previous?.tool.input
+      : typeof given === 'object' && !Array.isArray(given)
+        ? (given as Record<string, unknown>)
+        : { value: given };
+  const name = item.toolName ?? previous?.tool.name ?? (input ? item.type : undefined);
+  if (!name || !input) return undefined;
+  const detail: ToolDetail = { tool: { name, input }, truncated: false };
+  if (ENDED_ITEM.has(item.status)) {
+    const result: NonNullable<ToolDetail['result']> = { isError: item.status === 'failed' };
+    const text = item.text;
+    if (text !== undefined && text !== '') {
+      if (item.type === 'file_change' && DIFF_START.test(text)) result.diff = text;
+      else result.text = text;
+    }
+    const files = ['file_path', 'notebook_path', 'path']
+      .map((key) => input[key])
+      .filter((value): value is string => typeof value === 'string' && value !== '');
+    if (files.length > 0) result.files = [...new Set(files)];
+    detail.result = result;
+  }
+  return fitDetail(detail, TOOL_DETAIL_BYTES);
+}
+
+function byteLength(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+function cutStrings(value: unknown, limit: number): unknown {
+  if (typeof value === 'string') {
+    const characters = Array.from(value);
+    return characters.length <= limit ? value : `${characters.slice(0, limit).join('')}…`;
+  }
+  if (Array.isArray(value)) return value.map((each) => cutStrings(each, limit));
+  if (value !== null && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([key, each]) => [key, cutStrings(each, limit)])
+    );
+  return value;
+}
+
+/** `tool`, cut as {@link fitDetail} cuts a detail's call. */
+export function fitToolCall(tool: ToolCall, budget: number): ToolCall {
+  return fitDetail({ tool, truncated: false }, budget).tool;
+}
+
+/** `detail`, its strings cut shorter and shorter until it fits in `budget` bytes. */
+export function fitDetail(detail: ToolDetail, budget: number): ToolDetail {
+  if (byteLength(detail) <= budget) return detail;
+  for (let limit = 8192; limit >= 64; limit = Math.floor(limit / 2)) {
+    const cut: ToolDetail = {
+      tool: {
+        name: detail.tool.name,
+        input: cutStrings(detail.tool.input, limit) as Record<string, unknown>,
+      },
+      ...(detail.result
+        ? { result: cutStrings(detail.result, limit) as NonNullable<ToolDetail['result']> }
+        : {}),
+      truncated: true,
+    };
+    if (byteLength(cut) <= budget) return cut;
+  }
+  // Too many fields to fit even cut short: the call's name and outcome only.
+  return {
+    tool: { name: detail.tool.name.slice(0, 200), input: {} },
+    ...(detail.result ? { result: { isError: detail.result.isError } } : {}),
+    truncated: true,
+  };
 }
 type BufferedItem = { item: Item; emittedAt: number; dirty: boolean; parts: number };
 
@@ -126,7 +231,8 @@ export class ChatProjector {
             : event.item.type === 'user_message'
               ? 'user-message'
               : 'tool-activity';
-        // Raw tool output and vendor payloads are not a shared tool summary.
+        // Raw tool output and vendor payloads stay out of the summary; a tool
+        // step carries them, bounded, in its own `detail`.
         const item: Item = {
           itemId: key,
           turnId: event.turnId,
@@ -146,6 +252,10 @@ export class ChatProjector {
           attachments: [],
           origin: kind === 'user-message' ? context.origin : null,
         };
+        if (kind === 'tool-activity' && !child) {
+          const detail = toolDetail(event.item, previous?.item.detail);
+          if (detail) item.detail = detail;
+        }
         if (
           child &&
           previous &&

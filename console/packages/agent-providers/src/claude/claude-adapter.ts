@@ -77,6 +77,7 @@ import { claudeConfigDir, configDirSessionStore, savedConversationPath } from '.
 
 const PROVIDER = 'claude';
 const ASK_USER_QUESTION = 'AskUserQuestion';
+const EXIT_PLAN_MODE = 'ExitPlanMode';
 
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -174,7 +175,7 @@ type EventBody<T extends ProviderRuntimeEvent = ProviderRuntimeEvent> =
 
 interface PendingApproval {
   turnId: string;
-  settle: (decision: ApprovalDecision) => void;
+  settle: (decision: ApprovalDecision, reason?: string) => void;
 }
 
 interface PendingUserInput {
@@ -699,7 +700,8 @@ export class ClaudeAdapter implements ProviderAdapter {
   async respondToRequest(
     sessionId: string,
     requestId: string,
-    decision: ApprovalDecision
+    decision: ApprovalDecision,
+    reason?: string
   ): Promise<void> {
     const session = this.requireSession(sessionId);
     const pending = session.pendingApprovals.get(requestId);
@@ -707,7 +709,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       throw new ProviderSessionError(PROVIDER, sessionId, `Unknown request ${requestId}.`);
     }
     session.pendingApprovals.delete(requestId);
-    pending.settle(decision);
+    pending.settle(decision, reason);
   }
 
   async respondToUserInput(
@@ -1356,7 +1358,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     const requestId = options.toolUseID;
 
     return new Promise<PermissionResult>((resolve) => {
-      const settle = (decision: ApprovalDecision) => {
+      const settle = (decision: ApprovalDecision, reason?: string) => {
         session.pendingApprovals.delete(requestId);
         options.signal.removeEventListener('abort', onAbort);
         this.emit(session, { type: 'request.resolved', requestId, decision });
@@ -1372,12 +1374,17 @@ export class ClaudeAdapter implements ProviderAdapter {
           });
           return;
         }
+        const said = reason?.trim();
         resolve({
           behavior: 'deny',
           message:
             decision === 'cancel'
-              ? 'The user cancelled this request.'
-              : 'The user declined this request. Do not retry it another way.',
+              ? said
+                ? `The user cancelled this request: ${said}`
+                : 'The user cancelled this request.'
+              : said
+                ? `The user declined this request: ${said}`
+                : 'The user declined this request. Do not retry it another way.',
           ...(decision === 'cancel' ? { interrupt: true } : {}),
         });
       };
@@ -1392,6 +1399,10 @@ export class ClaudeAdapter implements ProviderAdapter {
         ...approvalContent(toolName, toolInput, options.title, options.description),
         options: APPROVAL_OPTIONS,
         ...connectorOf(session, toolName),
+        tool: { name: toolName, input: toolInput },
+        ...(toolName === EXIT_PLAN_MODE && typeof toolInput.plan === 'string'
+          ? { plan: toolInput.plan }
+          : {}),
         raw: { source: 'claude', payload: { toolName, toolInput } },
       });
     });

@@ -441,3 +441,50 @@ it('reports child progress with stable placement and identity through journal re
     )
   ).toMatchObject([{ row: { item_id: item.itemId, revision: 2, status: 'failed' } }]);
 });
+
+it("reports a tool step's detail, and nothing of one it does not have", async () => {
+  const lines = await reporter();
+  const detail = {
+    tool: { name: 'Bash', input: { command: 'pytest' } },
+    result: { isError: false, stdout: '12 passed' },
+    truncated: false,
+  };
+  const [withDetail] = rows(
+    lines.reports(event(1, item({ status: 'completed', detail })), originOf, noUsage)
+  );
+  expect(withDetail).toMatchObject({ kind: 'tool-activity', detail });
+  const [without] = rows(
+    lines.reports(event(2, item({ itemId: '["turn","tool-2"]' })), originOf, noUsage)
+  );
+  expect(without).not.toHaveProperty('detail');
+});
+
+it('opens an approval with the tool call and plan it names', async () => {
+  const lines = await reporter();
+  const [opened] = lines.reports(
+    event(1, {
+      type: 'request.opened',
+      request: {
+        requestId: 'plan',
+        turnId: 'turn',
+        revision: 1,
+        state: 'open',
+        expiresAt: null,
+        content: {
+          kind: 'approval',
+          title: 'Accept this plan?',
+          detail: null,
+          options: [{ optionId: '0', label: 'Go', decision: 'accept' }],
+          tool: { name: 'ExitPlanMode', input: { plan: '1. Build' } },
+          plan: '1. Build',
+        },
+      },
+    }),
+    originOf,
+    noUsage
+  );
+  expect(opened).toMatchObject({
+    kind: 'approval.open',
+    body: { tool: { name: 'ExitPlanMode', input: { plan: '1. Build' } }, plan: '1. Build' },
+  });
+});

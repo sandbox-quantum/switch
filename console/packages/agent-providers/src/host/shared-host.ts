@@ -290,6 +290,8 @@ const approvalOutcomesSchema = z.array(
       )
       .nullable(),
     answeredBy: z.string().nullable(),
+    // Servers that predate declining with a reason do not send it.
+    reason: z.string().nullable().optional(),
   })
 );
 
@@ -528,8 +530,9 @@ export async function runSharedHost(
           null
         );
     };
-    // Retry new optional fields independently: a server may predate either
-    // usage or child progress. Preserve the tool row and its terminal status.
+    // Retry new optional fields independently: a server may predate any of
+    // them, or refuse a tool's detail. Preserve the tool row and its terminal
+    // status, and the approval itself.
     const sendCompatible = async (item: Report): Promise<void> => {
       let report = item;
       for (;;) {
@@ -537,13 +540,24 @@ export async function runSharedHost(
           await send(report);
           return;
         } catch (error) {
-          if (
-            !(error instanceof RequestError) ||
-            error.status !== 422 ||
-            report.kind !== 'activity'
-          )
-            throw error;
-          if (report.row.usage) {
+          if (!(error instanceof RequestError) || error.status !== 422) throw error;
+          if (report.kind === 'approval.open') {
+            if (report.body.tool === undefined && report.body.plan === undefined) throw error;
+            const { tool: _tool, plan: _plan, ...body } = report.body;
+            console.warn(
+              `Switch refused the tool call or plan of request ${body.request_id}, so they are not shown with it: ${error.message}`
+            );
+            report = { kind: 'approval.open', body };
+            continue;
+          }
+          if (report.kind !== 'activity') throw error;
+          if (report.row.detail) {
+            const { detail: _detail, ...row } = report.row;
+            console.warn(
+              `Switch refused the detail of tool step ${row.item_id}, so it is shown without it: ${error.message}`
+            );
+            report = { kind: 'activity', row };
+          } else if (report.row.usage) {
             const { usage: _usage, ...row } = report.row;
             console.warn(
               `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
@@ -627,6 +641,7 @@ export async function runSharedHost(
                 customText: answer.custom_text,
               })) ?? null,
             answeredBy: outcome.answeredBy,
+            reason: outcome.reason ?? null,
           });
         } catch (error) {
           if (String(error).includes('HOST_STOPPING')) throw error;

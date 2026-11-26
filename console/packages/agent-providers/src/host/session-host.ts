@@ -31,7 +31,13 @@ import type {
 } from '../adapter';
 import type { TokenUsage, TurnOutcome, UsageLimit, UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
-import { ChatProjector, ITEM_PART_CHARACTERS, itemParts } from '../session-v1/chat-projector';
+import {
+  ChatProjector,
+  fitToolCall,
+  ITEM_PART_CHARACTERS,
+  itemParts,
+  TOOL_DETAIL_BYTES,
+} from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
@@ -124,7 +130,12 @@ export type ApprovalOutcome = {
   answer: string | null;
   answers: Answer[] | null;
   answeredBy: string | null;
+  /** The person's words on declining; null when they gave none. */
+  reason: string | null;
 };
+
+/** As much of a plan-mode approval's plan as one published request carries. */
+const PLAN_CHARACTERS = 16 * 1024;
 
 /** Execution owner for a local-only session. Shared server leases are an external boundary. */
 export class HostedSession {
@@ -832,7 +843,14 @@ export class HostedSession {
         throw new Error(
           `INVALID_ANSWER: Switch recorded option ${outcome.answer} for request ${outcome.requestId}, which it never offered.`
         );
-      respond = () => this.adapter.respondToRequest(sessionId, outcome.requestId, option.decision);
+      const reason =
+        (option.decision === 'decline' || option.decision === 'cancel') && outcome.reason
+          ? outcome.reason
+          : undefined;
+      respond = () =>
+        reason === undefined
+          ? this.adapter.respondToRequest(sessionId, outcome.requestId, option.decision)
+          : this.adapter.respondToRequest(sessionId, outcome.requestId, option.decision, reason);
       const cancelled = option.decision === 'cancel';
       settled = cancelled ? 'cancelled' : 'answered';
       result = cancelled ? null : { kind: 'approval', optionId: option.optionId };
@@ -1533,6 +1551,10 @@ export class HostedSession {
                   ...option,
                   optionId: String(index),
                 })),
+                ...(event.tool ? { tool: fitToolCall(event.tool, TOOL_DETAIL_BYTES) } : {}),
+                ...(event.plan !== undefined
+                  ? { plan: Array.from(event.plan).slice(0, PLAN_CHARACTERS).join('') }
+                  : {}),
               }
             : {
                 kind: 'questions',

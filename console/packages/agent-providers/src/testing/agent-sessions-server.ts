@@ -14,7 +14,9 @@ export type AgentSessionsCall = { method: string; path: string; body: unknown };
  * Setting `state.unavailable` answers every such call with 503, as an
  * unreachable Switch would, and `state.refusesUsage` refuses an activity row
  * carrying usage with 422, as a server that predates it does, and
- * `state.refusesDelivery` one saying how a message sent mid-turn was delivered.
+ * `state.refusesDelivery` one saying how a message sent mid-turn was delivered,
+ * `state.refusesDetail` one carrying a tool's detail, and
+ * `state.refusesApprovalTool` an approval naming its tool call or plan.
  * `state.startUnknown` answers a session start report with a bare 404, as a
  * server that predates that route does, and `state.startRefused` refuses one
  * with 422.
@@ -27,6 +29,8 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
     refusesUsage: false,
     refusesSubagent: false,
     refusesDelivery: false,
+    refusesDetail: false,
+    refusesApprovalTool: false,
     startUnknown: false,
     startRefused: false,
   };
@@ -59,7 +63,14 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
         return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
       if (state.refusesUsage && 'usage' in body)
         return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
+      if (state.refusesDetail && 'detail' in body)
+        return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
       return Response.json({ recorded: true });
+    }
+    if (path.endsWith('/approvals') && method === 'POST') {
+      const body = calls.at(-1)!.body as Record<string, unknown>;
+      if (state.refusesApprovalTool && ('tool' in body || 'plan' in body))
+        return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
     }
     return Response.json({});
   });

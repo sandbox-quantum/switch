@@ -206,7 +206,16 @@ export interface ProviderAdapter {
   startSession(input: ProviderSessionStartInput): Promise<ProviderSession>;
   sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult>;
   interruptTurn(sessionId: string): Promise<void>;
-  respondToRequest(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void>;
+  /**
+   * `reason` is the person's words on a decline or cancel, which a provider
+   * that can pass a denial message to the agent passes on; others ignore it.
+   */
+  respondToRequest(
+    sessionId: string,
+    requestId: string,
+    decision: ApprovalDecision,
+    reason?: string
+  ): Promise<void>;
   respondToUserInput(
     sessionId: string,
     requestId: string,

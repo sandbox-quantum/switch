@@ -38,6 +38,24 @@ export const attachmentSchema = z.strictObject({
     .nullable()
     .optional(),
 });
+const toolCall = z.strictObject({
+  name: z.string().min(1),
+  input: z.record(z.string(), z.unknown()),
+});
+const toolDetail = z.strictObject({
+  tool: toolCall,
+  result: z
+    .strictObject({
+      isError: z.boolean(),
+      text: z.string().optional(),
+      stdout: z.string().optional(),
+      stderr: z.string().optional(),
+      diff: z.string().optional(),
+      files: z.array(z.string()).optional(),
+    })
+    .optional(),
+  truncated: z.boolean(),
+});
 const item = z.strictObject({
   itemId: id,
   turnId: id,
@@ -50,6 +68,7 @@ const item = z.strictObject({
   attachments: z.array(attachmentSchema),
   origin: origin.nullable(),
   delivery: z.enum(['steered', 'queued']).optional(),
+  detail: toolDetail.optional(),
 });
 const option = z.strictObject({
   optionId: id,
@@ -86,6 +105,8 @@ const request = z.strictObject({
       title: z.string(),
       detail: z.string().nullable(),
       options: z.array(option),
+      tool: toolCall.optional(),
+      plan: z.string().optional(),
     }),
     z.strictObject({
       kind: z.literal('questions'),

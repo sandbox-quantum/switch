@@ -5,11 +5,12 @@ import type { ItemType, ProviderRuntimeEvent } from '../events';
  * What each recent tool call was given and what it gave back, held in memory
  * by the session host beside the reasoning buffer and under the same rules.
  *
- * A session-v1 tool item carries only a title: raw tool input and output are
- * not a shared summary, so they are never published, journaled, snapshotted
- * or sent to Switch (whose renderers show an item's text in Slack and the
- * like). A Console on the same machine, or over SSH, reads them here to show
- * what a tool did. Every value is clipped as it is taken, so the buffer and an
+ * A session-v1 tool item's title and text are a shared summary, which
+ * Switch's renderers show in Slack and the like; raw input and output stay
+ * out of them. The item carries them only in its bounded `detail`
+ * (`toolDetail` in the chat projector), for clients that draw a card. A
+ * Console on the same machine, or over SSH, reads the fuller copy here to
+ * show what a tool did. Every value is clipped as it is taken, so the buffer and an
  * answer stay bounded however large a file read or a command's output is.
  */
 
@@ -74,7 +75,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** The arguments in a provider payload: OpenCode nests them under `input`. */
-function payloadInput(payload: Record<string, unknown> | undefined): unknown {
+export function payloadInput(payload: Record<string, unknown> | undefined): unknown {
   if (!payload) return null;
   if (typeof payload.tool === 'string' && isRecord(payload.input)) return payload.input;
   return payload;

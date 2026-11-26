@@ -1,11 +1,17 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Session } from '@switch-console/shared/session-v1';
+import type { HostBody, Session } from '@switch-console/shared/session-v1';
 import { describe, expect, it } from 'vitest';
 import type { ProviderRuntimeEvent } from '../events';
 import { Redactions } from '../host/redaction';
-import { ChatProjector } from './chat-projector';
+import {
+  ChatProjector,
+  fitDetail,
+  itemParts,
+  TOOL_DETAIL_BYTES,
+  toolDetail,
+} from './chat-projector';
 import { EventOutbox } from './event-outbox';
 
 const session = (provider: Session['provider']): Session => ({
@@ -100,7 +106,7 @@ describe('chat projection', () => {
       ).toMatchObject({ item: { revision: 3, status: 'completed', text: 'Hello world!' } });
     }
   );
-  it('excludes reasoning and tool payload/output while preserving verified user origin', () => {
+  it('excludes reasoning, keeps tool payload/output to the detail and preserves verified user origin', () => {
     const projector = new ChatProjector(session('claude'), null);
     projector.bindTurn('turn', context);
     const base = {
@@ -142,7 +148,17 @@ describe('chat projection', () => {
       },
       0
     );
-    expect(JSON.stringify(output)).not.toMatch(/raw output|private|payload/);
+    expect(output).toHaveLength(1);
+    expect(output[0]).toMatchObject({
+      type: 'item.upsert',
+      item: { title: 'Run tests', text: '' },
+    });
+    expect((output[0] as Extract<HostBody, { type: 'item.upsert' }>).item.detail).toEqual({
+      tool: { name: 'command_execution', input: { secret: 'private' } },
+      result: { isError: false, text: 'raw output' },
+      truncated: false,
+    });
+    expect(JSON.stringify(output)).not.toMatch(/sdk|payload/);
     expect(
       projector.ingest(
         {
@@ -378,5 +394,113 @@ describe('subagent projection', () => {
     if (event.type !== 'item.updated') throw new Error('Expected child update');
     event.item.title = 'Inspect demo-private-value';
     expect(JSON.stringify(projector.ingest(event, 0))).not.toContain('demo-private-value');
+  });
+});
+
+describe('tool detail', () => {
+  const base = {
+    provider: 'claude',
+    sessionId: 'session',
+    eventId: 'native-event',
+    createdAt: '2026-09-07T12:00:00Z',
+    turnId: 'turn',
+  };
+  const edit = {
+    id: 'edit-1',
+    type: 'file_change' as const,
+    status: 'in_progress' as const,
+    title: 'Edit a.py',
+    toolName: 'Edit',
+    payload: { file_path: 'a.py', old_string: 'x', new_string: 'y' },
+  };
+
+  it('carries the call while the tool runs and its result once it ends', () => {
+    const projector = new ChatProjector(session('claude'), null);
+    projector.bindTurn('turn', context);
+    const [started] = projector.ingest({ ...base, type: 'item.started', item: edit }, 0);
+    expect(started).toMatchObject({
+      item: {
+        detail: { tool: { name: 'Edit', input: edit.payload }, truncated: false },
+      },
+    });
+    expect((started as Extract<HostBody, { type: 'item.upsert' }>).item.detail).not.toHaveProperty(
+      'result'
+    );
+    // A provider that does not repeat the call on completion keeps it.
+    const { payload: _payload, ...bare } = edit;
+    const [ended] = projector.ingest(
+      { ...base, type: 'item.completed', item: { ...bare, status: 'completed', text: 'Updated' } },
+      1000
+    );
+    expect((ended as Extract<HostBody, { type: 'item.upsert' }>).item.detail).toEqual({
+      tool: { name: 'Edit', input: edit.payload },
+      result: { isError: false, text: 'Updated', files: ['a.py'] },
+      truncated: false,
+    });
+  });
+
+  it('gives a file change whose output is a unified diff as its diff', () => {
+    const diff = '--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n';
+    expect(toolDetail({ ...edit, status: 'completed', text: diff }, undefined)?.result).toEqual({
+      isError: false,
+      diff,
+      files: ['a.py'],
+    });
+  });
+
+  it('says nothing when the provider says nothing of the call', () => {
+    expect(
+      toolDetail({ id: 't', type: 'web_search', status: 'completed', title: 'q' }, undefined)
+    ).toBeUndefined();
+  });
+
+  it('cuts long strings until the detail fits, and says it did', () => {
+    const big = toolDetail(
+      { ...edit, status: 'completed', payload: { content: 'x'.repeat(100_000) }, text: 'ok' },
+      undefined
+    )!;
+    expect(big.truncated).toBe(true);
+    expect(new TextEncoder().encode(JSON.stringify(big)).byteLength).toBeLessThanOrEqual(
+      TOOL_DETAIL_BYTES
+    );
+    expect(String(big.tool.input.content).endsWith('…')).toBe(true);
+    const many = fitDetail(
+      {
+        tool: {
+          name: 'Bulk',
+          input: Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`k${i}`, 'value'])),
+        },
+        result: { isError: false, text: 'done' },
+        truncated: false,
+      },
+      1024
+    );
+    expect(many).toEqual({
+      tool: { name: 'Bulk', input: {} },
+      result: { isError: false },
+      truncated: true,
+    });
+  });
+
+  it('is carried by the first part of a long item only', () => {
+    const parts = itemParts(
+      {
+        itemId: 'i',
+        turnId: 'turn',
+        revision: 1,
+        kind: 'tool-activity',
+        status: 'completed',
+        title: 't',
+        text: '',
+        attachments: [],
+        origin: null,
+        detail: { tool: { name: 'Bash', input: {} }, truncated: false },
+      },
+      'y'.repeat(5000),
+      1
+    );
+    expect(parts).toHaveLength(2);
+    expect(parts[0]!.detail).toBeDefined();
+    expect(parts[1]).not.toHaveProperty('detail');
   });
 });

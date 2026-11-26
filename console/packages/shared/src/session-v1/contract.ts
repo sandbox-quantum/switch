@@ -34,6 +34,24 @@ export type Attachment = {
   bytes: number;
   sha256?: string | null;
 };
+/** A tool call: the tool's name and the input it was given. */
+export type ToolCall = { name: string; input: Record<string, unknown> };
+/**
+ * What a tool step called and, once it finished, what came back. Long strings
+ * are cut by whoever builds it, which then sets `truncated`.
+ */
+export type ToolDetail = {
+  tool: ToolCall;
+  result?: {
+    isError: boolean;
+    text?: string;
+    stdout?: string;
+    stderr?: string;
+    diff?: string;
+    files?: string[];
+  };
+  truncated: boolean;
+};
 export type Item = {
   itemId: Id;
   turnId: Id;
@@ -51,6 +69,8 @@ export type Item = {
    * turn of its own. Absent for a message that started a turn straight away.
    */
   delivery?: 'steered' | 'queued';
+  /** On tool activity, when the provider says what the tool was given. */
+  detail?: ToolDetail;
 };
 export type ApprovalOption = {
   optionId: Id;
@@ -67,7 +87,16 @@ export type Question = {
 };
 export type Answer = { questionId: Id; selectedOptionIds: Id[]; customText: string | null };
 export type RequestContent =
-  | { kind: 'approval'; title: string; detail: string | null; options: ApprovalOption[] }
+  | {
+      kind: 'approval';
+      title: string;
+      detail: string | null;
+      options: ApprovalOption[];
+      /** The tool call it asks to run, when the provider says. */
+      tool?: ToolCall;
+      /** The plan a plan-mode approval asks a person to accept. */
+      plan?: string;
+    }
   | { kind: 'questions'; title: string; questions: Question[] };
 export type Request = {
   requestId: Id;

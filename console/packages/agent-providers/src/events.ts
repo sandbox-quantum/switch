@@ -150,6 +150,10 @@ export type ProviderRuntimeEvent = EventBase &
          * session's `connectorMcpServers`; absent for anything else.
          */
         connector?: string;
+        /** The tool call it asks to run, when the provider gives it. */
+        tool?: { name: string; input: Record<string, unknown> };
+        /** The plan a plan-mode approval asks a person to accept. */
+        plan?: string;
       }
     | { type: 'request.resolved'; requestId: string; decision: ApprovalDecision }
     | {
