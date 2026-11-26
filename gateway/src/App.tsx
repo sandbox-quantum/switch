@@ -12,6 +12,7 @@ import LoginPage from "./pages/auth/LoginPage";
 import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
 import InviteCapture from "./pages/onboarding/InviteCapture";
 import OnboardingPage from "./pages/onboarding/OnboardingPage";
+import SetupGate from "./pages/onboarding/SetupGate";
 import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
 
 function FullScreen({ children }: { children: React.ReactNode }) {
@@ -92,14 +93,16 @@ export function AppRoutes() {
   }
 
   return (
-    <Routes>
-      <Route element={<PageShell />}>
-        {renderRoutes()}
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-      <Route path="/invite" element={<InviteCapture />} />
-      <Route path="/login" element={<Navigate to="/" replace />} />
-    </Routes>
+    <SetupGate>
+      <Routes>
+        <Route element={<PageShell />}>
+          {renderRoutes()}
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
+        <Route path="/invite" element={<InviteCapture />} />
+        <Route path="/login" element={<Navigate to="/" replace />} />
+      </Routes>
+    </SetupGate>
   );
 }
 

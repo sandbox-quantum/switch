@@ -1728,6 +1728,29 @@ export async function fetchMe(): Promise<Me> {
   return jsonRequest<Me>("/auth/me", "GET");
 }
 
+export interface TeamSurveyAnswers {
+  company_size: string;
+  role: string;
+  agent_count: string;
+  use_cases: string[];
+}
+
+/** "Tell us about your team": the choices, which the server keeps, and the
+ * signed-in person's answers once given. */
+export interface TeamSurvey {
+  choices: { [K in keyof TeamSurveyAnswers]: string[] };
+  answers: TeamSurveyAnswers | null;
+  answered_at: string | null;
+}
+
+export async function fetchTeamSurvey(): Promise<TeamSurvey> {
+  return jsonRequest<TeamSurvey>("/auth/me/team-survey", "GET");
+}
+
+export async function answerTeamSurvey(answers: TeamSurveyAnswers): Promise<TeamSurvey> {
+  return jsonRequest<TeamSurvey>("/auth/me/team-survey", "PUT", answers);
+}
+
 /** The license Switch is offered under; `version` changes with its text. */
 export interface LicenseText {
   version: string;
@@ -1736,6 +1759,20 @@ export interface LicenseText {
 
 export async function fetchLicense(): Promise<LicenseText> {
   return fetchJson<LicenseText>("/license");
+}
+
+export interface LicenseAcceptance {
+  version: string;
+  accepted_version: string | null;
+  accepted_at: string | null;
+}
+
+export async function fetchLicenseAcceptance(): Promise<LicenseAcceptance> {
+  return jsonRequest<LicenseAcceptance>("/auth/me/license", "GET");
+}
+
+export async function acceptLicense(version: string): Promise<LicenseAcceptance> {
+  return jsonRequest<LicenseAcceptance>("/auth/me/license", "PUT", { version });
 }
 
 export async function changeMyName(name: string): Promise<Me> {

@@ -336,8 +336,10 @@ describe("signing up", () => {
   /** A server under open sign-up: signed out until the account is made, in
    * no workspace until it makes one, then in it. Every other request answers
    * as an empty new workspace would. */
-  function openSignUp() {
+  function openSignUp(flags: FeatureFlagKey[] = ["gateway_chats"]) {
     let state: "signed_out" | "no_workspace" | "ready" = "signed_out";
+    let surveyAnswers: unknown = null;
+    let acceptedVersion: string | null = null;
     const made: TenantMembership = { ...acme, id: "t9", slug: "adas-lab", name: "Ada's Lab" };
     vi.stubGlobal(
       "fetch",
@@ -366,7 +368,16 @@ describe("signing up", () => {
                   : session({}),
               );
         if (path === "/feature-flags")
-          return json(200, { flags: [{ key: "gateway_chats", enabled: true }] });
+          return json(200, { flags: flags.map((key) => ({ key, enabled: true })) });
+        if (path === "/auth/me/team-survey") {
+          if (method === "PUT") surveyAnswers = JSON.parse(String(init?.body));
+          return json(200, { choices: surveyChoices, answers: surveyAnswers, answered_at: null });
+        }
+        if (path === "/license") return json(200, { version: "v1", text: "Software: Agent Switch" });
+        if (path === "/auth/me/license") {
+          if (method === "PUT") acceptedVersion = JSON.parse(String(init?.body)).version;
+          return json(200, { version: "v1", accepted_version: acceptedVersion, accepted_at: null });
+        }
         if (path === "/tenants/current")
           return json(200, { ...made, administers: true, can_delete: false, can_manage_data_protection: false });
         if (path === "/chats") return json(200, { chats: [] });
@@ -375,6 +386,13 @@ describe("signing up", () => {
       }),
     );
   }
+
+  const surveyChoices = {
+    company_size: ["1-10", "11-50"],
+    role: ["Platform / DevOps", "Other"],
+    agent_count: ["1-5", "6-20"],
+    use_cases: ["Internal tools", "Other"],
+  };
 
   async function signUpWithWorkspace() {
     fireEvent.click(await screen.findByRole("button", { name: "Sign up" }));
@@ -386,6 +404,28 @@ describe("signing up", () => {
     fireEvent.change(await screen.findByLabelText(/Workspace name/), { target: { value: "Ada's Lab" } });
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
   }
+
+  it("asks about the team, then for the license, where the dashboard onboards people", async () => {
+    openSignUp(["gateway_chats", "gateway_onboarding"]);
+    renderAt("/");
+    await signUpWithWorkspace();
+
+    expect(await screen.findByRole("heading", { name: "Tell us about your team" })).toBeTruthy();
+    const continueButton = screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+    expect(continueButton.disabled).toBe(true);
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Company size" })).getByRole("radio", { name: "11-50" }));
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Your role" })).getByRole("radio", { name: "Other" }));
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Number of AI agents" })).getByRole("radio", { name: "1-5" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Internal tools" }));
+    fireEvent.click(continueButton);
+
+    expect(await screen.findByRole("heading", { name: "Review the license" })).toBeTruthy();
+    expect(await screen.findByText("Software: Agent Switch")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "I have reviewed and accept the license" }));
+
+    await landsOn("/overview");
+    expect(await screen.findByRole("navigation", { name: "Main" })).toBeTruthy();
+  });
 
   it("opens Chats in the new workspace, without a reload", async () => {
     openSignUp();
