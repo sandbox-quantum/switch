@@ -82,6 +82,9 @@ spec:
         - mountPath: "/etc/squid/passwd"
           name: passwd
           readOnly: true
+        - mountPath: "/etc/squid/denylists"
+          name: denylists
+          readOnly: true
         - mountPath: "/etc/squid/reload"
           name: reload
           readOnly: true
@@ -197,6 +200,12 @@ spec:
           defaultMode: 365
           name: squid-reload
         name: reload
+      # Deny lists every box is held to, the operator's own (DEPLOY.md, "Deny lists"). Not in these files, and
+      # optional: without it no list applies.
+      - configMap:
+          name: squid-denylists
+          optional: true
+        name: denylists
       # The network reporter's own Core credential (`network_report_token`). Optional, so squid starts without it: the
       # reporter then logs that it can't send, and boxes' egress is unaffected.
       - name: network-report-core
@@ -349,7 +358,8 @@ data:
     # Each request's box, host, outcome and bytes, for the network reporter beside squid, which follows this file, sums
     # it per box every minute, sends Core one report, and keeps the file short (network_report.py). Flushed per line.
     buffered_logs off
-    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st
+    # The last field is the reason of the deny list that refused the request (DEPLOY.md, "Deny lists"), or `-` for none.
+    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st %{switch_blocked}note
     access_log stdio:/var/log/squid/box.log logformat=switch_box
     cache_log /var/log/squid/cache.log
     pinger_enable off   # the ICMP pinger needs NET_RAW, which this pod rightly lacks
@@ -384,12 +394,17 @@ data:
     # - box files (squid-boxes) are joined, in name order, into one staged file, which goes live only after a
     #   clean `squid -k parse`, by a plain rename over the live file (rename(2): atomic, and the same with
     #   GNU, BSD or busybox `mv`), so a bad file never replaces a good one. Started with a bad file, it keeps
-    #   the pod's last good file if it has one, and otherwise allows no box at all.
+    #   the pod's last good file if it has one, and otherwise allows no box at all;
+    # - deny lists (squid-denylists), one per reason (`<reason>.hosts`, `<reason>.ips`), become rules at the head of
+    #   that same staged file: after a box's login and before any box's own rules, each refusal tagged with its
+    #   reason (`switch_blocked`). They go live with it, after the same parse.
     # It checks every $poll seconds, takes checksums and counts, and never prints a file's content.
     set -u
     conf=${SQUID_CONF:-/etc/squid/conf.d/squid.conf}
     src_boxes=${SQUID_SRC_BOXES:-/etc/squid/boxes}
     src_passwd=${SQUID_SRC_PASSWD:-/etc/squid/passwd}
+    src_deny=${SQUID_SRC_DENYLISTS:-/etc/squid/denylists}
+    max_lists=32
     live=${SQUID_LIVE:-/run/squid-live}
     squid=${SQUID_BIN:-squid}
     poll=${SQUID_POLL_S:-2}
@@ -398,6 +413,37 @@ data:
     files() { find -L "$1" -type f ! -path '*/..*' 2>/dev/null | sort; }
     sig() { files "$1" | while IFS= read -r f; do cat "$f"; done 2>/dev/null | cksum; }
     count() { files "$1" | wc -l | tr -d ' '; }
+    sig_rules() { sig "$src_boxes"; sig "$src_deny"; }
+
+    # One acl, note and deny per list file, in name order (a host on two lists is tagged by the first). A file
+    # name that isn't `<reason>.hosts` or `<reason>.ips`, with a reason of lowercase letters, digits and dashes,
+    # or more than $max_lists reasons, fails the whole stage, like a box file that doesn't parse.
+    deny_rules() {
+      reasons=$(files "$src_deny" | sed 's#.*/##; s#\.[a-z]*$##' | sort -u | wc -l | tr -d ' ')
+      if [ "$reasons" -gt "$max_lists" ]; then
+        echo "squid-reload: WARN $reasons deny lists, more than $max_lists" >&2
+        return 1
+      fi
+      [ "$reasons" -gt 0 ] || return 0
+      echo "acl switch_box_login proxy_auth REQUIRED"
+      n=0
+      for f in $(files "$src_deny"); do
+        name=${f##*/}
+        case "$name" in
+          *.hosts) reason=${name%.hosts} type="dstdomain -n" ;;
+          *.ips) reason=${name%.ips} type=dst ;;
+          *) reason="" ;;
+        esac
+        if ! printf '%s\n' "$reason" | grep -Eq '^[a-z0-9][a-z0-9-]{0,31}$'; then
+          echo "squid-reload: WARN a deny list file isn't named <reason>.hosts or <reason>.ips: $name" >&2
+          return 1
+        fi
+        n=$((n + 1))
+        echo "acl switch_deny_$n $type \"$f\""
+        echo "note switch_blocked $reason switch_deny_$n"
+        echo "http_access deny switch_box_login switch_deny_$n"
+      done
+    }
 
     apply_logins() {
       # A missing or unreadable file gives an empty one: no login works, so nothing is allowed.
@@ -413,7 +459,10 @@ data:
         cat "$src_boxes/_none.conf" > "$live/boxes.conf.new" 2>/dev/null || : > "$live/boxes.conf.new"
       else
         # Only the .conf files: a box's .list files are the host lists its .conf names by path, not squid config.
-        files "$src_boxes" | grep '\.conf$' | while IFS= read -r f; do cat "$f" && echo || exit 1; done > "$live/boxes.conf.new"
+        (
+          deny_rules || exit 1
+          files "$src_boxes" | grep '\.conf$' | while IFS= read -r f; do cat "$f" && echo || exit 1; done
+        ) > "$live/boxes.conf.new"
       fi
     }
 
@@ -435,7 +484,7 @@ data:
     mkdir -p "$live"
     # Checksums first, then the copies: a change made while copying is seen as a change on the next check.
     last_logins=$(sig "$src_passwd")
-    last_boxes=$(sig "$src_boxes")
+    last_boxes=$(sig_rules)
     apply_logins
     failing_since=""
     warned=0
@@ -459,7 +508,7 @@ data:
         kill -HUP "$pid" && echo "squid-reload: logins changed, applied and reloaded"
         last_logins=$now
       fi
-      now=$(sig "$src_boxes")
+      now=$(sig_rules)
       if [ "$now" != "$last_boxes" ]; then
         if stage && parses; then
           go_live

@@ -23,9 +23,14 @@ OLD = "k1-fedcba9876543210"
 
 
 def line(
-    login: str, host: str, status: str = "TCP_TUNNEL/200", up: int = 100, down: int = 1000
+    login: str,
+    host: str,
+    status: str = "TCP_TUNNEL/200",
+    up: int = 100,
+    down: int = 1000,
+    tag: str = "-",
 ) -> str:
-    return f"1795680000.123 {login} {status} {host} 443 {up} {down}"
+    return f"1795680000.123 {login} {status} {host} 443 {up} {down} {tag}"
 
 
 def test_a_line_names_its_box_by_either_login_and_counts_a_refusal() -> None:
@@ -146,3 +151,25 @@ def test_a_proxy_login_challenge_is_not_a_refusal() -> None:
     _, _, refused = parse(line(f"box-{BOX}", "github.com", status="TCP_DENIED/403"))
     _, _, older = parse(line(f"box-{BOX}", "github.com", status="TCP_DENIED"))
     assert (challenge.denied, refused.denied, older.denied) == (0, 1, 1)
+
+
+def test_refusals_are_counted_by_the_reason_of_the_list_that_refused_them() -> None:
+    agg = Aggregator()
+    ids = HostIds()
+    agg.add_line(
+        line(f"box-{BOX}", "blocked.example", tag="ours", status="TCP_DENIED/403", up=0, down=0)
+    )
+    agg.add_line(
+        line(f"box-{BOX}", "bad.example", tag="malware", status="TCP_DENIED/403", up=0, down=0)
+    )
+    agg.add_line(
+        line(f"box-{BOX}", "bad.example", tag="malware", status="TCP_DENIED/403", up=0, down=0)
+    )
+    agg.add_line(line(f"box-{BOX}", "github.com"))
+    agg.add_line(line(f"box-{BOX}", "odd.example", tag="Not_A_Reason"))
+    [box] = report_body(agg.take(), 60, 0, ids)["boxes"]
+    assert (box["requests"], box["denied"]) == (5, 3)
+    assert box["blocked"] == {"ours": 1, "malware": 2}
+    by_host = {h["host"]: h for h in box["hosts"]}
+    assert by_host[ids.of("bad.example:443")]["blocked"] == {"malware": 2}
+    assert by_host[ids.of("github.com:443")]["blocked"] == {}

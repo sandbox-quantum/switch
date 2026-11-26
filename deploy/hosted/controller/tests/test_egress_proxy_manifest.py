@@ -242,8 +242,10 @@ class Wrapper:
             tmp_path / "passwd",
             tmp_path / "live",
         )
+        self.src_deny = tmp_path / "denylists"
         self.src_boxes.mkdir()
         self.src_passwd.mkdir()
+        self.src_deny.mkdir()
         (self.src_boxes / "_none.conf").write_text("# No box yet: nothing is allowed.\n")
         self.set_boxes(boxes)
         if passwd is not None:
@@ -261,6 +263,7 @@ class Wrapper:
             "SQUID_CONF": str(conf),
             "SQUID_SRC_BOXES": str(self.src_boxes),
             "SQUID_SRC_PASSWD": str(self.src_passwd),
+            "SQUID_SRC_DENYLISTS": str(self.src_deny),
             "SQUID_LIVE": str(self.live),
             "SQUID_BIN": str(squid),
             "SQUID_POLL_S": "0.1",
@@ -292,6 +295,15 @@ class Wrapper:
             os.replace(staged, self.src_boxes / name)
         for old in self.src_boxes.iterdir():
             if old.name != "_none.conf" and old.name not in boxes:
+                old.unlink()
+
+    def set_denylists(self, lists: dict[str, str]) -> None:
+        for name, text in lists.items():
+            staged = self.src_deny.parent / f".{name}.tmp"
+            staged.write_text(text)
+            os.replace(staged, self.src_deny / name)
+        for old in self.src_deny.iterdir():
+            if old.name not in lists:
                 old.unlink()
 
     def set_passwd(self, text: str) -> None:
@@ -612,3 +624,43 @@ def test_squid_parses_the_config_with_open_box_files(tmp_path: Path) -> None:
 )
 def test_ipv6_forms_that_carry_an_ipv4_address_are_blocked(written: str) -> None:
     assert _blocked(written)
+
+
+def test_deny_lists_go_first_each_tagged_with_its_reason(wrapper) -> None:  # type: ignore[no-untyped-def]
+    """Each list file becomes one acl, note and deny, ahead of every box's own rules, so no box's list can let
+    a listed host through, and the refusal is logged with the list's reason."""
+    w = wrapper(GOOD, f"{HASH_ADA}\n")
+    assert "switch_box_login" not in (w.live / "boxes.conf").read_text()  # no list, no rule
+    w.set_denylists(
+        {
+            "malware.ips": "198.51.100.1\n",
+            "ours.hosts": ".example.org\n",
+            "ours.ips": "203.0.113.0/24\n",
+        }
+    )
+    w.until(lambda: "switch_deny_" in (w.live / "boxes.conf").read_text())
+    lines = (w.live / "boxes.conf").read_text().splitlines()
+    rules = lines[
+        : lines.index("http_access allow ada") if "http_access allow ada" in lines else None
+    ]
+    assert rules[:4] == [
+        "acl switch_box_login proxy_auth REQUIRED",
+        f'acl switch_deny_1 dst "{w.src_deny}/malware.ips"',
+        "note switch_blocked malware switch_deny_1",
+        "http_access deny switch_box_login switch_deny_1",
+    ]
+    assert f'acl switch_deny_2 dstdomain -n "{w.src_deny}/ours.hosts"' in rules
+    assert "note switch_blocked ours switch_deny_3" in rules
+    assert w.live_boxes() == {"_none.conf", "ada.conf", "bob.conf"}
+    assert "example.org" not in w.output()  # never a list's content
+
+
+def test_a_badly_named_deny_list_keeps_the_last_good_config(wrapper) -> None:  # type: ignore[no-untyped-def]
+    w = wrapper(GOOD, f"{HASH_ADA}\n")
+    w.set_denylists({"malware.ips": "198.51.100.1\n"})
+    w.until(lambda: "switch_deny_1" in (w.live / "boxes.conf").read_text())
+    w.set_denylists({"malware.ips": "198.51.100.1\n", "Bad Reason.ips": "203.0.113.7\n"})
+    w.until(lambda: "isn't named <reason>.hosts or <reason>.ips" in w.output())
+    w.until(lambda: "WARN box files failed squid -k parse" in w.output())
+    live = (w.live / "boxes.conf").read_text()
+    assert "note switch_blocked malware switch_deny_1" in live and "203.0.113.7" not in live

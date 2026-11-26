@@ -151,6 +151,30 @@ login is refused them, so every AI call goes through the controller's gateway an
 `false` to go back to the per-box allow-lists (`egress-settings`' parts), which are still read and checked either
 way.
 
+**Deny lists (`squid-denylists`, optional).** Hosts and addresses no box may reach, whatever its own list or the open
+web allows, each list named by its reason. They are the operator's, not in these files: a ConfigMap
+`squid-denylists` in `egress-proxy`, one key per list file, `<reason>.hosts` (one host per line: `example.com` for
+that host, `.example.com` with its subdomains) and/or `<reason>.ips` (one address or range per line). A reason is
+lowercase letters, digits and dashes, at most 32 characters; at most 32 lists. For example:
+
+```bash
+kubectl -n egress-proxy create configmap squid-denylists \
+  --from-literal=ours.hosts=$'.example.org\n' --from-literal=ours.ips=$'203.0.113.0/24\n' \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+squid's reload wrapper turns each file into a rule checked after a box's login and before any box's own rules, and
+applies a change within seconds, after a clean `squid -k parse`, as it does box files; a badly named file or a list
+that fails the parse keeps the last good config, with a `squid-reload: WARN` line. A refused request gets a 403 and
+is tagged with its list's reason; the network reporter counts it per box (`blocked`, by reason, with the host's
+random id), and the monitor "a hosted box asked for a blocked host" alerts on any. No list, no rule.
+
+Lists of one sentinel address each are how a DNS-level block becomes a counted one. Where the box cluster's VPC
+answers a blocked name with a fixed address instead (Route 53 Resolver DNS Firewall, with an override per list), a
+list `<reason>.ips` holding that address refuses the request and counts it per box under that reason. squid does
+every lookup for the boxes, so the block is tied to the box, and no hostname leaves squid's pod. Create the lists
+before turning such a block on: until then a blocked name just fails to connect, uncounted.
+
 **How fast a box gets egress.** egress-lists reads the box map and settings every 3 s and rewrites squid's files
 when they change. squid's wrapper checks its mounted files every 2 s: logins apply at once (a removed box loses its
 login within seconds, as squid re-checks a login every 10 s), and box files go live only after a clean
