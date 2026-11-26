@@ -23,9 +23,14 @@ OLD = "k1-fedcba9876543210"
 
 
 def line(
-    login: str, host: str, status: str = "TCP_TUNNEL/200", up: int = 100, down: int = 1000
+    login: str,
+    host: str,
+    status: str = "TCP_TUNNEL/200",
+    up: int = 100,
+    down: int = 1000,
+    tag: str = "-",
 ) -> str:
-    return f"1795680000.123 {login} {status} {host} 443 {up} {down}"
+    return f"1795680000.123 {login} {status} {host} 443 {up} {down} {tag}"
 
 
 def test_a_line_names_its_box_by_either_login_and_counts_a_refusal() -> None:
@@ -152,12 +157,11 @@ def test_a_deny_list_refusal_is_counted_for_its_box_and_host() -> None:
     agg = Aggregator()
     ids = HostIds()
     agg.add_line(
-        line(f"box-{BOX}", "blocked.example", status="TCP_DENIED/403", up=0, down=0) + " yes"
+        line(f"box-{BOX}", "blocked.example", status="TCP_DENIED/403", up=0, down=0, tag="yes")
     )
-    agg.add_line(line(f"box-{BOX}", "github.com") + " -")
-    agg.add_line(line(f"box-{BOX}", "github.com"))  # an older squid config, without the field
+    agg.add_line(line(f"box-{BOX}", "github.com"))
     [box] = report_body(agg.take(), 60, 0, ids)["boxes"]
-    assert (box["requests"], box["denied"], box["denylisted"]) == (3, 1, 1)
+    assert (box["requests"], box["denied"], box["denylisted"]) == (2, 1, 1)
     by_host = {h["host"]: h for h in box["hosts"]}
     assert by_host[ids.of("blocked.example:443")]["denylisted"] == 1
     assert by_host[ids.of("github.com:443")]["denylisted"] == 0

@@ -118,8 +118,6 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
     """(box id or None, host:port, one request's totals) from one `switch_box` line; None for a line that isn't
     one."""
     parts = line.split()
-    if len(parts) == 7:
-        parts.append("-")
     if len(parts) != 8:
         return None
     _, login, status, host, port, up, down, listed = parts
