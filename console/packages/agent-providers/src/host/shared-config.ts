@@ -47,6 +47,11 @@ export const sharedConfigSchema = z.strictObject({
    * Absent from every other session, and from configurations written before it.
    */
   importHistory: z.boolean().optional(),
+  /**
+   * Written only by a controller in box mode. The host takes box mode from the box image's marker alone; this can
+   * only make a host refuse to start where the marker is missing (`hostBoxMode`), never turn box mode off.
+   */
+  box: z.literal(true).optional(),
   execution: z
     .strictObject({
       credentialsPath: z.string().min(1),

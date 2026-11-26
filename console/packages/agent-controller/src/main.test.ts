@@ -3,7 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
-import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
+import {
+  boxModeFrom,
+  infoChange,
+  installerFor,
+  isSupervised,
+  main,
+  planServiceReleases,
+} from './main';
 import { dataLayout } from './paths';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import { ReleasesDirInstaller } from './self-update';
@@ -433,5 +440,31 @@ describe.skipIf(process.platform === 'win32')('planServiceReleases', () => {
     await expect(planServiceReleases(cliIn(join(other, '0.31.0')), own)).rejects.toThrow(
       /releases directory of another setup/
     );
+  });
+});
+
+describe('box mode', () => {
+  it('refuses a box image without --box, and --box outside one, for every command', async () => {
+    for (const command of ['run', 'enroll', 'status']) {
+      expect(await main([command, '--box'], false)).toBe(EXIT_CONFIGURATION);
+      expect(lastLine()).toBe(
+        'switch-agent-controller: --box is only for the box image, which this is not.'
+      );
+      expect(await main([command], true)).toBe(EXIT_CONFIGURATION);
+      expect(lastLine()).toBe(
+        'switch-agent-controller: This is a box image: the controller runs here only in box mode (--box).'
+      );
+    }
+  });
+
+  it('takes --box out of the arguments, and leaves desktop and v1 arguments as they are', () => {
+    expect(boxModeFrom(['--data-dir', '/data', '--box', '--updated-by-console'], true)).toEqual({
+      box: true,
+      rest: ['--data-dir', '/data', '--updated-by-console'],
+    });
+    expect(boxModeFrom(['--data-dir', '/data'], false)).toEqual({
+      box: false,
+      rest: ['--data-dir', '/data'],
+    });
   });
 });

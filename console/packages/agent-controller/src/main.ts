@@ -5,11 +5,14 @@ import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   cliToolsBase,
+  BoxModeMismatch,
   generateSealingKeyPair,
+  insideBox,
   isProviderRecheckRequest,
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
+  resolveControllerBoxMode,
   windowsRegistryPath,
   withWindowsPathEntries,
 } from '@switch-console/agent-providers';
@@ -500,7 +503,7 @@ async function precheckCommand(args: string[]): Promise<number> {
   return EXIT_OK;
 }
 
-async function runCommand(args: string[]): Promise<number> {
+async function runCommand(args: string[], box = false): Promise<number> {
   const { values } = parseArgs({
     args,
     options: {
@@ -548,6 +551,8 @@ async function runCommand(args: string[]): Promise<number> {
     level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
     write: (line) => process.stderr.write(line),
   });
+  // Box mode turns on only the box's own behaviour; with it off, this controller runs exactly as before.
+  if (box) log.info('Running in box mode.');
   // Read again on every provider recheck, so a CLI installed since start is found.
   const refreshPath = pathRefresher(log);
   await refreshPath();
@@ -1221,14 +1226,33 @@ async function updateCommand(args: string[]): Promise<number> {
   return EXIT_OK;
 }
 
-export async function main(argv: string[]): Promise<number> {
-  const [command, ...rest] = argv;
+/**
+ * Box mode (`box-mode.ts` in agent-providers), from `--box` anywhere on the command line and the box image's marker,
+ * for every command: either without the other refuses. Returns the arguments without `--box`, so each command's own
+ * parsing is as it was.
+ */
+export function boxModeFrom(
+  args: string[],
+  inBox: boolean = insideBox()
+): { box: boolean; rest: string[] } {
+  const rest = args.filter((arg) => arg !== '--box');
   try {
+    return { box: resolveControllerBoxMode(rest.length !== args.length, inBox), rest };
+  } catch (error) {
+    if (error instanceof BoxModeMismatch) throw new UsageError(error.message);
+    throw error;
+  }
+}
+
+export async function main(argv: string[], inBox: boolean = insideBox()): Promise<number> {
+  const [command, ...given] = argv;
+  try {
+    const { box, rest } = boxModeFrom(given, inBox);
     switch (command) {
       case 'enroll':
         return await enrollCommand(rest);
       case 'run': {
-        const code = await runCommand(rest).catch((error: unknown) => {
+        const code = await runCommand(rest, box).catch((error: unknown) => {
           reportFailure(error);
           return exitCodeFor(error);
         });

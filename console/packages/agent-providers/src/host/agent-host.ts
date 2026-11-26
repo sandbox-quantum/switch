@@ -686,13 +686,21 @@ export type OpenAgentStream = (deps: AgentStreamDeps) => AgentEventStream;
 /** The watcher's own connection to Switch, with the agent's credentials. */
 export const openSwitchStream: OpenAgentStream = (deps) => new SwitchEventStream(deps);
 
+/** What the agent host is told about how it runs. */
+export interface HostModeOptions {
+  /** Inside a box (`box-mode.ts`): only box-only behaviour branches on this. */
+  box: boolean;
+}
+
 export async function runAgentHost(
   root: string,
   template: SharedHostConfig,
   signal: AbortSignal,
   supervision: Supervision,
   control: WatcherControl,
-  openStream: OpenAgentStream
+  openStream: OpenAgentStream,
+  // Box mode (`box-mode.ts`), passed down from `shared-daemon`; desktop and v1 run with `box: false`.
+  _options: HostModeOptions = { box: false }
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
   const owner = { pid: process.pid, token: randomUUID() };

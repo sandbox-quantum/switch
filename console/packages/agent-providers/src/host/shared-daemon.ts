@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { hostBoxMode, insideBox } from '../box-mode';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import {
@@ -118,6 +119,8 @@ async function main(): Promise<void> {
     return;
   }
   const config = sharedConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
+  // Box mode, read once here and passed down (`box-mode.ts`). A host configured for a box outside one refuses.
+  const box = hostBoxMode(config.box === true, insideBox());
   if (mode === '--ensure' || mode === '--ensure-watch' || mode === '--restart') {
     console.log(
       JSON.stringify(
@@ -212,7 +215,8 @@ async function main(): Promise<void> {
           stop.signal,
           supervision,
           control,
-          hub ? openHubStream(hub) : openSwitchStream
+          hub ? openHubStream(hub) : openSwitchStream,
+          { box }
         ).finally(() => stop.abort()),
         serveControl(resolve(root), context, stop.signal),
       ]);
@@ -272,6 +276,7 @@ async function main(): Promise<void> {
         services,
         servicesChange,
         entrypoint: process.argv[1]!,
+        box,
         port: process,
         authenticate:
           config.start.provider === 'claude'

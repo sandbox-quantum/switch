@@ -97,3 +97,21 @@ def test_any_other_exit_is_passed_on_with_no_new_enrolment(tmp_path: Path, rc: i
     assert done.returncode == rc
     assert calls == ["run"]
     assert (tmp_path / "data" / "controller" / "state" / "identity").exists()
+
+
+def test_every_controller_command_the_entrypoint_runs_is_in_box_mode():
+    """The controller refuses to run in a box without --box (box-mode.ts), so every command here passes it."""
+    text = ENTRYPOINT.read_text()
+    commands = [line for line in text.splitlines() if "switch-agent-controller " in line or '"$cli" run' in line]
+    controller_calls = [c for c in commands if not c.lstrip().startswith(("#", "cli="))]
+    assert controller_calls, "no controller command found"
+    for line in controller_calls:
+        assert "--box" in line, line
+
+
+def test_the_image_carries_the_box_marker_root_owned_and_read_only():
+    dockerfile = (ENTRYPOINT.parent / "Dockerfile").read_text()
+    assert "> /etc/switch/box" in dockerfile
+    assert "chown 0:0 /etc/switch/box && chmod 0444 /etc/switch/box" in dockerfile
+    # Made before the image drops to the box's own user, so the user can't own it.
+    assert dockerfile.index("/etc/switch/box") < dockerfile.index("USER 2000:2000")
