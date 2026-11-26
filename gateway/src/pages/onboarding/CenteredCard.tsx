@@ -1,10 +1,10 @@
-import { Alert, Box, Button, Card, Stack, Typography } from "@mui/material";
+import "@switch-console/chat-ui/theme.css";
+import { Alert } from "@switch-console/chat-ui/primitives/alert";
+import { Button } from "@switch-console/chat-ui/primitives/button";
 import { type ReactNode, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
 import LinkNoticeBanner from "../../layout/LinkNoticeBanner";
 
-/** The layout the sign-in page uses, for the screens a signed-in person sees
- * before they are in a workspace. */
 export default function CenteredCard({
   title,
   subtitle,
@@ -15,7 +15,6 @@ export default function CenteredCard({
   children: ReactNode;
 }) {
   const { user, logout } = useAuth();
-  // A sign-out that works leaves this screen; one that fails says so.
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const signOut = async () => {
     setSignOutError(null);
@@ -26,42 +25,28 @@ export default function CenteredCard({
     }
   };
   return (
-    <Box
-      sx={{
-        display: "flex",
-        minHeight: "100vh",
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "var(--sw-canvas)",
-        py: 4,
-      }}
-    >
-      <Card sx={{ width: 420, p: 4, boxShadow: "var(--sw-shadow-surface)" }}>
-        <Typography variant="h6" sx={{ mb: 0.5 }}>
-          {title}
-        </Typography>
-        <Typography variant="body2" sx={{ mb: 3, color: "text.secondary" }}>
-          {subtitle}
-        </Typography>
+    <div className="flex min-h-screen items-center justify-center bg-background py-4">
+      <div className="w-full max-w-md space-y-6 rounded-lg border border-border bg-background p-8 shadow-lg">
+        <div>
+          <h1 className="text-xl font-semibold text-foreground">{title}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+        </div>
         <LinkNoticeBanner />
         {children}
-        <Stack
-          direction="row"
-          sx={{ mt: 3, alignItems: "center", justifyContent: "space-between" }}
-        >
-          <Typography variant="caption" sx={{ color: "text.secondary" }} noWrap>
+        <div className="flex items-center justify-between pt-3 text-sm">
+          <span className="truncate text-muted-foreground">
             {user ? `Signed in as ${user.email}` : ""}
-          </Typography>
-          <Button size="small" color="inherit" onClick={() => void signOut()}>
+          </span>
+          <Button variant="ghost" size="sm" onClick={() => void signOut()}>
             Sign out
           </Button>
-        </Stack>
+        </div>
         {signOutError && (
-          <Alert severity="error" sx={{ mt: 2, overflowWrap: "anywhere" }}>
+          <Alert variant="destructive" className="mt-2 break-words">
             {signOutError}
           </Alert>
         )}
-      </Card>
-    </Box>
+      </div>
+    </div>
   );
 }

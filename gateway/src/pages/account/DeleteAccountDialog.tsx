@@ -16,11 +16,18 @@ import {
 } from "@mui/material";
 import { useEffect, useId, useRef, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
-import { ApiError, accountDeletionRefusal, deleteMyAccount } from "../../data/api";
+import {
+  ApiError,
+  accountDeletionRefusal,
+  deleteMyAccount,
+  resetTestAccount,
+} from "../../data/api";
 
 interface Props {
   open: boolean;
   email: string;
+  /** `reset`: the test-server variant, which wipes everything the account owns, as Console's does. */
+  mode: "delete" | "reset";
   onClose: () => void;
 }
 
@@ -42,7 +49,8 @@ function messageOf(err: unknown): string {
  * form; anything that changes in between, the deletion still refuses, and its
  * reason shows the same way. Once the account is gone this browser is signed
  * out like any other sign-out. */
-export default function DeleteAccountDialog({ open, email, onClose }: Props) {
+export default function DeleteAccountDialog({ open, email, mode, onClose }: Props) {
+  const reset = mode === "reset";
   const { logout } = useAuth();
   const descriptionId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -83,7 +91,8 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
     setDeleting(true);
     setError(null);
     try {
-      await deleteMyAccount(typed.trim());
+      if (reset) await resetTestAccount(typed.trim());
+      else await deleteMyAccount(typed.trim());
       setDeleted(true);
     } catch (err) {
       // A refusal, something that changed since the dialog opened, takes the
@@ -132,7 +141,13 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
     >
       {/* The design system's modal, as `ConfirmDialog` draws it. */}
       <DialogTitle sx={{ fontSize: "1.0625rem", fontWeight: 600, pt: 3, pr: 8, pb: 0.5 }}>
-        {deleted ? "Your account is deleted" : "Delete your account"}
+        {deleted
+          ? reset
+            ? "Your test account is reset"
+            : "Your account is deleted"
+          : reset
+            ? "Reset your test account"
+            : "Delete your account"}
       </DialogTitle>
       <IconButton
         ref={closeRef}
@@ -166,15 +181,10 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
           </Alert>
         ) : (
           <>
-            <DialogContentText
-              id={descriptionId}
-              sx={{ fontSize: "0.875rem", lineHeight: "20px" }}
-            >
-              {email} will be removed from every workspace you're in. The agents you own stop and
-              are deleted, along with your devices, resources, templates and connector accounts.
-              Rooms you created stay, and so do your messages, under the name "Former member". A
-              workspace only you are in is deleted too, unless something is still in it, such as a
-              room. This can't be undone.
+            <DialogContentText id={descriptionId} sx={{ fontSize: "0.875rem", lineHeight: "20px" }}>
+              {reset
+                ? `For test accounts only. Everything ${email} has here is wiped: messaging app installs are disconnected, and its agents, devices, rooms, workspaces and organization are deleted, then the account itself. Signing in again with it starts as someone new. This can't be undone.`
+                : `${email} will be removed from every workspace you're in. The agents you own stop and are deleted, along with your devices, resources, templates and connector accounts. Rooms you created stay, and so do your messages, under the name "Former member". A workspace only you are in is deleted too, unless something is still in it, such as a room. This can't be undone.`}
             </DialogContentText>
             {check.state === "unchecked" && (
               <Alert severity="warning" sx={{ mt: 2, overflowWrap: "anywhere" }}>
@@ -229,7 +239,7 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
                 },
               }}
             >
-              Delete account
+              {reset ? "Reset test account" : "Delete account"}
             </Button>
           </>
         )}
