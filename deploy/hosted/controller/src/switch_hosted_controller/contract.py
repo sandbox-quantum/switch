@@ -324,6 +324,9 @@ class Cluster:
     def call(
         self, method: str, path: str, body: Any = None, content_type: str | None = None
     ) -> Any:
+        if not self.account:
+            # Every call is some service's: one made outside `acting` would be granted to nobody.
+            raise RuntimeError(f"a call outside any service's account: {method} {path}")
         target = parse_path(path)
         dry = "dryRun=All" in path
         verb = _VERB.get(method) or ("get" if target.name else "list")
@@ -643,16 +646,17 @@ def run_services() -> Cluster:
         lambda method, path, body=None, **_: cluster.call(method, path, body)
     )
     box = egress_lists.BoxEgress(namespace=base, parts=(), split=True)
-    ensured = egress_lists._ensure_login(
-        egress,
-        box,
-        f"{PROXY_HOST}:{PROXY_PORT}",
-        {},
-        lambda: "contract-password",
-        lambda: "contractsalt",
-    )
-    assert ensured is not None
+    # The read of the box's current login is the generator's own call too, so it's on its account.
     with cluster.acting(ACCOUNT["egress_lists"], "egress lists: a box's proxy login written"):
+        ensured = egress_lists._ensure_login(
+            egress,
+            box,
+            f"{PROXY_HOST}:{PROXY_PORT}",
+            {},
+            lambda: "contract-password",
+            lambda: "contractsalt",
+        )
+        assert ensured is not None
         egress.set_login(base, ensured[0])
     # Its reads, and its two writes in egress-proxy (with placeholder content: the real allow lists stay out).
     for path, obj in (

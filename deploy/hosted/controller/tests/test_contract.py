@@ -88,6 +88,13 @@ def test_every_box_tier_has_its_good_requests(files):
     assert all(d["expect"] == "allow" for d in good.values())
 
 
+def test_every_recorded_call_is_a_services(files):
+    """No call is recorded outside a service's account, where no grant could cover it."""
+    calls = json.loads(files["rbac.json"])["calls"]
+    assert "" not in calls
+    assert all(account.startswith("system:serviceaccount:") for account in calls)
+
+
 def test_each_good_request_is_one_its_account_made(files):
     rbac = json.loads(files["rbac.json"])["calls"]
     for name, data in files.items():

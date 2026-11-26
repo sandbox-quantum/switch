@@ -1,16 +1,6 @@
 {
   "box_namespace": "^agents-(user|box)-k1-[0-9a-f]{16}$",
   "calls": {
-    "": [
-      {
-        "group": "",
-        "name": "switch-proxy-login",
-        "namespace": "(box)",
-        "resource": "secrets",
-        "subresource": "",
-        "verb": "get"
-      }
-    ],
     "system:serviceaccount:egress-lists:egress-lists": [
       {
         "group": "",
