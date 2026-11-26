@@ -764,6 +764,18 @@ version of their own to them without also giving them a release of their own.
   no refresh, so Switch does not use it. Every connection can write: a
   sign-in asks for `api`, and GitLab's MCP server lets a token write even
   without it.
+- **The Asana connection.** A person connects Asana from Switch Console, and a
+  granted agent works with tasks, projects, comments and status updates, as
+  that person, through Asana's MCP server (`https://mcp.asana.com/v2/mcp`).
+  The first version of that server registered clients dynamically and was shut
+  down on 17 November 2026; the second has no registration endpoint, so each
+  server's operator registers an MCP app in Asana's developer console and
+  saves it under Connector apps or names it in `ASANA_CLIENT_CONFIG_PATH`
+  (Helm: `switchCore.asanaClientSecret`). Asana has no scopes for MCP apps, so
+  the entry is `access.unscoped` and every connection can write. The person's
+  account comes from the `get_me` tool. Access tokens last an hour and one
+  refresh token renews them. Disconnecting revokes the refresh token, which
+  also ends the access token.
 - **switch-core counts controller reconnects.** `switch.controllers.connections`
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn

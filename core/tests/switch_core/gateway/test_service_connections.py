@@ -146,14 +146,14 @@ class TestConnections:
         assert entries["atlassian"]["mcp_urls"] == ["https://mcp.atlassian.com/v2/mcp"]
         # No workspace switch on this server: nobody decided, it reads as on.
         assert (github["organization_locked"], github["decided_by"]) == (False, None)
-        asana = entries["asana"]
-        assert (asana["pass_through"], asana["token_lifetime"]) == (False, None)
-        assert asana["configured"] is False
-        assert asana["unavailable_code"] == "coming_soon"
-        assert asana["enabled"] is False
-        assert asana["connectable"] is False
-        assert asana["status"] == "not_connected"
-        assert (asana["method"], asana["choices"]) == (None, None)
+        amplitude = entries["amplitude"]
+        assert (amplitude["pass_through"], amplitude["token_lifetime"]) == (False, None)
+        assert amplitude["configured"] is False
+        assert amplitude["unavailable_code"] == "coming_soon"
+        assert amplitude["enabled"] is False
+        assert amplitude["connectable"] is False
+        assert amplitude["status"] == "not_connected"
+        assert (amplitude["method"], amplitude["choices"]) == (None, None)
         atlassian = entries["atlassian"]
         assert (atlassian["pass_through"], atlassian["token_lifetime"]) == (
             True,
@@ -162,7 +162,7 @@ class TestConnections:
         assert atlassian["loopback_ports"] == [39231, 39232, 39233, 39234, 39235]
         # Their own connection is theirs to disconnect; there is nothing to
         # disconnect where they have none.
-        assert (github["can_revoke"], asana["can_revoke"]) == (True, False)
+        assert (github["can_revoke"], amplitude["can_revoke"]) == (True, False)
         assert atlassian["agent_access_note"] is None
         assert "hour after each sign-in" in entries["sentry"]["agent_access_note"]
 
@@ -326,11 +326,11 @@ class TestGrants:
         owner = await add_member(harness.session_factory, "ada")
         agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
 
-        asana = await _put(harness, owner, agent_id, {"resources": {}}, "asana")
+        amplitude = await _put(harness, owner, agent_id, {"resources": {}}, "amplitude")
         unknown = await _put(harness, owner, agent_id, {"resources": {}}, "nowhere")
 
-        assert asana.status_code == 422
-        assert asana.json()["detail"] == "Not available yet."
+        assert amplitude.status_code == 422
+        assert amplitude.json()["detail"] == "Not available yet."
         assert unknown.status_code == 404
 
     async def test_tools_and_resources_outside_the_grant(
@@ -760,7 +760,7 @@ class TestYourAgents:
         response = await _agents(harness, member)
         assert (response.status_code, response.json()) == (200, [])
 
-    @pytest.mark.parametrize("service", ["nowhere", "asana"])
+    @pytest.mark.parametrize("service", ["nowhere", "amplitude"])
     async def test_an_unknown_or_placeholder_service_is_not_found(
         self, harness: Harness, service: str
     ) -> None:

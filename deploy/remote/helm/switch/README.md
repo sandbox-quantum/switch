@@ -337,6 +337,7 @@ place of the dashboard's Connectors page:
 switchCore:
   airtableClientSecret: switch-airtable-client         # AIRTABLE_CLIENT_CONFIG_PATH
   gitlabClientSecret: switch-gitlab-client             # GITLAB_CLIENT_CONFIG_PATH
+  asanaClientSecret: switch-asana-client               # ASANA_CLIENT_CONFIG_PATH
   googleWorkspaceClientSecret: switch-google-client    # GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH
 ```
 

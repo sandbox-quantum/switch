@@ -22,6 +22,8 @@ switchCore:
   allowNonExpiringKeys: true
   # Rendered so the GitLab client's env var, mount and volume are checked.
   gitlabClientSecret: render-check-gitlab-client
+  # Rendered so the Asana client's env var, mount and volume are checked.
+  asanaClientSecret: render-check-asana-client
   # Reporting on, so the OTLP settings switch-core and the decision service
   # share are rendered too.
   observability:
