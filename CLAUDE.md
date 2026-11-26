@@ -166,7 +166,34 @@ Concrete rules:
 
 ## Testing
 
-Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pytest with pytest-asyncio. Store tests should run against a real PostgreSQL instance — not mocks, not SQLite.
+Prefer tests that check what Switch promises over tests that check how one
+function does it. In order of preference, when the behaviour is more than one
+function's:
+
+1. **A property**: a claim in `properties/catalog/`, checked by a Hypothesis
+   machine on real Postgres (`core/tests/switch_core/properties/`), a Quint
+   model (`properties/specs/`), or a pure property over many generated inputs.
+   Reach for one when the behaviour crosses processes, tenants, the bridge,
+   the message bus, leases or retries. The bugs there are orderings and
+   interleavings that no hand-written case thinks of.
+2. **An end-to-end scenario**: the fast lane in `console/tooling-e2e/src/fast/`
+   (`just e2e-fast`), against a real stack, for a user-visible flow across
+   the gateway, core and a platform.
+3. **A unit test**: for pure logic (parsing, mapping, formatting, error
+   classification), or as a quick regression pin beside one of the above.
+
+This is a preference, not a rule. A one-line fix with an obvious unit test
+does not need a state machine. But a fix for a race, a lost or duplicated
+message, a cross-tenant read or a stale cache should come with a check that
+would have found it.
+
+A new checker counts only once it has been seen to fail: plant the bug it is
+meant to catch, see it fail, and revert. Say what you planted in the PR.
+
+Tests live in `core/tests/switch_core/`, mirroring the module structure, and
+use pytest with pytest-asyncio. Tests that touch the database run against a
+real PostgreSQL instance, not mocks and not SQLite. For how to write and run
+each kind, use the `testing` skill (`.claude/skills/testing/SKILL.md`).
 
 ## Reference Documentation
 
