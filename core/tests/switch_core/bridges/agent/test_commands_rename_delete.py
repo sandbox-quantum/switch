@@ -12,6 +12,7 @@ so each test can say exactly what the command asked for.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,6 +24,7 @@ from switch_core.bridges.agent.commands import (
     COMMANDS_BY_NAME,
     _cmd_delete_agent,
     _cmd_rename_agent,
+    _cmd_tool_details,
 )
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentDeletionResult,
@@ -34,6 +36,7 @@ from switch_core.clients.agent_admin import AgentDeletionRequests
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    AgentSessionActivityItem,
     AuditEvent,
     Client,
     CollaborationBridge,
@@ -518,3 +521,92 @@ class TestRegistration:
         spec = COMMANDS_BY_NAME["rename-agent"].args_spec
         assert [arg.name for arg in spec] == ["agent", "new_name", "display_name"]
         assert spec[-1].free_text and not spec[-1].required
+
+
+async def _tool_details(world: _World, args: str, sender: str) -> None:
+    await _cmd_tool_details(
+        world.host,  # type: ignore[arg-type]
+        _ROOM,  # type: ignore[arg-type]
+        _event("tool-details", args, sender),
+        False,
+    )
+
+
+async def _agent_setting(world: _World) -> bool | None:
+    async with world.session_factory() as session:
+        agent = await AgentStore().get(session, world.agent_id)
+        assert agent is not None
+        return agent.tool_details
+
+
+class TestToolDetailsForAnAgent:
+    async def test_an_agent_starts_with_it_unset(self, world: _World) -> None:
+        await _tool_details(world, "@notes-taker", world.stranger_chat)
+
+        assert await _agent_setting(world) is None
+        assert "not set" in world.replies[0]
+
+    async def test_the_owner_turns_it_on_and_off(self, world: _World) -> None:
+        await _tool_details(world, "@notes-taker on", world.owner_chat)
+        assert await _agent_setting(world) is True
+        assert "**on**" in world.replies[-1]
+
+        await _tool_details(world, "@notes-taker off", world.owner_chat)
+        assert await _agent_setting(world) is False
+
+        await _tool_details(world, "@Notes-Taker default", world.owner_chat)
+        assert await _agent_setting(world) is None
+
+    async def test_an_admin_may_set_it_on_someone_elses_agent(
+        self, world: _World
+    ) -> None:
+        await _tool_details(world, "@notes-taker on", world.admin_chat)
+
+        assert await _agent_setting(world) is True
+
+    async def test_someone_else_is_refused_and_nothing_changes(
+        self, world: _World
+    ) -> None:
+        await _tool_details(world, "@notes-taker on", world.stranger_chat)
+
+        assert await _agent_setting(world) is None
+        assert "Only the agent's owner or a workspace admin" in world.replies[0]
+
+    async def test_an_unknown_agent(self, world: _World) -> None:
+        await _tool_details(world, "@nobody on", world.owner_chat)
+
+        assert "No agent named `nobody`" in world.replies[0]
+
+    async def test_anything_else_shows_usage(self, world: _World) -> None:
+        await _tool_details(world, "@notes-taker maybe", world.owner_chat)
+
+        assert world.replies[0].startswith("Usage:")
+        assert await _agent_setting(world) is None
+
+    async def test_turning_it_off_empties_what_was_stored_while_it_was_on(
+        self, world: _World
+    ) -> None:
+        await _tool_details(world, "@notes-taker on", world.owner_chat)
+        async with world.session_factory() as session:
+            session.add(
+                AgentSessionActivityItem(
+                    tenant_id=TENANT_ZERO_ID,
+                    agent_id=world.agent_id,
+                    session_id="s",
+                    turn_id="t",
+                    item_id="tool",
+                    kind="tool-activity",
+                    revision=1,
+                    status="completed",
+                    title="Ran",
+                    text="Output:\nsecret-ish",
+                    occurred_at=datetime(2026, 9, 23, 12, 0, tzinfo=UTC),
+                )
+            )
+            await session.commit()
+
+        await _tool_details(world, "@notes-taker off", world.owner_chat)
+
+        async with world.session_factory() as session:
+            item = await session.scalar(select(AgentSessionActivityItem))
+        assert item is not None and item.text == ""
