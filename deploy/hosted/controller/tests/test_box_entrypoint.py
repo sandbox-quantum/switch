@@ -102,7 +102,11 @@ def test_any_other_exit_is_passed_on_with_no_new_enrolment(tmp_path: Path, rc: i
 def test_every_controller_command_the_entrypoint_runs_is_in_box_mode():
     """The controller refuses to run in a box without --box (box-mode.ts), so every command here passes it."""
     text = ENTRYPOINT.read_text()
-    commands = [line for line in text.splitlines() if "switch-agent-controller " in line or '"$cli" run' in line]
+    commands = [
+        line
+        for line in text.splitlines()
+        if "switch-agent-controller " in line or '"$cli" run' in line
+    ]
     controller_calls = [c for c in commands if not c.lstrip().startswith(("#", "cli="))]
     assert controller_calls, "no controller command found"
     for line in controller_calls:
