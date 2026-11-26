@@ -924,6 +924,46 @@ spec:
   matchConditions:
   - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-remover'
     name: is-the-remover
+  # Namespace deletions only: the binding's params (`box-removals`) are looked up before the match condition, so a
+  # policy matching every request would, with the Secret missing, refuse every write in the cluster, the Secret's own
+  # creation included. Matched this narrowly, a missing `box-removals` holds back namespace deletions alone, and the
+  # remover's other requests are refused by `switch-remover-does-nothing-else`, which takes no params.
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - DELETE
+      resources:
+      - namespaces
+      scope: "*"
+  paramKind:
+    apiVersion: v1
+    kind: Secret
+  # The remover deletes one thing: a box namespace listed in `box-removals` (which only the provisioner adds to, for
+  # a removal it claimed from Core). Its own code also checks the namespace's machine-id annotation and asks Core
+  # before every delete; this is the cluster's last word on the part a policy can read. The binding passes
+  # `box-removals` as params, and refuses the delete if it's missing.
+  validations:
+  - expression: request.?name.orValue('').matches('^agents-(user|box)-k1-[0-9a-f]{16}$')
+    message: only a box namespace, agents-user-k1-<16 hex> or agents-box-k1-<16 hex>
+  - expression: request.?name.orValue('') in params.?data.orValue({})
+    message: only a namespace listed in box-removals
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-remover-does-nothing-else
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-remover'
+    name: is-the-remover
   matchConstraints:
     matchPolicy: Equivalent
     namespaceSelector: {}
@@ -938,21 +978,11 @@ spec:
       resources:
       - "*/*"
       scope: "*"
-  paramKind:
-    apiVersion: v1
-    kind: Secret
-  # The remover deletes one thing: a box namespace listed in `box-removals` (which only the provisioner adds to, for
-  # a removal it claimed from Core). Its own code also checks the namespace's machine-id annotation and asks Core
-  # before every delete; this is the cluster's last word on the part a policy can read. The binding passes
-  # `box-removals` as params, and refuses everything if it's missing.
+  # Whatever its RBAC grants, the remover's only write is deleting a namespace (judged by the policy above).
   validations:
   - expression: request.?subResource.orValue('') == '' && request.operation == 'DELETE' && request.resource.group == ''
       && request.resource.resource == 'namespaces'
     message: the remover may only delete namespaces
-  - expression: request.?name.orValue('').matches('^agents-(user|box)-k1-[0-9a-f]{16}$')
-    message: only a box namespace, agents-user-k1-<16 hex> or agents-box-k1-<16 hex>
-  - expression: request.?name.orValue('') in params.?data.orValue({})
-    message: only a namespace listed in box-removals
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -1369,6 +1399,15 @@ spec:
     namespace: switch-hosted
     parameterNotFoundAction: Deny
   policyName: switch-remover-deletes-listed-boxes
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-remover-does-nothing-else
+spec:
+  policyName: switch-remover-does-nothing-else
   validationActions:
   - Deny
 ---

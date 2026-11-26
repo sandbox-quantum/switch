@@ -216,9 +216,20 @@ def test_the_cluster_lets_the_remover_delete_only_a_listed_box_namespace():
     p = _doc(policies, "ValidatingAdmissionPolicy", "switch-remover-deletes-listed-boxes")
     b = _doc(policies, "ValidatingAdmissionPolicyBinding", "switch-remover-deletes-listed-boxes")
     assert "system:serviceaccount:switch-hosted:switch-hosted-remover" in p
-    assert "failurePolicy: Fail" in p and "request.operation == 'DELETE'" in p
-    assert "request.resource.resource == 'namespaces'" in p
+    assert "failurePolicy: Fail" in p
+    # The params policy matches namespace deletions alone, so a missing `box-removals` can't refuse every write in
+    # the cluster (params are looked up before the match condition); the rest of the remover's writes are refused by
+    # a policy that takes no params.
+    assert "operations:\n      - DELETE\n      resources:\n      - namespaces" in p
     assert "request.?name.orValue('') in params.?data.orValue({})" in p
+    other = _doc(policies, "ValidatingAdmissionPolicy", "switch-remover-does-nothing-else")
+    other_binding = _doc(
+        policies, "ValidatingAdmissionPolicyBinding", "switch-remover-does-nothing-else"
+    )
+    assert "system:serviceaccount:switch-hosted:switch-hosted-remover" in other
+    assert "failurePolicy: Fail" in other and "request.operation == 'DELETE'" in other
+    assert "request.resource.resource == 'namespaces'" in other
+    assert "paramKind" not in other and "paramRef" not in other_binding
     (box_re,) = re.findall(r"\.matches\('([^']*)'\)", p)
 
     def allows(name: str, listed: dict[str, str]) -> bool:
