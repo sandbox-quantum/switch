@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import type { OpenAgentStream } from '@switch-console/agent-providers';
 import {
   BoxValve,
@@ -15,10 +14,9 @@ import {
 import type { AgentHub } from '../agent-hub';
 import type { ControllerClient } from '../api';
 import type { FrontLogin } from '../controller';
-import { ConfigurationError } from '../errors';
 import type { HostTickets } from '../host-tickets';
 import type { HubSocket } from '../hub-socket';
-import { errorCode, errorMessage, type Logger } from '../log';
+import { errorCode, type Logger } from '../log';
 import { type DataLayout, dataLayout } from '../paths';
 import {
   CREDENTIAL_RESTART_WAIT_MS,
@@ -42,7 +40,6 @@ import {
   resolveGateway,
 } from './gateway-agents';
 import { gatewayPlanFor, VertexTokenCache } from './gateway-logins';
-import { DailyCallCap, dailyCalls, usageFile } from './gateway-usage';
 import { boxHubValve } from './hub-valve';
 import type { LauncherLink, LinkState } from './launcher-link';
 import type { LauncherMeasure } from './launcher-measure';
@@ -98,12 +95,6 @@ export type BoxControllerDeps = {
    * local base URL and an opaque token, never the login. Off by default.
    */
   providerGateway?: boolean;
-  /**
-   * With the gateway: the operator's daily cap on provider calls, as the
-   * setting gives it (`gateway-usage.ts`). Unset, empty or 0, none; anything
-   * but a whole number stops the controller.
-   */
-  providerGatewayDailyCalls?: string;
   /**
    * Ends what a stopped agent left running, with proof it is the agent's (the
    * ownership marker); absent, nothing is swept.
@@ -195,10 +186,8 @@ export class BoxController {
   private readonly cap: ReturnType<typeof boxCap> | null;
   /** The box's memory limit, as the valve takes it; null where none is set. */
   private readonly boxLimit: number | null;
-  private readonly dailyCallCap: number;
   private rest: AgentRest | null = null;
   private gateway: GatewayDeps | null = null;
-  private dailyCap: DailyCallCap | null = null;
   private agentsDisk: AgentsDisk | null = null;
   private liveStatus: LiveStatusWriter | null = null;
   private hubSocket: HubSocket | null = null;
@@ -223,14 +212,6 @@ export class BoxController {
   ) {
     this.liveEvents = deps.liveStatusDir ? new LiveEvents(ctx.now) : null;
     this.log = this.liveEvents ? teeLogger(ctx.log, this.liveEvents) : ctx.log;
-    this.dailyCallCap = 0;
-    if (deps.providerGateway) {
-      try {
-        this.dailyCallCap = dailyCalls(deps.providerGatewayDailyCalls);
-      } catch (error) {
-        throw new ConfigurationError(errorMessage(error));
-      }
-    }
     this.split = deps.split;
     this.layout = dataLayout(ctx.dataDir);
     const log = this.log;
@@ -413,15 +394,8 @@ export class BoxController {
   /** After the relay: the provider gateway, when it is on. */
   async startGateway(): Promise<void> {
     if (!this.deps.providerGateway) return;
-    // Kept whether or not a cap is set: the day's calls count from the start.
-    this.dailyCap = new DailyCallCap({
-      cap: this.dailyCallCap,
-      file: usageFile(join(this.ctx.dataDir, 'gateway-usage.json')),
-      log: this.log,
-      now: this.ctx.now,
-    });
     this.gateway = {
-      gateway: new ProviderGateway({ log: this.log, cap: this.dailyCap }),
+      gateway: new ProviderGateway({ log: this.log }),
       vertex: new VertexTokenCache(),
     };
     await this.gateway.gateway.start();
@@ -506,10 +480,7 @@ export class BoxController {
           ? 'unprotected'
           : (this.valve.memoryProblem ?? this.sourceCheck.problem),
       boxCounts: () => ({ valveParks: this.valve.enabled ? this.valve.parks : null }),
-      gatewayCounts: () =>
-        this.gateway
-          ? { ...this.gateway.gateway.counts(), ...(this.dailyCap ? this.dailyCap.counts() : {}) }
-          : null,
+      gatewayCounts: () => (this.gateway ? this.gateway.gateway.counts() : null),
       operatorExec: split?.operatorExec === true,
       meminfo: readMeminfo,
       ...(agentsDisk ? { disk: () => agentsDisk.reading() } : {}),
@@ -872,10 +843,9 @@ export class BoxController {
     this.stopValve();
   }
 
-  /** Last: the gateway, the day's call count, and the launcher link. */
+  /** Last: the gateway and the launcher link. */
   async close(): Promise<void> {
     await this.gateway?.gateway.close();
-    this.dailyCap?.save();
     this.stopLinkTicks();
     await this.split?.link.close();
   }

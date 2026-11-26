@@ -18,7 +18,6 @@ import {
   ensureRelayCredentials,
   runController,
 } from '../controller';
-import { ConfigurationError } from '../errors';
 import { HostTickets } from '../host-tickets';
 import { silentLogger } from '../log';
 import { ProviderRechecks } from '../provider-rechecks';
@@ -428,15 +427,6 @@ describe('runController in box mode', () => {
     expect(store.identity()?.controllerId).toBe(core.controllerId);
     expect(store.revokedAt()).toBe('2026-01-02T00:00:00Z');
   });
-
-  it('refuses to run with a daily call cap that isn’t a whole number, so a typo never means no cap', async () => {
-    const capped = runController(
-      boxDeps({ providerGateway: true, providerGatewayDailyCalls: '5k' }),
-      stop.signal
-    );
-    await expect(capped).rejects.toThrow(/SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS/);
-    await expect(capped).rejects.toBeInstanceOf(ConfigurationError);
-  });
 });
 
 describe("where an agent's sessions stand", () => {
@@ -784,7 +774,7 @@ describe('runController on a split box: refused tickets', () => {
 });
 
 describe('runController on a split box with the provider gateway', () => {
-  it('reports the operator’s daily cap, and no workspace budget, whatever the assignment says', async () => {
+  it('reports the gateway’s counts and no daily cap, whatever an older assignment says', async () => {
     const socketPath = join(dir, 'launcher.sock');
     const link = new LauncherLink({ socketPath, now: Date.now, log: () => {} });
     const split = {
@@ -795,38 +785,16 @@ describe('runController on a split box with the provider gateway', () => {
       gate: new LaunchGate(Date.now),
       setProbeEnv: () => {},
     };
-    const machine = () => core.statusReports.at(-1)?.machine;
     // An assignment from an older Switch that still names a workspace budget: ignored.
     core.setAssignment({ revision: 1, agents: [], gateway_daily_cap: 2 } as never);
-    running = runController(
-      boxDeps({ providerGateway: true, providerGatewayDailyCalls: '3', split }),
-      stop.signal
-    );
-    await waitFor(() => machine()?.gateway_daily_cap === 3, 'the operator’s cap in force');
-    expect(machine()).toMatchObject({ gateway_calls_today: 0, gateway_capped: false });
-    expect(machine()).not.toHaveProperty('gateway_cap_source');
-  });
-
-  it('reports no cap when the operator set none', async () => {
-    const socketPath = join(dir, 'launcher.sock');
-    const link = new LauncherLink({ socketPath, now: Date.now, log: () => {} });
-    const split = {
-      link,
-      tickets: new HostTickets(),
-      measure: new LauncherMeasure({ link, now: Date.now }),
-      runner: { launchOf: () => null, currentLaunch: () => null },
-      gate: new LaunchGate(Date.now),
-      setProbeEnv: () => {},
-    };
-    core.setAssignment({ revision: 1, agents: [] });
     running = runController(boxDeps({ providerGateway: true, split }), stop.signal);
     await waitFor(
       () => core.statusReports.some((report) => report.machine.gateway_agents !== undefined),
       'a report with the gateway'
     );
     const reported = core.statusReports.at(-1)!.machine;
-    expect(reported.gateway_daily_cap).toBeUndefined();
-    expect(reported.gateway_calls_today).toBeUndefined();
+    for (const field of ['gateway_daily_cap', 'gateway_calls_today', 'gateway_capped'])
+      expect(reported).not.toHaveProperty(field);
   });
 
   it('hands the gateway probe to the split runtime: a login check gets a swpg_ token, never the login', async () => {

@@ -249,9 +249,6 @@ describe('status report', () => {
       gateway_agents: 1,
       gateway_refused: 0,
       operator_exec: false,
-      gateway_calls_today: 3,
-      gateway_capped: false,
-      gateway_daily_cap: 100,
       valve_parks: 0,
       mem_anon_bytes: 1024,
       mem_cached_bytes: 2048,
@@ -265,7 +262,6 @@ describe('status report', () => {
     expect(parsed.machine).toEqual(machine);
     expect(parsed.agents[0]).toEqual(agent);
     for (const bad of [
-      { gateway_daily_cap: 0 },
       { mem_anon_bytes: 2 ** 51 },
       { valve_memory: 'fine' },
       { valve_parks: 1_000_001 },

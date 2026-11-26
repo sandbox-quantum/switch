@@ -467,11 +467,11 @@ describe('BoxValve: admitting starts', () => {
     const ca = valve.connect(a);
     const cb = valve.connect(link('b'));
     expect(await ca.admit('a-2', 'message')).toEqual({ ok: false, reason: 'held' });
-    // a's session is still running while the guard stops it: it counts.
+    // a's session is still running while its host stops: it counts.
     expect(valve.awake).toBe(1);
     ok(await cb.admit('b-1', 'message'));
     expect(await cb.admit('b-2', 'message')).toEqual({ ok: false, reason: 'cap' });
-    // And it is never parked to make room: the guard is dealing with it.
+    // And it is never parked to make room: it is held.
     expect(a.parked).toEqual([]);
     // Gone: it no longer counts.
     a.awakeCount = 0;
@@ -519,7 +519,7 @@ describe('BoxValve: admitting starts', () => {
     expect(await ca.admit('a-2', 'message')).toEqual({ ok: false, reason: 'limit' });
     expect(await valve.parkIdle()).toBe(3);
     expect([...a.parked, ...b.parked].sort()).toEqual(['a-1', 'b-1', 'b-2']);
-    // A held agent is the guard's: never parked here.
+    // A held agent is never parked here.
     expect(c.parked).toEqual([]);
     admitting = true;
     ok(await ca.admit('a-2', 'message'));
@@ -765,16 +765,6 @@ describe('BoxValve: the box-wide wait list', () => {
     expect(valve.status().waiting).toBe(1);
   });
 
-  it('the guard dropping an agent takes its leases and waiters at once', async () => {
-    const { valve, now } = valveWith({ cap: 5 });
-    const ca = valve.connect(link('a'));
-    ok(await ca.admit('s1', 'message'));
-    ca.wait(wait('m1', 's2', now()));
-    valve.dropAgent('a');
-    expect(valve.starting).toBe(0);
-    expect(valve.status().waiting).toBe(0);
-  });
-
   it('a held agent’s waiters are refused with held and never given room', async () => {
     const held = new Set<string>();
     const { valve, now } = valveWith({ cap: 5, isHeld: (id) => held.has(id) });
@@ -918,15 +908,13 @@ describe('BoxValve: the box-wide wait list', () => {
 });
 
 describe('BoxValve: shedding', () => {
-  it('tells the guard while it sheds, and stops after 15 parks in one go', async () => {
+  it('stops after 15 parks in one go', async () => {
     let usage = 0.95 * LIMIT;
-    const shedding: boolean[] = [];
     const valve = new BoxValve({
       limit: LIMIT,
       readUsage: async () => usage,
       settleMs: 0,
       cap: 100,
-      onShedding: (on) => shedding.push(on),
       log: quiet,
     });
     const a = link('a');
@@ -937,9 +925,8 @@ describe('BoxValve: shedding', () => {
     }));
     valve.connect(a);
     await valve.check();
-    // The reading never falls: it gives up at 15, and the guard is the backstop.
+    // The reading never falls: it gives up at 15, and the box's own limit is the backstop.
     expect(a.parked.length).toBe(15);
-    expect(shedding).toEqual([true, false]);
     usage = 0.5 * LIMIT;
   });
 });

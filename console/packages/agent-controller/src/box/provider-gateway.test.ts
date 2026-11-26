@@ -9,7 +9,6 @@ import type { AddressInfo } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Logger } from '../log';
-import { DailyCallCap } from './gateway-usage';
 import {
   baseUrlWithToken,
   GATEWAY_TOKEN_PREFIX,
@@ -726,49 +725,5 @@ describe('a probe token', () => {
     await call(gateway.endpoint, '/v1/messages', { headers: { 'x-api-key': token } });
     expect(upstream.seen[0]!.headers['x-api-key']).toBe(REAL_A);
     expect(log.lines.join('\n')).not.toContain(token);
-  });
-});
-
-describe('the box’s daily call cap', () => {
-  it('refuses calls past the cap with a plain 429 until 00:00 UTC, and refused calls don’t count', async () => {
-    const noon = Date.UTC(2026, 9, 28, 12, 0, 0);
-    let text: string | null = null;
-    const cap = new DailyCallCap({
-      cap: 3,
-      file: { read: () => text, write: (t) => void (text = t) },
-      log,
-      now: () => noon,
-    });
-    const capped = makeGateway({ cap, now: () => noon });
-    await capped.start();
-    capped.setReady();
-    try {
-      const agent = capped.mint('agent-a', anthropicKey(REAL_A));
-      const probe = capped.mintProbe('p1', anthropicKey(REAL_A));
-      // Refused for other reasons: not counted.
-      await call(capped.endpoint, '/v1/files', { headers: { 'x-api-key': agent } });
-      await call(capped.endpoint, '/v1/messages', { headers: { 'x-api-key': 'swpg_wrong' } });
-      expect(cap.counts().callsToday).toBe(0);
-      // An agent's calls and a probe's both count.
-      for (const token of [agent, probe, agent])
-        expect(
-          (await call(capped.endpoint, '/v1/messages', { headers: { 'x-api-key': token } })).status
-        ).toBe(200);
-      const over = await call(capped.endpoint, '/v1/messages', { headers: { 'x-api-key': probe } });
-      expect(over.status).toBe(429);
-      expect(over.headers['retry-after']).toBe(String(12 * 3600));
-      expect(over.body).toContain('daily AI limit');
-      expect(upstream.seen).toHaveLength(3);
-      expect(cap.counts()).toEqual({
-        callsToday: 3,
-        capped: true,
-        dailyCap: 3,
-      });
-      expect(log.lines.join('\n')).toContain('"reason":"daily_cap"');
-      // The refused probe call didn't use up one of its own calls either.
-      expect(log.lines.join('\n')).not.toContain(probe);
-    } finally {
-      await capped.close();
-    }
   });
 });

@@ -95,11 +95,6 @@ export type GatewayDeps = {
   limits?: Partial<GatewayLimits>;
   send?: UpstreamSend;
   now?: () => number;
-  /**
-   * The box's daily call cap (`gateway-usage.ts`): counts each admitted call,
-   * or returns the seconds until it resets when the day's calls are used up.
-   */
-  cap?: { take(): number | null };
 };
 
 /** The routes each provider's CLI needs, and nothing else. */
@@ -444,9 +439,6 @@ export class ProviderGateway {
       throw new Refusal(429, 'rate', Math.max(1, wait));
     }
     if (state.probe && state.probe.callsLeft <= 0) throw new Refusal(401, 'probe_used');
-    // Last, so a call refused for any other reason isn't counted against the day.
-    const resetsInS = this.deps.cap?.take() ?? null;
-    if (resetsInS !== null) throw new Refusal(429, 'daily_cap', resetsInS);
     if (state.probe) state.probe.callsLeft -= 1;
     state.started.push(now);
     state.inFlight += 1;
@@ -647,8 +639,6 @@ function describe(refusal: Refusal): string {
       return 'The agents controller is starting; retry in a moment.';
     case 'unknown_token':
       return 'This token is not one the agents controller issued, or its login was withdrawn.';
-    case 'daily_cap':
-      return 'This account has reached its daily AI limit. It resets at 00:00 UTC.';
     case 'probe_expired':
     case 'probe_used':
       return 'This probe token has expired or been used up.';

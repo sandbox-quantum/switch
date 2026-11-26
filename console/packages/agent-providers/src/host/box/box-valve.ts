@@ -47,7 +47,7 @@ export const LEASE_MS = SESSION_READY_MS + 5_000;
 /** The highest `parks` goes: Core takes no count above this. */
 export const MAX_PARK_COUNT = 1_000_000;
 
-/** The most parks in one shed: past this the guard is the backstop. */
+/** The most parks in one shed: past this the box's own memory limit is the backstop. */
 export const MAX_PARKS_PER_SHED = 15;
 /**
  * Settles in a row a shed waits for a memory reading before it gives up:
@@ -143,7 +143,7 @@ export type HostLink = {
 export type BoxValveOptions = {
   /** The box's memory limit in bytes; null leaves the valve off (a laptop). */
   limit: number | null;
-  /** The box's use on the same scale as the guard (`readBoxMemory`); null when unreadable. */
+  /** The box's memory use (`readBoxMemory`); null when unreadable. */
   readUsage: () => Promise<number | null>;
   /** The cap on sessions awake at once; worked out from `limit` and the env when not given. */
   cap?: number;
@@ -154,10 +154,8 @@ export type BoxValveOptions = {
   refuseAt?: number;
   /** How long after a park before the next: the reading needs this long to fall. */
   settleMs?: number;
-  /** Whether the guard is stopping or holding an agent: the valve leaves it alone. */
+  /** Whether an agent's host is stopped on purpose (resting): the valve leaves it alone. */
   isHeld?: (agentId: string) => boolean;
-  /** Told while a shed runs, so the guard pauses only its slow-leak clock. */
-  onShedding?: (shedding: boolean) => void;
   /**
    * Told of each wait-list change, after the decision and outside it, for
    * the controller's live status: counts only, so ids are cut to 8 characters
@@ -346,8 +344,8 @@ export class BoxValve {
    * Sessions up across the box, counting high, never low. Each agent counts
    * as the larger of what its host last said and what its health file last
    * said: a host that hasn't said yet, or whose report fails, keeps its last
-   * known count and never counts as none. An agent the guard is stopping or
-   * holding still counts until its sessions are gone, and so does one whose
+   * known count and never counts as none. A held agent still counts until
+   * its sessions are gone, and so does one whose
    * host has disconnected but whose health still shows sessions up. (Starts
    * in flight are added on top, as `starting`.)
    */
@@ -423,14 +421,6 @@ export class BoxValve {
       for (const timer of this.timers) clearInterval(timer);
       this.timers = [];
     };
-  }
-
-  /** The guard stopped or holds this agent: its leases and waiters go at once, without a line. */
-  dropAgent(agentId: string): void {
-    for (const [id, lease] of this.leases)
-      if (lease.connection.agentId === agentId) this.leases.delete(id);
-    for (const [key, waiter] of this.waiters)
-      if (waiter.connection.agentId === agentId) this.waiters.delete(key);
   }
 
   /** Parks the quietest idle sessions, box-wide, one a settle apart, while past `startAt`. */
@@ -872,10 +862,7 @@ export class BoxValve {
           if (usage === null) return undefined;
           under = usage < this.stopAt * this.limit;
           if (under) return undefined;
-          if (!told) {
-            told = true;
-            safe(() => this.options.onShedding?.(true), undefined);
-          }
+          told = true;
           return this.quietest(tried);
         });
         if (usage === null) {
@@ -918,7 +905,6 @@ export class BoxValve {
       // The reading after the last park, for the closing line (the others already have one).
       await this.usage();
     } finally {
-      if (told) safe(() => this.options.onShedding?.(false), undefined);
       // The reading after the shed and why it stopped, once per shed that began.
       if (told || ended === 'unreadable') {
         const at = this.lastGood === null ? 0 : percent(this.lastGood);

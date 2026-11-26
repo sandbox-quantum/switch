@@ -328,13 +328,6 @@ export const statusReportSchema = z.object({
     gateway_refused: z.number().int().nonnegative().optional(),
     /** Box only, split test boxes: an operator may exec into the agents container. */
     operator_exec: z.boolean().optional(),
-    /**
-     * Box only: the operator's daily call cap on the gateway, where one is
-     * set: calls today, whether the cap is reached, and the cap.
-     */
-    gateway_calls_today: z.number().int().nonnegative().optional(),
-    gateway_capped: z.boolean().optional(),
-    gateway_daily_cap: z.number().int().min(1).max(1_000_000_000).optional(),
     /** Box only, since the controller started: sessions the box valve parked. Capped. */
     valve_parks: z.number().int().nonnegative().max(1_000_000).optional(),
     /** Box only: `/proc/meminfo`'s `AnonPages` and `Cached`, in bytes. */
