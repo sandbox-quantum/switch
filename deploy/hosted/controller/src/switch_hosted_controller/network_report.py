@@ -16,10 +16,11 @@ digits) this process gives it the first time it sees it and keeps only in memory
 its id while this process runs and gets a new one after a restart. Another squid replica's reporter has its own ids.
 
 squid's line (`switch_box`): `<epoch> <login> <squid status>/<http status> <host> <port> <bytes up> <bytes down>
-<denylisted>`. A refusal is squid's `TCP_DENIED` other than a 407: a 407 asks the client for its proxy login, which it
-then sends. The last field is `yes` when the host deny list refused it (a line without that field, from an older squid
-config, reads as not). A box's agents log in as `box-<id>` and its controller as `box-<id>-ctl` (`egress_lists.BoxEgress`); both count for the box. A line
-without a box login (refused before any box's rule) is counted as unattributed.
+<blocked by>`. A refusal is squid's `TCP_DENIED` other than a 407: a 407 asks the client for its proxy login, which it
+then sends. The last field names what refused it, `denylist` (the host deny list) or a DNS Firewall list
+(`dnsfw-malware` and the like), and is `-` for neither; each is counted per box and host under `blocked`. A box's
+agents log in as `box-<id>` and its controller as `box-<id>-ctl` (`egress_lists.BoxEgress`); both count for the box.
+A line without a box login (refused before any box's rule) is counted as unattributed.
 
 If Core can't be reached, the window's sums are kept and merged into the next one, and older ones beyond that are
 dropped and counted (`dropped_windows`), so a long outage costs memory for one window, not one per minute.
@@ -70,6 +71,8 @@ POLL_S = 1.0
 # `box-<id>` and `box-<id>-ctl`, where <id> is `box-k1-<16 hex>` (box-keyed) or `k1-<16 hex>` (person-keyed).
 LOGIN_RE = re.compile(r"^box-((?:box-)?k1-[0-9a-f]{16})(?:-ctl)?$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.:\[\]_-]{1,253}$")
+# What refused a request, as squid's `switch_blocked` note names it.
+BLOCKED_RE = re.compile(r"^(denylist|dnsfw-[a-z0-9-]{1,24})$")
 
 
 @dataclass
@@ -78,15 +81,16 @@ class Totals:
     denied: int = 0
     bytes_up: int = 0
     bytes_down: int = 0
-    # Refused by the host deny list (counted in `denied` too).
-    denylisted: int = 0
+    # Refusals by what refused them: `denylist`, `dnsfw-…` (counted in `denied` too).
+    blocked: dict[str, int] = field(default_factory=dict)
 
     def add(self, other: Totals) -> None:
         self.requests += other.requests
         self.denied += other.denied
         self.bytes_up += other.bytes_up
         self.bytes_down += other.bytes_down
-        self.denylisted += other.denylisted
+        for by, count in other.blocked.items():
+            self.blocked[by] = self.blocked.get(by, 0) + count
 
 
 @dataclass
@@ -120,7 +124,7 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
     parts = line.split()
     if len(parts) != 8:
         return None
-    _, login, status, host, port, up, down, listed = parts
+    _, login, status, host, port, up, down, by = parts
     try:
         bytes_up, bytes_down = int(up), int(down)
     except ValueError:
@@ -138,7 +142,7 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
             1 if denied else 0,
             max(bytes_up, 0),
             max(bytes_down, 0),
-            1 if listed == "yes" else 0,
+            {by: 1} if BLOCKED_RE.fullmatch(by) else {},
         ),
     )
 

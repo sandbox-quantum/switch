@@ -351,8 +351,9 @@ data:
     # Each request's box, host, outcome and bytes, for the network reporter beside squid, which follows this file, sums
     # it per box every minute, sends Core one report, and keeps the file short (network_report.py). Flushed per line.
     buffered_logs off
-    # The last field is `yes` for a request the host deny list refused (`_deny.conf`), `-` otherwise.
-    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st %{switch_denylisted}note
+    # The last field names what refused the request: `denylist` (`_deny.conf`), a DNS Firewall list (`dnsfw-…`, above),
+    # or `-` for neither.
+    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st %{switch_blocked}note
     access_log stdio:/var/log/squid/box.log logformat=switch_box
     cache_log /var/log/squid/cache.log
     pinger_enable off   # the ICMP pinger needs NET_RAW, which this pod rightly lacks
@@ -388,16 +389,39 @@ metadata:
   name: squid-denylist
   namespace: egress-proxy
 data:
-  # Checked after the box's login, so the refusal is counted for the box: squid tags it (`switch_denylisted`), the
-  # network reporter counts it per box, and Core logs it as `denylisted` in the box's network line.
+  # Checked after the box's login, so the refusal is counted for the box: squid
+  # tags it (`switch_blocked denylist`), the network reporter counts it per box, and Core logs it under `blocked` in
+  # the box's network line.
   _deny.conf: |
+    acl switch_box_login proxy_auth REQUIRED
     acl switch_denied_host dstdomain -n "/etc/squid/boxes/_deny.hosts"
     acl switch_denied_ip dst "/etc/squid/boxes/_deny.ips"
-    acl switch_box_login proxy_auth REQUIRED
-    note switch_denylisted yes switch_denied_host
-    note switch_denylisted yes switch_denied_ip
+    note switch_blocked denylist switch_denied_host
+    note switch_blocked denylist switch_denied_ip
     http_access deny switch_box_login switch_denied_host
     http_access deny switch_box_login switch_denied_ip
+  # DNS Firewall's sentinels: on the box cluster's VPC, AWS's managed threat lists answer a listed name with a CNAME
+  # to a sentinel name of ours, which resolves to one of these unroutable TEST-NET addresses, one per list. squid
+  # does every lookup for the boxes, so it sees the sentinel, refuses, and tags which list it was; the network
+  # reporter counts it per box (`blocked`), and no hostname leaves this pod. Fixed here and in the box cluster's
+  # Terraform (napoleon, box-cluster module, `dns_firewall`): change both together. Without the firewall nothing
+  # resolves to them, and these rules never match.
+  _dnsfw.conf: |
+    acl switch_dnsfw_malware dst 198.51.100.1
+    acl switch_dnsfw_botnet dst 198.51.100.2
+    acl switch_dnsfw_threats dst 198.51.100.3
+    acl switch_dnsfw_guardduty dst 198.51.100.4
+    acl switch_dnsfw_custom dst 198.51.100.5
+    note switch_blocked dnsfw-malware switch_dnsfw_malware
+    note switch_blocked dnsfw-botnet switch_dnsfw_botnet
+    note switch_blocked dnsfw-threats switch_dnsfw_threats
+    note switch_blocked dnsfw-guardduty switch_dnsfw_guardduty
+    note switch_blocked dnsfw-custom switch_dnsfw_custom
+    http_access deny switch_box_login switch_dnsfw_malware
+    http_access deny switch_box_login switch_dnsfw_botnet
+    http_access deny switch_box_login switch_dnsfw_threats
+    http_access deny switch_box_login switch_dnsfw_guardduty
+    http_access deny switch_box_login switch_dnsfw_custom
   # One host per line: `example.com` is that host only, `.example.com` it and every subdomain.
   _deny.hosts: |
     # (none yet)

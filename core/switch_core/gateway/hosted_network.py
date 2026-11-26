@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -52,6 +52,17 @@ HOST_MAX_LENGTH = 32
 MAX_HOSTS = 10
 MAX_BOXES = 2000
 COUNT = Field(ge=0, le=1 << 50)
+# Refusals by what refused them (counted in `denied` too): `denylist`, the host deny list, or a DNS Firewall list
+# (`dnsfw-malware` and the like). Empty from a reporter that doesn't count them.
+Blocked = Annotated[
+    dict[
+        Annotated[
+            str, StringConstraints(pattern=r"^(denylist|dnsfw-[a-z0-9-]{1,24})$")
+        ],
+        Annotated[int, Field(ge=0, le=1 << 50)],
+    ],
+    Field(max_length=8),
+]
 
 
 class HostTotals(BaseModel):
@@ -62,8 +73,7 @@ class HostTotals(BaseModel):
     denied: int = COUNT
     bytes_up: int = COUNT
     bytes_down: int = COUNT
-    # Refused by the host deny list (counted in `denied` too); 0 from an older reporter.
-    denylisted: int = Field(default=0, ge=0, le=1 << 50)
+    blocked: Blocked = Field(default_factory=dict)
 
 
 class BoxNetwork(BaseModel):
@@ -74,7 +84,7 @@ class BoxNetwork(BaseModel):
     denied: int = COUNT
     bytes_up: int = COUNT
     bytes_down: int = COUNT
-    denylisted: int = Field(default=0, ge=0, le=1 << 50)
+    blocked: Blocked = Field(default_factory=dict)
     # Every host the box reached in the window, the controller's login and
     # the agents' together; `hosts` names the busiest of them.
     distinct_hosts: int = COUNT
@@ -157,7 +167,10 @@ async def report(
                 "window_seconds": body.window_seconds,
                 "requests": box.requests,
                 "denied": box.denied,
-                "denylisted": box.denylisted,
+                "blocked": json.dumps(
+                    box.blocked, separators=(",", ":"), sort_keys=True
+                ),
+                "blocked_total": sum(box.blocked.values()),
                 "bytes_up": box.bytes_up,
                 "bytes_down": box.bytes_down,
                 "distinct_hosts": box.distinct_hosts,

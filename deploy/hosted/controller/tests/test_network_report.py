@@ -153,15 +153,27 @@ def test_a_proxy_login_challenge_is_not_a_refusal() -> None:
     assert (challenge.denied, refused.denied, older.denied) == (0, 1, 1)
 
 
-def test_a_deny_list_refusal_is_counted_for_its_box_and_host() -> None:
+def test_refusals_are_counted_by_what_refused_them() -> None:
     agg = Aggregator()
     ids = HostIds()
     agg.add_line(
-        line(f"box-{BOX}", "blocked.example", status="TCP_DENIED/403", up=0, down=0, tag="yes")
+        line(f"box-{BOX}", "blocked.example", tag="denylist", status="TCP_DENIED/403", up=0, down=0)
+    )
+    agg.add_line(
+        line(
+            f"box-{BOX}", "bad.example", tag="dnsfw-malware", status="TCP_DENIED/403", up=0, down=0
+        )
+    )
+    agg.add_line(
+        line(
+            f"box-{BOX}", "bad.example", tag="dnsfw-malware", status="TCP_DENIED/403", up=0, down=0
+        )
     )
     agg.add_line(line(f"box-{BOX}", "github.com"))
+    agg.add_line(line(f"box-{BOX}", "odd.example", tag="not-a-known-tag"))
     [box] = report_body(agg.take(), 60, 0, ids)["boxes"]
-    assert (box["requests"], box["denied"], box["denylisted"]) == (2, 1, 1)
+    assert (box["requests"], box["denied"]) == (5, 3)
+    assert box["blocked"] == {"denylist": 1, "dnsfw-malware": 2}
     by_host = {h["host"]: h for h in box["hosts"]}
-    assert by_host[ids.of("blocked.example:443")]["denylisted"] == 1
-    assert by_host[ids.of("github.com:443")]["denylisted"] == 0
+    assert by_host[ids.of("bad.example:443")]["blocked"] == {"dnsfw-malware": 2}
+    assert by_host[ids.of("github.com:443")]["blocked"] == {}
