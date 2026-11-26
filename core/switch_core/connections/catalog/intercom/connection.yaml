@@ -1,7 +1,79 @@
 slug: intercom
 name: Intercom
 category: Customer support
-description: Read Intercom conversations, contacts and help articles.
-enabled: false
+description: Search and read Intercom conversations, contacts and help articles, and add internal notes, as you. US-hosted workspaces only; there is no customer-reply tool.
+enabled: true
+publisher: Intercom
+links:
+  documentation: https://developers.intercom.com/building-apps/docs
+  support: https://www.intercom.com/help
+  privacy: https://www.intercom.com/privacy
+adapter: oauth
 auth:
   type: oauth
+  # Measured: a refresh hands out a new access token and a NEW refresh token,
+  # which replaces the old one.
+  refresh: rotating
+  oauth:
+    # Intercom's MCP server offers dynamic registration, PKCE S256 and token
+    # revocation, so Core registers its client and nothing is set up on the
+    # server. Measured: registration accepted this exact request.
+    registration: dynamic
+    # Registration accepts loopback redirects only (measured: these five
+    # URIs accepted; an https redirect, a port-less loopback URI,
+    # urn:ietf:wg:oauth:2.0:oob and the server's own /callback are each
+    # refused as not in the allowlist), so a sign-in can only come back to
+    # the machine Console runs on. The ports are Atlassian's.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # The authorization-server metadata names its token endpoint as the
+    # revocation endpoint (measured).
+    revocation_discovered: true
+  # Measured today, against a real sign-in: the MCP host names nobody - /me,
+  # /userinfo and OIDC discovery answer 404, the metadata names no
+  # introspection endpoint, the token answer carries no claims, and none of
+  # the 22 tools reads the caller (no whoami). The REST API's /me
+  # (api.intercom.io/me) names the admin and the workspace's app.id_code, but
+  # it answers the MCP server's OAuth tokens with 401 (measured; it accepts
+  # only workspace access tokens). So a sign-in cannot be identified yet.
+  # The entry is wired for the fix the design doc already patterns (Sentry):
+  # a read-only whoami tool on the MCP server. Intercom does not offer one
+  # today, so connecting fails until it does; the field names below assume
+  # Sentry's whoami shape and adjust to whatever Intercom ships. If
+  # Intercom's REST API starts accepting MCP tokens instead, flip to:
+  #   identity: {url: https://api.intercom.io/me, account_id: app.id_code, label: email}
+  identity:
+    mcp_tool: whoami
+    account_id: user.id
+    label: user.email
+# Measured: the first access token lives 3,600 s; a refresh re-issues one
+# for another 3,600 s. The cap keeps an agent-held token to one hour.
+token:
+  kind: pass_through
+  max_lifetime: 3600
+  note: "Agents use Intercom with your token for up to an hour after each sign-in. For another hour, disconnect and connect again, then turn Intercom on again for each agent."
+mcp:
+  # US-hosted workspaces only, as the issue's maintainer asked. The EU host
+  # (mcp.eu.intercom.com) serves its own OAuth metadata (measured), but
+  # signing an EU workspace in is unverified, so the entry ships one server.
+  servers:
+    - { name: intercom, url: "https://mcp.intercom.com/mcp" }
+access:
+  # The protected-resource metadata lists two scopes, mcp and operator
+  # (measured). Asking for mcp is granted "mcp operator" (measured), so every
+  # connection also carries Fin's operator scope; nothing narrower exists to
+  # ask for. A connection is therefore never read-only by scope, so read
+  # repeats write and Console labels it "Read and write"; the skill keeps the
+  # writes behind a confirmation. Measured with a real sign-in: 22 tools -
+  # search/read for conversations, contacts, companies, audiences and
+  # articles; writes create_article, update_article, add_internal_note and
+  # submit_mcp_feedback; and six Fin Operator tools (send_operator_message,
+  # get_operator_response, get_proposal_details, apply_proposals,
+  # reject_proposals, report_proposal_card_event) that act as the workspace's
+  # Fin AI Agent, including messaging its customers. No tool replies to a
+  # customer as the signed-in person; the skill says so.
+  read:
+    scopes: [mcp]
+  write:
+    scopes: [mcp]
+tools: { mode: pass_through }

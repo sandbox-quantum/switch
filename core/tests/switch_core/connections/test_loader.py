@@ -29,7 +29,6 @@ PLACEHOLDERS = {
     "dropbox",
     "grafana",
     "hubspot",
-    "intercom",
     "launchdarkly",
     "marketo",
     "microsoft-365",
@@ -59,6 +58,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "datadog",
         "google-workspace",
         "gitlab",
+        "intercom",
         "notion",
         "sentry",
         "linear",
@@ -70,6 +70,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "gitlab",
         "google-workspace",
+        "intercom",
         "linear",
         "notion",
         "sentry",
@@ -81,6 +82,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
+    assert "SKILL.md" in CATALOG["intercom"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
     assert "SKILL.md" in CATALOG["linear"].skill_files
