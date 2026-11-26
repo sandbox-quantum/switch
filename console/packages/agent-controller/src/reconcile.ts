@@ -2,8 +2,9 @@ import {
   providerLoginEnvironment,
   providerUnsupportedReason,
 } from '@switch-console/agent-providers';
+import type { AgentRemovalDeps, LeftoverWatch } from './box/agent-removal';
 import { ReasonedError } from './errors';
-import { errorMessage, type Logger } from './log';
+import { errorCode, errorMessage, type Logger } from './log';
 import { isSafeSegment } from './paths';
 import { type AgentObservation, type AgentRuntime, emptyObservation } from './runtime';
 import {
@@ -14,7 +15,7 @@ import {
   type ReasonCode,
 } from './schemas';
 import type { GivenLogin } from './sealed-logins';
-import { isCredentialFailure, LAUNCH_GRACE_MS } from './status';
+import { isCredentialFailure, LAUNCH_GRACE_MS, noSessionMidTurn } from './status';
 import type { AgentRow, ControllerStore } from './store';
 import { advancedConfigDefinitionProblem, buildWatcherTemplate } from './template';
 
@@ -28,6 +29,8 @@ export type StartAction = {
   /** Counted in `restarts_10m`: anything but the first start of an agent here. */
   relaunch: boolean;
   why: string;
+  /** Box mode: false for a restart nobody in its rooms asked for, so a cut-off turn owes its line. */
+  asked?: boolean;
 };
 
 export type Action =
@@ -36,7 +39,48 @@ export type Action =
   | { kind: 'stop'; agentId: string; revision: number; write: boolean }
   | { kind: 'remove'; agentId: string }
   | { kind: 'invalid'; agentId: string; revision: number; detail: string; stop: boolean }
-  | { kind: 'hold'; agentId: string; why: string };
+  | {
+      kind: 'hold';
+      agentId: string;
+      why: string;
+      /** Held for a restart owed for new credentials: said once per debt, not every pass. */
+      owedCredentials?: true;
+    };
+
+/** Box mode: how long a restart for new credentials waits for a session's turn to end before it goes ahead anyway. */
+export const CREDENTIAL_RESTART_WAIT_MS = 10 * 60 * 1000;
+
+/**
+ * Box mode: the agents owed a restart because their relay credentials (or the login
+ * in them) were rewritten while their host ran busy. `ensureCredentials`
+ * says a file was rewritten only on the pass that rewrites it, so the debt is
+ * kept here until a start pays it. In memory only: a controller that restarts
+ * starts every host afresh, on the credentials as written.
+ */
+export class CredentialRestarts {
+  private readonly since = new Map<string, number>();
+  private readonly held = new Set<string>();
+
+  owe(agentId: string, nowMs: number): void {
+    if (!this.since.has(agentId)) this.since.set(agentId, nowMs);
+  }
+
+  settle(agentId: string): void {
+    this.since.delete(agentId);
+    this.held.delete(agentId);
+  }
+
+  /** True the first time the agent's restart is held for this debt: the hold is logged once, not every pass. */
+  firstHold(agentId: string): boolean {
+    if (this.held.has(agentId)) return false;
+    this.held.add(agentId);
+    return true;
+  }
+
+  owed(): Map<string, number> {
+    return new Map(this.since);
+  }
+}
 
 /**
  * Why an assigned agent cannot be applied on this machine as defined, or null
@@ -91,6 +135,21 @@ export function planReconcile(input: {
   nowMs: number;
   /** The providers this controller offers (`providersFor`). */
   offered: readonly string[];
+  /** Box mode (`ControllerDeps.box`). */
+  box?: boolean;
+  /**
+   * Agents whose agent host is stopped on purpose until their next message
+   * (resting until their next message; `AgentRest`). Not started for
+   * being down, nor restarted for new credentials, which their next start
+   * reads; a new revision still starts them.
+   */
+  suspended?: Set<string>;
+  /**
+   * When each agent first became owed a restart for new credentials
+   * (`CredentialRestarts`): one whose session is mid-turn waits for the
+   * turn, up to `CREDENTIAL_RESTART_WAIT_MS` from then.
+   */
+  credentialsOwedSince?: Map<string, number>;
 }): Action[] {
   const actions: Action[] = [];
   const rows = new Map(input.rows.map((row) => [row.agentId, row]));
@@ -139,6 +198,8 @@ export function planReconcile(input: {
         actions.push({ kind: 'stop', agentId, revision: entry.revision, write: false });
       continue;
     }
+    const suspended = input.suspended?.has(agentId) ?? false;
+    if (suspended && applied !== null && applied >= entry.revision) continue;
     const credentialsChanged = input.credentialsChanged.has(agentId);
     const base = {
       kind: 'start' as const,
@@ -156,7 +217,9 @@ export function planReconcile(input: {
         restart: replaceIdentity || (observation.alive && observation.flags?.enabled === false),
         replaceIdentity,
         clearTakenOver: true,
-        why: applied === null ? 'not applied yet' : `revision ${applied} → ${entry.revision}`,
+        why:
+          (applied === null ? 'not applied yet' : `revision ${applied} → ${entry.revision}`) +
+          (suspended ? ' (its host was stopped until its next message)' : ''),
       });
       continue;
     }
@@ -169,14 +232,39 @@ export function planReconcile(input: {
           clearTakenOver: false,
           why: 'its agent host is being turned off',
         });
-      else if (credentialsChanged)
-        actions.push({
-          ...base,
-          restart: true,
-          replaceIdentity: false,
-          clearTakenOver: false,
-          why: 'its relay endpoint or token changed',
-        });
+      else if (credentialsChanged) {
+        // A login given or changed while a reply is being written would cut
+        // it off with no line to the room: wait for the turn to end,
+        // as a self-update does, but not for ever.
+        // Only a login change waits (`credentialsOwedSince` holds those): the
+        // relay keeps the host's token then, so the running turn can finish.
+        // A new endpoint or token has already cut the old host off.
+        const owedSince = input.credentialsOwedSince?.get(agentId);
+        if (
+          owedSince !== undefined &&
+          !noSessionMidTurn([observation]) &&
+          input.nowMs - owedSince < CREDENTIAL_RESTART_WAIT_MS
+        )
+          actions.push({
+            kind: 'hold',
+            agentId,
+            why: 'a session is mid-turn; it restarts for its new relay endpoint or token once the turn ends',
+            owedCredentials: true,
+          });
+        else
+          actions.push({
+            ...base,
+            restart: true,
+            replaceIdentity: false,
+            clearTakenOver: false,
+            // Nobody in its rooms asked for it (box mode): a turn it cuts off owes its line.
+            ...(input.box ? { asked: false } : {}),
+            why:
+              owedSince !== undefined && input.nowMs - owedSince >= CREDENTIAL_RESTART_WAIT_MS
+                ? 'its relay endpoint or token changed; a session was still mid-turn after the wait'
+                : 'its relay endpoint or token changed',
+          });
+      }
       continue;
     }
     if (observation.takenOver) continue;
@@ -213,17 +301,43 @@ export type ReconcileDeps = {
   /** The providers this controller offers (`providersFor`): an agent naming another isn't run. */
   offered: readonly string[];
   /**
-   * Makes the agent's credentials file name the relay and a token it accepts.
-   * Resolves true when the file had to be (re)written.
+   * Box mode (`ControllerDeps.box`): a given login's copies go as soon as it
+   * is withdrawn or replaced, a removed agent's host is waited for, and a
+   * restart for new credentials says nobody asked for it.
    */
-  ensureCredentials: (agentId: string, provider: string) => Promise<boolean>;
+  box?: boolean;
+  /**
+   * Makes the agent's credentials file name the relay and a token it accepts.
+   * Resolves false when nothing changed, `'login'` when only the provider
+   * login in it was given or changed (the relay still takes the old token, so
+   * a running host keeps working), `'withdrawn'` when the login it named is
+   * no longer to be used, and `'relay'` or true when the endpoint, hub or
+   * token changed (a running host is cut off from the relay).
+   */
+  ensureCredentials: (agentId: string, provider: string) => Promise<CredentialChange>;
+
   /** The login Switch gave the machine for `provider`, when its agents use it rather than the machine's own. */
   givenLogin: (provider: Provider) => Promise<GivenLogin | null>;
+  /**
+   * Box mode, with a provider gateway: the CLI environment for an agent's
+   * gateway-backed login (a local base URL and its opaque token), or null when
+   * the login isn't one. Absent, logins go in the environment as they are.
+   */
+  gatewayEnv?: (agentId: string, login: GivenLogin) => Promise<Record<string, string> | null>;
   /** The agent is no longer assigned here: the relay stops accepting its token. */
   forgetAgent: (agentId: string) => void;
   binaryPath: (provider: Provider) => Promise<string | null>;
+  /**
+   * Box mode: where a removed agent's files are, to delete them, and when its
+   * leftover folders may go; absent, only its relay token goes.
+   */
+  removal?: AgentRemovalDeps & { leftovers: LeftoverWatch };
   now: () => number;
   log: Logger;
+  /** Box mode: agents whose agent host is stopped until their next message; absent where none are. */
+  rest?: { suspended(agentId: string): boolean; clear(agentId: string): void };
+  /** Box mode: restarts owed for new credentials while a session was mid-turn; absent, none wait. */
+  credentialRestarts?: CredentialRestarts;
 };
 
 function reasonFor(error: unknown): ReasonCode {
@@ -270,24 +384,37 @@ export async function startAgent(
     // A login Switch gave the machine: its environment goes in the agent's
     // configuration, and its files are written by the agent host, which then
     // runs in a process of its own.
-    if (login)
-      template.start.input.env = {
-        ...template.start.input.env,
-        ...providerLoginEnvironment(deps.runtime.agentStateRoot(agentId), login),
-      };
+    if (login) {
+      // Box mode, through the provider gateway: the CLI gets its base URL and
+      // token, never the login. With the gateway on, a login it can't front
+      // isn't used at all: no login goes in the environment.
+      const loginEnv = deps.gatewayEnv
+        ? await deps.gatewayEnv(agentId, login)
+        : providerLoginEnvironment(deps.runtime.agentStateRoot(agentId), login);
+      if (loginEnv) template.start.input.env = { ...template.start.input.env, ...loginEnv };
+    }
     const observation = await deps.runtime.observe(agentId);
     const replaceIdentity =
       action.replaceIdentity ||
       (observation.configured !== null &&
         (observation.configured.provider !== provider || observation.configured.cwd !== cwd));
     const restart = action.restart || replaceIdentity;
+    // Box mode: the host it starts writes the login it is given now, so a copy
+    // of one withdrawn or replaced since must not outlive the host that used it.
+    if (deps.box && (restart || !observation.alive))
+      await forgetLogin(agentId, deps, 'its host starts');
     await deps.runtime.launch(agentId, template, {
       isolation: definition.isolation === 'isolated' || login ? 'isolated' : 'shared',
       restart,
       replaceIdentity,
       clearTakenOver: action.clearTakenOver,
+      ...(action.asked === false ? { asked: false } : {}),
     });
     deps.store.recordApplied(agentId, entry.revision, now);
+    // Whatever (re)started its host (a reconcile, a wake, an owner's
+    // restart), it now runs on the credentials as written: no restart is owed
+    // for them. A running host only handed a new definition still is.
+    if (restart || !observation.alive) deps.credentialRestarts?.settle(agentId);
     if (action.relaunch && (restart || !observation.alive))
       deps.store.recordRestart(agentId, nowMs);
     deps.log.info('Started agent', { agentId, revision: entry.revision, why: action.why });
@@ -306,9 +433,26 @@ export async function startAgent(
   }
 }
 
+/**
+ * Box mode: the given login's copies under the agent's host root go
+ * (`AgentRuntime.forgetProviderLogin`), with why in the log.
+ */
+async function forgetLogin(agentId: string, deps: ReconcileDeps, why: string): Promise<void> {
+  await deps.runtime.forgetProviderLogin(agentId);
+  deps.log.info('Deleted the agent’s login copies', { agentId, why });
+}
+
 /** Carries out one action. Per-agent failures are recorded on the agent and logged. */
 export async function executeAction(action: Action, deps: ReconcileDeps): Promise<void> {
   const now = new Date(deps.now()).toISOString();
+  // Box mode: stopped, removed, invalid or started at a new revision, so no
+  // longer waiting for its next message: that message neither starts it nor
+  // is kept for it.
+  if (action.kind !== 'hold' && deps.rest?.suspended(action.agentId))
+    deps.rest.clear(action.agentId);
+  // Stopped or gone: nothing owed. A start settles it in `startAgent`.
+  if (action.kind === 'stop' || action.kind === 'remove' || action.kind === 'invalid')
+    deps.credentialRestarts?.settle(action.agentId);
   switch (action.kind) {
     case 'start':
       await startAgent(action, deps);
@@ -321,14 +465,20 @@ export async function executeAction(action: Action, deps: ReconcileDeps): Promis
     case 'remove':
       // An id that was never safe to put in a path never got an agent host or a key.
       if (isSafeSegment(action.agentId)) {
-        await deps.runtime.stop(action.agentId, { wait: false });
-        await deps.runtime.deleteCredentials(action.agentId);
+        if (deps.box) await removeAgent(action.agentId, deps);
+        else {
+          await deps.runtime.stop(action.agentId, { wait: false });
+          await deps.runtime.deleteCredentials(action.agentId);
+        }
       }
       deps.forgetAgent(action.agentId);
       deps.store.deleteAgent(action.agentId);
-      deps.log.info('Agent is no longer assigned here; stopped it and deleted its relay token', {
-        agentId: action.agentId,
-      });
+      deps.log.info(
+        deps.box
+          ? 'Agent is no longer assigned here; stopped it and deleted its files'
+          : 'Agent is no longer assigned here; stopped it and deleted its relay token',
+        { agentId: action.agentId }
+      );
       return;
     case 'invalid':
       if (action.stop) await deps.runtime.stop(action.agentId, { wait: false });
@@ -343,15 +493,77 @@ export async function executeAction(action: Action, deps: ReconcileDeps): Promis
       });
       return;
     case 'hold':
+      // A restart owed for new credentials is re-planned every pass until the
+      // turn ends: said when it starts waiting, not on every status poll.
+      if (action.owedCredentials && deps.credentialRestarts?.firstHold(action.agentId) === false)
+        return;
       deps.log.warn('Leaving agent as it is', { agentId: action.agentId, why: action.why });
       return;
   }
 }
 
-/** Observes every agent, plans, and carries the plan out in order. */
-export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Promise<Action[]> {
+/**
+ * Box mode: removes an agent from this machine: its login copies first,
+ * whatever follows, then its agent host stopped and waited for. Its folders
+ * and session folders go at the end of the same reconcile, once its host is
+ * proven gone (`removeLeftovers`).
+ */
+async function removeAgent(agentId: string, deps: ReconcileDeps): Promise<void> {
+  if (deps.removal) {
+    const { deleteLoginCopies, logRemoval } = await import('./box/agent-removal');
+    logRemoval(deps.log, agentId, 'login copies', await deleteLoginCopies(deps.removal, agentId));
+  }
+  await deps.runtime.stop(agentId, { wait: true });
+  await deps.runtime.deleteCredentials(agentId);
+}
+
+/**
+ * Deletes what is left on disk of agents this machine no longer runs: neither
+ * assigned nor known to the store. That is an agent removed, one removed
+ * while the controller was not running, or one removed before removal deleted
+ * folders (box A held 55 such on 27 Oct). Called only straight after a
+ * successful fetch of `assignment`, and only for agents `LeftoverWatch` says
+ * have been missing long enough. One whose agent host is still running is
+ * left alone, and found again by a later reconcile.
+ */
+export async function removeLeftovers(assignment: Assignment, deps: ReconcileDeps): Promise<void> {
+  if (!deps.removal) return;
+  const { deleteAgentFolders, deleteLoginCopies, leftoverAgents, logRemoval } =
+    await import('./box/agent-removal');
+  const keep = new Set<string>([
+    ...assignment.agents.map((entry) => entry.agent_id),
+    ...deps.store.agents().map((row) => row.agentId),
+  ]);
+  const candidates = await leftoverAgents(deps.removal.layout, keep);
+  for (const agentId of deps.removal.leftovers.due(
+    candidates,
+    assignment.agents.length,
+    deps.now()
+  )) {
+    if ((await deps.runtime.observe(agentId)).alive) {
+      deps.log.warn('A removed agent’s host is still running; its folders are kept for now', {
+        agentId,
+      });
+      continue;
+    }
+    logRemoval(deps.log, agentId, 'login copies', await deleteLoginCopies(deps.removal, agentId));
+    logRemoval(deps.log, agentId, 'folders', await deleteAgentFolders(deps.removal, agentId));
+  }
+}
+
+/**
+ * Observes every agent, plans, and carries the plan out in order. With
+ * `fetched` (box mode: the assignment was just fetched from Switch, not held
+ * from an earlier fetch), removed agents' leftover folders are considered too.
+ */
+export async function reconcile(
+  assignment: Assignment,
+  deps: ReconcileDeps,
+  options: { fetched?: boolean } = {}
+): Promise<Action[]> {
   const observations = new Map<string, AgentObservation>();
   const credentialsChanged = new Set<string>();
+  const loginOnly = new Set<string>();
   for (const entry of assignment.agents) {
     if (definitionProblem(entry, deps.offered)) {
       observations.set(entry.agent_id, emptyObservation());
@@ -360,8 +572,27 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
     observations.set(entry.agent_id, await deps.runtime.observe(entry.agent_id));
     if (entry.desired_state !== 'running') continue;
     try {
-      if (await deps.ensureCredentials(entry.agent_id, entry.definition.provider))
-        credentialsChanged.add(entry.agent_id);
+      const change = await deps.ensureCredentials(entry.agent_id, entry.definition.provider);
+      if (change) credentialsChanged.add(entry.agent_id);
+      if (deps.box) {
+        if (change === 'login') loginOnly.add(entry.agent_id);
+        // The relay cut the old host off, or the login it runs on was
+        // withdrawn: it restarts at once, owing nothing.
+        else if (change) deps.credentialRestarts?.settle(entry.agent_id);
+        // A withdrawn login's copy goes now, resting agent or not, not when
+        // its host next starts.
+        if (change === 'withdrawn')
+          await forgetLogin(entry.agent_id, deps, 'the login was withdrawn');
+        // An agent whose host isn't running (resting, stopped, failed, never
+        // started) isn't using its copy of a login that has just changed: it
+        // goes now, and the host's next start writes the new one.
+        else if (change === 'login' && !observations.get(entry.agent_id)?.alive)
+          await forgetLogin(
+            entry.agent_id,
+            deps,
+            'the login changed while its host is not running'
+          );
+      }
     } catch (error) {
       // Starting it writes them again, and records the failure on the agent.
       deps.log.error('Could not write an agent’s relay credentials', {
@@ -370,6 +601,11 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
       });
     }
   }
+  const owedRestarts = deps.credentialRestarts;
+  if (owedRestarts) {
+    for (const agentId of loginOnly) owedRestarts.owe(agentId, deps.now());
+    for (const agentId of owedRestarts.owed().keys()) credentialsChanged.add(agentId);
+  }
   const actions = planReconcile({
     assignment,
     rows: deps.store.agents(),
@@ -377,6 +613,17 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
     credentialsChanged,
     nowMs: deps.now(),
     offered: deps.offered,
+    ...(deps.box ? { box: true } : {}),
+    ...(owedRestarts ? { credentialsOwedSince: owedRestarts.owed() } : {}),
+    ...(deps.rest
+      ? {
+          suspended: new Set(
+            assignment.agents
+              .map((entry) => entry.agent_id)
+              .filter((agentId) => deps.rest?.suspended(agentId))
+          ),
+        }
+      : {}),
   });
   for (const action of actions) {
     try {
@@ -389,6 +636,14 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
       });
     }
   }
+  if (options.fetched && deps.removal)
+    try {
+      await removeLeftovers(assignment, deps);
+    } catch (error) {
+      deps.log.error('Could not clear removed agents’ leftover files', {
+        error: errorCode(error),
+      });
+    }
   return actions;
 }
 

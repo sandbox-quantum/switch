@@ -93,6 +93,8 @@ export type LaunchOptions = {
   replaceIdentity: boolean;
   /** Someone asked for this agent host on purpose: a standing-down marker is cleared. */
   clearTakenOver: boolean;
+  /** Box mode: false when nobody in the agent's rooms asked for this restart, so a cut-off turn owes its line. */
+  asked?: boolean;
 };
 
 /**
@@ -596,7 +598,11 @@ export class InProcessRuntime implements AgentRuntime {
   async launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void> {
     const root = this.deps.layout.watcherRoot(agentId);
     await mkdir(root, { recursive: true, mode: 0o700 });
-    if (options.restart || options.replaceIdentity) await this.stop(agentId, { wait: true });
+    if (options.restart || options.replaceIdentity)
+      await this.stop(agentId, {
+        wait: true,
+        ...(options.asked === false ? { asked: false } : {}),
+      });
     await this.stopDetached(root);
     if (options.replaceIdentity) await removeOptional(join(root, 'config.json'));
     if (options.clearTakenOver) await clearTakenOver(root);
