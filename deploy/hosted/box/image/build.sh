@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the agent box image in two stages, then optionally pushes it by digest.
 #
-#   ./build.sh --from-source <tag>     packs the box controller from this checkout, then builds
+#   ./build.sh --from-source <tag>     packs the controller from this checkout, then builds
 #   ./build.sh <controller.tgz> <tag>  builds from a controller package packed earlier
 #
 #   <tag>                  the local tag for the result, e.g. 2026-11-02, required
@@ -11,17 +11,18 @@
 #                          written to the switch.built-from label. Needs CONTROLLER_TGZ_SHA256 too. --from-source refuses it,
 #                          because there the checkout's own commit is always the label.
 #
-# The box runs the box copy of the controller, @switch-console/agent-controller-box, never the upstream
-# console/packages/agent-controller that Switch Console and the v1 controller release use. --from-source packs it
-# the same way the controller release does: install with the frozen lockfile (with no dependency install scripts run
-# on the build machine; the package is the same byte for byte without them), build the box package and the
-# workspace packages it depends on, then run its `package` script, which bundles the CLI and the shared host
-# (workspace dependencies included) into one switch-agent-controller-<version>.tgz with no dependencies to install.
-# The checkout must be clean, so the commit it records is the commit the image was built from.
+# The box runs the same controller package as v1 machines, @switch-console/agent-controller, in box mode: the
+# entrypoint passes --box, and the image carries the box marker (/etc/switch/box). --from-source packs it the same
+# way the controller release does: install with the frozen lockfile (with no dependency install scripts run on the
+# build machine; the package is the same byte for byte without them), build the controller and the workspace
+# packages it depends on, then run its `package` script, which bundles the CLI and the shared host (workspace
+# dependencies included) into one switch-agent-controller-<version>.tgz with no dependencies to install. The
+# checkout must be clean, so the commit it records is the commit the image was built from.
 #
 # Either way the package is checked before the image is built: it must be named switch-agent-controller with the
 # switch-agent-controller command, so it installs where the entrypoint expects it, and it must install and report
-# its version, and both bundles must carry strings only the box copy has. Its sha256 and the source commit
+# its version, both bundles must carry box mode's own modules, and the entrypoint must pass --box to every
+# controller command. Its sha256 and the source commit
 # (--from-source only) are printed and kept as image labels.
 #
 # Stage 1 (Dockerfile) builds the base with the provider CLIs; stage 2 (Dockerfile.controller-update) puts the
@@ -44,11 +45,11 @@ if [ "$src" = --from-source ]; then
   (
     cd "$console"
     pnpm install --frozen-lockfile --ignore-scripts
-    pnpm --filter '@switch-console/agent-controller-box...' run build
-    pnpm --filter @switch-console/agent-controller-box run package
+    pnpm --filter '@switch-console/agent-controller...' run build
+    pnpm --filter @switch-console/agent-controller run package
   )
-  version=$(node -p "require('$console/packages/agent-controller-box/package.json').version")
-  tgz=$console/packages/agent-controller-box/dist-package/switch-agent-controller-$version.tgz
+  version=$(node -p "require('$console/packages/agent-controller/package.json').version")
+  tgz=$console/packages/agent-controller/dist-package/switch-agent-controller-$version.tgz
 else
   tgz=$src
   if [ -n "${BUILT_FROM:-}" ]; then
@@ -72,13 +73,21 @@ deps=$(node -p "Object.keys(require('$work/package/package.json').dependencies |
 [ "$name" = switch-agent-controller ] || { echo "REFUSE: package name is '$name', not switch-agent-controller" >&2; exit 1; }
 [ "$bin" = switch-agent-controller ] || { echo "REFUSE: package commands are '$bin', not switch-agent-controller" >&2; exit 1; }
 [ "$deps" = 0 ] || { echo "REFUSE: the package lists $deps dependencies; it must be bundled whole" >&2; exit 1; }
-# The box copy's own code must be inside the bundles, so a box is never built from upstream's controller or providers
-# by mistake (a wrong path in the package script would otherwise go unnoticed). Each string is only in the box copy.
-has() { grep -qF "$2" "$work/package/$1" || { echo "REFUSE: $1 lacks '$2', so it wasn't built from the box copy" >&2; exit 1; }; }
-has cli.mjs pushTicketUntilTaken
-has cli.mjs 'kept your message'
-has shared-host.mjs 'kept your message'
-echo "controller package carries the box copy's controller and providers"
+# Box mode's own modules must be inside the bundles, so a box is never built from a package without them (a build
+# from before box mode, or a wrong path in the package script). esbuild names each bundled module in a comment line;
+# box-only modules live under a box/ folder, or are agent-providers' ./box export (see
+# console/packages/agent-controller/scripts/box-bundle.mjs, which checks the same at packaging).
+box_modules() { grep -cE '^// (\.\./agent-providers/(dist/box\.mjs|src/host/box/)|src/box/)' "$work/package/$1" || true; }
+for bundle in cli.mjs shared-host.mjs; do
+  [ "$(box_modules "$bundle")" -gt 0 ] || { echo "REFUSE: $bundle carries no box mode modules, so it can't run a box" >&2; exit 1; }
+done
+echo "controller package carries box mode's modules in both bundles"
+# And the entrypoint runs every controller command in box mode: without --box a controller refuses in a box image.
+for command in enroll status run; do
+  grep -qE "(switch-agent-controller|cli\") $command --box( |\$)" entrypoint.sh ||
+    { echo "REFUSE: entrypoint.sh doesn't run '$command' with --box" >&2; exit 1; }
+done
+echo "entrypoint runs enroll, status and run with --box"
 npm install --global --ignore-scripts --prefix "$work/smoke" "$tgz" >/dev/null
 echo "controller package installs and reports version $("$work/smoke/bin/switch-agent-controller" --version)"
 
