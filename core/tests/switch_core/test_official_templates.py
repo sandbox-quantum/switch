@@ -175,13 +175,17 @@ def _playbook_table(heading: str) -> dict[str, list[str]]:
     }
 
 
-def test_switch_buddy_asks_the_work_question_as_a_numbered_list_with_skip():
+def test_switch_buddy_asks_the_work_question_openly_with_skip():
     instructions = _buddy_words()
     assert (
-        'one message, "What do you mostly work on?", listing Engineering, Product, '
-        'Design, Sales, Marketing, Other and "Skip for now", numbered, in that order. '
-        "Not a question form"
+        "one open, inviting message asking what they mostly work on and what bogs "
+        "down their day-to-day"
     ) in instructions
+    assert 'don\'t ask "what do you want an agent to handle?"' in instructions
+    assert "as much detail as they're comfortable with" in instructions
+    assert (
+        '"Skip for now" anytime to just explore. Not a question form.' in instructions
+    )
     assert "the work question is a form" not in instructions
     assert "Do not repeat it as text." in instructions
     assert 'ask the work question and run "Their first agent"' in instructions
@@ -502,14 +506,59 @@ def test_switch_buddy_names_only_choices_the_connect_dialog_offers():
     assert "pick Slack under Messaging app" in playbook
 
 
-def test_switch_buddy_joins_and_links_the_room_a_template_makes():
-    """A template's room does not include buddy, so it adds itself before
-    asking the first question, and always hands the person a link."""
+def test_switch_buddy_joins_introduces_and_links_the_rooms_it_creates():
+    """Buddy stays in the first rooms it creates (including template rooms with
+    a kickoff), introduces each room in the room, and hands the person a link."""
     text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
-    assert "has a `kickoff` asks its agents for you: don't join it" in text
+    assert "don't join it" not in text
     assert "add yourself with `invite_agent_to_room`" in text
+    assert "even when the template has a `kickoff`" in text
+    assert "post a short welcome" in text
+    assert "targeting the owner's username on bridged channels" in text
+    assert 'a concrete "try this now" prompt wrapped in inline backticks' in text
+    assert "if teammates are in the room, note you answer the owner by default" in text
+    assert "produce a useful starter artifact from what you know" in text
+    assert "<#<external_channel_id>>" in text
+    assert "**[Open <room name> →](<channel_url>)**" in text
     assert "switchdash://open/room/<room-id>" in text
+    assert "Come back to this chat any time to tweak it or ask about Switch." in text
+    assert "confirm their time zone rather than assuming UTC" in text
+    assert (
+        "Never assume someone on Slack or another messaging app has Switch Console access."
+        in text
+    )
+    assert "this might take a few minutes." in text
+    assert "Friendly, like a buddy." in text
+    assert "Much less verbose." in text
+    assert "services[].url" in text
     assert 'Never end the turn on "creating it now"' in text
+
+
+def test_switch_buddy_runs_adaptive_interview_and_starts_with_one_agent():
+    """Onboarding asks a few quick questions with a check-in to go deeper or
+    move on, drives connectors from those answers, and starts with one focused
+    agent in one room before hinting at multi-agent workflows."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "A few quick questions about their work" in text
+    assert "Every question is skippable" in text
+    assert "name the one-line agent idea you have in mind" in text
+    assert "answer 2–3 sharper questions to tailor it" in text
+    assert "Offer one focused agent first." in text
+    assert "Start with one agent in one room, not a multi-agent room template" in text
+    assert "the private room you'll create for it" in text
+    assert "break the proposal into 2–3 short blocks separated by blank lines" in text
+    assert (
+        "if `list_machines` shows other ready providers on that machine, name them"
+        in text
+    )
+    assert "Never bundle multiple setup questions" in text
+    assert "offer a concrete schedule right in the proposal" in text
+    assert "hint at richer multi-agent setups once this one is working" in text
+    assert "wait for them to say they're done, then re-check `get_my_context`" in text
+    assert (
+        "invite them to say when it's connected; always re-check `get_my_context`"
+        in text
+    )
 
 
 def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
