@@ -1873,6 +1873,7 @@ class AgentRecipient:
                 from_platform=PLATFORM_MARKER in event.content,
                 from_app=event.content.get(SENDER_IS_APP_MARKER) is True,
                 agent_metadata=self.agent.metadata_,
+                agent_client_id=self.agent.client_id,
                 agent_live=agent_live,
                 has_attachment=has_attachment,
             )

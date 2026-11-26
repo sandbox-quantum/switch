@@ -103,7 +103,11 @@ async def test_a_new_session_is_reported_with_how_it_started(session_factory) ->
 
     assert (response.status_code, response.json()) == (200, {"reported": True})
     assert _started(sink) == [
-        {"start_source": "user", "known_agent_type": "claude-code"}
+        {
+            "start_source": "user",
+            "known_agent_type": "claude-code",
+            "agent_origin": "other",
+        }
     ]
 
 

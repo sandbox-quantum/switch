@@ -25,12 +25,18 @@ from switch_core.gateway.auth import (
     get_tenant_is_admin,
     require_room_access,
 )
-from switch_core.gateway.dependencies import get_room_store, get_session
+from switch_core.gateway.dependencies import (
+    current_telemetry,
+    get_room_store,
+    get_session,
+)
 from switch_core.room_schedules import (
     TEXT_LIMIT,
     ScheduleError,
     addressed_first_run,
     first_run,
+    report_schedule_created,
+    report_schedule_removed,
 )
 
 router = APIRouter()
@@ -152,6 +158,7 @@ async def create_room_schedule(
         ),
     )
     detail = _detail(schedule)
+    await report_schedule_created(session, current_telemetry(), schedule)
     await session.commit()
     return detail
 
@@ -205,6 +212,10 @@ async def pause_room_schedule(
             )
         except ScheduleError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+    if body.paused and not schedule.paused:
+        await report_schedule_removed(
+            session, current_telemetry(), schedule, change="paused", removed_by="user"
+        )
     schedule.paused = body.paused
     await session.flush()
     detail = _detail(schedule)
@@ -222,6 +233,10 @@ async def delete_room_schedule(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> Response:
     await require_room_access(session, room_store, room_id, user, "configure", is_admin)
-    await STORE.delete(session, await _schedule_in(session, room_id, schedule_id))
+    schedule = await _schedule_in(session, room_id, schedule_id)
+    await report_schedule_removed(
+        session, current_telemetry(), schedule, change="deleted", removed_by="user"
+    )
+    await STORE.delete(session, schedule)
     await session.commit()
     return Response(status_code=204)

@@ -19,11 +19,13 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Agent
+from switch_core.db.session_scope import tenant_session
 from switch_core.telemetry.deployment import (
     SESSION_START_CLAIM_PREFIX,
     claim_milestone,
     prune_claims,
 )
+from switch_core.telemetry.origins import agent_origins
 from switch_core.telemetry.service import TelemetryService, emit_safely
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 
@@ -101,6 +103,19 @@ def default_session_start_limiter() -> SessionStartLimiter:
     )
 
 
+async def _origin(
+    session_factory: async_sessionmaker[AsyncSession], agent: Agent
+) -> str:
+    """The agent's origin (`telemetry/origins.py`), or `unknown` when it cannot
+    be read: a start is reported either way."""
+    try:
+        async with tenant_session(session_factory, agent.tenant_id) as session:
+            return (await agent_origins(session, [agent.id]))[agent.id]
+    except Exception:
+        logger.warning("Could not read agent %s's origin", agent.id, exc_info=True)
+        return "unknown"
+
+
 async def report_session_started(
     telemetry: TelemetryService | None,
     session_factory: async_sessionmaker[AsyncSession],
@@ -135,7 +150,11 @@ async def report_session_started(
         emit_safely(
             telemetry,
             "session_started",
-            {"start_source": start_source, "known_agent_type": known_agent_type},
+            {
+                "start_source": start_source,
+                "known_agent_type": known_agent_type,
+                "agent_origin": await _origin(session_factory, agent),
+            },
         )
     await telemetry.emit_milestone(
         "first_agent_session",

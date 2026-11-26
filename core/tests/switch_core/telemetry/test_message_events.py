@@ -408,6 +408,7 @@ class TestAnAgentsMessage:
                 {
                     "sender_kind": "agent",
                     "known_agent_type": "codex",
+                    "agent_origin": "other",
                     "bridge_platform": "slack",
                     "channel_type": "channel_private",
                     "console_chat": "false",
@@ -456,6 +457,7 @@ class TestAgentMessageReceived:
             agent_metadata={"known_agent_type": "claude-code"},
             agent_live=True,
             has_attachment=False,
+            agent_client_id=world.agent.client_id,
         )
 
         assert await _reported(messages, service, sink) == [
@@ -464,6 +466,7 @@ class TestAgentMessageReceived:
                 {
                     "sender_kind": "user",
                     "known_agent_type": "claude-code",
+                    "agent_origin": "other",
                     "bridge_platform": "slack",
                     "channel_type": "channel_private",
                     "console_chat": "false",

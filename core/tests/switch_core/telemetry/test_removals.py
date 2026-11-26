@@ -151,6 +151,7 @@ class TestRegistrationPathProducesEveryValue:
                 "known_agent_type": "claude-code",
                 "registration_path": path,
                 "has_parent": False,
+                "created_by_buddy": False,
             },
         )
 
@@ -164,6 +165,7 @@ class TestRegistrationPathProducesEveryValue:
                     "known_agent_type": "none",
                     "registration_path": "console",
                     "has_parent": False,
+                    "created_by_buddy": False,
                 },
             )
 
@@ -185,6 +187,7 @@ class TestAutoSessionIsAnAgentType:
                 "known_agent_type": "claude-code",
                 "registration_path": "gateway",
                 "has_parent": False,
+                "created_by_buddy": False,
             },
         )
 

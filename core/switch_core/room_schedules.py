@@ -52,6 +52,9 @@ from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.room_policy import RoomCaller
 from switch_core.room_read_only import read_only_state
+from switch_core.telemetry import TelemetryService, emit_after_commit, emit_safely
+from switch_core.telemetry.ages import age_days
+from switch_core.telemetry.origins import is_buddy
 from switch_core.tenant_context import no_tenant
 
 logger = logging.getLogger(__name__)
@@ -171,10 +174,75 @@ async def skip_missed_runs(
     return len(missed)
 
 
+def schedule_kind(schedule: RoomSchedule) -> str:
+    """`recurring` for a cron rule, `once` for a set moment (telemetry)."""
+    return "recurring" if schedule.cron is not None else "once"
+
+
+async def _set_by_buddy(session: AsyncSession, schedule: RoomSchedule) -> bool:
+    """Whether a switch-buddy set the schedule up, for telemetry; False when it
+    cannot be read, which must never fail the change being reported."""
+    try:
+        return await is_buddy(session, schedule.author_agent_id)
+    except Exception:
+        logger.warning(
+            "Could not read whether schedule %s's agent is a switch-buddy",
+            schedule.id,
+            exc_info=True,
+        )
+        return False
+
+
+async def report_schedule_created(
+    session: AsyncSession, telemetry: TelemetryService | None, schedule: RoomSchedule
+) -> None:
+    """`room_schedule_created`, once `session` commits."""
+    if telemetry is None or not telemetry.enabled:
+        return
+    emit_after_commit(
+        session,
+        telemetry,
+        "room_schedule_created",
+        {
+            "schedule_kind": schedule_kind(schedule),
+            "set_by": "agent" if schedule.author_agent_id is not None else "user",
+            "by_buddy": await _set_by_buddy(session, schedule),
+            "agent_count": len(schedule.agent_ids),
+        },
+    )
+
+
+async def report_schedule_removed(
+    session: AsyncSession,
+    telemetry: TelemetryService | None,
+    schedule: RoomSchedule,
+    *,
+    change: str,
+    removed_by: str,
+) -> None:
+    """`room_schedule_removed` (`change` deleted or paused), once `session`
+    commits. Read before a delete, while the row is still there."""
+    if telemetry is None or not telemetry.enabled:
+        return
+    emit_after_commit(
+        session,
+        telemetry,
+        "room_schedule_removed",
+        {
+            "change": change,
+            "removed_by": removed_by,
+            "schedule_kind": schedule_kind(schedule),
+            "by_buddy": await _set_by_buddy(session, schedule),
+            "age_days": age_days(schedule.created_at),
+        },
+    )
+
+
 def own_room_schedules(
     ownership: Ownership,
     session_factory: async_sessionmaker[AsyncSession],
     client_lifecycle: ClientLifecycleService,
+    telemetry: TelemetryService | None = None,
 ) -> OwnedKind:
     """Register the scheduler as owned work, wanted by this process; it runs
     here only while this process holds it.
@@ -184,7 +252,7 @@ def own_room_schedules(
     posted, so the moment two processes overlap as ownership moves posts it
     once.
     """
-    scheduler = RoomScheduler(session_factory, client_lifecycle)
+    scheduler = RoomScheduler(session_factory, client_lifecycle, telemetry)
     running: dict[str, asyncio.Task[None]] = {}
 
     def launch(key: str) -> None:
@@ -224,9 +292,11 @@ class RoomScheduler:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         client_lifecycle: ClientLifecycleService,
+        telemetry: TelemetryService | None = None,
     ) -> None:
         self._sessions = session_factory
         self._lifecycle = client_lifecycle
+        self._telemetry = telemetry
         self._schedules = RoomScheduleStore()
         self._rooms = RoomStore()
         self._agents = AgentStore()
@@ -337,6 +407,11 @@ class RoomScheduler:
                 if agent_id in present
                 and (agent := await self._agents.get(db, agent_id)) is not None
             ]
+            by_buddy = (
+                await _set_by_buddy(db, schedule)
+                if self._telemetry is not None and self._telemetry.enabled
+                else False
+            )
             if not may_speak or setter_gone or not names:
                 stored = await self._schedules.get(db, schedule.id)
                 assert stored is not None
@@ -358,6 +433,9 @@ class RoomScheduler:
                 room.id,
                 state,
             )
+            self._report_fired(
+                schedule, by_buddy, "skipped", "room_read_only", due_at, now
+            )
             return
         if not may_speak:
             logger.warning(
@@ -371,6 +449,9 @@ class RoomScheduler:
                 f"Paused a schedule: {creator.name}, who it speaks for, may no longer "
                 "manage this room. Someone who may can edit it to take it over, then resume it.",
             )
+            self._report_fired(
+                schedule, by_buddy, "paused", "author_lost_room", due_at, now
+            )
             return
         if setter_gone:
             logger.warning(
@@ -382,6 +463,7 @@ class RoomScheduler:
                 room.transport_room_id,
                 "Paused a schedule: the agent that set it up is no longer in this room.",
             )
+            self._report_fired(schedule, by_buddy, "paused", "setter_left", due_at, now)
             return
         if not names:
             logger.warning(
@@ -393,6 +475,7 @@ class RoomScheduler:
                 room.transport_room_id,
                 "Paused a schedule: none of the agents it was for are in this room any more.",
             )
+            self._report_fired(schedule, by_buddy, "paused", "no_agents", due_at, now)
             return
         await admin.send_platform_message(
             room.transport_room_id,
@@ -402,4 +485,27 @@ class RoomScheduler:
                 if setter is not None
                 else OnBehalfOf(creator.id, creator.name)
             ),
+        )
+        self._report_fired(schedule, by_buddy, "posted", "none", due_at, now)
+
+    def _report_fired(
+        self,
+        schedule: RoomSchedule,
+        by_buddy: bool,
+        outcome: str,
+        reason: str,
+        due_at: datetime,
+        now: datetime,
+    ) -> None:
+        """`room_schedule_fired`, for a run already claimed and acted on."""
+        emit_safely(
+            self._telemetry,
+            "room_schedule_fired",
+            {
+                "outcome": outcome,
+                "reason": reason,
+                "schedule_kind": schedule_kind(schedule),
+                "by_buddy": by_buddy,
+                "late": now - due_at > LATE_AFTER,
+            },
         )

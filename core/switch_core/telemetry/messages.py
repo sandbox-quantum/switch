@@ -40,9 +40,23 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.chats import CHAT_OPERATION_ID_KEY, MEMBER_CLIENT_TYPE
-from switch_core.db.models import Agent, Client, ClientRoom, CollaborationBridge, Room
+from switch_core.db.models import (
+    Agent,
+    Client,
+    ClientRoom,
+    CollaborationBridge,
+    Room,
+    TemplateInstall,
+    TemplateInstallResource,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.observability.throttle import WarningThrottle
+from switch_core.telemetry.origins import (
+    AgentOrigin,
+    agent_origins,
+    most_specific,
+    origin_of,
+)
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.snapshot import (
     AGENT_CLIENT_TYPE,
@@ -97,6 +111,7 @@ _CLIENT_TYPE_KIND = {
 # An agent whose runtime could not be looked up. Not `none`, which is a real
 # answer: an agent that declares no runtime.
 _UNKNOWN_RUNTIME = "unknown"
+_UNKNOWN_ORIGIN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -140,6 +155,7 @@ class _AgentAddressed:
     from_platform: bool
     from_app: bool
     known_agent_type: str
+    agent_client_id: str | None
     agent_live: bool
     has_attachment: bool
 
@@ -200,6 +216,11 @@ class MessageTelemetry:
         self._agent_runtimes: _TtlCache[tuple[str, str], str] = _TtlCache(
             _IDENTITY_TTL_SECONDS, _CACHE_MAX_ENTRIES
         )
+        # Each agent's origin (`telemetry/origins.py`), by client like the
+        # runtimes and read with them.
+        self._agent_origins: _TtlCache[tuple[str, str], str] = _TtlCache(
+            _IDENTITY_TTL_SECONDS, _CACHE_MAX_ENTRIES
+        )
         # Keys whose lookup failed, as `(lookup, tenant_id, id)`, until they
         # may be tried again.
         self._failed_lookups: _TtlCache[tuple[str, str, str], bool] = _TtlCache(
@@ -243,6 +264,7 @@ class MessageTelemetry:
         agent_metadata: dict | None,
         agent_live: bool,
         has_attachment: bool,
+        agent_client_id: str | None = None,
     ) -> None:
         """A message was addressed to an agent and let through its addressing
         policy and budget. `agent_live` is whether the agent had a live session
@@ -259,6 +281,7 @@ class MessageTelemetry:
                 from_platform=from_platform,
                 from_app=from_app,
                 known_agent_type=normalise_known_agent_type(agent_metadata),
+                agent_client_id=agent_client_id,
                 agent_live=agent_live,
                 has_attachment=has_attachment,
             )
@@ -345,6 +368,11 @@ class MessageTelemetry:
                 if message.sender_role == "agent"
                 else None
             ),
+            agent_origin=(
+                await self._agent_origin(message.tenant_id, message.sender_client_id)
+                if message.sender_role == "agent"
+                else None
+            ),
             bridge_platform=room.bridge_platform,
             channel_type=room.channel_type,
             console_chat=room.console_chat,
@@ -368,6 +396,11 @@ class MessageTelemetry:
             "agent_message_received",
             sender_kind=sender_kind,
             known_agent_type=item.known_agent_type,
+            agent_origin=(
+                await self._agent_origin(item.tenant_id, item.agent_client_id)
+                if item.agent_client_id is not None
+                else _UNKNOWN_ORIGIN
+            ),
             bridge_platform=room.bridge_platform,
             channel_type=room.channel_type,
             console_chat=room.console_chat,
@@ -545,6 +578,31 @@ class MessageTelemetry:
                     ).where(Agent.tenant_id == tenant_id)
                 )
             ).all()
+            installs = (
+                await session.execute(
+                    select(
+                        Agent.client_id,
+                        TemplateInstall.source,
+                        TemplateInstall.template_id,
+                    )
+                    .select_from(TemplateInstallResource)
+                    .join(
+                        TemplateInstall,
+                        and_(
+                            TemplateInstall.id == TemplateInstallResource.install_id,
+                            TemplateInstall.tenant_id == tenant_id,
+                        ),
+                    )
+                    .join(
+                        Agent,
+                        and_(
+                            Agent.id == TemplateInstallResource.agent_id,
+                            Agent.tenant_id == tenant_id,
+                        ),
+                    )
+                    .where(TemplateInstallResource.tenant_id == tenant_id)
+                )
+            ).all()
         self._tenants_read[tenant_id] = time.monotonic() + _ROOM_TTL_SECONDS
         by_room: dict[str, dict[str, int]] = {}
         for room_id, client_type, count in members:
@@ -565,6 +623,15 @@ class MessageTelemetry:
             self._sender_kinds.put(
                 (tenant_id, transport_user_id),
                 _CLIENT_TYPE_KIND.get(client_type, "unknown"),
+            )
+        origins: dict[str, AgentOrigin] = {}
+        for client_id, source, template_id in installs:
+            origins[client_id] = most_specific(
+                origins.get(client_id, "other"), origin_of(source, template_id)
+            )
+        for client_id, _ in agents:
+            self._agent_origins.put(
+                (tenant_id, client_id), origins.get(client_id, "other")
             )
         for client_id, known_agent_type in agents:
             self._agent_runtimes.put(
@@ -721,3 +788,43 @@ class MessageTelemetry:
         runtime = normalise_known_agent_type(row[0])
         self._agent_runtimes.put(key, runtime)
         return runtime
+
+    async def _agent_origin(self, tenant_id: str, client_id: str) -> str:
+        """The agent's origin, read with every agent's when the tenant is read
+        and on its own for one made since; `unknown` when it cannot be read."""
+        key = (tenant_id, client_id)
+        cached = self._agent_origins.get(key)
+        if cached is not None:
+            return cached
+        # The runtime's key: an agent whose lookup just failed is not asked
+        # about again for its origin straight away.
+        failure_key = ("agent", tenant_id, client_id)
+        if not self._may_look_up(failure_key):
+            return _UNKNOWN_ORIGIN
+        try:
+            await self._read_tenant(tenant_id)
+        except Exception:
+            self._lookup_failed(failure_key, "an agent's origin")
+            return _UNKNOWN_ORIGIN
+        cached = self._agent_origins.get(key)
+        if cached is not None:
+            return cached
+        try:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                agent_id = (
+                    await session.execute(
+                        select(Agent.id).where(
+                            Agent.tenant_id == tenant_id, Agent.client_id == client_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if agent_id is None:
+                    origin = _UNKNOWN_ORIGIN
+                else:
+                    origin = (await agent_origins(session, [agent_id]))[agent_id]
+        except Exception:
+            self._lookup_failed(failure_key, "an agent's origin")
+            return _UNKNOWN_ORIGIN
+        self._lookup_answered()
+        self._agent_origins.put(key, origin)
+        return origin

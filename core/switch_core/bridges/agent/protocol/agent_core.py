@@ -97,7 +97,7 @@ from switch_core.clients.admin_messages import (
     platform_replies_in_channel,
 )
 from switch_core.clients.agent_admin import AgentDeletionRequests
-from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.audit import AuditAction, record_audit_event, request_actor
 from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
@@ -155,6 +155,8 @@ from switch_core.room_schedules import (
     ScheduleError,
     addressed_first_run,
     first_run,
+    report_schedule_created,
+    report_schedule_removed,
 )
 from switch_core.room_service import (
     RemovalMiss,
@@ -171,6 +173,7 @@ from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.telemetry import TelemetryService, emit_after_commit, emit_safely
 from switch_core.telemetry.ages import age_days
+from switch_core.telemetry.origins import is_buddy
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
@@ -689,6 +692,7 @@ class AgentCore:
 
         if newly_registered:
             runtime = normalise_known_agent_type(metadata)
+            created_by_buddy = await self._acting_agent_is_buddy()
             emit_safely(
                 self.telemetry,
                 "agent_registered",
@@ -697,6 +701,7 @@ class AgentCore:
                     "known_agent_type": runtime,
                     "registration_path": registration_path,
                     "has_parent": parent_agent_id is not None,
+                    "created_by_buddy": created_by_buddy,
                 },
             )
             if self.telemetry is not None:
@@ -714,6 +719,26 @@ class AgentCore:
             api_key=api_key,
             oauth_client_id=oauth_client_id,
         )
+
+    async def _acting_agent_is_buddy(self) -> bool:
+        """Whether the agent this request acts for is a switch-buddy, for
+        telemetry. False outside an agent's request, while telemetry is off,
+        and when its origin cannot be read: never a reason to fail the call."""
+        if self.telemetry is None or not self.telemetry.enabled:
+            return False
+        _, acting_agent_id = request_actor()
+        if acting_agent_id is None:
+            return False
+        try:
+            async with self.session_factory() as session:
+                return await is_buddy(session, acting_agent_id)
+        except Exception:
+            logger.warning(
+                "Could not read whether agent %s is a switch-buddy",
+                acting_agent_id,
+                exc_info=True,
+            )
+            return False
 
     async def _create_agent(
         self,
@@ -4457,6 +4482,7 @@ class AgentCore:
                 ),
             )
             view = await self._schedule_view(session, schedule, agent_id)
+            await report_schedule_created(session, self.telemetry, schedule)
             await session.commit()
         return view
 
@@ -4508,6 +4534,14 @@ class AgentCore:
                     )
                 except ScheduleError as e:
                     raise ValueError(str(e)) from e
+            if paused and not schedule.paused:
+                await report_schedule_removed(
+                    session,
+                    self.telemetry,
+                    schedule,
+                    change="paused",
+                    removed_by="agent",
+                )
             schedule.paused = paused
             await session.flush()
             view = await self._schedule_view(session, schedule, agent_id)
@@ -4521,6 +4555,9 @@ class AgentCore:
         async with self.session_factory() as session:
             await self._require_schedule_change(session, agent_id, room_id)
             schedule = await self._own_schedule(session, agent_id, room_id, schedule_id)
+            await report_schedule_removed(
+                session, self.telemetry, schedule, change="deleted", removed_by="agent"
+            )
             await RoomScheduleStore().delete(session, schedule)
             await session.commit()
 

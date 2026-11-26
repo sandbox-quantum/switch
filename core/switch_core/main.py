@@ -1086,7 +1086,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # here too (`clients/client_signals.py`).
     ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
     # Room schedules post from whichever process owns them (`room_schedules.py`).
-    own_room_schedules(ownership, session_factory, client_lifecycle)
+    own_room_schedules(ownership, session_factory, client_lifecycle, telemetry)
     # Every process runs each tenant's admin actor, so the process that wrote
     # a message posts the heads-up it owes (`clients/mention_warnings.py`).
     router.use_admin(

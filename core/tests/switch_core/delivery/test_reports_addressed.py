@@ -94,6 +94,7 @@ async def test_an_addressed_message_is_reported_once(scene: _Scene) -> None:
             "from_platform": False,
             "from_app": False,
             "agent_metadata": None,
+            "agent_client_id": scene.agent.client_id,
             "agent_live": True,
             "has_attachment": False,
         }

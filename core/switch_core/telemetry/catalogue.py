@@ -241,6 +241,15 @@ BRIDGE_FAILURE_REASON = one_of(
 # three-valued fact, not a boolean with a spare bit smuggled into it.
 TRISTATE = one_of("true", "false", "unknown")
 
+# Where an agent came from (`telemetry/origins.py`): switch-buddy, another
+# template that comes with Switch, or anything else (made by hand, by an agent,
+# or from a saved template). Read from the server's own record of the template
+# run, never from a name. `unknown` when that record could not be read.
+AGENT_ORIGIN = one_of("buddy", "official_template", "other", "unknown")
+
+# How often a room schedule posts: once at a set moment, or on a cron rule.
+SCHEDULE_KIND = one_of("once", "recurring")
+
 
 # Which decision backend a workspace's auto-route used: the server's own
 # decision service as its default, the workspace's own endpoint, or a choice
@@ -492,6 +501,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "created_by_kind": ACTOR_KIND,
         "from_template": BOOLEAN,
         "console_chat": BOOLEAN,
+        # Made by a switch-buddy (`created_by_kind` is then `agent`).
+        "created_by_buddy": BOOLEAN,
     },
     "room_became_active": {
         "seconds_since_room_created": NUMBER,
@@ -544,6 +555,10 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         # identically, so the server cannot tell them apart.
         "registration_path": one_of("bootstrap", "personal_key", "gateway", "other"),
         "has_parent": BOOLEAN,
+        # Made by a switch-buddy acting for its owner (`create_agent`), as
+        # against by a person or another agent: the "Buddy built their first
+        # agent" step, without an event of its own.
+        "created_by_buddy": BOOLEAN,
     },
     # An agent coming online: its first live connection. No "start source": the
     # server sees an authenticated connection whether a person launched the
@@ -559,6 +574,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "session_started": {
         "start_source": one_of("user", "room", "automation", "unknown"),
         "known_agent_type": KNOWN_AGENT_TYPE,
+        "agent_origin": AGENT_ORIGIN,
     },
     # No runtime: the connection registry is the only thing that knows a
     # session ended and it holds none. Starts carry it. Dated to the last
@@ -619,6 +635,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "message_sent": {
         "sender_kind": SENDER_KIND,
         "known_agent_type": optional(LOOKED_UP_AGENT_TYPE),
+        # Only when an agent said it, as `known_agent_type`.
+        "agent_origin": optional(AGENT_ORIGIN),
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
         "console_chat": TRISTATE,
@@ -638,6 +656,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "agent_message_received": {
         "sender_kind": SENDER_KIND,
         "known_agent_type": KNOWN_AGENT_TYPE,
+        "agent_origin": AGENT_ORIGIN,
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
         "console_chat": TRISTATE,
@@ -796,6 +815,39 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "delivery": one_of("sent", "not_configured", "failed", "not_requested")
     },
     "invitation_accepted": {"age_hours": optional(NUMBER)},
+    # ── Room schedules ───────────────────────────────────────────────────────
+    # Messages Switch posts to a room's agents on a timer (`room_schedules.py`).
+    # Set up by a person (`set_by` user) or by an agent for its owner; a
+    # schedule a switch-buddy set up is `by_buddy`, the "it comes back on its
+    # own" half of onboarding.
+    "room_schedule_created": {
+        "schedule_kind": SCHEDULE_KIND,
+        "set_by": one_of("user", "agent"),
+        "by_buddy": BOOLEAN,
+        "agent_count": NUMBER,
+    },
+    # One run falling due. `posted` went to the room; `paused` stopped the
+    # schedule instead (its author lost the room, the agent that set it left,
+    # or none of its agents are left); `skipped` held a run for a room that
+    # takes no posts. `late` is a run sent after it was due, once.
+    "room_schedule_fired": {
+        "outcome": one_of("posted", "paused", "skipped"),
+        "reason": one_of(
+            "none", "author_lost_room", "setter_left", "no_agents", "room_read_only"
+        ),
+        "schedule_kind": SCHEDULE_KIND,
+        "by_buddy": BOOLEAN,
+        "late": BOOLEAN,
+    },
+    # Deleted, or paused by a person or agent (a pause the scheduler made is a
+    # `room_schedule_fired`).
+    "room_schedule_removed": {
+        "change": one_of("deleted", "paused"),
+        "removed_by": one_of("user", "agent"),
+        "schedule_kind": SCHEDULE_KIND,
+        "by_buddy": BOOLEAN,
+        "age_days": optional(NUMBER),
+    },
     "bridge_disconnected": {
         # Which side of the bridge: always "collaboration" today; "agent" is
         # declared so the agent bridge can report the same events.

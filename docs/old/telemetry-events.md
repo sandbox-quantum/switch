@@ -721,6 +721,7 @@ when Switch is first told about the bridge.
 | `created_by_kind` | `user` \| `agent` \| `system` |
 | `from_template` | boolean |
 | `console_chat` | boolean — Switch Console made the room as a chat (1-1 or group) |
+| `created_by_buddy` | boolean — a switch-buddy made it (`created_by_kind` is then `agent`) |
 
 **`room_became_active`** — the first interaction in a room, once per room,
 dated to that interaction rather than to the snapshot pass that noticed it. A
@@ -797,6 +798,7 @@ that as `false` would misfile a lookup failure as a failed setup.
 | `known_agent_type` | the runtime Switch offers it as: `claude-code` \| `codex` \| `opencode` \| `antigravity` \| `cursor` \| `deepseek-harness` \| `pi` \| `copilot` \| `kiro` \| `mistral-vibe` \| `goose` \| `qwen` \| `droid` \| `cline` \| `junie`; `other` for a runtime Switch does not offer, `none` when it declared none. The same values wherever `known_agent_type` appears |
 | `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
+| `created_by_buddy` | boolean — a switch-buddy made it for its owner (`create_agent`): the "Buddy built their first agent" step, without an event of its own. False for an agent a person or any other agent made |
 
 **`agent_connected`** — `known_agent_type`. An agent *coming online*: its
 first live connection, not a session a person began. Sessions share their
@@ -808,7 +810,8 @@ servers sent it as `agent_session_started`. An agent run by an agent
 controller, which holds no connection of its own, does not send it.
 
 **`session_started`** — `start_source` (`user` \| `room` \| `automation` \|
-`unknown`), `known_agent_type`. A coding-agent session starting, reported once
+`unknown`), `known_agent_type`, `agent_origin` (see
+[Closed value sets](#closed-value-sets)). A coding-agent session starting, reported once
 by the host that runs it when the session is new — never on a resume. The
 launcher stamps `start_source`: `user` is a person starting one in Switch
 Console, `room` the agent being addressed in a room, `automation` Console's
@@ -908,6 +911,7 @@ carrying its runtime, and did not count Switch Console chat at all.
 |---|---|
 | `sender_kind` | `user` \| `member` \| `bot` \| `agent` — only participants are metered, so `platform` does not occur here. `member` is a person in Switch Console; `bot` is an integration's post on a platform (see "People, bots and accounts") |
 | `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up; only on an agent's message, left out otherwise |
+| `agent_origin` | where the sending agent came from (see [Closed value sets](#closed-value-sets)); only on an agent's message, left out otherwise |
 | `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
 | `channel_type` | channel type, or `unknown` if the room could not be read |
 | `console_chat` | tri-state — Switch Console made the room as a chat; `unknown` if the room could not be read. A person can write in Console in a room that is not one, such as a Slack-bridged room they joined there |
@@ -942,6 +946,7 @@ the requests an agent could act on as they arrived.
 |---|---|
 | `sender_kind` | `user` \| `member` \| `bot` \| `agent` \| `platform` \| `unknown` — as for `message_sent` |
 | `known_agent_type` | the receiving agent's runtime |
+| `agent_origin` | where the receiving agent came from (see [Closed value sets](#closed-value-sets)). Messages to switch-buddy against messages to every other agent is how a falling Buddy share of a growing total shows |
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
 | `console_chat` | tri-state, as for `message_sent` |
@@ -1038,6 +1043,19 @@ only when there was something to detach or remove.
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
 | `invitation_accepted` | `age_hours` (number) |
 
+### Room schedules
+
+Messages Switch posts to a room's agents on a timer. A schedule a switch-buddy
+set up is `by_buddy`: the half of onboarding where an agent comes back on its
+own, without anyone writing to it. None of these carries the schedule's text,
+its time or its room.
+
+| Event | Properties |
+|---|---|
+| `room_schedule_created` | `schedule_kind` (`once` \| `recurring`); `set_by` (`user` \| `agent`); `by_buddy` (boolean); `agent_count` (number): the agents it is addressed to |
+| `room_schedule_fired` | `outcome` (`posted` \| `paused` \| `skipped`); `reason` (`none` \| `author_lost_room` \| `setter_left` \| `no_agents` \| `room_read_only`); `schedule_kind`; `by_buddy`; `late` (boolean): sent after it was due, once, after Switch was down. One per run falling due: `posted` went to the room, `paused` stopped the schedule instead and told the room why, `skipped` held a run for a frozen or archived room |
+| `room_schedule_removed` | `change` (`deleted` \| `paused`); `removed_by` (`user` \| `agent`); `schedule_kind`; `by_buddy`; `age_days` (number). A person or agent deleting or pausing one; a pause the scheduler makes itself is a `room_schedule_fired` |
+
 ### Closed value sets
 
 `bridge_platform`: a platform this build registers — today `slack` |
@@ -1054,6 +1072,14 @@ whenever that lookup has a transient error.
 `unknown`, with `unknown` meaning what it does for `bridge_platform`. Every
 event with a `channel_type` accepts `unknown`, but only the message events send
 it today; the room events read the type from a row they already hold.
+
+`agent_origin`: `buddy` | `official_template` | `other` | `unknown`. Where an
+agent came from, read from the server's own record of the template run that
+made it (`template_installs`), never from a name: `buddy` is a switch-buddy,
+`official_template` an agent from any other template that comes with Switch,
+`other` everything else (made by hand, by an agent, or from a saved template),
+and `unknown` a lookup that failed. A switch-buddy made before template runs
+were recorded, and never matched to one since, reads as `other`.
 
 `reference_type`: `google_drive` | `confluence` | `github` | `jira` | `other`. The
 four built-in types; a user-defined type's slug is free text, so it reports as
@@ -1376,6 +1402,13 @@ gateway routes under `/gateway`
 - `invitation_sent` / `invitation_accepted` — invite someone to a tenant and
   accept it. Accepting an invitation you already hold reports nothing, because
   nobody joined.
+- `room_schedule_created` — `POST /gateway/rooms/{id}/schedules`, or an
+  agent's `create_room_schedule`. `set_by` is `agent` for the tool.
+- `room_schedule_fired` — a schedule falling due: a `run_at` a minute ahead is
+  the quickest. Pause it by removing its agents from the room first to see
+  `paused` with `no_agents`.
+- `room_schedule_removed` — delete one, or pause it (`PUT …/paused` or the
+  agent's `pause_room_schedule`). Resuming reports nothing.
 
 **Creating is intent; attaching is use.** Both are reported, and the distance
 between them is the signal: a library of references nobody ever attached says

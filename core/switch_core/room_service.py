@@ -76,6 +76,7 @@ from switch_core.room_policy import (
 )
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
+from switch_core.telemetry.origins import is_buddy
 from switch_core.telemetry.snapshot import (
     normalise_actor_kind,
     normalise_channel_type,
@@ -1317,6 +1318,7 @@ class RoomService:
         # `await` there is evaluated before `emit_safely` is entered, outside
         # the guard meant to contain it.
         platform = await self._bridge_platform(bridge_id)
+        created_by_buddy = await self._made_by_buddy(config.created_by_agent_id)
 
         emit_safely(
             self._telemetry,
@@ -1330,6 +1332,7 @@ class RoomService:
                 "created_by_kind": config.created_by_kind,
                 "from_template": config.from_template,
                 "console_chat": config.chat_operation_id is not None,
+                "created_by_buddy": created_by_buddy,
             },
         )
         for spec in config.roles or []:
@@ -1993,6 +1996,23 @@ class RoomService:
                 },
             )
         return changed
+
+    async def _made_by_buddy(self, agent_id: str | None) -> bool:
+        """Whether `agent_id` is a switch-buddy, for `room_created`. False with
+        no agent, while telemetry is off, and when it cannot be read: the room
+        is already made, and a lookup must not fail its creation."""
+        if agent_id is None or self._telemetry is None or not self._telemetry.enabled:
+            return False
+        try:
+            async with self._session_factory() as session:
+                return await is_buddy(session, agent_id)
+        except Exception:
+            logger.warning(
+                "Could not read whether agent %s is a switch-buddy",
+                agent_id,
+                exc_info=True,
+            )
+            return False
 
     async def _bridge_platform(self, bridge_id: str | None) -> str:
         """The platform a bridge id names, as the telemetry catalogue spells it.
