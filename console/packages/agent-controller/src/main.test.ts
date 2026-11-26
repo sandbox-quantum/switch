@@ -457,6 +457,32 @@ describe('box mode', () => {
     }
   });
 
+  it('outside box mode, knows none of the box-only commands or flags', async () => {
+    expect(await main(['launcher', '--data-dir', dir], false)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe("switch-agent-controller: Unknown command 'launcher'.");
+    for (const flag of ['--launcher-socket', '--agents-data-dir', '--agents-workspaces']) {
+      expect(await main(['run', flag, join(dir, 'x')], false)).toBe(EXIT_CONFIGURATION);
+      expect(lastLine()).toMatch(new RegExp(`^switch-agent-controller: Unknown option '${flag}'`));
+    }
+    expect(await main(['run', '--operator-exec'], false)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/^switch-agent-controller: Unknown option '--operator-exec'/);
+    for (const flag of ['--live', '--json']) {
+      expect(await main(['status', flag], false)).toBe(EXIT_CONFIGURATION);
+      expect(lastLine()).toMatch(new RegExp(`^switch-agent-controller: Unknown option '${flag}'`));
+    }
+  });
+
+  it('outside box mode, leaves the gateway proxy variable alone', async () => {
+    process.env.SWITCH_CONTROLLER_GATEWAY_PROXY = 'http://proxy.example:3128';
+    try {
+      await main(['run', '--no-such-flag'], false);
+      await main(['status', '--data-dir', join(dir, 'none')], false);
+      expect(process.env.SWITCH_CONTROLLER_GATEWAY_PROXY).toBe('http://proxy.example:3128');
+    } finally {
+      delete process.env.SWITCH_CONTROLLER_GATEWAY_PROXY;
+    }
+  });
+
   it('takes --box out of the arguments, and leaves desktop and v1 arguments as they are', () => {
     expect(boxModeFrom(['--data-dir', '/data', '--box', '--updated-by-console'], true)).toEqual({
       box: true,
@@ -466,5 +492,43 @@ describe('box mode', () => {
       box: false,
       rest: ['--data-dir', '/data'],
     });
+  });
+});
+
+describe('in box mode', () => {
+  it('reads the live status file for status --live and --json, and nothing else', async () => {
+    expect(await main(['status', '--box', '--live', '--live-dir', dir], true)).toBe(EXIT_FAILURE);
+    expect(lastLine()).toBe(
+      `No live status in ${dir}: the controller is not running here, or has not written one yet.`
+    );
+    expect(await main(['status', '--box', '--live-dir', dir], true)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe(
+      'switch-agent-controller: --live-dir and --since go with --live or --json.'
+    );
+  });
+
+  it('takes the gateway proxy out of the environment before any command', async () => {
+    process.env.SWITCH_CONTROLLER_GATEWAY_PROXY = 'http://proxy.example:3128';
+    try {
+      await main(['status', '--box', '--live', '--live-dir', dir], true);
+      expect(process.env).not.toHaveProperty('SWITCH_CONTROLLER_GATEWAY_PROXY');
+    } finally {
+      delete process.env.SWITCH_CONTROLLER_GATEWAY_PROXY;
+    }
+  });
+
+  it('sends no device id', async () => {
+    const out: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk));
+      return true;
+    });
+    expect(await main(['--device-id', '--device-root', dir, '--box'], true)).toBe(EXIT_OK);
+    expect(out.join('')).toBe('\n');
+  });
+
+  it('refuses operator exec unless the template marks a split test box', async () => {
+    expect(await main(['run', '--box', '--operator-exec'], true)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/--operator-exec is for test boxes only/);
   });
 });

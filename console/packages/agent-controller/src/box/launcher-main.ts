@@ -128,6 +128,8 @@ export async function runLauncher(
         new DetachedRuntime({
           layout,
           bundlePath,
+          // A host that died uncleanly leaves its control file; cleared before the next launch.
+          box: true,
           // Started here, so each host is this launcher's child with a known pid,
           // its launch's marker and push key, and told its hellos need a ticket.
           start: async (agentId, root, templatePath) => {

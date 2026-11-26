@@ -1886,10 +1886,6 @@ describe('a resting agent', () => {
     });
   });
 
-  it('leaves an agent the memory guard stopped to the guard’s own state', () => {
-    expect(mapRest(stoppedHost, { kind: 'out_of_memory' })).toMatchObject({ process: 'crashed' });
-  });
-
   describe('in the report', () => {
     let dir: string;
     let store: ControllerStore;

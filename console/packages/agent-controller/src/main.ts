@@ -16,6 +16,7 @@ import {
   windowsRegistryPath,
   withWindowsPathEntries,
 } from '@switch-console/agent-providers';
+import type { RestartNotice } from '@switch-console/agent-providers/box';
 import {
   withWindowsAgyBinDir,
   withWindowsCodexBinDir,
@@ -268,7 +269,7 @@ async function openState(dataDirFlag: string | undefined) {
   };
 }
 
-async function enrollCommand(args: string[]): Promise<number> {
+async function enrollCommand(args: string[], box: boolean): Promise<number> {
   const { values } = parseArgs({
     args,
     options: {
@@ -302,7 +303,8 @@ async function enrollCommand(args: string[]): Promise<number> {
     // Provider logins given to this machine are sealed to this key; only the
     // machine holds the private half.
     const keys = generateSealingKeyPair();
-    const deviceId = await readDeviceId(SYSTEM_SOURCES, dataDir);
+    // A box never sends a device id: see `runController`'s `deviceId` below.
+    const deviceId = box ? null : await readDeviceId(SYSTEM_SOURCES, dataDir);
     const enrolled = await enroll(fetch, server, {
       proof: { kind: 'enrollment_code', code: values.code },
       public_key: { alg: 'X25519', key: keys.publicKey },
@@ -513,9 +515,12 @@ async function precheckCommand(args: string[], box: boolean): Promise<number> {
 }
 
 async function runCommand(args: string[], box = false): Promise<number> {
+  // Box mode's half of this command, loaded only in box mode.
+  const boxRun = box ? await import('./box/run-box') : null;
   const { values } = parseArgs({
     args,
     options: {
+      ...boxRun?.BOX_RUN_OPTIONS,
       'data-dir': { type: 'string' },
       'shared-host-bundle': { type: 'string' },
       'controller-id': { type: 'string' },
@@ -550,6 +555,8 @@ async function runCommand(args: string[], box = false): Promise<number> {
   // Before anything reads the environment: the agents inherit it.
   const fromFile = values['env-file'] ? await readEnvFile(resolve(values['env-file'])) : {};
   Object.assign(process.env, fromFile);
+  const boxFlags = boxRun ? boxRun.boxRunFlags(values) : null;
+  if (boxRun && boxFlags) boxRun.checkBoxRunFlags(boxFlags, agentRuntime, process.env);
   const selfUpdateOff = selfUpdateTurnedOff(values['no-self-update'] === true, process.env);
   const controllerId = values['controller-id'];
   if ((controllerId === undefined) !== (values.server === undefined))
@@ -692,12 +699,25 @@ async function runCommand(args: string[], box = false): Promise<number> {
       log.warn(
         'The setup has no unit template for Codex agents, so they run as the one other agents do. Run the setup again to give each its own.'
       );
+    const boxParts =
+      boxRun && boxFlags
+        ? await boxRun.prepareBoxRun({
+            flags: boxFlags,
+            agentRuntime,
+            dataDir,
+            layout,
+            env: process.env,
+            log,
+            rechecks,
+          })
+        : null;
     const exit = await runController(
       {
         store,
         secrets,
-        runtime: (openStream, workspaces) =>
-          separateUsers
+        runtime: (openStream, workspaces, restartNotice?: (agentId: string) => RestartNotice) =>
+          boxParts?.splitRuntime?.(openStream, workspaces, restartNotice) ??
+          (separateUsers
             ? new SystemdRuntime({
                 config: separateUsers,
                 store,
@@ -715,15 +735,23 @@ async function runCommand(args: string[], box = false): Promise<number> {
                   openStream,
                   log,
                   crashBackoffMs: 2_000,
-                  // Box mode's half (`InProcessBox`) comes with the owner markers and restart notices.
-                  box: null,
+                  // Box mode's half: owner markers and restart notices (`InProcessBox`).
+                  box: boxParts ? boxParts.inProcess(restartNotice) : null,
                 }),
-                new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
-              ),
+                new DetachedRuntime({
+                  layout,
+                  bundlePath: sharedHostBundle,
+                  ...boxParts?.detached,
+                })
+              )),
         locator: new PathProviderLocator(() => process.env.PATH, join(dataDir, 'version-probe')),
         // Agents running as users of their own sign in as those users, which
         // a test prompt from the controller's user would not show.
-        verifyLogin: agentRuntime === 'default' ? providerLoginTest(dataDir) : undefined,
+        // Nor on a split box, where a provider's CLI never runs as the controller's user.
+        verifyLogin:
+          agentRuntime === 'default' && (boxParts?.verifyLogin ?? true)
+            ? providerLoginTest(dataDir)
+            : undefined,
         rechecks,
         refreshPath,
         providerSeed,
@@ -734,13 +762,21 @@ async function runCommand(args: string[], box = false): Promise<number> {
         dataDir,
         // Each agent sees its own directory at the same path: an agent named
         // no directory works in a folder of its own there.
-        workspacesFor: separateUsers ? () => unitAgentRoot(separateUsers) : serverWorkspacesDir,
+        workspacesFor: separateUsers
+          ? () => unitAgentRoot(separateUsers)
+          : (boxParts?.workspacesFor ?? serverWorkspacesDir),
         version: VERSION,
-        deviceId: await readDeviceId(SYSTEM_SOURCES, values['device-root'] ?? dataDir),
+        // A box never sends a device id. Upstream's id lets Switch hand a
+        // re-enrolling controller the device it was before, with its agents; a
+        // box stays one device through the credential on its volume, and
+        // adopting an earlier device could give back a paused or deleted
+        // machine's agents past hosted agents v2's own re-enrolment.
+        deviceId: box ? null : await readDeviceId(SYSTEM_SOURCES, values['device-root'] ?? dataDir),
         updatedBy,
         selfUpdate,
         supervised,
         box,
+        ...(boxParts ? { boxDeps: boxParts.deps } : {}),
         now: Date.now,
         random: Math.random,
         timing: DEFAULT_TIMING,
@@ -756,11 +792,23 @@ async function runCommand(args: string[], box = false): Promise<number> {
 }
 
 async function statusCommand(args: string[], box: boolean): Promise<number> {
+  // Box mode's half of this command (the live status), loaded only in box mode.
+  const boxRun = box ? await import('./box/run-box') : null;
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
+    options: {
+      'data-dir': { type: 'string' },
+      'shared-host-bundle': { type: 'string' },
+      ...boxRun?.BOX_STATUS_OPTIONS,
+    },
     strict: true,
   });
+  if (boxRun) {
+    const flags = boxRun.boxStatusFlags(values);
+    if (flags.live || flags.json) return boxRun.boxStatusCommand(flags, process.env);
+    if (flags['live-dir'] || flags.since)
+      throw new ConfigurationError('--live-dir and --since go with --live or --json.');
+  }
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
   try {
     const separateUsers = await separateUsersConfigHere(dataDir);
@@ -826,7 +874,12 @@ async function statusCommand(args: string[], box: boolean): Promise<number> {
             unreadable = errorMessage(error);
             return emptyObservation();
           });
-        else observation = await observeOnDisk(layout, entry.agent_id, null);
+        else
+          observation = await observeOnDisk(
+            layout,
+            entry.agent_id,
+            boxRun ? boxRun.statusObserveBox() : null
+          );
       }
       // Whether events flow is the running controller's to know; this reads only disk.
       const mapped = mapAgentProcess({
@@ -1262,9 +1315,20 @@ export async function main(argv: string[], inBox: boolean = insideBox()): Promis
   const [command, ...given] = argv;
   try {
     const { box, rest } = boxModeFrom(given, inBox);
+    if (box) {
+      const boxRun = await import('./box/run-box');
+      // Before anything is started: no child may inherit the gateway's proxy password.
+      boxRun.takeBoxGatewayProxy(process.env);
+      // The agents container's pid 1 on boxes where the controller runs as its own user.
+      if (command === 'launcher')
+        return await boxRun.runBoxLauncher(rest, {
+          bundle: bundlePath(undefined),
+          version: VERSION,
+        });
+    }
     switch (command) {
       case 'enroll':
-        return await enrollCommand(rest);
+        return await enrollCommand(rest, box);
       case 'run': {
         const code = await runCommand(rest, box).catch((error: unknown) => {
           reportFailure(error);
@@ -1310,9 +1374,8 @@ export async function main(argv: string[], inBox: boolean = insideBox()): Promis
           strict: true,
         });
         if (!values['device-root']) throw new UsageError('--device-id needs --device-root.');
-        process.stdout.write(
-          `${(await readDeviceId(SYSTEM_SOURCES, values['device-root'])) ?? ''}\n`
-        );
+        const deviceId = box ? null : await readDeviceId(SYSTEM_SOURCES, values['device-root']);
+        process.stdout.write(`${deviceId ?? ''}\n`);
         return 0;
       }
       default:
