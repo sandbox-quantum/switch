@@ -172,6 +172,7 @@ def fills() -> dict[str, Any]:
         "__PREVIOUS_BOX_IMAGE_2__": IMAGE["box_previous_2"],
         "__PREVIOUS_BOX_IMAGE_3__": IMAGE["box_previous_3"],
         "__SERVER_IP__": SERVER_IP,
+        "__SQUID_CONFIG_HASH__": "0" * 16,
         "__ZONE__": ZONE,
         "kubernetes_service_ip": KUBERNETES_SERVICE_IP,
     }

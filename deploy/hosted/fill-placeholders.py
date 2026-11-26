@@ -36,6 +36,7 @@ Standard library only, so it runs wherever Python 3.10+ does.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import re
@@ -188,6 +189,26 @@ def _replace_once(text: str, old: str, new: str, name: str) -> str:
     return text.replace(old, new)
 
 
+SQUID_CONFIG_HASH = "__SQUID_CONFIG_HASH__"
+SQUID_CONFIG_MAPS = ("squid-conf", "squid-reload")
+
+
+def squid_config_hash(text: str, name: str) -> str:
+    """A hash of the filled squid-conf and squid-reload ConfigMaps, for squid's pod template: a change to either
+    then rolls the pods, which read both only at start."""
+    docs = {}
+    for doc in text.split("\n---\n"):
+        found = re.search(r"^kind: ConfigMap\n(?:.*\n)*?  name: (\S+)$", doc, re.M)
+        if found and found.group(1) in SQUID_CONFIG_MAPS:
+            docs[found.group(1)] = doc
+    if sorted(docs) != sorted(SQUID_CONFIG_MAPS):
+        raise Refused(
+            f"{name}: expected the ConfigMaps {', '.join(SQUID_CONFIG_MAPS)}; update this script"
+        )
+    joined = "\n---\n".join(docs[key] for key in SQUID_CONFIG_MAPS)
+    return hashlib.sha256(joined.encode()).hexdigest()[:16]
+
+
 def fill(name: str, text: str, v: dict[str, object]) -> str:
     previous: list[str] = v["previous"]  # type: ignore[assignment]
     zones: list[str] = v["zones"]  # type: ignore[assignment]
@@ -237,6 +258,10 @@ def fill(name: str, text: str, v: dict[str, object]) -> str:
     }
     for placeholder, value in simple.items():
         text = text.replace(placeholder, str(value))
+    if name == "50-egress-proxy.yaml":
+        text = _replace_once(
+            text, SQUID_CONFIG_HASH, squid_config_hash(text, name), name
+        )
     left = sorted(set(PLACEHOLDER.findall(text)))
     if left:
         raise Refused(f"{name}: {', '.join(left)} would be left unfilled")

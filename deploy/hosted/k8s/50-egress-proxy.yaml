@@ -32,6 +32,10 @@ spec:
         # The access-log sidecar prints each box's proxy login and destination host. An agent collecting every
         # container's output must drop all of it: it never leaves the cluster.
         ad.datadoghq.com/access-log.logs: '[{"source":"squid-access","service":"switch-egress-proxy","log_processing_rules":[{"type":"exclude_at_match","name":"never_ship_box_destinations","pattern":"."}]}]'
+        # squid.conf and the reload wrapper as filled (fill-placeholders.py fills in their hash). squid reads both
+        # only when its pod starts, so a change to either changes this and rolls the pods; without it, applying the
+        # files left the running pods on the old ones, and a pod starting mid-apply could take the old wrapper.
+        switch.dev/squid-config: __SQUID_CONFIG_HASH__
       labels:
         app: squid
         tags.datadoghq.com/service: switch-egress-proxy

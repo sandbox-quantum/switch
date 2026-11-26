@@ -201,3 +201,22 @@ def test_takes_one_agents_subnet_per_zone(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     squid = (tmp_path / "out" / "50-egress-proxy.yaml").read_text()
     assert "acl agents src 10.1.32.0/20 10.1.64.0/20" in squid
+
+
+def _squid_hash(out: Path) -> str:
+    match = re.search(r"switch.dev/squid-config: (\S+)", (out / "50-egress-proxy.yaml").read_text())
+    assert match
+    return match.group(1)
+
+
+def test_squids_pods_carry_a_hash_of_its_config_and_wrapper(tmp_path: Path) -> None:
+    """squid reads squid.conf and its reload wrapper only at start: their hash on the pod template rolls the pods
+    when either changes, and stays put when neither does."""
+    assert _run(tmp_path, out="a").returncode == 0
+    assert _run(tmp_path, out="b").returncode == 0
+    first = _squid_hash(tmp_path / "a")
+    assert re.fullmatch(r"[0-9a-f]{16}", first)
+    assert _squid_hash(tmp_path / "b") == first
+    # squid.conf as filled: another agents subnet is another config.
+    assert _run(tmp_path, out="c", agents_subnet="10.1.48.0/20").returncode == 0
+    assert _squid_hash(tmp_path / "c") != first
