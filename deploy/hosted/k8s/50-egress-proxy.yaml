@@ -85,6 +85,45 @@ spec:
         - mountPath: "/etc/squid/reload"
           name: reload
           readOnly: true
+      - command:
+        - switch-network-report
+        env:
+        - name: SWITCH_NETWORK_REPORT_CORE_URL
+          value: https://__SERVER_IP__
+        - name: SWITCH_NETWORK_REPORT_TOKEN_FILE
+          value: "/etc/switch/core/token"
+        - name: SWITCH_NETWORK_REPORT_CORE_CA
+          value: "/etc/switch/ca/box-ca.crt"
+        image: __EGRESS_LISTS_IMAGE__
+        imagePullPolicy: IfNotPresent
+        name: network-report
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 20m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 13
+          runAsNonRoot: true
+          runAsUser: 13
+        terminationMessagePath: "/dev/termination-log"
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: "/var/log/squid"
+          name: logs
+        - mountPath: "/etc/switch/core"
+          name: network-report-core
+          readOnly: true
+        - mountPath: "/etc/switch/ca"
+          name: network-report-ca
+          readOnly: true
       - args:
         - sh
         - "-c"
@@ -158,6 +197,17 @@ spec:
           defaultMode: 365
           name: squid-reload
         name: reload
+      # The network reporter's own Core credential (`network_report_token`). Optional, so squid starts without it: the
+      # reporter then logs that it can't send, and boxes' egress is unaffected.
+      - name: network-report-core
+        secret:
+          defaultMode: 288
+          optional: true
+          secretName: switch-network-report-core
+      - configMap:
+          defaultMode: 420
+          name: switch-network-report-ca
+        name: network-report-ca
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -296,6 +346,11 @@ data:
     # A box refused for its connection limit: one fixed line in the same in-cluster log, no host and no address.
     logformat box_limit %ts switch-egress: a box is over its connection limit
     access_log stdio:/var/log/squid/access.log logformat=box_limit box_over
+    # Each request's box, host, outcome and bytes, for the network reporter beside squid, which follows this file, sums
+    # it per box every minute, sends Core one report, and keeps the file short (network_report.py). Flushed per line.
+    buffered_logs off
+    logformat switch_box %ts %un %Ss %>rd %>rP %>st %<st
+    access_log stdio:/var/log/squid/box.log logformat=switch_box
     cache_log /var/log/squid/cache.log
     pinger_enable off   # the ICMP pinger needs NET_RAW, which this pod rightly lacks
     pid_filename none
@@ -447,3 +502,12 @@ spec:
     app: squid
   sessionAffinity: None
   type: ClusterIP
+---
+# The CA that signs the Switch server's certificate, for the network reporter (the same as the provisioner's).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: switch-network-report-ca
+  namespace: egress-proxy
+data:
+  box-ca.crt: __BOX_CA_CERT__

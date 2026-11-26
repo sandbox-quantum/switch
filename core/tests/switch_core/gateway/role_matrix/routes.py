@@ -1614,6 +1614,9 @@ UNAUTHENTICATED: dict[str, str] = {
     "POST /gateway/hosted-provisioner/pool/{pool_box_id}/gone": (
         "The warm pool reaper's, with its own token; no session reaches it."
     ),
+    "POST /gateway/hosted-network/report": (
+        "The box cluster's egress reporter's, with its own token; no session reaches it."
+    ),
     "GET /gateway/hosted-controller/pool": (
         "The hosted controller's, with its own token; no session reaches it."
     ),

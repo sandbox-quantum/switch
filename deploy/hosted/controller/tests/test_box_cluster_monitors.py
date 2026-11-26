@@ -66,12 +66,15 @@ def test_the_squid_pod_carries_the_service_the_monitors_use() -> None:
 
 
 def test_no_box_destination_reaches_datadog() -> None:
-    """squid's access and cache logs stay in files, and the sidecar that tails the access log is dropped whole."""
+    """squid's access and cache logs stay in files, and the sidecar that tails the access log is dropped whole. The
+    network reporter's file (`box.log`) is one of them: the reporter beside squid sends Core per-box sums from it, which
+    Core logs as security events, by decision; the file itself goes nowhere."""
     text = MANIFEST.read_text()
     # Every access log line (the main one, and the fixed connection-limit line) goes to the same in-cluster file.
     access = re.findall(r"^    access_log (.+)$", text, re.M)
     (cache,) = re.findall(r"^    cache_log (.+)$", text, re.M)
     assert access
+    assert "stdio:/var/log/squid/box.log logformat=switch_box" in access
     for target in (*access, cache):
         assert target.split()[0].removeprefix("stdio:").startswith("/var/log/squid/"), target
         assert "stdout" not in target and "stderr" not in target and "syslog" not in target, target

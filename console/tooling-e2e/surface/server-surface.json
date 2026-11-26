@@ -1493,6 +1493,13 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/hosted-network/report",
+      "auth": "none",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
       "route": "POST /gateway/hosted-provisioner/actions/{action_id}/result",
       "auth": "none",
       "flags": [

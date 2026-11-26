@@ -231,6 +231,9 @@ def fill(name: str, text: str, v: dict[str, object]) -> str:
         )
         pem = "\n".join("    " + line for line in v["ca"].splitlines())  # type: ignore[union-attr]
         text = _replace_once(text, CA_LINE, f"  box-ca.crt: |\n{pem}\n", name)
+    if name == "50-egress-proxy.yaml":
+        pem = "\n".join("    " + line for line in v["ca"].splitlines())  # type: ignore[union-attr]
+        text = _replace_once(text, CA_LINE, f"  box-ca.crt: |\n{pem}\n", name)
     if name == "30-admission-policies.yaml":
         # P8 admits the current box image and up to two earlier ones.
         allowed = [v["box"], *previous]

@@ -1561,5 +1561,105 @@
       }
     },
     "priority": 1
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Security: a hosted box is uploading a lot",
+    "type": "log alert",
+    "query": "logs(\"service:REPLACE-WITH-SERVICE @switch.event:security.hosted.box_network\").index(\"*\").rollup(\"sum\", \"@security_details.bytes_up\").by(\"@switch.target_id\").last(\"1h\") > 2000000000",
+    "message": "{{#is_alert}}Cloud machine {{[@switch.target_id].name}} (owner {{[@switch.actor_user_id].name}}) sent {{value}} bytes out through the box egress proxy in an hour, more than 2 GB. Pushing code and installing packages is far below that; this looks like data leaving.\n\n**Check:** the log sample's `security_details.hosts` lists the box's busiest hosts per minute by random id (hostnames never leave the box cluster), with bytes up and down, so one host taking it all shows.\n\n**To stop it:** pause the person's hosted agents from the operator's Hosted area (it stops the box and refuses every start), or suspend the person or their agents with `switch-suspend`. Both are audited and can be lifted. To keep evidence, snapshot the box's disks before it is removed.{{/is_alert}}{{#is_recovery}}Recovered: cloud machine {{[@switch.target_id].name}} is uploading at a normal rate again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:security"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": true,
+      "thresholds": {
+        "critical": 2000000000
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Security: a hosted box is reaching many hosts",
+    "type": "log alert",
+    "query": "logs(\"service:REPLACE-WITH-SERVICE @switch.event:security.hosted.box_network\").index(\"*\").rollup(\"sum\", \"@security_details.distinct_hosts\").by(\"@switch.target_id\").last(\"1h\") > 500",
+    "message": "{{#is_alert}}Cloud machine {{[@switch.target_id].name}} (owner {{[@switch.actor_user_id].name}}) reached {{value}} host-minutes in an hour (the per-minute distinct hosts, summed). An agent working on code reaches a handful of registries and forges; this many is scanning, crawling or spreading traffic to hide it.\n\n**Check:** `security_details.distinct_hosts`, `other_hosts` and `hosts` (by random id) in the log sample.\n\n**To stop it:** pause the person's hosted agents from the operator's Hosted area (it stops the box and refuses every start), or suspend the person or their agents with `switch-suspend`. Both are audited and can be lifted. To keep evidence, snapshot the box's disks before it is removed.{{/is_alert}}{{#is_recovery}}Recovered: cloud machine {{[@switch.target_id].name}} reaches a normal number of hosts again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:security"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": true,
+      "thresholds": {
+        "critical": 500
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Security: a hosted box keeps being refused by the egress proxy",
+    "type": "log alert",
+    "query": "logs(\"service:REPLACE-WITH-SERVICE @switch.event:security.hosted.box_network\").index(\"*\").rollup(\"sum\", \"@security_details.denied\").by(\"@switch.target_id\").last(\"15m\") > 200",
+    "message": "{{#is_alert}}Cloud machine {{[@switch.target_id].name}} (owner {{[@switch.actor_user_id].name}}) had {{value}} requests refused by the box egress proxy in 15 minutes: something in the box keeps trying where it may not go (private addresses, other ports, a blocked host).\n\n**Check:** `security_details.hosts` in the log sample shows the refusals per host, by random id.\n\n**To stop it:** pause the person's hosted agents from the operator's Hosted area (it stops the box and refuses every start), or suspend the person or their agents with `switch-suspend`. Both are audited and can be lifted. To keep evidence, snapshot the box's disks before it is removed.{{/is_alert}}{{#is_recovery}}Recovered: cloud machine {{[@switch.target_id].name}} is no longer being refused.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:security"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": true,
+      "thresholds": {
+        "critical": 200
+      }
+    },
+    "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Security: a hosted box is pinned at its CPU limit",
+    "type": "log alert",
+    "query": "logs(\"service:REPLACE-WITH-SERVICE @switch.event:security.hosted.box_usage\").index(\"*\").rollup(\"avg\", \"@security_details.cpu_ratio\").by(\"@switch.target_id\").last(\"30m\") > 0.9",
+    "message": "{{#is_alert}}Cloud machine {{[@switch.target_id].name}} (owner {{[@switch.actor_user_id].name}}) used over 90% of its CPU limit on average for 30 minutes. Agents work in bursts; a box held at its limit this long is usually mining or a runaway process.\n\n**Check:** the box's sessions in the operator's Hosted area, and its network lines (`security.hosted.box_network`): one host taking steady traffic fits a mining pool.\n\n**To stop it:** pause the person's hosted agents from the operator's Hosted area (it stops the box and refuses every start), or suspend the person or their agents with `switch-suspend`. Both are audited and can be lifted. To keep evidence, snapshot the box's disks before it is removed.{{/is_alert}}{{#is_recovery}}Recovered: cloud machine {{[@switch.target_id].name}} is below its CPU limit again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:security"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": true,
+      "thresholds": {
+        "critical": 0.9
+      }
+    },
+    "priority": 4
   }
 ]

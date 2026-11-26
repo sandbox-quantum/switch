@@ -27,6 +27,10 @@ cluster files never go in git or in chat.**
      proxy login (a start given up on past its grace, or a box being deleted). Only the scaler writes it (`get` and
      `update` by name); the egress lists read it (`get` by name) and leave those boxes out. If it's missing or
      unreadable the egress lists keep every login and log `egress-held ALERT`, which the monitor alerts on;
+   - in `egress-proxy`: `switch-network-report-core` (`token`), the network reporter's own Core credential, equal to
+     `controller.json`'s `network_report_token`. The reporter beside squid sums each box's requests per host every minute and
+     sends Core one report, which Core logs as one `security.hosted.box_network` event per box. Optional: without it
+     squid runs as before and the reporter logs that it can't send;
    - in the Switch server's namespace: three Secrets, their names given to the chart as
      `hostedControllerSecret`, `visibilityKeyedIdKeySecret` and `visibilityOperatorsSecret`, holding the keys
      `controller.json` (the hosted controller config), `keyed-id.key` and `operators.json` (the operator list). The three tokens in `controller.json` equal the

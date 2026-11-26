@@ -12,6 +12,15 @@ rules:
   - pods
   verbs:
   - get
+# The box pod's CPU and memory now (metrics-server), for the box scaler's usage report.
+- apiGroups:
+  - metrics.k8s.io
+  resourceNames:
+  - box-0
+  resources:
+  - pods
+  verbs:
+  - get
 - apiGroups:
   - ''
   resources:

@@ -40,6 +40,13 @@ spec:
               - "198.18.0.0/15"
               - "224.0.0.0/4"
               - "240.0.0.0/4"
+    # The egress reporter (in squid's pod) sends Core its per-minute report.
+    - ports:
+        - port: 443
+          protocol: "TCP"
+      to:
+        - ipBlock:
+            cidr: "__SERVER_IP__/32"
   ingress:
     - from:
         - namespaceSelector:
