@@ -31,6 +31,8 @@ export function answerFetch(routes: Record<string, Answer | Answer[]>): Call[] {
         404,
         { detail: `unmocked ${method} ${path}` },
       ];
+      // A status that carries no body can't be given one.
+      if (status === 204) return new Response(null, { status });
       return new Response(JSON.stringify(body), { status });
     }),
   );
