@@ -12,9 +12,13 @@ const signIn: BrowserScenario = {
   ]),
   async run({ ui }) {
     await ui.signIn();
+    // Home is a chat with switch-buddy or the workspace at a glance, by flag:
+    // either way the rail marks it as the page open.
     await expect
-      .poll(() => ui.page.getByRole('heading', { name: 'Home', level: 5 }).isVisible())
-      .toBe(true);
+      .poll(() =>
+        ui.nav().getByRole('link', { name: 'Home', exact: true }).getAttribute('aria-current')
+      )
+      .toBe('page');
     await ui.settled();
   },
 };
@@ -105,7 +109,10 @@ const createRoom: BrowserScenario = {
     expect(room.bridgeId, 'the room was asked for with no bridge').toBeNull();
     expect(room.externalChannelId).toBeNull();
     expect(room.agentIds).toEqual([agent.id]);
-    await expect.poll(() => ui.page.getByRole('heading', { name }).isVisible()).toBe(true);
+    // The room's header names it (the list beside it does too).
+    await expect
+      .poll(() => ui.page.locator('header').getByText(name, { exact: true }).isVisible())
+      .toBe(true);
     await ui.settled();
   },
 };

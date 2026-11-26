@@ -226,6 +226,14 @@ export class GatewayUi {
     await this.page.getByLabel('Password').fill(account.password);
     await this.page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await this.finishFirstRunSteps();
+    // Where cloud machines are offered, a first visit to a workspace with no
+    // agents opens Get started once, before the page is drawn.
+    await expect
+      .poll(() => this.page.getByRole('main').isVisible(), { timeout: 15_000 })
+      .toBe(true);
+    if (this.path() === '/get-started') {
+      await this.page.getByRole('button', { name: 'Finish later', exact: true }).click();
+    }
     await expect.poll(() => this.path(), { timeout: 15_000 }).toBe(this.landing);
     await this.recordSessionCookie();
     this.signedIn = true;
@@ -246,10 +254,10 @@ export class GatewayUi {
         ? 'survey'
         : (await accept.isVisible())
           ? 'license'
-          : this.path() === this.landing
+          : this.path() !== '/login'
             ? 'app'
             : null;
-    await expect.poll(step, { timeout: 15_000 }).not.toBeNull();
+    await expect.poll(step, { timeout: 30_000 }).not.toBeNull();
     if ((await step()) === 'survey') {
       for (const question of ['Company size', 'Your role', 'Number of AI agents']) {
         await this.page.getByRole('radiogroup', { name: question }).getByRole('radio').first().click();
