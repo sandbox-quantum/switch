@@ -27,7 +27,10 @@ from switch_core.bridges.collaboration.install import (
     oauth_callback_path,
     public_url,
 )
+from switch_core.bridges.collaboration.own_app_setup import slack_manifest
+from switch_core.bridges.collaboration.slack.adapter import OFFICIAL_COMMAND_PREFIX
 from switch_core.bridges.collaboration.slack.install import BOT_SCOPES
+from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
 
 _DOC = (
     Path(__file__).resolve().parents[5]
@@ -120,3 +123,20 @@ def test_the_manifest_does_not_enable_org_wide_deploy(manifest: dict) -> None:
     would offer customers a button that always fails.
     """
     assert manifest["settings"]["org_deploy_enabled"] is False
+
+
+def test_the_manifest_registers_every_command_with_the_official_prefix(
+    manifest: dict,
+) -> None:
+    """The commands the server has, each as `/switch-<name>`.
+
+    A command missing here is one official-app users cannot run, and a bare
+    name is one that collides with every other app in their workspace.
+    """
+    flags = dict.fromkeys(KNOWN_FEATURE_FLAGS, True)
+    expected = [
+        f"/{OFFICIAL_COMMAND_PREFIX}{entry['command'].removeprefix('/')}"
+        for entry in slack_manifest(flags)["features"]["slash_commands"]
+    ]
+    registered = [entry["command"] for entry in manifest["features"]["slash_commands"]]
+    assert registered == expected

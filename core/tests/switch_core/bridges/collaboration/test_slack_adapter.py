@@ -1415,6 +1415,66 @@ def test_slash_command_maps_to_in_room_command() -> None:
     assert cmd.message_ref == "C123:111.1"
 
 
+def test_official_slash_command_maps_to_in_room_command() -> None:
+    adapter = _adapter()
+    fake = _FakeSlashWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+    commands = _capture_commands(adapter)
+
+    _run(
+        adapter._handle_slash_command(
+            {
+                "command": "/switch-reset",
+                "text": "@worker",
+                "channel_id": "C123",
+                "user_id": "U123",
+            }
+        )
+    )
+
+    assert [(c.command, c.args) for c in commands] == [("reset", "@worker")]
+    # The "Running …" message shows what the person typed.
+    assert "/switch-reset @worker" in fake.posts[0]["text"]
+
+
+def test_official_account_command_is_answered_privately() -> None:
+    adapter = _adapter()
+    fake = _FakeSlashWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+    commands = _capture_commands(adapter)
+
+    _run(
+        adapter._handle_slash_command(
+            {
+                "command": "/switch-link-account",
+                "text": "7KQ2-M9XD",
+                "channel_id": "C123",
+                "user_id": "U123",
+                "response_url": "https://hooks.slack.test/r",
+            }
+        )
+    )
+
+    assert [c.command for c in commands] == ["link-account"]
+    assert fake.posts == []
+
+
+def test_slash_command_names_follow_the_app() -> None:
+    own: dict[str, object] = {"event_delivery": "socket_mode"}
+    official: dict[str, object] = {"event_delivery": "webhook"}
+    assert SlackAdapter.typed_command("invite-agent", "@w", own) == "/invite-agent @w"
+    assert (
+        SlackAdapter.typed_command("invite-agent", "@w", official)
+        == "/switch-invite-agent @w"
+    )
+    assert "`/switch-unlink-account ada`" in SlackAdapter.unlink_account_instructions(
+        "ada", official
+    )
+    assert "`/unlink-account ada`" in SlackAdapter.unlink_account_instructions(
+        "ada", own
+    )
+
+
 def test_slash_command_private_channel_type_resolved() -> None:
     adapter = _adapter()
     adapter._web_client = _FakeSlashWebClient(is_private=True)  # type: ignore[assignment]

@@ -659,7 +659,8 @@ change it. A refusal says which of these it was; relay it rather than retrying.
   cancels it. Switch also shows a one-time code, which works where the
   message can't be sent. The person posts `!link-account CODE` from that chat
   account, and Switch says exactly how on each platform (on Slack,
-  `/link-account CODE` works from any conversation; on Teams they @mention the
+  `/link-account CODE` works from any conversation, written
+  `/switch-link-account CODE` with the official Switch app; on Teams they @mention the
   Switch app with `link-account CODE`; on Telegram they send
   `/link_account CODE`). `!unlink-account` lists the Switch users a chat
   account is linked to, and `!unlink-account NAME` removes one. Both act only
@@ -706,7 +707,9 @@ carrying a display name addresses no one.
   name. Humans and agents can do the same from inside a room with the
   `!invite-agent @agent-name` command (also the `/invite-agent` slash command
   on bridged Slack, Discord and Telegram channels; Telegram registers it as
-  `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
+  `/invite_agent`, since it will not accept a hyphen in a command, and the
+  official Switch app on Slack starts every slash command with `switch-`, as
+  `/switch-invite-agent`). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
   the bot asks for the one it needs and runs when you reply with it. The tool
   is refused in a direct or group conversation, whose platform fixes who is in

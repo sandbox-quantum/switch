@@ -428,7 +428,12 @@ class TestNoSilentFailures:
         assert "7KQ2-M9XD" not in caplog.text
 
     def test_the_reply_names_no_reason(self) -> None:
-        assert slack_adapter.COULD_NOT_PROCESS.startswith("Switch couldn't process")
+        assert slack_adapter.could_not_process({}).startswith("Switch couldn't process")
+
+    def test_the_reply_names_the_command_the_app_has(self) -> None:
+        assert "`/link-account`" in slack_adapter.could_not_process({})
+        official = slack_adapter.could_not_process({"event_delivery": "webhook"})
+        assert "`/switch-link-account`" in official
 
 
 class TestCodeInstructions:
@@ -445,3 +450,4 @@ class TestCodeInstructions:
         )
 
         assert "Interactivity" not in text
+        assert text.startswith("Type `/switch-link-account 7KQ2-M9XD`")
