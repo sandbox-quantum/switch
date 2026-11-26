@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -238,15 +238,40 @@ class TestListing:
             bob: "member",
         }
 
-    async def test_a_workspace_admin_who_is_no_org_admin_is_refused(
+    async def test_a_member_sees_everyone_and_may_change_nobody(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
+        async with session_factory() as session:
+            await session.execute(
+                update(User).where(User.id == bob).values(first_signed_in_at=func.now())
+            )
+            await session.commit()
 
         async with _client(_app(session_factory), bob, tenant_id) as client:
+            response = await client.get("/organizations/current/members")
+
+        assert response.status_code == 200, response.text
+        rows = {row["user_id"]: row for row in response.json()}
+        assert set(rows) == {ada, bob}
+        for row in rows.values():
+            assert not row["can_change_role"]
+            assert not row["can_grant_org_admin"]
+            assert not row["can_remove"]
+        assert rows[ada]["first_signed_in_at"] is None
+        assert rows[bob]["first_signed_in_at"] is not None
+
+    async def test_someone_outside_the_organization_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
+        operator_id = await _operator(session_factory)
+
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
             response = await client.get("/organizations/current/members")
 
         assert response.status_code == 403

@@ -51,6 +51,12 @@ def org_admin(ok: Expected = OK, refused: int = 403) -> dict[Persona, Expected]:
     return _rule(frozenset({Persona.ORG_ADMIN}), ok, refused)
 
 
+def org_members(ok: Expected = OK, refused: int = 403) -> dict[Persona, Expected]:
+    """Every member of the organization, whatever their role in it; not the
+    operator, who has none."""
+    return _rule(frozenset(Persona) - {Persona.OPERATOR}, ok, refused)
+
+
 def operator(ok: Expected = OK, refused: int = 403) -> dict[Persona, Expected]:
     return _rule(frozenset({Persona.OPERATOR}), ok, refused)
 

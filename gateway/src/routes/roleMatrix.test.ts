@@ -30,6 +30,8 @@ function capabilitiesOf(persona: Persona): Capabilities {
     isOperator: persona === "operator",
     administersWorkspace: persona !== "member",
     administersOrganization: persona === "orgAdmin",
+    // Joining a workspace makes someone a member of its organization.
+    memberOfOrganization: persona !== "operator",
     inOrganization: true,
     canDeleteWorkspace: persona === "workspaceAdmin",
     canManageDataProtection: persona === "workspaceAdmin",

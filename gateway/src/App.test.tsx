@@ -466,6 +466,7 @@ describe("the layout", () => {
         "API keys",
         "Guardrails",
         "Your account",
+        "Organization settings",
       ]);
     });
 
@@ -485,6 +486,7 @@ describe("the layout", () => {
         "Guardrails",
         "Devices",
         "Your account",
+        "Organization settings",
       ]);
     });
 
@@ -506,8 +508,8 @@ describe("the layout", () => {
       expect(within(menu).getAllByRole("separator")).toHaveLength(2);
     });
 
-    it("gives a member's Your account its own group too, with no way to the organization", async () => {
-      mockFetch(signedInAs("member"));
+    it("gives a member's Your account its own group too, and no way to an organization it has none", async () => {
+      mockFetch(signedInAs("member", { inOrganization: false }));
       renderAt("/settings/general");
       const menu = await screen.findByRole("navigation", { name: "Settings" });
       const lists = within(menu).getAllByRole("list");
@@ -571,7 +573,7 @@ describe("the layout", () => {
     });
 
     it("lands on General after a switch to a workspace where the page may not be opened", async () => {
-      window.sessionStorage.setItem("switch.settings.afterSwitch", "/settings/org/users");
+      window.sessionStorage.setItem("switch.settings.afterSwitch", "/settings/org/general");
       mockFetch(signedInAs("member"));
       renderAt("/settings");
       await landsOn("/settings/general");
@@ -635,22 +637,26 @@ describe("the layout", () => {
       expect(await screen.findByText("Only the organization's admins can open this page.")).toBeTruthy();
     });
 
-    it("keeps workspace admins and members out, showing no menu", async () => {
+    it("shows workspace admins and members its Users, and nothing more", async () => {
       for (const role of ["workspace_admin", "member"] as const) {
         mockFetch(signedInAs(role));
-        renderAt("/settings/org/users");
+        renderAt("/settings/org");
+        await landsOn("/settings/org/users");
+        expect(await menuLabels("Organization settings")).toEqual(["Users"]);
+        cleanup();
+        mockFetch(signedInAs(role));
+        renderAt("/settings/org/general");
         expect(
           await screen.findByText("Only the organization's admins can open this page."),
         ).toBeTruthy();
-        expect(screen.queryByRole("navigation", { name: "Organization settings" })).toBeNull();
         cleanup();
       }
     });
 
-    it("is not offered to a workspace admin", async () => {
+    it("is offered to a workspace admin", async () => {
       mockFetch(signedInAs("workspace_admin"));
       renderAt("/settings/general");
-      expect(await menuLabels("Settings")).not.toContain("Organization settings");
+      expect(await menuLabels("Settings")).toContain("Organization settings");
     });
   });
 
@@ -910,15 +916,19 @@ describe("the layout", () => {
     });
 
     it("shows someone it refuses, or a page that is not there, in the workspace's own chrome", async () => {
-      for (const [role, path] of [
-        ["member", "/settings/org"],
-        ["workspace_admin", "/settings/org/users"],
-        ["org_admin", "/settings/org/billing"],
+      for (const [role, path, inOrganization] of [
+        ["member", "/settings/org", false],
+        ["workspace_admin", "/settings/org/users", false],
+        ["org_admin", "/settings/org/billing", true],
       ] as const) {
-        mockFetch(signedInAs(role));
+        mockFetch(signedInAs(role, { inOrganization }));
         renderAt(path);
         expect(await screen.findByRole("navigation", { name: "Main" })).toBeTruthy();
-        expect(await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ })).toBeTruthy();
+        expect(
+          await screen.findByRole("button", {
+            name: inOrganization ? /Acme Group\s*\/\s*Acme/ : /Acme/,
+          }),
+        ).toBeTruthy();
         expect(screen.queryByRole("link", { name: "Back to workspace" })).toBeNull();
         expect(screen.queryByText("Organization settings")).toBeNull();
         cleanup();
@@ -1157,7 +1167,7 @@ describe("a page that falls behind the server", () => {
   });
 
   it("follows a change of role when the tab comes back", async () => {
-    mockFetch(signedInAs("member"));
+    mockFetch(signedInAs("member", { inOrganization: false }));
     renderAt("/settings/general");
     expect(await menuLabels("Settings")).not.toContain("Organization settings");
 
@@ -1221,7 +1231,7 @@ describe("what the server's answers say about the session", () => {
     expect(await menuLabels("Settings")).toContain("Organization settings");
 
     mockFetch({
-      ...signedInAs("member"),
+      ...signedInAs("member", { inOrganization: false }),
       "/tenants/t1/invitations": [403, { detail: "Workspace admin access required" }],
     });
     await gatewayFetch("/gateway/tenants/t1/invitations", { method: "POST" });

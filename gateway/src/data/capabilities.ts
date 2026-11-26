@@ -20,6 +20,8 @@ export interface Capabilities {
   /** `org_admin` of the current workspace's organization. The operator is
    * not one by the operator bit alone. */
   administersOrganization: boolean;
+  /** A member of the current workspace's organization, in any role. */
+  memberOfOrganization: boolean;
   inOrganization: boolean;
   /** The current workspace's own `can_delete`: an admin membership of the
    * caller's, which the reach of an organization admin or the operator does
@@ -50,6 +52,7 @@ export function capabilitiesOf(
     isOperator: session?.user.is_operator ?? false,
     administersWorkspace: tenant?.administers ?? false,
     administersOrganization: session?.tenant?.organization_role === "org_admin",
+    memberOfOrganization: (session?.tenant?.organization_role ?? null) !== null,
     inOrganization: (session?.tenant?.organization_id ?? null) !== null,
     canDeleteWorkspace: tenant?.can_delete ?? false,
     canManageDataProtection: tenant?.can_manage_data_protection ?? false,
@@ -91,6 +94,15 @@ export const organizationAdmins: Rule = (caps) => {
   return caps.administersOrganization || caps.isOperator
     ? ALLOWED
     : notPermitted(ONLY_ORGANIZATION_ADMINS);
+};
+
+/** Every member of the organization, whatever their role, and the
+ * operator, who may need to restore an admin. */
+export const organizationMembers: Rule = (caps) => {
+  if (!caps.inOrganization) return inOrganization(caps);
+  return caps.memberOfOrganization || caps.isOperator
+    ? ALLOWED
+    : notPermitted("Only the organization's members can open this page.");
 };
 
 /** The organization's admins alone: the operator restores an admin, and

@@ -70,6 +70,7 @@ from switch_core.db.tenant_lookup import (
     all_organization_ids,
     all_tenant_ids,
     create_lookup_ddl,
+    organizations_of_user,
     tenant_of_agent_oauth_client,
     tenant_of_api_key,
     tenant_of_collaboration_bridge,
@@ -122,6 +123,7 @@ _ADDED_SINCE = {
     "directory_organizations": "a7c3e9f15b20",
     "tenants_of_organization": "c3d9a1f7b246",
     "tenants_with_pending_decisions": "689d7d8ff913",
+    "organizations_of_user": "b3e7c2a9d41f",
 }
 
 # A third kind of change, and the quietest: a lookup whose body a later
@@ -419,6 +421,43 @@ class TestWhatTheyAnswer:
         assert await tenants_of_organization(
             rls_harness.restricted, organization_id
         ) == [fixture.tenant_a]
+
+    async def test_organizations_of_user_sees_every_one_they_are_in(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _two_populated_tenants(rls_harness)
+        suffix = uuid.uuid4().hex[:8]
+        organizations = [f"org-{name}-{suffix}" for name in ("a", "b", "c")]
+        async with rls_harness.owner() as session:
+            for organization_id in organizations:
+                session.add(
+                    Organization(id=organization_id, slug=organization_id, name="O")
+                )
+            await session.flush()
+            session.add_all(
+                [
+                    OrganizationMember(
+                        organization_id=organizations[0],
+                        user_id=fixture.user_in_both,
+                        role="member",
+                    ),
+                    OrganizationMember(
+                        organization_id=organizations[1],
+                        user_id=fixture.user_in_both,
+                        role="org_admin",
+                    ),
+                    OrganizationMember(
+                        organization_id=organizations[2],
+                        user_id=fixture.user_a,
+                        role="member",
+                    ),
+                ]
+            )
+            await session.commit()
+
+        assert await organizations_of_user(
+            rls_harness.restricted, fixture.user_in_both
+        ) == sorted(organizations[:2])
 
     async def test_tenants_with_pending_decisions_sees_only_those_waiting(
         self, rls_harness: RLSHarness

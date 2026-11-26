@@ -478,7 +478,9 @@ CHECKS: dict[str, Check] = {
         ],
         "the organization": [
             Check(
-                "can_manage_members", _get(f"{G}/organizations/current"), ORG_MEMBERS
+                "can_manage_members",
+                _get(f"{G}/organizations/current"),
+                _get(f"{G}/organizations/current/issues"),
             ),
             Check(
                 "administers",

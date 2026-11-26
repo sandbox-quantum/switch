@@ -1411,6 +1411,9 @@ class TestSigningInHoldsOneConnectionAtATime:
             )
 
         assert _tenant_claim(response) == TENANT_ZERO_ID
+        async with factory() as session:
+            signed_in = await session.get(User, user.id)
+        assert signed_in is not None and signed_in.first_signed_in_at is not None
 
     async def test_session_state_completes_on_a_pool_of_one(
         self, one_connection_session_factory: async_sessionmaker[AsyncSession]

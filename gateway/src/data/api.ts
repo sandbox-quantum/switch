@@ -1931,6 +1931,9 @@ export interface OrganizationMember {
   email: string;
   role: OrganizationRole;
   created_at: string;
+  /** When they first signed in to Switch; null for someone brought in from
+   * the organization's WorkOS account who never has. */
+  first_signed_in_at: string | null;
   /** After a demotion: sign-ins Switch could not revoke at a vendor while
    * taking away what they held in workspaces they were in only as an
    * organization admin. */

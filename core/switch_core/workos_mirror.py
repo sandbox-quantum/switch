@@ -41,9 +41,23 @@ in WorkOS to a linked organization's members, applied in Switch
   log and the server's audit log, and checks every organization in full.
 
 People are matched to WorkOS users by the sign-in identity linking them
-(`oidc_identities`, the gateway's issuer and their WorkOS user id). Someone
-WorkOS lists who has never signed in to Switch has no account to add, and is
-brought in when they first sign in.
+(`oidc_identities`, the gateway's issuer and their WorkOS user id).
+
+**Members who never signed in.** For a member WorkOS lists with no account
+linked, the mirror makes one: a user with WorkOS's name and address, no
+password, `first_signed_in_at` NULL, `created_by_directory` set, and the
+identity linking it to the WorkOS user, written together so the account is
+never without it. Their organization's admins then see them and can add
+them to a workspace, and their role follows WorkOS like anyone's. Their first sign-in finds the
+account by that identity and sets `first_signed_in_at`. No account is made
+where one already has the address: that is an account from before WorkOS,
+which `switch-link-workos accounts` links. The daily check keeps such an
+account's name and address as WorkOS has them until its first sign-in. One
+removed from its last organization is deleted
+(`organization_mirror.delete_if_unheld`), and the daily check deletes any
+such account left in no organization or workspace, so a deletion that failed
+or never ran is made up. An account the mirror did not make (an operator's,
+or one from a sign-in) is never renamed or deleted by it.
 
 One process runs it (`ownership.py`, kind `workos_mirror`), under the fence
 it was started with: each change and each move of the cursor is made only
@@ -63,6 +77,7 @@ from typing import Any
 
 from sqlalchemy import exists, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.audit import (
@@ -78,6 +93,7 @@ from switch_core.db.models import (
     Organization,
     OrganizationMember,
     OwnershipLease,
+    User,
 )
 from switch_core.db.session_scope import organization_session
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
@@ -90,7 +106,11 @@ from switch_core.observability.catalogue import (
 )
 from switch_core.observability.metrics import GaugeReading, metrics
 from switch_core.organization_issues import workos_organization_deleted
-from switch_core.organization_mirror import MirrorDependencies, apply_from_directory
+from switch_core.organization_mirror import (
+    MirrorDependencies,
+    apply_from_directory,
+    delete_if_unheld,
+)
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.tenant_context import no_tenant
 from switch_core.workos_directory import EventCursorRejected, WorkOSDirectory
@@ -218,6 +238,7 @@ class WorkOSMirror:
         """Compare every linked organization's members with WorkOS's, and
         apply the differences."""
         await self._check_all(fence, await self._linked(), only=None)
+        await self._delete_unheld_accounts(fence)
         self._last_full_check = self._clock()
 
     async def run(self, fence: Fence) -> None:
@@ -343,9 +364,15 @@ class WorkOSMirror:
             logger.error("WorkOS sent a membership event with no user; passed over")
             return
         user_id = (await self._users_of([subject])).get(subject)
-        if user_id is None:
+        if user_id is None and kind == "organization_membership.deleted":
             return
         wanted = await self._directory.membership_role(subject, workos_organization_id)
+        if user_id is None:
+            if wanted is None:
+                return
+            user_id = await self._placeholder(fence, subject)
+            if user_id is None:
+                return
         await self._ensure_held(fence)
         await apply_from_directory(
             self._session_factory,
@@ -401,6 +428,29 @@ class WorkOSMirror:
             )
             in_switch = {user_id: role for user_id, role in rows}
         users = await self._users_of(list(in_workos))
+        complete = True
+        made: set[str] = set()
+        for missing in sorted(set(in_workos) - set(users)):
+            try:
+                account = await self._placeholder(fence, missing)
+            except TakenOver:
+                raise
+            except Exception:
+                logger.exception(
+                    "Making an account for WorkOS user %s, a member of "
+                    "organization %s, failed",
+                    missing,
+                    organization_id,
+                )
+                complete = False
+                continue
+            if account is not None:
+                users[missing] = account
+                made.add(account)
+        if not await self._refresh_placeholders(
+            fence, {s: u for s, u in users.items() if u not in made}
+        ):
+            complete = False
         subjects = await self._subjects_of(list(in_switch))
         wanted: dict[str, str | None] = {
             user_id: in_workos[subject] for subject, user_id in users.items()
@@ -416,7 +466,6 @@ class WorkOSMirror:
                 )
                 continue
             wanted.setdefault(user_id, in_workos.get(subject))
-        complete = True
         for user_id, role in sorted(wanted.items()):
             if in_switch.get(user_id) == role:
                 continue
@@ -561,6 +610,164 @@ class WorkOSMirror:
                 )
                 return {sub: user_id for sub, user_id in rows}
 
+    async def _placeholder(self, fence: Fence, subject: str) -> str | None:
+        """Make an account for WorkOS user `subject`, a member who has never
+        signed in, with the identity linking it to them, and return its id.
+        None where another account already has their address, or WorkOS gives
+        none."""
+        workos_user = await self._directory.user(subject)
+        email = workos_user.get("email")
+        if not isinstance(email, str) or not email:
+            logger.error(
+                "WorkOS user %s has no address; no account is made for them",
+                subject,
+            )
+            return None
+        await self._ensure_held(fence)
+        with no_tenant():
+            async with self._session_factory() as session:
+                user_store = self._dependencies.user_store
+                if await user_store.get_by_email(session, email) is not None:
+                    return None
+                user = User(
+                    name=_name_of(workos_user, email),
+                    email=email.lower(),
+                    role="user",
+                    password_hash=None,
+                    first_signed_in_at=None,
+                    created_by_directory=True,
+                )
+                try:
+                    async with session.begin_nested():
+                        session.add(user)
+                        await session.flush()
+                        session.add(
+                            OidcIdentity(user_id=user.id, iss=self._issuer, sub=subject)
+                        )
+                        await session.flush()
+                except IntegrityError:
+                    # Another pass, or their first sign-in, made it first.
+                    await session.rollback()
+                    return (await self._users_of([subject])).get(subject)
+                await session.commit()
+                user_id = user.id
+        logger.info(
+            "Made account %s for WorkOS user %s, a member who never signed in",
+            user_id,
+            subject,
+        )
+        return user_id
+
+    async def _refresh_placeholders(self, fence: Fence, users: dict[str, str]) -> bool:
+        """Give each of `users` (WorkOS user id to account) that was never
+        signed in to the name and address WorkOS has for them now. Returns
+        whether every one was read; an address another account has is left,
+        and logged."""
+        if not users:
+            return True
+        with no_tenant():
+            async with self._session_factory() as session:
+                never = set(
+                    await session.scalars(
+                        select(User.id).where(
+                            User.id.in_(list(users.values())),
+                            User.created_by_directory,
+                            User.first_signed_in_at.is_(None),
+                        )
+                    )
+                )
+        complete = True
+        for subject, user_id in sorted(users.items()):
+            if user_id not in never:
+                continue
+            try:
+                await self._refresh_placeholder(fence, subject, user_id)
+            except TakenOver:
+                raise
+            except Exception:
+                logger.exception(
+                    "Refreshing account %s from WorkOS user %s failed",
+                    user_id,
+                    subject,
+                )
+                complete = False
+        return complete
+
+    async def _refresh_placeholder(
+        self, fence: Fence, subject: str, user_id: str
+    ) -> None:
+        workos_user = await self._directory.user(subject)
+        email = workos_user.get("email")
+        if not isinstance(email, str) or not email:
+            return
+        name = _name_of(workos_user, email)
+        await self._ensure_held(fence)
+        with no_tenant():
+            async with self._session_factory() as session:
+                user = await session.scalar(
+                    select(User).where(User.id == user_id).with_for_update()
+                )
+                if (
+                    user is None
+                    or not user.created_by_directory
+                    or user.first_signed_in_at is not None
+                ):
+                    return
+                if user.name == name and user.email == email.lower():
+                    return
+                holder = await self._dependencies.user_store.get_by_email(
+                    session, email
+                )
+                if holder is not None and holder.id != user_id:
+                    logger.warning(
+                        "Account %s keeps its address: the one WorkOS user %s "
+                        "has now belongs to account %s",
+                        user_id,
+                        subject,
+                        holder.id,
+                    )
+                    return
+                user.name = name
+                user.email = email.lower()
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    logger.warning(
+                        "Account %s keeps its address: WorkOS user %s's new "
+                        "one was taken meanwhile",
+                        user_id,
+                        subject,
+                    )
+
+    async def _delete_unheld_accounts(self, fence: Fence) -> None:
+        """Delete each account the mirror made that was never signed in to
+        and is in no organization or workspace any more: one whose deletion
+        on its removal failed, or never ran because the process stopped
+        between the two (`organization_mirror.delete_if_unheld`)."""
+        with no_tenant():
+            async with self._session_factory() as session:
+                candidates = list(
+                    await session.scalars(
+                        select(User.id)
+                        .where(
+                            User.created_by_directory,
+                            User.first_signed_in_at.is_(None),
+                            User.password_hash.is_(None),
+                        )
+                        .order_by(User.id)
+                    )
+                )
+        for user_id in candidates:
+            await self._ensure_held(fence)
+            try:
+                await delete_if_unheld(self._session_factory, user_id)
+            except Exception:
+                logger.exception(
+                    "Deleting account %s, made for a WorkOS member who never "
+                    "signed in, failed; tried again on the next full check",
+                    user_id,
+                )
+
     async def _subjects_of(self, user_ids: list[str]) -> dict[str, str]:
         """The WorkOS user each of `user_ids` signs in as, where linked."""
         if not user_ids:
@@ -637,6 +844,17 @@ def _holds(fence: Fence) -> Any:
         OwnershipLease.token == fence.token,
         OwnershipLease.process_id == fence.process_id,
     )
+
+
+def _name_of(workos_user: dict[str, Any], email: str) -> str:
+    """A WorkOS user's name, or their address's local part when WorkOS has
+    none, as a first sign-in names them."""
+    parts = [
+        part.strip()
+        for part in (workos_user.get("first_name"), workos_user.get("last_name"))
+        if isinstance(part, str) and part.strip()
+    ]
+    return " ".join(parts) or email.split("@")[0]
 
 
 def _organization_named(event: dict[str, Any]) -> str | None:

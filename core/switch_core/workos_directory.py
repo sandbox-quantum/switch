@@ -348,6 +348,11 @@ class WorkOSDirectory:
         linking a Switch organization to it."""
         return await self._get(f"/organizations/{workos_organization_id}", {})
 
+    async def user(self, workos_user_id: str) -> dict[str, Any]:
+        """The WorkOS user `workos_user_id`, with their name and address, for
+        the mirror making an account for a member who never signed in."""
+        return await self._get(f"/user_management/users/{workos_user_id}", {})
+
     async def users_with_email(self, email: str) -> list[dict[str, Any]]:
         """The WorkOS users whose address is `email`, for an operator linking
         existing accounts."""

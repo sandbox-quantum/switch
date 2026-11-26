@@ -31,6 +31,7 @@ function member(
     email: `${overrides.name.toLowerCase()}@example.com`,
     role: "member",
     created_at: "2026-01-01",
+    first_signed_in_at: "2026-01-01T00:00:00Z",
     warning: null,
     service_account: false,
     can_change_role: true,
@@ -82,10 +83,10 @@ const DRIFTER = member({ user_id: "drifter", name: "Drifter", workspaces: [] });
 
 const WORKSPACES = [workspace("w1", "Core"), workspace("w2", "Lab"), workspace("w3", "Old", true)];
 
-function signedIn() {
+function signedIn(isOperator: boolean) {
   vi.mocked(useAuth).mockReturnValue({
     session: {
-      user: { id: "me", name: "Me", email: "me@example.com", is_operator: false },
+      user: { id: "me", name: "Me", email: "me@example.com", is_operator: isOperator },
       tenant: workspace("w1", "Core"),
       tenants: [],
       state: "ready",
@@ -134,7 +135,7 @@ function choose(label: string, option: string) {
 }
 
 describe("OrganizationUsersSettings", () => {
-  beforeEach(signedIn);
+  beforeEach(() => signedIn(false));
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -384,6 +385,7 @@ describe("OrganizationUsersSettings", () => {
   });
 
   it("shows the platform operator nothing to manage while the organization has an admin", async () => {
+    signedIn(true);
     answerFetch({});
     renderPage({ ...ORGANIZATION, role: null, administers: false, can_manage_members: false });
 
@@ -391,6 +393,25 @@ describe("OrganizationUsersSettings", () => {
       await screen.findByText(/you can manage this organization's users only while it has no admin/),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Invite users" })).toBeNull();
+  });
+
+  it("lets the platform operator, also a member here, restore an admin", async () => {
+    signedIn(true);
+    answerFetch({ "GET /organizations/current/members": [200, [ME, BOB]] });
+    renderPage({ ...ORGANIZATION, role: "member", administers: false, can_manage_members: true });
+
+    expect(await screen.findByText(/This organization has no admin/)).toBeTruthy();
+    expect(screen.queryByText("Only the organization's admins can change who is in it.")).toBeNull();
+  });
+
+  it("shows the platform operator, also a member here, a member's view while it has an admin", async () => {
+    signedIn(true);
+    answerFetch({ "GET /organizations/current/members": [200, [ME, BOB]] });
+    renderPage({ ...ORGANIZATION, role: "member", administers: false, can_manage_members: false });
+
+    await screen.findByTestId("row-bob");
+    expect(screen.getByText("Only the organization's admins can change who is in it.")).toBeTruthy();
+    expect(screen.queryByText(/As platform operator/)).toBeNull();
   });
 
   describe("where changes go to the organization's account settings", () => {
@@ -472,5 +493,53 @@ describe("OrganizationUsersSettings", () => {
       const dialog = await screen.findByRole("dialog");
       expect(within(dialog).queryByText(/Switch Trust/)).toBeNull();
     });
+  });
+
+  it("marks who has never signed in, where the members come from the directory", async () => {
+    const never = member({ user_id: "never", name: "Never", first_signed_in_at: null });
+    const answer = () =>
+      answerFetch({
+        "GET /organizations/current/members": [200, [ME, BOB, never]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+      });
+    answer();
+    renderPage({ ...ORGANIZATION, members_from_directory: true, directory_takes_changes: true });
+
+    expect(within(await screen.findByTestId("row-never")).getByText("Never signed in")).toBeTruthy();
+    expect(within(screen.getByTestId("row-bob")).queryByText("Never signed in")).toBeNull();
+    cleanup();
+
+    answer();
+    renderPage();
+    await screen.findByTestId("row-never");
+    expect(screen.queryByText("Never signed in")).toBeNull();
+  });
+
+  it("shows a member who is no admin the list, with nothing to change", async () => {
+    const readOnly = (entry: OrganizationMemberEntry): OrganizationMemberEntry => ({
+      ...entry,
+      can_change_role: false,
+      can_grant_org_admin: false,
+      can_remove: false,
+    });
+    const calls = answerFetch({
+      "GET /organizations/current/members": [200, [ME, BOB].map(readOnly)],
+    });
+    renderPage({
+      ...ORGANIZATION,
+      role: "member",
+      administers: false,
+      can_manage_members: false,
+      members_from_directory: true,
+      directory_takes_changes: true,
+    });
+
+    await screen.findByTestId("row-bob");
+    expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Invite users" })).toBeNull();
+    expect(screen.getByText("Only the organization's admins can change who is in it.")).toBeTruthy();
+    expect(screen.queryByText(/Changes you make here are made there too/)).toBeNull();
+    expect(screen.queryByText(/As platform operator/)).toBeNull();
+    expect(calls.map((call) => call.path)).not.toContain("/organizations/current/workspaces");
   });
 });

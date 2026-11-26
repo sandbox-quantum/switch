@@ -152,9 +152,16 @@ export default function OrganizationUsersSettings({
 }) {
   const { session } = useAuth();
   const selfId = session?.user.id ?? "";
-  const asOperator = !organization.administers;
+  // A member who is no admin sees the list and changes nothing; the operator
+  // comes in only to restore an admin, also one who is a member here, and one
+  // in no role here sees nothing while the organization has an admin.
+  const asOperator =
+    (session?.user.is_operator ?? false) &&
+    !organization.administers &&
+    (organization.role === null || organization.can_manage_members);
   const lockedOut = asOperator && !organization.can_manage_members;
-  const labels: RoleLabels = organization.members_from_directory ? DIRECTORY_ROLE_LABELS : ROLE_LABELS;
+  const fromDirectory = organization.members_from_directory;
+  const labels: RoleLabels = fromDirectory ? DIRECTORY_ROLE_LABELS : ROLE_LABELS;
   const toTrust =
     organization.members_from_directory && organization.directory_takes_changes && !asOperator;
   const loadMembers = useCallback(
@@ -320,6 +327,11 @@ export default function OrganizationUsersSettings({
                   )}
                 </Typography>
                 {row.service_account && <Chip label="Service account" size="small" variant="outlined" />}
+                {fromDirectory && row.first_signed_in_at === null && (
+                  <Tooltip title="In the organization's account, and hasn't signed in to Switch yet.">
+                    <Chip label="Never signed in" size="small" variant="outlined" />
+                  </Tooltip>
+                )}
               </Stack>
               <Typography variant="caption" color="text.secondary" noWrap>
                 {row.email}
@@ -364,7 +376,7 @@ export default function OrganizationUsersSettings({
         },
       },
     ];
-  }, [organization.administers, selfId, openWorkspaceIds, noOpenWorkspace, labels]);
+  }, [organization.administers, selfId, openWorkspaceIds, noOpenWorkspace, labels, fromDirectory]);
 
   const close = () => setPending(null);
   const openWorkspaces = (workspaces.data ?? []).filter((w) => w.archived_at === null);
@@ -407,6 +419,7 @@ export default function OrganizationUsersSettings({
       <Stack spacing={1.5} sx={{ mb: 3 }}>
         <OrganizationUsersNotices
           asOperator={asOperator}
+          administers={organization.administers}
           lockedOut={lockedOut || (asOperator && members.errorStatus === 403)}
           error={members.error}
           loaded={!members.loading && members.error === null}

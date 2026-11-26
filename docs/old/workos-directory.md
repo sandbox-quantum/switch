@@ -175,8 +175,7 @@ rule", naming what:
 - a workspace was left with no owner (its organization's Org Admins still
   administer it).
 
-Someone WorkOS lists who has never signed in to Switch is added when they
-first do. A member with no WorkOS identity (an account nobody linked) can't be
+A member with no WorkOS identity (an account nobody linked) can't be
 compared, and is logged and left. Deleting a linked organization in WorkOS
 removes nobody, since one event would take away a whole organization. It is
 logged at `error`, recorded in the organization's audit log, counted in
@@ -191,6 +190,40 @@ Organization page, until it is fixed: no admin (shown to the platform
 operator, who may then make one), a workspace with no owner, agents whose
 owner can no longer act for them, and a linked WorkOS organization that was
 deleted. The audit log keeps the history.
+
+## Members who never signed in
+
+A WorkOS member of a linked organization who has never signed in to Switch
+gets an account all the same, when the mirror sees their membership (its
+event, or the daily check). The account has WorkOS's name and address, no
+password, and the WorkOS identity, so it is in the organization with its
+WorkOS role from then on: the organization's admins see them on Users,
+marked "Never signed in", can add them to a workspace, and their role follows
+WorkOS as anyone's does. Their first sign-in through WorkOS lands in that
+account; no second one is made.
+
+- No account is made where one already has the address (in any letter case).
+  That is an account from before WorkOS: link it with
+  `switch-link-workos accounts`, after which it is matched like any other.
+- Until the first sign-in, the daily check updates the account's name and
+  address from WorkOS. A new address another account already has is left,
+  and logged at `warning` (without the address).
+- Removed in WorkOS from its last linked organization, an account the
+  mirror made that was never signed in to, has no password and is in no
+  organization (linked or not) and no workspace is deleted: the account and
+  its WorkOS identity only. Invitations to its address stay. One that other
+  rows still point at is kept, and logged at `warning`. The daily check
+  deletes any such account left behind, so a deletion that failed, or never
+  ran because the process stopped, is made up.
+- Only accounts the mirror made (`users.created_by_directory`) are updated or
+  deleted by it. An account made any other way, by an operator, a sign-up or
+  a sign-in (also by a release from before this one), is never touched.
+- To take the accounts away again, delete each account with
+  `created_by_directory` set and no `first_signed_in_at`
+  (`accounts/deletion.py`, `delete_account_rows`).
+
+Every member of an organization, not only its admins, sees its Users page,
+read-only unless they are an Org Admin.
 
 ## Changes made from Switch
 

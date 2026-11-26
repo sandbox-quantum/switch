@@ -309,10 +309,16 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`), and writes the server's audit log; it reads
     # no workspace or organization.
     "switch_core.accounts.purge_elsewhere",
-    # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
-    # and reads `oidc_identities` to match people, both global
+    # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`),
+    # reads `oidc_identities` to match people, and writes the `users` and
+    # `oidc_identities` rows of members who never signed in, all global
     # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.
     "switch_core.workos_mirror",
+    # Deleting an account the WorkOS mirror made, once its last membership
+    # goes, locks its `users` row (`rls_ddl.GLOBAL_TABLES`); its memberships
+    # are asked through `db/tenant_lookup.py`, and every workspace it leaves
+    # is bound (`accounts/deletion.delete_account_rows`).
+    "switch_core.organization_mirror",
     #
     # ── The OAuth client Core registers for itself at a vendor that offers
     # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The

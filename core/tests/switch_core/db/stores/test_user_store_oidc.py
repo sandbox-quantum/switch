@@ -15,6 +15,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.user_store import (
+    AccountGoneError,
     OidcIdentityConflictError,
     OidcIdentityRaceError,
     SignupRefusedError,
@@ -902,3 +903,85 @@ class TestLastTenant:
                 "theme": "dark",
                 "last_tenant_id": TENANT_ZERO_ID,
             }
+
+
+class TestTheFirstSignIn:
+    async def test_an_account_made_at_sign_in_is_marked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            made = await UserStore().get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="first@example.com",
+                name="First",
+                sub="user_FIRST",
+                email_verified=True,
+                join_tenant=False,
+                link_by_email=False,
+                create_allowed=True,
+            )
+            await session.commit()
+
+        assert made.user.first_signed_in_at is not None
+
+    async def test_only_the_first_sign_in_is_recorded(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            user = User(name="Once", email="once@example.com", role="user")
+            session.add(user)
+            await session.commit()
+
+            await store.mark_signed_in(session, user)
+            first = user.first_signed_in_at
+            await session.commit()
+            await store.mark_signed_in(session, user)
+            await session.commit()
+
+        assert first is not None
+        assert user.first_signed_in_at == first
+
+    async def test_an_account_gone_raises(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            with pytest.raises(AccountGoneError):
+                await UserStore().mark_signed_in(
+                    session,
+                    User(
+                        id="nobody", name="Nobody", email="n@example.com", role="user"
+                    ),
+                )
+
+    async def test_an_account_deleted_once_found_is_looked_up_again(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        class _FindsOneDeletedFirst(UserStore):
+            found_stale = False
+
+            async def get_by_oidc_identity(self, session, *, iss, sub):
+                if not self.found_stale:
+                    self.found_stale = True
+                    return User(
+                        id="deleted", name="Gone", email="gone@example.com", role="user"
+                    )
+                return await super().get_by_oidc_identity(session, iss=iss, sub=sub)
+
+        async with session_factory() as session:
+            made = await _FindsOneDeletedFirst().get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="again@example.com",
+                name="Again",
+                sub="user_AGAIN",
+                email_verified=True,
+                join_tenant=False,
+                link_by_email=False,
+                create_allowed=True,
+            )
+            await session.commit()
+
+        assert made.created
+        assert made.user.email == "again@example.com"

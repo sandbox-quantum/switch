@@ -43,6 +43,7 @@ function member(
     email: `${overrides.name.toLowerCase()}@example.com`,
     role: "member",
     created_at: "2026-01-01",
+    first_signed_in_at: "2026-01-01T00:00:00Z",
     warning: null,
     service_account: false,
     can_change_role: true,
@@ -57,12 +58,12 @@ function member(
 
 // Only `session` and `refresh` are read by this page and what it renders;
 // who administers the organization, and what the operator may do, come from
-// `CurrentOrganization`, not the session.
+// `CurrentOrganization`; the session says only that this is the operator.
 function signedIn() {
   const refresh = vi.fn(async () => {});
   vi.mocked(useAuth).mockReturnValue({
     session: {
-      user: { id: "me", name: "Me", email: "me@example.com", is_operator: false },
+      user: { id: "me", name: "Me", email: "me@example.com", is_operator: true },
       tenant: null,
       tenants: [],
       state: "ready",

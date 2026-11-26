@@ -16,6 +16,7 @@ import {
   connectorAppManagers,
   everyone,
   organizationAdmins,
+  organizationMembers,
   organizationAdminsOnly,
   organizationConnectorApps,
   serviceConnections,
@@ -121,7 +122,7 @@ export const AREAS: Record<SettingsArea, AreaDefinition> = {
     // Whoever may set up the deployment's connector apps comes in for them
     // even from a workspace in no organization, which an older release
     // could make; every other page here asks for the organization itself.
-    access: anyOf(organizationAdmins, connectorAppManagers),
+    access: anyOf(organizationMembers, connectorAppManagers),
     first: "/settings/org/general",
     outsideWorkspace: true,
   },
@@ -244,12 +245,13 @@ export const ROUTES: readonly AppRoute[] = [
   settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
-  // Organization settings: the area admits the organization's admins, the
-  // operator to restore one, and whoever may set up the deployment's
-  // connector apps. Its pages beyond General, Workspaces and Users are the
-  // admins' alone, but for Connector apps, which is whoever may set up the
-  // deployment's connector apps, the operator included, in an organization
-  // or not.
+  // Organization settings: the area admits the organization's members, the
+  // operator to restore an admin, and whoever may set up the deployment's
+  // connector apps. Users is every member's, read-only but for its admins;
+  // General and Workspaces are the admins' and the operator's; the pages
+  // beyond them are the admins' alone, but for Connector apps, which is
+  // whoever may set up the deployment's connector apps, the operator
+  // included, in an organization or not.
   areaIndex("/settings/org", "organization"),
   settingsPage(
     "/settings/org/general",
@@ -269,7 +271,7 @@ export const ROUTES: readonly AppRoute[] = [
     "/settings/org/users",
     "organization",
     "Users",
-    organizationAdmins,
+    organizationMembers,
     <OrganizationUsersPage />,
   ),
   settingsPage(
