@@ -33,6 +33,9 @@ export interface RoomSummary {
   read_visibility: "public" | "private";
   write_visibility: "public" | "private";
   created_at: string;
+  // When its newest message was sent; null when it has none. Absent from
+  // servers that predate it.
+  last_message_at?: string | null;
   archived: boolean;
   // The viewer takes part in it: owns it, is in it (in Switch Console or
   // through a platform account they claimed), or owns an agent in it.
@@ -95,6 +98,8 @@ export interface AgentSummary {
   // The label people read ("Notes Helper"); null when none was chosen and the
   // name is shown instead.
   display_name: string | null;
+  // The agent's picture; null for none. Absent from servers that predate it.
+  icon_url?: string | null;
   description: string;
   connector_type: string;
   connection_model: string | null;
@@ -340,6 +345,10 @@ export interface RoomPerson {
 }
 
 export interface RoomDetail extends RoomSummary {
+  /** The room's channel on its messaging app, where Switch knows how to link to it; absent from older servers. */
+  external_channel_url?: string | null;
+  /** The channel's name on its messaging app; absent from older servers. */
+  linked_channel_name?: string | null;
   transport_room_id: string;
   /** @deprecated Alias of `transport_room_id`, carried for the compatibility window. */
   matrix_room_id: string;
@@ -869,6 +878,11 @@ export async function fetchAgents(): Promise<AgentSummary[] | null> {
 
 /** The agents the Agents list shows, throwing rather than answering null so
  * a failure can say why. */
+/** Whether the server lets clients draw agents with icons from outside avatar services. */
+export async function fetchAvatarSettings(): Promise<{ third_party_avatars_enabled: boolean }> {
+  return jsonRequest<{ third_party_avatars_enabled: boolean }>("/agents/avatar-settings", "GET");
+}
+
 export async function loadAgents(): Promise<AgentListEntry[]> {
   return jsonRequest<AgentListEntry[]>("/agents", "GET");
 }
@@ -1004,6 +1018,39 @@ export async function updateAgentOptions(
   });
   if (!res.ok) throw await failure(res);
   return (await res.json()) as AgentSummary;
+}
+
+export async function updateAgentDisplayName(
+  agentId: string,
+  displayName: string | null,
+): Promise<AgentSummary> {
+  return jsonRequest<AgentSummary>(
+    `/agents/${agentId}/display-name`,
+    "PUT",
+    { display_name: displayName },
+  );
+}
+
+export async function updateAgentDescription(
+  agentId: string,
+  description: string,
+): Promise<AgentSummary> {
+  return jsonRequest<AgentSummary>(
+    `/agents/${agentId}/description`,
+    "PUT",
+    { description },
+  );
+}
+
+export async function updateAgentIcon(
+  agentId: string,
+  iconUrl: string | null,
+): Promise<AgentSummary> {
+  return jsonRequest<AgentSummary>(
+    `/agents/${agentId}/icon`,
+    "PUT",
+    { icon_url: iconUrl },
+  );
 }
 
 export async function registerOtherAgent(
@@ -1142,6 +1189,10 @@ export interface BridgeTypeInfo {
   config_schema: BridgeConfigSchema;
   // Whether this platform can create channels at all. Fixed per platform.
   channel_creation_supported: boolean;
+  // The platform's page under the messaging-apps docs, or null where there is none.
+  docs_slug: string | null;
+  // Whether its people can be searched, which linking an account needs.
+  directory_search_supported: boolean;
 }
 
 export async function fetchBridges(): Promise<BridgeDetail[] | null> {
@@ -1156,9 +1207,10 @@ export async function createBridge(
   bridgeType: string,
   displayName: string,
   connectionConfig: Record<string, unknown>,
-  // Defaults to true on the backend when omitted. Posting true for a platform
-  // that doesn't support channel creation returns 400.
-  channelCreationEnabled?: boolean,
+  // Posting true for a platform that doesn't support channel creation returns 400.
+  channelCreationEnabled: boolean,
+  // Makes it the app new rooms use when none is named.
+  setAsDefault: boolean,
 ): Promise<BridgeDetail> {
   const res = await gatewayFetch(`${BASE}/collaborations`, {
     method: "POST",
@@ -1169,10 +1221,30 @@ export async function createBridge(
       display_name: displayName,
       connection_config: connectionConfig,
       channel_creation_enabled: channelCreationEnabled,
+      set_as_default: setAsDefault,
     }),
   });
   if (!res.ok) throw await failure(res);
   return (await res.json()) as BridgeDetail;
+}
+
+/** Slack's create-app page, filled in with the app Switch needs, and its manifest for pasting by hand. */
+export async function fetchSlackOwnAppSetup(): Promise<{
+  create_url: string;
+  manifest?: Record<string, unknown>;
+}> {
+  return jsonRequest("/collaborations/setup/slack", "GET");
+}
+
+/** Whether a Slack app's two tokens work, and its workspace. A refusal says which token is wrong. */
+export async function checkSlackTokens(
+  botToken: string,
+  appToken: string,
+): Promise<{ workspace_id: string; workspace_name: string; bot_name: string }> {
+  return jsonRequest("/collaborations/setup/slack/check", "POST", {
+    bot_token: botToken,
+    app_token: appToken,
+  });
 }
 
 export async function fetchBridgeUsers(
@@ -1624,6 +1696,15 @@ export async function login(email: string, password: string): Promise<UserInfo> 
   return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
 
+/** Creates an account and signs it in, where the server offers sign-up. */
+export async function signUp(input: {
+  email: string;
+  password: string;
+  display_name: string | null;
+}): Promise<UserInfo> {
+  return jsonRequest<UserInfo>("/auth/signup", "POST", input);
+}
+
 // Throws when the cookie wasn't cleared, so a failed sign-out never looks
 // like a signed-out browser that a reload would sign straight back in.
 export async function logout(): Promise<void> {
@@ -1663,6 +1744,33 @@ export async function deleteMyAccount(email: string): Promise<void> {
   await jsonRequest("/auth/me", "DELETE", { email });
 }
 
+/** Wipes a test account and everything it owns, on a test server that allows it, confirmed by its email. */
+export async function resetTestAccount(email: string): Promise<void> {
+  await jsonRequest("/auth/me/reset-test-account", "POST", { email });
+}
+
+/** Where wiping what a test account owns, keeping its login, has got to:
+ * `finished` once it is done and the browser signed out; otherwise `waiting`
+ * says what it waits on, and asking again carries on. */
+export interface StartOverProgress {
+  finished: boolean;
+  waiting: string | null;
+}
+
+export async function startOverTestAccount(email: string): Promise<StartOverProgress> {
+  const res = await gatewayFetch(
+    `${BASE}/auth/me/start-over`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    },
+    LONG_REQUEST_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await failure(res);
+  return (await res.json()) as StartOverProgress;
+}
+
 /** A sign-in link Switch Console handed this browser, as its page asks about
  * it before spending it. */
 export interface BrowserHandoffPeek {
@@ -1690,8 +1798,15 @@ export type SignupMode = "default_tenant" | "invite_only" | "open";
 
 export interface AuthConfig {
   password_login_enabled: boolean;
+  /** Whether this page offers sign-up; absent from older servers. */
+  web_signup_enabled?: boolean;
+  /** Whether this is a test server, which offers test tools; absent from older servers. */
+  test_account_reset_enabled?: boolean;
   oidc_enabled: boolean;
   oidc_provider_label: string | null;
+  /** One sign-in button each (Google, GitHub…); empty for one labelled
+   * `oidc_provider_label`. Absent from older servers. */
+  oidc_login_options?: { id: string; label: string }[];
   signup_mode: SignupMode;
 }
 
@@ -2551,6 +2666,55 @@ export async function acceptInvitation(token: string): Promise<InvitationAcceptR
   return jsonRequest<InvitationAcceptResult>("/invitations/accept", "POST", { token });
 }
 
+/** A live invitation addressed to the signed-in person's own email, to a
+ * workspace they are not in yet (or at a higher role). Never the token. */
+export interface AddressedInvitation {
+  id: string;
+  tenant_id: string;
+  tenant_slug: string;
+  tenant_name: string;
+  role: TenantRole;
+  expires_at: string;
+  invited_by: string;
+  created_at: string;
+}
+
+export async function fetchMyInvitations(): Promise<AddressedInvitation[]> {
+  return fetchJson<AddressedInvitation[]>("/invitations/mine");
+}
+
+/** Accepts it by id, their email standing in for the token, and switches the
+ * session into its workspace. */
+export async function acceptMyInvitation(
+  invitation: AddressedInvitation,
+): Promise<InvitationAcceptResult> {
+  return jsonRequest<InvitationAcceptResult>("/invitations/mine/accept", "POST", {
+    tenant_id: invitation.tenant_id,
+    invitation_id: invitation.id,
+  });
+}
+
+/** A workspace open to the domain of the signed-in person's email, that they
+ * are not in yet. */
+export interface JoinableTenant {
+  tenant_id: string;
+  tenant_slug: string;
+  tenant_name: string;
+  domain: string;
+}
+
+export async function fetchJoinableTenants(): Promise<JoinableTenant[]> {
+  return fetchJson<JoinableTenant[]>("/joinable-tenants");
+}
+
+/** Joins it as a member and switches the session into it. */
+export async function joinTenantByDomain(tenantId: string): Promise<TenantMembership> {
+  return jsonRequest<TenantMembership>(
+    `/joinable-tenants/${encodeURIComponent(tenantId)}/join`,
+    "POST",
+  );
+}
+
 /** What an invitation is to, and nothing else. */
 export interface InvitationPreview {
   workspace_name: string;
@@ -2570,8 +2734,10 @@ export async function fetchAuthConfig(): Promise<AuthConfig | null> {
 
 // Full-page navigation (not fetch): the IdP redirect round-trip must happen
 // at the top level so cookies and the callback redirect work.
-export function oidcLoginUrl(): string {
-  return `${BASE}/auth/oidc/login`;
+/** `provider`: one of the sign-in options, or null for the one SSO button. */
+export function oidcLoginUrl(provider: string | null): string {
+  const url = `${BASE}/auth/oidc/login`;
+  return provider === null ? url : `${url}?provider=${encodeURIComponent(provider)}`;
 }
 
 /** Where an admin signs in to their organization's WorkOS account, for the
@@ -3896,6 +4062,70 @@ export const OWNER_ONLY_POLICY: AddressingPolicy = {
     },
   ],
 };
+
+// ── Decision routing ──────────────────────────────────────────────────────
+
+type DecisionBackendName = "none" | "endpoint" | "haiku_anthropic" | "haiku_bedrock";
+
+interface DecisionSettingsResponse {
+  source: "workspace" | "server_default";
+  effective: {
+    backend: DecisionBackendName;
+    endpoint: string | null;
+    threshold: number | null;
+    available: boolean;
+    reason: string | null;
+  };
+  workspace: {
+    backend: DecisionBackendName;
+    endpoint: string | null;
+    threshold: number | null;
+    has_api_key: boolean;
+    api_key_last4: string | null;
+    api_key_unreadable: boolean;
+    updated_at: string;
+  } | null;
+  server_default: { configured: boolean; endpoint: string | null; has_api_key: boolean };
+  options: { haiku_anthropic: boolean; haiku_bedrock: boolean };
+}
+
+interface DecisionSettingsUpdateInput {
+  backend: DecisionBackendName;
+  endpoint?: string | null;
+  api_key?: string;
+  clear_api_key?: boolean;
+  threshold?: number | null;
+}
+
+type DecisionTestRequestInput =
+  | DecisionSettingsUpdateInput
+  | { backend: "default"; endpoint?: never; api_key?: never; clear_api_key?: never; threshold?: number | null };
+
+interface DecisionTestResponse {
+  ok: boolean;
+  agent: string | null;
+  model_choice: string | null;
+  confidence: number | null;
+  latency_ms: number | null;
+  backend: string | null;
+  error: { code: string; message: string } | null;
+}
+
+export async function fetchDecisionSettings(): Promise<DecisionSettingsResponse> {
+  return jsonRequest<DecisionSettingsResponse>("/decision-settings", "GET");
+}
+
+export async function updateDecisionSettings(input: DecisionSettingsUpdateInput): Promise<DecisionSettingsResponse> {
+  return jsonRequest<DecisionSettingsResponse>("/decision-settings", "PUT", input);
+}
+
+export async function clearDecisionSettings(): Promise<void> {
+  return noContentRequest("/decision-settings", "DELETE");
+}
+
+export async function testDecisionSettings(input: DecisionTestRequestInput): Promise<DecisionTestResponse> {
+  return jsonRequest<DecisionTestResponse>("/decision-settings/test", "POST", input);
+}
 
 // ── Connector app credentials (the server's operator only) ───────────────
 

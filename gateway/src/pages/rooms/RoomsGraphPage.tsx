@@ -1,9 +1,7 @@
-import ArrowBack from "@mui/icons-material/ArrowBack";
 import {
   Alert,
   Box,
   CircularProgress,
-  IconButton,
   Stack,
   Typography,
 } from "@mui/material";
@@ -212,9 +210,6 @@ export default function RoomsGraphPage() {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
-          <ArrowBack />
-        </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Rooms graph
         </Typography>

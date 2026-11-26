@@ -13,9 +13,10 @@
  * test fails until the two agree.
  *
  * Plain data with no imports, because the harness reads it too. Every page
- * assumes the server has `agent_management`, `service_connections` and
- * `organization_connector_apps` on, as the harness's stack does, and more
- * than one organization: the server's default one and the harness's own. */
+ * assumes the server has `agent_management`, `service_connections`,
+ * `organization_connector_apps`, `gateway_chats` and `gateway_onboarding` on,
+ * as the harness's stack does, and more than one organization: the server's
+ * default one and the harness's own. */
 
 /** The roles, each a real account in the harness:
  *
@@ -36,6 +37,11 @@ const ADMINS: readonly Persona[] = ["orgAdmin", "workspaceAdmin", "operator"];
 const ORGANIZATION_ADMIN_OR_OPERATOR: readonly Persona[] = ["orgAdmin", "operator"];
 const ORGANIZATION_ADMIN: readonly Persona[] = ["orgAdmin"];
 const OPERATOR: readonly Persona[] = ["operator"];
+
+/** Pages that fill the window, with no rail or top bar, as Console's first
+ * run does. The shell draws them bare, and the harness, which follows the
+ * rail from page to page, comes back to one with a rail after each. */
+export const FULL_WINDOW: readonly string[] = ["/get-started"];
 
 export interface MatrixPage {
   /** The route's own path, `:name` parameters included. */
@@ -65,11 +71,13 @@ function page(path: string, open: readonly Persona[]): MatrixPage {
 export const PAGES: readonly MatrixPage[] = [
   page("/overview", EVERYONE),
   page("/ecosystem", EVERYONE),
-  page("/rooms", EVERYONE),
-  page("/rooms/new", EVERYONE),
-  page("/rooms/groups", EVERYONE),
-  page("/rooms/graph", EVERYONE),
+  page("/get-started", EVERYONE),
+  page("/chats", EVERYONE),
+  page("/chats/agents/:agentId", EVERYONE),
+  page("/chats/rooms/:roomId", EVERYONE),
+  page("/chats/:roomId", EVERYONE),
   page("/rooms/:roomId", EVERYONE),
+  page("/rooms/:roomId/manage", EVERYONE),
   page("/rooms/:roomId/documents/:documentId", EVERYONE),
   page("/resources", EVERYONE),
   page("/resources/references/:id", EVERYONE),
@@ -79,16 +87,21 @@ export const PAGES: readonly MatrixPage[] = [
   page("/templates/:id", EVERYONE),
   page("/agents", EVERYONE),
   page("/agents/:agentId", EVERYONE),
+  page("/agents/:agentId/manage", EVERYONE),
   page("/connectors", EVERYONE),
   page("/connectors/:connectorId", EVERYONE),
 
   page("/settings/general", EVERYONE),
   page("/settings/general/private-channel-rooms", ADMINS),
   page("/settings/users", EVERYONE),
+  page("/settings/room-groups", EVERYONE),
+  page("/settings/room-graph", EVERYONE),
   page("/settings/messaging-apps", EVERYONE),
   page("/settings/connectors", EVERYONE),
   page("/settings/api-keys", EVERYONE),
   page("/settings/guardrails", EVERYONE),
+  page("/settings/message-routing", ADMINS),
+  page("/settings/ai-providers", EVERYONE),
   page("/settings/devices", EVERYONE),
   page("/settings/account", EVERYONE),
 
@@ -120,6 +133,10 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/workspace", to: "/settings/users" },
   { from: "/workspace/private-channel-rooms", to: "/settings/general/private-channel-rooms" },
   { from: "/organization", to: "/settings/org" },
+  { from: "/rooms", to: "/chats?tab=rooms" },
+  { from: "/rooms/new", to: "/chats?tab=rooms&new=room" },
+  { from: "/rooms/groups", to: "/settings/room-groups" },
+  { from: "/rooms/graph", to: "/settings/room-graph" },
   { from: "/usage", to: "/settings" },
   { from: "/users", to: "/settings/org/users" },
   { from: "/operator/workspaces", to: "/settings/org/workspaces" },
@@ -129,11 +146,13 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/platform/connectors", to: "/settings/org/connector-apps" },
 ];
 
-// The ecosystem graph has no rail item of its own: Home links to it.
+// The ecosystem graph has no rail item of its own: Home links to it. Nor do
+// rooms where there are Chats: they are opened from there. Nor does Get
+// started: a first visit opens it, and Home leads back while setup is unfinished.
 const RAIL_EVERYONE = [
   "Home",
+  "Chats",
   "Agents",
-  "Rooms",
   "Templates",
   "Connectors",
   "Resources",
@@ -153,13 +172,21 @@ export type MatrixSettingsArea = "workspace" | "organization";
 const WORKSPACE_MENU_EVERYONE = [
   "General",
   "Users",
+  "Room groups",
+  "Rooms graph",
   "Messaging apps",
   "Connectors",
   "API keys",
   "Guardrails",
 ];
-const WORKSPACE_MENU_MEMBER = [...WORKSPACE_MENU_EVERYONE, "Devices", "Your account"];
-const WORKSPACE_MENU_ADMIN = WORKSPACE_MENU_MEMBER;
+const WORKSPACE_MENU_MEMBER = [...WORKSPACE_MENU_EVERYONE, "AI providers", "Devices", "Your account"];
+const WORKSPACE_MENU_ADMIN = [
+  ...WORKSPACE_MENU_EVERYONE,
+  "Message routing",
+  "AI providers",
+  "Devices",
+  "Your account",
+];
 
 /** Each settings area's menu, in order: the pages it lists, not the link
  * across to the other area. Null where the role may not

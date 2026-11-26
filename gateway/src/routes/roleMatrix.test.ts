@@ -21,7 +21,14 @@ import { AREAS, ROUTES, accessTo, menuOf, railFor } from "./routeTable";
  * organization, on a server with the flags the harness's stack turns on. */
 function capabilitiesOf(persona: Persona): Capabilities {
   const features = featureFlagsFrom(
-    ["agent_management", "service_connections", "organization_connector_apps"].map((key) => ({
+    [
+      "agent_management",
+      "service_connections",
+      "organization_connector_apps",
+      "gateway_chats",
+      "gateway_onboarding",
+      "decision_routing",
+    ].map((key) => ({
       key,
       enabled: true,
     })),

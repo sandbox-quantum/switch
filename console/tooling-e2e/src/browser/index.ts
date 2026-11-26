@@ -1,4 +1,5 @@
 import { expect } from 'vitest';
+import { FULL_WINDOW } from '../../../../gateway/src/routes/roleMatrix.ts';
 import { ROLE_MATRIX_SCENARIOS } from './role-matrix/index.ts';
 import { browserHeader, type BrowserScenario } from './scenario.ts';
 
@@ -28,26 +29,29 @@ const everyPage: BrowserScenario = {
   async run({ ui, log }) {
     await ui.signIn();
     const links = await ui.navLinks();
-    expect(links.map((link) => link.path)).toEqual(expect.arrayContaining(['/rooms', '/agents']));
+    expect(links.map((link) => link.path)).toEqual(expect.arrayContaining(['/chats', '/agents']));
     for (const link of links) {
       await ui.openFromRail(link.label);
       log(`${link.label} (${ui.path()}) opened`);
+      // A page that fills the window has no rail: once it is drawn (the old
+      // page stays until its code has loaded), back to one that has.
+      if (FULL_WINDOW.includes(link.path)) {
+        await expect.poll(() => ui.nav().isVisible(), { timeout: 15_000 }).toBe(false);
+        await ui.open('/');
+      }
     }
   },
 };
 
-/** A room made over the API is listed, and its page opens from the list. */
+/** A room made over the API opens on its own page, where it is managed. */
 const roomFromList: BrowserScenario = {
   header: browserHeader('gateway-room-from-list', ['GET /gateway/rooms/{room_id}']),
   async run({ ui, fixtures }) {
     const agent = await fixtures.agent('member');
     const room = await fixtures.internalRoom('room', [agent]);
     await ui.signIn();
-    await ui.openFromRail('Rooms');
-    const row = ui.page.getByRole('row').filter({ hasText: room.name });
-    await expect.poll(() => row.count(), { timeout: 15_000 }).toBe(1);
-    await row.click();
-    await expect.poll(() => ui.path()).toBe(`/rooms/${room.id}`);
+    await ui.open(`/rooms/${room.id}/manage`);
+    await expect.poll(() => ui.path()).toBe(`/rooms/${room.id}/manage`);
     await expect
       .poll(() => ui.page.getByRole('heading', { name: room.name }).isVisible())
       .toBe(true);
@@ -56,45 +60,45 @@ const roomFromList: BrowserScenario = {
 };
 
 /**
- * A room made in the gateway's own form exists in the backend as asked: an
- * internal room (no bridge, so no platform channel is made on a shared
- * deployment) with the agent picked in the form as its member. Made from the
- * gateway rather than by adding a bot on the platform, which is the path
- * where the first bot added to a new channel creates no room.
+ * A room made in the dashboard's New room dialog exists in the backend as
+ * asked: a room on no messaging app (so no platform channel is made on a
+ * shared deployment) with the agent picked in the dialog as its member, opened
+ * in Chats. Made from the dashboard rather than by adding a bot on the
+ * platform, which is the path where the first bot added to a new channel
+ * creates no room.
  */
 const createRoom: BrowserScenario = {
-  header: browserHeader('gateway-create-room', ['POST /gateway/rooms']),
+  header: browserHeader('gateway-create-room', ['POST /gateway/chats']),
   async run({ ui, fixtures, names, switchClient, log }) {
     const agent = await fixtures.agent('member');
     const name = names.name('ui-room');
-    const description = `Made in the gateway form by the Switch end-to-end harness (run ${names.runId}). Safe to delete.`;
+    const description = `Made in the dashboard's New room dialog by the Switch end-to-end harness (run ${names.runId}). Safe to delete.`;
     await ui.signIn();
-    await ui.openFromRail('Rooms');
-    // An empty list offers the same button again in the table: either opens the form.
-    await ui.page.getByRole('button', { name: 'New room' }).first().click();
-    await expect.poll(() => ui.path()).toBe('/rooms/new');
-    await ui.page.getByRole('textbox', { name: /^Name/ }).fill(name);
-    await ui.page.getByRole('textbox', { name: /^Description/ }).fill(description);
-    await ui.page.getByRole('combobox', { name: 'Agents' }).fill(agent.name);
-    await ui.page.getByRole('option').filter({ hasText: agent.name }).click();
+    await ui.open('/chats?tab=rooms');
+    await ui.page.getByRole('button', { name: 'New Room' }).click();
+    const dialog = ui.page.getByRole('dialog');
+    await dialog.getByPlaceholder('Name this room').fill(name);
+    await dialog.getByPlaceholder('What this room is for').fill(description);
+    await dialog.getByRole('combobox', { name: 'Add agents or people' }).fill(agent.name);
+    await dialog.getByRole('option').filter({ hasText: agent.name }).click();
     // The room is known from the create call's answer, not from where the page
     // goes next, so it is removed even if the page never gets there.
     const created = ui.page.waitForResponse(
       (response) =>
         response.request().method() === 'POST' &&
-        new URL(response.url()).pathname.endsWith('/gateway/rooms'),
+        new URL(response.url()).pathname.endsWith('/gateway/chats'),
       { timeout: 15_000 }
     );
-    await ui.page.getByRole('button', { name: 'Create', exact: true }).click();
+    await dialog.getByRole('button', { name: /^Create room/ }).click();
     const response = await created;
     expect(response.status(), 'the create call failed').toBeLessThan(300);
-    const roomId = ((await response.json()) as { id?: unknown }).id;
+    const roomId = ((await response.json()) as { chat?: { roomId?: unknown } }).chat?.roomId;
     if (typeof roomId !== 'string') {
       throw new Error(`the create call answered without a room id: ${await response.text()}`);
     }
     fixtures.defer(`room ${name} (${roomId})`, () => switchClient.deleteRoom(roomId));
-    log(`created room ${name} (${roomId}) from the form`);
-    await expect.poll(() => ui.path(), { timeout: 15_000 }).toBe(`/rooms/${roomId}`);
+    log(`created room ${name} (${roomId}) from the New room dialog`);
+    await expect.poll(() => ui.path(), { timeout: 15_000 }).toBe(`/chats/rooms/${roomId}`);
 
     const room = await switchClient.getRoom(roomId);
     expect(room.name).toBe(name);
@@ -112,7 +116,7 @@ const signOut: BrowserScenario = {
   async run({ ui }) {
     await ui.signIn();
     await ui.signOut();
-    await ui.goto('/rooms');
+    await ui.goto('/agents');
     await expect.poll(() => ui.path(), { timeout: 15_000 }).toBe('/login');
   },
 };

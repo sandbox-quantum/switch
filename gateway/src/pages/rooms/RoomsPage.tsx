@@ -41,6 +41,7 @@ import { EM_DASH, channelTypeLabel, formatDate } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 import { buildGroupIndex, effectiveColor } from "./groupTree";
 import { RoomAccessChip } from "./RoomAccessChip";
+import type { RoomsNotice } from "./RoomDetailPage";
 import {
   bridgeOptions,
   connectedUserOptions,
@@ -77,12 +78,6 @@ type View = "active" | "archived";
 
 /** What the confirm dialog is asking about. */
 type Pending = { kind: "archive"; rooms: RoomSummary[] } | { kind: "delete"; room: RoomSummary };
-
-/** A notice another page leaves for this one when it sends someone here,
- * such as a room's platform channel that could not be cleaned up. */
-export interface RoomsNotice {
-  notice: string;
-}
 
 function Missing() {
   return <MutedText>{EM_DASH}</MutedText>;

@@ -1,5 +1,6 @@
 import { Alert, Box, Button, CircularProgress } from "@mui/material";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router";
+import { useState } from "react";
+import { Navigate, Route, RouterProvider, Routes, createBrowserRouter } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
 import { appView, readPendingInvite } from "./data/sessionState";
 import { DevRoleCorner } from "./layout/DevRoleSlot";
@@ -102,23 +103,27 @@ export function AppRoutes() {
   );
 }
 
-export default function App() {
+function Root() {
   // The sign-in link Switch Console opens stands outside the session and both
   // layouts, beside the sign-in page: it reads its code off the address before
   // anything else runs, and replaces whatever session this browser holds.
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/auth/handoff" element={<BrowserHandoffPage />} />
-        <Route
-          path="*"
-          element={
-            <AuthProvider>
-              <AppRoutes />
-            </AuthProvider>
-          }
-        />
-      </Routes>
-    </BrowserRouter>
+    <Routes>
+      <Route path="/auth/handoff" element={<BrowserHandoffPage />} />
+      <Route
+        path="*"
+        element={
+          <AuthProvider>
+            <AppRoutes />
+          </AuthProvider>
+        }
+      />
+    </Routes>
   );
+}
+
+export default function App() {
+  // A data router, so a page with unsaved changes can ask before it is left.
+  const [router] = useState(() => createBrowserRouter([{ path: "*", Component: Root }]));
+  return <RouterProvider router={router} />;
 }

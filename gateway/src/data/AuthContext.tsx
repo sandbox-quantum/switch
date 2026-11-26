@@ -10,6 +10,7 @@ import {
   loadCurrentTenant,
   login as apiLogin,
   logout as apiLogout,
+  signUp as apiSignUp,
   signOutEverywhere,
   switchTenant,
 } from "./api";
@@ -56,6 +57,7 @@ interface AuthState {
   recheck: () => Promise<void>;
   refresh: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
+  signUp: (input: { email: string; password: string; name: string | null }) => Promise<void>;
   logout: () => Promise<void>;
   logoutEverywhere: () => Promise<void>;
   switchTo: (tenantId: string) => Promise<void>;
@@ -297,6 +299,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  const signUp = useCallback(
+    async (input: { email: string; password: string; name: string | null }) => {
+      await apiSignUp({ email: input.email, password: input.password, display_name: input.name });
+      await refresh();
+    },
+    [refresh],
+  );
+
   // The next person to sign in on this tab must not inherit an invitation,
   // or a link, they never followed. Both are dropped only once signed out: a
   // sign-out that fails leaves the person here, with what they had.
@@ -340,6 +350,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     recheck,
     refresh,
     login,
+    signUp,
     logout,
     logoutEverywhere,
     switchTo,
