@@ -12,10 +12,6 @@ export default defineConfig({
   ],
   resolve: chatUiResolve,
   build: { outDir: "dist" },
-  test: {
-    environment: "jsdom",
-    setupFiles: ["./vitest.setup.ts"],
-  },
   server: {
     fs: { allow: [".", CHAT_UI_SRC, PROVIDER_ICONS_SRC] },
     proxy: {

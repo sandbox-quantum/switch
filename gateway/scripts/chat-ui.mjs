@@ -37,6 +37,7 @@ export const chatUiResolve = {
     "clsx",
     "tailwind-merge",
     "streamdown",
+    "@streamdown/mermaid",
     "react-syntax-highlighter",
     "date-fns",
     "@tanstack/react-query",

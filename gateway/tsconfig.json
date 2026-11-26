@@ -14,7 +14,7 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
-    "types": ["@testing-library/jest-dom", "vitest/globals"],
+    "types": ["vitest/globals"],
     "paths": {
       "@switch-console/chat-ui/*": ["../console/packages/chat-ui/src/*"],
       "@switch-console/provider-icons/*": ["../console/packages/plugins/src/agents/impl/*/icon.ts"],
