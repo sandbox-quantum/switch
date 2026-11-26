@@ -1,0 +1,19 @@
+{
+  "__AGENTS_SUBNET__": "198.51.100.0/24",
+  "__API_SERVER_IP_1__": "192.0.2.11",
+  "__API_SERVER_IP_2__": "192.0.2.12",
+  "__BOX_CA_CERT__": "-----BEGIN CERTIFICATE-----\nMIIB1DCCAXugAwIBAgIUM9a7//fChE1Z2Mq63W1IrNVogOowCgYIKoZIzj0EAwIw\nPzE9MDsGA1UEAww0Q29udHJhY3QgZXhhbXBsZSBDQSAodGhyb3dhd2F5LCBubyBw\ncml2YXRlIGtleSBrZXB0KTAgFw0yNjExMjYxMjE1NTZaGA8yMTI2MTEwMjEyMTU1\nNlowPzE9MDsGA1UEAww0Q29udHJhY3QgZXhhbXBsZSBDQSAodGhyb3dhd2F5LCBu\nbyBwcml2YXRlIGtleSBrZXB0KTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLl9\nA2LI0Rm7p3z/bgNx3k9Ted9jnqmzi1vR0DW6fMzQ89x+50R5n6o/gOZsRtvsHrN0\nzJ0A2+h9T+cYqS4LanWjUzBRMB0GA1UdDgQWBBSMkFBZPMpp/MwUAmYY+PQPXHfd\n3DAfBgNVHSMEGDAWgBSMkFBZPMpp/MwUAmYY+PQPXHfd3DAPBgNVHRMBAf8EBTAD\nAQH/MAoGCCqGSM49BAMCA0cAMEQCIBSA1oRDm3XAdyzs8pm4ZQGcxAPdsRiTHBME\nHyWbW79gAiBMrs2sKahW7Mx9Q5rMVdGZKL+IYwofaJaUS09I21AeHA==\n-----END CERTIFICATE-----\n",
+  "__BOX_IMAGE__": "registry.example/hosted-agents-box@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "__CLUSTER_SERVICE_CIDR__": "203.0.113.0/24",
+  "__CLUSTER_VPC_CIDR__": "198.51.100.0/22",
+  "__CONTROLLER_IMAGE__": "registry.example/switch-hosted-controller@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "__EGRESS_LISTS_IMAGE__": "registry.example/switch-hosted-controller@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "__PAUSE_IMAGE__": "registry.example/pause@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "__PREVIOUS_BOX_IMAGE_1__": "registry.example/hosted-agents-box@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "__PREVIOUS_BOX_IMAGE_2__": "registry.example/hosted-agents-box@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "__PREVIOUS_BOX_IMAGE_3__": "registry.example/hosted-agents-box@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "__SERVER_IP__": "192.0.2.10",
+  "__SQUID_IP__": "203.0.113.53",
+  "__ZONE__": "xx-example-1a",
+  "kubernetes_service_ip": "203.0.113.1"
+}

@@ -38,7 +38,6 @@ rules:
   resources:
   - nodes
   verbs:
-  - get
   - list
 - apiGroups:
   - metrics.k8s.io
@@ -102,15 +101,6 @@ rules:
   verbs:
   - get
   - delete
-- apiGroups:
-  - ''
-  resourceNames:
-  - data-controller
-  - data-agents
-  resources:
-  - persistentvolumeclaims
-  verbs:
-  - get
 - apiGroups:
   - ''
   resources:
@@ -257,6 +247,8 @@ rules:
   - get
 - apiGroups:
   - ''
+  resourceNames:
+  - box-0
   resources:
   - pods/eviction
   verbs:

@@ -1,0 +1,835 @@
+{
+  "files": [
+    {
+      "path": "admission/bad/add-only-a-removal-entry-removed.json",
+      "sha256": "9d19b0a099f37e34905ad515b43ca9eaec428af70436b386ca166c284653161a"
+    },
+    {
+      "path": "admission/bad/cordon-a-status-change.json",
+      "sha256": "6d33ebbb8ae79ec6091167844cd1ccf496e2706dc54f8b0759c854dd22806f0d"
+    },
+    {
+      "path": "admission/bad/cordon-already-cordoned.json",
+      "sha256": "b0f798ff15907c2a5ed4bba91154f5850949a2cf7be395d1251601fa409d9ea4"
+    },
+    {
+      "path": "admission/bad/cordon-and-label.json",
+      "sha256": "8c22b6d667505398c67526df5db8c0e987660822043bb6d842d14f720502f8ac"
+    },
+    {
+      "path": "admission/bad/cordon-and-taint.json",
+      "sha256": "cc2cc3f039f49e1896c4519193e38deb06ee9eb8615ec9c568216e3ee2c95ebf"
+    },
+    {
+      "path": "admission/bad/cordon-not-an-agents-node.json",
+      "sha256": "70dccadc71dd57573d61bc6a93206f211a1f789cacaaae0cafed6acb0982b476"
+    },
+    {
+      "path": "admission/bad/evict-another-pod.json",
+      "sha256": "03a7059f01a592e62917c0c304631fadf67475ede1ded10a0141c577fa3505c4"
+    },
+    {
+      "path": "admission/bad/gvisor-a-class-outside-the-box-namespaces.json",
+      "sha256": "774aebbe072bb23b7e2d362ff351e9753afe7cb50fa6513e9538e58f7bd1d11d"
+    },
+    {
+      "path": "admission/bad/gvisor-agent-toleration-without-gvisor.json",
+      "sha256": "a85d4a1c3ef622b0fbb56f20683120d709b69d3e76d148e81d3f2f0a71246f87"
+    },
+    {
+      "path": "admission/bad/identity-machine-id-changed.json",
+      "sha256": "4a4da430cf8479907c1751366455a90ce20e7bea415b4c0502d30e5f8c9daa85"
+    },
+    {
+      "path": "admission/bad/identity-name-label-changed.json",
+      "sha256": "a6fe88448697f4f9839e0484b0c37f2dd6872627897fc8f2a6eb19050d923e52"
+    },
+    {
+      "path": "admission/bad/p1-a-finalizer.json",
+      "sha256": "165952ba47ed00335c1117a3d4e1e6dd96abe506181e915026fc60ab32947d2f"
+    },
+    {
+      "path": "admission/bad/p1-a-machine-id-out-of-form.json",
+      "sha256": "651f6659c4b6745e8062ceb9247b445792d585a79a14354a09b698569ad19daa"
+    },
+    {
+      "path": "admission/bad/p1-a-name-out-of-form.json",
+      "sha256": "bbd392c14e818cdcf10d56f7a337262b1b4c2e4eb8e723440d610544f1f3aee6"
+    },
+    {
+      "path": "admission/bad/p1-a-template-label-missing.json",
+      "sha256": "d6cb24d644d4ca11fd759f93e327311adc3fc07087588a180516df6466de28af"
+    },
+    {
+      "path": "admission/bad/p1-an-extra-label.json",
+      "sha256": "1a6cdb3a3f090a8d686748b0cb28afe32c82b19e47c1388b20d7005b3038eb97"
+    },
+    {
+      "path": "admission/bad/p1-an-update.json",
+      "sha256": "5b81d066576a9342c5c65841ce62320efa1573c1d19a2d7e6425edc2035583ef"
+    },
+    {
+      "path": "admission/bad/p2-a-delete.json",
+      "sha256": "1ba895aaaf47b671f96ef23bc8d3cfcdf90f089b4a08e11d218e2164653f6e1d"
+    },
+    {
+      "path": "admission/bad/p2-a-finalizer.json",
+      "sha256": "dc08f752da3aa344e18f2c9485ae3bc9dc1e75cc3570efc8b9ff59460e22df9c"
+    },
+    {
+      "path": "admission/bad/p2-an-object-not-in-the-template.json",
+      "sha256": "3b76398411c3ceaefcd53590506b477c2d7213ea31a319e78eebf2a076f7f38a"
+    },
+    {
+      "path": "admission/bad/p2-an-unlabelled-namespace.json",
+      "sha256": "abfb0154b077a712a75be560611261865bd9783f510fca0cd3106c8864f0c4b4"
+    },
+    {
+      "path": "admission/bad/p3-account-mounts-its-token.json",
+      "sha256": "6cb54a78a13924b7613145c61d31953d5daff825def8100fc304ff5ae0edd5ff"
+    },
+    {
+      "path": "admission/bad/p3-configmap-an-extra-key.json",
+      "sha256": "8ac60ee7650ebffd67dc4ed1ecd61629990620a70da21b4715979b7afe953fba"
+    },
+    {
+      "path": "admission/bad/p3-configmap-binary-data.json",
+      "sha256": "f466dc1e1cfa457078b19b289ed6e18e3bd1d6717964c21754938a07c91d1790"
+    },
+    {
+      "path": "admission/bad/p3-disk-another-class.json",
+      "sha256": "ae7951c514ed5543a33919ec327d14ea98f45c060a3900d6d75a4d6dd0c69297"
+    },
+    {
+      "path": "admission/bad/p3-networkpolicy-deny-lets-egress-out.json",
+      "sha256": "308385af4baf63b052abbaf2fca6034f8c4cd0e103022e18dd30515ef3e5a334"
+    },
+    {
+      "path": "admission/bad/p3-networkpolicy-egress-to-another-port.json",
+      "sha256": "8d9368afb4b18f23d30dc1ed89a4caf1a4b6a6970f97816deda30ec22c76b88c"
+    },
+    {
+      "path": "admission/bad/p3-networkpolicy-ingress-allowed.json",
+      "sha256": "5a5e6fa24c0ed691a9f1a2bb52c16dfa52aa76ff48a1f76edbcde320cb5610cc"
+    },
+    {
+      "path": "admission/bad/p3-quota-pods-allowed.json",
+      "sha256": "c5e8368379d4a8e950b2a2ec4356e5393982170b5f593e7dcb2e84bc5413ba81"
+    },
+    {
+      "path": "admission/bad/p3-secret-made-with-data.json",
+      "sha256": "58a5e25d07955f1616b5604b7ad56d6c0b1e4acff5bd5f00b29d0f42411ea529"
+    },
+    {
+      "path": "admission/bad/p3-secret-not-opaque.json",
+      "sha256": "2baa6030c81409420dccc4ba6edd4bb1e03c8670a7e68efe6dd3a014a1d2af7c"
+    },
+    {
+      "path": "admission/bad/p4-a-capability-added.json",
+      "sha256": "a0b09055d544533e439945c1b8e32cc835746d216a62b427f9eb255f3ac581a7"
+    },
+    {
+      "path": "admission/bad/p4-a-container-renamed.json",
+      "sha256": "27b82429ce0343b96e2e882d0384f1577351035e7ecf5efbe246bd5a1bd1d02f"
+    },
+    {
+      "path": "admission/bad/p4-a-writable-root.json",
+      "sha256": "cfa57933d4eebd51dd2bd811cf6ce71c75fbd37cd09ad98204c856ea89c93951"
+    },
+    {
+      "path": "admission/bad/p4-an-extra-volume.json",
+      "sha256": "39142910d6ef4dda893902d551fb00e5a3faabc3742251147a7099125592676e"
+    },
+    {
+      "path": "admission/bad/p4-an-image-not-allowed.json",
+      "sha256": "a2bf9c5081d70f2ad3b4ef189db8b36b18ffbd660af86e783b4bfc83a8ebb060"
+    },
+    {
+      "path": "admission/bad/p4-another-controller-command.json",
+      "sha256": "339aff98b1e6b85fb3db1264cc9dc632ad2e16791bac1789c26ceaeddd25960e"
+    },
+    {
+      "path": "admission/bad/p4-another-service-name.json",
+      "sha256": "252c074fbb70b1e3b0bc74efba52d0db0ad1742d8b706ad7853cb9585b4c577b"
+    },
+    {
+      "path": "admission/bad/p4-another-zone.json",
+      "sha256": "6a34f0ad29410db990652c1ce870d9078230c4c84665f903fcbad5dc619c0437"
+    },
+    {
+      "path": "admission/bad/p4-env-from-a-configmap.json",
+      "sha256": "ca7fc4728046efc0883fff17abfdc4a4d459d9c380d8528e01ec45d729fd929f"
+    },
+    {
+      "path": "admission/bad/p4-host-network.json",
+      "sha256": "877b8736fafc0206e5c08cdf1c1ffe682585025c922e4079d3668f50972192c1"
+    },
+    {
+      "path": "admission/bad/p4-made-running.json",
+      "sha256": "db0bc3c8035abaec8ad6ca9254fd8e8a195237e08be08db0f5da87c6899b35b9"
+    },
+    {
+      "path": "admission/bad/p4-not-a-tier.json",
+      "sha256": "f0d7f0e99c726e4cb23e62707ea8d3aec348b0b78019baf6676afdb37ed4b170"
+    },
+    {
+      "path": "admission/bad/p4-not-gvisor.json",
+      "sha256": "391c09018f99b1ac41546feb00824816fbd7ea309c1c7dae7af2e603983c7072"
+    },
+    {
+      "path": "admission/bad/p4-privilege-escalation.json",
+      "sha256": "6855b0e0e9fb282afe60b6bc867d612d5e66a89c4639c1b6d99f6b8bc6a9c730"
+    },
+    {
+      "path": "admission/bad/p4-privileged.json",
+      "sha256": "abce8cad47c537d3e69b933bcb5b8d1bdb7a41ca4389b77c563c1b7bc59afa8d"
+    },
+    {
+      "path": "admission/bad/p4-root-allowed.json",
+      "sha256": "e1343913b7544a5cc4086efc7f795a0242b2fa930ea924e4828e4f0d56007916"
+    },
+    {
+      "path": "admission/bad/p4-starter-another-command.json",
+      "sha256": "efd7d7951182e93b308dce24a3baef3f72249db619d8c8c75b2787a5545222ca"
+    },
+    {
+      "path": "admission/bad/p4-the-agents-disk-in-the-controller.json",
+      "sha256": "0397aa12711c93a954e21de2e4dd4653366c30aafa05d2ad644db2c4d77ddf28"
+    },
+    {
+      "path": "admission/bad/p5-box-map-deleted.json",
+      "sha256": "f567b7ac3e0133b6014300ceb7db64d5ad4fbcf6777118110b15cfe37e755449"
+    },
+    {
+      "path": "admission/bad/p5-box-map-entry-out-of-form.json",
+      "sha256": "90dd6b5beef52db4b920a5d6db237494ef624371bd30c960f4dc4d0d12b43271"
+    },
+    {
+      "path": "admission/bad/p5-box-map-entry-removed.json",
+      "sha256": "4d7d0df09515f7790049591e49903137ac9b0e279bd2449e4237022aa06a3022"
+    },
+    {
+      "path": "admission/bad/p5-box-map-label-changed.json",
+      "sha256": "ca48f8ffb68129e41e8740aaf212543632322dbf6c2303f9adcdcd12bb21ca14"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-deleted.json",
+      "sha256": "2d7c7debad098ad8cd117706795e958d2533e01073b8d3fdf64ce8dfa102a87f"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-entry-out-of-form.json",
+      "sha256": "5f9081f6f5d9c0cae76cbfa74a83b7c214a587b9df7fafcaf6f90f38477818a3"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-entry-removed.json",
+      "sha256": "2ff6a6c1f5c65b3bcd090e777328f52527eb5b4e12423999026c38d52f3a6be0"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-label-changed.json",
+      "sha256": "3c5768e47ab9ee97479f6306a6cf1c15f62836d32d83897d8c3f694a374e4234"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-deleted.json",
+      "sha256": "1b5ee00392265beb7f663c2b4fdd3fa8208e746d3b883efc2fdef5c2b743c5a2"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-entry-out-of-form.json",
+      "sha256": "8ce4c3db3497b3e10781e910c0a33478b7d7474d1a015e26860c7371c7db702c"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-entry-removed.json",
+      "sha256": "02a2cedaa004c9798b877966399b552702c58f252f5bfd3fd83ef208b4aaf9d8"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-label-changed.json",
+      "sha256": "ba9954ebefa841edd556206ff5a9090210f41fdac3c7d7067a16ed4b791560b2"
+    },
+    {
+      "path": "admission/bad/p6-a-configmap-outside-a-box.json",
+      "sha256": "ec75c76eb0ce279f9a18c992173b44816fe55b9d6f8a9e2ffc75824e3d2504c7"
+    },
+    {
+      "path": "admission/bad/p7-a-write-in-an-unlabelled-namespace.json",
+      "sha256": "69c5188c99b11de36b8b7172141de4a9f255348ff95a4145d647af5e59350c99"
+    },
+    {
+      "path": "admission/bad/p7-enrolment-secret-another-key.json",
+      "sha256": "8fae6f7e56a0b51517d31451620ea2786d7a8ec863f45a7790d3502c760fe683"
+    },
+    {
+      "path": "admission/bad/p7-generator-in-an-unlabelled-namespace.json",
+      "sha256": "969a4594019677daa7c0d44460b01586646287e8115a19a4c8b41ec6d5484c66"
+    },
+    {
+      "path": "admission/bad/p7-scale-outside-a-box-namespace.json",
+      "sha256": "7183aa11d42303c7c6e59e7fafc8c079d7df8a832bd532dfc36bd2f0b7ae43ac"
+    },
+    {
+      "path": "admission/bad/p8-a-finalizer.json",
+      "sha256": "13d42b344b8f4bc42c1915f37919f3ef220a739fad913d249619af70303e97ab"
+    },
+    {
+      "path": "admission/bad/p8-an-unlabelled-namespace.json",
+      "sha256": "1cbc7d49e857322fa2921c40026e0da2cbdd8c062073bc900de70970f77a281c"
+    },
+    {
+      "path": "admission/bad/p8-an-update.json",
+      "sha256": "aee3003353913e3dd737c600bcb45f1551f91910def88e6b6c84ea0013882da2"
+    },
+    {
+      "path": "admission/bad/p8-another-name.json",
+      "sha256": "59b94a0e37befb7b7002353fe5f6c8096ec423e2d6ecf37017b706db73c4d1ab"
+    },
+    {
+      "path": "admission/bad/p8-another-subject.json",
+      "sha256": "ccf1f1651d79e458d54a6e3cb7028683f4211d793669893e16b8224f993af08f"
+    },
+    {
+      "path": "admission/bad/p8-binds-another-role.json",
+      "sha256": "1846011a12300e5c184096569c5adfd7ed0bf68acaacea8061bd5148a20a5cfa"
+    },
+    {
+      "path": "admission/bad/placeholder-a-higher-priority.json",
+      "sha256": "2444f7ed09b1821ebc6b09c1c8fbda1ca2c6f7f66b77c59b48da3aac934619e2"
+    },
+    {
+      "path": "admission/bad/placeholder-a-long-name.json",
+      "sha256": "1140b909abd837b151513d758024f2091007fd822ec1b18a91c07748aacf63a7"
+    },
+    {
+      "path": "admission/bad/placeholder-a-port.json",
+      "sha256": "8b8406a81ca4da4b8f364bc20fbd04941340e6b7a2d5af91122024b1de486715"
+    },
+    {
+      "path": "admission/bad/placeholder-an-unlisted-security-key.json",
+      "sha256": "abdd1bf8b7c9134bb937b1a3ab8b866206a74d71521c1dca7abad1268120328d"
+    },
+    {
+      "path": "admission/bad/placeholder-an-unlisted-spec-key.json",
+      "sha256": "50bb68e897a79c7aa73729f9b153ac5b04ec563ec889c705794ce515f6818e1c"
+    },
+    {
+      "path": "admission/bad/placeholder-another-scheduler.json",
+      "sha256": "b7fb551e36fabd24a3e64ad27b28a42129eaf920fab4205a50ebcea9cc5aea44"
+    },
+    {
+      "path": "admission/bad/placeholder-another-toleration.json",
+      "sha256": "2b891b7e3f41958a32fbf8fd154fce298d8f73f8ce34367d2b9eced133d59956"
+    },
+    {
+      "path": "admission/bad/placeholder-another-zone.json",
+      "sha256": "0e79eb7e0bd73890ecb45f39ccdde4f19bf974c88d7769ffa108e230c113d8a0"
+    },
+    {
+      "path": "admission/bad/placeholder-bigger-than-a-box.json",
+      "sha256": "209b9ad3d89982d2b393bbcb1c99f717157f55c499c325286cc0423442b5c452"
+    },
+    {
+      "path": "admission/bad/placeholder-elsewhere.json",
+      "sha256": "e85903da5cb50f493a4ac2ac2d253df35693cfab702320fe9873a6e7b52a7a07"
+    },
+    {
+      "path": "admission/bad/placeholder-not-plain-gvisor.json",
+      "sha256": "4e5b20785c57b9c8b71472ea2731a28f9d50a52fcd0fbcdbd63a2cb35c3b2df8"
+    },
+    {
+      "path": "admission/bad/placeholder-with-a-token.json",
+      "sha256": "7abeb7a45a2f249f528c8ec35462bbe8c61b9d76f02381c1923531eb2a870b7c"
+    },
+    {
+      "path": "admission/bad/placeholder-with-env.json",
+      "sha256": "e95ac7784bceaf817e1dba3a485ed5476902944b28095b06610c04b5396150b9"
+    },
+    {
+      "path": "admission/bad/reaper-a-person-keyed-namespace.json",
+      "sha256": "a35ed7d0194f0f878b562a83767eefb8af5d04386b692ef721e3fef10245d6e4"
+    },
+    {
+      "path": "admission/bad/reaper-an-owned-box.json",
+      "sha256": "d210f3858aa5631423c289fe82efe91bf89c9e7076bbd96e9034ba24b62f8f73"
+    },
+    {
+      "path": "admission/bad/reaper-deletes-a-secret.json",
+      "sha256": "dc6f6d0e1489cc2022b75f4b77c34dc6ebc2772beaea85f93a54b72c6c209b9a"
+    },
+    {
+      "path": "admission/bad/remover-a-box-not-listed.json",
+      "sha256": "1acf525e191951f0c7d030140bf01f087c76d7b1295afe3e6491123e181745e9"
+    },
+    {
+      "path": "admission/bad/remover-deletes-a-secret.json",
+      "sha256": "ad1f1b19c61b0c5e2271e58052f5e776ee39bece027d436cd0c2810e27f7305d"
+    },
+    {
+      "path": "admission/bad/remover-not-a-box-namespace.json",
+      "sha256": "cd92aaa51fb90bb639064332e335fda63736d9c122970a062056dc0a340ca293"
+    },
+    {
+      "path": "admission/good/drain-worker-a-box-evicted-post-pod-eviction-box-0.json",
+      "sha256": "0d63a32247c6ae07dfeffd5442a7e267f8f6527dbdd17011f4b2345db0e69d60"
+    },
+    {
+      "path": "admission/good/drain-worker-a-placeholder-made-post-pod-drain-room-contract1.json",
+      "sha256": "d5117fd18410b59d1a34ac1ad62e287d1677bf1d79241e70d0babe1c335efb4b"
+    },
+    {
+      "path": "admission/good/drain-worker-a-placeholder-taken-away-delete-pod-drain-room-contract1.json",
+      "sha256": "b03d2d01928a278900ab765ac8448b3e3d3dfe8a3e9f7fd4c7d65e4af54ce1b4"
+    },
+    {
+      "path": "admission/good/drain-worker-an-agents-node-cordoned-patch-node-contract-agents-node-1.json",
+      "sha256": "f05e5d3816651d933dbed497fe3e282a73e473bc8d340674f2e677317dc9d064"
+    },
+    {
+      "path": "admission/good/egress-lists-a-box-s-proxy-login-written-patch-secret-switch-proxy-login.json",
+      "sha256": "fe8cb5c6a9654da993548ae424ba334ab569bab3db5f99f017d357328d9cdb2e"
+    },
+    {
+      "path": "admission/good/egress-lists-squid-s-box-files-written-patch-configmap-squid-boxes.json",
+      "sha256": "24884022ac1ea077c989a1eccba378a5f7e4870137640df012a05c4ee8b7e09a"
+    },
+    {
+      "path": "admission/good/egress-lists-squid-s-logins-written-patch-secret-squid-passwd.json",
+      "sha256": "95be60ef78751ccb6152fe7c375d065362bfa85a403b3b10d110a9ccb23cba3b"
+    },
+    {
+      "path": "admission/good/eviction-watch-a-warning-event-on-a-box-post-event.json",
+      "sha256": "4fd0bae01cdb22c4eefe1f00f7243cd44937b722557c9fc6f5170997005cda1c"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-configmap-claude-managed-settings.json",
+      "sha256": "e5d7a5c6443e726e2dc5c06879822f279385039acf4a3acac69063a228d8f73b"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-configmap-switch-ca.json",
+      "sha256": "98afab9ad53daa2bc4d31940c5d7e72a5e50bd02ffe89812c310920d6e57fe79"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-namespace-box-namespace.json",
+      "sha256": "0917f0fba2570eac6cac1e7f27020539a0505dbd3cefe506e93e3584ae777b7e"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-networkpolicy-agent-egress.json",
+      "sha256": "2f008bf0db05dbe73c04cfd09d8b74f3d168c3edfdf75b4807bfe9c1512f2b60"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-networkpolicy-default-deny.json",
+      "sha256": "688eeeb2f1368d900d8e5b2721d2e1017b8943c9235ea03a0d55ae96ae28308e"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-persistentvolumeclaim-data-agents.json",
+      "sha256": "33b4e55298dcd483d71698fa2724626b493fa033766e32706c46465818da6220"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-persistentvolumeclaim-data-controller.json",
+      "sha256": "de41dfa4d147002c47d3a857a76c779bace2c1d8364bab0a72327c7fd37f32c7"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-resourcequota-no-shared-services-priority.json",
+      "sha256": "49c4efd1334cf65c4872ea992f457dc2397ef2c9d445a3d82f5b7c3fd7f19557"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-rolebinding-switch-box-watch.json",
+      "sha256": "42297a1badbe9eed00e0e929fc8ffb946ddf7592afc0a27057adb0a2ee9ae4c2"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-rolebinding-switch-operator-restart.json",
+      "sha256": "3291812f5d50c1680717bd4d8482bb48b9c812c925638829575f27ad2cd3c157"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-secret-switch-enrol.json",
+      "sha256": "c1cd857239e2d3462c9c3ca559bbc28af1eaf6107fa9ec99b4e9e1c134d897da"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-secret-switch-proxy-login.json",
+      "sha256": "3115b4579d2bedff0e2f739891ad6d7ff06a7749b5acc7fac3115f68b6b54e86"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-serviceaccount-box.json",
+      "sha256": "d4ae3b23a97287cb2c7c7f0f72ad2b830a4b066d2e7af6e587c8348d836e47be"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-post-statefulset-box.json",
+      "sha256": "f85fdb8c88061d4a1c05d4b980abdf994f787e88f038af125066c1acbf01514f"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-put-secret-box-map.json",
+      "sha256": "ce9c51edb8304ba8d5be635e4dc841067e957f7df0f348327f9d56056be139eb"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-box-keyed-put-secret-box-owners.json",
+      "sha256": "4d1f555b47036794953d520dde58e10f45af7f5a91df63bcd25229ccb9f73493"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-configmap-claude-managed-settings.json",
+      "sha256": "a06c563da9be57e7cc5a4c56fd6fe38af991fdfe4f31f59241eec262ae33d7dd"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-configmap-switch-ca.json",
+      "sha256": "9a5127f12bbc0013405247565778f88efef4371fa7c01781e991402863f0bfc8"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-namespace-box-namespace.json",
+      "sha256": "5476ea013fb7813581a1e2ee7bba85182a9bdd0b7965c29d03d992f47e7c5955"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-networkpolicy-agent-egress.json",
+      "sha256": "fd8bb9d379f70e1f7242e01abf0894dba2f373817e2ee32d6fba843e83bc9fcd"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-networkpolicy-default-deny.json",
+      "sha256": "dab6cd3e181d0ebb854d6721c5ba87de5b7362b95fcf1374c2129752a5c53379"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-persistentvolumeclaim-data-agents.json",
+      "sha256": "d35150574ef5c43303204aa5be279ca256ebbd12f148cc1a8338468108c9a3bc"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-persistentvolumeclaim-data-controller.json",
+      "sha256": "686cf13e49c7d674a087fca1f2aceb9dd66b0d9dab6fa096782ac555f4de0582"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-resourcequota-no-shared-services-priority.json",
+      "sha256": "7eff4a2213f517dd80945664ec6a1badce747873dcf6606e84f1e929aabdf889"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-rolebinding-switch-box-watch.json",
+      "sha256": "b60eb06ae9f75d4ad2024d06067c709eea95cb3ae88f91a7bf67e94d1b44644e"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-rolebinding-switch-operator-restart.json",
+      "sha256": "7cf81283a8e80f18093d2c2a694cf99a5b3ca39b96a02340092975a62f337653"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-secret-switch-enrol.json",
+      "sha256": "6794f2da0e66cb18e68f8767df394e7ac6fa2a1fe48ebed5be1edf3f3392fb00"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-secret-switch-proxy-login.json",
+      "sha256": "ea8d48314f6a45ffd921a3a1890955cbcbce184331a8d8da6255c9869b6f9782"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-serviceaccount-box.json",
+      "sha256": "eb3462d8f9003ee0af16bee0e3daaa645512272ffaca5762a1d46ca0e10e682c"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-post-statefulset-box.json",
+      "sha256": "5c84d8d5349a02b7e380b53459f46635c2ebf37f6538244366926fa2fef1f759"
+    },
+    {
+      "path": "admission/good/provisioner-a-base-box-person-keyed-put-secret-box-map.json",
+      "sha256": "6f4dbbb673293493ec10e309ee81c69bf118777417abcc86bac1aff6089fb008"
+    },
+    {
+      "path": "admission/good/provisioner-a-box-named-for-removal-listed-put-secret-box-removals.json",
+      "sha256": "c4c189a6472c42bd8c5a6e9a02107f9606b4e7d01b244eaceee07868ccf63d7f"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-configmap-claude-managed-settings.json",
+      "sha256": "1efc9aa3a6bf7aa7bef9900a3a89a94a982321e351802b54b08dc07d4e3fbc99"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-configmap-switch-ca.json",
+      "sha256": "da1d56e4a9d8eb978b9c5167fefdc50d1ff42466b091b8a328394d0716a0114b"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-namespace-box-namespace.json",
+      "sha256": "16a4b5ca675316ac851cd0d6d0fd482af5fb5bae376bea2ae4fcfcdf1ad50a8f"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-networkpolicy-agent-egress.json",
+      "sha256": "4fba2e25816f0e5a9fcf825a8eb4a4509bf8d7c4c28ae0c457f551ccef7049e9"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-networkpolicy-default-deny.json",
+      "sha256": "be37f0da457f0c3bcbae6ec2ae934bf58f8733fc53ed50afcdd4f38cd5b517c3"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-persistentvolumeclaim-data-agents.json",
+      "sha256": "a41b3e8e528b562ea746ab5173535b41a1f24a4b2284c334b31b383a06a6463d"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-persistentvolumeclaim-data-controller.json",
+      "sha256": "b7b1e70a9685e3cf6f926f74ead535ac5de0e6cb8367fd73d2734495ba99d64c"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-resourcequota-no-shared-services-priority.json",
+      "sha256": "584c31ae1dfc8121146cfea20de6350b27d62acee04b015448e75e521ff96e7e"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-rolebinding-switch-box-watch.json",
+      "sha256": "0d631c8f12a1bbd4ae534784ed7ee253744714d5cbf0dbbfd47c2673c3de0c13"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-rolebinding-switch-operator-restart.json",
+      "sha256": "6571eb353dd509f61eb4110ceaf6080d52b1846a63d66478c10938eded80341d"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-secret-switch-enrol.json",
+      "sha256": "68d66cc3401b5ad9dde960a42d7ce728212f1033a26eb2b7cbe1b742f172aa3e"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-secret-switch-proxy-login.json",
+      "sha256": "9675d4933c8300f4018b81c8f3c9d98f1c22c437c65cea6f20aac4a2cf180451"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-serviceaccount-box.json",
+      "sha256": "5efd89e4bda339a8a1393888b2fc5181b407f0c17e2dbfde5c0293a66ba30bb5"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-post-statefulset-box.json",
+      "sha256": "75e1477201574cd4d2dc7f15d1c9d0187db7b1ed375e24154a7622009749af92"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-put-secret-box-map.json",
+      "sha256": "c673dfe59c1c0aa99547dcdf2d0036da4a38a35d98bd26c4acd6c8ab774cd849"
+    },
+    {
+      "path": "admission/good/provisioner-a-max-box-box-keyed-put-secret-box-owners.json",
+      "sha256": "9c567f79c1b8149d614bd7e735329504baba25bc017f581167427535d5755400"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-configmap-claude-managed-settings.json",
+      "sha256": "0d190ac6e13df16a5c2c00cbaaf4d51c034ba4fac43c8eb1e945bbb61984691a"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-configmap-switch-ca.json",
+      "sha256": "3f985714ed5e8c8d841dd3e463a25c48b9d3f439c25bc71f69f1b702bb4adb98"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-namespace-box-namespace.json",
+      "sha256": "358062647b9308541a94daa2821b943abcc284a1178ad8f08610187d1830be16"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-networkpolicy-agent-egress.json",
+      "sha256": "4aa285477d8efbc4ec93818686b8a4b444e838c25ea99bc723c01dcb29a0643d"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-networkpolicy-default-deny.json",
+      "sha256": "844357ab2de8927a9c98a6d2db4a5cb75ce84a15eca360c18666a1bdd7d6c105"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-persistentvolumeclaim-data-agents.json",
+      "sha256": "01967348d3a9fb94e471a1a59fb2375b571ef7d322122e43d64d23ab3a318eb0"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-persistentvolumeclaim-data-controller.json",
+      "sha256": "68a4914eae1d21df89dd06fe7cf5e5b3bff900909ab0d06063e51406cb7dca8c"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-resourcequota-no-shared-services-priority.json",
+      "sha256": "0b911105760ac0613378c942ad9750dad2eca317cde2241e74539d3177a31762"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-rolebinding-switch-box-watch.json",
+      "sha256": "585fe19ac566c3765e1015d0a2166075d1f8383bf902b4e696aea9b30940c0fe"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-rolebinding-switch-operator-restart.json",
+      "sha256": "bbc1f9e745741293ddd81144484b18219433b9ac547612d40bf87813890a9a1b"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-secret-switch-enrol.json",
+      "sha256": "3f7bcc4c5048f77cc0071f0d1932eb19f91369184b0e412fdf8ef8a14cc1e121"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-secret-switch-proxy-login.json",
+      "sha256": "50702324f16b41bac468c7add82d748df8e7b592b6922f2ca41a0ccff97264ba"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-serviceaccount-box.json",
+      "sha256": "72cedfd1a8b10a26240d31ac1b1391dfececcb566e7f09da6b4f652132d8c33f"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-post-statefulset-box.json",
+      "sha256": "d5cf08432736b87b796ea9010a86eccdaa6913bb70c4332ce1402dfc0646127c"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-put-secret-box-map.json",
+      "sha256": "773a03a226656b8e803daef78e49e6a6ce60c289306e263ad914649ed6999cfc"
+    },
+    {
+      "path": "admission/good/provisioner-a-plus-box-box-keyed-put-secret-box-owners.json",
+      "sha256": "e256ba3478787326c6ffc10e6fb0156a38a23cf47a2cd6251a8a0d5c2f7392fe"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-configmap-claude-managed-settings.json",
+      "sha256": "e950c23eb6f5f0d56083b6d064b23ee63e759227e78429d1752077192a095335"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-configmap-switch-ca.json",
+      "sha256": "da847c68c6062fa7ba1b39d2cfbea1474787e1089eaa08de12d815c9c6b818c8"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-namespace-box-namespace.json",
+      "sha256": "7e8008df51f81a601116fa1b7420629815db4a0fa70ec65ce6079d75bd7a9ef8"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-networkpolicy-default-deny.json",
+      "sha256": "cc55e0c3db30734a8f0b11c1819ab214963eb5a1e69b576cf0a2c8566c58c39f"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-persistentvolumeclaim-data-agents.json",
+      "sha256": "b8e9f5675e5e45b227538074d4c9b0d813c9d4edeef33f67765e85a10c98d93a"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-persistentvolumeclaim-data-controller.json",
+      "sha256": "e0881b459cba09daa7be8addf12758317229f0358a781e89ded53eb2a62ef4e7"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-resourcequota-no-shared-services-priority.json",
+      "sha256": "4f19ce21db113981fcab2f721ab8c680577670a2fc04aafba066bfe90a04abf5"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-rolebinding-switch-box-watch.json",
+      "sha256": "cfc9253b6d92385a7491d09f1d55658bcdbcaecfa2e51cbe87df28b3b19c2c15"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-rolebinding-switch-operator-restart.json",
+      "sha256": "d56a7969b239b2743dde3ffc383daea9885156e41333fd30b6f4dee62185785b"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-secret-switch-enrol.json",
+      "sha256": "8e0556c4b3b30080d1bf197be4852b6f33d45ebd47c21df536f0521f52a143bb"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-secret-switch-proxy-login.json",
+      "sha256": "8ac939c61c262b33bfeed989e79c5e659abbff0a9d51eb2f809d847b0140941c"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-serviceaccount-box.json",
+      "sha256": "bb88f80c459a5744450c8e3c646e0960c56d9d92b5b33619c549a003241bc8d4"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-statefulset-box.json",
+      "sha256": "9464713fd3af63b5726253cb9a755f1d310667caa4944b17281f3fe9f4720f33"
+    },
+    {
+      "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-put-secret-pool-map.json",
+      "sha256": "8be37a5d15b1ca17ccb4a61b95764750edc4a957466f8ac95346760f094f5b06"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-configmap-claude-managed-settings.json",
+      "sha256": "7db6a24344388f0610ffd0ead5ca82c9b47f91a78260717fb84e47e7a4103d86"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-configmap-switch-ca.json",
+      "sha256": "1c467c73cd2ee877bafd95c3bfe7edd8b433a20507209a530f2c44e4a3cdacb4"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-namespace-box-namespace.json",
+      "sha256": "f40bb1ef23efdb9e96314345d8ad420175280ce479efb0e693646f30c08b3c00"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-networkpolicy-default-deny.json",
+      "sha256": "4d674bd0978144e06a14b0bc62ea4b7eca2a6ef5299483ffacbbc43ef08695ee"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-persistentvolumeclaim-data-agents.json",
+      "sha256": "cef5d920c8b2c5dfa794a5d555758fcb8fa492e30b1434b6bd44d262b8179180"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-persistentvolumeclaim-data-controller.json",
+      "sha256": "6c36f9865ca1a3866d01207f3e420030b8a802e2b655bf7eae3b5787364167c9"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-resourcequota-no-shared-services-priority.json",
+      "sha256": "de0b693eca450612c06c90347eaf84be672b546a3e168cc153c516b7a6bb035d"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-rolebinding-switch-box-watch.json",
+      "sha256": "be0cdecff71ef4f6bbc1159fce41d5a44dc785b99242b40ab4297f5589ac627a"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-rolebinding-switch-operator-restart.json",
+      "sha256": "9d68c6faf36fc570ff832d4e734c0dc8440275fdf6b91b590c361acdacb2d9f7"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-secret-switch-enrol.json",
+      "sha256": "55657b660530af767b21b08d78be537882dfeb26e7662049948bc1a4bea7c49c"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-secret-switch-proxy-login.json",
+      "sha256": "e8429cfe5b3ac0d9a4dff66400b46d9d14ee3cac712a22af5391d05e3829e3c3"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-serviceaccount-box.json",
+      "sha256": "e62c80459e5d2307301578e2729019330b229a2c864a307497d8f98e5dd3712e"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-post-statefulset-box.json",
+      "sha256": "8421bf61e686110f470d157fbc3e7eac3c88b012247128b649b3c01d73ec3ebb"
+    },
+    {
+      "path": "admission/good/provisioner-a-warm-pool-box-put-secret-pool-map.json",
+      "sha256": "c3b5c3a96671a66a697c794bda329ded07c53bd83c7e9faadb437de1873acb46"
+    },
+    {
+      "path": "admission/good/provisioner-the-box-keyed-names-check-post-namespace-box-namespace.json",
+      "sha256": "e9d7fb262889f9bd2f46dac5bd7955de45ea9a23acdff64ed726fd2dbc1ea3c3"
+    },
+    {
+      "path": "admission/good/provisioner-the-pool-box-bound-to-its-person-post-networkpolicy-agent-egress.json",
+      "sha256": "a93636b7f5f2a297fc6dd6f1e02a26a3842828f2913def4d69521c4b020cc84f"
+    },
+    {
+      "path": "admission/good/provisioner-the-pool-box-bound-to-its-person-put-secret-box-map.json",
+      "sha256": "f658b4045d7d0996eb39e621c1871f21ea9bd9bdce8526ad29d4185a9d57145d"
+    },
+    {
+      "path": "admission/good/provisioner-the-pool-box-bound-to-its-person-put-secret-box-owners.json",
+      "sha256": "16fac58fdb514a1d26995554ad30d77e12cc9a59d5de87e4087d89f93f899e89"
+    },
+    {
+      "path": "admission/good/reaper-an-unclaimed-pool-box-s-namespace-deleted-delete-namespace-box-namespace.json",
+      "sha256": "081a7e0e7a44ea216bb7cc303e641083e6b6e843d1059ababe7edd4705758e9c"
+    },
+    {
+      "path": "admission/good/remover-a-listed-box-s-namespace-deleted-delete-namespace-box-namespace.json",
+      "sha256": "df62d71ea92b7873dcfa51eccbf383ff5c740346493f45b110a6e6e0bfefa6ec"
+    },
+    {
+      "path": "admission/good/restart-worker-a-box-s-pod-restarted-delete-pod-box-0.json",
+      "sha256": "ce4281b75a99b41251cb0bfa132b6494d97eb8d0075d23698c610b160b051e49"
+    },
+    {
+      "path": "admission/good/scaler-a-box-held-without-its-proxy-login-put-configmap-egress-held.json",
+      "sha256": "dc7dbac775add10f93cd34be1d00477d450c482af37cdb378d519fa929083742"
+    },
+    {
+      "path": "admission/good/scaler-a-box-s-enrolment-code-set-patch-secret-switch-enrol.json",
+      "sha256": "56c015575c8c5fef6dc2ddc372963351f7d8708b88bc1fd20cec671889e4b9a0"
+    },
+    {
+      "path": "admission/good/scaler-a-box-started-patch-statefulset-scale-box.json",
+      "sha256": "719fc66fdb96387947c7b8786feaea69fa3bfc494d7ee2623b127e6150585e91"
+    },
+    {
+      "path": "admission/good/scaler-a-box-stopped-patch-statefulset-scale-box.json",
+      "sha256": "34b79c0dacd821097d51a925a39f780e03add45f11cc103544ddd6e4a269bb5c"
+    },
+    {
+      "path": "fills.json",
+      "sha256": "f24607affb54d2628940221f200c7bc6b61db42d713efb6b398732d6366f8a75"
+    },
+    {
+      "path": "log-lines.json",
+      "sha256": "be0e30ba89d4adeae9e8ab53cedfb3b72ee947382669f017baf3490f1062a969"
+    },
+    {
+      "path": "rbac.json",
+      "sha256": "0b8a948f40c9de2f7dd1ac8b8e56395c5d63b977d7d56fad5cdff60dbffada14"
+    },
+    {
+      "path": "tiers.json",
+      "sha256": "2f0aa39762ecb9a38039a912980ca29ecaae80cfbe73f0ef6f76b5ca9ddfb47a"
+    }
+  ],
+  "format": 1,
+  "template_revision": "t3-83d77cb13462",
+  "tiers": [
+    "base",
+    "plus",
+    "max"
+  ]
+}

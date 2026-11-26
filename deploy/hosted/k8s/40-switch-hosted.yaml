@@ -804,21 +804,6 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: switch-hosted-controller-box-templates
-  namespace: switch-hosted
-rules:
-- apiGroups:
-  - ''
-  resourceNames:
-  - box-templates
-  resources:
-  - secrets
-  verbs:
-  - get
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
   name: switch-hosted-provisioner-box-map
   namespace: switch-hosted
 rules:
@@ -829,22 +814,6 @@ rules:
   - pool-map
   - box-owners
   - box-removals
-  resources:
-  - secrets
-  verbs:
-  - get
-  - update
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: switch-hosted-provisioner-box-templates
-  namespace: switch-hosted
-rules:
-- apiGroups:
-  - ''
-  resourceNames:
-  - box-templates
   resources:
   - secrets
   verbs:
@@ -910,40 +879,12 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: switch-hosted-controller-box-templates
-  namespace: switch-hosted
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: switch-hosted-controller-box-templates
-subjects:
-- kind: ServiceAccount
-  name: switch-hosted-controller
-  namespace: switch-hosted
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
   name: switch-hosted-provisioner-box-map
   namespace: switch-hosted
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: switch-hosted-provisioner-box-map
-subjects:
-- kind: ServiceAccount
-  name: switch-hosted-provisioner
-  namespace: switch-hosted
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: switch-hosted-provisioner-box-templates
-  namespace: switch-hosted
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: switch-hosted-provisioner-box-templates
 subjects:
 - kind: ServiceAccount
   name: switch-hosted-provisioner
@@ -1014,7 +955,6 @@ data:
         }
       },
       "ceiling": 20,
-      "daily_calls": __DAILY_CALLS__,
       "default_size": "base",
       "split": true,
       "allowed_images": [
