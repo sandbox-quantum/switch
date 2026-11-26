@@ -18,5 +18,7 @@ export { isValveFrame, ValveServer } from './box-valve-wire';
 export { boxLimitFromEnv, readUsage, startReserveFromEnv } from './memory-pressure';
 export { OWNER_MARKER_ENV } from './owner-marker-env';
 export { judgeOwnerRecord, recordedOwnerAlive } from './owner-records';
+export { supervisionBox } from './supervision';
+export { HubTickets } from './watcher-box';
 export { macEquals, PUSH_KEY_BYTES, takenMac, ticketMac } from './push-key';
 export type { RestartNotice } from '../watcher-tools';

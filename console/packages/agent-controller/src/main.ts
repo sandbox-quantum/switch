@@ -715,6 +715,8 @@ async function runCommand(args: string[], box = false): Promise<number> {
                   openStream,
                   log,
                   crashBackoffMs: 2_000,
+                  // Box mode's half (`InProcessBox`) comes with the owner markers and restart notices.
+                  box: null,
                 }),
                 new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
               ),
@@ -824,7 +826,7 @@ async function statusCommand(args: string[], box: boolean): Promise<number> {
             unreadable = errorMessage(error);
             return emptyObservation();
           });
-        else observation = await observeOnDisk(layout, entry.agent_id);
+        else observation = await observeOnDisk(layout, entry.agent_id, null);
       }
       // Whether events flow is the running controller's to know; this reads only disk.
       const mapped = mapAgentProcess({
