@@ -7,7 +7,7 @@ import type {
   UserInputQuestion,
 } from '../events';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
-import type { ProviderLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
+import type { JsonRpcError, ProviderLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 import type {
   AcpAgentCapabilities,
   AcpConfigOption,
@@ -15,6 +15,7 @@ import type {
   AcpPermissionRequest,
   AcpPromptCapabilities,
   AcpSessionModes,
+  AcpSessionUpdate,
   AcpToolCall,
 } from './protocol';
 
@@ -70,6 +71,8 @@ export interface AcpSelectedAnswer {
 export interface AcpSessionContext {
   /** The running turn, or null when there is none or it was interrupted. */
   readonly turnId: string | null;
+  /** The session's runtime mode. */
+  readonly runtimeMode: RuntimeMode;
   /** Names of the MCP servers this session registered. */
   readonly mcpServerNames: ReadonlySet<string>;
   /**
@@ -133,6 +136,16 @@ export interface AcpProviderHooks {
    * MCP-over-HTTP check is skipped: the agent's own MCP client connects.
    */
   mcpServersAtLaunch?: boolean;
+  /**
+   * The agent's `outputTokens` leaves out its `thoughtTokens`, so a turn's
+   * output is the two added. Otherwise `outputTokens` is taken to include them.
+   */
+  thoughtTokensSeparate?: boolean;
+  /**
+   * Model option keys saved by an earlier release of the CLI, each mapped to
+   * the session config option that now takes its value.
+   */
+  modelOptionAliases?: Record<string, string>;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /**
@@ -202,11 +215,39 @@ export interface AcpProviderHooks {
    */
   persistentPermissionKinds?: readonly string[];
   /**
+   * The vendor request that adds a message to the running turn rather than
+   * queueing it behind (OpenCode's `_session/steering`), sent with the
+   * session id and the message's prompt content. The agent answers
+   * `{ outcome: 'injected' }` when the turn took it and
+   * `{ outcome: 'promptRequired' }` when no turn was running, in which case
+   * the message is sent as a turn of its own. Omit for an agent that has no
+   * such request: with `capabilities.steering` it is steered with another
+   * `session/prompt` (see {@link AcpProviderHooks.steersRunningTurn}), and
+   * without, it cannot be steered.
+   */
+  steerMethod?: string;
+  /**
+   * How the agent compacts its conversation, for one that can: the prompt
+   * that asks it to (OpenCode's `/compact`), and how a session update reports
+   * a compaction's progress. A compaction the agent runs on its own inside a
+   * turn is reported the same way and shows in that turn. Omit for an agent
+   * Switch cannot compact.
+   */
+  compaction?: {
+    prompt: string;
+    progress(update: AcpSessionUpdate): AcpCompactionProgress | undefined;
+  };
+  /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
+  /**
+   * Whether the agent's answer to resuming a conversation says it has no such
+   * conversation, so a fresh one can be offered instead of failing the start.
+   */
+  conversationMissing?(error: JsonRpcError): boolean;
   /**
    * The MCP server a tool call belongs to, when the agent says so. `servers`
    * names the session's registered servers. A permission request is asked
@@ -249,6 +290,11 @@ export interface AcpProviderHooks {
   /** Register vendor-specific requests and notifications for a session. */
   extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
 }
+
+export type AcpCompactionProgress =
+  | { status: 'started' }
+  | { status: 'completed' }
+  | { status: 'failed'; message: string };
 
 export interface AcpSignedInQuery {
   binaryPath: string;

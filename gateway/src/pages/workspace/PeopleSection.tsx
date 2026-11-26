@@ -11,7 +11,7 @@ import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { type Erasure, type Person, fetchErasures, fetchPeople } from "../../data/api";
-import { formatDate, sentenceCase, titleCase } from "../../theme/format";
+import { formatDate, platformLabel, sentenceCase } from "../../theme/format";
 import EraseDialog from "./EraseDialog";
 import { useLoad } from "./useLoad";
 
@@ -87,7 +87,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
         valueGetter: (_value, row) =>
           row.kind === "member"
             ? "Switch Console"
-            : `${row.bridge_name ?? "Disconnected app"} (${titleCase(row.platform)})`,
+            : `${row.bridge_name ?? "Disconnected app"} (${platformLabel(row.platform)})`,
       },
       { field: "message_count", headerName: "Messages", width: 110, type: "number" },
       {

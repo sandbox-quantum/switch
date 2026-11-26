@@ -1561,6 +1561,8 @@ describe('GitHub connection transport', () => {
         unavailable_reason: entry.unavailable_reason,
         // A server that predates them says none of these.
         unavailable_code: null,
+        sign_in_unavailable_reason: null,
+        server_setup_needed: false,
         read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
@@ -1700,7 +1702,10 @@ describe('GitHub connection transport', () => {
       expect.objectContaining({
         slug: 'datadog',
         status: 'needs_reauthorization',
-        paste: [token, keys],
+        paste: [
+          { ...token, create_url: null },
+          { ...keys, create_url: null },
+        ],
         method: 'token',
         access_note: 'Reaches what your token allows.',
         reconnect_code: 'token_refused',
@@ -1756,6 +1761,8 @@ describe('GitHub connection transport', () => {
         connectable: true,
         unavailable_reason: null,
         unavailable_code: null,
+        sign_in_unavailable_reason: null,
+        server_setup_needed: false,
         read_only_reason: null,
         pass_through: false,
         token_lifetime: null,

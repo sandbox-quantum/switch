@@ -334,6 +334,18 @@ class ServiceConnectionStore:
             raise RuntimeError(f"The {service} grant just saved could not be read.")
         return grant
 
+    async def delete_grants(
+        self, session: AsyncSession, owner_id: str, service: str
+    ) -> None:
+        """Delete every grant on the owner's connection to `service`."""
+        await session.execute(
+            delete(ServiceGrant).where(
+                ServiceGrant.tenant_id == require_tenant_id(),
+                ServiceGrant.owner_id == owner_id,
+                ServiceGrant.service == service,
+            )
+        )
+
     async def delete_grant(self, session: AsyncSession, grant_id: str) -> None:
         await session.execute(
             delete(ServiceGrant).where(
