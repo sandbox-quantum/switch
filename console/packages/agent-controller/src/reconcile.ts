@@ -38,11 +38,18 @@ export type Action =
   | { kind: 'invalid'; agentId: string; revision: number; detail: string; stop: boolean }
   | { kind: 'hold'; agentId: string; why: string };
 
-/** Why an assigned agent cannot be applied on this machine as defined, or null when it can. */
-export function definitionProblem(entry: AgentAssignment): string | null {
+/**
+ * Why an assigned agent cannot be applied on this machine as defined, or null
+ * when it can. `offered` is the providers this controller offers
+ * (`providersFor`): every registered one, unless it runs in box mode.
+ */
+export function definitionProblem(
+  entry: AgentAssignment,
+  offered: readonly string[]
+): string | null {
   if (!isSafeSegment(entry.agent_id))
     return `The agent id '${entry.agent_id}' cannot be used as a directory name.`;
-  if (!isProvider(entry.definition.provider))
+  if (!isProvider(entry.definition.provider) || !offered.includes(entry.definition.provider))
     return `This controller does not run the provider '${entry.definition.provider}'.`;
   const advancedProblem = advancedConfigDefinitionProblem(
     entry.definition.provider,
@@ -82,6 +89,8 @@ export function planReconcile(input: {
   /** Agents whose relay credentials file was rewritten in this pass. */
   credentialsChanged: Set<string>;
   nowMs: number;
+  /** The providers this controller offers (`providersFor`). */
+  offered: readonly string[];
 }): Action[] {
   const actions: Action[] = [];
   const rows = new Map(input.rows.map((row) => [row.agentId, row]));
@@ -93,7 +102,7 @@ export function planReconcile(input: {
     const observation = input.observations.get(agentId);
     if (!observation) throw new Error(`No observation of agent ${agentId} to reconcile against.`);
     const applied = row?.appliedRevision ?? null;
-    const problem = definitionProblem(entry);
+    const problem = definitionProblem(entry, input.offered);
     if (problem) {
       if (row?.failure?.revision !== entry.revision || observation.alive)
         actions.push({
@@ -201,6 +210,8 @@ export function planReconcile(input: {
 export type ReconcileDeps = {
   store: ControllerStore;
   runtime: AgentRuntime;
+  /** The providers this controller offers (`providersFor`): an agent naming another isn't run. */
+  offered: readonly string[];
   /**
    * Makes the agent's credentials file name the relay and a token it accepts.
    * Resolves true when the file had to be (re)written.
@@ -342,7 +353,7 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
   const observations = new Map<string, AgentObservation>();
   const credentialsChanged = new Set<string>();
   for (const entry of assignment.agents) {
-    if (definitionProblem(entry)) {
+    if (definitionProblem(entry, deps.offered)) {
       observations.set(entry.agent_id, emptyObservation());
       continue;
     }
@@ -365,6 +376,7 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
     observations,
     credentialsChanged,
     nowMs: deps.now(),
+    offered: deps.offered,
   });
   for (const action of actions) {
     try {

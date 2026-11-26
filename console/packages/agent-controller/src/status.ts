@@ -21,7 +21,6 @@ import {
   isProvider,
   PROTOCOL_VERSION,
   type Provider,
-  PROVIDERS,
   type ProviderStatus,
   type ReasonCode,
   type StatusReport,
@@ -262,6 +261,8 @@ export class ProviderStatuses {
 
   constructor(
     private readonly deps: {
+      /** The providers this controller offers (`providersFor`): the only ones checked or reported. */
+      providers: readonly Provider[];
       locator: ProviderLocator;
       runtime: Pick<AgentRuntime, 'probe'>;
       /**
@@ -292,7 +293,12 @@ export class ProviderStatuses {
   seed(seeds: ProviderSeed): void {
     let changed = false;
     for (const { status, path } of seeds) {
-      if (!isProvider(status.provider) || this.entries.has(status.provider)) continue;
+      if (
+        !isProvider(status.provider) ||
+        !this.deps.providers.includes(status.provider) ||
+        this.entries.has(status.provider)
+      )
+        continue;
       const own = status.auth === 'ok' && status.auth_source === 'local';
       if (!own && status.installed) continue;
       const at = Date.parse(status.checked_at);
@@ -312,7 +318,7 @@ export class ProviderStatuses {
 
   /** Every check made so far, with where each provider's CLI was found: what `seed` takes. */
   results(): ProviderSeed {
-    return PROVIDERS.flatMap((provider) => {
+    return this.deps.providers.flatMap((provider) => {
       const entry = this.entries.get(provider);
       return entry ? [{ status: entry.status, path: entry.path }] : [];
     });
@@ -490,7 +496,7 @@ export class ProviderStatuses {
   /** Where each provider's CLI was found at its last check, or `not found`. */
   locations(): Partial<Record<Provider, string>> {
     return Object.fromEntries(
-      PROVIDERS.flatMap((provider) => {
+      this.deps.providers.flatMap((provider) => {
         const entry = this.entries.get(provider);
         return entry ? [[provider, entry.path ?? 'not found']] : [];
       })
@@ -498,16 +504,18 @@ export class ProviderStatuses {
   }
 
   async checkAll(options: { verify?: boolean } = {}): Promise<void> {
-    await Promise.all(PROVIDERS.map((provider) => this.check(provider, options)));
+    await Promise.all(this.deps.providers.map((provider) => this.check(provider, options)));
   }
 
   /** Checks every provider whose last check is older than the TTL, all at once. */
   async refreshStale(): Promise<void> {
     this.refreshing ??= Promise.all(
-      PROVIDERS.filter((provider) => {
-        const entry = this.entries.get(provider);
-        return !entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS;
-      }).map((provider) => this.check(provider))
+      this.deps.providers
+        .filter((provider) => {
+          const entry = this.entries.get(provider);
+          return !entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS;
+        })
+        .map((provider) => this.check(provider))
     )
       .then(() => {})
       .finally(() => {
@@ -518,7 +526,7 @@ export class ProviderStatuses {
 
   /** What is known now; providers not checked yet are left out rather than guessed. */
   snapshot(): ProviderStatus[] {
-    return PROVIDERS.flatMap((provider) => {
+    return this.deps.providers.flatMap((provider) => {
       const entry = this.entries.get(provider);
       return entry ? [entry.status] : [];
     });

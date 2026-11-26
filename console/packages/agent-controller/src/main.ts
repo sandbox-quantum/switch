@@ -61,6 +61,7 @@ import { loginShellPath, withUserBinDirs } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
+import { providersFor } from './providers';
 import { definitionProblem } from './reconcile';
 import { TRUSTED_RELEASE_KEYS } from './release-keys';
 import { assertTrustedKeys, verifyDownloadedRelease } from './release-signing';
@@ -477,6 +478,7 @@ async function precheckCommand(args: string[]): Promise<number> {
   await pathRefresher(log)();
   const sharedHostBundle = bundlePath(values['shared-host-bundle']);
   const providers = new ProviderStatuses({
+    providers: PROVIDERS,
     locator: new PathProviderLocator(() => process.env.PATH, join(probeDir, 'version-probe')),
     runtime: {
       probe: (provider, binaryPath, cwd) =>
@@ -727,6 +729,7 @@ async function runCommand(args: string[], box = false): Promise<number> {
         updatedBy,
         selfUpdate,
         supervised,
+        box,
         now: Date.now,
         random: Math.random,
         timing: DEFAULT_TIMING,
@@ -741,7 +744,7 @@ async function runCommand(args: string[], box = false): Promise<number> {
   }
 }
 
-async function statusCommand(args: string[]): Promise<number> {
+async function statusCommand(args: string[], box: boolean): Promise<number> {
   const { values } = parseArgs({
     args,
     options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
@@ -806,7 +809,7 @@ async function statusCommand(args: string[]): Promise<number> {
       const row = store.agent(entry.agent_id);
       let observation = emptyObservation();
       let unreadable: string | null = null;
-      if (!definitionProblem(entry)) {
+      if (!definitionProblem(entry, providersFor(box))) {
         if (separateRuntime)
           observation = await separateRuntime.observe(entry.agent_id).catch((error: unknown) => {
             unreadable = errorMessage(error);
@@ -1264,7 +1267,7 @@ export async function main(argv: string[], inBox: boolean = insideBox()): Promis
       case 'set-info':
         return await setInfoCommand(rest);
       case 'status':
-        return await statusCommand(rest);
+        return await statusCommand(rest, box);
       case 'install-service':
         return await installServiceCommand(rest);
       case 'uninstall-service':

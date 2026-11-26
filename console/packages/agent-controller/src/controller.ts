@@ -16,6 +16,7 @@ import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
 import { isSafeSegment } from './paths';
 import type { ProviderRechecks } from './provider-rechecks';
+import { providersFor } from './providers';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
 import { LocalRelay, RELAY_TOKEN_PREFIX } from './relay';
 import { UpstreamForwarder } from './relay-forward';
@@ -145,6 +146,8 @@ export type ControllerDeps = {
   selfUpdate: SelfUpdater | null;
   /** Whether ending with `restarting` starts this controller again: a service, or Switch Console. */
   supervised: boolean;
+  /** Box mode (`--box` on a box image): only the box's providers are offered (`providersFor`). */
+  box: boolean;
   now: () => number;
   random: () => number;
   timing: ControllerTiming;
@@ -457,7 +460,9 @@ export async function runController(
     void registerSealingKey(client, keys, log).then((registered) => {
       if (!registered) providers.disableGiven();
     });
+  const offered = providersFor(deps.box);
   const providers = new ProviderStatuses({
+    providers: offered,
     locator: deps.locator,
     runtime,
     sealed,
@@ -484,6 +489,7 @@ export async function runController(
   const reconcileDeps: ReconcileDeps = {
     store,
     runtime,
+    offered,
     ensureCredentials: async (agentId, provider) =>
       ensureRelayCredentials(
         agentId,
@@ -579,7 +585,7 @@ export async function runController(
           client,
           assignment: () => assignment,
           restartAgent: async (entry) => {
-            const problem = definitionProblem(entry);
+            const problem = definitionProblem(entry, offered);
             if (problem) return { reason: 'definition_invalid', detail: problem };
             return startAgent(
               {
@@ -716,7 +722,7 @@ export async function runController(
       if (!assignment || stop.signal.aborted) return;
       try {
         for (const entry of assignment.agents) {
-          if (entry.desired_state !== 'running' || definitionProblem(entry)) continue;
+          if (entry.desired_state !== 'running' || definitionProblem(entry, offered)) continue;
           const agentId = entry.agent_id;
           const observation = await runtime.observe(agentId);
           if (!observation.alive || !observation.outdated) continue;

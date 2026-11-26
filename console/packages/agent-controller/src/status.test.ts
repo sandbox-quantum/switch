@@ -11,9 +11,11 @@ import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
+import { BOX_PROVIDERS, providersFor } from './providers';
 import { type AgentObservation, emptyObservation } from './runtime';
 import {
   type AgentAssignment,
+  PROVIDERS as REGISTERED_PROVIDERS,
   type ProviderStatus,
   type SealedLoginResponse,
   statusReportSchema,
@@ -299,6 +301,41 @@ describe('providerStatusFrom', () => {
 const PROVIDERS = providerRuntimeIds().length;
 
 describe('ProviderStatuses', () => {
+  it('in box mode checks and reports only the box providers', async () => {
+    const runtime = new FakeRuntime();
+    const statuses = new ProviderStatuses({
+      providers: providersFor(true),
+      locator: new FakeLocator(),
+      runtime,
+      sealed: null,
+      probeCwd: '/tmp',
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    await statuses.refreshStale();
+    expect(
+      statuses
+        .snapshot()
+        .map((s) => s.provider)
+        .sort()
+    ).toEqual([...BOX_PROVIDERS].sort());
+    statuses.seed([
+      {
+        status: {
+          provider: 'pi',
+          installed: false,
+          version: null,
+          auth: 'missing',
+          auth_source: null,
+          checked_at: new Date(NOW).toISOString(),
+        },
+        path: null,
+      },
+    ]);
+    expect(statuses.snapshot().some((s) => s.provider === 'pi')).toBe(false);
+  });
+
   it('checks each provider at most once per TTL, and reports changes', async () => {
     let clock = NOW;
     let changes = 0;
@@ -306,6 +343,7 @@ describe('ProviderStatuses', () => {
     const locator = new FakeLocator();
     locator.missing.add('cursor');
     const statuses = new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
       locator,
       runtime,
       sealed: null,
@@ -336,6 +374,7 @@ describe('ProviderStatuses', () => {
     const locator = new FakeLocator();
     locator.missing.add('cursor');
     const statuses = new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
       locator,
       runtime: new FakeRuntime(),
       sealed: null,
@@ -356,6 +395,7 @@ describe('ProviderStatuses trying a login with a test prompt', () => {
     const runtime = new FakeRuntime();
     const tried: string[] = [];
     const providers = new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
       locator: new FakeLocator(),
       runtime,
       sealed: null,
@@ -411,6 +451,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     const runtime = new FakeRuntime();
     let changes = 0;
     const providers = new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
       locator: new FakeLocator(),
       runtime,
       sealed: null,
@@ -499,6 +540,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
 
   function build(runtime: FakeRuntime) {
     return new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
       locator: new FakeLocator(),
       runtime,
       sealed: new SealedLogins({
@@ -822,6 +864,7 @@ describe('StatusCollector', () => {
     let clock = NOW;
     const runtime = new FakeRuntime();
     const providers = new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
       locator: new FakeLocator(),
       runtime,
       sealed: null,
