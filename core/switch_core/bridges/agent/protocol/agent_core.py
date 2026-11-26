@@ -4966,17 +4966,22 @@ class AgentCore:
     async def _channel_web_url(self, room: Room) -> str | None:
         """An https link to the room's channel on its app, or None.
 
-        Only a web address: a native scheme (`slack://`) is not something a
-        chat message can be trusted to open, so a room whose app gives only
-        that is linked through Switch Console instead.
+        Only a web address: a native scheme (`slack://`, `mattermost://`) is
+        not something a chat message can be trusted to open, so adapters that
+        use a native scheme for `channel_deeplink` expose their web address via
+        `channel_web_url`.
         """
         if not room.bridge_id or not room.external_channel_id:
             return None
         adapter = self.collab_lifecycle.get_adapter(room.bridge_id)
         if adapter is None:
             return None
+        web_url_fn = getattr(adapter, "channel_web_url", None)
         try:
-            url = await adapter.channel_deeplink(room.external_channel_id)
+            if web_url_fn is not None:
+                url = await web_url_fn(room.external_channel_id)
+            else:
+                url = await adapter.channel_deeplink(room.external_channel_id)
         except Exception:
             logger.warning(
                 "Could not build a channel link for room %s", room.id, exc_info=True

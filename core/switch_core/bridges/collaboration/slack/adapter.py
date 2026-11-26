@@ -2991,6 +2991,15 @@ class SlackAdapter(PlatformAdapter):
             f"slack://channel?team={self._config.workspace_id}&id={external_channel_id}"
         )
 
+    async def channel_web_url(self, external_channel_id: str) -> str | None:
+        """`https://app.slack.com/client/<workspace>/<channel>` — web-safe link
+        that opens the channel in Slack (web or desktop app)."""
+        if not external_channel_id or not self._config.workspace_id:
+            return None
+        return (
+            f"https://app.slack.com/client/{self._config.workspace_id}/{external_channel_id}"
+        )
+
     async def home_deeplink(self) -> str | None:
         """`slack://open?team=<workspace>` — opens this workspace in the Slack
         desktop app, matching the scheme `channel_deeplink` already uses."""

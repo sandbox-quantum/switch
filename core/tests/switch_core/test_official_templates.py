@@ -518,7 +518,14 @@ def test_switch_buddy_joins_introduces_and_links_the_rooms_it_creates():
     assert 'a concrete "try this now" prompt wrapped in inline backticks' in text
     assert "if teammates are in the room, note you answer the owner by default" in text
     assert "produce a useful starter artifact from what you know" in text
+    assert "<#<external_channel_id>>" in text
+    assert "**[Open <room name> →](<channel_url>)**" in text
     assert "switchdash://open/room/<room-id>" in text
+    assert "come back to this Buddy chat any time for questions about Switch" in text
+    assert "Never assume someone on Slack or another messaging app has Switch Console access." in text
+    assert "this might take a few minutes." in text
+    assert "Friendly, like a buddy." in text
+    assert "Much less verbose." in text
     assert 'Never end the turn on "creating it now"' in text
 
 
