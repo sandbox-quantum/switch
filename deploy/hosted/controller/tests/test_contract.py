@@ -282,3 +282,9 @@ def _rbac_only(policy: str, rule: str) -> bool:
             "the operator may only create placeholder pods",
         )
     )
+
+
+def test_each_bad_sample_has_its_own_name():
+    """Two bad samples of one name would write one file, and the earlier would silently go."""
+    slugs = [bad.slug for bad in contract.BAD]
+    assert len(slugs) == len(set(slugs)), sorted({s for s in slugs if slugs.count(s) > 1})

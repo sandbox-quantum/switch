@@ -855,8 +855,9 @@ def _as_admin(s: dict) -> None:
     s["groups"] = ADMIN["groups"]
 
 
-def _ns_update(change: Callable[[dict], None]) -> Callable[[dict], None]:
-    """The namespace sample turned into an update of that namespace by an administrator."""
+def _ns_update(change: Callable[[dict], None], admin: bool = True) -> Callable[[dict], None]:
+    """The namespace sample turned into an update of that namespace: by an administrator, or (`admin=False`) by the
+    provisioner itself."""
 
     def apply(s: dict) -> None:
         obj = copy.deepcopy(_body(s))
@@ -865,7 +866,8 @@ def _ns_update(change: Callable[[dict], None]) -> Callable[[dict], None]:
         )
         change(obj)
         _to(s, "PUT", f"/api/v1/namespaces/{obj['metadata']['name']}", obj)
-        _as_admin(s)
+        if admin:
+            _as_admin(s)
 
     return apply
 
@@ -955,8 +957,10 @@ def _room_container(key: str, value: Any) -> Callable[[dict], None]:
     return lambda s: _body(s)["spec"]["containers"][0].__setitem__(key, value)
 
 
-def _uppercase_name(s: dict) -> None:
-    name = "agents-box-k1-0123456789ABCDEF"
+def _name_out_of_form(s: dict) -> None:
+    """A valid Kubernetes name, so only the policy can refuse it: a box namespace's shape with a "g" for its last
+    hex digit."""
+    name = "agents-box-k1-0123456789abcdeg"
     meta = _body(s)["metadata"]
     meta["name"] = name
     meta["labels"]["switch.dev/box"] = name.removeprefix("agents-")
@@ -1060,8 +1064,8 @@ def _bind_role(name: str) -> Callable[[dict], None]:
 
 BAD: list[Bad] = [
     # P1: the namespaces the provisioner makes.
-    Bad("p1-an-update", NS, _ns_update(lambda o: o["metadata"]["labels"].__setitem__("x", "y")), rbac=True),
-    Bad("p1-a-name-out-of-form", NS, _uppercase_name, (P1,), "a box namespace is agents-user-k1-<16 hex> or agents-box-k1-<16 hex>"),
+    Bad("p1-an-update", NS, _ns_update(lambda o: o["metadata"]["labels"].__setitem__("x", "y"), admin=False), rbac=True),
+    Bad("p1-a-name-out-of-form", NS, _name_out_of_form, (P1,), "a box namespace is agents-user-k1-<16 hex> or agents-box-k1-<16 hex>"),
     Bad("p1-a-template-label-missing", NS, _label("app.kubernetes.io/part-of", None), (P1,), "the five template labels"),
     Bad("p1-an-extra-label", NS, _label("example.com/extra", "x"), (P1,), "no labels beyond the template's"),
     Bad("p1-a-machine-id-out-of-form", NS, _set(("metadata", "annotations", "switch.dev/machine-id"), "not-a-uuid"), (P1,), "exactly one annotation, switch.dev/machine-id, a UUID"),
@@ -1139,7 +1143,7 @@ BAD: list[Bad] = [
     # P8: the box's RoleBindings.
     Bad("p8-an-update", WATCH, lambda s: _to(s, "PUT", s["request"]["path"] + "/switch-box-watch", _body(s)), rbac=True),
     Bad("p8-an-unlabelled-namespace", WATCH, _unlabel_namespace, (P8, P2), "only in a labelled box namespace"),
-    Bad("p8-another-name", WATCH, lambda s: (_body(s)["metadata"].__setitem__("name", "switch-extra"), _bind_role("switch-extra")(s)), (P8, P2), "the RoleBinding is named switch-box-watch or switch-operator-restart"),
+    Bad("p8-another-name", WATCH, _set(("metadata", "name"), "switch-extra"), (P8, P2), "the RoleBinding is named switch-box-watch or switch-operator-restart"),
     Bad("p8-binds-another-role", WATCH, _bind_role("switch-operator-restart"), (P8,), "each binds only the ClusterRole of its own name"),
     Bad("p8-another-subject", WATCH, lambda s: _body(s)["subjects"][0].__setitem__("name", "default"), (P8,), "its one subject is the hosted controller's account"),
     Bad("p8-a-finalizer", WATCH, _set(("metadata", "finalizers"), ["example.com/hold"]), (P8, P2), "no owners or finalizers"),

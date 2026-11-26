@@ -58,7 +58,7 @@
     },
     {
       "path": "admission/bad/p1-a-name-out-of-form.json",
-      "sha256": "bbd392c14e818cdcf10d56f7a337262b1b4c2e4eb8e723440d610544f1f3aee6"
+      "sha256": "a9d96e8e9081948c4189914a3ac9326eb0f2569e445f06819457008534304052"
     },
     {
       "path": "admission/bad/p1-a-template-label-missing.json",
@@ -70,7 +70,7 @@
     },
     {
       "path": "admission/bad/p1-an-update.json",
-      "sha256": "5b81d066576a9342c5c65841ce62320efa1573c1d19a2d7e6425edc2035583ef"
+      "sha256": "6b0d197f663e8cf394141f03d72970cd7e09093a9b56c89fc1341e6c3665f3e7"
     },
     {
       "path": "admission/bad/p2-a-delete.json",
@@ -294,7 +294,7 @@
     },
     {
       "path": "admission/bad/p8-another-name.json",
-      "sha256": "2c381df33e6aa216a9a7fe6997bd645686d765c1bc82145ddd55b4f9342dbdbd"
+      "sha256": "cec2c174304a274149124094e487b94c8e7d63a32619608165a69adf46a3fc39"
     },
     {
       "path": "admission/bad/p8-another-subject.json",
