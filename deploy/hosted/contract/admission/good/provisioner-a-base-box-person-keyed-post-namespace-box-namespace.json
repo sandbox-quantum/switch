@@ -1,0 +1,140 @@
+{
+  "as": "system:serviceaccount:switch-hosted:switch-hosted-provisioner",
+  "expect": "allow",
+  "group": "",
+  "name": "agents-user-k1-4444444444444444",
+  "namespace": "",
+  "object": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "annotations": {
+        "switch.dev/machine-id": "00000004-0000-4000-8000-000000000004"
+      },
+      "labels": {
+        "app.kubernetes.io/managed-by": "switch-hosted",
+        "app.kubernetes.io/part-of": "hosted-agents-test",
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/warn": "restricted",
+        "switch.dev/user": "user-k1-4444444444444444"
+      },
+      "name": "agents-user-k1-4444444444444444"
+    }
+  },
+  "operation": "CREATE",
+  "request": {
+    "body": {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "annotations": {
+          "switch.dev/machine-id": "00000004-0000-4000-8000-000000000004"
+        },
+        "labels": {
+          "app.kubernetes.io/managed-by": "switch-hosted",
+          "app.kubernetes.io/part-of": "hosted-agents-test",
+          "pod-security.kubernetes.io/enforce": "restricted",
+          "pod-security.kubernetes.io/warn": "restricted",
+          "switch.dev/user": "user-k1-4444444444444444"
+        },
+        "name": "agents-user-k1-4444444444444444"
+      }
+    },
+    "method": "POST",
+    "path": "/api/v1/namespaces"
+  },
+  "resource": "namespaces",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "switch-hosted"
+        }
+      },
+      "path": "/api/v1/namespaces/switch-hosted"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "00000001-0000-4000-8000-000000000001": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIx",
+          "00000002-0000-4000-8000-000000000002": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIy",
+          "00000003-0000-4000-8000-000000000003": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIz",
+          "0000000f-0000-4000-8000-00000000000f": "YWdlbnRzLWJveC1rMS1mZmZmZmZmZmZmZmZmZmZm"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "0000000e-0000-4000-8000-00000000000e": "YWdlbnRzLWJveC1rMS1lZWVlZWVlZWVlZWVlZWVl"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "pool-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/pool-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-0000000000000021": "azEtMTExMTExMTExMTExMTExMQ==",
+          "agents-box-k1-0000000000000022": "azEtMjIyMjIyMjIyMjIyMjIyMg==",
+          "agents-box-k1-0000000000000023": "azEtMzMzMzMzMzMzMzMzMzMzMw==",
+          "agents-box-k1-ffffffffffffffff": "azEtZGRkZGRkZGRkZGRkZGRkZA=="
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-owners",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-owners"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-cccccccccccccccc": "MDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBj"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-removals",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-removals"
+    }
+  ],
+  "subresource": "",
+  "version": "v1",
+  "what": "provisioner: a base box, person-keyed"
+}

@@ -90,7 +90,6 @@ def _box_pod() -> dict:
                 }
             },
             "ceiling": 20,
-            "daily_calls": 500,
             "default_size": "standard",
         },
         "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
