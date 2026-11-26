@@ -752,6 +752,53 @@ class TestWhatOutlivesTheirMessages:
             "elsewhere": "Acme Slack: ana / helper (elsewhere)",
         }
 
+    async def test_a_room_detached_before_this_release_loses_their_name_only_if_direct(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Rooms detached before a detached room recorded what it was keep no
+        bridge and no channel type. A direct one still carries the description
+        the bridge gave it; a group channel named after them does not, and
+        renaming it would rename it for everyone in it."""
+        async with session_factory() as session:
+            bridge = await _bridge(session)
+            ana = await _person(session, bridge, "ana")
+            ana_client = await _client_of(session, ana)
+            rooms = {}
+            # Metadata is either missing or holds something else.
+            for key, description, metadata in (
+                ("direct", "Acme Slack DM — ana / helper", None),
+                ("group", "Auto-bridged from Acme Slack channel ana standup", {}),
+            ):
+                rooms[key] = Room(
+                    transport_room_id=f"!{key}-{uuid.uuid4().hex[:8]}:test",
+                    name=f"Acme Slack: ana {key}",
+                    description=description,
+                    channel_type=None,
+                    bridge_id=None,
+                    metadata_=metadata,
+                )
+                session.add(rooms[key])
+            await session.flush()
+            for room in rooms.values():
+                await _say(session, room, ana_client, f"${room.name}")
+            sender_id = await _disconnect(session, ana)
+            await session.commit()
+        await _queue(session_factory, [], former_sender_ids=[sender_id])
+
+        await ErasureService(session_factory, _Clients(), _Bridges()).work_once(
+            datetime.now(UTC)
+        )
+
+        async with session_factory() as session:
+            names = {
+                key: (await session.get(Room, room.id)).name  # type: ignore[union-attr]
+                for key, room in rooms.items()
+            }
+        assert names == {
+            "direct": "Acme Slack: erased person direct",
+            "group": "Acme Slack: ana group",
+        }
+
 
 class _Killed(BaseException):
     """The process stopping mid-request: not an error the request handles."""

@@ -65,6 +65,7 @@ from switch_core.db.stores.bridge_message_map_store import (
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import (
+    DIRECT_ROOM_DESCRIPTION,
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
 )
@@ -347,9 +348,12 @@ class CollaborationCore:
         # does every mapping made or removed here. A room's mapping was
         # settled by the newest of those that has acted on it
         # (`_mapping_stamped`); an older reload that finishes later leaves it
-        # alone, whatever order they finish in.
+        # alone, whatever order they finish in. A read of one room's row that
+        # began before the newest reload is older than what that reload found,
+        # whether or not the reload saw the room (`_reloaded_stamp`).
         self._mapping_stamps = 0
         self._mapping_stamped: dict[tuple[str, str], int] = {}
+        self._reloaded_stamp = 0
         # Switch room id -> its tenant. Filled by `add_room_mapping`, which is
         # the one way a room enters the channel maps at all, so a room that
         # has a channel mapping always has a tenant here — including rooms
@@ -676,13 +680,16 @@ class CollaborationCore:
     # ── Startup loading ──────────────────────────────────────────────────────
 
     async def _load_channel_map(self) -> None:
+        stamp = self._next_mapping_stamp()
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
             rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
+        self._reloaded_stamp = max(self._reloaded_stamp, stamp)
         for room in rooms:
             if room.external_channel_id:
-                self.add_room_mapping(
+                self._map_as_read(
+                    stamp,
                     room.id,
                     room.transport_room_id,
                     room.external_channel_id,
@@ -1834,6 +1841,7 @@ class CollaborationCore:
         """If a room already exists in the DB for this channel on this bridge,
         register it in the in-memory map and return its (room_id,
         transport_room_id). Returns None if no such room exists. Idempotent."""
+        stamp = self._next_mapping_stamp()
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -1842,9 +1850,10 @@ class CollaborationCore:
             )
         if room is None:
             return None
-        self.add_room_mapping(
-            room.id, room.transport_room_id, channel_id, room.tenant_id
-        )
+        if not self._map_as_read(
+            stamp, room.id, room.transport_room_id, channel_id, room.tenant_id
+        ):
+            return None
         logger.debug("Adopted existing room %s for channel %s", room.id, channel_id)
         return (room.id, room.transport_room_id)
 
@@ -1882,7 +1891,7 @@ class CollaborationCore:
             parts = [p for p in (sender_name, agent_name) if p]
             label = " / ".join(parts) if parts else channel_id[:16]
             name = f"{bridge_name}: {label}"
-            description = f"{bridge_name} DM — {label}"
+            description = f"{bridge_name}{DIRECT_ROOM_DESCRIPTION}{label}"
         else:
             channel_label = channel_name or channel_id[:16]
             name = f"{bridge_name}: {channel_label}"
@@ -2846,6 +2855,7 @@ class CollaborationCore:
         channel_id = self._find_channel(transport_room_id=transport_room_id)
         if channel_id is not None:
             return channel_id
+        stamp = self._next_mapping_stamp()
         async with self._session_factory() as session:
             room = await self._room_store.get_by_transport_room_id(
                 session, transport_room_id
@@ -2856,9 +2866,14 @@ class CollaborationCore:
             or not room.external_channel_id
         ):
             return None
-        self.add_room_mapping(
-            room.id, room.transport_room_id, room.external_channel_id, room.tenant_id
-        )
+        if not self._map_as_read(
+            stamp,
+            room.id,
+            room.transport_room_id,
+            room.external_channel_id,
+            room.tenant_id,
+        ):
+            return None
         return room.external_channel_id
 
     async def reload_channel_map(self) -> None:
@@ -2871,6 +2886,7 @@ class CollaborationCore:
             self._session_factory, self._bridge_tenant_id
         ) as session:
             rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
+        self._reloaded_stamp = max(self._reloaded_stamp, stamp)
         stored = {
             (room.id, room.transport_room_id): room
             for room in rooms
@@ -2901,6 +2917,22 @@ class CollaborationCore:
     def _next_mapping_stamp(self) -> int:
         self._mapping_stamps += 1
         return self._mapping_stamps
+
+    def _map_as_read(
+        self,
+        stamp: int,
+        room_id: str,
+        transport_room_id: str,
+        external_channel_id: str,
+        tenant_id: str,
+    ) -> bool:
+        """Map a room as a read of its row stamped `stamp` found it, unless a
+        reload or a change newer than the read has settled it since. Returns
+        whether the room is mapped to that channel now."""
+        key = (room_id, transport_room_id)
+        if stamp >= self._reloaded_stamp and self._mapping_newer(key, stamp):
+            self._map(room_id, transport_room_id, external_channel_id, tenant_id)
+        return self._room_to_channel.get(key) == external_channel_id
 
     def _mapping_newer(self, key: tuple[str, str], stamp: int) -> bool:
         """Whether a reload or change stamped `stamp` is newer than what
@@ -3389,8 +3421,15 @@ class CollaborationCore:
         del self._outbound_groups[group_id]
         self._flushing_outbound_groups.append(pending)
         try:
-            await self._flush_outbound_group(
-                group_id, pending, channel_id, sender_name, thread_root_ref
+            self._disclose_incomplete_group(group_id, pending)
+            # A post the platform refuses is held by the workspace consumer and
+            # tried again, which keeps the room's progress before the group.
+            await client.relay_held_back(
+                pending.room_id,
+                pending.from_seq,
+                lambda: self._relay_outbound_group_again(
+                    pending, channel_id, sender_name, thread_root_ref
+                ),
             )
         finally:
             self._flushing_outbound_groups = [
@@ -3401,13 +3440,8 @@ class CollaborationCore:
             if client.transport is not None:
                 client.transport.held_back_released(pending.room_id)
 
-    async def _flush_outbound_group(
-        self,
-        group_id: str,
-        pending: _PendingOutboundGroup,
-        channel_id: str,
-        sender_name: str,
-        thread_root_ref: str | None,
+    def _disclose_incomplete_group(
+        self, group_id: str, pending: _PendingOutboundGroup
     ) -> None:
         received = len(pending.parts)
         logger.error(
@@ -3423,9 +3457,6 @@ class CollaborationCore:
             f"{pending.total} files_"
         )
         pending.caption = f"{pending.caption}\n{notice}" if pending.caption else notice
-        await self._relay_outbound_group(
-            pending, channel_id, sender_name, thread_root_ref
-        )
 
     async def _relay_outbound_group(
         self,

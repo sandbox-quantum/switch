@@ -71,6 +71,11 @@ DECISION_NOTICE_AT_KEY = "decision_notice_at"
 #: kind of channel it was there (`RoomStore.clear_bridge`).
 DETACHED_FROM = "detached_from"
 
+#: What the bridge puts between its name and the people in the description of a
+#: direct room it adopts. Erasure reads it as the evidence that a room detached
+#: before `DETACHED_FROM` was recorded was a direct chat.
+DIRECT_ROOM_DESCRIPTION = " DM — "
+
 
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
     """Whether a room's metadata leaves follow-ups on."""

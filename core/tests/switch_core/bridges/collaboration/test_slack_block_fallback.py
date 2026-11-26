@@ -107,12 +107,10 @@ async def test_format_rejected_update_clears_buttons_on_the_same_message(adapter
 async def test_definitive_nonformat_post_refusal_does_not_retry_as_text(adapter, code):
     client = adapter._web_client
     client.chat_postMessage.side_effect = refusal(code)
-    assert (
+    with pytest.raises(SlackApiError):
         await adapter.post_blocks(
             "channel-demo", "worker", TEXT, BLOCKS, "1.0", reply_broadcast=False
         )
-        is None
-    )
     client.chat_postMessage.assert_called_once()
 
 

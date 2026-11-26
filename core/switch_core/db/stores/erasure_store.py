@@ -54,7 +54,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.bridge_message_map_store import CARD_ANSWERER_ID
 from switch_core.db.stores.retention_store import UNREFERENCED_BLOB
-from switch_core.db.stores.room_store import DETACHED_FROM
+from switch_core.db.stores.room_store import DETACHED_FROM, DIRECT_ROOM_DESCRIPTION
 from switch_core.ui_spec import answerer_name
 
 #: What `answered_by` reads once the person who answered has been erased.
@@ -556,7 +556,11 @@ class ErasureStore:
         the app detached its rooms, so a room is found by what is left: it was
         a direct chat on their bridge (`DETACHED_FROM`), whether or not they
         wrote in it. A room detached before that was recorded is found among
-        `room_ids`, the rooms their messages were deleted from."""
+        `room_ids`, the rooms their messages were deleted from, if what
+        detaching left still says it was a direct chat: the description the
+        bridge gave a direct room it adopted (`DIRECT_ROOM_DESCRIPTION`). A
+        group channel detached then is left alone, even one named after
+        them."""
         if not participant.names:
             return 0
         detached = Room.metadata_[DETACHED_FROM]
@@ -567,7 +571,8 @@ class ErasureStore:
             Room.channel_type == "direct",
             (Room.bridge_id.is_(None))
             & (Room.channel_type.is_(None))
-            & ~Room.metadata_.has_key(DETACHED_FROM),
+            & or_(Room.metadata_.is_(None), ~Room.metadata_.has_key(DETACHED_FROM))
+            & Room.description.contains(DIRECT_ROOM_DESCRIPTION),
         )
         return await self._scrub_rooms(
             session, or_(was_theirs, wrote_in), participant.names

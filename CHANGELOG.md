@@ -242,7 +242,8 @@ version of their own to them without also giving them a release of their own.
   it. Later messages in the same room wait behind it, so a reply is not posted
   before the message it answers. A message that still fails after that, or
   that the platform refuses for good, is given up on, with an error in the
-  log.
+  log. The same goes for the files of a multi-file message posted incomplete
+  because the rest did not arrive in time.
 - **Slack mentions and links come through as written.** A mention at the end
   of a sentence ("thanks @alice.") is now a real Slack mention, a mention of
   someone on an Enterprise Grid org reads as their name in the room rather
@@ -281,7 +282,9 @@ version of their own to them without also giving them a release of their own.
   so nothing could try it again. The refusal now reaches the bridge as an
   error, and Slack's refusals are told apart: one that can clear (a rate
   limit, an outage) from one that cannot (an archived or missing channel, a
-  message too long). The session activity messages use the same distinction.
+  message too long). This covers an agent's messages, its cards, and
+  Switch's own notices in the channel. The session activity messages use the
+  same distinction.
 - **Erasing a person takes their name off the cards they answered.** A card
   pressed on a chat app now reads "erased" as its answerer once they are
   erased; which button was pressed stays. A card answer now records who

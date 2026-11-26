@@ -559,6 +559,48 @@ def test_a_send_slack_refuses_raises_for_the_caller() -> None:
     assert SlackAdapter.classify_refusal(refused.value) == "transient"
 
 
+@pytest.mark.parametrize(
+    "send",
+    [
+        lambda adapter: adapter.post_blocks(
+            "C123", "agent-bot", "hi", [], None, reply_broadcast=False
+        ),
+        lambda adapter: adapter.admin_message("C123", "hi"),
+    ],
+    ids=["card", "system message"],
+)
+def test_a_card_or_system_message_slack_refuses_raises_for_the_caller(
+    send: Any,
+) -> None:
+    """Cards and system messages go through the same retry as an agent's
+    message, which only sees a refusal that is raised."""
+    adapter = _adapter()
+    adapter._web_client = _RefusingWebClient("ratelimited")  # type: ignore[assignment]
+
+    with pytest.raises(SlackApiError) as refused:
+        _run(send(adapter))
+
+    assert SlackAdapter.classify_refusal(refused.value) == "transient"
+
+
+@pytest.mark.parametrize(
+    "send",
+    [
+        lambda adapter: adapter.post_blocks(
+            "C123", "agent-bot", "hi", [], None, reply_broadcast=False
+        ),
+        lambda adapter: adapter.admin_message("C123", "hi"),
+    ],
+    ids=["card", "system message"],
+)
+def test_a_card_or_system_message_with_no_client_raises(send: Any) -> None:
+    adapter = _adapter()
+    adapter._web_client = None
+
+    with pytest.raises(BridgeOperationError):
+        _run(send(adapter))
+
+
 def test_a_send_with_no_client_raises() -> None:
     adapter = _adapter()
     adapter._web_client = None

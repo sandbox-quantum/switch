@@ -45,6 +45,7 @@ def _make_bridge(**overrides: Any) -> CollaborationCore:
     bridge._room_to_channel = {}
     bridge._mapping_stamps = 0
     bridge._mapping_stamped = {}
+    bridge._reloaded_stamp = 0
     bridge._room_tenants = {}
     bridge._channel_locks = {}
     bridge._bridge_id = "bridge-1"
@@ -191,6 +192,7 @@ async def test_adopt_existing_room_registers_mapping() -> None:
     bridge._room_to_channel = {}
     bridge._mapping_stamps = 0
     bridge._mapping_stamped = {}
+    bridge._reloaded_stamp = 0
     bridge._room_tenants = {}
     bridge._bridge_id = "bridge-1"
     bridge._bridge_tenant_id = "tenant-1"

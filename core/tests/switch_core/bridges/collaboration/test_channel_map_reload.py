@@ -51,6 +51,7 @@ def _bridge(store: _RoomStore) -> CollaborationCore:
     bridge._room_to_channel = {}
     bridge._mapping_stamps = 0
     bridge._mapping_stamped = {}
+    bridge._reloaded_stamp = 0
     bridge._room_store = store  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
     return bridge
@@ -168,3 +169,55 @@ async def test_a_room_moved_to_another_channel_no_longer_hears_the_old_one() -> 
 
     assert bridge._find_channel(room_id=ROOM.id) == "C1"
     assert "C0" not in bridge._channel_to_room
+
+
+class _LookupHeld:
+    """One room's row read on its own, held until released, beside the
+    bridge's rooms read in full at once."""
+
+    def __init__(self, room: SimpleNamespace) -> None:
+        self.room = room
+        self.bridged = True
+        self.read = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def get_by_transport_room_id(
+        self, session: Any, transport_room_id: str
+    ) -> Any:
+        room = SimpleNamespace(**vars(self.room), bridge_id="bridge-1")
+        self.read.set()
+        await self.release.wait()
+        return room
+
+    async def get_by_bridge(self, session: Any, bridge_id: str) -> list[Any]:
+        return [self.room] if self.bridged else []
+
+
+async def test_a_room_read_before_a_reload_that_found_it_unbridged_stays_unmapped() -> (
+    None
+):
+    """A message for a room not mapped here reads the room's row; the room is
+    unbridged elsewhere and reloaded here before that read finishes. The
+    reload never had the room to record, but the read is older than it."""
+    store = _LookupHeld(ROOM)
+    bridge = _bridge(store)  # type: ignore[arg-type]
+
+    lookup = asyncio.create_task(bridge._channel_for_room(ROOM.transport_room_id))
+    await asyncio.wait_for(store.read.wait(), 5)
+    store.bridged = False
+    await bridge.reload_channel_map()
+    store.release.set()
+
+    assert await asyncio.wait_for(lookup, 5) is None
+    assert bridge._find_channel(room_id=ROOM.id) is None
+
+
+async def test_a_room_read_after_a_reload_is_mapped() -> None:
+    store = _LookupHeld(ROOM)
+    store.release.set()
+    bridge = _bridge(store)  # type: ignore[arg-type]
+    store.bridged = False
+    await bridge.reload_channel_map()
+
+    assert await bridge._channel_for_room(ROOM.transport_room_id) == "C1"
+    assert bridge._find_channel(room_id=ROOM.id) == "C1"

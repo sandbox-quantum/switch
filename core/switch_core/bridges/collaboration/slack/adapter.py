@@ -1027,8 +1027,9 @@ class SlackAdapter(PlatformAdapter):
         will not render the blocks are left with, so it has to stand alone.
         """
         if not self._web_client:
-            logger.error("Cannot post blocks: Slack client not connected")
-            return None
+            raise BridgeOperationError(
+                "Cannot post blocks: the Slack client is not connected"
+            )
 
         thread_ts = (
             self._parse_message_ref(thread_root_id)[1]
@@ -1070,14 +1071,7 @@ class SlackAdapter(PlatformAdapter):
             return f"{channel_id}:{ts}"
         except SlackApiError as e:
             logger.error("Failed to post blocks to Slack channel %s: %s", channel_id, e)
-            if e.response.get("error") in {
-                "internal_error",
-                "fatal_error",
-                "request_timeout",
-                "service_unavailable",
-            }:
-                raise
-            return None
+            raise
 
     async def find_request_card(
         self,
@@ -2139,8 +2133,9 @@ class SlackAdapter(PlatformAdapter):
         # speaking, not an agent. message_type is available for future
         # per-type tweaks (e.g. richer self-mention guidance).
         if not self._web_client:
-            logger.error("Cannot post admin message: Slack client not connected")
-            return None
+            raise BridgeOperationError(
+                "Cannot post an admin message: the Slack client is not connected"
+            )
 
         thread_ts: str | None = None
         if thread_root_id:
@@ -2164,7 +2159,7 @@ class SlackAdapter(PlatformAdapter):
             logger.error(
                 "Failed to post admin message to Slack channel %s: %s", channel_id, e
             )
-            return None
+            raise
 
     async def send_attachment(
         self,

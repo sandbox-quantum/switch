@@ -100,6 +100,12 @@ class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
             worker.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
 
+    async def relay_held_back(self, room_id: str, seq: int, relay: Relay) -> None:
+        """Relay a row the bridge held back and posts on its own time (a
+        multi-file message posted incomplete when its wait ran out), held and
+        tried again as a row relayed as it was read is (`_relay`)."""
+        await self._relay(RoomRef(room_id=room_id), seq, relay)
+
     async def _relay(self, room: RoomRef, seq: int, relay: Relay) -> None:
         """Relay a room row, or hold it to post later.
 
