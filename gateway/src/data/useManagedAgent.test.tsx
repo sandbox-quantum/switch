@@ -19,8 +19,8 @@ function wrapper({ children }: { children: React.ReactNode }) {
 describe("useManagedAgent", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("fetches from /gateway/management/agents/:id", async () => {
-    const fetch = respond(200, {
+  it("picks the agent from /gateway/management/agents, never asking for it by id", async () => {
+    const fetch = respond(200, [{
       agent_id: "agent-1",
       name: "test-agent",
       display_name: null,
@@ -47,14 +47,15 @@ describe("useManagedAgent", () => {
       updated_at: "2024-01-01T00:00:00Z",
       can_edit: true,
       can_delete: true,
-    });
+    }]);
 
     const { result } = renderHook(() => useManagedAgent("agent-1"), { wrapper });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledWith(
-      "/gateway/management/agents/agent-1",
+      "/gateway/management/agents",
       expect.objectContaining({
         method: "GET",
         credentials: "include",
@@ -64,6 +65,15 @@ describe("useManagedAgent", () => {
       agent_id: "agent-1",
       name: "test-agent",
     });
+  });
+
+  it("is null for an agent Switch does not run", async () => {
+    respond(200, [{ agent_id: "agent-2" }]);
+
+    const { result } = renderHook(() => useManagedAgent("agent-1"), { wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeNull();
   });
 
   it("propagates fetch errors instead of returning null", async () => {

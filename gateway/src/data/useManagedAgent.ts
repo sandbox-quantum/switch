@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { AgentsClient } from "@switch-console/chat-ui/client/agents-client";
 import { gatewayFetch } from "./gatewayFetch";
-import { ManagementApiError, managementError } from "./management";
+import { managementError } from "./management";
 
 const agentsClient = new AgentsClient({
   call: async (path, request = {}) => {
@@ -18,16 +18,10 @@ const agentsClient = new AgentsClient({
 export function useManagedAgent(agentId: string | null) {
   return useQuery({
     queryKey: ["managedAgent", agentId],
-    queryFn: async () => {
-      if (!agentId) return null;
-      try {
-        return await agentsClient.getManagedAgent(agentId);
-      } catch (error) {
-        // Switch does not run this agent: there is nothing to manage, which is not a failure.
-        if (error instanceof ManagementApiError && error.status === 404) return null;
-        throw error;
-      }
-    },
+    // Picked from the person's managed agents rather than asked for by id: one
+    // Switch does not run is absent from the list, where by id it is a 404.
+    queryFn: async () =>
+      (await agentsClient.listManagedAgents()).find((managed) => managed.agent_id === agentId) ?? null,
     enabled: agentId !== null,
     staleTime: 5000,
   });

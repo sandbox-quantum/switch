@@ -474,29 +474,43 @@ describe("ChatsPage", () => {
   });
 
   describe("management of the agent on its page", () => {
+    // `body` is what the person's managed agents list answers. Asking for the
+    // one agent is answered as Switch answers it for an agent it does not run.
     function managementAnswers(status: number, body: unknown, hosted = { available: false, machines: [] }) {
       vi.stubGlobal(
         "fetch",
         vi.fn(async (url: string) =>
-          url === "/gateway/management/agents/a1"
+          url === "/gateway/management/agents"
             ? new Response(JSON.stringify(body), { status })
-            : url === "/gateway/hosted-machines"
-              ? new Response(JSON.stringify(hosted), { status: 200 })
-              : new Response("[]", { status: 200 }),
+            : url === "/gateway/management/agents/a1"
+              ? new Response(JSON.stringify({ error: { code: "not_found", message: "Managed agent not found" } }), {
+                  status: 404,
+                })
+              : url === "/gateway/hosted-machines"
+                ? new Response(JSON.stringify(hosted), { status: 200 })
+                : new Response("[]", { status: 200 }),
         ),
       );
     }
 
+    const managedA1 = {
+      agent_id: "a1",
+      name: "notes-helper",
+      controller_id: "m1",
+      controller_name: "Laptop",
+      desired_state: "running",
+      definition: { provider: "claude", directory: null },
+    };
+
     afterEach(() => vi.unstubAllGlobals());
 
-    it("shows no error and no management actions for an agent Switch does not run", async () => {
-      managementAnswers(404, {
-        error: { code: "not_found", message: "Managed agent not found", retryable: false },
-      });
+    it("asks for no management of an agent Switch does not run, and shows no error or actions", async () => {
+      managementAnswers(200, [{ ...managedA1, agent_id: "other" }]);
       renderAt("/chats/agents/a1", storeWith([chat("c1", "a1")]));
       await screen.findByRole("toolbar", { name: "Agent" });
-      await waitFor(() => expect(fetch).toHaveBeenCalledWith("/gateway/management/agents/a1", expect.anything()));
+      await waitFor(() => expect(fetch).toHaveBeenCalledWith("/gateway/management/agents", expect.anything()));
       await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fetch).not.toHaveBeenCalledWith("/gateway/management/agents/a1", expect.anything());
       expect(screen.queryByText(/Could not read agent management status/)).toBeNull();
       expect(screen.queryByRole("button", { name: /Turn (on|off) agent/ })).toBeNull();
       expect(screen.queryByRole("button", { name: "Move to another device…" })).toBeNull();
@@ -513,33 +527,16 @@ describe("ChatsPage", () => {
     });
 
     it("offers turning the agent on or off and moving it when Switch runs it", async () => {
-      managementAnswers(200, {
-        agent_id: "a1",
-        name: "notes-helper",
-        controller_id: "m1",
-        controller_name: "Laptop",
-        desired_state: "running",
-        definition: { provider: "claude", directory: null },
-      });
+      managementAnswers(200, [managedA1]);
       renderAt("/chats/agents/a1", storeWith([chat("c1", "a1")]));
       expect(await screen.findByRole("button", { name: "Turn off agent" })).toBeTruthy();
       expect(await screen.findByRole("button", { name: "Move to another device…" })).toBeTruthy();
+      expect(fetch).toHaveBeenCalledWith("/gateway/management/agents", expect.anything());
       expect(screen.queryByText(/Could not read agent management status/)).toBeNull();
     });
 
     it("offers no move where Switch runs agents on Switch Cloud, as New agent does", async () => {
-      managementAnswers(
-        200,
-        {
-          agent_id: "a1",
-          name: "notes-helper",
-          controller_id: "m1",
-          controller_name: "Switch Cloud",
-          desired_state: "running",
-          definition: { provider: "claude", directory: null },
-        },
-        { available: true, machines: [] },
-      );
+      managementAnswers(200, [{ ...managedA1, controller_name: "Switch Cloud" }], { available: true, machines: [] });
       renderAt("/chats/agents/a1", storeWith([chat("c1", "a1")]));
       expect(await screen.findByRole("button", { name: "Turn off agent" })).toBeTruthy();
       await waitFor(() => expect(fetch).toHaveBeenCalledWith("/gateway/hosted-machines", expect.anything()));
