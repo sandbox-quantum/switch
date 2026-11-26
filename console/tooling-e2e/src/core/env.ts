@@ -136,7 +136,10 @@ export interface HarnessEnv {
   keepArtifacts: boolean;
   /** Where to record the credentials the server issues during the run; see `IssuedSecrets`. */
   secretsFile: string | null;
-  /** The server's JSON log, when the harness can read it; see `ServerLog`. */
+  /**
+   * The server's JSON log, when the harness can read it, or several separated
+   * by commas, one per replica; see `ServerLogWatch`.
+   */
   serverLog: string | null;
   /**
    * The gateway UI, served against `switch.apiUrl` (its `/gateway` requests

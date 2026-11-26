@@ -14,6 +14,10 @@ name: E2E
 #                explore   the same gateway UI, driven at random by Bombadil
 #                          against the properties in its specification
 #
+#   replicas     1 or 2. With 2, two switch-core processes run behind HAProxy
+#                (round robin, no stickiness), so each scenario's requests are
+#                served by both
+#
 # Runs against the deployed environments are not here: they live with the
 # deployment configuration, which checks out this harness at the commit the
 # environment runs and drives it with SWITCH_E2E_ENVIRONMENT set.
@@ -49,6 +53,11 @@ on:
         type: string
         required: false
         default: 10m
+      replicas:
+        description: How many switch-core replicas serve the stack
+        type: number
+        required: false
+        default: 1
     outputs:
       summary:
         description: One line counting the lane's scenarios by outcome
@@ -68,13 +77,18 @@ on:
         description: How long the explore lane explores
         type: string
         default: 10m
+      replicas:
+        description: How many switch-core replicas serve the stack
+        type: choice
+        options: ['1', '2']
+        default: '1'
 
 permissions:
   contents: read
 
 jobs:
   run:
-    name: ${{ inputs.lane }} lane
+    name: ${{ inputs.lane }} lane${{ inputs.replicas == 2 && ', two replicas' || '' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     environment: ${{ (inputs.lane == 'provider' || inputs.lane == 'agentic') && 'e2e-provider' || '' }}
@@ -88,6 +102,7 @@ jobs:
     env:
       OUT: ${{ github.workspace }}/build/e2e/out
       LANE: ${{ inputs.lane }}
+      REPLICAS: ${{ inputs.replicas }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -97,6 +112,7 @@ jobs:
           AGENT_TYPE: ${{ inputs.agent_type }}
         run: |
           case "$LANE" in fast|provider|browser|agentic|explore) ;; *) echo "::error::Unknown lane '$LANE'."; exit 1 ;; esac
+          case "$REPLICAS" in 1|2) ;; *) echo "::error::replicas is 1 or 2, not '$REPLICAS'."; exit 1 ;; esac
           case "$LANE" in provider|agentic) REAL_SESSION=1 ;; *) REAL_SESSION=0 ;; esac
           if [ "$REAL_SESSION" = 1 ] && [ "$AGENT_TYPE" != claude-code ]; then
             echo "::error::CI has credentials for claude-code only, not '$AGENT_TYPE'."; exit 1
@@ -159,7 +175,7 @@ jobs:
           SWITCH_E2E_AGENTIC_BUDGET_USD: '2'
           # How long the explore lane explores.
           SWITCH_E2E_EXPLORE_TIME_LIMIT: ${{ inputs.explore_time_limit }}
-        run: console/tooling-e2e/scripts/ephemeral-stack.sh
+        run: console/tooling-e2e/scripts/ephemeral-stack.sh --replicas "$REPLICAS"
 
       - name: Summarise the run
         id: summary
@@ -183,7 +199,7 @@ jobs:
         if: ${{ always() && steps.scan.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e2e-${{ inputs.lane }}
+          name: e2e-${{ inputs.lane }}${{ inputs.replicas == 2 && '-replicas' || '' }}
           path: ${{ env.OUT }}
           include-hidden-files: true
           retention-days: 14

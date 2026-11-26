@@ -11,6 +11,9 @@ same exception types for the same statuses.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import requests
@@ -26,6 +29,24 @@ from mattermostdriver.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Statuses the caller expects and handles, so a refusal with one of them is
+# not logged as an error here: the caller says what it means.
+_expected_refusals: ContextVar[frozenset[int]] = ContextVar(
+    "mattermost_expected_refusals", default=frozenset()
+)
+
+
+@contextmanager
+def refusals_expected(*statuses: int) -> Iterator[None]:
+    """Requests made inside log a refusal with one of `statuses` as a warning,
+    for a caller that handles it. It is still raised."""
+    token = _expected_refusals.set(frozenset(statuses))
+    try:
+        yield
+    finally:
+        _expected_refusals.reset(token)
+
 
 _ERRORS_BY_STATUS: dict[int, type[requests.HTTPError]] = {
     400: InvalidOrMissingParameters,
@@ -94,7 +115,12 @@ class NoRedirectClient(Client):  # type: ignore[misc]
                 message = response.text
             # An expired session is routine: the adapter logs in again and
             # retries (`_mm_api_blocking`), and raises where it cannot.
-            log = logger.warning if exc.response.status_code == 401 else logger.error
+            status = exc.response.status_code
+            log = (
+                logger.warning
+                if status == 401 or status in _expected_refusals.get()
+                else logger.error
+            )
             log("Mattermost %s %s failed: %s", method, endpoint, message)
             error = _ERRORS_BY_STATUS.get(exc.response.status_code)
             if error is not None:

@@ -5,10 +5,11 @@ name: E2E scheduled
 #
 #   after a merge to main  the provider lane on a throwaway stack. Real model
 #                          calls, so not on every PR, and never a required check
-#   nightly                the provider lane again and the explore lane (Bombadil
+#   nightly                the provider lane again, the explore lane (Bombadil
 #                          driving the gateway UI at random for 30 minutes, the
-#                          `ui` properties in properties/catalog/ui.yaml), then
-#                          a notification
+#                          `ui` properties in properties/catalog/ui.yaml) and
+#                          the fast lane on two switch-core replicas behind a
+#                          load balancer, then a notification
 #   a release tag          (switch-v*, candidates included) every lane that runs
 #                          on a throwaway stack: fast, provider and agentic, on
 #                          the tagged commit, always reported. A candidate may
@@ -79,6 +80,15 @@ jobs:
       agent_type: claude-code
       explore_time_limit: 30m
 
+  fast-replicas:
+    name: Fast lane, two replicas
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/e2e.yml
+    with:
+      lane: fast
+      agent_type: claude-code
+      replicas: 2
+
   agentic:
     name: Agentic lane
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
@@ -92,7 +102,7 @@ jobs:
 
   notify:
     name: Report
-    needs: [provider, fast, explore, agentic]
+    needs: [provider, fast, explore, fast-replicas, agentic]
     if: ${{ always() && github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
@@ -106,6 +116,8 @@ jobs:
           FAST_SUMMARY: ${{ needs.fast.outputs.summary }}
           EXPLORE_RESULT: ${{ needs.explore.result }}
           EXPLORE_SUMMARY: ${{ needs.explore.outputs.summary }}
+          REPLICAS_RESULT: ${{ needs.fast-replicas.result }}
+          REPLICAS_SUMMARY: ${{ needs.fast-replicas.outputs.summary }}
           AGENTIC_RESULT: ${{ needs.agentic.result }}
           AGENTIC_SUMMARY: ${{ needs.agentic.outputs.summary }}
         run: |
@@ -129,8 +141,9 @@ jobs:
           fi
           lines="$(line 'Provider lane (ephemeral)' "$PROVIDER_RESULT" "$PROVIDER_SUMMARY")"
           if [ "$GITHUB_EVENT_NAME" = schedule ]; then
-            lines="$(printf '%s\n%s' "$lines" \
-              "$(line 'Explore lane (ephemeral)' "$EXPLORE_RESULT" "$EXPLORE_SUMMARY")")"
+            lines="$(printf '%s\n%s\n%s' "$lines" \
+              "$(line 'Explore lane (ephemeral)' "$EXPLORE_RESULT" "$EXPLORE_SUMMARY")" \
+              "$(line 'Fast lane, two replicas (ephemeral)' "$REPLICAS_RESULT" "$REPLICAS_SUMMARY")")"
           fi
           if [ "$tagged" = true ]; then
             lines="$(printf '%s\n%s\n%s' \

@@ -63,7 +63,10 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     interrupt_action,
     read_press,
 )
-from switch_core.bridges.collaboration.mattermost.http_client import NoRedirectClient
+from switch_core.bridges.collaboration.mattermost.http_client import (
+    NoRedirectClient,
+    refusals_expected,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -142,6 +145,11 @@ _MM_SOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
 # directory dialog, the setup scripts), and connecting is a log-in and two
 # reads, so it is normally under a second.
 _CONNECT_WAIT_SECONDS = 15.0
+
+# How often, and how far apart, a bot another process just created is looked
+# for after Mattermost refused to create it again: about two seconds in all.
+_CREATED_BOT_LOOKUPS = 10
+_CREATED_BOT_LOOKUP_PAUSE_SECONDS = 0.2
 
 # Mattermost channel types a bot can be *added* to: open and private channels.
 # Membership of a DM ("D") or group DM ("G") is a property of the conversation
@@ -663,6 +671,10 @@ class MattermostAdapter(PlatformAdapter):
         # another stops here and starts there.
         self._ws_stops: dict[str, threading.Event] = {}
         self._identity_locks: dict[str, asyncio.Lock] = {}
+        # One bot set up at a time per username, whoever asks: registration,
+        # a rename, or a channel the agent is added to before this process
+        # heard it was registered (`_adopt_agent_identity`).
+        self._bot_setup_locks: dict[str, asyncio.Lock] = {}
         self._bot_id_to_username: dict[str, str] = {}
         self._bridge_bot_ids: set[str] = set()
 
@@ -2855,8 +2867,9 @@ class MattermostAdapter(PlatformAdapter):
 
         logger.debug("Inviting agents %s to channel %s", agent_names, channel_id)
         loop = self._main_loop
+        admin = self._admin_driver
         for agent_name in agent_names:
-            bot_info = self._agent_bots.get(agent_name)
+            bot_info = await self._adopt_agent_identity(agent_name)
             if not bot_info:
                 logger.warning(
                     "No Mattermost bot for agent '%s', cannot add to channel",
@@ -2864,9 +2877,18 @@ class MattermostAdapter(PlatformAdapter):
                 )
                 continue
             try:
+                # The bot may have been created by a process that does not
+                # hold the bridge, which leaves it off the team; a channel
+                # refuses anyone who is not on it.
                 await loop.run_in_executor(
                     None,
-                    self._admin_driver.channels.add_user,
+                    admin.teams.add_user_to_team,
+                    self._team_id,
+                    {"team_id": self._team_id, "user_id": bot_info["user_id"]},
+                )
+                await loop.run_in_executor(
+                    None,
+                    admin.channels.add_user,
                     channel_id,
                     {"user_id": bot_info["user_id"]},
                 )
@@ -3024,34 +3046,86 @@ class MattermostAdapter(PlatformAdapter):
             raise RuntimeError(
                 f"Cannot create agent identity '{agent_name}': adapter not started"
             )
-        if agent_name in self._agent_bots:
-            return
+        async with self._bot_setup_locks.setdefault(agent_name, asyncio.Lock()):
+            if agent_name in self._agent_bots:
+                return
+            label = await self._agent_label(agent_name)
+            existing = await self._find_existing_bot(agent_name)
+            if existing:
+                bot_id = await self._own_existing_bot(agent_name, existing, label)
+            else:
+                created = await self._create_bot(agent_name, agent_description, label)
+                if created is None:
+                    return
+                bot_id = created
+            await self._set_up_bot(agent_name, bot_id)
+        await self._after_bot_set_up(agent_name, bot_id)
 
-        loop = self._main_loop
+    async def _adopt_agent_identity(self, agent_name: str) -> dict[str, str] | None:
+        """The agent's bot, set up in this process if it exists on Mattermost
+        and this process has not set it up yet; None if there is none.
 
+        A room can be created here moments after its agent was registered on
+        another process, before this one has heard of the agent. The bot is
+        then adopted as registration here would have adopted it, rather than
+        the agent being left out of the channel. Never creates a bot: that
+        needs the agent's description, which registration gives."""
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError(
+                f"Cannot adopt agent identity '{agent_name}': adapter not started"
+            )
+        async with self._bot_setup_locks.setdefault(agent_name, asyncio.Lock()):
+            bot = self._agent_bots.get(agent_name)
+            if bot is not None:
+                return bot
+            existing = await self._find_existing_bot(agent_name)
+            if existing is None:
+                return None
+            label = await self._agent_label(agent_name)
+            bot_id = await self._own_existing_bot(agent_name, existing, label)
+            await self._set_up_bot(agent_name, bot_id)
+        await self._after_bot_set_up(agent_name, bot_id)
+        return self._agent_bots.get(agent_name)
+
+    async def _after_bot_set_up(self, agent_name: str, bot_id: str) -> None:
+        """Outside the bot's setup lock: bridging a channel adds the room's
+        agents to it, this one among them, which takes the lock again."""
+        if self._listening and agent_name in self._agent_bots:
+            await self._bridge_channels_already_joined(agent_name, bot_id)
+
+    async def _agent_label(self, agent_name: str) -> str:
         # The username is the routing handle — the mention, the member-list key
         # and the key this adapter adopts a bot back by — so it stays the
         # identifier. Only the bot's own display name carries the label.
         label = (await self.agent_rendering(agent_name)).field_label
         if label != agent_name:
             await self._warn_once_if_display_names_are_hidden()
+        return label
 
-        existing = await self._find_existing_bot(agent_name)
-        if existing:
-            bot_id: str = str(existing["user_id"])
-            if existing.get("display_name") != label and self._listening:
-                try:
-                    await self._mm_api(
-                        "put", f"/bots/{bot_id}", {"display_name": label}
-                    )
-                except Exception as e:
-                    logger.exception(
-                        "Failed to update the display name of Mattermost bot %s: %s",
-                        agent_name,
-                        e,
-                    )
-        else:
+    async def _own_existing_bot(
+        self, agent_name: str, existing: dict[str, Any], label: str
+    ) -> str:
+        bot_id = str(existing["user_id"])
+        if existing.get("display_name") != label and self._listening:
             try:
+                await self._mm_api("put", f"/bots/{bot_id}", {"display_name": label})
+            except Exception as e:
+                logger.exception(
+                    "Failed to update the display name of Mattermost bot %s: %s",
+                    agent_name,
+                    e,
+                )
+        return bot_id
+
+    async def _create_bot(
+        self, agent_name: str, agent_description: str, label: str
+    ) -> str | None:
+        """Create the agent's bot and return its id, or the id of the one
+        another process created a moment before; None, logged, if neither."""
+        try:
+            # Every switch-core process provisions its copy of the bridge, so
+            # two may create the same bot at once; the one refused adopts it.
+            with refusals_expected(400):
                 bot = await self._mm_api(
                     "post",
                     "/bots",
@@ -3061,18 +3135,24 @@ class MattermostAdapter(PlatformAdapter):
                         "description": f"Switch agent: {agent_description}",
                     },
                 )
-                bot_id = str(bot["user_id"])
-            except Exception as e:
-                # Another switch-core process may have created it a moment ago:
-                # every process provisions its copy of the bridge.
+            return str(bot["user_id"])
+        except Exception as e:
+            # Mattermost takes the username before the bot is listed, so the
+            # other process's bot can be missing from the list for a moment.
+            for _ in range(_CREATED_BOT_LOOKUPS):
                 created = await self._find_existing_bot(agent_name)
-                if created is None:
-                    logger.exception(
-                        "Failed to create Mattermost bot %s: %s", agent_name, e
-                    )
-                    return
-                bot_id = str(created["user_id"])
+                if created is not None:
+                    return str(created["user_id"])
+                await asyncio.sleep(_CREATED_BOT_LOOKUP_PAUSE_SECONDS)
+            logger.exception("Failed to create Mattermost bot %s: %s", agent_name, e)
+            return None
 
+    async def _set_up_bot(self, agent_name: str, bot_id: str) -> None:
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError(
+                f"Cannot set up agent identity '{agent_name}': adapter not started"
+            )
+        loop = self._main_loop
         if not self._listening:
             # Known by id, for mentions and for telling its posts from people's.
             # The process holding the bridge posts as the bot and listens on
@@ -3120,8 +3200,11 @@ class MattermostAdapter(PlatformAdapter):
                 self._team_id,
                 {"team_id": self._team_id, "user_id": bot_id},
             )
-        except Exception:
-            pass
+        except Exception as e:
+            # Its channels refuse it until it is on the team.
+            logger.warning(
+                "Failed to add Mattermost bot %s to the team: %s", agent_name, e
+            )
 
         stopped = threading.Event()
         self._ws_stops[agent_name] = stopped
@@ -3170,9 +3253,6 @@ class MattermostAdapter(PlatformAdapter):
             target=_run_ws, daemon=True, name=f"mm-ws-{agent_name}"
         )
         ws_thread.start()
-
-        await self._bridge_channels_already_joined(agent_name, bot_id)
-
         logger.info("Created Mattermost bot identity: %s", agent_name)
 
     async def _bridge_channels_already_joined(
@@ -3968,23 +4048,19 @@ class MattermostAdapter(PlatformAdapter):
         return resp.json()  # type: ignore[no-any-return]
 
     async def _find_existing_bot(self, username: str) -> dict[str, Any] | None:
-        try:
-            page = 0
-            per_page = 200
-            while True:
-                result = await self._mm_api(
-                    "get",
-                    f"/bots?include_deleted=true&page={page}&per_page={per_page}",
-                )
-                bots: list[dict[str, Any]] = result  # type: ignore[assignment]
-                for bot in bots:
-                    if bot.get("username") == username:
-                        if bot.get("delete_at", 0) > 0:
-                            await self._mm_api("post", f"/bots/{bot['user_id']}/enable")
-                        return bot
-                if len(bots) < per_page:
-                    break
-                page += 1
-        except Exception:
-            pass
-        return None
+        page = 0
+        per_page = 200
+        while True:
+            result = await self._mm_api(
+                "get",
+                f"/bots?include_deleted=true&page={page}&per_page={per_page}",
+            )
+            bots: list[dict[str, Any]] = result  # type: ignore[assignment]
+            for bot in bots:
+                if bot.get("username") == username:
+                    if bot.get("delete_at", 0) > 0:
+                        await self._mm_api("post", f"/bots/{bot['user_id']}/enable")
+                    return bot
+            if len(bots) < per_page:
+                return None
+            page += 1

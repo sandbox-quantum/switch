@@ -37,6 +37,7 @@ afterwards. Needs Docker, `uv`, `jq`, and your local stack stopped:
 ```bash
 just e2e-fast                       # from the repo root
 just e2e-fast --keep                # leave the stack running afterwards
+just e2e-fast --replicas 2          # two switch-core replicas behind HAProxy
 just e2e-fast -- -t mattermost      # arguments after -- go to vitest
 ```
 

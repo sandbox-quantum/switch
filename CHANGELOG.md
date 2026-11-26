@@ -220,6 +220,13 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **An agent registered moments before its room was created is now in the
+  room's Mattermost channel when Switch runs more than one server process.**
+  The process creating the channel had not yet set up the agent's bot, and
+  left the agent out, so the agent never heard that channel. It now adopts the
+  bot and puts it on the team before adding it. Two processes creating the
+  same bot at once no longer log an error, and a failed bot lookup is reported
+  instead of being read as "no bot".
 - **A cached controller token or room membership no longer outlives its TTL
   after a slow read.** The TTL counted from when the read was stored, so a
   change missed while the read was in flight could be served for the TTL plus

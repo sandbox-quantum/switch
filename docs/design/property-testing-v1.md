@@ -575,13 +575,27 @@ In this order, each checker shown to fail on a planted bug:
       round robin with no stickiness, WebSocket upgrades passed through, so a
       client's requests and sockets land on either replica. Both replicas
       write the shared assertion log (the SDK appends each record in one
-      write), and `SWITCH_E2E_SERVER_LOG` takes both servers' logs. Every
-      fast-lane scenario runs through it, each with the history check before
-      teardown. This closes the system level of `bus.room-seq-dense`,
-      `delivery.decided-at-write`, `chats.membership-is-read-authority`,
+      write), and `SWITCH_E2E_SERVER_LOG` takes both servers' logs, comma
+      separated. The replicas start one after the other, so the start-up work
+      runs alone, as in a rolling deploy. Every fast-lane scenario runs
+      through it, each with the history check before teardown, so what the
+      lane already checks at the system level (the `delivery.*` history
+      checks, `retention.erasure-complete`, `tenancy.no-cross-tenant-ids`,
+      `api.no-5xx`, `chats.streams-close-on-sign-out` and the server's
+      assertions) is now checked with every request free to land on either
+      replica. It closes no gap by itself: the system-level gaps of
+      `bus.room-seq-dense`, `delivery.decided-at-write`,
+      `chats.membership-is-read-authority`,
       `tenancy.agent-surface-no-cross-tenant` and
-      `connector.token-only-to-granted`, whose scenarios and history checks
-      exist and need only the second replica.
+      `connector.token-only-to-granted` are missing scenarios or a commit-order
+      log, not a second replica, and each is written for this lane when it is
+      added.
+
+      Its first run found an agent left out of a new room's Mattermost
+      channel: registered on one replica and put in a room on the other
+      before that one had set up the agent's bot. Two replicas creating the
+      same bot also logged an error each time, and a failed bot lookup was
+      read as "no bot". All three are fixed.
    2. **Process faults.** A fault hook in the harness, implemented by the stack
       script: kill a replica (`SIGKILL`, or `SIGTERM` as a deploy does), pause
       and resume one (`SIGSTOP`/`SIGCONT`, which lets its lease lapse without
