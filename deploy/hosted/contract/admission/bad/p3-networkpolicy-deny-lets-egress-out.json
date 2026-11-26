@@ -1,0 +1,154 @@
+{
+  "as": "system:serviceaccount:switch-hosted:switch-hosted-provisioner",
+  "expect": "refuse",
+  "from_good": "good/provisioner-a-base-box-box-keyed-post-networkpolicy-default-deny.json",
+  "group": "networking.k8s.io",
+  "message": "default-deny must deny everything, in and out",
+  "name": "default-deny",
+  "namespace": "agents-box-k1-0000000000000021",
+  "object": {
+    "apiVersion": "networking.k8s.io/v1",
+    "kind": "NetworkPolicy",
+    "metadata": {
+      "name": "default-deny",
+      "namespace": "agents-box-k1-0000000000000021"
+    },
+    "spec": {
+      "podSelector": {},
+      "policyTypes": [
+        "Ingress"
+      ]
+    }
+  },
+  "operation": "CREATE",
+  "policies": [
+    "switch-v0-p3-networkpolicies"
+  ],
+  "refused_by": "admission",
+  "request": {
+    "body": {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "default-deny",
+        "namespace": "agents-box-k1-0000000000000021"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress"
+        ]
+      }
+    },
+    "method": "POST",
+    "path": "/apis/networking.k8s.io/v1/namespaces/agents-box-k1-0000000000000021/networkpolicies"
+  },
+  "resource": "networkpolicies",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "switch-hosted"
+        }
+      },
+      "path": "/api/v1/namespaces/switch-hosted"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "annotations": {
+            "switch.dev/machine-id": "00000001-0000-4000-8000-000000000001"
+          },
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted",
+            "app.kubernetes.io/part-of": "hosted-agents-test",
+            "pod-security.kubernetes.io/enforce": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted",
+            "switch.dev/box": "box-k1-0000000000000021"
+          },
+          "name": "agents-box-k1-0000000000000021"
+        }
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000021"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "0000000f-0000-4000-8000-00000000000f": "YWdlbnRzLWJveC1rMS1mZmZmZmZmZmZmZmZmZmZm"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "0000000e-0000-4000-8000-00000000000e": "YWdlbnRzLWJveC1rMS1lZWVlZWVlZWVlZWVlZWVl"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "pool-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/pool-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-ffffffffffffffff": "azEtZGRkZGRkZGRkZGRkZGRkZA=="
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-owners",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-owners"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-cccccccccccccccc": "MDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBj"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-removals",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-removals"
+    }
+  ],
+  "subresource": "",
+  "version": "v1",
+  "what": "refused: p3 networkpolicy deny lets egress out"
+}

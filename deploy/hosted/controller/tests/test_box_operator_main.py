@@ -365,7 +365,6 @@ def test_the_start_line_names_the_ceiling_default_size_and_sizes(tmp_path, monke
             for name, disk in (("pro", "80Gi"), ("max", "160Gi"), ("earlier", "15Gi"))
         },
         "ceiling": 45,
-        "daily_calls": 500,
         "default_size": "pro",
     }
     files = {}

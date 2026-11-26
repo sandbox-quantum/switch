@@ -1,0 +1,373 @@
+{
+  "as": "system:serviceaccount:switch-hosted:switch-hosted-provisioner",
+  "expect": "allow",
+  "group": "rbac.authorization.k8s.io",
+  "name": "switch-box-watch",
+  "namespace": "agents-box-k1-0000000000000023",
+  "object": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {
+      "name": "switch-box-watch",
+      "namespace": "agents-box-k1-0000000000000023"
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "ClusterRole",
+      "name": "switch-box-watch"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "switch-hosted-controller",
+        "namespace": "switch-hosted"
+      }
+    ]
+  },
+  "operation": "CREATE",
+  "request": {
+    "body": {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "switch-box-watch",
+        "namespace": "agents-box-k1-0000000000000023"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "ClusterRole",
+        "name": "switch-box-watch"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "name": "switch-hosted-controller",
+          "namespace": "switch-hosted"
+        }
+      ]
+    },
+    "method": "POST",
+    "path": "/apis/rbac.authorization.k8s.io/v1/namespaces/agents-box-k1-0000000000000023/rolebindings"
+  },
+  "resource": "rolebindings",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "switch-hosted"
+        }
+      },
+      "path": "/api/v1/namespaces/switch-hosted"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "annotations": {
+            "switch.dev/machine-id": "00000003-0000-4000-8000-000000000003"
+          },
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted",
+            "app.kubernetes.io/part-of": "hosted-agents-test",
+            "pod-security.kubernetes.io/enforce": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted",
+            "switch.dev/box": "box-k1-0000000000000023"
+          },
+          "name": "agents-box-k1-0000000000000023"
+        }
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000023"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "00000001-0000-4000-8000-000000000001": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIx",
+          "00000002-0000-4000-8000-000000000002": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIy",
+          "0000000f-0000-4000-8000-00000000000f": "YWdlbnRzLWJveC1rMS1mZmZmZmZmZmZmZmZmZmZm"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "0000000e-0000-4000-8000-00000000000e": "YWdlbnRzLWJveC1rMS1lZWVlZWVlZWVlZWVlZWVl"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "pool-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/pool-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-0000000000000021": "azEtMTExMTExMTExMTExMTExMQ==",
+          "agents-box-k1-0000000000000022": "azEtMjIyMjIyMjIyMjIyMjIyMg==",
+          "agents-box-k1-ffffffffffffffff": "azEtZGRkZGRkZGRkZGRkZGRkZA=="
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-owners",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-owners"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-cccccccccccccccc": "MDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBj"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-removals",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-removals"
+    },
+    {
+      "object": {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+          "name": "default-deny",
+          "namespace": "agents-box-k1-0000000000000023"
+        },
+        "spec": {
+          "podSelector": {},
+          "policyTypes": [
+            "Ingress",
+            "Egress"
+          ]
+        }
+      },
+      "path": "/apis/networking.k8s.io/v1/namespaces/agents-box-k1-0000000000000023/networkpolicies/default-deny"
+    },
+    {
+      "object": {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+          "name": "agent-egress",
+          "namespace": "agents-box-k1-0000000000000023"
+        },
+        "spec": {
+          "egress": [
+            {
+              "ports": [
+                {
+                  "port": 443,
+                  "protocol": "TCP"
+                }
+              ],
+              "to": [
+                {
+                  "ipBlock": {
+                    "cidr": "192.0.2.10/32"
+                  }
+                }
+              ]
+            },
+            {
+              "ports": [
+                {
+                  "port": 3128,
+                  "protocol": "TCP"
+                }
+              ],
+              "to": [
+                {
+                  "namespaceSelector": {
+                    "matchLabels": {
+                      "kubernetes.io/metadata.name": "egress-proxy"
+                    }
+                  },
+                  "podSelector": {
+                    "matchLabels": {
+                      "app": "squid"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "podSelector": {},
+          "policyTypes": [
+            "Egress"
+          ]
+        }
+      },
+      "path": "/apis/networking.k8s.io/v1/namespaces/agents-box-k1-0000000000000023/networkpolicies/agent-egress"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "ResourceQuota",
+        "metadata": {
+          "name": "no-shared-services-priority",
+          "namespace": "agents-box-k1-0000000000000023"
+        },
+        "spec": {
+          "hard": {
+            "pods": "0"
+          },
+          "scopeSelector": {
+            "matchExpressions": [
+              {
+                "operator": "In",
+                "scopeName": "PriorityClass",
+                "values": [
+                  "switch-shared-services"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000023/resourcequotas/no-shared-services-priority"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "automountServiceAccountToken": false,
+        "kind": "ServiceAccount",
+        "metadata": {
+          "name": "box",
+          "namespace": "agents-box-k1-0000000000000023"
+        }
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000023/serviceaccounts/box"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "ca.crt": "-----BEGIN CERTIFICATE-----\nMIIB1DCCAXugAwIBAgIUM9a7//fChE1Z2Mq63W1IrNVogOowCgYIKoZIzj0EAwIw\nPzE9MDsGA1UEAww0Q29udHJhY3QgZXhhbXBsZSBDQSAodGhyb3dhd2F5LCBubyBw\ncml2YXRlIGtleSBrZXB0KTAgFw0yNjExMjYxMjE1NTZaGA8yMTI2MTEwMjEyMTU1\nNlowPzE9MDsGA1UEAww0Q29udHJhY3QgZXhhbXBsZSBDQSAodGhyb3dhd2F5LCBu\nbyBwcml2YXRlIGtleSBrZXB0KTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLl9\nA2LI0Rm7p3z/bgNx3k9Ted9jnqmzi1vR0DW6fMzQ89x+50R5n6o/gOZsRtvsHrN0\nzJ0A2+h9T+cYqS4LanWjUzBRMB0GA1UdDgQWBBSMkFBZPMpp/MwUAmYY+PQPXHfd\n3DAfBgNVHSMEGDAWgBSMkFBZPMpp/MwUAmYY+PQPXHfd3DAPBgNVHRMBAf8EBTAD\nAQH/MAoGCCqGSM49BAMCA0cAMEQCIBSA1oRDm3XAdyzs8pm4ZQGcxAPdsRiTHBME\nHyWbW79gAiBMrs2sKahW7Mx9Q5rMVdGZKL+IYwofaJaUS09I21AeHA==\n-----END CERTIFICATE-----\n"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "switch-ca",
+          "namespace": "agents-box-k1-0000000000000023"
+        }
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000023/configmaps/switch-ca"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "managed-settings.json": "{\"permissions\": {}}"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "claude-managed-settings",
+          "namespace": "agents-box-k1-0000000000000023"
+        }
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000023/configmaps/claude-managed-settings"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+          "name": "switch-enrol",
+          "namespace": "agents-box-k1-0000000000000023"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000023/secrets/switch-enrol"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+          "name": "switch-proxy-login",
+          "namespace": "agents-box-k1-0000000000000023"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000023/secrets/switch-proxy-login"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+          "name": "data-controller",
+          "namespace": "agents-box-k1-0000000000000023"
+        },
+        "spec": {
+          "accessModes": [
+            "ReadWriteOnce"
+          ],
+          "resources": {
+            "requests": {
+              "storage": "2Gi"
+            }
+          },
+          "storageClassName": "gp3"
+        }
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000023/persistentvolumeclaims/data-controller"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+          "name": "data-agents",
+          "namespace": "agents-box-k1-0000000000000023"
+        },
+        "spec": {
+          "accessModes": [
+            "ReadWriteOnce"
+          ],
+          "resources": {
+            "requests": {
+              "storage": "160Gi"
+            }
+          },
+          "storageClassName": "gp3"
+        }
+      },
+      "path": "/api/v1/namespaces/agents-box-k1-0000000000000023/persistentvolumeclaims/data-agents"
+    }
+  ],
+  "subresource": "",
+  "version": "v1",
+  "what": "provisioner: a max box, box-keyed"
+}
