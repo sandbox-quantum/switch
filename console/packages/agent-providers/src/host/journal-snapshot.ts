@@ -64,7 +64,7 @@ export function replayJournal(
   return snapshotSchema.parse(snapshot);
 }
 
-async function completeLines(file: string): Promise<string[] | null> {
+export async function completeLines(file: string): Promise<string[] | null> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
