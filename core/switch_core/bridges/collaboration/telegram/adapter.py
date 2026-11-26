@@ -688,13 +688,16 @@ class TelegramAdapter(PlatformAdapter):
     @classmethod
     def classify_error(cls, exc: BaseException) -> BridgeErrorKind | None:
         """Telegram answers a bot removed from a chat, or blocked by the
-        person, with 403 `Forbidden`: counted as `auth`, the bot no longer
-        being let in. A chat that no longer exists is a `BadRequest` saying
+        person, with 403 `Forbidden`: that one chat refused the bot, whose
+        token still works, so `forbidden`; a token Telegram rejects is
+        `InvalidToken`. A chat that no longer exists is a `BadRequest` saying
         so, the only way it is told apart, and a group upgraded to a
         supergroup is `ChatMigrated`: the chat addressed is gone. `BadRequest`
         is a `NetworkError` here, so it is read first."""
-        if isinstance(exc, InvalidToken | Forbidden):
+        if isinstance(exc, InvalidToken):
             return "auth"
+        if isinstance(exc, Forbidden):
+            return "forbidden"
         if isinstance(exc, RetryAfter):
             return "rate_limited"
         if isinstance(exc, ChatMigrated):

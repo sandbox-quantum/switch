@@ -582,10 +582,14 @@ class MattermostAdapter(PlatformAdapter):
         the status; any other status arrives as the `requests` error with the
         response still on it. Its errors are `OSError`s, so they are read here
         rather than left to the shared rules."""
-        if isinstance(exc, NoAccessTokenProvided | NotEnoughPermissions):
+        if isinstance(exc, NoAccessTokenProvided):
             return "auth"
+        if isinstance(exc, NotEnoughPermissions):
+            return "forbidden"
         if isinstance(exc, ResourceNotFound):
             return "not_found"
+        if isinstance(exc, FeatureDisabled):
+            return "platform_error"
         if isinstance(
             exc,
             sync_requests.exceptions.ConnectionError | sync_requests.exceptions.Timeout,

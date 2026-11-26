@@ -167,7 +167,7 @@ class GoogleAuthManager:
                     err_desc = resp.text
                 raise BridgeCredentialError(
                     f"Google OAuth rejected service account assertion (status {resp.status_code}): {err_desc}"
-                )
+                ) from _token_endpoint_status(resp, self._token_uri)
 
             token_data = resp.json()
             access_token = token_data.get("access_token")
@@ -238,7 +238,7 @@ class GoogleAuthManager:
                     err_desc = resp.text
                 raise BridgeCredentialError(
                     f"Google OAuth rejected User OAuth refresh token (status {resp.status_code}): {err_desc}"
-                )
+                ) from _token_endpoint_status(resp, DEFAULT_TOKEN_URI)
 
             token_data = resp.json()
             access_token = token_data.get("access_token")
@@ -251,3 +251,14 @@ class GoogleAuthManager:
             self._user_token = str(access_token)
             self._user_token_expiry = now + float(expires_in)
             return self._user_token
+
+
+def _token_endpoint_status(resp: httpx.Response, uri: str) -> httpx.HTTPStatusError:
+    """The token endpoint's answer as the cause of the `BridgeCredentialError`
+    raised for it, so a 429 or a 5xx is counted as what it was rather than as
+    credentials refused."""
+    return httpx.HTTPStatusError(
+        f"Google OAuth answered {resp.status_code}",
+        request=httpx.Request("POST", uri),
+        response=resp,
+    )

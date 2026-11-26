@@ -15,7 +15,10 @@ import discord
 import httpx
 import pytest
 import requests
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from mattermostdriver.exceptions import (
+    FeatureDisabled,
     InvalidOrMissingParameters,
     NoAccessTokenProvided,
     NotEnoughPermissions,
@@ -40,6 +43,8 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
 from switch_core.bridges.collaboration.error_kind import classify_bridge_error
+from switch_core.bridges.collaboration.google_chat.adapter import GoogleChatAdapter
+from switch_core.bridges.collaboration.google_chat.auth import GoogleAuthManager
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
@@ -59,6 +64,7 @@ from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 
 _VOCABULARY = {
     "auth",
+    "forbidden",
     "rate_limited",
     "not_found",
     "network",
@@ -113,12 +119,15 @@ def _caused_by(cause: BaseException) -> RichContentFailed:
         (SlackAdapter, _slack("is_archived"), "not_found"),
         (SlackAdapter, _slack("internal_error"), "platform_error"),
         (SlackAdapter, _slack(None, 502), "platform_error"),
-        (SlackAdapter, _slack("missing_scope"), "other"),
+        (SlackAdapter, _slack("not_in_channel"), "forbidden"),
+        (SlackAdapter, _slack("missing_scope"), "forbidden"),
+        (SlackAdapter, _slack("invalid_blocks"), "other"),
         (SlackAdapter, _caused_by(_slack("account_inactive")), "auth"),
         (SlackAdapter, aiohttp.ServerDisconnectedError(), "network"),
         # Discord: the status every `HTTPException` carries.
         (DiscordAdapter, discord.LoginFailure("bad token"), "auth"),
-        (DiscordAdapter, discord.Forbidden(_discord_response(403), "no"), "auth"),
+        (DiscordAdapter, discord.Forbidden(_discord_response(403), "no"), "forbidden"),
+        (DiscordAdapter, discord.HTTPException(_discord_response(401), "no"), "auth"),
         (DiscordAdapter, discord.NotFound(_discord_response(404), "gone"), "not_found"),
         (DiscordAdapter, discord.RateLimited(3.0), "rate_limited"),
         (
@@ -134,7 +143,12 @@ def _caused_by(cause: BaseException) -> RichContentFailed:
         (DiscordAdapter, discord.HTTPException(_discord_response(400), "no"), "other"),
         # Telegram: the class, and for a missing chat what BadRequest says.
         (TelegramAdapter, InvalidToken(), "auth"),
-        (TelegramAdapter, Forbidden("bot was kicked from the group chat"), "auth"),
+        (
+            TelegramAdapter,
+            Forbidden("bot was kicked from the group chat"),
+            "forbidden",
+        ),
+        (TelegramAdapter, Forbidden("bot was blocked by the user"), "forbidden"),
         (TelegramAdapter, RetryAfter(5), "rate_limited"),
         (TelegramAdapter, BadRequest("Chat not found"), "not_found"),
         (TelegramAdapter, ChatMigrated(-100123), "not_found"),
@@ -143,7 +157,8 @@ def _caused_by(cause: BaseException) -> RichContentFailed:
         (TelegramAdapter, NetworkError("Bad Gateway"), "network"),
         # Mattermost: the driver's named classes, else the requests status.
         (MattermostAdapter, NoAccessTokenProvided("no"), "auth"),
-        (MattermostAdapter, NotEnoughPermissions("no"), "auth"),
+        (MattermostAdapter, NotEnoughPermissions("no"), "forbidden"),
+        (MattermostAdapter, FeatureDisabled("off"), "platform_error"),
         (MattermostAdapter, ResourceNotFound("gone"), "not_found"),
         (MattermostAdapter, _requests_status(429), "rate_limited"),
         (MattermostAdapter, _requests_status(502), "platform_error"),
@@ -161,7 +176,11 @@ def _caused_by(cause: BaseException) -> RichContentFailed:
             BotConnectorGone("gone", status=404, retry_after=None),
             "not_found",
         ),
-        (TeamsAdapter, BotConnectorRefused("no", status=403, retry_after=None), "auth"),
+        (
+            TeamsAdapter,
+            BotConnectorRefused("no", status=403, retry_after=None),
+            "forbidden",
+        ),
         (
             TeamsAdapter,
             BotConnectorUnavailable("down", status=503, retry_after=None),
@@ -194,6 +213,7 @@ def test_each_platform_s_errors_read_as_their_kind(
         (RichContentThrottled(retry_after=2.0, text="hi"), "rate_limited"),
         (DirectorySearchBusy(retry_after=2.0), "rate_limited"),
         (_httpx_status(401), "auth"),
+        (_httpx_status(403), "forbidden"),
         (_httpx_status(410), "not_found"),
         (_httpx_status(500), "platform_error"),
         (_httpx_status(409), "other"),
@@ -224,6 +244,76 @@ def test_the_outermost_answer_wins() -> None:
         raise RichContentThrottled(retry_after=1.0, text="hi") from TimeoutError()
     except RichContentThrottled as error:
         assert classify_bridge_error(error, SlackAdapter) == "rate_limited"
+
+
+def _credential_error_from(cause: BaseException) -> BridgeCredentialError:
+    try:
+        raise BridgeCredentialError("could not get a token") from cause
+    except BridgeCredentialError as error:
+        return error
+
+
+@pytest.mark.parametrize(
+    ("cause", "kind"),
+    [
+        (httpx.ConnectError("refused"), "network"),
+        (_httpx_status(429), "rate_limited"),
+        (_httpx_status(503), "platform_error"),
+        (_caused_by(httpx.ReadTimeout("slow")), "network"),
+        (_httpx_status(401), "auth"),
+        (_httpx_status(400), "auth"),
+        (_httpx_status(404), "auth"),
+        (ValueError("bad key"), "auth"),
+    ],
+)
+def test_a_credential_error_raised_from_a_transport_failure_is_that_failure(
+    cause: BaseException, kind: BridgeErrorKind
+) -> None:
+    """Only a cause saying the platform was unreachable, throttling or failing
+    outranks the credential error wrapped around it."""
+    assert classify_bridge_error(_credential_error_from(cause), None) == kind
+
+
+def _google_auth(handler: httpx.MockTransport) -> GoogleAuthManager:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+    return GoogleAuthManager(
+        {"client_email": "bot@project.example.invalid", "private_key": pem},
+        http_client=httpx.AsyncClient(transport=handler),
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "kind"),
+    [(503, "platform_error"), (429, "rate_limited"), (400, "auth"), (401, "auth")],
+)
+async def test_google_chat_s_token_endpoint_answer_decides_the_kind(
+    status: int, kind: BridgeErrorKind
+) -> None:
+    auth = _google_auth(
+        httpx.MockTransport(lambda _: httpx.Response(status, json={"error": "x"}))
+    )
+
+    with pytest.raises(BridgeCredentialError) as raised:
+        await auth.get_service_account_token()
+
+    assert classify_bridge_error(raised.value, GoogleChatAdapter) == kind
+
+
+async def test_google_chat_s_token_endpoint_unreachable_is_network() -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    auth = _google_auth(httpx.MockTransport(refuse))
+
+    with pytest.raises(BridgeCredentialError) as raised:
+        await auth.get_service_account_token()
+
+    assert classify_bridge_error(raised.value, GoogleChatAdapter) == "network"
 
 
 def test_an_adapter_whose_classifier_raises_falls_back_to_the_shared_rules(

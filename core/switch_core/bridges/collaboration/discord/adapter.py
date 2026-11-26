@@ -791,9 +791,10 @@ class DiscordAdapter(PlatformAdapter):
     @classmethod
     def classify_error(cls, exc: BaseException) -> BridgeErrorKind | None:
         """`Forbidden`, `NotFound` and `DiscordServerError` are all
-        `HTTPException`s carrying their status, so the status decides; a 429
-        the library declined to sleep through is `RateLimited`, which is not
-        one."""
+        `HTTPException`s carrying their status, so the status decides: a 403
+        (the bot lacks a permission in that channel) is `forbidden`, a 401 a
+        token Discord no longer accepts. A 429 the library declined to sleep
+        through is `RateLimited`, which is not one."""
         if isinstance(exc, discord.LoginFailure):
             return "auth"
         if isinstance(exc, discord.RateLimited):

@@ -355,8 +355,13 @@ handled in a way that leaves no trace.
 - **`switch.bridge.errors`** — an inbound bridge failure is a message a person
   sent that nobody received; from the platform it is indistinguishable from
   being ignored. `kind` says what went wrong, from a fixed set: `auth` (the
-  credentials refused: a 401 or 403, a token revoked or invalid, a Telegram bot
-  removed from the chat), `rate_limited` (a 429 or the platform's throttling),
+  credentials themselves invalid or revoked: a 401, a revoked Slack token, a
+  token Telegram or Discord rejects; an operator reconnects the app),
+  `forbidden` (the credentials work but this chat or action was refused: a
+  403, a Telegram bot removed from a group or blocked by the person, a Discord
+  channel permission missing, Slack's `not_in_channel` or `missing_scope`; one
+  conversation, or one capability, rather than the whole bridge),
+  `rate_limited` (a 429 or the platform's throttling),
   `not_found` (the channel or chat gone), `network` (a timeout or connection
   failure), `platform_error` (a 5xx) and `other`. Each adapter reads its own
   SDK's exceptions (`PlatformAdapter.classify_error`: Slack's error code,
@@ -364,7 +369,11 @@ handled in a way that leaves no trace.
   Bot Connector and Graph statuses), and shared rules read the rest
   (`bridges/collaboration/error_kind.py`): an `httpx` or `aiohttp` status, a
   transport failure, a throttle Switch raised. The causes an error was raised
-  from are read too, outermost first. Anything else, including most inbound
+  from are read too, outermost first, and the outermost answer wins — except
+  that `auth` gives way to a cause beneath it that is `network`,
+  `rate_limited` or `platform_error`: a credential error raised because the
+  token endpoint was unreachable or answered 503 (Google Chat's token exchange
+  raises one for both) is counted as that failure. Anything else, including most inbound
   handler failures, which are Switch's own, is `other`, never a new value.
 - **`switch.retention.failures`** — the retention and erasure sweeps log a
   failure and carry on, so one workspace cannot stop the others; a sweep that

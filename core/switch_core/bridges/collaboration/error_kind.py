@@ -9,7 +9,13 @@ It walks the exception and the causes it was raised `from`, outermost first,
 because adapters wrap their SDK's errors (`RichContentFailed` carries the
 `SlackApiError` as its cause). For each one it asks the bridge's adapter
 (`PlatformAdapter.classify_error`, for that platform's SDK), then the shared
-rules here. The first answer wins; an exception nobody recognises is `other`.
+rules here. The first answer wins, with one exception: an `auth` answer is
+provisional while a cause beneath it says the platform could not be reached,
+throttled the call or failed on its side (`network`, `rate_limited`,
+`platform_error`). Adapters raise `BridgeCredentialError` for any failure to
+get a token — Google Chat's token exchange does for a dropped connection or a
+503 — and counting those as `auth` would send an operator to reconnect an app
+whose credentials are fine. An exception nobody recognises is `other`.
 
 Never the exception's message as a value: it routinely carries a workspace
 name or a token fragment, and metric values come from a fixed set.
@@ -61,6 +67,12 @@ NETWORK_EXCEPTIONS = (
 # chain longer than this is not one anybody built on purpose.
 _MAX_CHAIN = 8
 
+# The kinds that, found beneath an `auth` answer, say why the credentials
+# could not be checked rather than that they were refused.
+_CAUSES_OUTRANKING_AUTH: frozenset[BridgeErrorKind] = frozenset(
+    {"network", "rate_limited", "platform_error"}
+)
+
 
 def classify_bridge_error(
     exc: BaseException, adapter_cls: type[PlatformAdapter] | None
@@ -69,13 +81,19 @@ def classify_bridge_error(
     adapter is involved (the agent bridge): only the shared rules apply."""
     seen: set[int] = set()
     link: BaseException | None = exc
+    provisional: BridgeErrorKind | None = None
     while link is not None and id(link) not in seen and len(seen) < _MAX_CHAIN:
         seen.add(id(link))
         kind = _adapter_kind(link, adapter_cls) or _shared_kind(link)
-        if kind is not None:
+        if provisional is None:
+            if kind == "auth":
+                provisional = kind
+            elif kind is not None:
+                return kind
+        elif kind in _CAUSES_OUTRANKING_AUTH:
             return kind
         link = link.__cause__
-    return "other"
+    return provisional or "other"
 
 
 def _adapter_kind(

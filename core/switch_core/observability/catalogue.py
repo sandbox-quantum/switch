@@ -420,9 +420,11 @@ BRIDGE_ERRORS = _spec(
     "sum",
     "{error}",
     "Bridge operations that raised, by direction and `kind`: `auth` (the "
-    "credentials refused, a token revoked), `rate_limited`, `not_found` (the "
-    "channel or chat gone), `network` (unreachable, timed out), "
-    "`platform_error` (a 5xx) or `other`.",
+    "credentials invalid or revoked, a 401), `forbidden` (the credentials "
+    "accepted but this chat or action refused: a 403, a bot removed from a "
+    "chat, a missing scope), `rate_limited`, `not_found` (the channel or chat "
+    "gone), `network` (unreachable, timed out), `platform_error` (a 5xx) or "
+    "`other`.",
     "bridge",
     "platform",
     "direction",

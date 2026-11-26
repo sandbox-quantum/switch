@@ -409,22 +409,33 @@ FailureReason = Literal[
 ]
 
 #: What kind of error a bridge operation raised, as `switch.bridge.errors`
-#: counts it: the credentials refused (`auth`), a rate limit (`rate_limited`),
-#: the channel or chat addressed gone (`not_found`), the platform unreachable
+#: counts it: the credentials themselves invalid or revoked (`auth`), the
+#: credentials accepted but this action or conversation refused — a bot
+#: removed from a chat, a missing channel permission or scope (`forbidden`), a
+#: rate limit (`rate_limited`), the channel or chat addressed gone
+#: (`not_found`), the platform unreachable
 #: (`network`), the platform failing on its side (`platform_error`), and
 #: everything else (`other`). `PlatformAdapter.classify_error` answers with one
 #: of these for its own SDK's exceptions; `error_kind.classify_bridge_error`
 #: decides the rest. A closed set: an error nobody recognises is `other`.
 BridgeErrorKind = Literal[
-    "auth", "rate_limited", "not_found", "network", "platform_error", "other"
+    "auth",
+    "forbidden",
+    "rate_limited",
+    "not_found",
+    "network",
+    "platform_error",
+    "other",
 ]
 
 
 def error_kind_for_status(status: int) -> BridgeErrorKind | None:
     """The kind an HTTP status says, or None for one that says none of them
     (a 400, a 409): the rest of the exception decides, else `other`."""
-    if status in (401, 403):
+    if status == 401:
         return "auth"
+    if status == 403:
+        return "forbidden"
     if status == 429:
         return "rate_limited"
     if status in (404, 410):
