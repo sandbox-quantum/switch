@@ -50,13 +50,29 @@ describe('the launcher protocol', () => {
       launch,
       { kind: 'stop', id: 2, agentId: AGENT, wait: true, asked: false },
       { kind: 'observe', id: 3, agentId: AGENT },
-      { kind: 'end', id: 4, agentId: AGENT },
       { kind: 'sweep', id: 5, agentId: AGENT },
       { kind: 'ticket', id: 6, agentId: AGENT, launchId: 7, ticket: 'c'.repeat(32) },
     ];
     r.feed(Buffer.from(orders.map(encodeLine).join('')));
     expect(messages).toEqual(orders);
     expect(refused).toEqual([]);
+  });
+
+  it('refuses the removed memory-guard orders and the reply count they had', () => {
+    const orders = reader<LauncherOrder>(launcherOrderSchema);
+    orders.r.feed(
+      Buffer.from(
+        ['freeze', 'thaw', 'end', 'memory_notice']
+          .map((kind) => `${JSON.stringify({ kind, id: 1, agentId: AGENT })}\n`)
+          .join('')
+      )
+    );
+    expect(orders.messages).toEqual([]);
+    expect(orders.refused).toEqual(Array(4).fill('bad_shape'));
+    const reports = reader<LauncherReport>(launcherReportSchema);
+    reports.r.feed(Buffer.from(`${JSON.stringify({ kind: 'reply', id: 1, ok: true, told: 2 })}\n`));
+    expect(reports.messages).toEqual([]);
+    expect(reports.refused).toEqual(['bad_shape']);
   });
 
   it('passes the launcher reports with ids and numbers only', () => {

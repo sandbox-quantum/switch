@@ -1,5 +1,5 @@
 import type { Logger } from '../log';
-import type { BoxReading } from './memory-guard';
+import type { BoxReading } from './box-memory';
 
 /** How far the launcher's agents may read above the box before it counts (noise, timing). */
 export const SOURCE_CHECK_MARGIN_BYTES = 128 * 1024 * 1024;
@@ -12,7 +12,7 @@ const POD_SOURCES: readonly (BoxReading['source'] | undefined)[] = ['meminfo', '
 /**
  * Whether a split box's memory reading can see the whole pod. Under gVisor only `/proc/meminfo` shows the pod's total; the
  * cgroup figure is the controller's own container, blind to the agents. So
- * on a split box the box valve and the guard are taken as unprotected when:
+ * on a split box the box valve is taken as unprotected when:
  *
  * - the reading didn't come from meminfo (the cgroup, or no source at all); or
  * - the launcher's own total for the agents is above the box reading (by a
@@ -71,7 +71,7 @@ export class MemorySourceCheck {
     if (reason === this.reason) return;
     if (reason)
       this.deps.log.error(
-        "The box's memory reading can't see the whole pod, so the valve and the guard aren't protecting it",
+        "The box's memory reading can't see the whole pod, so the valve isn't protecting it",
         { reason }
       );
     else this.deps.log.info("The box's memory reading sees the whole pod again", {});

@@ -5,14 +5,6 @@ import { overControlPort } from '../control-port';
  * an agent host in a process of its own, on top of `overControlPort`.
  */
 
-/**
- * Tell an agent host in a process of its own that the memory guard is about
- * to stop it, so it tells its rooms. Resolves to how many rooms it told.
- */
-export async function stopForMemoryOverControlPort(controlFile: string): Promise<number> {
-  return overControlPort(controlFile, (client) => client.stopForMemory());
-}
-
 /** The control port named in `control.json` isn't the spawned host's own. */
 export class WrongPortError extends Error {
   constructor() {

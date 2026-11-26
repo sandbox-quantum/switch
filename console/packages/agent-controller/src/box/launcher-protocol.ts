@@ -65,16 +65,12 @@ export const launcherOrderSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('observe'), id: requestId, agentId }).strict(),
-  /** The memory guard's steps: the launcher signals only processes it proves the agent's. */
-  z.object({ kind: z.enum(['freeze', 'thaw', 'end']), id: requestId, agentId }).strict(),
-  /** A resting agent's leftovers, ended with proof. */
+  /** A resting agent's leftovers, ended with proof: the launcher signals only processes it proves the agent's. */
   z.object({ kind: z.literal('sweep'), id: requestId, agentId }).strict(),
   /** Start the session a message to `roomId` would start, through the host's control port. */
   z
     .object({ kind: z.literal('warm'), id: requestId, agentId, roomId: z.string().min(1).max(255) })
     .strict(),
-  /** The memory guard is stopping the agent: its host tells its rooms, through its control port. */
-  z.object({ kind: z.literal('memory_notice'), id: requestId, agentId }).strict(),
   /**
    * A provider sign-in check, run in the agents container: the CLI with the
    * gateway's probe environment (a short-lived probe token, never a login).
@@ -173,8 +169,6 @@ export const launcherReportSchema = z.discriminatedUnion('kind', [
         .object({ signalled: count, gone: count, notProven: count, disputed: count, left: count })
         .strict()
         .optional(),
-      /** `memory_notice`: how many rooms the host told. */
-      told: count.optional(),
       /** `probe`: the provider's answer, checked again by the controller's own schema. */
       readiness: z.record(z.string(), z.unknown()).optional(),
       /** `disk`: the agents' volume, in bytes. */

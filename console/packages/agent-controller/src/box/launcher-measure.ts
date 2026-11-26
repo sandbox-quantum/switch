@@ -1,18 +1,17 @@
 import { type LauncherLink, type Measurement, QUIET_AFTER_MS } from './launcher-link';
-import type { GuardRemote } from './memory-guard';
 
 /**
- * The memory guard's view through the launcher: the latest `measure`,
- * taken only while fresh by the controller's own clock, and the guard's stop
- * steps sent as orders. The launcher's figures are untrusted; the guard keeps
- * its own box reading beside them.
+ * The launcher's latest `measure`, the split box's heartbeat, taken only while
+ * fresh by the controller's own clock. Its figures are untrusted: they are
+ * only the one-way tripwire of the valve's memory source check
+ * (`totalBytes`), never what the valve reads.
  */
-export class LauncherGuard implements GuardRemote {
+export class LauncherMeasure {
   private latest: { at: number; measurement: Measurement } | null = null;
 
   constructor(
     private readonly deps: {
-      link: Pick<LauncherLink, 'order' | 'current'>;
+      link: Pick<LauncherLink, 'current'>;
       now: () => number;
       /** Whether the controller launched this agent: figures for any other are ignored and counted. */
       launched?: (agentId: string) => boolean;
@@ -61,39 +60,5 @@ export class LauncherGuard implements GuardRemote {
     for (const entry of Object.values(this.latest.measurement.agents))
       total += Math.max(0, entry.bytes - entry.disputedBytes);
     return total;
-  }
-
-  read(agentIds: readonly string[]): Map<string, { undisputed: number; processes: number }> | null {
-    if (this.deps.link.current !== 'live' || !this.latest) return null;
-    if (this.deps.now() - this.latest.at >= QUIET_AFTER_MS) return null;
-    const out = new Map<string, { undisputed: number; processes: number }>();
-    for (const agentId of agentIds) {
-      const entry = this.latest.measurement.agents[agentId];
-      if (entry)
-        out.set(agentId, {
-          undisputed: Math.max(0, entry.bytes - entry.disputedBytes),
-          processes: entry.processes,
-        });
-    }
-    return out;
-  }
-
-  async freeze(agentId: string): Promise<void> {
-    await this.deps.link.order({ kind: 'freeze', agentId });
-  }
-
-  async thaw(agentId: string): Promise<void> {
-    await this.deps.link.order({ kind: 'thaw', agentId });
-  }
-
-  async end(agentId: string): Promise<{ forced: number; notProven: number; left: number }> {
-    const reply = await this.deps.link.order({ kind: 'end', agentId });
-    if (!reply.ok || !reply.counts)
-      throw new Error(`The launcher did not end the agent (${reply.code ?? 'failed'}).`);
-    return {
-      forced: reply.counts.signalled,
-      notProven: reply.counts.notProven,
-      left: reply.counts.left,
-    };
   }
 }

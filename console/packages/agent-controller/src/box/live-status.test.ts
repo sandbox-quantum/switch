@@ -110,7 +110,7 @@ function inputs(overrides: Partial<LiveStatusInputs> = {}): LiveStatusInputs {
     hubHosts: new Map([[AGENT_A, { since: T0 - 5_000, onValve: false }]]),
     valve: VALVE_ON,
     formulaCap: 12,
-    guard: { boxLimit: 6 * 1024 ** 3, backstop: 0.92, share: 0.6 },
+    memoryLimit: 6 * 1024 ** 3,
     restAfterMs: 600_000,
     lastSyncAt: T0 - 30_000,
     imageDigest: DIGEST,
@@ -148,7 +148,7 @@ describe('liveStatusFrom', () => {
       now: T0,
       peakAwake: 4,
     });
-    expect(status.version).toBe(1);
+    expect(status.version).toBe(2);
     expect(status.controller).toEqual({
       version: '0.9.1-l2fix9',
       image_digest: DIGEST,
@@ -180,7 +180,6 @@ describe('liveStatusFrom', () => {
       awake: 2,
       peak_awake: 4,
     });
-    expect(status.guard).toEqual({ enabled: true, backstop: 0.92, share: 0.6, noting: false });
     expect(status.launcher).toBeNull();
     expect(status.agents).toEqual([
       {
@@ -188,7 +187,6 @@ describe('liveStatusFrom', () => {
         desired: 'running',
         process: 'stopped',
         resting: true,
-        out_of_memory: false,
         rest_after_ms: 600_000,
         on_hub: false,
         on_hub_since: null,
@@ -205,7 +203,6 @@ describe('liveStatusFrom', () => {
         desired: 'running',
         process: 'running',
         resting: false,
-        out_of_memory: false,
         rest_after_ms: 600_000,
         on_hub: true,
         on_hub_since: '2026-10-28T14:59:55.000Z',
@@ -222,18 +219,17 @@ describe('liveStatusFrom', () => {
     expect(status.totals.process.running).toBe(1);
   });
 
-  it('shows an unbounded or switched-off valve and guard without figures', () => {
+  it('shows an unbounded or switched-off valve, and no limit, without figures', () => {
     const status = liveStatusFrom(
       inputs({
         valve: { ...VALVE_ON, enabled: false, cap: Number.POSITIVE_INFINITY },
         formulaCap: null,
-        guard: null,
+        memoryLimit: null,
       }),
       EXTRAS,
       { startedAt: T0, now: T0, peakAwake: 0 }
     );
     expect(status.valve.cap).toBeNull();
-    expect(status.guard).toEqual({ enabled: false, backstop: null, share: null, noting: false });
     expect(status.box.memory_limit_bytes).toBeNull();
     expect(status.agents.every((entry) => entry.valve_fallback === null)).toBe(true);
   });
@@ -332,16 +328,13 @@ describe('the live status file', () => {
   });
   const gather = async () => EXTRAS;
 
-  it('is written 0600, with ids cut to 8, and holds no session, path, note or full id', async () => {
+  it('is written 0600, with ids cut to 8, and holds no session, path or full id', async () => {
     const path = join(dir, LIVE_STATUS_FILE);
     await writeLiveStatus(
       path,
       liveStatusFrom(
         inputs({
-          report: report([agent(AGENT_A, 'running')], {
-            memory_note: 'unexplained',
-            memory_note_box_bytes: 5_000_000_000,
-          }),
+          report: report([agent(AGENT_A, 'running')]),
         }),
         EXTRAS,
         { startedAt: T0, now: T0, peakAwake: 0 }
@@ -415,7 +408,7 @@ describe('the live status file', () => {
     expect(await readLiveStatus(dir, T0)).toEqual({ kind: 'unreadable', why: 'too large' });
 
     const good = liveStatusFrom(inputs(), EXTRAS, { startedAt: T0, now: T0, peakAwake: 0 });
-    writeFileSync(join(dir, LIVE_STATUS_FILE), JSON.stringify({ ...good, version: 2 }));
+    writeFileSync(join(dir, LIVE_STATUS_FILE), JSON.stringify({ ...good, version: 1 }));
     expect(await readLiveStatus(dir, T0)).toEqual({
       kind: 'unreadable',
       why: 'not the live status shape',
@@ -464,7 +457,6 @@ describe('formatLiveStatus', () => {
     expect(lines).toContain(
       'valve: on cap=12 formula=12 awake=2 peak=3 starting=1 waiting=0 waiting_for_room=0 hosts=- joined=-'
     );
-    expect(lines).toContain('guard: on backstop=0.92 share=0.6 noting=no');
     expect(lines).toContain('conversations: waking=0 awake=0 busy=1 parked=1');
     expect(lines).toContain(
       'controller_process: anon=120MiB optimize_for_size=yes node_options_set=no launcher_mode=no'

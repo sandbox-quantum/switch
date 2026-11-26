@@ -309,14 +309,6 @@ export const statusReportSchema = z.object({
     /** The absolute directory agents' workspaces are made in when nothing else names one. */
     workspaces_dir: z.string().min(1),
     /**
-     * Box only: the memory guard's note while the box is high and no agent's
-     * processes explain it (memory in `/dev/shm`, say). Absent otherwise.
-     */
-    memory_note: z.enum(['unexplained', 'sustained']).optional(),
-    /** Box only: the box's reading and its shared-memory part when the note was made, in bytes. */
-    memory_note_box_bytes: z.number().int().nonnegative().optional(),
-    memory_note_shmem_bytes: z.number().int().nonnegative().optional(),
-    /**
      * Box only: the box valve's isolated hosts connected to the hub, and how
      * many were proved and joined it. Absent where the valve is off.
      */
@@ -343,11 +335,7 @@ export const statusReportSchema = z.object({
     gateway_calls_today: z.number().int().nonnegative().optional(),
     gateway_capped: z.boolean().optional(),
     gateway_daily_cap: z.number().int().min(1).max(1_000_000_000).optional(),
-    /**
-     * Box only, since the controller started: agents the memory guard stopped,
-     * and sessions the box valve parked. Capped.
-     */
-    guard_stops: z.number().int().nonnegative().max(1_000_000).optional(),
+    /** Box only, since the controller started: sessions the box valve parked. Capped. */
     valve_parks: z.number().int().nonnegative().max(1_000_000).optional(),
     /** Box only: `/proc/meminfo`'s `AnonPages` and `Cached`, in bytes. */
     mem_anon_bytes: z.number().int().nonnegative().max(MEMINFO_MAX_BYTES).optional(),

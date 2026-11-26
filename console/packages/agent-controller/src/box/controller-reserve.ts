@@ -10,9 +10,8 @@ export const DEFAULT_CONTROLLER_RESERVE_BYTES = 256 * MIB;
 
 /**
  * Memory kept back for the controller under the pod's limit on a split box:
- * the box valve's memory lines and the memory
- * guard work to the pod limit less this, so agents are parked or stopped
- * before they reach the controller's share. Under gVisor only the pod's limit
+ * the box valve's memory lines work to the pod limit less this, so sessions
+ * are parked before they reach the controller's share. Under gVisor only the pod's limit
  * holds, not the controller container's own.
  *
  * `SWITCH_CONTROLLER_RESERVE_BYTES`, checked at start: a whole number of

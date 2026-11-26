@@ -7,8 +7,8 @@ import { ConfigurationError } from '../errors';
 import type { Logger } from '../log';
 import type { DataLayout } from '../paths';
 import { PROCESS_STATES, type ProcessState, type StatusReport } from '../schemas';
+import { anonymousBytesIn, readBoxMemory } from './box-memory';
 import { EVENT_KINDS, type LiveEvent } from './live-events';
-import { anonymousBytesIn, readBoxMemory } from './memory-guard';
 import { listProcesses, type OwnerMarkers, ProcReader } from './owner-marker';
 
 /**
@@ -31,7 +31,7 @@ export const LIVE_STATUS_DIR_ENV = 'SWITCH_CONTROLLER_LIVE_STATUS_DIR';
 export const IMAGE_DIGEST_ENV = 'SWITCH_IMAGE_DIGEST';
 export const LIVE_STATUS_FILE = 'live-status.json';
 /** The shape's version: operators' scripts refuse one they don't know. */
-export const LIVE_STATUS_VERSION = 1;
+export const LIVE_STATUS_VERSION = 2;
 /** How often, at most, the file is rewritten. */
 export const LIVE_STATUS_EVERY_MS = 10_000;
 /** Older than this, the reader calls it stale: the controller has stopped writing. */
@@ -133,7 +133,6 @@ const agentSchema = z.strictObject({
   desired: z.enum(['running', 'stopped']),
   process: z.enum(PROCESS_STATES).nullable(),
   resting: z.boolean(),
-  out_of_memory: z.boolean(),
   rest_after_ms: count.nullable(),
   on_hub: z.boolean(),
   on_hub_since: time.nullable(),
@@ -141,7 +140,7 @@ const agentSchema = z.strictObject({
   valve_fallback: z.boolean().nullable(),
   sessions_active: count,
   waiting_for_room: count,
-  /** Its processes, by their owner markers; null where the guard (and so the markers) is off. */
+  /** Its processes, by their owner markers; null where the markers are off. */
   claude_processes: count.nullable(),
   host_processes: count.nullable(),
   /** The login copies on the box for it (relay token, provider home and data), never their contents. */
@@ -195,7 +194,7 @@ export const liveStatusSchema = z.strictObject({
   }),
   box: z.strictObject({
     memory_limit_bytes: count.nullable(),
-    /** The guard's own reading of the box (AnonPages + Shmem, or the cgroup's when higher). */
+    /** The box's own reading (AnonPages + Shmem, or the cgroup's when higher), as the valve reads it. */
     memory_bytes: count.nullable(),
     /** `memory_bytes` as a percentage of `memory_limit_bytes`, to one decimal place. */
     memory_percent: z.number().min(0).max(1000).nullable(),
@@ -224,13 +223,6 @@ export const liveStatusSchema = z.strictObject({
      */
     memory: z.enum(['unprotected', 'failing']).nullable(),
   }),
-  guard: z.strictObject({
-    enabled: z.boolean(),
-    backstop: z.number().min(0).max(1).nullable(),
-    share: z.number().min(0).max(1).nullable(),
-    /** Noting memory no agent explains (the note itself goes to Core, not here). */
-    noting: z.boolean(),
-  }),
   /** The launcher link on split boxes (the controller's own user); null until that is built. */
   launcher: z.null(),
   /** The test-box exec exemption; null until that is built. */
@@ -240,7 +232,6 @@ export const liveStatusSchema = z.strictObject({
     desired_stopped: count,
     process: processCounts,
     resting: count,
-    out_of_memory: count,
     on_hub: count,
   }),
   agents: z.array(agentSchema).max(500),
@@ -260,12 +251,13 @@ export type LiveStatusInputs = {
   report: Omit<StatusReport, 'seq'>;
   /** Every assigned agent and what its owner wants. */
   assigned: Array<{ agentId: string; desired: 'running' | 'stopped' }>;
-  restKind: (agentId: string) => 'resting' | 'out_of_memory' | 'waking' | null;
+  restKind: (agentId: string) => 'resting' | 'waking' | null;
   /** Each connected agent host on the hub: since when, and whether it joined the box valve. */
   hubHosts: ReadonlyMap<string, { since: number; onValve: boolean }>;
   valve: BoxValveStatus;
   formulaCap: number | null;
-  guard: { boxLimit: number; backstop: number; share: number } | null;
+  /** The box's memory limit, as the valve takes it; null where none is set. */
+  memoryLimit: number | null;
   restAfterMs: number | null;
   lastSyncAt: number | null;
   imageDigest: string | null;
@@ -347,7 +339,6 @@ export function liveStatusFrom(
       desired,
       process: status?.process ?? null,
       resting: kind === 'resting',
-      out_of_memory: kind === 'out_of_memory',
       rest_after_ms: inputs.restAfterMs,
       on_hub: host !== undefined,
       on_hub_since: iso(host?.since ?? null),
@@ -376,11 +367,11 @@ export function liveStatusFrom(
       launcher_mode: inputs.launcherMode,
     },
     box: {
-      memory_limit_bytes: inputs.guard?.boxLimit ?? null,
+      memory_limit_bytes: inputs.memoryLimit,
       memory_bytes: extras.box?.bytes ?? null,
       memory_percent:
-        extras.box && inputs.guard && inputs.guard.boxLimit > 0
-          ? Math.round((extras.box.bytes / inputs.guard.boxLimit) * 1000) / 10
+        extras.box && inputs.memoryLimit !== null && inputs.memoryLimit > 0
+          ? Math.round((extras.box.bytes / inputs.memoryLimit) * 1000) / 10
           : null,
       shmem_bytes: extras.box?.shmem ?? null,
       claude_processes: inputs.launcherMode ? null : extras.claudeProcesses,
@@ -399,12 +390,6 @@ export function liveStatusFrom(
       hosts_joined: report.machine.valve_hosts_joined ?? null,
       memory: report.machine.valve_memory ?? null,
     },
-    guard: {
-      enabled: inputs.guard !== null,
-      backstop: inputs.guard?.backstop ?? null,
-      share: inputs.guard?.share ?? null,
-      noting: report.machine.memory_note !== undefined,
-    },
     launcher: null,
     exec_exemption: null,
     totals: {
@@ -412,7 +397,6 @@ export function liveStatusFrom(
       desired_stopped: agents.filter((agent) => agent.desired === 'stopped').length,
       process,
       resting: agents.filter((agent) => agent.resting).length,
-      out_of_memory: agents.filter((agent) => agent.out_of_memory).length,
       on_hub: agents.filter((agent) => agent.on_hub).length,
     },
     agents,
@@ -488,9 +472,9 @@ async function loginCopies(
 }
 
 /**
- * Reads the box for the live status: its memory as the guard reads it, its
+ * Reads the box for the live status: its memory as the valve reads it, its
  * Claude and agent host processes (by name and command line, read no further
- * than needed) and, where the guard's owner markers prove whose a process is,
+ * than needed) and, where owner markers prove whose a process is,
  * each agent's share of them; and each agent's login copies, by their times.
  */
 export async function gatherLiveExtras(input: {
@@ -724,7 +708,7 @@ const mib = (bytes: number | null) => (bytes === null ? '-' : `${Math.round(byte
 
 /** One line per reading, each `name: key=value …`, for a person or `grep`. */
 export function formatLiveStatus(status: LiveStatus, ageMs: number, now: number): string {
-  const { controller, box, valve, guard, totals } = status;
+  const { controller, box, valve, totals } = status;
   const process = PROCESS_STATES.map((state) => `${state}=${totals.process[state]}`).join(' ');
   const lastSync =
     controller.last_sync_at === null ? 'never' : seconds(now - Date.parse(controller.last_sync_at));
@@ -735,13 +719,10 @@ export function formatLiveStatus(status: LiveStatus, ageMs: number, now: number)
     valve.enabled
       ? `valve: on cap=${orDash(valve.cap)} formula=${orDash(valve.formula_cap)} awake=${valve.awake} peak=${valve.peak_awake} starting=${valve.starting} waiting=${valve.waiting} waiting_for_room=${valve.waiting_for_room} hosts=${orDash(valve.hosts)} joined=${orDash(valve.hosts_joined)}${valve.memory ? ` memory=${valve.memory}` : ''}`
       : 'valve: off',
-    guard.enabled
-      ? `guard: on backstop=${orDash(guard.backstop)} share=${orDash(guard.share)} noting=${yesNo(guard.noting)}`
-      : 'guard: off',
     `conversations: ${(['waking', 'awake', 'busy', 'parked'] as const)
       .map((state) => `${state}=${status.conversations.filter((c) => c.state === state).length}`)
       .join(' ')}`,
-    `agents: desired_running=${totals.desired_running} desired_stopped=${totals.desired_stopped} ${process} resting=${totals.resting} out_of_memory=${totals.out_of_memory} on_hub=${totals.on_hub}`,
+    `agents: desired_running=${totals.desired_running} desired_stopped=${totals.desired_stopped} ${process} resting=${totals.resting} on_hub=${totals.on_hub}`,
     ...status.agents.map(
       (agent) =>
         `agent ${agent.id}: desired=${agent.desired} process=${orDash(agent.process)} resting=${yesNo(agent.resting)} on_hub=${yesNo(agent.on_hub)} fallback=${agent.valve_fallback === null ? '-' : yesNo(agent.valve_fallback)} sessions=${agent.sessions_active} claude=${orDash(agent.claude_processes)} hosts=${orDash(agent.host_processes)} login_copies=${orDash(agent.login_copies)}`

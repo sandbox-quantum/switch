@@ -80,7 +80,6 @@ function launcher(over: Partial<LauncherDeps> = {}): Launcher {
     },
     probe: async (provider) => ({ status: 'authenticated', message: provider, models: [] }),
     warm: async (agentId, roomId) => void warmed.push([agentId, roomId]),
-    memoryNotice: async () => 3,
     workspacesRoot: join(dir, 'workspaces'),
     dataRoot: join(dir, 'agents'),
     onClosed: () => void closed++,
@@ -245,7 +244,7 @@ describe('Launcher', () => {
     expect(sent).toContainEqual({ kind: 'reply', id: 3, ok: false, code: 'bad_directory' });
   });
 
-  it('warms a room and passes on the memory line through the host, only for an agent it launched', async () => {
+  it('warms a room through the host, only for an agent it launched', async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine({ kind: 'warm', id: 1, agentId: X, roomId: '!r:x' })));
     await answered(1);
@@ -255,13 +254,9 @@ describe('Launcher', () => {
     await settle();
     sent = [];
     l.feed(Buffer.from(encodeLine({ kind: 'warm', id: 3, agentId: X, roomId: '!r:x' })));
-    l.feed(Buffer.from(encodeLine({ kind: 'memory_notice', id: 4, agentId: X })));
-    await answered(3, 4);
+    await answered(3);
     expect(warmed).toEqual([[X, '!r:x']]);
-    expect(sent).toEqual([
-      { kind: 'reply', id: 3, ok: true },
-      { kind: 'reply', id: 4, ok: true, told: 3 },
-    ]);
+    expect(sent).toEqual([{ kind: 'reply', id: 3, ok: true }]);
   });
 
   it('refuses a bad template, and logs an order it cannot read by code only', async () => {
@@ -299,7 +294,7 @@ describe('Launcher', () => {
     ]);
   });
 
-  it("ends X's tree, its Y-marked tool included, and never Y's host (C8a); freeze spares the host", async () => {
+  it("ends X's tree, its Y-marked tool included, and never Y's host (C8a)", async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1)) + encodeLine(launchOrder(Y, MY, 2))));
     await replied(1);
@@ -308,11 +303,8 @@ describe('Launcher', () => {
     process(12, 10, 120, MY, 'sneaky', 1);
     process(20, 1, 105, MY, `node bundle.mjs ${root(Y)}`, 1);
     sent = [];
-    l.feed(Buffer.from(encodeLine({ kind: 'freeze', id: 7, agentId: X })));
-    await replied(7);
-    expect(signals).toEqual([[12, 'SIGSTOP']]);
     signals = [];
-    l.feed(Buffer.from(encodeLine({ kind: 'end', id: 8, agentId: X })));
+    l.feed(Buffer.from(encodeLine({ kind: 'sweep', id: 8, agentId: X })));
     await replied(8);
     expect(
       signals
@@ -349,11 +341,13 @@ describe('Launcher: spawn and file safety', () => {
     await answered(1);
     process(10, 1, 100, MX, `node bundle.mjs ${root(X)} --watch`, 1); // the spawned host
     process(11, 10, 110, MX, 'tool', 1);
-    signals = [];
-    l.feed(Buffer.from(encodeLine({ kind: 'freeze', id: 2, agentId: X })));
-    await answered(2);
-    // The host is spared; the impostor (disputed, X's marker) and the tool are frozen.
-    expect(signals.map(([pid]) => pid).sort((a, b) => a - b)).toEqual([5, 11]);
+    sent = [];
+    await l.measure();
+    // The spawned host's tree is X's own; only the impostor (X's marker, outside it) is disputed.
+    expect(sent.at(-1)).toMatchObject({
+      kind: 'measure',
+      agents: { [X]: { bytes: 3 * 1024, processes: 3, disputedBytes: 1024 } },
+    });
   });
 
   it('never takes a reused pid for the host: the first sighting must be this launcher’s own child', async () => {
@@ -361,11 +355,13 @@ describe('Launcher: spawn and file safety', () => {
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1))));
     await answered(1);
     process(10, 7, 100, MX, 'not ours', 1); // pid 10, but its parent isn't the launcher
-    signals = [];
-    l.feed(Buffer.from(encodeLine({ kind: 'freeze', id: 2, agentId: X })));
-    await answered(2);
-    // Not the host, so not spared: frozen as a disputed process with X's marker.
-    expect(signals).toEqual([[10, 'SIGSTOP']]);
+    sent = [];
+    await l.measure();
+    // Not the host: counted only as a disputed process with X's marker.
+    expect(sent.at(-1)).toMatchObject({
+      kind: 'measure',
+      agents: { [X]: { bytes: 1024, processes: 1, disputedBytes: 1024 } },
+    });
   });
 
   it('ends a stranger seen in two scans in a row, counts its bytes to the box, and says so once', async () => {

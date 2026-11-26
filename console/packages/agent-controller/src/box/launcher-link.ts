@@ -104,7 +104,7 @@ export class LauncherLink {
     };
   }
 
-  /** Sets what the link tells, for an owner made after it (the controller's valve and guard). */
+  /** Sets what the link tells, for an owner made after it (the controller's valve). */
   listenTo(handlers: LinkHandlers): void {
     this.handlers = { ...this.handlers, ...handlers };
   }

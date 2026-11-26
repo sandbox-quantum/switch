@@ -18,7 +18,6 @@ export const EVENT_KINDS = [
   'parked_for_cap',
   'parked_for_memory',
   'starts_refused',
-  'guard_stopped',
   'could_not_tell_room',
   'host_failed_too_often',
   'waited',
@@ -90,7 +89,6 @@ export const EVENT_RULES: readonly Rule[] = [
       count: Math.min(Number(found[2]), 1_000_000),
     }),
   },
-  { kind: 'guard_stopped', match: /^Memory guard stopped an agent/, read: fromFields },
   { kind: 'could_not_tell_room', match: /^Could not tell (the|a) room/, read: fromFields },
   {
     kind: 'host_failed_too_often',

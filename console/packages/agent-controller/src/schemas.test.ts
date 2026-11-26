@@ -243,9 +243,6 @@ describe('status report', () => {
     const machine = {
       ...report.machine,
       disk_scope: 'workspace',
-      memory_note: 'unexplained',
-      memory_note_box_bytes: 1,
-      memory_note_shmem_bytes: 1,
       valve_hosts: 2,
       valve_hosts_joined: 1,
       valve_memory: 'failing',
@@ -255,7 +252,6 @@ describe('status report', () => {
       gateway_calls_today: 3,
       gateway_capped: false,
       gateway_daily_cap: 100,
-      guard_stops: 0,
       valve_parks: 0,
       mem_anon_bytes: 1024,
       mem_cached_bytes: 2048,
@@ -272,7 +268,7 @@ describe('status report', () => {
       { gateway_daily_cap: 0 },
       { mem_anon_bytes: 2 ** 51 },
       { valve_memory: 'fine' },
-      { guard_stops: 1_000_001 },
+      { valve_parks: 1_000_001 },
     ])
       expect(
         statusReportSchema.safeParse({ ...report, machine: { ...machine, ...bad } }).success

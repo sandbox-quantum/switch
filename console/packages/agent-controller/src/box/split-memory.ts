@@ -1,4 +1,4 @@
-import { type BoxReading, readBoxMemory } from './memory-guard';
+import { type BoxReading, readBoxMemory } from './box-memory';
 
 /**
  * The box's memory on a split box, from `/proc/meminfo` only.

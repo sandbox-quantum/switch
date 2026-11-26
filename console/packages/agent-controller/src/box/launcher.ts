@@ -4,6 +4,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { sharedConfigSchema } from '@switch-console/agent-providers';
 import { relayCredentialsBody, writeAtomic } from '../runtime';
 import type { AgentObservation, AgentRunner } from '../runtime';
+import { anonymousBytesIn } from './box-memory';
 import { FirstSight, OPERATOR, type SeenProcess } from './first-sight';
 import {
   encodeLine,
@@ -15,7 +16,6 @@ import {
   type ReplyCode,
   type LineRefusal,
 } from './launcher-protocol';
-import { anonymousBytesIn } from './memory-guard';
 import {
   listProcesses,
   MarkerTable,
@@ -97,8 +97,6 @@ export type LauncherDeps = {
   probe: (provider: string, binaryPath: string, env: Record<string, string>) => Promise<unknown>;
   /** Asks a host to start a room's session early, over its control port (`warmOverControlPort`). */
   warm: (agentId: string, roomId: string) => Promise<void>;
-  /** Asks a host to tell its rooms the guard is stopping it; how many it told (`stopForMemoryOverControlPort`). */
-  memoryNotice: (agentId: string) => Promise<number>;
   /** The workspaces folder: a launch's `directory` is made only inside it. */
   workspacesRoot?: string;
   /** The agents' data folder: a launch's `directory` may also be an existing one inside it. */
@@ -299,7 +297,7 @@ export class Launcher {
     this.deps.log('host_ended', { agentId, reason });
     this.running.delete(agentId);
     await this.runner.stop(agentId, { wait: false, asked: false }).catch(() => {});
-    await this.signalAgent({ kind: 'end', id: 0, agentId }).catch(() => {});
+    await this.signalAgent({ kind: 'sweep', id: 0, agentId }).catch(() => {});
     this.hostExited(agentId, reason);
   }
 
@@ -404,20 +402,6 @@ export class Launcher {
             return this.reply(order.id, false, 'unknown_agent');
           await this.deps.warm(order.agentId, order.roomId);
           return this.reply(order.id, true);
-        case 'memory_notice': {
-          if (!this.launches.has(order.agentId))
-            return this.reply(order.id, false, 'unknown_agent');
-          const told = await this.deps.memoryNotice(order.agentId);
-          return this.report({
-            kind: 'reply',
-            id: order.id,
-            ok: true,
-            told: Math.max(0, Math.min(told, 1_000_000)),
-          });
-        }
-        case 'freeze':
-        case 'thaw':
-        case 'end':
         case 'sweep':
           return this.report({
             kind: 'reply',
@@ -436,30 +420,19 @@ export class Launcher {
   }
 
   /**
-   * The memory guard's and resting's steps, for one agent, on what first sight
-   * says is its (C8a): `freeze` stops all but its host, `thaw` resumes, `end`
-   * and `sweep` stop then kill, in rounds, until none is left.
+   * Ends one agent's processes, on what first sight says is its (C8a): stop
+   * then kill, in rounds, until none is left. Resting's sweep, and a host that
+   * failed a check.
    */
-  private async signalAgent(
-    order: Extract<LauncherOrder, { kind: 'freeze' | 'thaw' | 'end' | 'sweep' }>
-  ) {
+  private async signalAgent(order: Extract<LauncherOrder, { kind: 'sweep' }>) {
     const counts = { signalled: 0, gone: 0, notProven: 0, disputed: 0, left: 0 };
-    const host = this.hostOf(order.agentId, await this.scan());
-    const rounds = order.kind === 'end' || order.kind === 'sweep' ? END_ROUNDS : 1;
-    for (let round = 0; round < rounds; round++) {
+    for (let round = 0; round < END_ROUNDS; round++) {
       const scan = await this.scan();
-      const targets = this.sight
-        .toEnd(scan, order.agentId)
-        .filter((entry) => !(order.kind === 'freeze' && host && entry.pid === host.pid));
+      const targets = this.sight.toEnd(scan, order.agentId);
       if (targets.length === 0) break;
       for (const entry of targets) {
         if (this.sight.attribute(entry).disputed) counts.disputed++;
-        const signals: NodeJS.Signals[] =
-          order.kind === 'freeze'
-            ? ['SIGSTOP']
-            : order.kind === 'thaw'
-              ? ['SIGCONT']
-              : ['SIGSTOP', 'SIGKILL'];
+        const signals: NodeJS.Signals[] = ['SIGSTOP', 'SIGKILL'];
         for (const name of signals) {
           // Signal only the process that was scanned: same pid and start time, read again just before.
           if (!(await this.stillSame(entry))) {
@@ -476,8 +449,7 @@ export class Launcher {
         }
       }
     }
-    if (order.kind === 'end' || order.kind === 'sweep')
-      counts.left = this.sight.toEnd(await this.scan(), order.agentId).length;
+    counts.left = this.sight.toEnd(await this.scan(), order.agentId).length;
     return counts;
   }
 

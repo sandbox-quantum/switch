@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { pushTicketUntilTaken, stopForMemoryOverControlPort } from './control-port-box';
+import { pushTicketUntilTaken } from './control-port-box';
 
 const TOKEN = 'a-control-token-of-enough-length';
 /** The host's confirmation of a ticket: 64 hex, as the control client checks. */
@@ -25,8 +25,7 @@ beforeEach(async () => {
       if (message.token === TOKEN) socket.write(`${JSON.stringify({ authenticated: true })}\n`);
       else {
         received.push(message);
-        const value =
-          'stopForMemory' in message ? 2 : 'hubTicket' in message ? TAKEN_MAC : 'session-1';
+        const value = 'hubTicket' in message ? TAKEN_MAC : 'session-1';
         socket.write(`${JSON.stringify({ id: message.id, ok: true, value })}\n`);
       }
     });
@@ -44,12 +43,6 @@ function controlFile(content: unknown): string {
   writeFileSync(path, JSON.stringify(content));
   return path;
 }
-
-it('asks the agent host to tell its rooms of a memory guard stop, and reads how many it told', async () => {
-  const { port } = server.address() as { port: number };
-  expect(await stopForMemoryOverControlPort(controlFile({ port, token: TOKEN }))).toBe(2);
-  expect(received).toEqual([{ id: 0, stopForMemory: true }]);
-});
 
 function serverPort(): number {
   return (server.address() as { port: number }).port;

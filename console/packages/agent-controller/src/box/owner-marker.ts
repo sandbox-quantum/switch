@@ -265,8 +265,8 @@ const LINE_FEED = 0x0a;
  * up as it goes, never as one whole-file string.
  *
  * `readFile` on a `/proc` file (whose size reads as 0) allocates fresh,
- * growing native buffers on every read. The guard reads four files a process
- * every 2 s, and glibc kept that churn: the controller sat at 276-300 MB on
+ * growing native buffers on every read. A split box's launcher reads several
+ * files a process every 2 s, and glibc kept that churn: the controller sat at 276-300 MB on
  * the 27 Oct boxes against about 90 MB with one reused buffer.
  *
  * One reader per scan, never shared by two at once: what `read` returns is a
@@ -274,7 +274,7 @@ const LINE_FEED = 0x0a;
  */
 export class ProcReader {
   private buffer: Buffer;
-  /** The process whose file was the largest read since the last `settle()`: for the guard's slow-tick log. */
+  /** The process whose file was the largest read since the last `settle()`: for a slow scan's log. */
   private biggest: { pid: number | null; bytes: number } | null = null;
 
   constructor(private readonly startBytes = READER_START) {
