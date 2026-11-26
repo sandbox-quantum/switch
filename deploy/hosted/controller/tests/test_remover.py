@@ -232,3 +232,19 @@ def test_the_cluster_lets_the_remover_delete_only_a_listed_box_namespace():
         "name: box-removals\n    namespace: switch-hosted\n    parameterNotFoundAction: Deny" in b
     )
     assert json.dumps(b).count("Deny") == 2
+
+
+@pytest.mark.parametrize("status", [403, 500])
+def test_the_kube_client_raises_on_a_removals_read_it_cant_trust(status):
+    """Only a list not made yet (404) reads as empty. Any other error raises, so the pass fails loudly (logged as a
+    failed pass) and nothing is deleted, rather than quietly working from an empty list."""
+    from switch_hosted_controller import remover_main
+
+    api = object.__new__(remover_main.RemoverKubeApi)
+
+    def call(method: str, path: str) -> Any:
+        raise HTTPError("u", status, "x", None, io.BytesIO(b"{}"))  # type: ignore[arg-type]
+
+    api._call = call  # type: ignore[method-assign]
+    with pytest.raises(HTTPError):
+        api.removals()
