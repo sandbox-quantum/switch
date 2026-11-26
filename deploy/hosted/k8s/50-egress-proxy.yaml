@@ -189,6 +189,8 @@ spec:
           - configMap:
               name: squid-boxes
               optional: true
+          - configMap:
+              name: squid-denylist
       - name: passwd
         secret:
           defaultMode: 288
@@ -349,7 +351,8 @@ data:
     # Each request's box, host, outcome and bytes, for the network reporter beside squid, which follows this file, sums
     # it per box every minute, sends Core one report, and keeps the file short (network_report.py). Flushed per line.
     buffered_logs off
-    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st
+    # The last field is `yes` for a request the host deny list refused (`_deny.conf`), `-` otherwise.
+    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st %{switch_denylisted}note
     access_log stdio:/var/log/squid/box.log logformat=switch_box
     cache_log /var/log/squid/cache.log
     pinger_enable off   # the ICMP pinger needs NET_RAW, which this pod rightly lacks
@@ -372,6 +375,35 @@ metadata:
     app: squid
   name: squid-boxes-base
   namespace: egress-proxy
+---
+# The host deny list, for every box: hosts and addresses no box may reach, whatever its own list or the open web
+# allows. Mounted beside the box files, so squid's reload wrapper applies a change within seconds, after a clean
+# `squid -k parse`; `_deny.conf` sorts before every box's file, so it comes first. Change the two lists here (a
+# reviewed change, applied with the rest), not with `kubectl edit`, which the next apply would undo.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: squid
+  name: squid-denylist
+  namespace: egress-proxy
+data:
+  # Checked after the box's login, so the refusal is counted for the box: squid tags it (`switch_denylisted`), the
+  # network reporter counts it per box, and Core logs it as `denylisted` in the box's network line.
+  _deny.conf: |
+    acl switch_denied_host dstdomain -n "/etc/squid/boxes/_deny.hosts"
+    acl switch_denied_ip dst "/etc/squid/boxes/_deny.ips"
+    acl switch_box_login proxy_auth REQUIRED
+    note switch_denylisted yes switch_denied_host
+    note switch_denylisted yes switch_denied_ip
+    http_access deny switch_box_login switch_denied_host
+    http_access deny switch_box_login switch_denied_ip
+  # One host per line: `example.com` is that host only, `.example.com` it and every subdomain.
+  _deny.hosts: |
+    # (none yet)
+  # One address or range per line, e.g. 203.0.113.7 or 198.51.100.0/24.
+  _deny.ips: |
+    # (none yet)
 ---
 apiVersion: v1
 data:

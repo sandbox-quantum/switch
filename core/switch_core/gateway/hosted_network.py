@@ -62,6 +62,8 @@ class HostTotals(BaseModel):
     denied: int = COUNT
     bytes_up: int = COUNT
     bytes_down: int = COUNT
+    # Refused by the host deny list (counted in `denied` too); 0 from an older reporter.
+    denylisted: int = Field(default=0, ge=0, le=1 << 50)
 
 
 class BoxNetwork(BaseModel):
@@ -72,6 +74,7 @@ class BoxNetwork(BaseModel):
     denied: int = COUNT
     bytes_up: int = COUNT
     bytes_down: int = COUNT
+    denylisted: int = Field(default=0, ge=0, le=1 << 50)
     # Every host the box reached in the window, the controller's login and
     # the agents' together; `hosts` names the busiest of them.
     distinct_hosts: int = COUNT
@@ -154,6 +157,7 @@ async def report(
                 "window_seconds": body.window_seconds,
                 "requests": box.requests,
                 "denied": box.denied,
+                "denylisted": box.denylisted,
                 "bytes_up": box.bytes_up,
                 "bytes_down": box.bytes_down,
                 "distinct_hosts": box.distinct_hosts,

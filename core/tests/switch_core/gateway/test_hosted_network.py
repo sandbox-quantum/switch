@@ -69,6 +69,7 @@ def _box(squid_id: str, **totals) -> dict:
         "box": squid_id,
         "requests": 3,
         "denied": 1,
+        "denylisted": 1,
         "bytes_up": 1200,
         "bytes_down": 50_000,
         "distinct_hosts": 25,
@@ -129,6 +130,7 @@ async def test_one_line_per_box_names_its_machine_owner_and_busiest_hosts(
         assert details["box"] == squid_id
         assert event["target_type"] == "cloud_machine"
         assert details["distinct_hosts"] == 25 and details["other_hosts"] == 23
+        assert details["denylisted"] == 1
         assert [h["host"] for h in json.loads(details["hosts"])] == [
             "h-0000aaaa",
             "h-0000bbbb",

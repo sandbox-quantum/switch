@@ -15,9 +15,10 @@ No hostname leaves this process, not even hashed: a host is named in the report 
 digits) this process gives it the first time it sees it and keeps only in memory (`HostIds`), so the same host keeps
 its id while this process runs and gets a new one after a restart. Another squid replica's reporter has its own ids.
 
-squid's line (`switch_box`): `<epoch> <login> <squid status>/<http status> <host> <port> <bytes up> <bytes down>`.
-A refusal is squid's `TCP_DENIED` other than a 407: a 407 asks the client for its proxy login, which it then sends. A box's agents
-log in as `box-<id>` and its controller as `box-<id>-ctl` (`egress_lists.BoxEgress`); both count for the box. A line
+squid's line (`switch_box`): `<epoch> <login> <squid status>/<http status> <host> <port> <bytes up> <bytes down>
+<denylisted>`. A refusal is squid's `TCP_DENIED` other than a 407: a 407 asks the client for its proxy login, which it
+then sends. The last field is `yes` when the host deny list refused it (a line without that field, from an older squid
+config, reads as not). A box's agents log in as `box-<id>` and its controller as `box-<id>-ctl` (`egress_lists.BoxEgress`); both count for the box. A line
 without a box login (refused before any box's rule) is counted as unattributed.
 
 If Core can't be reached, the window's sums are kept and merged into the next one, and older ones beyond that are
@@ -77,12 +78,15 @@ class Totals:
     denied: int = 0
     bytes_up: int = 0
     bytes_down: int = 0
+    # Refused by the host deny list (counted in `denied` too).
+    denylisted: int = 0
 
     def add(self, other: Totals) -> None:
         self.requests += other.requests
         self.denied += other.denied
         self.bytes_up += other.bytes_up
         self.bytes_down += other.bytes_down
+        self.denylisted += other.denylisted
 
 
 @dataclass
@@ -114,9 +118,11 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
     """(box id or None, host:port, one request's totals) from one `switch_box` line; None for a line that isn't
     one."""
     parts = line.split()
-    if len(parts) != 7:
+    if len(parts) == 7:
+        parts.append("-")
+    if len(parts) != 8:
         return None
-    _, login, status, host, port, up, down = parts
+    _, login, status, host, port, up, down, listed = parts
     try:
         bytes_up, bytes_down = int(up), int(down)
     except ValueError:
@@ -129,7 +135,13 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
     return (
         matched.group(1) if matched else None,
         f"{host}:{port}",
-        Totals(1, 1 if denied else 0, max(bytes_up, 0), max(bytes_down, 0)),
+        Totals(
+            1,
+            1 if denied else 0,
+            max(bytes_up, 0),
+            max(bytes_down, 0),
+            1 if listed == "yes" else 0,
+        ),
     )
 
 

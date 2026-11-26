@@ -146,3 +146,18 @@ def test_a_proxy_login_challenge_is_not_a_refusal() -> None:
     _, _, refused = parse(line(f"box-{BOX}", "github.com", status="TCP_DENIED/403"))
     _, _, older = parse(line(f"box-{BOX}", "github.com", status="TCP_DENIED"))
     assert (challenge.denied, refused.denied, older.denied) == (0, 1, 1)
+
+
+def test_a_deny_list_refusal_is_counted_for_its_box_and_host() -> None:
+    agg = Aggregator()
+    ids = HostIds()
+    agg.add_line(
+        line(f"box-{BOX}", "blocked.example", status="TCP_DENIED/403", up=0, down=0) + " yes"
+    )
+    agg.add_line(line(f"box-{BOX}", "github.com") + " -")
+    agg.add_line(line(f"box-{BOX}", "github.com"))  # an older squid config, without the field
+    [box] = report_body(agg.take(), 60, 0, ids)["boxes"]
+    assert (box["requests"], box["denied"], box["denylisted"]) == (3, 1, 1)
+    by_host = {h["host"]: h for h in box["hosts"]}
+    assert by_host[ids.of("blocked.example:443")]["denylisted"] == 1
+    assert by_host[ids.of("github.com:443")]["denylisted"] == 0

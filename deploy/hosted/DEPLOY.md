@@ -151,6 +151,15 @@ login is refused them, so every AI call goes through the controller's gateway an
 `false` to go back to the per-box allow-lists (`egress-settings`' parts), which are still read and checked either
 way.
 
+**The host deny list (`squid-denylist`, in `50-egress-proxy.yaml`).** Hosts (`_deny.hosts`: `example.com` for that
+host, `.example.com` with its subdomains) and addresses or ranges (`_deny.ips`) no box may reach, whatever its own
+list or the open web allows. squid checks it after a box's login and before any box's own rules, refuses with a 403,
+and tags the refusal; the network reporter counts it per box (`denylisted`, by the host's random id), and the
+monitor "a hosted box asked for a deny-listed host" alerts on any. It ships empty. Change it in the filled files and
+apply it, a reviewed change like the rest: a `kubectl edit` is undone by the next apply. squid applies a change within
+seconds, after a clean `squid -k parse`, as it does box files; a list that fails the parse is kept out, with squid's
+`squid-reload: WARN` line.
+
 **How fast a box gets egress.** egress-lists reads the box map and settings every 3 s and rewrites squid's files
 when they change. squid's wrapper checks its mounted files every 2 s: logins apply at once (a removed box loses its
 login within seconds, as squid re-checks a login every 10 s), and box files go live only after a clean
