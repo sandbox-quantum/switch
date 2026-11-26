@@ -118,10 +118,6 @@
                   "value": "1"
                 },
                 {
-                  "name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS",
-                  "value": "500"
-                },
-                {
                   "name": "SWITCH_CONTROLLER_RESERVE_BYTES",
                   "value": "268435456"
                 },
@@ -572,10 +568,6 @@
                   {
                     "name": "SWITCH_CONTROLLER_PROVIDER_GATEWAY",
                     "value": "1"
-                  },
-                  {
-                    "name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS",
-                    "value": "500"
                   },
                   {
                     "name": "SWITCH_CONTROLLER_RESERVE_BYTES",

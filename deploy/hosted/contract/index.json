@@ -26,7 +26,7 @@
     },
     {
       "path": "admission/bad/evict-another-pod.json",
-      "sha256": "b6c8f2643f5a281f83f11f307bac04a3002f25e7a42a9e55a499804dff54c3e4"
+      "sha256": "db7dc43f173a7c2f58e1368be7b2c1e364bd876898f21078baa2dd6fece94611"
     },
     {
       "path": "admission/bad/gvisor-a-class-outside-the-box-namespaces.json",
@@ -126,75 +126,75 @@
     },
     {
       "path": "admission/bad/p4-a-capability-added.json",
-      "sha256": "be44ab62f6235cd3319904a6ff202459ffdd7f5341109c0b64a57e077c731414"
+      "sha256": "e7c6d31eab51fc1ccd8d85b122ed02d4efd2059f477e46287e914c37256d1bda"
     },
     {
       "path": "admission/bad/p4-a-container-renamed.json",
-      "sha256": "3e9c25a127f6e3ca81672048ea2462f33a5d59983692281dbd44f96bfff7841b"
+      "sha256": "0d6cf83c86f1c747c76d8c2b6ee837521d6e8b46a6b17b6ea98fc659ac997106"
     },
     {
       "path": "admission/bad/p4-a-writable-root.json",
-      "sha256": "74b6d0e828fe71a0bdeba4a49894fa77546d1517bc45c60f2edf4a395a77ac01"
+      "sha256": "2e7e28a81059c4203b7a206f6555befc7651a4bf054be3fcc35604d115e148a2"
     },
     {
       "path": "admission/bad/p4-an-extra-volume.json",
-      "sha256": "f3622585fdf3692634ed075235fa27293a461e9b8bd7db370eb21cd438443375"
+      "sha256": "0a075858c4104ca72beb6f1905de884f8f0d492a4fc12b168cb86bb0446d9e24"
     },
     {
       "path": "admission/bad/p4-an-image-not-allowed.json",
-      "sha256": "fcddf287c0aaaf8a5b77c0ebe27916c19cef2f282c569c18a62fa592e26c9299"
+      "sha256": "4a5e7752a92ab67f87a09ebfec6117dfbf880ce4394be905d6a68f7e13b08fbc"
     },
     {
       "path": "admission/bad/p4-another-controller-command.json",
-      "sha256": "ba6c1a4977cfcf981ad7a63a5a06c05ae06d21a99937fe5ef1a7d7c0b9e2e287"
+      "sha256": "de423b36ef8b1283552f7508610cce700a1f97fda3f23287fee51dca7bfedd18"
     },
     {
       "path": "admission/bad/p4-another-service-name.json",
-      "sha256": "3d48918d5f1139c9dd3400cc0771e0616f01cf4dc5edd2c1490856dcf1a90f62"
+      "sha256": "8cf9fdeb01bf426e02c319cc9a2a7714e6b33b1d95211f4700623d21b2a358f0"
     },
     {
       "path": "admission/bad/p4-another-zone.json",
-      "sha256": "795cfc58f7e60edefa27096343a99d48621243044e30fbbe7b786c4f0499f6e1"
+      "sha256": "1fd8ae47c99cfe849e96e83faface886da77882d0bc1ae46122f6836422f5d2f"
     },
     {
       "path": "admission/bad/p4-env-from-a-configmap.json",
-      "sha256": "494ca55a835367667f50d262b1a5852a1c93f7181356f0b35dbb8a646439134f"
+      "sha256": "2e9c043ad053159a11dd364fb612d4d239bcb071c959fc69cecf3f9a535a9209"
     },
     {
       "path": "admission/bad/p4-host-network.json",
-      "sha256": "349ec7ebd7ef2ad20674d4a1f2f3a96ff098be32f22a13f825da29bd5f0da8ac"
+      "sha256": "6779442dcca6fc989d56dd74240613b1b55c8b79df2c77106ab48de7558154c2"
     },
     {
       "path": "admission/bad/p4-made-running.json",
-      "sha256": "1b35693211b68e3ece9ece68554237aa979da2b8c815cdbed91e3e97b42a47fc"
+      "sha256": "97d66b36f40734dfded30be10720288a15c7df3c4e0572200a4c5832368a5b2e"
     },
     {
       "path": "admission/bad/p4-not-a-tier.json",
-      "sha256": "d67e114ed0908ad236f825cc3e231ca8b5eeda235bc01406ec7e0db83b1e8f20"
+      "sha256": "4987fd0314144a3d7f98f6202cff85d57267473d895854fe6c297e42b7013665"
     },
     {
       "path": "admission/bad/p4-not-gvisor.json",
-      "sha256": "a5ebafd6d409d971ee7189d3421e0f3b1272952238e7c396828411de9a779cdc"
+      "sha256": "10f5dbacb0fb500f28b676545d84d127f230e34f29344de16cb8435ec3c31554"
     },
     {
       "path": "admission/bad/p4-privilege-escalation.json",
-      "sha256": "9061d9a28601a9f1880a53441f461bc8924dc9d6726e8dd3f1762e43320ab9af"
+      "sha256": "1664f14d24f376bb9332d0fe858df6c1c85da87c88b7e1654749feb5dedc7ef0"
     },
     {
       "path": "admission/bad/p4-privileged.json",
-      "sha256": "d493b93db4237d739ceb480cbeada6995e4e5d8881619419f9ccd178a67e1adf"
+      "sha256": "1f9f39f2f6548ebf4311b04a641bae96486bdb8305804e9879279f5ca3c717f2"
     },
     {
       "path": "admission/bad/p4-root-allowed.json",
-      "sha256": "43bf9cb0a8c5344e77a8600f1998043514a2dd280be88979e2a47e85b9602ae5"
+      "sha256": "62861572e6884f7eb40c9b00b5941e5c0cd828a440d08e6a12e0ff3d8947c754"
     },
     {
       "path": "admission/bad/p4-starter-another-command.json",
-      "sha256": "0ccc0a3e2dfd110dd7f3a4134e0377ed678f165bfe3c54e6393ec5bb83994d00"
+      "sha256": "8a7ca931d20e748989db6855804b31157091591a6486e6938c2440260c6263ed"
     },
     {
       "path": "admission/bad/p4-the-agents-disk-in-the-controller.json",
-      "sha256": "3a2a80db4f720ef55787540929516a968def2d76344aa00014dc35908cfbed4c"
+      "sha256": "18bd047ea44e03bab8859bf151f2d03be94007a2f88805ef372ae121582cc4b8"
     },
     {
       "path": "admission/bad/p5-box-map-deleted.json",
@@ -250,19 +250,19 @@
     },
     {
       "path": "admission/bad/p7-a-write-in-an-unlabelled-namespace.json",
-      "sha256": "012528c08972fc5b00c5195567f63b511934c3ab21c2b7b23826d278c1a18017"
+      "sha256": "4d26651901b611c487a3008068def8f0e12bb85029c733b7739ddae509912717"
     },
     {
       "path": "admission/bad/p7-enrolment-secret-another-key.json",
-      "sha256": "63854c898c0812d955dbc362e72c502b568e66a4583080bbaa82ff325a87c4b3"
+      "sha256": "97940df3261544645f24171bf0a7107550a4c0cea13b8ce8e7d479241734d65e"
     },
     {
       "path": "admission/bad/p7-generator-in-an-unlabelled-namespace.json",
-      "sha256": "a655d5ffd1fe41cef6cb57608f7dc69f8e7f6b4f09538d15d345f7d04902d6ca"
+      "sha256": "ba5ca59dab0f0ce33d4084d2995ad27ff49b158f0715c87b5a7d6e49122a092c"
     },
     {
       "path": "admission/bad/p7-scale-outside-a-box-namespace.json",
-      "sha256": "e96db35ee215d40e009f563f43887f1719d2a1aa3f216bbfc2d99eba68aeada3"
+      "sha256": "c87b5645247f6d50001ac416e12f8feb007d14fb73a8ac1e3073efee514d76b5"
     },
     {
       "path": "admission/bad/p8-a-finalizer.json",
@@ -366,7 +366,7 @@
     },
     {
       "path": "admission/good/drain-worker-a-box-evicted-post-pod-eviction-box-0.json",
-      "sha256": "179ffbe72d49446d2421e102e0cfb12f81ac25b6ed75f2e865408609e10499a8"
+      "sha256": "e431b91253f8a62781594646c75251ca9994b3283b35ea87d8db4b6be7f11488"
     },
     {
       "path": "admission/good/drain-worker-a-placeholder-made-post-pod-drain-room-contract1.json",
@@ -382,7 +382,7 @@
     },
     {
       "path": "admission/good/egress-lists-a-box-s-proxy-login-written-patch-secret-switch-proxy-login.json",
-      "sha256": "716cce1ade530865d63cc89ce196462a15485f5909e33cde5496ba419d342dd5"
+      "sha256": "e9ee249f82e76ff57cc3430d7ce517402d5ddd686e09deba9932ad1c4905a8b9"
     },
     {
       "path": "admission/good/egress-lists-squid-s-box-files-written-patch-configmap-squid-boxes.json",
@@ -394,7 +394,7 @@
     },
     {
       "path": "admission/good/eviction-watch-a-warning-event-on-a-box-post-event.json",
-      "sha256": "e091306a1481376a6856a4a8b8dded2108f38d3f5a531e65a554fc9bfb57f44b"
+      "sha256": "fe7ce84c2a6b6b77539a9a0449061ca9b109f98e2362d2dfe4b44bbfa97980d0"
     },
     {
       "path": "admission/good/provisioner-a-base-box-box-keyed-post-configmap-claude-managed-settings.json",
@@ -450,7 +450,7 @@
     },
     {
       "path": "admission/good/provisioner-a-base-box-box-keyed-post-statefulset-box.json",
-      "sha256": "106cec7e2f437409906c8d0c6f912ce7f174d2f1bdd086c63f4b5e666d003d89"
+      "sha256": "f4bb3ee5f7fa5747fb82dfa7d24c74acfa3076457b230331b0cc3e69f2bcbea3"
     },
     {
       "path": "admission/good/provisioner-a-base-box-box-keyed-put-secret-box-map.json",
@@ -514,7 +514,7 @@
     },
     {
       "path": "admission/good/provisioner-a-base-box-person-keyed-post-statefulset-box.json",
-      "sha256": "1838b1c4a5e1ad2055681b8907611001b446da60df5c090a9d7af57987a8db93"
+      "sha256": "8fe2e81660e942af61691849739ded1e502e9bb61d1e7f856d73c102c8eb34cf"
     },
     {
       "path": "admission/good/provisioner-a-base-box-person-keyed-put-secret-box-map.json",
@@ -578,7 +578,7 @@
     },
     {
       "path": "admission/good/provisioner-a-max-box-box-keyed-post-statefulset-box.json",
-      "sha256": "b0b313c03a18652430b72bac5ed45a90cd6b28321b4a470c106bb4b621a6e3b7"
+      "sha256": "8efde374afb4135b9991a257fe932dbb4fc25367ef5172c4f3c77b87fb672177"
     },
     {
       "path": "admission/good/provisioner-a-max-box-box-keyed-put-secret-box-map.json",
@@ -642,7 +642,7 @@
     },
     {
       "path": "admission/good/provisioner-a-plus-box-box-keyed-post-statefulset-box.json",
-      "sha256": "fa1dbdeb709a676ce5b5804cf5099d5e24e9522cbb80ca0b706abd03352c9174"
+      "sha256": "88eecf64c4fc4327778374fef938d4582343b3865829ca455a822924c2fcfe7e"
     },
     {
       "path": "admission/good/provisioner-a-plus-box-box-keyed-put-secret-box-map.json",
@@ -702,7 +702,7 @@
     },
     {
       "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-post-statefulset-box.json",
-      "sha256": "e6bae6a1fbdf85ba5b29d7e7ef0c8835c61fcb8f3c804cdc90df41cc83800f79"
+      "sha256": "3e98e01b614697d162e5d83a81f1348553d7c9456c92d3f502a0db839ce645bf"
     },
     {
       "path": "admission/good/provisioner-a-second-warm-pool-box-never-claimed-put-secret-pool-map.json",
@@ -758,7 +758,7 @@
     },
     {
       "path": "admission/good/provisioner-a-warm-pool-box-post-statefulset-box.json",
-      "sha256": "61db158637aea58489b7cab9b70b53857b068321a49d528e5fce2c1cd609846c"
+      "sha256": "beccdc808a883e6e8ab5335e2b380b67c5724e112874fa46de582b9d6e6c53a6"
     },
     {
       "path": "admission/good/provisioner-a-warm-pool-box-put-secret-pool-map.json",
@@ -770,7 +770,7 @@
     },
     {
       "path": "admission/good/provisioner-the-pool-box-bound-to-its-person-post-networkpolicy-agent-egress.json",
-      "sha256": "25b7066913ecb225f6bfc7278a8d6f1ba678133c8c29fe28ebfc1871b3897f12"
+      "sha256": "102345063ab7c271b82a9561abdd8b64262907440d36b3429b6701f9eb8c6a76"
     },
     {
       "path": "admission/good/provisioner-the-pool-box-bound-to-its-person-put-secret-box-map.json",
@@ -790,7 +790,7 @@
     },
     {
       "path": "admission/good/restart-worker-a-box-s-pod-restarted-delete-pod-box-0.json",
-      "sha256": "d239ee443c7d989cc11a2b896a8a10bf2e8105cef36fbf09da6584f677f9b7f3"
+      "sha256": "608df3b7f19220a5759163e629a516d5f725af52ed46d504daeb15ab435c1b9d"
     },
     {
       "path": "admission/good/scaler-a-box-held-without-its-proxy-login-put-configmap-egress-held.json",
@@ -798,19 +798,19 @@
     },
     {
       "path": "admission/good/scaler-a-box-s-enrolment-code-set-patch-secret-switch-enrol.json",
-      "sha256": "c0c4743d3f935cc3770437a6c794efcaf7e6ecc4011ebfc578d70842e398ad82"
+      "sha256": "c50ffa6481564a72fe7eac17f0363deff58b5d0e43fee4e4ba99714f8890a4ab"
     },
     {
       "path": "admission/good/scaler-a-box-started-patch-statefulset-scale-box.json",
-      "sha256": "810ea36bb704bc57f19d8adf9171e937c4f3a0a7449d11b4b9a1fc59b7a1286b"
+      "sha256": "6732aad7a8362487a496adcec52ac5444368ade22d64ddc7dccdb4619fa1e2c9"
     },
     {
       "path": "admission/good/scaler-a-box-stopped-patch-statefulset-scale-box.json",
-      "sha256": "caff509da716bc3b20684fc4b2f099c063ae5d1105a4d99b409a85c80277c019"
+      "sha256": "4bca3088b918ccb1056eb4a49c74c50e40712db963e5ae2a4637567a35170e0c"
     },
     {
       "path": "fills.json",
-      "sha256": "12b0316a1dea36e6dfa087fb60d2301f95b4e9ce71b752b5f285f7ec06c98231"
+      "sha256": "9c4628414929bc16504643b2a3041715bb47c1987ecb39c1351cbe863a9e3b7a"
     },
     {
       "path": "log-lines.json",

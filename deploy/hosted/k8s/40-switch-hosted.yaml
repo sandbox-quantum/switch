@@ -955,7 +955,6 @@ data:
         }
       },
       "ceiling": 20,
-      "daily_calls": __DAILY_CALLS__,
       "default_size": "base",
       "split": true,
       "allowed_images": [

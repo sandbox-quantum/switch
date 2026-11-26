@@ -88,7 +88,6 @@ CLUSTER_VPC_CIDR = "198.51.100.0/22"
 CLUSTER_SERVICE_CIDR = "203.0.113.0/24"
 KUBERNETES_SERVICE_IP = "203.0.113.1"
 ZONE = "xx-example-1a"
-DAILY_CALLS = 500
 PROXY_HOST = "squid.egress-proxy.svc"
 PROXY_PORT = 3128
 STORAGE_CLASS = "gp3"
@@ -143,7 +142,6 @@ def operator_config() -> box_operator.OperatorConfig:
             "zones": [ZONE],
             "sizes": TIERS,
             "ceiling": 20,
-            "daily_calls": DAILY_CALLS,
             "default_size": "base",
             "split": True,
             "allowed_images": [IMAGE["box_previous_1"], IMAGE["box_previous_2"]],
@@ -168,7 +166,6 @@ def fills() -> dict[str, Any]:
         "__CLUSTER_SERVICE_CIDR__": CLUSTER_SERVICE_CIDR,
         "__CLUSTER_VPC_CIDR__": CLUSTER_VPC_CIDR,
         "__CONTROLLER_IMAGE__": IMAGE["controller"],
-        "__DAILY_CALLS__": DAILY_CALLS,
         "__EGRESS_LISTS_IMAGE__": IMAGE["egress_lists"],
         "__PAUSE_IMAGE__": IMAGE["pause"],
         "__PREVIOUS_BOX_IMAGE_1__": IMAGE["box_previous_1"],

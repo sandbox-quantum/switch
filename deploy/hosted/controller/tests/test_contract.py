@@ -144,9 +144,7 @@ def test_the_tiers_are_the_operators_and_the_policys():
     the deployment repository, which then checks its own configuration against `tiers.json`.)"""
     config = (HOSTED / "k8s" / "40-switch-hosted.yaml").read_text()
     raw = json.loads(
-        re.search(r"  config\.json: \|\n(.*?)\n(?=\S|  \S)", config, re.S)
-        .group(1)  # type: ignore[union-attr]
-        .replace("__DAILY_CALLS__", "1")
+        re.search(r"  config\.json: \|\n(.*?)\n(?=\S|  \S)", config, re.S).group(1)  # type: ignore[union-attr]
     )
     for tier, size in contract.TIERS.items():
         assert raw["sizes"][tier] == size

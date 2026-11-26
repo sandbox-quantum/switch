@@ -7,7 +7,6 @@
   "__CLUSTER_SERVICE_CIDR__": "203.0.113.0/24",
   "__CLUSTER_VPC_CIDR__": "198.51.100.0/22",
   "__CONTROLLER_IMAGE__": "registry.example/switch-hosted-controller@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-  "__DAILY_CALLS__": 500,
   "__EGRESS_LISTS_IMAGE__": "registry.example/switch-hosted-controller@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "__PAUSE_IMAGE__": "registry.example/pause@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "__PREVIOUS_BOX_IMAGE_1__": "registry.example/hosted-agents-box@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
