@@ -236,6 +236,7 @@ from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.retention.audit_history import check_purge_function
 from switch_core.retention.erasure import ErasureService, erasure_loop
+from switch_core.retention.health import SweepHealth
 from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
 from switch_core.room_schedules import own_room_schedules
@@ -1714,11 +1715,16 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                     switch_buddy=config.feature_flags[SWITCH_BUDDY],
                 ).run(tenant_ids)
             )
-            data_retention_task = asyncio.create_task(retention_loop(session_factory))
+            sweeps = SweepHealth(time.monotonic)
+            metrics().register_observer(sweeps.readings)
+            data_retention_task = asyncio.create_task(
+                retention_loop(session_factory, sweeps)
+            )
             erasure_task = asyncio.create_task(
                 erasure_loop(
                     session_factory,
                     ErasureService(session_factory, client_lifecycle, collab_lifecycle),
+                    sweeps,
                 )
             )
             # Only when telemetry is on: the chart tells a customer that off

@@ -46,6 +46,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeErrorKind,
     BridgeOperationError,
     ChannelMembers,
     ChannelNotUsable,
@@ -65,6 +66,7 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
+    error_kind_for_status,
 )
 from switch_core.bridges.collaboration.session.renderers import position_action
 from switch_core.bridges.collaboration.session.renderers.slack import (
@@ -570,6 +572,31 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     return "platform_error"
 
 
+# Slack's error codes for each kind `switch.bridge.errors` counts. A code in
+# none of them falls back to the HTTP status Slack answered with.
+_SLACK_RATE_LIMIT_CODES = frozenset({"ratelimited", "rate_limited"})
+_SLACK_GONE_CODES = frozenset({"channel_not_found", "is_archived"})
+_SLACK_OUTAGE_CODES = frozenset(
+    {"internal_error", "fatal_error", "service_unavailable"}
+)
+
+
+def _slack_error_kind(exc: SlackApiError) -> BridgeErrorKind | None:
+    """The kind of Slack's refusal, read from its error code and else from
+    the status; None when neither says (a missing scope, a bad block)."""
+    code = _slack_response_field(exc, "error")
+    if code in _SLACK_AUTH_ERROR_CODES:
+        return "auth"
+    if code in _SLACK_RATE_LIMIT_CODES:
+        return "rate_limited"
+    if code in _SLACK_GONE_CODES:
+        return "not_found"
+    if code in _SLACK_OUTAGE_CODES:
+        return "platform_error"
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return error_kind_for_status(status) if isinstance(status, int) else None
+
+
 def _slack_response_field(exc: SlackApiError, key: str) -> Any:
     """`key` from the body of Slack's refusal, or None when it has no such
     field or no readable body."""
@@ -704,6 +731,12 @@ class SlackAdapter(PlatformAdapter):
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
         if isinstance(exc, SlackApiError):
             return _slack_failure_reason(exc)
+        return None
+
+    @classmethod
+    def classify_error(cls, exc: BaseException) -> BridgeErrorKind | None:
+        if isinstance(exc, SlackApiError):
+            return _slack_error_kind(exc)
         return None
 
     @classmethod

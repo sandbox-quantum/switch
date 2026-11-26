@@ -39,6 +39,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.retention import service as retention_service
+from switch_core.retention.health import RetentionJob, SweepHealth
 from switch_core.retention.service import RetentionService
 from switch_core.tenant_context import tenant_scope
 
@@ -571,6 +572,17 @@ class TestLeftovers:
         assert (result.invitations, result.install_states) == (2, 1)
 
 
+class _RecordedHealth(SweepHealth):
+    """Which jobs a pass recorded as failed."""
+
+    def __init__(self) -> None:
+        super().__init__(lambda: 0.0)
+        self.passes: dict[str, bool] = {}
+
+    def record(self, job: RetentionJob, *, failed: bool) -> None:
+        self.passes[job] = failed
+
+
 class TestPass:
     async def test_a_failing_step_does_not_stop_the_others(
         self,
@@ -590,6 +602,46 @@ class TestPass:
 
         assert result.failed == ("messages",)
         assert result.media == 1
+
+    async def test_each_job_s_pass_is_recorded_failed_or_not(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await _set_policy(session_factory, 30, TENANT_ZERO_ID)
+
+        async def broken(*args: object, **kwargs: object) -> list[str]:
+            raise RuntimeError("deleting messages is broken")
+
+        monkeypatch.setattr(MessageStore, "delete_sent_before", broken)
+        health = _RecordedHealth()
+        await retention_service.retain_once(session_factory, NOW, health)
+
+        assert health.passes == {
+            "messages": True,
+            "media": False,
+            "leftovers": False,
+            "audit_history": False,
+        }
+
+    async def test_a_pass_that_cannot_list_tenants_fails_every_tenant_job(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def broken(*args: object) -> list[str]:
+            raise RuntimeError("the database is away")
+
+        monkeypatch.setattr(retention_service, "all_tenant_ids", broken)
+        health = _RecordedHealth()
+        await retention_service.retain_once(session_factory, NOW, health)
+
+        assert health.passes == {
+            "messages": True,
+            "media": True,
+            "leftovers": True,
+            "audit_history": False,
+        }
 
     async def test_a_pass_out_of_time_stops_after_a_batch_and_says_so(
         self,

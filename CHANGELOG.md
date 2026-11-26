@@ -52,6 +52,19 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **`switch.retention.last_success_age` and `switch.retention.failures`.**
+  Data retention and erasure caught and logged their failures, so a sweep
+  failing every pass looked like one with nothing to do. Each process running
+  the sweeps now reports, by `job` (`messages`, `media`, `leftovers`,
+  `audit_history`, `erasure`), the seconds since the job last completed a pass
+  with no failure, and counts the passes that failed. Read the age with `max`.
+- **`switch.bridge.errors` has a `kind` attribute**: `auth`, `rate_limited`,
+  `not_found`, `network`, `platform_error` or `other`, read from what Slack,
+  Microsoft Teams, Discord, Mattermost and Telegram raise and from HTTP
+  statuses and transport failures on any platform. A revoked token and a rate
+  limit are no longer the same series.
+
 #### Fixed
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login

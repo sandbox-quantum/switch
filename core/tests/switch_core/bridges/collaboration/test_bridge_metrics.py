@@ -16,11 +16,17 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from slack_sdk.errors import SlackApiError
 
+from switch_core.bridges.collaboration.adapter import (
+    RichContentFailed,
+    RichContentThrottled,
+)
 from switch_core.bridges.collaboration.collaboration_core import (
     MEMBERSHIP_EVENTS_AT_ONCE,
     CollaborationCore,
 )
+from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
 BRIDGE_TENANT = "tenant-bridge"
@@ -39,11 +45,19 @@ def _bridge() -> CollaborationCore:
     bridge._bridge_id = "bridge-1"
     bridge._bridge_tenant_id = BRIDGE_TENANT
     bridge._bridge_type = "slack"
+    bridge._adapter = SlackAdapter.__new__(SlackAdapter)
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
     bridge._room_tenants = {}
     bridge._membership_slots = asyncio.Semaphore(MEMBERSHIP_EVENTS_AT_ONCE)
     return bridge
+
+
+def _wrapped(cause: Exception) -> RichContentFailed:
+    try:
+        raise RichContentFailed("not posted", text="hi") from cause
+    except RichContentFailed as error:
+        return error
 
 
 def _event(channel_id: str = "C1") -> SimpleNamespace:
@@ -97,6 +111,7 @@ async def test_a_failing_inbound_handler_is_counted_and_still_raises(
         (
             ("bridge", "collaboration"),
             ("direction", "inbound"),
+            ("kind", "other"),
             ("platform", "slack"),
         ): 1.0
     }
@@ -125,6 +140,7 @@ def test_a_failing_outbound_relay_is_counted_and_still_raises(registry) -> None:
         (
             ("bridge", "collaboration"),
             ("direction", "outbound"),
+            ("kind", "other"),
             ("platform", "slack"),
         ): 1.0
     }
@@ -133,6 +149,56 @@ def test_a_failing_outbound_relay_is_counted_and_still_raises(registry) -> None:
     assert collected["switch.bridge.events_out"] == {
         (("bridge", "collaboration"), ("kind", "media"), ("platform", "slack")): 1.0
     }
+
+
+def _slack_refusal(code: str) -> SlackApiError:
+    return SlackApiError(code, {"ok": False, "error": code})
+
+
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        # The adapter's own wrapper, with Slack's refusal as its cause.
+        (RichContentFailed("not posted", text="hi"), "other"),
+        (_wrapped(_slack_refusal("token_revoked")), "auth"),
+        (_wrapped(_slack_refusal("channel_not_found")), "not_found"),
+        (RichContentThrottled(retry_after=3.0, text="hi"), "rate_limited"),
+        (TimeoutError(), "network"),
+    ],
+)
+def test_a_failing_outbound_relay_says_what_kind_of_error_it_was(
+    registry, error: Exception, kind: str
+) -> None:
+    bridge = _bridge()
+
+    with pytest.raises(type(error)):
+        with bridge._counted_outbound("message"):
+            raise error
+
+    assert _points(registry, "switch.bridge.errors") == {
+        (
+            ("bridge", "collaboration"),
+            ("direction", "outbound"),
+            ("kind", kind),
+            ("platform", "slack"),
+        ): 1.0
+    }
+
+
+async def test_a_failing_inbound_handler_says_what_kind_of_error_it_was(
+    registry,
+) -> None:
+    bridge = _bridge()
+
+    async def _handler(event: object) -> None:
+        raise _slack_refusal("ratelimited")
+
+    with pytest.raises(SlackApiError):
+        await bridge._traced("message", _handler)(_event())
+
+    assert dict(next(iter(_points(registry, "switch.bridge.errors"))))["kind"] == (
+        "rate_limited"
+    )
 
 
 async def test_nothing_is_recorded_when_observability_is_off() -> None:

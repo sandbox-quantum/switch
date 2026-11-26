@@ -85,7 +85,12 @@ async def test_a_failing_operation_is_counted_and_still_raises(
 
     points = _collect(registry)
     assert points["switch.bridge.errors"] == [
-        {"bridge": "agent", "platform": "switch", "direction": "inbound"}
+        {
+            "bridge": "agent",
+            "platform": "switch",
+            "direction": "inbound",
+            "kind": "other",
+        }
     ]
 
 

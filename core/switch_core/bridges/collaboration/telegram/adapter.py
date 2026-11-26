@@ -63,6 +63,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeErrorKind,
     BridgeInstallLink,
     ChannelCreationUnsupported,
     ChannelType,
@@ -682,6 +683,26 @@ class TelegramAdapter(PlatformAdapter):
             return "network"
         if isinstance(exc, TelegramError):
             return "platform_error"
+        return None
+
+    @classmethod
+    def classify_error(cls, exc: BaseException) -> BridgeErrorKind | None:
+        """Telegram answers a bot removed from a chat, or blocked by the
+        person, with 403 `Forbidden`: counted as `auth`, the bot no longer
+        being let in. A chat that no longer exists is a `BadRequest` saying
+        so, the only way it is told apart, and a group upgraded to a
+        supergroup is `ChatMigrated`: the chat addressed is gone. `BadRequest`
+        is a `NetworkError` here, so it is read first."""
+        if isinstance(exc, InvalidToken | Forbidden):
+            return "auth"
+        if isinstance(exc, RetryAfter):
+            return "rate_limited"
+        if isinstance(exc, ChatMigrated):
+            return "not_found"
+        if isinstance(exc, BadRequest):
+            return "not_found" if "chat not found" in str(exc).lower() else None
+        if isinstance(exc, NetworkError):
+            return "network"
         return None
 
     supports_channel_creation: ClassVar[bool] = False

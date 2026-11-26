@@ -20,6 +20,7 @@ from switch_core.bridges.collaboration.collaboration_core import CollaborationCo
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
+from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.observability.catalogue import BRIDGE_CALL_DURATION
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
@@ -58,6 +59,7 @@ class _Bridge:
     def __new__(cls, bridge_type: str):
         core = object.__new__(CollaborationCore)
         core._bridge_type = bridge_type  # type: ignore[attr-defined]
+        core._adapter = SlackAdapter.__new__(SlackAdapter)  # type: ignore[attr-defined]
         return core
 
 

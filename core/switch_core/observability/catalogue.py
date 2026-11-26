@@ -419,10 +419,14 @@ BRIDGE_ERRORS = _spec(
     "switch.bridge.errors",
     "sum",
     "{error}",
-    "Bridge operations that raised, by direction.",
+    "Bridge operations that raised, by direction and `kind`: `auth` (the "
+    "credentials refused, a token revoked), `rate_limited`, `not_found` (the "
+    "channel or chat gone), `network` (unreachable, timed out), "
+    "`platform_error` (a 5xx) or `other`.",
     "bridge",
     "platform",
     "direction",
+    "kind",
 )
 BRIDGES_RUNNING = _spec(
     "switch.bridges.running",
@@ -880,6 +884,32 @@ WORKOS_ORGANIZATION_DELETED = _spec(
 )
 
 
+# ── Data retention and erasure ───────────────────────────────────────────────
+# Reported only by a process running the sweeps (`retention/service.py`,
+# `retention/erasure.py`), from when each loop starts. Every replica runs
+# them, each over every workspace, so read the age with max: the worst
+# replica's is the one that says a sweep is stuck. `job` is `messages`,
+# `media`, `leftovers`, `audit_history` or `erasure`.
+RETENTION_LAST_SUCCESS_AGE = _spec(
+    "switch.retention.last_success_age",
+    "gauge",
+    "s",
+    "Seconds since a data retention or erasure job last completed a pass with "
+    "no failure, by `job`; since the loop started if none has yet. Retention "
+    "passes run hourly and erasure every few seconds, so a reading well past "
+    "that interval is a job that keeps failing.",
+    "job",
+)
+RETENTION_FAILURES = _spec(
+    "switch.retention.failures",
+    "sum",
+    "{run}",
+    "Data retention or erasure passes that failed, by `job`: counted once per "
+    "pass, however many workspaces failed in it. The traceback is in the log.",
+    "job",
+)
+
+
 # ── Health ───────────────────────────────────────────────────────────────────
 # One series per dependency, so a dashboard shows which one broke.
 HEALTH_CHECK = _spec(
@@ -1169,6 +1199,8 @@ CATALOGUE: dict[str, MetricSpec] = {
         WORKOS_RECHECK_OLDEST_AGE,
         WORKOS_FULL_CHECK_AGE,
         WORKOS_ORGANIZATION_DELETED,
+        RETENTION_LAST_SUCCESS_AGE,
+        RETENTION_FAILURES,
         HEALTH_CHECK,
         HOSTED_AGENTS,
         HOSTED_AGENTS_STOPPED,

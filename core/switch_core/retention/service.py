@@ -35,6 +35,12 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.retention.audit_history import purge_deleted_workspace_history
+from switch_core.retention.health import (
+    RETENTION_PASS_JOBS,
+    TENANT_JOBS,
+    RetentionJob,
+    SweepHealth,
+)
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -63,7 +69,7 @@ class RetentionPass:
     invitations: int
     install_states: int
     backlog: bool
-    failed: tuple[str, ...]
+    failed: tuple[RetentionJob, ...]
 
 
 class RetentionService:
@@ -82,7 +88,7 @@ class RetentionService:
         """
         tenant_id = require_tenant_id()
         deadline = time.monotonic() + budget.total_seconds()
-        failed: list[str] = []
+        failed: list[RetentionJob] = []
 
         messages, message_backlog = 0, False
         try:
@@ -182,37 +188,60 @@ class RetentionService:
 
 
 async def retain_once(
-    session_factory: async_sessionmaker[AsyncSession], now: datetime
+    session_factory: async_sessionmaker[AsyncSession],
+    now: datetime,
+    health: SweepHealth,
 ) -> None:
     """One pass over every tenant, each bound before it is touched, then the
-    purge of deleted workspaces' audit history."""
+    purge of deleted workspaces' audit history. Each job's pass is recorded
+    in `health` as failed if it failed in any tenant."""
     service = RetentionService(session_factory)
-    for tenant_id in await all_tenant_ids(session_factory):
+    failed: set[RetentionJob] = set()
+    try:
+        tenant_ids = await all_tenant_ids(session_factory)
+    except Exception:
+        logger.exception("Data retention could not list tenants")
+        failed.update(TENANT_JOBS)
+        tenant_ids = []
+    for tenant_id in tenant_ids:
         with tenant_scope(tenant_id):
             try:
-                await service.apply(now, TENANT_BUDGET)
+                result = await service.apply(now, TENANT_BUDGET)
             except Exception:
                 # One tenant's failure must not stop the others' retention.
                 logger.exception("Data retention failed for tenant %s", tenant_id)
+                failed.update(TENANT_JOBS)
+            else:
+                failed.update(result.failed)
     try:
         await purge_deleted_workspace_history(session_factory)
     except Exception:
         logger.exception(
             "Data retention could not purge deleted workspaces' audit history"
         )
+        failed.add("audit_history")
+    for job in RETENTION_PASS_JOBS:
+        health.record(job, failed=job in failed)
 
 
-async def retention_loop(session_factory: async_sessionmaker[AsyncSession]) -> None:
-    """Retention at start and hourly, as a task of its own.
+async def retention_loop(
+    session_factory: async_sessionmaker[AsyncSession], health: SweepHealth
+) -> None:
+    """Retention at start and hourly, as a task of its own, reporting each
+    job's health while it runs (`retention/health.py`).
 
     Not in the session-activity upkeep loop, which also expires approval
     requests every few seconds: a long retention pass there would hold up
     what unblocks a stuck session.
     """
-    with no_tenant():
-        while True:
-            try:
-                await retain_once(session_factory, datetime.now(UTC))
-            except Exception:
-                logger.exception("Data retention could not list tenants")
-            await asyncio.sleep(PASS_EVERY_SECONDS)
+    health.start(RETENTION_PASS_JOBS)
+    try:
+        with no_tenant():
+            while True:
+                try:
+                    await retain_once(session_factory, datetime.now(UTC), health)
+                except Exception:
+                    logger.exception("Data retention pass failed")
+                await asyncio.sleep(PASS_EVERY_SECONDS)
+    finally:
+        health.stop(RETENTION_PASS_JOBS)
