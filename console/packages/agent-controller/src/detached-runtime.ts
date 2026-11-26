@@ -60,9 +60,8 @@ export class DetachedRuntime implements AgentRunner {
        */
       box?: boolean;
       /**
-       * Box mode: marks everything an agent's host starts as that agent's, for
-       * the memory guard and resting agents to stop with proof (the box's
-       * owner markers). Absent, the host starts with this process's environment.
+       * Box mode: marks everything an agent's host starts as that agent's, so
+       * resting agents are stopped only with proof (the box's owner markers). Absent, the host starts with this process's environment.
        */
       ownerMarkers?: { environmentFor: (agentId: string) => Record<string, string> };
       /**

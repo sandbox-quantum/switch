@@ -148,8 +148,8 @@ type AgentState = {
   lastHostCursor: number | null;
   /**
    * Its agent host was stopped on purpose until something needs it (a
-   * resting agent, or one the memory guard stopped): what it must start
-   * for calls `onWake`, and the hub takes what no agent host would be handed.
+   * resting agent): what it must start for calls `onWake`, and the hub takes
+   * what no agent host would be handed.
    */
   suspended: boolean;
   /**
