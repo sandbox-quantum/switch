@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
 import {
   type ChatMessage,
   liveSessionStartingNotices,
@@ -8,7 +7,8 @@ import {
   TURN_FAILED_PHRASE,
   turnEndNotice,
   UNPOSTED_REPLY_MESSAGE,
-} from '@shared/core/chats/chats';
+} from '@switch-console/chat-ui/contracts/chats';
+import { describe, expect, it } from 'vitest';
 
 function message(messageId: string, clientId: string, body: string): ChatMessage {
   return {

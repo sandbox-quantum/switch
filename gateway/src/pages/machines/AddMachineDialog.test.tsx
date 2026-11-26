@@ -26,14 +26,6 @@ function issue(
   );
 }
 
-/** Nothing a person could run or paste: no command, no code, no name to put in one. */
-function expectNothingToRun() {
-  expect(screen.queryByText(/--code/)).toBeNull();
-  expect(screen.queryByText(/curl -fsSL/)).toBeNull();
-  expect(screen.queryByText("swce_example")).toBeNull();
-  expect(screen.queryByLabelText("Name (optional)")).toBeNull();
-}
-
 describe("AddMachineDialog", () => {
   afterEach(() => {
     cleanup();
@@ -83,29 +75,40 @@ describe("AddMachineDialog", () => {
     expect(screen.getByText("swce_example")).toBeTruthy();
   });
 
-  it("says why, and shows nothing to run, where Switch Console runs Switch", async () => {
+  it("shows the warning and the enrollment code where Switch Console runs Switch", async () => {
     const reason =
       "This Switch is run by Switch Console, and only the computer it runs on can reach it, so other devices can't be added.";
     issue("http://localhost:8000", { supported: false, reason });
     render(<AddMachineDialog open onClose={() => {}} />);
     expect(await screen.findByText(reason)).toBeTruthy();
-    expectNothingToRun();
+    expect(screen.getByText("swce_example")).toBeTruthy();
+    expect(
+      screen.getByText("switch-agent-controller enroll --server http://localhost:8000 --code swce_example"),
+    ).toBeTruthy();
   });
 
-  it("says why, and shows nothing to run, where the public address is a loopback one", async () => {
+  it("shows the warning and the enrollment code where the public address is a loopback one", async () => {
     const reason =
       "This Switch's public address is http://127.0.0.1:8000, which only the computer it runs on can reach. Set GATEWAY_PUBLIC_URL to an address other devices reach.";
     issue("http://127.0.0.1:8000", { supported: false, reason });
     render(<AddMachineDialog open onClose={() => {}} />);
     expect(await screen.findByText(reason)).toBeTruthy();
-    expectNothingToRun();
+    expect(screen.getByText("swce_example")).toBeTruthy();
+    expect(
+      screen.getByText("switch-agent-controller enroll --server http://127.0.0.1:8000 --code swce_example"),
+    ).toBeTruthy();
   });
 
-  it("still refuses when Switch gives no reason", async () => {
+  it("shows the warning and the enrollment code when Switch gives no reason", async () => {
     issue("https://switch-api.example.test", { supported: false, reason: null });
     render(<AddMachineDialog open onClose={() => {}} />);
     expect(await screen.findByText(/Other devices can't reach this Switch/)).toBeTruthy();
-    expectNothingToRun();
+    expect(screen.getByText("swce_example")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "switch-agent-controller enroll --server https://switch-api.example.test --code swce_example",
+      ),
+    ).toBeTruthy();
   });
 
   it("shows the commands, as before, when a server from before remote_devices says nothing", async () => {

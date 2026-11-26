@@ -1,6 +1,6 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@renderer/utils/utils';
-import { Button } from './button';
 
 /**
  * The bar at the foot of a paged flow: which page you are on, and the way back

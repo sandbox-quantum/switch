@@ -36,10 +36,17 @@ import {
  * fails it (`GatewayUi`).
  */
 
-/** The flags every row of the matrix assumes are on. */
-const MATRIX_FLAGS = ['agent_management', 'service_connections', 'organization_connector_apps'];
+/** The flags every row of the matrix assumes are on. A row that needs another names it. */
+const MATRIX_FLAGS = [
+  'agent_management',
+  'service_connections',
+  'organization_connector_apps',
+  'gateway_chats',
+  'gateway_onboarding',
+];
 
-async function requireMatrixFlags(switchClient: SwitchClient): Promise<void> {
+/** The server's flags, which the dashboard reads, once the matrix's assumed ones are seen on. */
+async function matrixFlags(switchClient: SwitchClient): Promise<Set<string>> {
   const on = await switchClient.enabledFeatureFlags();
   const off = MATRIX_FLAGS.filter((flag) => !on.has(flag));
   if (off.length > 0) {
@@ -48,6 +55,7 @@ async function requireMatrixFlags(switchClient: SwitchClient): Promise<void> {
         "The browser lane's stack (scripts/ephemeral-stack.sh) turns them on."
     );
   }
+  return on;
 }
 
 /**
@@ -189,7 +197,7 @@ function personaScenario(persona: Persona): BrowserScenario {
   return {
     header: roleMatrixHeader(`role-matrix-${KEBAB[persona]}`, [...EVERY_ROLE, ...BY_ROLE[persona]]),
     async run({ env, names, switchClient, fixtures, ui, log }) {
-      await requireMatrixFlags(switchClient);
+      const flags = await matrixFlags(switchClient);
       const world = new RoleWorld(switchClient, env.switch, names, fixtures);
       const organization = await world.organization('oa');
       const { account, objects } = await personaIn(world, organization, persona);
@@ -203,9 +211,9 @@ function personaScenario(persona: Persona): BrowserScenario {
 
       const wrong = [
         ...(await checkRail(ui, persona)),
-        ...(await checkSettingsMenus(ui, persona)),
-        ...(await checkPages(ui, persona, objects, log)),
-        ...(await checkRedirects(ui, persona, objects, log)),
+        ...(await checkSettingsMenus(ui, persona, flags)),
+        ...(await checkPages(ui, persona, flags, objects, log)),
+        ...(await checkRedirects(ui, persona, flags, objects, log)),
       ];
       expect(
         wrong,
@@ -221,14 +229,22 @@ function personaScenario(persona: Persona): BrowserScenario {
  * invite people. `asPersona` is the role the person holds
  * where they are now.
  */
-async function checkView(ui: GatewayUi, asPersona: Persona, where: string): Promise<string[]> {
-  const wrong = [...(await checkRail(ui, asPersona)), ...(await checkSettingsMenus(ui, asPersona))];
+async function checkView(
+  ui: GatewayUi,
+  asPersona: Persona,
+  flags: ReadonlySet<string>,
+  where: string
+): Promise<string[]> {
+  const wrong = [
+    ...(await checkRail(ui, asPersona)),
+    ...(await checkSettingsMenus(ui, asPersona, flags)),
+  ];
   // Their paths name nothing, so there is nothing to fill in.
   const sensitive = [...AREAS, ...PAGES].filter(
     (row) => row.open.length < PERSONAS.length && !row.path.includes(':')
   );
   for (const { path } of sensitive) {
-    const problem = await openAndCompare(ui, path, landingOf(asPersona, path));
+    const problem = await openAndCompare(ui, path, landingOf(asPersona, path, flags));
     if (problem !== null) wrong.push(problem);
   }
   // Back where the switcher is: organization settings show none.
@@ -256,7 +272,7 @@ const twoWorkspaces: BrowserScenario = {
     'POST /gateway/tenants/{tenant_id}/switch',
   ]),
   async run({ env, names, switchClient, fixtures, ui }) {
-    await requireMatrixFlags(switchClient);
+    const flags = await matrixFlags(switchClient);
     const world = new RoleWorld(switchClient, env.switch, names, fixtures);
     const organization = await world.organization('oa');
     const second = await world.addWorkspace(organization.admin, 'ws2');
@@ -267,12 +283,12 @@ const twoWorkspaces: BrowserScenario = {
 
     await ui.signInAs(person);
     expect(await ui.workspaceId()).toBe(organization.workspace.id);
-    const wrong = await checkView(ui, 'workspaceAdmin', organization.workspace.name);
+    const wrong = await checkView(ui, 'workspaceAdmin', flags, organization.workspace.name);
     await ui.switchWorkspace(second);
-    wrong.push(...(await checkView(ui, 'member', second.name)));
+    wrong.push(...(await checkView(ui, 'member', flags, second.name)));
     await ui.switchWorkspace(organization.workspace);
     wrong.push(
-      ...(await checkView(ui, 'workspaceAdmin', `back in ${organization.workspace.name}`))
+      ...(await checkView(ui, 'workspaceAdmin', flags, `back in ${organization.workspace.name}`))
     );
     expect(wrong, `\n  ${wrong.join('\n  ')}\n`).toEqual([]);
   },
@@ -296,7 +312,7 @@ const twoOrganizations: BrowserScenario = {
     'POST /gateway/tenants/{tenant_id}/switch',
   ]),
   async run({ env, names, switchClient, fixtures, ui }) {
-    await requireMatrixFlags(switchClient);
+    const flags = await matrixFlags(switchClient);
     const world = new RoleWorld(switchClient, env.switch, names, fixtures);
     const ours = await world.organization('oa');
     const colleague = await world.account('oa2', 'fellow organization admin');
@@ -319,11 +335,11 @@ const twoOrganizations: BrowserScenario = {
         );
       }
     }
-    wrong.push(...(await checkView(ui, 'orgAdmin', ours.workspace.name)));
+    wrong.push(...(await checkView(ui, 'orgAdmin', flags, ours.workspace.name)));
     await ui.switchWorkspace(second);
-    wrong.push(...(await checkView(ui, 'orgAdmin', second.name)));
+    wrong.push(...(await checkView(ui, 'orgAdmin', flags, second.name)));
     await ui.switchWorkspace(theirs.workspace);
-    wrong.push(...(await checkView(ui, 'member', theirs.workspace.name)));
+    wrong.push(...(await checkView(ui, 'member', flags, theirs.workspace.name)));
     expect(wrong, `\n  ${wrong.join('\n  ')}\n`).toEqual([]);
   },
 };

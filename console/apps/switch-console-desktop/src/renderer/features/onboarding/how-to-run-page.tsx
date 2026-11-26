@@ -1,6 +1,6 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { Check, Cloud, Globe, Laptop } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import { Button } from '@renderer/lib/ui/button';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
 import { cn } from '@renderer/utils/utils';
 

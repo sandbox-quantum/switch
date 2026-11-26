@@ -1,10 +1,12 @@
+import { ServerPage, ServerTableEmpty } from '@switch-console/chat-ui/components/server-page';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import { useQuery } from '@tanstack/react-query';
 import { FileText, Library, Link2, Package, Plus, Shapes } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { homeRedirect } from '@renderer/features/switch-servers/home-target';
-import { ServerPage, ServerTableEmpty } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
@@ -15,9 +17,7 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import type { LibraryItem, LibraryKind } from '@shared/core/switch-servers/library';
 import { LibraryCard } from './library-card';
 import {

@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
+import { createBuddy } from './create-buddy';
 
 const list = vi.hoisted(() => vi.fn());
 const getTemplateDetail = vi.hoisted(() => vi.fn());
@@ -16,8 +18,6 @@ vi.mock('@renderer/lib/telemetry/report', () => ({ report }));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { idOnServerInScope: () => 'ws-1' },
 }));
-
-const { BuddyNotCreated, createBuddy } = await import('./create-buddy');
 
 const input = {
   serverId: 'srv-1',
@@ -130,7 +130,7 @@ describe('createBuddy', () => {
     );
 
     const error = await createBuddy(input).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(BuddyNotCreated);
+    expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe('Your computer is offline. Sign in to Claude.');
     expect(runTemplateDocument).toHaveBeenCalledTimes(1);
   });
@@ -149,6 +149,24 @@ describe('createBuddy', () => {
     expect(report).toHaveBeenCalledWith('buddy_step', {
       action: 'create_failed',
       provider: 'none',
+    });
+  });
+
+  it('rethrows a failed template run as the same error, so its code and details reach the person', async () => {
+    const rpcError = new RpcError({
+      __switchConsoleRpcError: true,
+      code: 'GatewayError',
+      message: 'HTTP 401 Unauthorized',
+      data: { kind: 'unauthorized', status: 401, detail: 'Session expired' },
+    });
+    runTemplateDocument.mockRejectedValue(rpcError);
+
+    const caught = await createBuddy(input).catch((e: unknown) => e);
+
+    expect(caught).toBe(rpcError);
+    expect(report).toHaveBeenCalledWith('buddy_step', {
+      action: 'create_failed',
+      provider: 'claude',
     });
   });
 });

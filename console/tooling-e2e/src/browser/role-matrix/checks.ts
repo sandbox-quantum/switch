@@ -4,6 +4,8 @@ import {
   RAIL,
   REDIRECTS,
   SETTINGS_MENUS,
+  settingsMenu,
+  stateAt,
   type MatrixSettingsArea,
   type Persona,
 } from '../../../../../gateway/src/routes/roleMatrix.ts';
@@ -51,40 +53,67 @@ export function fill(path: string, objects: PageObjects): string {
   return filled;
 }
 
+/**
+ * A query parameter a page acts on and then drops from the address, by what it
+ * opens: the title of the dialog it opens.
+ */
+const DIALOG_PARAMS: Readonly<Record<string, string>> = { 'new=room': 'New room' };
+
 /** Where the app should end up when `persona` opens a URL, and what it should show there. */
 export interface Landing {
   path: string;
   /** A query the landing carries, as `key=value`, when it must. */
   query: string | null;
   state: PageState;
+  /** A dialog open on arrival, opened by a query parameter now gone from the address. */
+  dialog: { param: string; title: string } | null;
 }
 
 /**
- * Where opening `path` lands `persona`: following redirects, then into a
- * settings area's first page, then onto the page or its refusal.
+ * The landing of a redirect's query: what it keeps in the address, and a
+ * dialog a parameter it drops opens.
  */
-export function landingOf(persona: Persona, path: string): Landing {
+function queryLanding(search: string | null): Pick<Landing, 'query' | 'dialog'> {
+  if (search === null) return { query: null, dialog: null };
+  const kept: string[] = [];
+  let dialog: Landing['dialog'] = null;
+  for (const param of search.split('&')) {
+    const title = DIALOG_PARAMS[param];
+    if (title === undefined) kept.push(param);
+    else dialog = { param: param.split('=')[0]!, title };
+  }
+  return { query: kept.length === 0 ? null : kept.join('&'), dialog };
+}
+
+/**
+ * Where opening `path` lands `persona`, on a server with `flags` on:
+ * following redirects, then into a settings area's first page, then onto the
+ * page or what it shows in the page's place.
+ */
+export function landingOf(persona: Persona, path: string, flags: ReadonlySet<string>): Landing {
   let target = path;
-  let query: string | null = null;
+  let search: string | null = null;
   for (let hops = 0; ; hops += 1) {
     if (hops > 10) throw new Error(`The matrix's redirects from ${path} go round in a circle.`);
     const redirect = REDIRECTS.find((row) => row.from === target);
     if (redirect === undefined) break;
-    const [to, search] = redirect.to.split('?', 2) as [string, string | undefined];
+    const [to, query] = redirect.to.split('?', 2) as [string, string | undefined];
     target = to;
-    if (search !== undefined) query = search;
+    if (query !== undefined) search = query;
   }
+  const { query, dialog } = queryLanding(search);
   const area = AREAS.find((row) => row.path === target);
   if (area !== undefined) {
-    if (!area.open.includes(persona)) return { path: target, query, state: 'refused' };
+    const state = stateAt(area, persona, flags);
+    if (state !== 'page') return { path: target, query, state, dialog: null };
     target = area.first;
   }
   const page = PAGES.find((row) => row.path === target);
   if (page === undefined) {
     throw new Error(`The matrix sends ${path} to ${target}, which it has no row for.`);
   }
-  if (!page.open.includes(persona)) return { path: target, query, state: 'refused' };
-  return { path: target, query, state: 'page' };
+  const state = stateAt(page, persona, flags);
+  return { path: target, query, state, dialog: state === 'page' ? dialog : null };
 }
 
 /** `landing` with its path's parameters filled in from `objects`. */
@@ -108,10 +137,20 @@ export async function openAndCompare(
   const at = new URL(ui.page.url());
   const state = await ui.pageState();
   const wrongPath = at.pathname !== expected.path;
-  const wrongQuery = expected.query !== null && !at.search.includes(expected.query);
-  if (!wrongPath && !wrongQuery && state === expected.state) return null;
-  const query = expected.query === null ? '' : `?${expected.query}`;
-  return `${url}: wanted ${expected.path}${query} (${expected.state}), got ${at.pathname}${at.search} (${state})`;
+  const wrongQuery =
+    (expected.query !== null && !at.search.includes(expected.query)) ||
+    (expected.dialog !== null && at.searchParams.has(expected.dialog.param));
+  if (wrongPath || wrongQuery || state !== expected.state) {
+    const query = expected.query === null ? '' : `?${expected.query}`;
+    return `${url}: wanted ${expected.path}${query} (${expected.state}), got ${at.pathname}${at.search} (${state})`;
+  }
+  if (expected.dialog === null) return null;
+  const dialog = ui.page.getByRole('dialog', { name: expected.dialog.title, exact: true });
+  const open = await dialog.waitFor({ state: 'visible', timeout: 5_000 }).then(
+    () => true,
+    () => false
+  );
+  return open ? null : `${url}: the ${expected.dialog.title} dialog is not open`;
 }
 
 /**
@@ -135,6 +174,7 @@ async function missingObject(
 export async function checkPages(
   ui: GatewayUi,
   persona: Persona,
+  flags: ReadonlySet<string>,
   objects: PageObjects,
   log: (message: string) => void
 ): Promise<string[]> {
@@ -142,7 +182,7 @@ export async function checkPages(
   const wrong: string[] = [];
   for (const path of paths) {
     const url = fill(path, objects);
-    const expected = filled(landingOf(persona, path), objects);
+    const expected = filled(landingOf(persona, path, flags), objects);
     const problem = await openAndCompare(ui, url, expected);
     if (problem !== null) wrong.push(problem);
     else if (expected.state === 'page') {
@@ -158,6 +198,7 @@ export async function checkPages(
 export async function checkRedirects(
   ui: GatewayUi,
   persona: Persona,
+  flags: ReadonlySet<string>,
   objects: PageObjects,
   log: (message: string) => void
 ): Promise<string[]> {
@@ -166,7 +207,7 @@ export async function checkRedirects(
     const problem = await openAndCompare(
       ui,
       fill(from, objects),
-      filled(landingOf(persona, from), objects)
+      filled(landingOf(persona, from, flags), objects)
     );
     if (problem !== null) wrong.push(problem);
   }
@@ -197,11 +238,15 @@ const AREA_PATH: Record<MatrixSettingsArea, string> = {
  * workspace's settings to the organization's. An area the role may not enter
  * is the page checks' business.
  */
-export async function checkSettingsMenus(ui: GatewayUi, persona: Persona): Promise<string[]> {
+export async function checkSettingsMenus(
+  ui: GatewayUi,
+  persona: Persona,
+  flags: ReadonlySet<string>
+): Promise<string[]> {
   const wrong: string[] = [];
   const areaPaths = new Set(Object.values(AREA_PATH));
   for (const area of ['workspace', 'organization'] as const) {
-    const expected = SETTINGS_MENUS[area][persona];
+    const expected = settingsMenu(area, persona, flags);
     if (expected === null) continue;
     await ui.open(AREA_PATH[area]);
     const links = await ui.linksIn(

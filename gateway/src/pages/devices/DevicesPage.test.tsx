@@ -1,7 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudMachine, WorkspaceDevice, WorkspaceManagedAgent } from "../../data/management";
 import { answer, signedInAs } from "../../test/signedIn";
+import { providersQueryClient } from "../ai-providers/DeviceProviders";
 import DevicesPage, { withCloud } from "./DevicesPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -77,10 +79,14 @@ function cloud(extra: Partial<CloudMachine> = {}): CloudMachine {
     stopped_by_admin: false,
     sleeping: false,
     revision: 3,
+    instance_type: null,
     error: null,
     error_code: null,
     retain_until: null,
     heartbeat_at: "2026-11-12T10:00:00Z",
+    disk: null,
+    memory: null,
+    agents: [],
     controller_id: null,
     ...extra,
   };
@@ -101,6 +107,12 @@ function serve(devices: WorkspaceDevice[], agents: WorkspaceManagedAgent[] = [],
     "DELETE /management/controllers/grace-laptop": [200, { ok: true }],
     "DELETE /agents/theirs": [200, { ok: true, bridge_cleanup_failures: [] }],
     "POST /management/operations": [201, { id: "op1" }],
+    "GET /management/controllers": [
+      200,
+      devices
+        .filter((each) => each.owner_id === "u1")
+        .map((each) => ({ ...each, status: { providers: each.provider_reports }, public_key: null })),
+    ],
   });
 }
 
@@ -115,13 +127,14 @@ async function menuOf(rowId: string, name: string): Promise<string[]> {
 describe("DevicesPage", () => {
   afterEach(() => {
     cleanup();
+    providersQueryClient.clear();
     vi.unstubAllGlobals();
   });
 
   it("shows an admin everyone's devices, removing anyone's and refreshing their own", async () => {
     signedInAs("admin");
     serve([device("laptop"), THEIRS]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     expect(await screen.findByText("Computers running an agents controller in Acme.")).toBeTruthy();
     expect(within(screen.getByTestId("row-grace-laptop")).getByText("Grace")).toBeTruthy();
@@ -132,7 +145,7 @@ describe("DevicesPage", () => {
   it("removes someone else's device, saying whose it is", async () => {
     signedInAs("admin");
     const calls = serve([THEIRS]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     await menuOf("grace-laptop", "grace-laptop");
     fireEvent.click(screen.getByRole("menuitem", { name: /Remove/ }));
@@ -148,11 +161,12 @@ describe("DevicesPage", () => {
   it("says why an offline device can't be refreshed", async () => {
     signedInAs("member");
     serve([device("laptop", { state: "offline" })]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     expect(await screen.findByText("Your computers running an agents controller in Acme.")).toBeTruthy();
     expect(await menuOf("laptop", "laptop")).toEqual([
       "Details",
+      "AI providers",
       "Refreshlaptop is offline.",
       "Restart devicelaptop is offline.",
       "Edit",
@@ -160,10 +174,23 @@ describe("DevicesPage", () => {
     ]);
   });
 
+  it("opens your own device's AI providers, to recheck one or give it a login", async () => {
+    signedInAs("member");
+    serve([device("laptop")]);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
+
+    await menuOf("laptop", "laptop");
+    fireEvent.click(screen.getByRole("menuitem", { name: /AI providers/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: "AI providers on laptop" });
+    expect(await within(dialog).findByRole("button", { name: "Recheck Claude Code on laptop" })).toBeTruthy();
+    expect(within(dialog).getByText("Signed in")).toBeTruthy();
+  });
+
   it("asks an online device to report in", async () => {
     signedInAs("member");
     const calls = serve([device("laptop")]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     await menuOf("laptop", "laptop");
     fireEvent.click(screen.getByRole("menuitem", { name: /Refresh/ }));
@@ -178,7 +205,7 @@ describe("DevicesPage", () => {
   it("asks your own device to restart its controller", async () => {
     signedInAs("member");
     const calls = serve([device("laptop")]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     await menuOf("laptop", "laptop");
     fireEvent.click(screen.getByRole("menuitem", { name: /Restart device/ }));
@@ -197,13 +224,14 @@ describe("DevicesPage", () => {
       [],
       [cloud({ controller_id: "cloud-1", sleeping: true })],
     );
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     const row = within(await screen.findByTestId("row-cloud-1"));
     expect(row.getByText("Sleeping")).toBeTruthy();
     expect(row.getByText("Cloud")).toBeTruthy();
     expect(await menuOf("cloud-1", "Switch cloud")).toEqual([
       "Details",
+      "AI providers",
       "Refresh",
       "Stop",
       "EditSwitch manages cloud devices.",
@@ -225,7 +253,7 @@ describe("DevicesPage", () => {
         can_remove: false,
       }),
     ]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     const row = within(await screen.findByTestId("row-grace-cloud"));
     expect(row.getByText("Cloud")).toBeTruthy();
@@ -246,7 +274,7 @@ describe("DevicesPage", () => {
           })
         : (served as typeof fetch)(input, init),
     );
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     await menuOf("cloud:m1", "Switch cloud");
     fireEvent.click(screen.getByRole("menuitem", { name: /Stop/ }));
@@ -258,17 +286,26 @@ describe("DevicesPage", () => {
   it("shows a cloud device still being set up", async () => {
     signedInAs("member");
     serve([], [], [cloud({ state: "provisioning" })]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     const row = within(await screen.findByTestId("row-cloud:m1"));
     expect(row.getByText("Switch cloud")).toBeTruthy();
     expect(row.getByText("Provisioning")).toBeTruthy();
   });
 
+  it("says what is wrong with a cloud device in the dashboard's words", async () => {
+    signedInAs("member");
+    serve([], [], [cloud({ state: "error", error_code: "disk_full" })]);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
+
+    const row = within(await screen.findByTestId("row-cloud:m1"));
+    expect(row.getByLabelText("The device's disk is full.")).toBeTruthy();
+  });
+
   it("disables what an agent on an offline device can't do, with the reason", async () => {
     signedInAs("member");
     serve([device("laptop", { state: "offline" })], [managed("helper", { controller_state: "offline" })]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     // Pausing is kept for when the device is back; restarting is only for now.
     expect(await menuOf("helper", "helper")).toEqual([
@@ -295,7 +332,7 @@ describe("DevicesPage", () => {
       "GET /management/providers": [200, { providers: [] }],
       "PATCH /management/agents/helper": [200, {}],
     });
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     await menuOf("helper", "helper");
     fireEvent.click(screen.getByRole("menuitem", { name: /Pause/ }));
@@ -315,7 +352,7 @@ describe("DevicesPage", () => {
         { error: { code: "not_found", message: "Controller not found.", retryable: false } },
       ],
     });
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     await menuOf("grace-laptop", "grace-laptop");
     fireEvent.click(screen.getByRole("menuitem", { name: /Remove/ }));
@@ -332,7 +369,7 @@ describe("DevicesPage", () => {
       [THEIRS],
       [managed("theirs", { owner_id: "u2", owner_name: "Grace", controller_id: "grace-laptop", controller_name: "grace-laptop", can_edit: false })],
     );
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     expect(await menuOf("theirs", "theirs")).toEqual(["Stop managing", "Delete"]);
     fireEvent.click(screen.getByRole("menuitem", { name: /Delete/ }));
@@ -359,7 +396,7 @@ describe("DevicesPage", () => {
       }),
       device("desk", { name: "desk" }),
     ]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     // A provider it reports missing is only absent, not a problem.
     const flagged = within(await screen.findByTestId("row-laptop"));
@@ -381,7 +418,7 @@ describe("DevicesPage", () => {
         },
       }),
     ]);
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     await menuOf("laptop", "laptop");
     fireEvent.click(screen.getByRole("menuitem", { name: /Details/ }));
@@ -400,7 +437,7 @@ describe("DevicesPage", () => {
       [device("laptop")],
       [managed("helper", { process: "crashed", process_reason: "exit_code", process_detail: "exited with 1", updating: true })],
     );
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     const row = within(await screen.findByTestId("row-helper"));
     expect(row.getByText("crashed: exit_code")).toBeTruthy();
@@ -414,7 +451,7 @@ describe("DevicesPage", () => {
       "GET /hosted-machines": [200, { available: false, machines: [] }],
       "GET /management/providers": [200, { providers: [] }],
     });
-    render(<DevicesPage />);
+    render(<MemoryRouter><DevicesPage /></MemoryRouter>);
 
     await waitFor(() => expect(screen.getByText(/Couldn't load the devices: boom/)).toBeTruthy());
   });

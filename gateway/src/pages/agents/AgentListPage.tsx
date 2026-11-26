@@ -1,77 +1,64 @@
-import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
-import DeleteOutline from "@mui/icons-material/DeleteOutline";
-import EditOutlined from "@mui/icons-material/EditOutlined";
-import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
-import SwapHoriz from "@mui/icons-material/SwapHoriz";
-import {
-  Alert,
-  Box,
-  Button,
-  Card,
-  Chip,
-  CircularProgress,
-  Link,
-  Stack,
-  Typography,
-} from "@mui/material";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
-import { Link as RouterLink, useNavigate } from "react-router";
+import "@switch-console/chat-ui/theme.css";
+import { AddAgentTile, AgentCard, AgentCardGrid } from "@switch-console/chat-ui/components/agent-cards";
+import { ServerPage } from "@switch-console/chat-ui/components/server-page";
+import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
+import { Alert, AlertAction, AlertDescription } from "@switch-console/chat-ui/primitives/alert";
+import { Button } from "@switch-console/chat-ui/primitives/button";
+import { DropdownMenuItem, DropdownMenuSeparator } from "@switch-console/chat-ui/primitives/dropdown-menu";
+import { SearchInput } from "@switch-console/chat-ui/primitives/search-input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@switch-console/chat-ui/primitives/select";
+import { Spinner } from "@switch-console/chat-ui/primitives/spinner";
+import { ArrowRightLeft, Pencil, Trash2, X } from "lucide-react";
+import { type ReactNode, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
+import AgentPicture from "../../components/AgentPicture";
 import ConfirmDialog from "../../components/ConfirmDialog";
-import DataTable, {
-  type FilterOption,
-  type SelectFilter,
-  type TableColumn,
-  TableEmptyState,
-} from "../../components/DataTable";
-import PageBanner from "../../components/PageBanner";
-import PageHeader from "../../components/PageHeader";
-import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
+import { agentPath } from "../../data/agentPaths";
 import { useAuth } from "../../data/AuthContext";
+import type { Capabilities } from "../../data/capabilities";
 import {
   type AgentDevice,
   type AgentListEntry,
   type DeleteAgentResult,
   deleteAgent,
+  fetchAvatarSettings,
   loadAgents,
 } from "../../data/api";
 import { AGENT_MANAGEMENT } from "../../data/featureFlags";
 import { type ListScope, agentsInScope, listScopeOf } from "../../data/listScope";
-import { EM_DASH, formatDate, sentenceCase } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
+import { NewAgentDialog } from "./NewAgentDialog";
 import RegisterAgentDialog from "./RegisterAgentDialog";
 import RenameAgentDialog from "./RenameAgentDialog";
 
 /** Filter values for an agent with no parent, owner or device. None can be
- * an id, which these columns otherwise hold. */
+ * an id, which these filters otherwise hold. */
 const TOP_LEVEL = "top-level";
 const NO_OWNER = "no-owner";
 const NO_DEVICE = "no-device";
+/** The value of a filter that lets every agent through. */
+const ALL = "all";
 
-const STATUS: Record<AgentListEntry["status"], { label: string; color: string; detail?: string }> = {
-  online: { label: "Online", color: "var(--sw-success)" },
-  offline: { label: "Offline", color: "var(--sw-muted-foreground)" },
+const STATUS: Record<AgentListEntry["status"], { label: string; dot: string; detail?: string }> = {
+  online: { label: "Online", dot: "bg-foreground-success" },
+  offline: { label: "Offline", dot: "bg-foreground-muted" },
   not_tracked: {
     label: "Not tracked",
-    color: "var(--sw-muted-foreground)",
+    dot: "bg-foreground-muted",
     detail: "This agent only polls, so Switch can't see it between polls.",
   },
 };
 
 const STATUSES = ["online", "offline", "not_tracked"] as const;
 
-/** Kept stable: a fresh array each render would rebuild the grid's columns. */
-const PINNED = ["actions"];
+type FilterField = "type" | "parent" | "owner" | "status" | "device";
 
-/** The table's header and footer, and a row, in pixels; a page of rows. */
-const TABLE_CHROME = 108;
-const ROW = 52;
-const PAGE_SIZE = 25;
-
-/** A category, not a status: the muted fill, so it doesn't compete with the
- *  status column for colour. */
-const NEUTRAL_CHIP_SX = { backgroundColor: "var(--sw-muted)", color: "var(--sw-foreground)" };
+interface FilterOption {
+  value: string;
+  label: string;
+}
 
 interface Notice {
   severity: "success" | "warning" | "error";
@@ -98,32 +85,58 @@ export function deviceLabels(agents: readonly AgentListEntry[]): Map<string, str
 
 const byLabel = (a: FilterOption, b: FilterOption) => a.label.localeCompare(b.label);
 
-/** Plain text for a cell with no value to show, in the muted ink an em
- * dash takes, with what it means on hover. */
-function MutedCell({ text, title }: { text: string; title?: string }) {
+/** What each filter reads off an agent. */
+const FILTER_VALUE: Record<FilterField, (agent: AgentListEntry) => string> = {
+  type: (agent) => agent.connector_type,
+  parent: (agent) => agent.parent_agent_id ?? TOP_LEVEL,
+  owner: (agent) => agent.owner_id ?? NO_OWNER,
+  status: (agent) => agent.status,
+  device: (agent) => agent.device?.id ?? NO_DEVICE,
+};
+
+const FILTER_LABEL: Record<FilterField, { label: string; all: string }> = {
+  type: { label: "Type", all: "All types" },
+  parent: { label: "Parent", all: "All parents" },
+  owner: { label: "Owner", all: "All owners" },
+  status: { label: "Status", all: "All statuses" },
+  device: { label: "Device", all: "All devices" },
+};
+
+function FilterSelect({
+  field,
+  options,
+  value,
+  onChange,
+}: {
+  field: FilterField;
+  options: FilterOption[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { label, all } = FILTER_LABEL[field];
   return (
-    <Box component="span" title={title} sx={{ color: "text.secondary" }}>
-      {text}
-    </Box>
+    <Select value={value} onValueChange={(next) => onChange(next as string)}>
+      <SelectTrigger aria-label={label} className="h-9">
+        <SelectValue>{value === ALL ? all : (options.find((o) => o.value === value)?.label ?? value)}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={ALL}>{all}</SelectItem>
+        {options.map((option) => (
+          <SelectItem key={option.value} value={option.value}>
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
-function StatusCell({ status }: { status: AgentListEntry["status"] }) {
-  const meta = STATUS[status];
-  return (
-    <Stack direction="row" spacing={1} sx={{ alignItems: "center", height: "100%" }} title={meta.detail}>
-      <Box aria-hidden sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: meta.color, flexShrink: 0 }} />
-      <span>{meta.label}</span>
-    </Stack>
-  );
-}
-
-/** The workspace's agents, or a member's own, as the design's register:
+/** The workspace's agents, or a member's own, as cards in Console's design:
  * read and filtered here, opened for everything else. */
 export default function AgentListPage() {
   const { session, capabilities } = useAuth();
   const tenant = session?.tenant;
-  if (!session || !tenant) return <CircularProgress />;
+  if (!session || !tenant) return <Spinner />;
 
   const scope = listScopeOf(capabilities);
   return (
@@ -134,6 +147,7 @@ export default function AgentListPage() {
       userId={session.user.id}
       workspace={tenant.name}
       showDevices={capabilities.features[AGENT_MANAGEMENT]}
+      capabilities={capabilities}
     />
   );
 }
@@ -143,15 +157,23 @@ function AgentList({
   userId,
   workspace,
   showDevices,
+  capabilities,
 }: {
   scope: ListScope;
   userId: string;
   workspace: string;
   showDevices: boolean;
+  capabilities: Capabilities;
 }) {
   const navigate = useNavigate();
   const { data, error, loading, refetch } = useLoad(loadAgents);
+  const avatars = useLoad(fetchAvatarSettings);
+  const [newOpen, setNewOpen] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
+  // Switch runs a new agent on one of the person's devices where it manages
+  // agents; elsewhere the only way to add one is to connect an agent that runs
+  // on its own, which an admin can also do from the New agent dialog.
+  const managed = capabilities.features[AGENT_MANAGEMENT];
   const [renaming, setRenaming] = useState<AgentListEntry | null>(null);
   const [transferring, setTransferring] = useState<AgentListEntry | null>(null);
   // What the delete dialog shows, taken when it opens and kept after it
@@ -160,43 +182,27 @@ function AgentList({
   const [deleting, setDeleting] = useState<{ agent: AgentListEntry; subAgents: number } | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<Record<FilterField, string>>({
+    type: ALL,
+    parent: ALL,
+    owner: ALL,
+    status: ALL,
+    device: ALL,
+  });
   const yours = scope === "yours";
 
   const all = useMemo(() => data ?? [], [data]);
   const rows = useMemo(() => [...agentsInScope(all, scope, userId)], [all, scope, userId]);
   // From every agent, not only the rows: a member's sub-agent may sit under
-  // someone else's agent, whose name still belongs in its Parent column.
+  // someone else's agent, whose name still belongs on its card.
   const nameById = useMemo(() => new Map(all.map((agent) => [agent.id, agent.name])), [all]);
   const devices = useMemo(() => deviceLabels(rows), [rows]);
 
-  const actionsFor = useCallback((agent: AgentListEntry): RowAction[] => {
-    const actions: RowAction[] = [];
-    if (agent.can_rename) {
-      actions.push({ label: "Rename", icon: <EditOutlined fontSize="small" />, onClick: () => setRenaming(agent) });
-    }
-    if (agent.can_transfer || agent.transfer_blocked_reason !== null) {
-      actions.push({
-        label: "Transfer ownership",
-        icon: <SwapHoriz fontSize="small" />,
-        onClick: () => setTransferring(agent),
-        disabledReason: agent.can_transfer ? null : agent.transfer_blocked_reason,
-      });
-    }
-    if (agent.can_manage) {
-      actions.push({
-        label: "Delete",
-        icon: <DeleteOutline fontSize="small" />,
-        destructive: true,
-        onClick: () => {
-          setDeleting({ agent, subAgents: all.filter((other) => other.parent_agent_id === agent.id).length });
-          setDeleteOpen(true);
-        },
-      });
-    }
-    return actions;
-  }, [all]);
-
-  const columns = useMemo<TableColumn<AgentListEntry>[]>(() => {
+  const options = useMemo<Partial<Record<FilterField, FilterOption[]>>>(() => {
+    const types = [...new Set(rows.map((agent) => agent.connector_type))]
+      .map((value) => ({ value, label: value }))
+      .sort(byLabel);
     const parents: FilterOption[] = [
       ...(rows.some((agent) => !agent.parent_agent_id) ? [{ value: TOP_LEVEL, label: "Top level" }] : []),
       ...[...new Set(rows.flatMap((agent) => (agent.parent_agent_id ? [agent.parent_agent_id] : [])))]
@@ -214,256 +220,218 @@ function AgentList({
       ...(rows.some((agent) => !agent.device) ? [{ value: NO_DEVICE, label: "No device" }] : []),
     ];
     // Only the statuses some agent here has, so none returns nothing.
-    const statusOptions: FilterOption[] = STATUSES.filter((status) => rows.some((agent) => agent.status === status)).map(
+    const statuses: FilterOption[] = STATUSES.filter((status) => rows.some((agent) => agent.status === status)).map(
       (value) => ({ value, label: STATUS[value].label }),
     );
+    return {
+      type: types,
+      parent: parents,
+      ...(yours ? {} : { owner: owners }),
+      status: statuses,
+      ...(showDevices ? { device: deviceOptions } : {}),
+    };
+  }, [rows, nameById, devices, yours, showDevices]);
 
-    return [
-      {
-        field: "name",
-        headerName: "Name",
-        flex: 1,
-        minWidth: 160,
-        renderCell: ({ row, tabIndex }) => (
-          <Link
-            component={RouterLink}
-            to={`/agents/${row.id}`}
-            tabIndex={tabIndex}
-            // The row opens the agent too; one navigation, not two.
-            onClick={(event) => event.stopPropagation()}
-            underline="hover"
-            sx={{ fontWeight: 500, color: "text.primary" }}
-          >
-            {row.name}
-          </Link>
-        ),
-      },
-      {
-        field: "connector_type",
-        headerName: "Agent type",
-        width: 124,
-        filter: { value: (agent) => agent.connector_type },
-        renderCell: ({ value }) => <Chip label={value} size="small" variant="outlined" />,
-      },
-      {
-        field: "connection_model",
-        headerName: "Availability",
-        width: 180,
-        renderCell: ({ value }) =>
-          value ? <Chip label={sentenceCase(value as string)} size="small" sx={NEUTRAL_CHIP_SX} /> : EM_DASH,
-      },
-      {
-        field: "status",
-        headerName: "Status",
-        width: 120,
-        filter: { value: (agent) => agent.status, options: statusOptions },
-        renderCell: ({ row }) => <StatusCell status={row.status} />,
-      },
-      {
-        field: "parent_agent_id",
-        headerName: "Parent",
-        width: 140,
-        filter: { value: (agent) => agent.parent_agent_id ?? TOP_LEVEL, options: parents },
-        valueGetter: (value) => (value ? (nameById.get(value as string) ?? value) : ""),
-        renderCell: ({ value }) => value || <MutedCell text={EM_DASH} title="Top-level agent" />,
-      },
-      {
-        field: "description",
-        headerName: "Description",
-        flex: 2,
-        minWidth: 220,
-        sortable: false,
-        renderCell: ({ value }) => (
-          <Box
-            component="span"
-            title={value}
-            sx={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", color: "text.secondary" }}
-          >
-            {value}
-          </Box>
-        ),
-      },
-      // Counts sit under their headers, left-aligned like every other column.
-      { field: "tool_count", headerName: "Tools", width: 64, type: "number", align: "left", headerAlign: "left" },
-      { field: "model_count", headerName: "Models", width: 72, type: "number", align: "left", headerAlign: "left" },
-      {
-        field: "owner_name",
-        headerName: "Owner",
-        width: 140,
-        ...(!yours && { filter: { value: (agent: AgentListEntry) => agent.owner_id ?? NO_OWNER, options: owners } }),
-        // An owner whose name can't be found is still an owner.
-        renderCell: ({ value, row }) => value ?? <MutedCell text={row.owner_id ? "Unknown" : "No owner"} />,
-      },
-      ...(showDevices
-        ? [
-            {
-              field: "device",
-              headerName: "Device",
-              width: 150,
-              sortable: false,
-              filter: {
-                value: (agent: AgentListEntry) => agent.device?.id ?? NO_DEVICE,
-                options: deviceOptions,
-              },
-              renderCell: ({ row }: { row: AgentListEntry }) => {
-                if (!row.device) return EM_DASH;
-                const label = devices.get(row.device.id) ?? row.device.name;
-                return <span title={label}>{label}</span>;
-              },
-            } satisfies TableColumn<AgentListEntry>,
-          ]
-        : []),
-      {
-        field: "created_at",
-        headerName: "Created",
-        width: 112,
-        type: "date",
-        valueGetter: (value) => new Date(value as string),
-        valueFormatter: (value) => formatDate(value as Date),
-      },
-      {
-        field: "actions",
-        headerName: "",
-        width: 56,
-        sortable: false,
-        disableColumnMenu: true,
-        renderCell: ({ row, tabIndex }) => (
-          <RowActionsMenu label={`Actions for ${row.name}`} actions={actionsFor(row)} tabIndex={tabIndex} />
-        ),
-      },
-    ];
-  }, [rows, nameById, devices, yours, showDevices, actionsFor]);
-
-  const selectFilters = useMemo<SelectFilter[]>(
-    () => [
-      { field: "connector_type", label: "Type", allLabel: "All types" },
-      { field: "parent_agent_id", label: "Parent", allLabel: "All parents" },
-      ...(yours ? [] : [{ field: "owner_name", label: "Owner", allLabel: "All owners" }]),
-      { field: "status", label: "Status", allLabel: "All statuses" },
-      ...(showDevices ? [{ field: "device", label: "Device", allLabel: "All devices" }] : []),
-    ],
-    [yours, showDevices],
-  );
-
-  const search = useMemo(
-    () => ({
-      label: "Search agents",
-      text: (agent: AgentListEntry) =>
+  const needle = query.trim().toLocaleLowerCase();
+  const shown = rows
+    .filter((agent) =>
+      (Object.keys(options) as FilterField[]).every(
+        (field) => filters[field] === ALL || FILTER_VALUE[field](agent) === filters[field],
+      ),
+    )
+    .filter(
+      (agent) =>
+        needle === "" ||
         [
           agent.name,
           agent.display_name ?? "",
           agent.description,
           agent.parent_agent_id ? (nameById.get(agent.parent_agent_id) ?? "") : "",
           agent.owner_name ?? "",
-        ].join(" "),
-    }),
-    [nameById],
-  );
+        ]
+          .join("\n")
+          .toLocaleLowerCase()
+          .includes(needle),
+    )
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const filtering = needle !== "" || Object.values(filters).some((value) => value !== ALL);
 
-  const addButton = (
-    <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setRegisterOpen(true)}>
-      Add agent
-    </Button>
-  );
-
-  // Two different nothings: the workspace has no agents at all, or it has
-  // some and none are this member's.
-  const workspaceEmpty = all.length === 0;
-  // With nothing to list there is nothing to filter, so the card stands in
-  // for the filters and the table, as the design has it.
-  const emptyCard = (
-    <Card variant="outlined" sx={{ borderRadius: "16px" }}>
-      <Stack spacing={2} sx={{ alignItems: "center", px: 3, py: 8 }}>
-        <SmartToyOutlined aria-hidden sx={{ fontSize: 24, color: "text.secondary" }} />
-        <TableEmptyState
-          title={workspaceEmpty ? `No agents in ${workspace} yet` : `You don’t own any agents in ${workspace}`}
+  const actionsFor = (agent: AgentListEntry): ReactNode => {
+    const items: ReactNode[] = [];
+    if (agent.can_rename) {
+      items.push(
+        <DropdownMenuItem key="rename" onClick={() => setRenaming(agent)}>
+          <Pencil className="size-4" />
+          Rename…
+        </DropdownMenuItem>,
+      );
+    }
+    if (agent.can_transfer || agent.transfer_blocked_reason !== null) {
+      items.push(
+        <DropdownMenuItem key="transfer" disabled={!agent.can_transfer} onClick={() => setTransferring(agent)}>
+          <ArrowRightLeft className="size-4" />
+          <span className="flex flex-col">
+            Transfer ownership…
+            {!agent.can_transfer && (
+              <span className="text-xs text-foreground-muted">{agent.transfer_blocked_reason}</span>
+            )}
+          </span>
+        </DropdownMenuItem>,
+      );
+    }
+    if (agent.can_manage) {
+      if (items.length > 0) items.push(<DropdownMenuSeparator key="separator" />);
+      items.push(
+        <DropdownMenuItem
+          key="delete"
+          variant="destructive"
+          onClick={() => {
+            setDeleting({ agent, subAgents: all.filter((other) => other.parent_agent_id === agent.id).length });
+            setDeleteOpen(true);
+          }}
         >
-          {workspaceEmpty
-            ? "Add an agent to let it join rooms and work alongside the people in this workspace."
-            : "Add an agent of your own, or ask a workspace admin to transfer one to you."}
-        </TableEmptyState>
-        {addButton}
-      </Stack>
-    </Card>
-  );
+          <Trash2 className="size-4" />
+          Delete agent…
+        </DropdownMenuItem>,
+      );
+    }
+    return items.length > 0 ? items : null;
+  };
+
+  const card = (agent: AgentListEntry) => {
+    const label = agent.display_name ?? agent.name;
+    const status = STATUS[agent.status];
+    const device = showDevices && agent.device ? (devices.get(agent.device.id) ?? agent.device.name) : null;
+    const owner = agent.owner_name ?? (agent.owner_id ? "an unknown owner" : null);
+    const parent = agent.parent_agent_id ? (nameById.get(agent.parent_agent_id) ?? agent.parent_agent_id) : null;
+    const note = [
+      parent && `under ${parent}`,
+      !yours && (owner ? `by ${owner}` : "No owner"),
+    ].filter(Boolean).join(" · ");
+    return (
+      <AgentCard
+        key={agent.id}
+        label={label}
+        avatar={
+          <AgentPicture
+            name={label}
+            iconUrl={agent.icon_url ?? null}
+            size={66}
+            thirdParty={avatars.data?.third_party_avatars_enabled ?? null}
+          />
+        }
+        detail={device ? `${agent.connector_type} · ${device}` : agent.connector_type}
+        note={note || null}
+        footer={
+          <div className="relative self-start px-3.5 pb-3">
+            <span title={status.detail} className="flex items-center gap-1.5 text-xs text-foreground-muted">
+              <span aria-hidden className={`size-2 shrink-0 rounded-full ${status.dot}`} />
+              {status.label}
+            </span>
+          </div>
+        }
+        actions={actionsFor(agent)}
+        onOpen={() => navigate(agentPath(agent.id, capabilities))}
+      />
+    );
+  };
 
   let body: ReactNode;
   if (data === null && loading) {
-    body = <CircularProgress aria-label="Loading agents" />;
+    body = (
+      <div className="flex justify-center py-12">
+        <Spinner aria-label="Loading agents" />
+      </div>
+    );
   } else if (data === null) {
     body = (
-      <Alert
-        severity="error"
-        action={
-          <Button color="inherit" size="small" onClick={() => void refetch()}>
+      <Alert variant="destructive">
+        <AlertDescription>Couldn't load the agents: {error}</AlertDescription>
+        <AlertAction>
+          <Button variant="outline" size="xs" onClick={() => void refetch()}>
             Retry
           </Button>
-        }
-      >
-        Couldn't load the agents: {error}
+        </AlertAction>
       </Alert>
     );
-  } else if (rows.length === 0) {
-    body = emptyCard;
   } else {
     body = (
-      <DataTable
-        rows={rows}
-        columns={columns}
-        // Sized to a page of rows, as the design's table is: the page
-        // scrolls, not the table, and a short list ends at its last row.
-        height={TABLE_CHROME + ROW * Math.min(rows.length, PAGE_SIZE)}
-        pageSize={PAGE_SIZE}
-        noun={{ one: "agent", other: "agents" }}
-        search={search}
-        selectFilters={selectFilters}
-        initialSort={{ field: "created_at", sort: "desc" }}
-        yours={yours}
-        pinnedRight={PINNED}
-        onRowClick={(params) => navigate(`/agents/${params.id}`)}
-        sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
-      />
+      <>
+        {rows.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <SearchInput
+              containerClassName="min-w-60 flex-1"
+              className="h-9"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter agents by name…"
+              aria-label="Search agents"
+            />
+            {(Object.keys(options) as FilterField[]).map((field) => (
+              <FilterSelect
+                key={field}
+                field={field}
+                options={options[field] ?? []}
+                value={filters[field]}
+                onChange={(value) => setFilters((current) => ({ ...current, [field]: value }))}
+              />
+            ))}
+          </div>
+        )}
+        {filtering && shown.length === 0 && (
+          <p className="py-2 text-sm text-foreground-muted">
+            {yours ? "None of your agents match these filters." : "No agent here matches these filters."}
+          </p>
+        )}
+        <AgentCardGrid>
+          <AddAgentTile onClick={() => (managed ? setNewOpen(true) : setRegisterOpen(true))} />
+          {shown.map(card)}
+        </AgentCardGrid>
+      </>
     );
   }
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <PageHeader
-        sx={{ mb: 3 }}
-        title={<Typography variant="h5">Agents</Typography>}
-        description={
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            {yours ? `The agents you own in ${workspace}.` : `Agents in ${workspace}.`}
-          </Typography>
-        }
-        actions={addButton}
-      />
-
+    <div className={`${SHARED_UI_CLASS} flex min-h-0 flex-1 flex-col`}>
+    <ServerPage
+      width={880}
+      title="Agents"
+      term="agent"
+      description={yours ? `The agents you own in ${workspace}.` : `Agents in ${workspace}.`}
+    >
       {data !== null && error !== null && (
-        <Box sx={{ mb: 2 }}>
-          <PageBanner
-            tone="warning"
-            action={
-              <Button color="inherit" size="small" onClick={() => void refetch()}>
-                Retry
-              </Button>
-            }
-          >
-            Couldn't refresh the agents: {error}. This is the list as last loaded.
-          </PageBanner>
-        </Box>
+        <Alert variant="warning">
+          <AlertDescription>Couldn't refresh the agents: {error}. This is the list as last loaded.</AlertDescription>
+          <AlertAction>
+            <Button variant="outline" size="xs" onClick={() => void refetch()}>
+              Retry
+            </Button>
+          </AlertAction>
+        </Alert>
       )}
 
       {notice && notice.severity !== "success" && (
-        <Alert severity={notice.severity} onClose={() => setNotice(null)} sx={{ mb: 2 }}>
-          {notice.lines.map((line) => (
-            <div key={line}>{line}</div>
-          ))}
+        <Alert variant={notice.severity === "error" ? "destructive" : "warning"}>
+          <AlertDescription>
+            {notice.lines.map((line) => (
+              <div key={line}>{line}</div>
+            ))}
+          </AlertDescription>
+          <AlertAction>
+            <Button variant="ghost" size="icon-xs" aria-label="Dismiss" onClick={() => setNotice(null)}>
+              <X className="size-3.5" />
+            </Button>
+          </AlertAction>
         </Alert>
       )}
 
       {body}
 
+      <NewAgentDialog
+        open={newOpen}
+        onClose={() => setNewOpen(false)}
+        onAddOutsideAgent={capabilities.administersWorkspace ? () => setRegisterOpen(true) : null}
+      />
       <RegisterAgentDialog open={registerOpen} onClose={() => setRegisterOpen(false)} onRegistered={refetch} />
 
       {renaming && (
@@ -549,6 +517,7 @@ function AgentList({
         message={notice?.severity === "success" ? notice.lines.join(" ") : null}
         onClose={() => setNotice(null)}
       />
-    </Box>
+    </ServerPage>
+    </div>
   );
 }

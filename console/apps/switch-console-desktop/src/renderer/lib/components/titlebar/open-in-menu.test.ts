@@ -72,7 +72,7 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
 }));
 
-vi.mock('@renderer/lib/ui/select', async () => {
+vi.mock('@switch-console/chat-ui/primitives/select', async () => {
   const React = await import('react');
 
   type SelectContextValue = {
@@ -130,7 +130,7 @@ vi.mock('@renderer/lib/ui/shortcut', async () => {
   };
 });
 
-vi.mock('@renderer/lib/ui/tooltip', async () => {
+vi.mock('@switch-console/chat-ui/primitives/tooltip', async () => {
   const React = await import('react');
   return {
     Tooltip: ({ children }: { children: React.ReactNode }) =>

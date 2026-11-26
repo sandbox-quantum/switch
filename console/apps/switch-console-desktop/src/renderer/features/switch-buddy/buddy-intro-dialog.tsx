@@ -1,14 +1,14 @@
+import { BuddyIntroLines } from '@switch-console/chat-ui/components/buddy-intro-lines';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { observer } from 'mobx-react-lite';
 import { useRef } from 'react';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { useCurrentViewId, useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Button } from '@renderer/lib/ui/button';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 import { ONBOARDING_BACKDROP } from '@renderer/lib/ui/wizard-frame';
 import { BuddyAvatar } from './buddy-avatar';
 import { firstNameOf } from './buddy-identity';
-import { BuddyIntroLines } from './buddy-intro-lines';
 import { buddyIntroStore } from './buddy-intro-store';
 import { useBuddyPending } from './buddy-pending';
 import { buddyPerson } from './buddy-person';
@@ -65,7 +65,7 @@ export const BuddyIntroDialog = observer(function BuddyIntroDialog() {
             </h2>
             <p className="text-sm text-foreground-muted">Your first AI assistant in Switch Rooms</p>
           </div>
-          <BuddyIntroLines firstName={firstNameOf(person.name)} />
+          <BuddyIntroLines firstName={firstNameOf(person.name)} here="Console" />
         </div>
         <div className="flex justify-center gap-2 px-8 pt-2 pb-8">
           <Button variant="ghost" onClick={notNow}>

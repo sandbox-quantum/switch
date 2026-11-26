@@ -1,3 +1,4 @@
+import { AgentActivities } from '@switch-console/chat-ui/stores/chat-activity-store';
 import { agentNamesChanged } from '@renderer/features/agent-identity/agent-names-changed';
 import { changesRooms } from '@renderer/features/switch-servers/room-changing-tools';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -12,7 +13,6 @@ import {
 } from '@shared/core/chats/chatEvents';
 import { roomHealthChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { userChangesChannel } from '@shared/events/userChangesEvents';
-import { AgentActivities } from './chat-activity-store';
 import { chatsStore } from './chats';
 
 /** How long to gather room changes before re-reading: a template makes several at once. */

@@ -1,3 +1,16 @@
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { SidebarItemMiniButton, SidebarMenuRow } from '@switch-console/chat-ui/primitives/sidebar';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { ChevronRight, DoorOpen, ExternalLink, MoreVertical, Plus, Trash2 } from 'lucide-react';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
@@ -7,16 +20,7 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { appState } from '@renderer/lib/stores/app-state';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
-import { SidebarItemMiniButton, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent, UNASSIGNED_ROOM_KEY } from './sidebar-store';
 
 /** Sidebar placement remembers the last room even after its delivery ownership is lost. */

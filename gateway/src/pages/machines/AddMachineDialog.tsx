@@ -126,7 +126,7 @@ export default function AddMachineDialog({
         {error && <Alert severity="error">Could not issue an enrollment code: {error}</Alert>}
         {!error && !enrollment && <CircularProgress size={24} />}
         {refusal && <Alert severity="warning">{refusal.reason ?? NO_REMOTE_DEVICES}</Alert>}
-        {enrollment && !refused && (
+        {enrollment && (
           <Stack spacing={2}>
             <Stack spacing={2}>
               <TextField

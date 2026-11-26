@@ -1,8 +1,8 @@
+import { Entrance } from '@switch-console/chat-ui/components/chat-entrance';
+import { buddyWelcomeMessage } from '@switch-console/chat-ui/model/buddy-welcome-message';
+import { ChatMarkdown } from '@switch-console/chat-ui/ui/chat-markdown';
 import { useReducedMotion } from 'motion/react';
-import { Entrance } from '@renderer/features/chats/chat-entrance';
-import { ChatMarkdown } from '@renderer/features/chats/ui/chat-markdown';
 import { BuddyAvatar } from './buddy-avatar';
-import { buddyWelcomeMessage } from './buddy-welcome-message';
 
 /**
  * switch-buddy's welcome while it does not exist yet: the very message it

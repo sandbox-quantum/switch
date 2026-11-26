@@ -1,3 +1,9 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { detectPlatform } from '@tanstack/react-hotkeys';
 import { BookOpen, ExternalLink, PanelLeft, Search } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -7,9 +13,7 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@renderer/lib/ui/button';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import { SWITCH_CONSOLE_DOCS_URL, SWITCH_TRUST_URL } from '@shared/urls';
 

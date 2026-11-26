@@ -1,3 +1,5 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { withChatHost } from '@switch-console/chat-ui/testing';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { runInAction } from 'mobx';
 import { createElement } from 'react';
@@ -16,7 +18,6 @@ import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-con
 import { RoomSidePanel } from '@renderer/features/switch-rooms/room-side-panel';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 const chat = vi.hoisted(() => ({ current: null as ChatSummary | null }));
@@ -70,23 +71,25 @@ function render(canManage: boolean, panel: 'side' | 'configuration' | 'add' = 's
     createElement(
       QueryClientProvider,
       { client },
-      panel === 'side'
-        ? createElement(RoomSidePanel, { roomId: 'r' })
-        : panel === 'configuration'
-          ? createElement(RoomConfigurationPanel, { roomId: 'r' })
-          : createElement(ChatAddParticipantPanel, {
-              serverId: 's',
-              workspaceId: null,
-              chat: chat.current,
-              memberIds: new Set(['u1', 'u2']),
-              onAddedPeople: () => {},
-            })
+      withChatHost(
+        panel === 'side'
+          ? createElement(RoomSidePanel, { roomId: 'r' })
+          : panel === 'configuration'
+            ? createElement(RoomConfigurationPanel, { roomId: 'r' })
+            : createElement(ChatAddParticipantPanel, {
+                serverId: 's',
+                workspaceId: null,
+                chat: chat.current,
+                memberIds: new Set(['u1', 'u2']),
+                onAddedPeople: () => {},
+              })
+      )
     )
   );
 }
 
-describe('a group chat’s participant column', () => {
-  it('lists the chat’s agents and people, with adding and a menu per member for a manager', () => {
+describe("a group chat's participant column", () => {
+  it("lists the chat's agents and people, with adding and a menu per member for a manager", () => {
     const html = render(true);
     expect(html).toContain('Helper');
     expect(html).toContain('Bob');
@@ -129,7 +132,7 @@ describe('adding to a group chat', () => {
   });
 });
 
-describe('a group chat’s configuration', () => {
+describe("a group chat's configuration", () => {
   it('leaves who is in the chat to the participant column, and keeps Leave room', () => {
     const html = render(false, 'configuration');
     expect(html).not.toContain('Group chat in Switch Console');

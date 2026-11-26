@@ -11,22 +11,22 @@
  * status pill — so hosts and agents read as one product.
  */
 
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Label } from '@switch-console/chat-ui/primitives/label';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { ToggleGroup, ToggleGroupItem } from '@switch-console/chat-ui/primitives/toggle-group';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Plus, Server, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { PageHeader } from '@renderer/lib/components/page-header';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@renderer/lib/ui/button';
-import { Label } from '@renderer/lib/ui/label';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
-import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
 import { log } from '@renderer/utils/logger';
 import { deriveHostStatus, type HostStatus } from '@shared/core/remote-hosts/host-status';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';

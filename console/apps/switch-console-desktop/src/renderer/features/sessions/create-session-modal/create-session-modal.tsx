@@ -1,3 +1,19 @@
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@switch-console/chat-ui/primitives/select';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -21,22 +37,6 @@ import {
   ComboboxTrigger,
 } from '@renderer/lib/ui/combobox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
-import { Textarea } from '@renderer/lib/ui/textarea';
 import { log } from '@renderer/utils/logger';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';

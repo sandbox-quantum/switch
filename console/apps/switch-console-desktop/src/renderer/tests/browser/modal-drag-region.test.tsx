@@ -1,9 +1,9 @@
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { act, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ModalRenderer } from '@renderer/lib/modal/modal-renderer';
 import { modalStore } from '@renderer/lib/modal/modal-store';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 
 /**
  * Draggable regions are geometric rectangles Chromium derives from layout, not

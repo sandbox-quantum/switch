@@ -1,19 +1,19 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { FileText, Link2, Loader2, Plus, Search, X } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
-import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Dialog,
   DialogContent,
   DialogContentArea,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Input } from '@renderer/lib/ui/input';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FileText, Link2, Loader2, Plus, Search, X } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import type { LibraryItem, PackageMemberKind } from '@shared/core/switch-servers/library';
 import { KIND_TEXT, libraryItemOpens, removalText, type Viewer } from './library-model';
 import { invalidateLibrary, libraryItemsKey } from './library-queries';

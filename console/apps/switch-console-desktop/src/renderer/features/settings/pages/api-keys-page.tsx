@@ -1,16 +1,16 @@
+import { Alert } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, Plus, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { PageHeader } from '@renderer/lib/components/page-header';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Alert } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import { Input } from '@renderer/lib/ui/input';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import {
   type CreatedRegistrationKey,
   type SwitchApiKey,

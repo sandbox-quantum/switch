@@ -1,3 +1,12 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from '@switch-console/chat-ui/primitives/popover';
 import {
   AlertTriangle,
   ArrowRight,
@@ -10,15 +19,6 @@ import {
 import { observer } from 'mobx-react-lite';
 import React from 'react';
 import { appState } from '@renderer/lib/stores/app-state';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  Popover,
-  PopoverContent,
-  PopoverDescription,
-  PopoverHeader,
-  PopoverTitle,
-  PopoverTrigger,
-} from '@renderer/lib/ui/popover';
 import { Progress } from '@renderer/lib/ui/progress';
 import {
   type UpdateActionKind,

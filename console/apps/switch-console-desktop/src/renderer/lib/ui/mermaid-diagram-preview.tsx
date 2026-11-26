@@ -1,7 +1,11 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { Expand } from 'lucide-react';
 import type React from 'react';
-import { Button } from '@renderer/lib/ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 
 interface MermaidDiagramPreviewProps {

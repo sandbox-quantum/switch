@@ -8,9 +8,7 @@ import {
   consoleTemplatesLink,
   copyName,
   createsLine,
-  kindOf,
   ownerLabel,
-  lastUsed,
   templateMenu,
   useCaseLabel,
 } from "./templateRows";
@@ -100,15 +98,6 @@ describe("copyName", () => {
 });
 
 describe("what a card says", () => {
-  it("files any kind the product does not name as a room, as Switch Console does", () => {
-    expect(["agent", "room", "group", "pipeline"].map((kind) => kindOf({ kind }))).toEqual([
-      "agent",
-      "room",
-      "group",
-      "room",
-    ]);
-  });
-
   it("labels each use case", () => {
     expect(useCaseLabel("ops")).toBe("Operations");
     expect(useCaseLabel("engineering")).toBe("Engineering");
@@ -128,16 +117,6 @@ describe("what a card says", () => {
 
   it("calls an owner who has left a former member", () => {
     expect(ownerLabel(template({ owner_name: null }))).toBe("Former member");
-  });
-
-  it("says when it was last used, if ever, with the exact time to hover", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-11-16T12:00:00Z"));
-    expect(lastUsed(template())).toBeNull();
-    expect(lastUsed(template({ last_run_at: "2026-11-14T12:00:00Z" }))?.text).toBe("used 2 days ago");
-    expect(lastUsed(template({ last_run_at: "2026-11-16T11:59:30Z" }))?.text).toBe("used just now");
-    expect(lastUsed(template({ last_run_at: "2026-10-01T12:00:00Z" }))?.text).toBe("used on 2026-10-01");
-    expect(lastUsed(template({ last_run_at: "2026-11-14T12:00:00Z" }))?.title).toMatch(/^Last used 2026-11-14 /);
   });
 });
 

@@ -1,3 +1,11 @@
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
@@ -5,14 +13,6 @@ import { RoomPickerRow } from '@renderer/lib/components/room-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
 import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 
 type Props = BaseModalProps<{ roomId: string }> & { workspaceId: string };

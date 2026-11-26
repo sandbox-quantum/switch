@@ -14,7 +14,7 @@ vi.mock('@renderer/lib/ipc', () => ({
 }));
 vi.mock('@renderer/lib/stores/app-state', () => ({ appState: { navigation: { navigate } } }));
 vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
-vi.mock('@renderer/features/chats/components/chat-composer', () => ({
+vi.mock('@switch-console/chat-ui/components/chat-composer', () => ({
   focusComposerWhenOpened,
 }));
 vi.mock('@renderer/features/chats/stores/chats', () => ({
@@ -25,7 +25,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { statusFor: () => ({ user: { name: 'Max Tam' } }) },
 }));
 vi.mock('./buddy-intro-store', () => ({ buddyIntroStore: { skipped } }));
-vi.mock('./buddy-welcome-message', () => ({
+vi.mock('@switch-console/chat-ui/model/buddy-welcome-message', () => ({
   buddyChannelOpener: () => 'opener',
   buddyWelcomeMessage: ({ firstName, agentName }: { firstName: string; agentName: string }) =>
     `welcome ${firstName} from ${agentName}`,

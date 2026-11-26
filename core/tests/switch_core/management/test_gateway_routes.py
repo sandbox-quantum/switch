@@ -27,6 +27,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ASSIGNMENT_CHANGED, CREDENTIAL_REVOKED
+from switch_core.providers.registry import agent_provider
 from tests.switch_core.connections.github_seed import connect_github, grant_repository
 from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.management.harness import (
@@ -616,8 +617,23 @@ class TestManagedAgents:
             "junie",
         ]
         assert providers[0]["label"] == "Claude Code"
+        assert providers[0]["supports_auto_mode"] is True
+        assert providers[4] == {
+            **providers[4],
+            "id": "cursor",
+            "supports_auto_mode": False,
+        }
         for entry in providers:
-            assert set(entry) == {"id", "label", "advanced_fields"}
+            assert set(entry) == {
+                "id",
+                "label",
+                "advanced_fields",
+                "supports_auto_mode",
+            }
+            assert (
+                entry["supports_auto_mode"]
+                == agent_provider(entry["id"]).supports_auto_mode
+            )
             assert (
                 entry["advanced_fields"]
                 == advanced.json()["providers"][entry["id"]]["fields"]

@@ -1,12 +1,12 @@
+import { ProviderChoiceCard } from '@switch-console/chat-ui/components/provider-choice';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { CircleAlert, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import { LogTail } from '@renderer/features/switch-servers/log-tail';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@renderer/lib/ui/button';
-import { Input } from '@renderer/lib/ui/input';
-import { Spinner } from '@renderer/lib/ui/spinner';
-import { cn } from '@renderer/utils/utils';
 import { requireProvider } from '@shared/core/providers/agent-provider-registry';
 import { asksForCode, linksIn } from '@shared/core/providers/provider-login';
 import type { BuddyProvider } from './buddy-providers';
@@ -66,34 +66,22 @@ export function ProviderCard({
   onSelect: () => void;
 }) {
   return (
-    <li className="list-none">
-      <button
-        type="button"
-        aria-pressed={selected}
-        disabled={disabled || provider.state === 'checking'}
-        onClick={onSelect}
-        className={cn(
-          'flex h-full w-full flex-col items-start gap-3 rounded-xl border bg-background/80 p-4 text-left disabled:opacity-60',
-          selected ? 'border-foreground' : 'border-border hover:bg-[var(--sel-soft)]'
-        )}
-      >
-        <AgentIcon id={provider.id} size={28} />
-        <span className="space-y-0.5">
-          <span className="block text-sm font-medium text-foreground">{provider.name}</span>
-          <span
-            className={cn(
-              'flex items-center gap-1.5 text-xs',
-              provider.state === 'ready' ? 'text-emerald-600' : 'text-foreground-muted'
-            )}
-          >
-            {provider.state === 'checking' && <Spinner className="size-3" />}
-            {provider.state === 'sign-in' && !provider.loginHelps
-              ? 'Can’t be used yet'
-              : TAG[provider.state]}
-          </span>
-        </span>
-      </button>
-    </li>
+    <ProviderChoiceCard
+      icon={<AgentIcon id={provider.id} size={28} />}
+      name={provider.name}
+      tag={
+        provider.state === 'sign-in' && !provider.loginHelps
+          ? 'Can’t be used yet'
+          : TAG[provider.state]
+      }
+      tone={
+        provider.state === 'ready' ? 'ready' : provider.state === 'checking' ? 'checking' : 'plain'
+      }
+      selected={selected}
+      disabled={disabled || provider.state === 'checking'}
+      onSelect={onSelect}
+      signIn={null}
+    />
   );
 }
 

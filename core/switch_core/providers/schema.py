@@ -32,6 +32,7 @@ def providers_schema(flags: Mapping[str, bool]) -> dict[str, Any]:
                 "id": provider.id,
                 "label": provider.label,
                 "advanced_fields": [field.wire() for field in provider.advanced_fields],
+                "supports_auto_mode": provider.supports_auto_mode,
             }
             for provider in offered_providers(flags)
         ]

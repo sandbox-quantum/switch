@@ -1,3 +1,17 @@
+import { ACCESS_HELPERS } from '@switch-console/chat-ui/model/room-access';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import {
   Archive,
   ArchiveRestore,
@@ -8,17 +22,7 @@ import {
   User,
 } from 'lucide-react';
 import { roomTitle } from '@renderer/features/switch-rooms/room-labels';
-import { ACCESS_HELPERS } from '@renderer/features/switch-rooms/room-settings-sections';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { ACCESS_SHORT, countText, ownerText, type RoomCard as RoomCardData } from './room-list';
 
 /** The mark of an app connection: its platform's icon, or Switch Console's. */
