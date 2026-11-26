@@ -182,6 +182,16 @@ export async function loginProbeEnvironment(
  * removes it: a decrypted copy of the login is never left behind. A copy that
  * cannot be removed is logged as an error; the probe's answer stands.
  */
+/**
+ * Deletes what a login check left under `dataDir` when the controller was
+ * stopped in the middle of one, so `probeWithLogin`'s clean-up never ran: a
+ * decrypted copy of a login. Box mode runs it once at start, before anything
+ * checks a login.
+ */
+export async function clearLeftLoginChecks(dataDir: string): Promise<void> {
+  await rm(join(dataDir, 'login-check'), { recursive: true, force: true });
+}
+
 export async function probeWithLogin<T>(
   dir: string,
   log: Logger,

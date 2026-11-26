@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { dataLayout } from './paths';
 import {
+  clearLeftLoginChecks,
   InProcessRuntime,
   isInside,
   LaunchedBundle,
@@ -421,6 +422,19 @@ describe('LaunchedBundle', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('clearLeftLoginChecks', () => {
+  it('clears a login check left by a controller stopped in the middle of one', async () => {
+    const left = join(dir, 'data', 'login-check', 'claude', 'provider-home');
+    mkdirSync(left, { recursive: true });
+    writeFileSync(join(left, 'google-credentials.json'), '{}');
+    writeFileSync(join(dir, 'data', 'kept.txt'), 'kept');
+    await clearLeftLoginChecks(join(dir, 'data'));
+    expect(existsSync(join(dir, 'data', 'login-check'))).toBe(false);
+    expect(existsSync(join(dir, 'data', 'kept.txt'))).toBe(true);
+    await clearLeftLoginChecks(join(dir, 'data'));
   });
 });
 

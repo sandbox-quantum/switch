@@ -66,7 +66,13 @@ import { definitionProblem } from './reconcile';
 import { TRUSTED_RELEASE_KEYS } from './release-keys';
 import { assertTrustedKeys, verifyDownloadedRelease } from './release-signing';
 import { isManagedRelease, readCurrent, throughCurrent } from './releases';
-import { emptyObservation, InProcessRuntime, observeOnDisk, probeProvider } from './runtime';
+import {
+  clearLeftLoginChecks,
+  emptyObservation,
+  InProcessRuntime,
+  observeOnDisk,
+  probeProvider,
+} from './runtime';
 import { AgentRuntimes } from './runtimes';
 import { type ControllerInfoChange, PROTOCOL_VERSION, PROVIDERS, type UpdatedBy } from './schemas';
 import {
@@ -678,6 +684,8 @@ async function runCommand(args: string[], box = false): Promise<number> {
           to: store.identity()?.server,
         });
     }
+    // A login check cut off by the box controller stopping left a copy of the login.
+    if (box) await clearLeftLoginChecks(dataDir);
     const codexTemplate = separateUsers ? await codexTemplateInstalled(separateUsers.uid) : false;
     if (separateUsers && !codexTemplate)
       log.warn(
