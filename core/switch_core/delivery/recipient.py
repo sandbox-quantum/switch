@@ -70,7 +70,7 @@ from switch_core.clients.mentions import (
     mention_regex as _mention_regex,
 )
 from switch_core.clients.mentions import (
-    strip_emphasis as _strip_emphasis,
+    mentionable_text as _mentionable_text,
 )
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, CloudMachine, TenantMember
@@ -1911,7 +1911,9 @@ class AgentRecipient:
     def _args_tag_my_name(self, text: str) -> bool:
         """True when `text` contains our own `@name` at a full-token boundary
         (so a name that is a prefix of a longer one is not falsely matched)."""
-        return _mention_regex(self.agent.name).search(_strip_emphasis(text)) is not None
+        return (
+            _mention_regex(self.agent.name).search(_mentionable_text(text)) is not None
+        )
 
     async def _text_tags_my_alias(
         self, session: AsyncSession, text: str, room_id: str

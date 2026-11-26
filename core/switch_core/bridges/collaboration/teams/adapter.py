@@ -114,6 +114,7 @@ from switch_core.bridges.collaboration.teams.withdrawal import (
     delete_own_subscriptions,
     leave_every_team,
 )
+from switch_core.clients.mentions import sub_outside_inline_code
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -3303,7 +3304,7 @@ class TeamsAdapter(PlatformAdapter):
                 return match.group(0)
             return f"<at>{html.escape(name)}</at>"
 
-        return pattern.sub(_replace, content)
+        return sub_outside_inline_code(pattern, _replace, content)
 
     def _mention_entities(self, text: str) -> list[dict[str, Any]]:
         """Bot Framework mention entities for the ``<at>`` markup in ``text``.

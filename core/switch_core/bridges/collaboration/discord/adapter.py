@@ -114,6 +114,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     turn_status,
 )
 from switch_core.chat_account_links import ACCOUNT_COMMANDS
+from switch_core.clients.mentions import sub_outside_inline_code
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -3981,7 +3982,7 @@ class DiscordAdapter(PlatformAdapter):
             role_id = self._agent_role_ids.get(match.group(1).casefold())
             return f"<@&{role_id}>" if role_id else match.group(0)
 
-        return re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
+        return sub_outside_inline_code(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
 
     def defuse_mass_mentions(self, text: str) -> str:
         """Defuse the words as prose: `allowed_mentions` is Discord's guard.
