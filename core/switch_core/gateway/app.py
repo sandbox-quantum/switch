@@ -55,8 +55,8 @@ from switch_core.gateway.ecosystem import router as ecosystem_router
 from switch_core.gateway.feature_flags import router as feature_flags_router
 from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
-from switch_core.gateway.hosted_network import router as hosted_network_router
 from switch_core.gateway.hosted_machines import router as hosted_machines_router
+from switch_core.gateway.hosted_network import router as hosted_network_router
 from switch_core.gateway.hosted_provisioner import router as hosted_provisioner_router
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
