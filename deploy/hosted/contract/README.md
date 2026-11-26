@@ -22,8 +22,16 @@ kept.
   run: make the `setup` objects first as an administrator, in order, then send `request` (`method`, `path`, `body`)
   impersonating `as`. `operation`, `resource`, `namespace`, `name` and `object` state the same request as admission
   sees it. `expect` is `allow`.
+- `admission/bad/*.json`: a good request changed so that one policy rule refuses it, one per rule. `expect` is
+  `refuse`; `policies` names the policy (or, where two guard the same thing, both) and `message` that rule's message.
+  `refused_by: rbac` marks a change the account's RBAC refuses before admission is reached (a verb or object it has
+  no grant for). `groups`, when present, are the impersonated user's groups (an administrator, for the rules every
+  account meets). `from_good` names the good sample it was made from.
 - `rbac.json`: per service account, every call its code made. `(box)` stands for any box namespace
-  (`box_namespace`), in `namespace`, or in `name` for the namespace itself.
-- `log-lines.json`: the alert lines monitors page on: `service`, and the fixed `words` a monitor matches.
+  (`box_namespace`), in `namespace`, or in `name` for the namespace itself; `names` lists the other names a service
+  chooses at run time, each standing for every name of its shape.
+- `log-lines.json`: every alert line the services log, each paging: `service` (the pod's Datadog service tag) and
+  the fixed `words` its monitor matches (`only_with_any_of`: the monitor matches only lines that also carry one of
+  these words).
 - `tiers.json`: the box sizes the operator's configuration must offer.
 - `fills.json`: a placeholder for each `__TOKEN__` the deployed manifests use, matching the samples.

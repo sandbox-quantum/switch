@@ -1,0 +1,106 @@
+{
+  "as": "system:serviceaccount:switch-hosted:switch-hosted-provisioner",
+  "expect": "refuse",
+  "from_good": "good/provisioner-a-base-box-box-keyed-put-secret-box-map.json",
+  "group": "",
+  "message": "",
+  "name": "box-map",
+  "namespace": "switch-hosted",
+  "object": null,
+  "operation": "DELETE",
+  "policies": [],
+  "refused_by": "rbac",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/v1/namespaces/switch-hosted/secrets/box-map"
+  },
+  "resource": "secrets",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "switch-hosted"
+        }
+      },
+      "path": "/api/v1/namespaces/switch-hosted"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "0000000f-0000-4000-8000-00000000000f": "YWdlbnRzLWJveC1rMS1mZmZmZmZmZmZmZmZmZmZm"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "0000000e-0000-4000-8000-00000000000e": "YWdlbnRzLWJveC1rMS1lZWVlZWVlZWVlZWVlZWVl"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "pool-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/pool-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-0000000000000021": "azEtMTExMTExMTExMTExMTExMQ==",
+          "agents-box-k1-ffffffffffffffff": "azEtZGRkZGRkZGRkZGRkZGRkZA=="
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-owners",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-owners"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-cccccccccccccccc": "MDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBj"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-removals",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-removals"
+    }
+  ],
+  "subresource": "",
+  "version": "v1",
+  "what": "refused: p5 box map deleted"
+}

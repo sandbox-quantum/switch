@@ -12,6 +12,7 @@
         "replicas": 1
       }
     },
+    "content_type": "application/merge-patch+json",
     "method": "PATCH",
     "path": "/apis/apps/v1/namespaces/agents-box-k1-0000000000000021/statefulsets/box/scale"
   },

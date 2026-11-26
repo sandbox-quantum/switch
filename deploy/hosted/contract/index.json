@@ -1,6 +1,398 @@
 {
   "files": [
     {
+      "path": "admission/bad/add-only-a-removal-entry-removed.json",
+      "sha256": "9d19b0a099f37e34905ad515b43ca9eaec428af70436b386ca166c284653161a"
+    },
+    {
+      "path": "admission/bad/cordon-a-status-change.json",
+      "sha256": "6d33ebbb8ae79ec6091167844cd1ccf496e2706dc54f8b0759c854dd22806f0d"
+    },
+    {
+      "path": "admission/bad/cordon-already-cordoned.json",
+      "sha256": "b0f798ff15907c2a5ed4bba91154f5850949a2cf7be395d1251601fa409d9ea4"
+    },
+    {
+      "path": "admission/bad/cordon-and-label.json",
+      "sha256": "8c22b6d667505398c67526df5db8c0e987660822043bb6d842d14f720502f8ac"
+    },
+    {
+      "path": "admission/bad/cordon-and-taint.json",
+      "sha256": "cc2cc3f039f49e1896c4519193e38deb06ee9eb8615ec9c568216e3ee2c95ebf"
+    },
+    {
+      "path": "admission/bad/cordon-not-an-agents-node.json",
+      "sha256": "70dccadc71dd57573d61bc6a93206f211a1f789cacaaae0cafed6acb0982b476"
+    },
+    {
+      "path": "admission/bad/evict-another-pod.json",
+      "sha256": "b6c8f2643f5a281f83f11f307bac04a3002f25e7a42a9e55a499804dff54c3e4"
+    },
+    {
+      "path": "admission/bad/gvisor-a-class-outside-the-box-namespaces.json",
+      "sha256": "774aebbe072bb23b7e2d362ff351e9753afe7cb50fa6513e9538e58f7bd1d11d"
+    },
+    {
+      "path": "admission/bad/gvisor-agent-toleration-without-gvisor.json",
+      "sha256": "a85d4a1c3ef622b0fbb56f20683120d709b69d3e76d148e81d3f2f0a71246f87"
+    },
+    {
+      "path": "admission/bad/identity-machine-id-changed.json",
+      "sha256": "4a4da430cf8479907c1751366455a90ce20e7bea415b4c0502d30e5f8c9daa85"
+    },
+    {
+      "path": "admission/bad/identity-name-label-changed.json",
+      "sha256": "a6fe88448697f4f9839e0484b0c37f2dd6872627897fc8f2a6eb19050d923e52"
+    },
+    {
+      "path": "admission/bad/p1-a-finalizer.json",
+      "sha256": "165952ba47ed00335c1117a3d4e1e6dd96abe506181e915026fc60ab32947d2f"
+    },
+    {
+      "path": "admission/bad/p1-a-machine-id-out-of-form.json",
+      "sha256": "651f6659c4b6745e8062ceb9247b445792d585a79a14354a09b698569ad19daa"
+    },
+    {
+      "path": "admission/bad/p1-a-name-out-of-form.json",
+      "sha256": "bbd392c14e818cdcf10d56f7a337262b1b4c2e4eb8e723440d610544f1f3aee6"
+    },
+    {
+      "path": "admission/bad/p1-a-template-label-missing.json",
+      "sha256": "d6cb24d644d4ca11fd759f93e327311adc3fc07087588a180516df6466de28af"
+    },
+    {
+      "path": "admission/bad/p1-an-extra-label.json",
+      "sha256": "1a6cdb3a3f090a8d686748b0cb28afe32c82b19e47c1388b20d7005b3038eb97"
+    },
+    {
+      "path": "admission/bad/p1-an-update.json",
+      "sha256": "5b81d066576a9342c5c65841ce62320efa1573c1d19a2d7e6425edc2035583ef"
+    },
+    {
+      "path": "admission/bad/p2-a-delete.json",
+      "sha256": "b3b867e9d21a45450db12e950cb4f2b58c0a548e585afb37c57848af3ba63863"
+    },
+    {
+      "path": "admission/bad/p2-a-finalizer.json",
+      "sha256": "fd880abb85e97f0b851989238523fa554a55362949c6adc7597f2f523ceb8021"
+    },
+    {
+      "path": "admission/bad/p2-an-object-not-in-the-template.json",
+      "sha256": "242b776942324559f4e3aff6dc07b572516f0a7072fc52f6abb7aacf6a483bcb"
+    },
+    {
+      "path": "admission/bad/p2-an-unlabelled-namespace.json",
+      "sha256": "ca24572ca421c6990a8a8addc1fde0904dcde4c9d8e199b8df9e617fd9ab65f0"
+    },
+    {
+      "path": "admission/bad/p3-account-mounts-its-token.json",
+      "sha256": "fade009f6a95b9cdc4ca1ef2fb4e92b16db9ed74e51b3d5cd053241d4816e3ac"
+    },
+    {
+      "path": "admission/bad/p3-configmap-an-extra-key.json",
+      "sha256": "dafa0ced63f091cece5aefc18ec11658c37a300cd3aa8c90b497a103b6468e6f"
+    },
+    {
+      "path": "admission/bad/p3-configmap-binary-data.json",
+      "sha256": "c872349e71925ff005d7b4bbe004cd06a205167df32d9662169c79b0a8447b59"
+    },
+    {
+      "path": "admission/bad/p3-disk-another-class.json",
+      "sha256": "3e09b55022e2401a80b22e07646330d941bf9b255e50adb6dfdfe6131c6c2862"
+    },
+    {
+      "path": "admission/bad/p3-networkpolicy-deny-lets-egress-out.json",
+      "sha256": "308385af4baf63b052abbaf2fca6034f8c4cd0e103022e18dd30515ef3e5a334"
+    },
+    {
+      "path": "admission/bad/p3-networkpolicy-egress-to-another-port.json",
+      "sha256": "c05de8e1a5034ff30121ba5f6aa95101ef7225f6d970f89ec66f8a575f3d2d4d"
+    },
+    {
+      "path": "admission/bad/p3-networkpolicy-ingress-allowed.json",
+      "sha256": "5a5e6fa24c0ed691a9f1a2bb52c16dfa52aa76ff48a1f76edbcde320cb5610cc"
+    },
+    {
+      "path": "admission/bad/p3-quota-pods-allowed.json",
+      "sha256": "44b4f0dfdefc75ef3c7fedfd8f2519255f1ccd1befe19702803300100c071042"
+    },
+    {
+      "path": "admission/bad/p3-secret-made-with-data.json",
+      "sha256": "44e174883a12ab2c1c94df38b3706b57b26676a27d973fdb23c6be612152ba6f"
+    },
+    {
+      "path": "admission/bad/p3-secret-not-opaque.json",
+      "sha256": "beaa981ac734e7b48e34fb87376797e0c648871f465ceffadde317cf2571e136"
+    },
+    {
+      "path": "admission/bad/p4-a-capability-added.json",
+      "sha256": "be44ab62f6235cd3319904a6ff202459ffdd7f5341109c0b64a57e077c731414"
+    },
+    {
+      "path": "admission/bad/p4-a-container-renamed.json",
+      "sha256": "3e9c25a127f6e3ca81672048ea2462f33a5d59983692281dbd44f96bfff7841b"
+    },
+    {
+      "path": "admission/bad/p4-a-writable-root.json",
+      "sha256": "74b6d0e828fe71a0bdeba4a49894fa77546d1517bc45c60f2edf4a395a77ac01"
+    },
+    {
+      "path": "admission/bad/p4-an-extra-volume.json",
+      "sha256": "f3622585fdf3692634ed075235fa27293a461e9b8bd7db370eb21cd438443375"
+    },
+    {
+      "path": "admission/bad/p4-an-image-not-allowed.json",
+      "sha256": "fcddf287c0aaaf8a5b77c0ebe27916c19cef2f282c569c18a62fa592e26c9299"
+    },
+    {
+      "path": "admission/bad/p4-another-controller-command.json",
+      "sha256": "ba6c1a4977cfcf981ad7a63a5a06c05ae06d21a99937fe5ef1a7d7c0b9e2e287"
+    },
+    {
+      "path": "admission/bad/p4-another-service-name.json",
+      "sha256": "3d48918d5f1139c9dd3400cc0771e0616f01cf4dc5edd2c1490856dcf1a90f62"
+    },
+    {
+      "path": "admission/bad/p4-another-zone.json",
+      "sha256": "795cfc58f7e60edefa27096343a99d48621243044e30fbbe7b786c4f0499f6e1"
+    },
+    {
+      "path": "admission/bad/p4-env-from-a-configmap.json",
+      "sha256": "494ca55a835367667f50d262b1a5852a1c93f7181356f0b35dbb8a646439134f"
+    },
+    {
+      "path": "admission/bad/p4-host-network.json",
+      "sha256": "349ec7ebd7ef2ad20674d4a1f2f3a96ff098be32f22a13f825da29bd5f0da8ac"
+    },
+    {
+      "path": "admission/bad/p4-made-running.json",
+      "sha256": "1b35693211b68e3ece9ece68554237aa979da2b8c815cdbed91e3e97b42a47fc"
+    },
+    {
+      "path": "admission/bad/p4-not-a-tier.json",
+      "sha256": "d67e114ed0908ad236f825cc3e231ca8b5eeda235bc01406ec7e0db83b1e8f20"
+    },
+    {
+      "path": "admission/bad/p4-not-gvisor.json",
+      "sha256": "a5ebafd6d409d971ee7189d3421e0f3b1272952238e7c396828411de9a779cdc"
+    },
+    {
+      "path": "admission/bad/p4-privilege-escalation.json",
+      "sha256": "9061d9a28601a9f1880a53441f461bc8924dc9d6726e8dd3f1762e43320ab9af"
+    },
+    {
+      "path": "admission/bad/p4-privileged.json",
+      "sha256": "d493b93db4237d739ceb480cbeada6995e4e5d8881619419f9ccd178a67e1adf"
+    },
+    {
+      "path": "admission/bad/p4-root-allowed.json",
+      "sha256": "43bf9cb0a8c5344e77a8600f1998043514a2dd280be88979e2a47e85b9602ae5"
+    },
+    {
+      "path": "admission/bad/p4-starter-another-command.json",
+      "sha256": "0ccc0a3e2dfd110dd7f3a4134e0377ed678f165bfe3c54e6393ec5bb83994d00"
+    },
+    {
+      "path": "admission/bad/p4-the-agents-disk-in-the-controller.json",
+      "sha256": "3a2a80db4f720ef55787540929516a968def2d76344aa00014dc35908cfbed4c"
+    },
+    {
+      "path": "admission/bad/p5-box-map-deleted.json",
+      "sha256": "f567b7ac3e0133b6014300ceb7db64d5ad4fbcf6777118110b15cfe37e755449"
+    },
+    {
+      "path": "admission/bad/p5-box-map-entry-out-of-form.json",
+      "sha256": "90dd6b5beef52db4b920a5d6db237494ef624371bd30c960f4dc4d0d12b43271"
+    },
+    {
+      "path": "admission/bad/p5-box-map-entry-removed.json",
+      "sha256": "4d7d0df09515f7790049591e49903137ac9b0e279bd2449e4237022aa06a3022"
+    },
+    {
+      "path": "admission/bad/p5-box-map-label-changed.json",
+      "sha256": "ca48f8ffb68129e41e8740aaf212543632322dbf6c2303f9adcdcd12bb21ca14"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-deleted.json",
+      "sha256": "2d7c7debad098ad8cd117706795e958d2533e01073b8d3fdf64ce8dfa102a87f"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-entry-out-of-form.json",
+      "sha256": "5f9081f6f5d9c0cae76cbfa74a83b7c214a587b9df7fafcaf6f90f38477818a3"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-entry-removed.json",
+      "sha256": "2ff6a6c1f5c65b3bcd090e777328f52527eb5b4e12423999026c38d52f3a6be0"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-label-changed.json",
+      "sha256": "3c5768e47ab9ee97479f6306a6cf1c15f62836d32d83897d8c3f694a374e4234"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-deleted.json",
+      "sha256": "1b5ee00392265beb7f663c2b4fdd3fa8208e746d3b883efc2fdef5c2b743c5a2"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-entry-out-of-form.json",
+      "sha256": "8ce4c3db3497b3e10781e910c0a33478b7d7474d1a015e26860c7371c7db702c"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-entry-removed.json",
+      "sha256": "02a2cedaa004c9798b877966399b552702c58f252f5bfd3fd83ef208b4aaf9d8"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-label-changed.json",
+      "sha256": "ba9954ebefa841edd556206ff5a9090210f41fdac3c7d7067a16ed4b791560b2"
+    },
+    {
+      "path": "admission/bad/p6-a-configmap-outside-a-box.json",
+      "sha256": "fd0ca8a379d19a30b628945d647425cb2aa90ce786ade473e9d887fbc4d4febe"
+    },
+    {
+      "path": "admission/bad/p7-a-write-in-an-unlabelled-namespace.json",
+      "sha256": "012528c08972fc5b00c5195567f63b511934c3ab21c2b7b23826d278c1a18017"
+    },
+    {
+      "path": "admission/bad/p7-enrolment-secret-another-key.json",
+      "sha256": "63854c898c0812d955dbc362e72c502b568e66a4583080bbaa82ff325a87c4b3"
+    },
+    {
+      "path": "admission/bad/p7-generator-in-an-unlabelled-namespace.json",
+      "sha256": "a655d5ffd1fe41cef6cb57608f7dc69f8e7f6b4f09538d15d345f7d04902d6ca"
+    },
+    {
+      "path": "admission/bad/p7-scale-outside-a-box-namespace.json",
+      "sha256": "e96db35ee215d40e009f563f43887f1719d2a1aa3f216bbfc2d99eba68aeada3"
+    },
+    {
+      "path": "admission/bad/p8-a-finalizer.json",
+      "sha256": "6fc20feb6b65127e1d35a20c07324754238dc0a0b7b9fc8ec0615f83bf75fdb5"
+    },
+    {
+      "path": "admission/bad/p8-an-unlabelled-namespace.json",
+      "sha256": "50adbfb48e9ba3b67a7c8f241d15d0f7e2072f406f0af97e49037d7757023c36"
+    },
+    {
+      "path": "admission/bad/p8-an-update.json",
+      "sha256": "7f74dfbef8e5e10a1b7deeb247eb104eff5f9f72112dd9d87fd6123856eabf56"
+    },
+    {
+      "path": "admission/bad/p8-another-name.json",
+      "sha256": "2c381df33e6aa216a9a7fe6997bd645686d765c1bc82145ddd55b4f9342dbdbd"
+    },
+    {
+      "path": "admission/bad/p8-another-subject.json",
+      "sha256": "24e0a1dd290d3ec2fb14e8fb4b6c1fa28aae8d9e6acb53cb1574c6ead409448a"
+    },
+    {
+      "path": "admission/bad/p8-binds-another-role.json",
+      "sha256": "b4b603ade1bcada0680d9bbe2384ff694d60449283bf5fdadbe4e4fb182d7522"
+    },
+    {
+      "path": "admission/bad/placeholder-a-higher-priority.json",
+      "sha256": "2444f7ed09b1821ebc6b09c1c8fbda1ca2c6f7f66b77c59b48da3aac934619e2"
+    },
+    {
+      "path": "admission/bad/placeholder-a-long-name.json",
+      "sha256": "1140b909abd837b151513d758024f2091007fd822ec1b18a91c07748aacf63a7"
+    },
+    {
+      "path": "admission/bad/placeholder-a-port.json",
+      "sha256": "8b8406a81ca4da4b8f364bc20fbd04941340e6b7a2d5af91122024b1de486715"
+    },
+    {
+      "path": "admission/bad/placeholder-an-unlisted-security-key.json",
+      "sha256": "abdd1bf8b7c9134bb937b1a3ab8b866206a74d71521c1dca7abad1268120328d"
+    },
+    {
+      "path": "admission/bad/placeholder-an-unlisted-spec-key.json",
+      "sha256": "50bb68e897a79c7aa73729f9b153ac5b04ec563ec889c705794ce515f6818e1c"
+    },
+    {
+      "path": "admission/bad/placeholder-another-scheduler.json",
+      "sha256": "b7fb551e36fabd24a3e64ad27b28a42129eaf920fab4205a50ebcea9cc5aea44"
+    },
+    {
+      "path": "admission/bad/placeholder-another-toleration.json",
+      "sha256": "2b891b7e3f41958a32fbf8fd154fce298d8f73f8ce34367d2b9eced133d59956"
+    },
+    {
+      "path": "admission/bad/placeholder-another-zone.json",
+      "sha256": "0e79eb7e0bd73890ecb45f39ccdde4f19bf974c88d7769ffa108e230c113d8a0"
+    },
+    {
+      "path": "admission/bad/placeholder-bigger-than-a-box.json",
+      "sha256": "209b9ad3d89982d2b393bbcb1c99f717157f55c499c325286cc0423442b5c452"
+    },
+    {
+      "path": "admission/bad/placeholder-elsewhere.json",
+      "sha256": "e85903da5cb50f493a4ac2ac2d253df35693cfab702320fe9873a6e7b52a7a07"
+    },
+    {
+      "path": "admission/bad/placeholder-not-plain-gvisor.json",
+      "sha256": "4e5b20785c57b9c8b71472ea2731a28f9d50a52fcd0fbcdbd63a2cb35c3b2df8"
+    },
+    {
+      "path": "admission/bad/placeholder-with-a-token.json",
+      "sha256": "7abeb7a45a2f249f528c8ec35462bbe8c61b9d76f02381c1923531eb2a870b7c"
+    },
+    {
+      "path": "admission/bad/placeholder-with-env.json",
+      "sha256": "e95ac7784bceaf817e1dba3a485ed5476902944b28095b06610c04b5396150b9"
+    },
+    {
+      "path": "admission/bad/reaper-a-person-keyed-namespace.json",
+      "sha256": "a35ed7d0194f0f878b562a83767eefb8af5d04386b692ef721e3fef10245d6e4"
+    },
+    {
+      "path": "admission/bad/reaper-an-owned-box.json",
+      "sha256": "d210f3858aa5631423c289fe82efe91bf89c9e7076bbd96e9034ba24b62f8f73"
+    },
+    {
+      "path": "admission/bad/reaper-deletes-a-secret.json",
+      "sha256": "dc6f6d0e1489cc2022b75f4b77c34dc6ebc2772beaea85f93a54b72c6c209b9a"
+    },
+    {
+      "path": "admission/bad/remover-a-box-not-listed.json",
+      "sha256": "1acf525e191951f0c7d030140bf01f087c76d7b1295afe3e6491123e181745e9"
+    },
+    {
+      "path": "admission/bad/remover-deletes-a-secret.json",
+      "sha256": "ad1f1b19c61b0c5e2271e58052f5e776ee39bece027d436cd0c2810e27f7305d"
+    },
+    {
+      "path": "admission/bad/remover-not-a-box-namespace.json",
+      "sha256": "cd92aaa51fb90bb639064332e335fda63736d9c122970a062056dc0a340ca293"
+    },
+    {
+      "path": "admission/good/drain-worker-a-box-evicted-post-pod-eviction-box-0.json",
+      "sha256": "179ffbe72d49446d2421e102e0cfb12f81ac25b6ed75f2e865408609e10499a8"
+    },
+    {
+      "path": "admission/good/drain-worker-a-placeholder-made-post-pod-drain-room-contract1.json",
+      "sha256": "d5117fd18410b59d1a34ac1ad62e287d1677bf1d79241e70d0babe1c335efb4b"
+    },
+    {
+      "path": "admission/good/drain-worker-a-placeholder-taken-away-delete-pod-drain-room-contract1.json",
+      "sha256": "b03d2d01928a278900ab765ac8448b3e3d3dfe8a3e9f7fd4c7d65e4af54ce1b4"
+    },
+    {
+      "path": "admission/good/drain-worker-an-agents-node-cordoned-patch-node-contract-agents-node-1.json",
+      "sha256": "f05e5d3816651d933dbed497fe3e282a73e473bc8d340674f2e677317dc9d064"
+    },
+    {
+      "path": "admission/good/egress-lists-a-box-s-proxy-login-written-patch-secret-switch-proxy-login.json",
+      "sha256": "716cce1ade530865d63cc89ce196462a15485f5909e33cde5496ba419d342dd5"
+    },
+    {
+      "path": "admission/good/egress-lists-squid-s-box-files-written-patch-configmap-squid-boxes.json",
+      "sha256": "24884022ac1ea077c989a1eccba378a5f7e4870137640df012a05c4ee8b7e09a"
+    },
+    {
+      "path": "admission/good/egress-lists-squid-s-logins-written-patch-secret-squid-passwd.json",
+      "sha256": "95be60ef78751ccb6152fe7c375d065362bfa85a403b3b10d110a9ccb23cba3b"
+    },
+    {
       "path": "admission/good/eviction-watch-a-warning-event-on-a-box-post-event.json",
       "sha256": "e091306a1481376a6856a4a8b8dded2108f38d3f5a531e65a554fc9bfb57f44b"
     },
@@ -397,20 +789,24 @@
       "sha256": "df62d71ea92b7873dcfa51eccbf383ff5c740346493f45b110a6e6e0bfefa6ec"
     },
     {
+      "path": "admission/good/restart-worker-a-box-s-pod-restarted-delete-pod-box-0.json",
+      "sha256": "d239ee443c7d989cc11a2b896a8a10bf2e8105cef36fbf09da6584f677f9b7f3"
+    },
+    {
       "path": "admission/good/scaler-a-box-held-without-its-proxy-login-put-configmap-egress-held.json",
       "sha256": "dc7dbac775add10f93cd34be1d00477d450c482af37cdb378d519fa929083742"
     },
     {
       "path": "admission/good/scaler-a-box-s-enrolment-code-set-patch-secret-switch-enrol.json",
-      "sha256": "c0fa17150e9c08bcbab3e12875fb12d485e09c88fe71806e9c8bc48c06a94548"
+      "sha256": "c0c4743d3f935cc3770437a6c794efcaf7e6ecc4011ebfc578d70842e398ad82"
     },
     {
       "path": "admission/good/scaler-a-box-started-patch-statefulset-scale-box.json",
-      "sha256": "f94af414e6eeae885e9ecea0bfe1e1f3dc4fa549a39fd09e8031f9a1ad38c900"
+      "sha256": "810ea36bb704bc57f19d8adf9171e937c4f3a0a7449d11b4b9a1fc59b7a1286b"
     },
     {
       "path": "admission/good/scaler-a-box-stopped-patch-statefulset-scale-box.json",
-      "sha256": "545950e7a41dfc4b5d62e9409a75c4b3733ff75c554856f0ef97653bde8237b0"
+      "sha256": "caff509da716bc3b20684fc4b2f099c063ae5d1105a4d99b409a85c80277c019"
     },
     {
       "path": "fills.json",
@@ -418,11 +814,11 @@
     },
     {
       "path": "log-lines.json",
-      "sha256": "ad5218c5978a69b752af8f00d9305358bc9d1d7b26e88d05f2545b6cbb157089"
+      "sha256": "be0e30ba89d4adeae9e8ab53cedfb3b72ee947382669f017baf3490f1062a969"
     },
     {
       "path": "rbac.json",
-      "sha256": "be35736ffb17cbba6e58271df4a237fb3db8bdfd049e429ace73ecfa606d08c1"
+      "sha256": "1b6cf7c8a8dcfcdbf855a3b13219e11ccbdf0805e50f36a1dd87d919395b5e56"
     },
     {
       "path": "tiers.json",
