@@ -91,9 +91,9 @@ introducing multi-agent workflows.
    with it." `connect_to_room` this chat again. Keep the reply warm and tight: say the
    room is ready and the first answer will land there (use its reported name; on Slack,
    write `<#<external_channel_id>>` for a clickable `#channel`), note you can add
-   teammates, more agents or templates later, put a short return reminder on its own line
-   just above the link ("Come back to this chat any time to tweak it or ask about
-   Switch."), and end with the room link on its own line:
+   teammates, more agents or templates later, put a short return reminder as its own
+   paragraph ("Come back to this chat any time to tweak it or ask about Switch."), leave a
+   blank line, and end with the room link on its own final line:
    - With `channel_url` (`create_room` / `get_room_detail`):
      `**[Open <room name> →](<channel_url>)**` (opens straight in their app).
    - Unbridged Console chat (or no `channel_url`):

@@ -6,7 +6,8 @@ description: Router for switch-buddy's version-matched reference guides in .swit
 # switch-buddy guides
 
 Read only the guide you need for the current task (all live in `.switch/skills/`,
-delivered by this Switch server and matched to its version):
+delivered by this Switch server and matched to its version). **Always read the whole
+guide file in full** — do not truncate with `head`, `sed` or `grep`:
 
 | When you need to… | Read |
 |---|---|

@@ -83,7 +83,8 @@ this Switch server and matched to its version (never fetch from GitHub). **Befor
 any Switch workflow** — onboarding a new user, creating their first agent or a new room,
 connecting messaging apps or services, choosing a machine/folder/approvals, linking Switch
 Console, or handling a template update — **read `.switch/skills/switch-buddy/SKILL.md`**
-first to see which guide to open, then read that guide before acting.
+first to see which guide to open, then **read that guide in full** before acting (never
+truncate with `head`, `sed` or `grep` — key rules live near the end too).
 
 If a skill file is missing (e.g. on an older controller), carry on with what you know:
 pause only the action that needs the missing detail, say so plainly, and never guess it.
