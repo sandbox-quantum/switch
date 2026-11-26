@@ -314,12 +314,13 @@ moves the delivery ones to `checked`.
    Schemathesis with two tenants; Bombadil properties that tie the UI to the
    API.
 3. **Across processes and boundaries**: several replicas, the signal bus and
-   its caches, the controller, in-console chats and connectors; the
-   two-replica lane and the workload generator; then trace validation of the
+   its caches, the controller, in-console chats and connectors; a thin
+   two-replica lane with process and bus faults; then trace validation of the
    delivery history against the Quint model. Planned below.
-4. **Antithesis evaluation**: the assertions, workload and properties already
-   exist, so the question left is whether deterministic replay of the stack,
-   with its process kills and partitions, justifies the cost.
+4. **Antithesis evaluation**: the assertions, properties, scenarios and fault
+   hooks already exist, so the question left is whether a random workload
+   with interleaved faults, explored and replayed deterministically, justifies
+   the cost.
 
 ## The first slice: delivery, at three levels
 
@@ -558,15 +559,58 @@ In this order, each checker shown to fail on a planted bug:
    echo loops (`bridge.roundtrip-exactly-once`), plus format round-trips (Slack
    mrkdwn and the internal form, Discord chunking) and an agent's retried write
    posting once.
-7. **The two-replica lane.** A mode of the ephemeral stack with two switch-core
-   processes behind a load balancer that does not pin a client to one, and the
-   fast lane's scenarios run through it, each with a history check before
-   teardown. Then a replica killed mid-scenario (`replica.single-owner`,
-   `replica.ownership-eventual`, `presence.online-iff-lease`), dropped `NOTIFY`
-   and a severed listening connection (`signal.loss-only-delays`), and the
-   system level of the revocation property. Whether this is built in phase 3 or
-   left to Antithesis in phase 4 is open; the properties that wait on it say so.
-   Process kills and network partitions at scale are what Antithesis gives.
+7. **The two-replica lane.** Built here as a thin lane, nightly only, in three
+   stages, each a pull request whose new checks are seen to fail on a planted
+   bug. A random workload with interleaved faults is left to the Antithesis
+   evaluation (phase 4). Exploring timing, partitions and deterministic replay
+   is what Antithesis is for, and this lane's scenarios, fault hooks and
+   history checks carry over to it as its workload and its checks.
+
+   Every bound a scenario waits for is derived from the product's own timers
+   (the lease's lifetime, the balance interval, the periodic re-checks), read
+   from the code rather than chosen, and a failure names the bound it missed.
+
+   1. **Two replicas, no faults.** `just e2e-fast --replicas 2` starts a second
+      switch-core on its own port (`SERVER_PORT`), behind HAProxy on `:8000`:
+      round robin with no stickiness, WebSocket upgrades passed through, so a
+      client's requests and sockets land on either replica. Both replicas
+      write the shared assertion log (the SDK appends each record in one
+      write), and `SWITCH_E2E_SERVER_LOG` takes both servers' logs. Every
+      fast-lane scenario runs through it, each with the history check before
+      teardown. This closes the system level of `bus.room-seq-dense`,
+      `delivery.decided-at-write`, `chats.membership-is-read-authority`,
+      `tenancy.agent-surface-no-cross-tenant` and
+      `connector.token-only-to-granted`, whose scenarios and history checks
+      exist and need only the second replica.
+   2. **Process faults.** A fault hook in the harness, implemented by the stack
+      script: kill a replica (`SIGKILL`, or `SIGTERM` as a deploy does), pause
+      and resume one (`SIGSTOP`/`SIGCONT`, which lets its lease lapse without
+      its knowing), restart one, and take one out of HAProxy through its
+      runtime API, which also severs its WebSockets so clients reconnect
+      through the other.
+      - `replica.single-owner`: kill or pause the holder of a bridge and of
+        controller connections mid-traffic; an `always` assertion where owned
+        work starts (no other live process holds the key), read from the
+        shared log, and `ownership_leases` after the run.
+      - `replica.ownership-eventual`: after a kill, the work runs on the
+        survivor within the lease's lifetime and one balance.
+      - `presence.online-iff-lease`: an agent whose holder died reads offline
+        within the lease's lifetime, and online again once it reconnects
+        through the survivor.
+      - `controller.takeover-fenced` at the system level, and the case the
+        eventual-ownership model found: a replica paused for less than its
+        lease, a replica added meanwhile, and the key moved once it resumes.
+   3. **Bus faults.** The listening connection is cut on its own with
+      `pg_terminate_backend` on the backends whose query is `LISTEN`, which
+      loses every notification sent until it reconnects; no proxy is needed.
+      - `signal.loss-only-delays`: cut one replica's listener, change something
+        on the other (rename an agent, remove a member), and see the change
+        take effect within the periodic re-check.
+      - `revocation.takes-effect-everywhere` at the system level: revoke on one
+        replica, then use what was revoked against the other, with its
+        listener whole and cut; it is refused within the bound.
+      A proxy such as toxiproxy, for latency between a replica and Postgres,
+      is added only if stage 2 shows timing hides what the checks look for.
 
 Not planned here: the controller's own rules on its side (TypeScript), such as
 a handed-over session never being driven by two controllers at once in
@@ -598,13 +642,15 @@ to track them.
   `POST /collaborations/setup/slack/check`, `POST /templates`, `PUT
   /chats/{room_id}/read`), all on the type of `detail`. They look like one
   error-shape fix, and are outside `api.no-5xx`, which only says 5xx.
-- **Presence reaches only the clients on the replica that announced it**,
-  because it goes over an in-process bus (`transport/ephemeral.py`). It is a
-  backlog item, not a property: a property known to fail is noise in the gate.
-  Online status is not cosmetic: the "I'm not online in this room" reply and
-  whether an agent is willing to start a session read it, so
-  `presence.online-iff-lease` matters, and moving presence to the signal bus is
-  worth deciding.
+- **An agent's runtime state is announced only on the replica that has it.**
+  `com.switch.agent.runtime_state`, Switch Console's working and idle, goes
+  over an in-process bus (`transport/ephemeral.py`). Nothing reads it today:
+  no consumer handles the event, a bridged channel shows a turn from the
+  session-activity publication, and `!status` reads `agent_runtime_states`.
+  Online status is not on this bus: it comes from the connection ledger's rows
+  and the signal bus, and is `presence.online-iff-lease`. Carrying runtime
+  state over the signal bus waits for a client that renders it, which is when
+  it gets a property of its own.
 - **The history check cannot see a platform person's messages once they are
   erased**, because the erasure deletes the identity row they are found by, and
   the fast lane erases only a member client. The erasure sweep above replaces it.
@@ -636,11 +682,5 @@ to track them.
   the delivery path.
 - Whether Schemathesis's tenant check needs the OpenAPI document to mark
   which fields are ids, or can find them from the schema's naming.
-- Whether the two-replica lane is built in phase 3 or left to Antithesis, and
-  if built, which load balancer it uses and whether it breaks WebSocket
-  connections on purpose, to reach reconnects.
-- Whether presence is to move to the signal bus. If so, "presence reaches every
-  replica" becomes a property to check; if not, say what a client on another
-  replica sees instead.
 - What rules the controller's handover and detached runtime keep, from whoever
   owns them.
