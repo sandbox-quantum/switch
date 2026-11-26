@@ -28,6 +28,10 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.bridges.collaboration.webhook.adapter import (
+    WebhookAdapter,
+    WebhookConnectionConfig,
+)
 from switch_core.keys import Keyring
 from tests.ownership import SoleOwner
 
@@ -108,6 +112,25 @@ def test_telegram_adapter_registers_with_expected_required_fields() -> None:
     # bridge hands out is built from it, with no API call to fall back on.
     assert set(schema["properties"]) == {"bot_token", "bot_username"}
     assert set(schema["required"]) == {"bot_token", "bot_username"}
+
+
+def test_webhook_adapter_registers_with_expected_required_fields() -> None:
+    service = _service()
+    service.register_adapter("webhook", WebhookAdapter, WebhookConnectionConfig)
+
+    assert service.get_registered_types() == ["webhook"]
+    schema = service.get_config_schema("webhook")
+    assert set(schema["properties"]) == {
+        "outbound_url",
+        "signing_secret",
+        "inbound_token",
+    }
+    assert set(schema["required"]) == {
+        "outbound_url",
+        "signing_secret",
+        "inbound_token",
+    }
+    assert service.supports_channel_creation("webhook") is False
 
 
 def test_get_config_schema_exposes_required_fields() -> None:

@@ -53,6 +53,10 @@ from switch_core.bridges.collaboration.webex.adapter import (
     WebexAdapter,
     WebexConnectionConfig,
 )
+from switch_core.bridges.collaboration.webhook.adapter import (
+    WebhookAdapter,
+    WebhookConnectionConfig,
+)
 from switch_core.bridges.collaboration.whatsapp.adapter import (
     WhatsAppAdapter,
     WhatsAppConnectionConfig,
@@ -117,6 +121,12 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     ),
     PlatformRegistration(
         "webex", WebexAdapter, WebexConnectionConfig, ADDITIONAL_MESSAGING_PLATFORMS
+    ),
+    PlatformRegistration(
+        "webhook",
+        WebhookAdapter,
+        WebhookConnectionConfig,
+        ADDITIONAL_MESSAGING_PLATFORMS,
     ),
 )
 
