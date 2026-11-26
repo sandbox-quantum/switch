@@ -74,7 +74,12 @@
     "POST /gateway/agents/{agent_id}/suspend": "Incident control for workspace admins and the server's operator: suspending or lifting a suspension. Covered by core's test_suspension.py and test_owner_suspension.py against real Postgres, and its permissions by the role matrix; no scenario drives incident control yet.",
     "POST /gateway/agents/{agent_id}/unsuspend": "Incident control for workspace admins and the server's operator: suspending or lifting a suspension. Covered by core's test_suspension.py and test_owner_suspension.py against real Postgres, and its permissions by the role matrix; no scenario drives incident control yet.",
     "POST /gateway/users/{user_id}/suspend": "Incident control for workspace admins and the server's operator: suspending or lifting a suspension. Covered by core's test_suspension.py and test_owner_suspension.py against real Postgres, and its permissions by the role matrix; no scenario drives incident control yet.",
-    "POST /gateway/users/{user_id}/unsuspend": "Incident control for workspace admins and the server's operator: suspending or lifting a suspension. Covered by core's test_suspension.py and test_owner_suspension.py against real Postgres, and its permissions by the role matrix; no scenario drives incident control yet."
+    "POST /gateway/users/{user_id}/unsuspend": "Incident control for workspace admins and the server's operator: suspending or lifting a suspension. Covered by core's test_suspension.py and test_owner_suspension.py against real Postgres, and its permissions by the role matrix; no scenario drives incident control yet.",
+    "GET /gateway/auth/me/license": "The dashboard's team questions and license acceptance, asked only with gateway_onboarding on, which the fast lane does not turn on. Covered by core's test_team_survey_and_license.py against real Postgres and by the role matrix.",
+    "GET /gateway/auth/me/team-survey": "The dashboard's team questions and license acceptance, asked only with gateway_onboarding on, which the fast lane does not turn on. Covered by core's test_team_survey_and_license.py against real Postgres and by the role matrix.",
+    "GET /gateway/license": "The dashboard's team questions and license acceptance, asked only with gateway_onboarding on, which the fast lane does not turn on. Covered by core's test_team_survey_and_license.py against real Postgres and by the role matrix.",
+    "PUT /gateway/auth/me/license": "The dashboard's team questions and license acceptance, asked only with gateway_onboarding on, which the fast lane does not turn on. Covered by core's test_team_survey_and_license.py against real Postgres and by the role matrix.",
+    "PUT /gateway/auth/me/team-survey": "The dashboard's team questions and license acceptance, asked only with gateway_onboarding on, which the fast lane does not turn on. Covered by core's test_team_survey_and_license.py against real Postgres and by the role matrix."
   },
   "unauthenticated": {
     "GET /gateway/agents/known-types": "The catalogue of agent types this server can register and their option schemas; no tenant data. Public since the initial import, and nothing records whether that is deliberate.",
@@ -83,6 +88,7 @@
     "GET /gateway/auth/oidc/login": "The OIDC sign-in round trip, before any session exists.",
     "GET /gateway/docs": "FastAPI's generated docs, served without a session. They publish the gateway's whole route list and schemas to anyone who can reach it.",
     "GET /gateway/docs/oauth2-redirect": "FastAPI's generated docs, served without a session. They publish the gateway's whole route list and schemas to anyone who can reach it.",
+    "GET /gateway/license": "The license text, which the sign-up page links to before any account exists. The repository's LICENSE file, public anyway.",
     "GET /gateway/openapi.json": "FastAPI's generated docs, served without a session. They publish the gateway's whole route list and schemas to anyone who can reach it.",
     "GET /gateway/provider-connections/github/authorize": "The GitHub App's redirect round trip: the sign-in flow is identified by its state parameter, not a session.",
     "GET /gateway/provider-connections/github/callback": "The GitHub App's redirect round trip: the sign-in flow is identified by its state parameter, not a session.",

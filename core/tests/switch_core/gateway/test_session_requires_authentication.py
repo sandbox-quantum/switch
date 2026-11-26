@@ -109,6 +109,8 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/service-connections/{service}/flows/callback"),
     # No caller yet: the sign-in surface and what it hands back.
     ("GET", "/auth/config"),
+    # The license text, which sign-up links to before any account exists.
+    ("GET", "/license"),
     ("GET", "/auth/oidc/login"),
     ("GET", "/auth/oidc/callback"),
     ("POST", "/auth/oidc/exchange"),
