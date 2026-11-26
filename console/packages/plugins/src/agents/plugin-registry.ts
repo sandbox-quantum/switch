@@ -12,6 +12,7 @@ import { provider as cursor } from './impl/cursor';
 import { provider as deepseekHarness } from './impl/deepseek-harness';
 import { provider as droid } from './impl/droid';
 import { provider as goose } from './impl/goose';
+import { provider as grokBuild } from './impl/grok-build';
 import { provider as junie } from './impl/junie';
 import { provider as kiro } from './impl/kiro';
 import { provider as mistralVibe } from './impl/mistral-vibe';
@@ -38,6 +39,7 @@ for (const p of [
   droid,
   cline,
   junie,
+  grokBuild,
 ]) {
   pluginRegistry.register(p);
 }
