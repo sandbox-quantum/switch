@@ -145,8 +145,14 @@ Read `console/tooling-e2e/README.md` first.
   route, remove that route from the exemptions or the backlog.
 - Run `pnpm typecheck` in `console/tooling-e2e`.
 
-What the lane cannot do: run two server replicas, or sign out from the explore
-lane. Record those as gaps rather than faking them.
+- A change to what more than one switch-core process shares (ownership, the
+  signal bus, a bridge's copies, anything cached per process) needs the lane
+  on two replicas: `just e2e-fast --replicas 2` runs every scenario through
+  HAProxy with no stickiness, so consecutive requests land on different
+  processes. It runs nightly, not on pull requests: run it yourself.
+
+What the lane cannot do yet: kill, pause or cut off a replica, or sign out from
+the explore lane. Record those as gaps rather than faking them.
 
 ## 4. Running
 
@@ -158,6 +164,7 @@ just properties-model                          # every Quint invariant and tempo
 just properties-mutants                        # every mutant fails its property
 just properties-http                           # Schemathesis over the gateway
 just e2e-fast                                  # fast lane on a throwaway stack
+just e2e-fast --replicas 2                     # the same, on two replicas behind HAProxy
 ```
 
 - **Targeted pytest.** `just test <path>` runs the whole suite. For a few
@@ -218,3 +225,6 @@ counterexample or the model's trace step by step against the code.
 - A Quint model that let any process claim a key. It passed while the code,
   which only lets the placed process claim, could strand the key.
 - Waits sized for an idle laptop, which failed under nightly load.
+- A race between replicas fixed with unit tests alone. The fix deadlocked: a
+  path it had not stubbed took its own lock again. Only the lane on two
+  replicas showed it. Rerun the lane that found a bug after fixing it.
