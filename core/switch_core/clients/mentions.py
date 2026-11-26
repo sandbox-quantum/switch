@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import re
+from collections.abc import Callable
 
 # Characters that may appear inside an agent / role / alias name (e.g.
 # "cc-bug-fixing-2", "claude-code.my-project.alice").
@@ -26,14 +27,37 @@ _MENTION_END = rf"(?!{NAME_CHAR}*[A-Za-z0-9])"
 # a valid character in agent and role names.
 _EMPHASIS = re.compile(r"[*~]")
 
+# Single-backtick inline code spans on one line (not triple-backtick fences),
+# so examples like `` `@agent what's next?` `` do not address the agent and are
+# not rewritten into platform mention pills on outbound bridges.
+_INLINE_CODE = re.compile(r"(?<!`)`[^`\n]+`(?!`)")
+_INLINE_CODE_SPLIT = re.compile(r"((?<!`)`[^`\n]+`(?!`))")
+
 # A token ends on a letter or digit, so trailing punctuation is left out of it
 # by the same rule `_MENTION_END` uses.
 _MENTION_TOKEN = re.compile(rf"{_MENTION_START}@({NAME_CHAR}*[A-Za-z0-9])")
 
 
-def strip_emphasis(text: str) -> str:
-    """Remove Markdown/mrkdwn emphasis markers so `@*name*` matches `@name`."""
-    return _EMPHASIS.sub("", text)
+def mentionable_text(text: str) -> str:
+    """Remove inline code spans and Markdown/mrkdwn emphasis markers so
+    `` `@name` `` examples don't address agents and `@*name*` matches `@name`."""
+    return _EMPHASIS.sub("", _INLINE_CODE.sub(" ", text))
+
+
+def sub_outside_inline_code(
+    pattern: re.Pattern[str] | str,
+    repl: Callable[[re.Match[str]], str] | str,
+    text: str,
+) -> str:
+    """Apply `re.sub(pattern, repl, ...)` only outside single-backtick inline
+    code spans, leaving `` `@name` `` examples literal on outbound bridges."""
+    compiled = re.compile(pattern) if isinstance(pattern, str) else pattern
+    parts = _INLINE_CODE_SPLIT.split(text)
+    if len(parts) == 1:
+        return compiled.sub(repl, text)
+    for idx in range(0, len(parts), 2):
+        parts[idx] = compiled.sub(repl, parts[idx])
+    return "".join(parts)
 
 
 def mention_pattern(name: str) -> str:
@@ -57,7 +81,7 @@ def mention_tokens(text: str) -> list[str]:
     Each token is what `mention_regex` treats as one whole mention, without the
     punctuation that may follow it.
     """
-    return _MENTION_TOKEN.findall(strip_emphasis(text))
+    return _MENTION_TOKEN.findall(mentionable_text(text))
 
 
 def unique_mention_tokens(text: str) -> list[str]:

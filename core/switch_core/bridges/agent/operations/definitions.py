@@ -1117,12 +1117,18 @@ async def create_room(
         caller_is_member = agent_id in await protocol.room_store.get_agent_ids(
             session, result.room.id
         )
+    channel_url_fn = getattr(protocol, "channel_web_url", None)
+    channel_url = (
+        await channel_url_fn(result.room) if channel_url_fn is not None else None
+    )
     return {
         "id": result.room.id,
         "name": result.room.name,
         "transport_room_id": result.room.transport_room_id,
         # Deprecated alias, carried for the connector compatibility window.
         "matrix_room_id": result.room.transport_room_id,
+        "external_channel_id": result.room.external_channel_id,
+        "channel_url": channel_url,
         "caller_is_member": caller_is_member,
         "failed_attachments": result.failed_attachments,
     }

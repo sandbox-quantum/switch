@@ -74,7 +74,7 @@ from switch_core.clients.admin_messages import (
     AdminMessageType,
     platform_on_behalf_of,
 )
-from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.clients.mentions import mention_regex, mentionable_text
 from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -1798,7 +1798,7 @@ class CollaborationCore:
         a message Switch never mapped) goes to the room's agent when it has
         exactly one, the rule a mention of the bot follows.
         """
-        body = strip_emphasis(content)
+        body = mentionable_text(content)
         async with self._session_factory() as session:
             agents = [
                 agent
@@ -1989,7 +1989,7 @@ class CollaborationCore:
             mention_target = await self._reply_target(room_id, thread_root_id, content)
 
         if mention_target is not None and (
-            mention_regex(mention_target).search(strip_emphasis(content)) is None
+            mention_regex(mention_target).search(mentionable_text(content)) is None
         ):
             content = f"@{mention_target} {content}"
         logger.debug(
