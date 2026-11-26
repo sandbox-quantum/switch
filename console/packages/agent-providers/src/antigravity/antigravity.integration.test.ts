@@ -2,6 +2,15 @@ import { spawnSync } from 'node:child_process';
 import { describeConformance, echoMcpServerSpec } from '../testing/index';
 import { createAntigravityAdapter } from './antigravity-adapter';
 
+const SIGN_IN_VARIABLES = [
+  'GEMINI_API_KEY',
+  'AGY_ADC_AUTH',
+  'GOOGLE_CLOUD_PROJECT',
+  'GOOGLE_CLOUD_QUOTA_PROJECT',
+  'GOOGLE_CLOUD_LOCATION',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+];
+
 describeConformance('antigravity', {
   createAdapter: async () => createAntigravityAdapter(),
   unavailableReason: async () => {
@@ -16,7 +25,10 @@ describeConformance('antigravity', {
       'Neither antigravity-acp 1.1.1 (2026-10-11) nor agy 1.5.1 (2026-11-05) finishes a subagent within the 300 s deadline.',
   },
   mcpServers: { echo: echoMcpServerSpec() },
-  // agy signs itself in from the user's keychain; a key in the environment is
-  // how a machine without one runs the suite.
-  ...(process.env.GEMINI_API_KEY ? { env: { GEMINI_API_KEY: process.env.GEMINI_API_KEY } } : {}),
+  // agy signs itself in from the user's keychain; a key in the environment, or
+  // Vertex AI application-default credentials, is how a machine without one
+  // runs the suite.
+  env: Object.fromEntries(
+    SIGN_IN_VARIABLES.flatMap((key) => (process.env[key] ? [[key, process.env[key]]] : []))
+  ),
 });

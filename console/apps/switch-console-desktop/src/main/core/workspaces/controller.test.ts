@@ -2,12 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
+const addRoomAgents = vi.hoisted(() => vi.fn());
 const trackEvent = vi.hoisted(() => vi.fn());
 const createRoomOnServer = vi.hoisted(() => vi.fn());
 const disconnectBridgeOnServer = vi.hoisted(() => vi.fn());
 const bridgeInstallState = vi.hoisted(() => vi.fn());
 const deleteRoom = vi.hoisted(() => vi.fn());
 const fetchBridges = vi.hoisted(() => vi.fn());
+const beginMessagingAppInstall = vi.hoisted(() => vi.fn());
 const fetchBridgeTeams = vi.hoisted(() => vi.fn());
 const addBridgeTeam = vi.hoisted(() => vi.fn());
 const removeBridgeTeam = vi.hoisted(() => vi.fn());
@@ -16,6 +18,7 @@ const saveTeamsPackage = vi.hoisted(() => vi.fn());
 const createRoomFromTemplate = vi.hoisted(() => vi.fn());
 const runTemplateWithAgents = vi.hoisted(() => vi.fn());
 const runTemplateDocument = vi.hoisted(() => vi.fn());
+const recordTemplateRun = vi.hoisted(() => vi.fn());
 const fetchRoomDetail = vi.hoisted(() => vi.fn());
 const fetchManagedAgent = vi.hoisted(() => vi.fn());
 const claimIdentityOnServer = vi.hoisted(() => vi.fn());
@@ -105,8 +108,9 @@ vi.mock('@main/core/switch-servers/teams-package', () => ({ saveTeamsPackage }))
 vi.mock('@main/core/switch-servers/update-bridge', () => ({ updateBridgeOnServer }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   addBridgeTeam,
-  addRoomAgents: vi.fn(),
+  addRoomAgents,
   agentExistsOnServer: vi.fn(),
+  beginMessagingAppInstall,
   connectServiceWithKey,
   disconnectGitHub,
   disconnectService,
@@ -135,6 +139,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchTemplateSchema: vi.fn(),
   GatewayError: class GatewayError extends Error {},
   ownsOwnerAddressedAgent: vi.fn(),
+  recordTemplateRun,
   releaseBridgeIdentity: vi.fn(),
   removeBridgeTeam,
   removeRoomAgent: vi.fn(),
@@ -160,6 +165,9 @@ vi.mock('./workspaces-store', () => ({
 }));
 
 const { workspacesController } = await import('./controller');
+const { createBridgeOnServer } = await import('@main/core/switch-servers/create-bridge');
+const { GatewayError } = await import('@main/core/switch-servers/gateway-client');
+const { log } = await import('@main/lib/logger');
 
 function server(overrides: Record<string, unknown>) {
   return {
@@ -219,6 +227,140 @@ describe('disconnecting a bridge', () => {
   });
 });
 
+describe('connecting a messaging app', () => {
+  const createParams = {
+    workspaceId: 'ws',
+    bridgeType: 'slack',
+    displayName: 'Slack',
+    connectionConfig: {},
+    setAsDefault: false,
+    channelCreationEnabled: true,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+    fetchBridges.mockResolvedValue([{ id: 'b-new', type: 'slack' }]);
+  });
+
+  it('reports tokens pasted in, by how it was connected', async () => {
+    vi.mocked(createBridgeOnServer).mockResolvedValue({ kind: 'created' } as never);
+
+    await workspacesController.createBridge(createParams as never);
+
+    expect(trackEvent).toHaveBeenCalledWith('bridge_connected', {
+      bridge_platform: 'slack',
+      method: 'credentials',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
+  });
+
+  it('reports a connect its host was known to be down for', async () => {
+    getServer.mockResolvedValue(server({ managed: true, managementKind: 'remote', sshHost: 'h' }));
+    managedServerHostBlocked.mockReturnValue({
+      sshHost: 'h',
+      status: 'unreachable',
+      lastError: 'no route to host',
+      lastCheckedAt: null,
+    });
+
+    await expect(workspacesController.createBridge(createParams as never)).rejects.toBeInstanceOf(
+      HostUnreachableError
+    );
+
+    expect(createBridgeOnServer).not.toHaveBeenCalled();
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledWith('bridge_connected', {
+      bridge_platform: 'slack',
+      method: 'credentials',
+      outcome: 'failure',
+      failure_reason: 'unreachable',
+    });
+  });
+
+  it('reports a connect the server failed once, not twice', async () => {
+    vi.mocked(createBridgeOnServer).mockRejectedValue(new Error('boom'));
+
+    await expect(workspacesController.createBridge(createParams as never)).rejects.toThrow('boom');
+
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledWith(
+      'bridge_connected',
+      expect.objectContaining({ outcome: 'failure', failure_reason: 'error' })
+    );
+  });
+
+  it('reports an app install that could not start', async () => {
+    beginMessagingAppInstall.mockRejectedValue(new Error('refused'));
+
+    await expect(
+      workspacesController.beginMessagingAppInstall({ workspaceId: 'ws', platform: 'slack' })
+    ).rejects.toThrow('refused');
+
+    expect(trackEvent).toHaveBeenCalledWith('bridge_connected', {
+      bridge_platform: 'slack',
+      method: 'app_install',
+      outcome: 'failure',
+      failure_reason: 'error',
+    });
+  });
+
+  it('reports nothing for an install that has only started', async () => {
+    beginMessagingAppInstall.mockResolvedValue('https://slack.example/oauth');
+
+    await workspacesController.beginMessagingAppInstall({ workspaceId: 'ws', platform: 'slack' });
+
+    expect(trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('reports an install once its connection shows up, once', async () => {
+    await workspacesController.messagingAppInstalled({ workspaceId: 'ws', bridgeId: 'b-new' });
+    await workspacesController.messagingAppInstalled({ workspaceId: 'ws', bridgeId: 'b-new' });
+
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledWith('bridge_connected', {
+      bridge_platform: 'slack',
+      method: 'app_install',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
+  });
+
+  it('reports an install once when two calls for it overlap', async () => {
+    let answer: (bridges: unknown[]) => void = () => {};
+    fetchBridges.mockImplementationOnce(
+      () =>
+        new Promise((settle) => {
+          answer = settle;
+        })
+    );
+
+    const first = workspacesController.messagingAppInstalled({
+      workspaceId: 'ws',
+      bridgeId: 'b-overlap',
+    });
+    const second = workspacesController.messagingAppInstalled({
+      workspaceId: 'ws',
+      bridgeId: 'b-overlap',
+    });
+    await vi.waitFor(() => expect(fetchBridges).toHaveBeenCalled());
+    answer([{ id: 'b-overlap', type: 'slack' }]);
+    await Promise.all([first, second]);
+
+    expect(fetchBridges).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports no install for a connection the server does not list', async () => {
+    await workspacesController.messagingAppInstalled({ workspaceId: 'ws', bridgeId: 'b-made-up' });
+
+    expect(trackEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe('linking a messaging account', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -254,6 +396,19 @@ describe('linking a messaging account', () => {
       expect(trackEvent).toHaveBeenCalledWith('bridge_identity_claimed', {
         bridge_platform: 'slack',
         outcome: 'success',
+      })
+    );
+  });
+
+  it('reports a claim the server refused by throwing as a failure', async () => {
+    claimIdentityOnServer.mockRejectedValue(new Error('403 forbidden'));
+
+    await expect(workspacesController.claimBridgeIdentity(PARAMS)).rejects.toThrow('403');
+
+    await vi.waitFor(() =>
+      expect(trackEvent).toHaveBeenCalledWith('bridge_identity_claimed', {
+        bridge_platform: 'slack',
+        outcome: 'failure',
       })
     );
   });
@@ -373,6 +528,48 @@ describe('linking a messaging account', () => {
         bridge_platform: 'slack',
         outcome: 'failure',
       })
+    );
+  });
+});
+
+describe('counting a template run', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+  });
+
+  const RUN = { workspaceId: 'ws', templateId: 'official:switch-expert' };
+
+  it('reports the run to the server', async () => {
+    recordTemplateRun.mockResolvedValue(true);
+
+    await expect(workspacesController.recordTemplateRun(RUN)).resolves.toBeUndefined();
+    expect(recordTemplateRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'official:switch-expert'
+    );
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('says so, without failing, when the server does not count runs', async () => {
+    recordTemplateRun.mockResolvedValue(false);
+
+    await expect(workspacesController.recordTemplateRun(RUN)).resolves.toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('not counted'),
+      expect.objectContaining({ errorCode: 'not_counted', templateId: 'official:switch-expert' })
+    );
+  });
+
+  it('never fails the run it follows, even when the server cannot be reached', async () => {
+    recordTemplateRun.mockRejectedValue(new Error('unreachable'));
+
+    await expect(workspacesController.recordTemplateRun(RUN)).resolves.toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      'A template run was not counted',
+      expect.objectContaining({ event: 'template_run_count', error: 'Error: unreachable' })
     );
   });
 });
@@ -757,6 +954,75 @@ describe('reporting what a template made', () => {
   });
 });
 
+describe('adding agents to a room', () => {
+  const params = {
+    workspaceId: 'ws',
+    roomId: 'r1',
+    agentIds: ['a1', 'a2'],
+    direction: 'agents_to_room' as const,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+    managedServerHostBlocked.mockReturnValue(null);
+  });
+
+  it('reports the agents it added', async () => {
+    addRoomAgents.mockResolvedValue(undefined);
+
+    await workspacesController.addRoomAgents(params);
+
+    expect(trackEvent).toHaveBeenCalledExactlyOnceWith('room_agents_added', {
+      agent_count: 2,
+      direction: 'agents_to_room',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
+  });
+
+  it.each([
+    ['a refusal from the server', { kind: 'http', status: 409 }, 'conflict'],
+    ['a session the server turned down', { kind: 'unauthorized', status: 401 }, 'unauthenticated'],
+    ['a request that never arrived', { kind: 'network' }, 'network'],
+    ['a server that broke', { kind: 'http', status: 502 }, 'server_error'],
+  ] as const)('reports %s as a failure, and still throws it', async (_label, fields, reason) => {
+    // The double's constructor takes none of the real one's fields, so they are set here.
+    const refusal = Object.assign(new GatewayError(fields.kind, 'refused'), fields);
+    addRoomAgents.mockRejectedValue(refusal);
+
+    await expect(workspacesController.addRoomAgents(params)).rejects.toBe(refusal);
+
+    expect(trackEvent).toHaveBeenCalledExactlyOnceWith('room_agents_added', {
+      agent_count: 2,
+      direction: 'agents_to_room',
+      outcome: 'failure',
+      failure_reason: reason,
+    });
+  });
+
+  it('reports a host known to be down without asking it', async () => {
+    getServer.mockResolvedValue(server({ managed: true, managementKind: 'remote', sshHost: 'h' }));
+    managedServerHostBlocked.mockReturnValue({
+      sshHost: 'h',
+      status: 'unreachable',
+      lastError: 'no route to host',
+      lastCheckedAt: null,
+    });
+
+    await expect(workspacesController.addRoomAgents(params)).rejects.toBeInstanceOf(
+      HostUnreachableError
+    );
+
+    expect(addRoomAgents).not.toHaveBeenCalled();
+    expect(trackEvent).toHaveBeenCalledWith(
+      'room_agents_added',
+      expect.objectContaining({ outcome: 'failure', failure_reason: 'unreachable' })
+    );
+  });
+});
+
 describe('an action a workspace whose host has gone down cannot take', () => {
   const blocked = {
     sshHost: 'h',
@@ -911,7 +1177,11 @@ describe('selecting the workspace’s tenant before the call', () => {
     const srv = expect.objectContaining({ id: 'srv' });
     const flow = { workspaceId: 'ws', service: 'example', flowId: 'flow-1' };
 
-    await workspacesController.startServiceConnection({ workspaceId: 'ws', service: 'example' });
+    await workspacesController.startServiceConnection({
+      workspaceId: 'ws',
+      service: 'example',
+      choices: { site: 'eu.example.test' },
+    });
     await workspacesController.getServiceFlow(flow);
     await workspacesController.cancelServiceConnection(flow);
     await workspacesController.connectServiceWithKey({
@@ -925,6 +1195,7 @@ describe('selecting the workspace’s tenant before the call', () => {
     expect(serviceBrowserFlow.startServiceBrowserFlow).toHaveBeenCalledWith(
       srv,
       'example',
+      { site: 'eu.example.test' },
       expect.any(Function)
     );
     expect(serviceBrowserFlow.getServiceBrowserFlow).toHaveBeenCalledWith(srv, 'example', 'flow-1');

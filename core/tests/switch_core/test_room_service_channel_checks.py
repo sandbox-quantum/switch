@@ -7,10 +7,15 @@ elsewhere it is put in the channel, so the channel is never left with nobody
 able to get in. A channel named by id is refused, with a reason the person can act on,
 when another room already uses it or the platform says the room cannot use it,
 including when two rooms race to the same channel.
+
+A public channel is made whether or not the owner has a confirmed link, and
+the owner is put in it when they have one, except on a platform where joining
+a public channel means joining more (Teams).
 """
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,7 +39,11 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.room_service import RoomCreateConfig, RoomService
+from switch_core.room_service import (
+    PUBLIC_NO_LINKED_ACCOUNT,
+    RoomCreateConfig,
+    RoomService,
+)
 
 DIRECTORY_ID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
 CHANNEL_ACCOUNT = "29:1a2b3c-channel-account"
@@ -47,8 +56,11 @@ class _Reached(Exception):
 class _Adapter:
     platform_name = "Teams"
 
-    def __init__(self, *, needs_owner: bool) -> None:
+    def __init__(
+        self, *, needs_owner: bool, adds_creator_to_public: bool = True
+    ) -> None:
         self.private_channel_needs_owner = needs_owner
+        self.adds_creator_to_public_channel = adds_creator_to_public
         self.created: list[dict[str, Any]] = []
         self.checked: list[str] = []
         self.not_usable: dict[str, str] = {}
@@ -98,6 +110,14 @@ class _Lifecycle:
 
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
+
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
 
 
 class _StopAtTransportRoom:
@@ -266,7 +286,13 @@ async def test_a_room_with_no_owner_cannot_have_a_private_channel_there(
         )
 
 
-async def test_no_account_is_looked_up_for_a_public_channel(
+def _public(bridge_id: str, owner_id: str | None) -> RoomCreateConfig:
+    return _private(bridge_id, owner_id).model_copy(
+        update={"channel_type": "channel_public"}
+    )
+
+
+async def test_a_public_channel_needs_no_linked_account(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     user_id, bridge_id = await _setup(session_factory, linked=[])
@@ -280,6 +306,81 @@ async def test_no_account_is_looked_up_for_a_public_channel(
         assert adapter.created == [
             {"channel_type": "channel_public", "owner_external_id": None}
         ]
+
+
+# ── Public channels: the room owner is put in them when they can be ─────────
+
+
+async def test_a_public_channel_is_made_for_the_owners_confirmed_account(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _Adapter(needs_owner=False)
+    svc = _service(session_factory, bridge_id, adapter)
+
+    _, creator = await svc._create_channel(
+        _Core(adapter),  # type: ignore[arg-type]
+        bridge_id,
+        "Open",
+        "",
+        "channel_public",
+        owner_user_id=user_id,
+    )
+
+    assert adapter.created == [
+        {"channel_type": "channel_public", "owner_external_id": None}
+    ]
+    assert creator is not None
+    assert creator.external_user_id == CHANNEL_ACCOUNT
+
+
+@pytest.mark.parametrize(
+    ("linked", "owner"),
+    [([], True), ([(DIRECTORY_ID, False)], True), ([(DIRECTORY_ID, True)], False)],
+    ids=["no-link", "unconfirmed", "no-owner"],
+)
+async def test_a_public_channel_is_made_without_someone_to_put_in_it(
+    session_factory: async_sessionmaker[AsyncSession],
+    linked: list[tuple[str, bool]],
+    owner: bool,
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=linked)
+    adapter = _Adapter(needs_owner=False)
+    svc = _service(session_factory, bridge_id, adapter)
+
+    _, creator = await svc._create_channel(
+        _Core(adapter),  # type: ignore[arg-type]
+        bridge_id,
+        "Open",
+        "",
+        "channel_public",
+        owner_user_id=user_id if owner else None,
+    )
+
+    assert adapter.created == [
+        {"channel_type": "channel_public", "owner_external_id": None}
+    ]
+    assert creator is None
+
+
+async def test_nobody_is_put_in_a_public_channel_where_that_joins_more(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # Teams: a standard channel's members are the team's.
+    user_id, bridge_id = await _setup(session_factory, linked=[(DIRECTORY_ID, True)])
+    adapter = _Adapter(needs_owner=True, adds_creator_to_public=False)
+    svc = _service(session_factory, bridge_id, adapter)
+
+    _, creator = await svc._create_channel(
+        _Core(adapter),  # type: ignore[arg-type]
+        bridge_id,
+        "Open",
+        "",
+        "channel_public",
+        owner_user_id=user_id,
+    )
+
+    assert creator is None
 
 
 # ── Private channels elsewhere: the room owner is put in them ────────────────
@@ -468,9 +569,10 @@ async def test_losing_a_race_while_binding_an_existing_room_is_a_conflict(
 
 
 class _FlowAdapter(_Adapter):
-    def __init__(self, *, needs_owner: bool) -> None:
+    def __init__(self, *, needs_owner: bool, refuses: Collection[str] = ()) -> None:
         super().__init__(needs_owner=needs_owner)
         self.added: list[list[str]] = []
+        self._refuses = set(refuses)
 
     async def ensure_channel_subscriptions(self, channels: Any) -> None:
         return None
@@ -482,7 +584,7 @@ class _FlowAdapter(_Adapter):
         self, channel_id: str, user_names: list[str], user_external_ids: list[str]
     ) -> list[str]:
         self.added.append(list(user_external_ids))
-        return []
+        return [each for each in user_external_ids if each in self._refuses]
 
 
 class _FlowCore(_Core):
@@ -574,3 +676,145 @@ async def test_the_owner_named_on_teams_is_not_added_again(
     assert adapter.created[0]["owner_external_id"] == DIRECTORY_ID
     assert adapter.added == []
     assert core.in_room == [DIRECTORY_ID]
+
+
+async def test_the_creator_is_put_in_their_new_public_channel_once(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _FlowAdapter(needs_owner=False)
+    core = _FlowCore(adapter, known={"ada": CHANNEL_ACCOUNT, "bob": "U-BOB"})
+    config = _public(bridge_id, user_id).model_copy(
+        update={"user_names": ["ada", "bob"]}
+    )
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(config)
+
+    assert adapter.added == [[CHANNEL_ACCOUNT], ["U-BOB"]]
+    assert CHANNEL_ACCOUNT in core.in_room
+    assert result.failed_attachments == []
+
+
+async def test_a_public_channel_without_a_link_is_made_with_nobody_added(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[])
+    adapter = _FlowAdapter(needs_owner=False)
+    core = _FlowCore(adapter, known={})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        _public(bridge_id, user_id)
+    )
+
+    assert adapter.created == [
+        {"channel_type": "channel_public", "owner_external_id": None}
+    ]
+    assert adapter.added == []
+    assert core.in_room == []
+    assert result.failed_attachments == []
+
+
+async def test_a_platform_refusing_the_creator_of_a_public_channel_is_reported(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _FlowAdapter(needs_owner=False, refuses=[CHANNEL_ACCOUNT])
+    core = _FlowCore(adapter, known={})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        _public(bridge_id, user_id)
+    )
+
+    assert result.failed_attachments == [
+        {
+            "kind": "user",
+            "id": "ada",
+            "error": "the platform would not add you to the channel",
+        }
+    ]
+
+
+# ── No choice made and no linked account: a public channel, said so ─────────
+
+
+def _unchosen(bridge_id: str, owner_id: str | None) -> RoomCreateConfig:
+    return _private(bridge_id, owner_id).model_copy(update={"channel_type": None})
+
+
+@pytest.mark.parametrize("needs_owner", [False, True])
+@pytest.mark.parametrize(
+    "config",
+    [_unchosen],
+    ids=["omitted"],
+)
+async def test_no_choice_and_no_linked_account_makes_a_public_room_and_says_why(
+    session_factory: async_sessionmaker[AsyncSession],
+    needs_owner: bool,
+    config: Any,
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[])
+    adapter = _FlowAdapter(needs_owner=needs_owner)
+    core = _FlowCore(adapter, known={})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        config(bridge_id, user_id)
+    )
+
+    # Public on both counts: never a private channel with a public room.
+    assert adapter.created == [
+        {"channel_type": "channel_public", "owner_external_id": None}
+    ]
+    assert result.room.channel_type == "channel_public"
+    assert result.room.read_visibility == "public"
+    (note,) = result.failed_attachments
+    assert note["id"] == PUBLIC_NO_LINKED_ACCOUNT
+    assert "Link your account to make it private" in note["error"]
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"channel_type": "channel_private"},
+        {"channel_type": None, "read_visibility": "private"},
+        # A template that requires a private channel (`require_private`).
+        {"channel_type": "channel_private", "from_template": True},
+        # Any template's room: a run shows no choice, so it never falls back.
+        {"channel_type_is_default": True, "from_template": True},
+        {"channel_type": None, "from_template": True},
+    ],
+    ids=[
+        "private-channel",
+        "private-room",
+        "template-requires-private",
+        "template-default",
+        "template-omitted",
+    ],
+)
+async def test_asking_for_private_without_a_linked_account_is_still_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+    update: dict[str, Any],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[])
+    adapter = _Adapter(needs_owner=False)
+    config = _private(bridge_id, user_id).model_copy(update=update)
+
+    with pytest.raises(PrivateChannelOwnerMissing):
+        await _service(session_factory, bridge_id, adapter).create_room(config)
+
+    assert adapter.created == []
+
+
+async def test_no_choice_with_a_linked_account_is_still_private(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _FlowAdapter(needs_owner=False)
+    core = _FlowCore(adapter, known={})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        _unchosen(bridge_id, user_id)
+    )
+
+    assert adapter.created[0]["channel_type"] == "channel_private"
+    assert result.room.read_visibility == "private"
+    assert result.failed_attachments == []

@@ -116,7 +116,7 @@ describe('where an onboarded agent is said to have come from', () => {
     const result = await onboardAgent(params());
 
     expect(result.success).toBe(true);
-    expect(h.emit).toHaveBeenCalledWith('agent:created', expect.anything(), 'sidebar');
+    expect(h.emit).toHaveBeenCalledWith('agent:created', expect.anything(), 'sidebar', 'created');
   });
 
   it('names it on a failure too', async () => {
@@ -222,6 +222,17 @@ describe('the onboarded agent’s permission settings', () => {
 
       expect(createAgent).toHaveBeenCalledWith(
         expect.objectContaining({ autoApprove: false, autoMode: true })
+      );
+    }
+  );
+
+  it.each([undefined, 'build-box'])(
+    'start asking for an OpenCode agent, whose auto mode nothing reviews (%s)',
+    async (sshHost) => {
+      await onboardAgent(params({ providerId: 'opencode', ...(sshHost ? { sshHost } : {}) }));
+
+      expect(createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ autoApprove: false, autoMode: false })
       );
     }
   );

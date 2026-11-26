@@ -11,6 +11,7 @@ import {
   OpenInMessagingApp,
   RoomTabs,
 } from '@renderer/features/switch-rooms/view';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import {
   ServerStatusPill,
@@ -127,14 +128,11 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
               serverState(server) !== 'connected' &&
               serverState(server) !== 'running-local' &&
               pill}
-            {agent &&
-              (chat ? (
-                <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities}>
-                  <ManagedAgentActionItems agent={agent} />
-                </ChatHeaderControls>
-              ) : (
-                <ManagedAgentActionsMenu agent={agent} />
-              ))}
+            {/* The agent's own actions sit with its profile (`AgentProfileActions`):
+            this menu is the chat's. */}
+            {agent && chat && (
+              <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities} />
+            )}
           </div>
         </>
       }
@@ -253,7 +251,7 @@ export const managedAgentView = {
       (value.section !== undefined && !isAgentSection(value.section)) ||
       (value.room !== undefined && typeof value.room !== 'string')
     )
-      return { ok: false, redirect: 'home', discardParams: true };
+      return { ...homeRedirect(), discardParams: true };
     return { ok: true };
   },
 } satisfies ViewDefinition<ManagedAgentParams>;

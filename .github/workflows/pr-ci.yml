@@ -75,7 +75,9 @@ jobs:
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
       decision: ${{ steps.filter.outputs.decision }}
+      observability: ${{ steps.filter.outputs.observability }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      e2e_browser: ${{ steps.filter.outputs.e2e_browser }}
       local_server_bundle: ${{ steps.filter.outputs.local_server_bundle }}
     steps:
       - name: Checkout
@@ -113,6 +115,11 @@ jobs:
             decision:
               - *shared
               - 'decision/**'
+            # The morning report, tested with its own dependencies, not core's,
+            # and the monitors' checks, which apply.sh relies on.
+            observability:
+              - *shared
+              - 'deploy/observability/**'
             console:
               - *shared
               - 'console/**'
@@ -123,6 +130,9 @@ jobs:
             gateway:
               - *shared
               - 'gateway/**'
+              # The dashboard pages Switch Console opens, which the gateway's
+              # tests check it still routes.
+              - 'console/apps/switch-console-desktop/src/shared/core/switch-servers/dashboard-pages.ts'
             # The step of the local-server bundle that builds the gateway's
             # pages. The bundle itself is only built at release, so the console
             # jobs below run (with this step) when it, or what it installs,
@@ -136,6 +146,18 @@ jobs:
             # The server, the stack the fast lane stands up, and the harness.
             e2e:
               - *shared
+              - 'core/**'
+              - 'console/tooling-e2e/**'
+              - 'console/pnpm-lock.yaml'
+              - 'deploy/local/**'
+              - '.env.example'
+              - '.github/workflows/e2e.yml'
+            # The gateway's pages, which the browser lane opens as each role, the
+            # server whose answers decide what each role is shown, and the
+            # harness and stack it runs on.
+            e2e_browser:
+              - *shared
+              - 'gateway/**'
               - 'core/**'
               - 'console/tooling-e2e/**'
               - 'console/pnpm-lock.yaml'
@@ -280,6 +302,35 @@ jobs:
         working-directory: decision
         run: uv run pytest -q
 
+  observability:
+    name: Morning report
+    needs: changes
+    if: ${{ needs.changes.outputs.observability == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      # Needs no secrets: priorities, tags, security routing and placeholders.
+      # A deployment's own tooling applies the same file with apply.sh.
+      - name: Check monitors.json
+        working-directory: deploy/observability
+        run: python3 check_monitors.py monitors.json
+
+      # The script's own dependencies, read from its header, plus pytest. This
+      # also runs test_monitors.py, which drives apply.sh in DRY_RUN to check
+      # its routing and that it refuses missing handles and placeholders.
+      - name: pytest
+        working-directory: deploy/observability
+        run: uv run --no-project --with-requirements daily_report.py --with pytest pytest -q
+
   console:
     name: Switch Console
     needs: changes
@@ -392,13 +443,20 @@ jobs:
       - name: Test shared
         run: pnpm --filter @switch-console/shared run test
 
+      # maxWorkers: capped here, not in the packages' own vitest config, so
+      # Linux and macOS (the `console` job, and anyone running `pnpm test`
+      # locally) keep full parallelism. These suites start real child
+      # processes and temp directories per test; windows-latest's runner
+      # cannot take as many of those at once as its CPU count suggests, and
+      # overcommitting them is what turned into a pile of unrelated tests
+      # timing out together rather than any one of them being slow on its own.
       - name: Test agent-providers
         if: ${{ !cancelled() }}
-        run: pnpm --filter @switch-console/agent-providers run test
+        run: pnpm --filter @switch-console/agent-providers run test --maxWorkers=50%
 
       - name: Test agent-controller
         if: ${{ !cancelled() }}
-        run: pnpm --filter @switch-console/agent-controller run test
+        run: pnpm --filter @switch-console/agent-controller run test --maxWorkers=50%
 
       - name: Test Console's embedded controller and Windows launching
         if: ${{ !cancelled() }}
@@ -504,6 +562,18 @@ jobs:
     uses: ./.github/workflows/e2e.yml
     with:
       lane: fast
+      agent_type: claude-code
+
+  # The gateway as each role: the role matrix
+  # (gateway/src/routes/roleMatrix.ts) checked against what a real account in
+  # each role is shown. Not a required check yet.
+  e2e-browser:
+    name: E2E browser lane
+    needs: changes
+    if: ${{ needs.changes.outputs.e2e_browser == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/e2e.yml
+    with:
+      lane: browser
       agent_type: claude-code
 
   migration-heads-on-merge:

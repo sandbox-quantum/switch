@@ -245,16 +245,40 @@ def answer_actions(
     only: that is what Mattermost documents an action id may contain.
     """
     return [
-        {
-            "id": f"switch{control.position}",
-            "name": _button_name(control),
-            "integration": {
-                "url": url,
-                "context": action_context(secret, token, control.position),
-            },
-        }
+        _signed_action(secret, url, token, control.position, _button_name(control))
         for control in controls
     ]
+
+
+def prompt_actions(
+    secret: str, url: str, token: str, labels: Sequence[str]
+) -> list[dict[str, Any]]:
+    """The buttons a direct prompt offers, the last of them its way out.
+
+    Built as a card's answer buttons are, so a press reads back as the same
+    `Press`. Named by the label alone rather than numbered: a prompt's labels
+    are the numbers, and numbering them would put "1. 47" on a button.
+    """
+    actions = [
+        _signed_action(secret, url, token, position, label)
+        for position, label in enumerate(labels, start=1)
+    ]
+    if actions:
+        actions[-1]["style"] = "danger"
+    return actions
+
+
+def _signed_action(
+    secret: str, url: str, token: str, position: int, name: str
+) -> dict[str, Any]:
+    return {
+        "id": f"switch{position}",
+        "name": name,
+        "integration": {
+            "url": url,
+            "context": action_context(secret, token, position),
+        },
+    }
 
 
 def _button_name(control: Control) -> str:

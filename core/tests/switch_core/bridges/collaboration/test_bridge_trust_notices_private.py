@@ -2,7 +2,7 @@
 alone: an ephemeral where the platform has one, a direct message where it has
 not, and the channel, with a warning, where it has neither, the private route
 fails, or there is no one person to reach
-(`CollaborationCore._post_trust_notice`)."""
+(`CollaborationCore._post_sender_notice`)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telegram.error import Forbidden
 
 from switch_core.bridges.collaboration.adapter import PrivateNoticeRefused
@@ -93,10 +94,14 @@ def _slack(web: _SlackWeb) -> SlackAdapter:
     return adapter
 
 
-async def test_slack_block_notice_is_ephemeral_to_the_sender() -> None:
+async def test_slack_block_notice_is_ephemeral_to_the_sender(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     web = _SlackWeb()
     human_actor = _FakeHumanActor()
-    bridge = _bridge(human_actor, _slack(web), _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+    bridge = _bridge(
+        session_factory, human_actor, _slack(web), _FixedTrustClient(_BLOCKED)
+    )  # type: ignore[arg-type]
 
     await CollaborationCore._handle_inbound_message(bridge, _message())
 
@@ -112,10 +117,14 @@ async def test_slack_block_notice_is_ephemeral_to_the_sender() -> None:
     assert call["thread_ts"] is None
 
 
-async def test_slack_redaction_notice_in_a_thread_is_ephemeral_in_that_thread() -> None:
+async def test_slack_redaction_notice_in_a_thread_is_ephemeral_in_that_thread(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     web = _SlackWeb()
     human_actor = _FakeHumanActor()
-    bridge = _bridge(human_actor, _slack(web), _FixedTrustClient(_REDACTED))  # type: ignore[arg-type]
+    bridge = _bridge(
+        session_factory, human_actor, _slack(web), _FixedTrustClient(_REDACTED)
+    )  # type: ignore[arg-type]
 
     async def _root_event(_external_root: str) -> str:
         return "$root"
@@ -142,13 +151,15 @@ class _TelegramBot:
         self.sent.append(kwargs)
 
 
-async def test_telegram_block_notice_goes_to_the_senders_private_chat() -> None:
+async def test_telegram_block_notice_goes_to_the_senders_private_chat(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     bot = _TelegramBot()
     adapter = TelegramAdapter.__new__(TelegramAdapter)
     adapter._bot = bot
     adapter._gateway_public_url = None
     human_actor = _FakeHumanActor()
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
 
     await CollaborationCore._handle_inbound_message(
         bridge, _message(sender_id="4242", message_ref="-100:7")
@@ -161,7 +172,9 @@ async def test_telegram_block_notice_goes_to_the_senders_private_chat() -> None:
     assert "blocked by Switch Trust" in bot.sent[0]["text"]
 
 
-async def test_discord_block_notice_is_a_direct_message_naming_the_channel() -> None:
+async def test_discord_block_notice_is_a_direct_message_naming_the_channel(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     sent: list[tuple[str, dict[str, Any]]] = []
 
     class _User:
@@ -174,7 +187,7 @@ async def test_discord_block_notice_is_a_direct_message_naming_the_channel() -> 
     adapter._connection = SimpleNamespace(client=client)  # type: ignore[assignment]
     adapter._gateway_public_url = None
     human_actor = _FakeHumanActor()
-    bridge = _bridge(human_actor, adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+    bridge = _bridge(session_factory, human_actor, adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
 
     await CollaborationCore._handle_inbound_message(
         bridge, _message(sender_id="4242", message_ref="1:2")
@@ -284,10 +297,13 @@ class _NoticeAdapter:
 
 
 async def test_a_refused_direct_message_falls_back_to_the_channel_with_a_warning(
+    session_factory: async_sessionmaker[AsyncSession],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     adapter = _NoticeAdapter("direct_message", private_fails=True)
-    bridge = _bridge(_FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+    bridge = _bridge(
+        session_factory, _FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED)
+    )  # type: ignore[arg-type]
 
     with caplog.at_level(logging.WARNING):
         await CollaborationCore._handle_inbound_message(bridge, _message())
@@ -303,12 +319,15 @@ async def test_a_refused_direct_message_falls_back_to_the_channel_with_a_warning
 
 
 async def test_a_refusal_the_platform_is_expected_to_give_is_logged_without_a_traceback(
+    session_factory: async_sessionmaker[AsyncSession],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Most members of a Telegram group never started a chat with the bot,
     so its refusal is routine: one line, not a traceback per notice."""
     adapter = _NoticeAdapter("direct_message", private_fails=False, refused=True)
-    bridge = _bridge(_FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+    bridge = _bridge(
+        session_factory, _FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED)
+    )  # type: ignore[arg-type]
 
     with caplog.at_level(logging.WARNING):
         await CollaborationCore._handle_inbound_message(bridge, _message())
@@ -323,12 +342,17 @@ async def test_a_refusal_the_platform_is_expected_to_give_is_logged_without_a_tr
     ("sender_id", "sender_is_app"), [("U-app", True), ("stand-in", False)]
 )
 async def test_an_app_or_a_shared_account_gets_its_notice_in_the_channel(
-    caplog: pytest.LogCaptureFixture, sender_id: str, sender_is_app: bool
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+    sender_id: str,
+    sender_is_app: bool,
 ) -> None:
     """Nobody is behind an app's post to reach privately, and a stand-in
     account is many people, so the private route is not tried at all."""
     adapter = _NoticeAdapter("direct_message", private_fails=True)
-    bridge = _bridge(_FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+    bridge = _bridge(
+        session_factory, _FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED)
+    )  # type: ignore[arg-type]
 
     with caplog.at_level(logging.WARNING):
         await CollaborationCore._handle_inbound_message(
@@ -342,10 +366,13 @@ async def test_an_app_or_a_shared_account_gets_its_notice_in_the_channel(
 
 
 async def test_a_platform_without_a_private_route_posts_in_channel_and_warns(
+    session_factory: async_sessionmaker[AsyncSession],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     adapter = _NoticeAdapter("in_channel", private_fails=False)
-    bridge = _bridge(_FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+    bridge = _bridge(
+        session_factory, _FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED)
+    )  # type: ignore[arg-type]
 
     with caplog.at_level(logging.WARNING):
         await CollaborationCore._handle_inbound_message(bridge, _message())
@@ -356,12 +383,15 @@ async def test_a_platform_without_a_private_route_posts_in_channel_and_warns(
 
 
 async def test_in_a_direct_conversation_the_notice_stays_where_it_is(
+    session_factory: async_sessionmaker[AsyncSession],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The channel is already just the sender and the bot, so nothing is
     sent anywhere else and nothing is worth a warning."""
     adapter = _NoticeAdapter("in_channel", private_fails=False)
-    bridge = _bridge(_FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+    bridge = _bridge(
+        session_factory, _FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED)
+    )  # type: ignore[arg-type]
 
     with caplog.at_level(logging.WARNING):
         await CollaborationCore._handle_inbound_message(

@@ -6,7 +6,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: false,
-        deployed: { known: true, enabled: true, endpointCurrent: true },
+        deployed: { known: true, enabled: true, endpointCurrent: true, buildShares: true },
         consent: false,
         sharedWithOthers: false,
       })
@@ -31,7 +31,7 @@ describe('managedTelemetryNotice', () => {
       expect(
         managedTelemetryNotice({
           running: true,
-          deployed: { known: true, enabled: consent, endpointCurrent: true },
+          deployed: { known: true, enabled: consent, endpointCurrent: true, buildShares: true },
           consent,
           sharedWithOthers: false,
         })
@@ -43,7 +43,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: false, endpointCurrent: true },
+        deployed: { known: true, enabled: false, endpointCurrent: true, buildShares: true },
         consent: true,
         sharedWithOthers: false,
       })
@@ -56,7 +56,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: true, endpointCurrent: true },
+        deployed: { known: true, enabled: true, endpointCurrent: true, buildShares: true },
         consent: false,
         sharedWithOthers: false,
       })
@@ -78,7 +78,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: false, endpointCurrent: true },
+        deployed: { known: true, enabled: false, endpointCurrent: true, buildShares: true },
         consent: true,
         sharedWithOthers: true,
       })
@@ -89,7 +89,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: true, endpointCurrent: true },
+        deployed: { known: true, enabled: true, endpointCurrent: true, buildShares: true },
         consent: false,
         sharedWithOthers: true,
       })
@@ -100,7 +100,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: true, endpointCurrent: false },
+        deployed: { known: true, enabled: true, endpointCurrent: false, buildShares: true },
         consent: true,
         sharedWithOthers: false,
       })
@@ -111,7 +111,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: true, endpointCurrent: false },
+        deployed: { known: true, enabled: true, endpointCurrent: false, buildShares: true },
         consent: true,
         sharedWithOthers: true,
       })
@@ -122,7 +122,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: false, endpointCurrent: false },
+        deployed: { known: true, enabled: false, endpointCurrent: false, buildShares: true },
         consent: false,
         sharedWithOthers: false,
       })
@@ -133,8 +133,28 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: true, endpointCurrent: false },
+        deployed: { known: true, enabled: true, endpointCurrent: false, buildShares: true },
         consent: false,
+        sharedWithOthers: false,
+      })
+    ).toEqual({ kind: 'stale', consent: false });
+  });
+
+  it('asks nothing of a server a build run from source keeps from sharing', () => {
+    expect(
+      managedTelemetryNotice({
+        running: true,
+        deployed: { known: true, enabled: false, endpointCurrent: true, buildShares: false },
+        consent: true,
+        sharedWithOthers: false,
+      })
+    ).toEqual({ kind: 'in-step' });
+    // One still sharing from before is still out of step.
+    expect(
+      managedTelemetryNotice({
+        running: true,
+        deployed: { known: true, enabled: true, endpointCurrent: true, buildShares: false },
+        consent: true,
         sharedWithOthers: false,
       })
     ).toEqual({ kind: 'stale', consent: false });

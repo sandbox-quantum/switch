@@ -18,10 +18,14 @@ def test_the_default_is_the_typed_command() -> None:
     assert f"`!link-account {_CODE}`" in text
 
 
-def test_slack_uses_the_typed_command() -> None:
-    # Slack apps set up before the slash command existed do not have it.
-    assert "`!link-account" in SlackAdapter.link_code_instructions(_CODE, {})
-    assert "/link-account" not in SlackAdapter.link_code_instructions(_CODE, {})
+def test_slack_leads_with_the_slash_command_and_keeps_the_typed_one() -> None:
+    # The slash command reaches Switch from any conversation (CHOO-4121), so a
+    # new user needs no channel; apps set up before it existed still have the
+    # typed form.
+    text = SlackAdapter.link_code_instructions(_CODE, {})
+    assert text.startswith(f"Type `/link-account {_CODE}`")
+    assert "a message to yourself works" in text
+    assert f"`!link-account {_CODE}`" in text
 
 
 def test_mattermost_needs_a_channel_with_an_agent_and_says_what_to_do_without_one() -> (
@@ -49,6 +53,37 @@ def test_teams_mentions_the_app() -> None:
 
 
 def test_telegram_uses_its_command_spelling() -> None:
+    assert f"`/link_account {_CODE}`" in TelegramAdapter.link_code_instructions(
+        _CODE, {}
+    )
+
+
+def test_each_platform_spells_the_commands_a_person_pastes() -> None:
+    assert PlatformAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "!invite-agent @buddy"
+    )
+    assert TelegramAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "/invite_agent @buddy"
+    )
+    assert TelegramAdapter.typed_command("link-account", _CODE, {}) == (
+        f"/link_account {_CODE}"
+    )
+    assert SlackAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "/invite-agent @buddy"
+    )
+    assert TeamsAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "!invite-agent @buddy"
+    )
+    assert DiscordAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "!invite-agent @buddy"
+    )
+    shared = DiscordAdapter.typed_command(
+        "invite-agent", "@buddy", {"event_delivery": "shared"}
+    )
+    assert shared.startswith("/invite-agent ") and shared.endswith(":buddy")
+
+
+def test_telegram_link_instructions_use_its_own_spelling() -> None:
     assert f"`/link_account {_CODE}`" in TelegramAdapter.link_code_instructions(
         _CODE, {}
     )

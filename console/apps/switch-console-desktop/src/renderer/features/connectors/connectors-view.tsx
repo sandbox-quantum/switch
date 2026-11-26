@@ -1,7 +1,9 @@
-import { ArrowRight, Check, Plug, Plus } from 'lucide-react';
+import { ArrowRight, Check, Compass, MessageSquarePlus, Plug, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
+import { servesWebGateway } from '@renderer/features/switch-servers/server-gateway';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -15,6 +17,7 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
@@ -23,26 +26,33 @@ import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
+import { openConnectorAppSetUp } from './connector-app-set-up';
 import {
+  type ConnectorCardKind,
   type ConnectorViewer,
   FIX_LABEL,
   TONE_BADGE,
+  connectorAppSetUp,
   connectorCardState,
 } from './connector-card-state';
 import { ConnectorProfile } from './connector-profile';
 import { ConnectorTile } from './connector-tile';
 import {
+  CONNECTOR_REQUEST_URL,
   type ConnectorsTab,
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
-  defaultConnectorsTab,
+  moreOnDiscover,
+  toDiscoverText,
 } from './connectors-catalog';
 import {
+  useConnectorAppManagement,
   useConnectorCatalog,
   useReloadConnectors,
   useServerFeatureFlags,
 } from './connectors-queries';
+import { FlagsUnreadable } from './flags-unreadable';
 import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
@@ -54,40 +64,69 @@ const ConnectorsTitlebar = observer(function ConnectorsTitlebar() {
   return <ServerSectionTitlebar serverId={useServerId()} icon={Plug} label="Connectors" />;
 });
 
-const DESCRIPTION =
-  'Connect the services your agents work with. An agent uses one only once you turn it on for that agent.';
+const DESCRIPTION = 'Connect external services for your agents. Connectors are enabled per agent.';
 
 /**
  * The connector catalog of the workspace in scope on the server. Behind the
  * server's `service_connections` flag: with it off there is no page, and
  * reaching it anyway goes to Your Agents rather than drawing an empty one.
+ * Flags that could never be read are said to be, not taken as off.
  */
 const ConnectorsPanel = observer(function ConnectorsPanel() {
   const serverId = useServerId();
   const { navigate } = useNavigate();
-  const access = connectorsPageAccess(useServerFeatureFlags(serverId));
+  const flags = useServerFeatureFlags(serverId);
+  const access = connectorsPageAccess(flags);
+  const gatewayV2 = flags?.flags.gateway_v2 === true;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const server = switchServersStore.servers.find((s) => s.id === serverId);
-  const viewer: ConnectorViewer = {
+  const person: Person = {
     operator: operatesServer(serverId),
     administers: administersWorkspaceInScope(serverId),
     onThisComputer: server !== undefined && runsOnThisComputer(server),
   };
+  const servesDashboard = server !== undefined && servesWebGateway(server);
   useEffect(() => {
     if (access === 'absent') navigate('serverAgents', { serverId });
   }, [access, navigate, serverId]);
 
+  if (access === 'unreadable')
+    return (
+      <ServerPage
+        width={LIST_PAGE_WIDTH}
+        title="Connectors"
+        term="connector"
+        description={DESCRIPTION}
+      >
+        <FlagsUnreadable flags={flags} />
+      </ServerPage>
+    );
   if (access !== 'shown' || workspaceId === null)
     return (
-      <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
+      <ServerPage
+        width={LIST_PAGE_WIDTH}
+        title="Connectors"
+        term="connector"
+        description={DESCRIPTION}
+      >
         <Spinner />
       </ServerPage>
     );
   // Keyed so a workspace switch starts from the catalog, not another workspace's profile.
   return (
-    <Connectors key={workspaceId} serverId={serverId} workspaceId={workspaceId} viewer={viewer} />
+    <Connectors
+      key={workspaceId}
+      serverId={serverId}
+      workspaceId={workspaceId}
+      person={person}
+      servesDashboard={servesDashboard}
+      gatewayV2={gatewayV2}
+    />
   );
 });
+
+/** Who is looking, short of who sets up the server's connector apps, which the server may answer. */
+type Person = Omit<ConnectorViewer, 'appSetUp'>;
 
 /**
  * The catalog, or one connector's profile in front of it. Which is open is a
@@ -95,24 +134,47 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
  * between the two as they do between a room and Your Rooms. Whether the
  * profile opened because the service was just connected is this page's own
  * business, kept here and dropped as soon as the person moves on.
+ *
+ * Where the server serves the dashboard, in either layout, it is asked who
+ * sets up its connector apps, and the catalog waits for the answer rather
+ * than offering Set up to the wrong people meanwhile. An answer that cannot
+ * be read leaves Set up to the operator alone, as on a server that does not
+ * say, and the page says so wherever an app is waiting to be set up.
  */
 function Connectors({
   serverId,
   workspaceId,
-  viewer,
+  person,
+  servesDashboard,
+  gatewayV2,
 }: {
   serverId: string;
   workspaceId: string;
-  viewer: ConnectorViewer;
+  person: Person;
+  /** The server serves the web dashboard, where its connector apps are set up. */
+  servesDashboard: boolean;
+  gatewayV2: boolean;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
-  // Null until the person picks a tab or the catalog first arrives; from then
-  // on it stays put, so a connection made on Discover does not move them.
-  const [chosenTab, setTab] = useState<ConnectorsTab | null>(null);
-  const tab = chosenTab ?? (catalog.data ? defaultConnectorsTab(catalog.data) : 'yours');
-  useEffect(() => {
-    if (chosenTab === null && catalog.data) setTab(defaultConnectorsTab(catalog.data));
-  }, [chosenTab, catalog.data]);
+  const management = useConnectorAppManagement(workspaceId, servesDashboard);
+  // A refetch that failed keeps the last answer in `data`; the page says it
+  // couldn't check, so it goes by none.
+  const answer = management.isError ? undefined : management.data;
+  const viewer: ConnectorViewer = {
+    ...person,
+    appSetUp: connectorAppSetUp({
+      operator: person.operator,
+      servesDashboard,
+      gatewayV2,
+      canManage: answer?.canManage ?? null,
+      inDashboard: answer?.inDashboard ?? null,
+    }),
+  };
+  const entries = management.isLoading ? undefined : catalog.data;
+  const setUpUnchecked = management.isError ? (
+    <AppSetUpUnchecked error={management.error} onRetry={() => void management.refetch()} />
+  ) : null;
+  const [tab, setTab] = useState<ConnectorsTab>('discover');
   const [query, setQuery] = useState('');
   const { navigate } = useNavigate();
   const open = useParams('connectors').params.connector ?? null;
@@ -155,7 +217,7 @@ function Connectors({
     { value: 'discover', label: 'Discover' },
   ] as const satisfies readonly { value: ConnectorsTab; label: string }[];
 
-  const opened = open === null ? null : catalog.data?.find((entry) => entry.slug === open);
+  const opened = open === null ? null : entries?.find((entry) => entry.slug === open);
   // The profile replaces the whole page, title included: it is a place of its
   // own, reached from the catalog, with the way back at its top. Same column
   // as `ServerPage`, so moving between the two does not shift the content.
@@ -169,6 +231,7 @@ function Connectors({
             {catalog.isError && (
               <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
             )}
+            {opened.unavailable_code === 'app_not_set_up' && setUpUnchecked}
             <ConnectorProfile
               key={opened.slug}
               serverId={serverId}
@@ -189,24 +252,25 @@ function Connectors({
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Connectors"
+      term="connector"
       description={DESCRIPTION}
       action={
-        // Turning a service on or off for everyone is the Admin page's; only
-        // the way there is here, for whoever may.
+        // Turning a service on or off for everyone is in Settings; only the
+        // way there is here, for whoever may.
         viewer.administers && (
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate('admin', { serverId, section: 'connectors' })}
+            onClick={() => navigate('settings', { tab: 'connectors' })}
           >
-            Manage in Admin
+            Manage in Settings
             <ArrowRight className="size-3.5" />
           </Button>
         )
       }
     >
-      {/* Which tab opens depends on the catalog, so the tabs wait for it rather than flick over. */}
-      {catalog.data && (
+      {/* The tabs and the search wait for the catalog: until it arrives they have nothing to narrow. */}
+      {entries && (
         <ListToolbar
           scope={
             <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
@@ -222,21 +286,26 @@ function Connectors({
           }
         />
       )}
+      {entries?.some((entry) => entry.unavailable_code === 'app_not_set_up') && setUpUnchecked}
       {catalog.isError ? (
         <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
-      ) : !catalog.data ? (
+      ) : !entries ? (
         <p className="flex items-center gap-2 text-sm">
           <Spinner /> Loading connectors…
         </p>
       ) : (
         <ConnectorGrid
-          entries={connectorsInTab(catalog.data, tab, query)}
+          entries={connectorsInTab(entries, tab, query)}
+          more={tab === 'yours' && moreOnDiscover(entries, query)}
           tab={tab}
           query={query}
+          onBrowse={() => setTab('discover')}
           viewer={viewer}
           turningOn={turningOn}
           onOpen={openProfile}
-          onSetUp={(entry) => navigate('admin', { serverId, section: 'apps', app: entry.slug })}
+          onSetUp={(entry) =>
+            openConnectorAppSetUp(serverId, entry.slug, viewer.appSetUp, navigate)
+          }
           onTurnOn={(entry) => void turnOn(entry)}
           onConnect={(entry) =>
             connect(entry, 'connect', (warning) => {
@@ -247,7 +316,47 @@ function Connectors({
           }
         />
       )}
+      {entries && tab === 'discover' && <RequestConnector />}
     </ServerPage>
+  );
+}
+
+/** The way to ask for a service the catalog does not list: a GitHub issue form, opened in the browser. */
+function RequestConnector() {
+  return (
+    <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
+      <MessageSquarePlus className="size-4 shrink-0" />
+      Don’t see the service you need?
+      <Button
+        size="sm"
+        variant="link"
+        className="h-auto p-0 text-foreground underline underline-offset-2"
+        onClick={() =>
+          void openExternalUrl(CONNECTOR_REQUEST_URL, 'Could not open the connector request form')
+        }
+      >
+        Request a connector
+      </Button>
+    </p>
+  );
+}
+
+/**
+ * The server could not be asked who may set up its connector apps, so Set up
+ * is the operator's alone, as on a server that does not say.
+ */
+function AppSetUpUnchecked({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <Alert variant="warning">
+      <AlertDescription>
+        {`Couldn't check who can set up connector apps on this server, so only whoever runs it is offered Set up. ${failureText(error, 'Reading your session on the server failed.')}`}
+      </AlertDescription>
+      <AlertAction>
+        <Button size="sm" variant="outline" onClick={onRetry}>
+          Retry
+        </Button>
+      </AlertAction>
+    </Alert>
   );
 }
 
@@ -266,8 +375,10 @@ function CatalogError({ error, onRetry }: { error: unknown; onRetry: () => void 
 
 function ConnectorGrid({
   entries,
+  more,
   tab,
   query,
+  onBrowse,
   viewer,
   turningOn,
   onOpen,
@@ -276,8 +387,12 @@ function ConnectorGrid({
   onConnect,
 }: {
   entries: ConnectionCatalogEntry[];
+  /** On Yours, whether Discover lists anything for the search that Yours does not. */
+  more: boolean;
   tab: ConnectorsTab;
   query: string;
+  /** Switches to Discover, keeping the search. */
+  onBrowse: () => void;
   viewer: ConnectorViewer;
   /** The services being turned on for the workspace from their card. */
   turningOn: ReadonlySet<string>;
@@ -286,6 +401,17 @@ function ConnectorGrid({
   onTurnOn: (entry: ConnectionCatalogEntry) => void;
   onConnect: (entry: ConnectionCatalogEntry) => void;
 }) {
+  if (entries.length === 0 && more)
+    return (
+      <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
+        {query.trim()
+          ? `None of your connectors match “${query.trim()}”.`
+          : 'You have not connected anything yet.'}
+        <Button size="sm" variant="outline" onClick={onBrowse}>
+          {toDiscoverText(query)}
+        </Button>
+      </p>
+    );
   if (entries.length === 0)
     return (
       <p className="text-sm text-foreground-muted">
@@ -296,25 +422,87 @@ function ConnectorGrid({
             : 'This server offers no connectors.'}
       </p>
     );
+  const card = (entry: ConnectionCatalogEntry) => (
+    <ConnectorCard
+      key={entry.slug}
+      entry={entry}
+      viewer={viewer}
+      turningOn={turningOn.has(entry.slug)}
+      onOpen={() => onOpen(entry.slug)}
+      onSetUp={() => onSetUp(entry)}
+      onTurnOn={() => onTurnOn(entry)}
+      onConnect={() => onConnect(entry)}
+    />
+  );
+  // Entries nobody can connect yet get a section of their own under the
+  // rest, so a long list of them never pushes the usable ones out of sight.
+  // Ones that can't be used here as things stand (off in the workspace, not
+  // set up, unavailable) go last in their section, so the usable ones lead.
+  const built = entries
+    .filter((entry) => entry.status !== 'coming_soon')
+    .sort((a, b) => Number(blocked(a, viewer)) - Number(blocked(b, viewer)));
+  const comingSoon = entries.filter((entry) => entry.status === 'coming_soon');
+  if (comingSoon.length === 0)
+    return (
+      <div role="group" aria-label="Connectors" className={GRID}>
+        {built.map(card)}
+        {more && (
+          // Inside the grid, where the eye already is: the tabs alone did not
+          // tell people that Yours is not the whole catalog.
+          <button
+            type="button"
+            onClick={onBrowse}
+            className="focus-visible:ring-ring flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border p-4 text-left text-sm font-medium text-foreground transition-colors hover:bg-background-tertiary-2 focus-visible:ring-2 focus-visible:outline-none"
+          >
+            <Compass className="size-5 shrink-0 text-foreground-muted" />
+            {toDiscoverText(query)}
+          </button>
+        )}
+      </div>
+    );
   return (
-    <div
-      role="group"
-      aria-label="Connectors"
-      className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3"
-    >
-      {entries.map((entry) => (
-        <ConnectorCard
-          key={entry.slug}
-          entry={entry}
-          viewer={viewer}
-          turningOn={turningOn.has(entry.slug)}
-          onOpen={() => onOpen(entry.slug)}
-          onSetUp={() => onSetUp(entry)}
-          onTurnOn={() => onTurnOn(entry)}
-          onConnect={() => onConnect(entry)}
-        />
-      ))}
+    <div className="flex flex-col gap-8">
+      {built.length > 0 && (
+        <section aria-labelledby="connectors-built" className="flex flex-col gap-3">
+          <SectionTitle id="connectors-built" title="Supported" count={built.length} />
+          <div role="group" aria-label="Connectors" className={GRID}>
+            {built.map(card)}
+          </div>
+        </section>
+      )}
+      <section aria-labelledby="connectors-coming-soon" className="flex flex-col gap-3">
+        <div>
+          <SectionTitle id="connectors-coming-soon" title="Coming soon" count={comingSoon.length} />
+          <p className="mt-1 text-sm text-foreground-muted">
+            Not available yet. They appear above once they can be connected.
+          </p>
+        </div>
+        <div role="group" aria-label="Coming soon connectors" className={GRID}>
+          {comingSoon.map(card)}
+        </div>
+      </section>
     </div>
+  );
+}
+
+const BLOCKED: ReadonlySet<ConnectorCardKind> = new Set([
+  'needs_setup',
+  'unavailable',
+  'workspace_off',
+]);
+
+function blocked(entry: ConnectionCatalogEntry, viewer: ConnectorViewer): boolean {
+  return BLOCKED.has(connectorCardState(entry, viewer).kind);
+}
+
+const GRID = 'grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3';
+
+function SectionTitle({ id, title, count }: { id: string; title: string; count: number }) {
+  return (
+    <h2 id={id} className="flex items-baseline gap-2 text-sm font-semibold">
+      {title}
+      <span className="font-normal text-foreground-muted">{count}</span>
+    </h2>
   );
 }
 
@@ -415,7 +603,7 @@ export const connectorsView = {
       typeof params === 'object' && params !== null
         ? (params as { serverId?: unknown }).serverId
         : undefined;
-    if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof serverId !== 'string') return homeRedirect();
     return { ok: true };
   },
 } satisfies ViewDefinition<{ serverId: string; connector?: string }>;

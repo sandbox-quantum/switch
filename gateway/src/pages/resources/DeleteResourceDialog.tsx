@@ -1,136 +1,109 @@
+import { Alert, Chip, CircularProgress, Stack } from "@mui/material";
+import { useCallback } from "react";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import {
-  Alert,
-  Button,
-  Chip,
-  CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
-  Stack,
-} from "@mui/material";
-import { useState } from "react";
-import {
+  type ResourceRoom,
   deleteDocument,
   deletePackage,
   deleteReference,
-  type ResourceDeleteResult,
+  loadDocumentRooms,
+  loadPackageRooms,
+  loadReferenceRooms,
 } from "../../data/api";
-import {
-  useDocumentRooms,
-  usePackageRooms,
-  useReferenceRooms,
-} from "../../data/hooks";
+import { useLoad } from "../workspace/useLoad";
 import { privateRoomsLabel } from "./privateRooms";
 
+type Kind = "reference" | "document" | "package";
+
+const LOAD_ROOMS: Record<Kind, (id: string) => Promise<ResourceRoom[]>> = {
+  reference: loadReferenceRooms,
+  document: loadDocumentRooms,
+  package: loadPackageRooms,
+};
+
+const DELETE: Record<Kind, (id: string) => Promise<unknown>> = {
+  reference: deleteReference,
+  document: deleteDocument,
+  package: deletePackage,
+};
+
 interface Props {
-  open: boolean;
-  kind: "reference" | "document" | "package";
+  kind: Kind;
   resourceId: string;
   resourceLabel: string;
   // Rooms it is in that the viewer may not read: unnamed, but the delete
   // still removes it from them.
   hiddenRoomsCount: number;
+  // Packages it is in, which the delete takes it out of. None for a package.
+  packageCount: number;
   onClose: () => void;
   onDeleted: () => void;
 }
 
+/** Asks before deleting a resource, naming what it leaves: the rooms it is
+ * detached from and the packages it is taken out of. Mounted only while
+ * open, so the rooms are read when the question is asked, not when the page
+ * was. */
 export default function DeleteResourceDialog({
-  open,
   kind,
   resourceId,
   resourceLabel,
   hiddenRoomsCount,
+  packageCount,
   onClose,
   onDeleted,
 }: Props) {
-  const refRooms = useReferenceRooms(kind === "reference" ? resourceId : undefined);
-  const docRooms = useDocumentRooms(kind === "document" ? resourceId : undefined);
-  const pkgRooms = usePackageRooms(kind === "package" ? resourceId : undefined);
-  const { data: rooms, loading } =
-    kind === "reference" ? refRooms : kind === "document" ? docRooms : pkgRooms;
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [affectedPackages, setAffectedPackages] = useState<string[] | null>(null);
-
-  const handleClose = () => {
-    if (submitting) return;
-    setError(null);
-    setAffectedPackages(null);
-    onClose();
-  };
-
-  const handleDelete = async () => {
-    setSubmitting(true);
-    setError(null);
-    try {
-      let result: ResourceDeleteResult;
-      if (kind === "reference") result = await deleteReference(resourceId);
-      else if (kind === "document") result = await deleteDocument(resourceId);
-      else result = await deletePackage(resourceId);
-      setAffectedPackages(result.affected_package_ids ?? null);
-      onDeleted();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to delete");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const load = useCallback(() => LOAD_ROOMS[kind](resourceId), [kind, resourceId]);
+  const { data: rooms, error, loading } = useLoad(load);
+  const roomCount = (rooms ?? []).length + hiddenRoomsCount;
 
   return (
-    <Dialog open={open} onClose={handleClose} fullWidth maxWidth="xs">
-      <DialogTitle>Delete {kind}</DialogTitle>
-      <DialogContent>
-        <DialogContentText sx={{ mb: 2 }}>
-          Delete <b>{resourceLabel}</b>? This cannot be undone.
-        </DialogContentText>
-        {loading ? (
-          <CircularProgress size={20} />
-        ) : (rooms ?? []).length + hiddenRoomsCount > 0 ? (
-          <Alert severity="warning">
-            This will detach from {(rooms ?? []).length + hiddenRoomsCount} room
-            {(rooms ?? []).length + hiddenRoomsCount === 1 ? "" : "s"}:
-            <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1 }}>
-              {(rooms ?? []).map((r) => (
-                <Chip key={r.room_id} size="small" label={r.room_name} />
-              ))}
-              {hiddenRoomsCount > 0 && (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={privateRoomsLabel(hiddenRoomsCount)}
-                />
-              )}
-            </Stack>
-          </Alert>
-        ) : null}
-        {affectedPackages && affectedPackages.length > 0 && (
-          <Alert severity="warning" sx={{ mt: 2 }}>
-            Also removed from {affectedPackages.length} package
-            {affectedPackages.length === 1 ? "" : "s"}.
-          </Alert>
-        )}
-        {error && (
-          <Alert severity="error" sx={{ mt: 2 }}>
-            {error}
-          </Alert>
-        )}
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={handleClose} disabled={submitting}>
-          Cancel
-        </Button>
-        <Button
-          color="error"
-          variant="contained"
-          onClick={handleDelete}
-          disabled={submitting}
-          startIcon={submitting ? <CircularProgress size={16} /> : undefined}
-        >
-          Delete
-        </Button>
-      </DialogActions>
-    </Dialog>
+    <ConfirmDialog
+      open
+      title={`Delete ${kind}`}
+      tone="destructive"
+      confirmLabel="Delete"
+      // Held until the question can be answered in full: deleting while
+      // the rooms are still loading would skip the warning about them.
+      confirmDisabled={loading && rooms === null}
+      description={
+        <Stack spacing={2}>
+          <span>
+            Delete <b>{resourceLabel}</b>? This cannot be undone.
+          </span>
+          {loading && rooms === null ? (
+            <CircularProgress size={20} aria-label="Loading the rooms it is in" />
+          ) : rooms === null ? (
+            <Alert severity="error">
+              Couldn't load the rooms it is in, so they aren't listed here: {error}
+            </Alert>
+          ) : (
+            roomCount > 0 && (
+              <Alert severity="warning">
+                This will detach it from {roomCount} room{roomCount === 1 ? "" : "s"}:
+                <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1 }}>
+                  {rooms.map((r) => (
+                    <Chip key={r.room_id} size="small" label={r.room_name} />
+                  ))}
+                  {hiddenRoomsCount > 0 && (
+                    <Chip size="small" variant="outlined" label={privateRoomsLabel(hiddenRoomsCount)} />
+                  )}
+                </Stack>
+              </Alert>
+            )
+          )}
+          {packageCount > 0 && (
+            <Alert severity="warning">
+              It is also taken out of {packageCount} package{packageCount === 1 ? "" : "s"}.
+            </Alert>
+          )}
+        </Stack>
+      }
+      onConfirm={async () => {
+        await DELETE[kind](resourceId);
+        onDeleted();
+      }}
+      onClose={onClose}
+    />
   );
 }

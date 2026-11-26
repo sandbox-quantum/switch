@@ -412,9 +412,14 @@ pnpm run lint
 - **Telemetry consent is a gate, not a preference.** Anything that would send usage data
   must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
   emission and send nothing when it returns false. Do not read `telemetry.enabled` from
-  settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
-  cache the answer across a send, since the user can revoke it at any time. Consent off
-  means **no request is made at all**, not a request whose result is discarded.
+  settings directly — the gate is the one place that decides, and it fails closed when the
+  setting can't be read — and do not cache the answer across a send, since the user can
+  revoke it at any time. Consent off
+  means **no request is made at all**, not a request whose result is discarded. `track`
+  reads it twice — before building the payload and again immediately before the request —
+  because building awaits the database, and an opt-out in that gap must still stop the
+  event. Turning sharing off also deletes the install id (`forgetInstallId`), as does
+  boot when sharing is off and a send refused by the second read.
 - **The answer reaches the managed server too, and never by omission.** "Share usage
   data" is one decision covering this app and a Switch server it runs, so `startStack`
   reads it and writes `TELEMETRY_ENABLED` into the stack's `.env` on every start —
@@ -429,13 +434,19 @@ pnpm run lint
   local server (no Docker) gets the same settings as its process environment, and the
   copy it was started with is what is read back. The server reads the gate once at
   boot, so a running stack can be out of step; that is surfaced on the server's page with
-  a restart offered, never applied by restarting the user's server for them. Whether it
+  a restart offered, never applied by restarting the user's server for them (the one
+  deliberate exception anywhere is a Switch Cloud machine, which reboots itself within
+  seven days of a security update that needs it, ending its sessions; see
+  `deploy/hosted/machine/README.md`, "Security updates and reboots"). Whether it
   is out of step is read off the running container, not inferred from what we last wrote —
   and a host that cannot be read is reported as unknown, never as agreeing.
 - **The toggle defaults to on.** Usage data is opt-out: a first-run notice says what is
   shared and carries the off switch, and the same toggle lives in Settings. That default is
-  a product decision, and so is what identifies an install (today, only the random
-  per-install id). Changing either is a product and privacy call, not a code change.
+  a product decision, and so is what identifies an install (today, only a random id that
+  is replaced every `TELEMETRY_ID_LIFETIME_DAYS` days and deleted on opt-out —
+  `src/main/core/telemetry/install-id.ts`). Changing either is a product and privacy
+  call, not a code change. Because that id makes the data pseudonymous, the copy never
+  calls it anonymous.
 - **What a telemetry payload may contain.** Add an event only by adding it to the closed
   catalogue in `src/main/core/telemetry/events.ts`: its property types are literal unions,
   numbers and booleans, and `TELEMETRY_EVENT_PROPERTIES` names the same fields as data, which
@@ -445,9 +456,14 @@ pnpm run lint
   enough — excess-property checking does not apply through a spread — so the runtime
   filter is what makes "nothing free-text can reach a payload" true rather than intended.
   Permitted: which of the catalogued things happened, agent type, local-vs-remote,
-  success-vs-failure, how long an operation took, app version, operating system, the
-  random install id, which kind of launch it was (first, after an update, or neither),
-  and whether a signed-in account is on a company email domain — the yes/no only, read
+  success-vs-failure, how long an operation took, app version, operating system family
+  and its major version (major.minor on macOS; `os-version.ts`), the rotating random
+  install id, a random id made fresh for each record (`flint.insert_id`, which
+  only keeps two alike events apart), the session the event is in (`flint.session_id`:
+  when the run of things someone did began, in epoch milliseconds, or `-1` for an event
+  that is not someone using the app — `BACKGROUND_EVENTS` in `events.ts`), which kind
+  of launch it was (first, after an update, or neither) and the version an update came
+  from, and whether a signed-in account is on a company email domain — the yes/no only, read
   from the domain, never the address. A duration is a number rather than a value from a fixed set,
   so it is held to `TelemetryDurationMs`: measured on a monotonic clock, whole
   milliseconds, and never a span that could encode something else. That is a branded
@@ -463,7 +479,7 @@ pnpm run lint
 - **The interface may report only through the one gate.** Almost everything is
   reported from the main process, where a call site is type-checked against the
   catalogue. The exceptions are moments that exist only in the UI — a screen
-  opened, a command run, a checklist abandoned — and they go through
+  opened, a command run, a page of the first run reached — and they go through
   `rpc.telemetry.track` into `src/main/core/telemetry/renderer-events.ts`, which
   checks the event is one of the few permitted and every value against the set
   the catalogue allows. That check is not ceremony: a type does not survive a
@@ -472,14 +488,14 @@ pnpm run lint
   the main process, observe it there.
 - **Report a moment, not a state — and if you must report a state, claim it after
   the gate.** A condition that is true from the instant it becomes true is true
-  again on every later launch, so reporting it directly counts it forever;
-  `ONCE_PER_INSTALL` in `renderer-events.ts` exists for that case and keeps the
-  record beside the emitter rather than in the user's settings, which would
-  report a setting nobody changed. The record is spent once and never given
-  back, so it must not be claimed until a send is actually possible: the app
-  renders behind the first-run consent prompt, so anything claiming before the
-  consent check spends its one chance while the answer is still unset and
-  retires the event for the life of the install.
+  again on every later launch, so reporting it directly counts it forever. A
+  state reported once per install needs a record that it was sent, kept beside
+  the emitter rather than in the user's settings, which would report a setting
+  nobody changed. The record is spent once and never given back, so it must not
+  be claimed until a send is actually possible (`telemetryService.canSend()`):
+  the app renders behind the first-run consent prompt, so anything claiming
+  before the consent check spends its one chance while the answer is still
+  unset and retires the event for the life of the install.
 - **Prefer a value the caller declares to one you read back.** Several
   dimensions describe an intent that only the caller has — which button, which
   source, whether a room was chosen — and the state that would answer is often
@@ -507,10 +523,8 @@ pnpm run lint
   from there. What a session host does tell is the Switch server it already works for:
   that a new session started and how (`host/session-start.ts`), as ordinary traffic to
   that server. Whether that leaves the server as telemetry is the server's own setting.
-  The agent controller this app runs on its own computer still reports nothing itself:
-  once Switch has taken a session's start it tells its parent over the IPC channel
-  (`host/session-started.ts`), and this app reports `managed_session_started` under its
-  own gate. A controller on any other machine has no parent listening; keep it that way.
+  The same holds for the agent controller this app runs on its own computer: Switch
+  counts its sessions from those reports, so this app does not report them again.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.
@@ -681,10 +695,17 @@ pnpm run test
   because the install runner's shell may be either PowerShell or cmd.exe, and
   each would expand one of them before `powershell -c` ran.
 - An auto-approving Codex session launches with `-c approval_policy="never"` and
-  nothing else. The sandbox is deliberately **not** overridden: "Bypass
-  permissions" promises unattended approvals, not unattended filesystem and
-  network access, so the user's own `sandbox_mode` from `~/.codex/config.toml`
-  stands. See `packages/plugins/src/agents/impl/codex/index.ts`.
+  nothing else. "Bypass permissions" promises unattended approvals, not
+  unattended filesystem and network access, so the user's own `sandbox_mode`
+  from the host's `~/.codex/config.toml` stands in every mode. See
+  `packages/plugins/src/agents/impl/codex/index.ts`. A session the agent
+  controller starts (`execution.defaultCodexSandbox`) takes the host's
+  `sandbox_mode` first, then the agent's, and only when neither names one a
+  default from its runtime mode — `danger-full-access` under Bypass,
+  `workspace-write` otherwise — so a cloud machine with no Codex config is not
+  left read-only (`prepareCodexSessionHome`, `managedCodexSandbox`). Auto mode
+  then tightens `danger-full-access` to `workspace-write` (`sandboxFor`), so its
+  automatic review still sees requests. Console's own sessions get no default.
 - App updates in dev: the update service is inert outside packaged builds, so the
   "update available" UI cannot be exercised by `pnpm run dev` alone. Set
   `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —

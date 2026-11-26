@@ -46,12 +46,6 @@
               }
             },
             {
-              "key": "flint.client_id",
-              "value": {
-                "stringValue": "0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10"
-              }
-            },
-            {
               "key": "service.instance.id",
               "value": {
                 "stringValue": "switch-decision-7d9f-abcd1234"
@@ -67,6 +61,12 @@
               "key": "service.version",
               "value": {
                 "stringValue": "0.1.0"
+              }
+            },
+            {
+              "key": "switch_trust.client_id",
+              "value": {
+                "stringValue": "0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10"
               }
             }
           ]

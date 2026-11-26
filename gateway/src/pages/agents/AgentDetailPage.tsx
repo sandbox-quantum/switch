@@ -1,4 +1,5 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import PageBanner from "../../components/PageBanner";
 import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import EditOutlined from "@mui/icons-material/EditOutlined";
 import {
@@ -7,15 +8,9 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
   Divider,
   IconButton,
   Stack,
-  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -26,7 +21,6 @@ import {
   type AgentRoomMembership,
   type AgentSessionDetail,
   type AgentSummary,
-  renameAgent,
   updateAgentOptions,
 } from "../../data/api";
 import { useAgent, useKnownAgentTypes } from "../../data/hooks";
@@ -37,8 +31,11 @@ import {
   sentenceCase,
 } from "../../theme/format";
 import { useAuth } from "../../data/AuthContext";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 import AddressingPolicySection from "./AddressingPolicySection";
+import RenameAgentDialog from "./RenameAgentDialog";
 import AgentManagementSection from "./AgentManagementSection";
+import MidTurnDeliverySection from "./MidTurnDeliverySection";
 import ServiceAccessSection from "./ServiceAccessSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 import { sessionPlace, sessionRunner } from "./sessionLabels";
@@ -80,7 +77,7 @@ export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
   const { capabilities } = useAuth();
-  const { data: agent, loading, error, refetch } = useAgent(agentId);
+  const { data: agent, loading, error, errorStatus, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
     severity: "success" | "warning";
@@ -103,13 +100,19 @@ export default function AgentDetailPage() {
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {error ?? "Agent not found"}
+          {mayBeInAnotherWorkspace(errorStatus) !== null && (
+            <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+              {mayBeInAnotherWorkspace(errorStatus)}
+            </Box>
+          )}
         </Alert>
       </Box>
     );
   }
 
-  // Every control follows the server's answer for this agent. Who may address
-  // it is open to whoever may manage it (its owner or an admin); agent
+  // Every control follows the server's answer for this agent. Whoever may
+  // manage it (its owner or an admin) may narrow who may address it, and only
+  // its owner may widen that; agent
   // management and service access stay with the owner alone, because the
   // agent then acts on the owner's own machines and credentials. Service
   // access shows only to its owner: the server answers anyone else's request
@@ -119,10 +122,12 @@ export default function AgentDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/agents")} size="small" aria-label="Back">
+        <IconButton onClick={() => navigate("/agents")} size="small" aria-label="Back to agents">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5">{agent.name}</Typography>
+        <Typography variant="h5" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
+          {agent.name}
+        </Typography>
         {agent.can_rename && (
           <Tooltip title="Rename agent">
             <IconButton
@@ -144,6 +149,14 @@ export default function AgentDetailPage() {
           />
         )}
       </Stack>
+
+      {!canManage && (
+        <Box sx={{ mb: 2 }}>
+          <PageBanner tone="neutral">
+            You can see this agent, but only its owner and this workspace's admins can change it.
+          </PageBanner>
+        </Box>
+      )}
 
       {renameNotice && (
         <Alert
@@ -184,6 +197,12 @@ export default function AgentDetailPage() {
         )}
         <Divider />
         <AddressingPolicySection
+          agent={agent}
+          canEdit={canManage}
+          canWiden={agent.can_widen_addressing}
+          onUpdated={refetch}
+        />
+        <MidTurnDeliverySection
           agent={agent}
           canEdit={canManage}
           onUpdated={refetch}
@@ -240,158 +259,6 @@ export default function AgentDetailPage() {
   );
 }
 
-// "notes-helper" -> "Notes Helper": the label a name usually reads as.
-export function labelFromName(name: string): string {
-  return name
-    .split(/[-_.]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
-function RenameAgentDialog({
-  open,
-  agent,
-  onClose,
-  onRenamed,
-}: {
-  open: boolean;
-  agent: AgentDetail;
-  onClose: () => void;
-  onRenamed: (lines: string[], severity: "success" | "warning") => void;
-}) {
-  const currentLabel = agent.display_name ?? "";
-  // The label follows the name while it is still the name written out; once
-  // someone edits it, or it was something else all along, it is left alone.
-  const labelFollowsName =
-    currentLabel !== "" && currentLabel === labelFromName(agent.name);
-  const [name, setName] = useState(agent.name);
-  const [displayName, setDisplayName] = useState(currentLabel);
-  const [labelEdited, setLabelEdited] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (open) {
-      setName(agent.name);
-      setDisplayName(agent.display_name ?? "");
-      setLabelEdited(false);
-      setError(null);
-    }
-  }, [open, agent.name, agent.display_name]);
-
-  const trimmed = name.trim();
-  const trimmedLabel = displayName.trim();
-  const unchanged = trimmed === agent.name && trimmedLabel === currentLabel;
-  const suggested = labelFollowsName && !labelEdited && trimmed !== agent.name;
-
-  const changeName = (value: string) => {
-    setName(value);
-    if (labelFollowsName && !labelEdited) {
-      setDisplayName(labelFromName(value.trim()));
-    }
-  };
-
-  const submit = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const result = await renameAgent(agent.id, trimmed, trimmedLabel || null);
-      const label = result.agent.display_name;
-      const lines =
-        result.old_name === result.agent.name
-          ? [`Display name is now ${label ? `"${label}"` : "cleared"}.`]
-          : [
-              `Renamed "${result.old_name}" to "${result.agent.name}"` +
-                (label ? `, shown as "${label}".` : "."),
-            ];
-      if (result.bridge_failures.length > 0) {
-        lines.push(
-          `Not yet updated on: ${result.bridge_failures.join("; ")}. ` +
-            "It catches up when that bridge next starts.",
-        );
-      }
-      if (result.templates_mentioning_old_name.length > 0) {
-        lines.push(
-          "These saved templates still use the old name: " +
-            result.templates_mentioning_old_name.join(", ") +
-            ".",
-        );
-      }
-      const clean =
-        result.bridge_failures.length === 0 &&
-        result.templates_mentioning_old_name.length === 0;
-      onRenamed(lines, clean ? "success" : "warning");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const submitOnEnter = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !unchanged && trimmed && !saving) void submit();
-  };
-
-  return (
-    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="xs">
-      <DialogTitle>Rename agent</DialogTitle>
-      <DialogContent>
-        <DialogContentText sx={{ mb: 2 }}>
-          The name is what people type to mention the agent; the display name is
-          what they read. Its rooms, roles and history stay with it, and
-          connected chat platforms are updated too.
-        </DialogContentText>
-        <Stack spacing={2}>
-          <TextField
-            autoFocus
-            fullWidth
-            label="Name"
-            value={name}
-            onChange={(e) => changeName(e.target.value)}
-            onKeyDown={submitOnEnter}
-            helperText="Lowercase letters, digits, dots, hyphens and underscores."
-            inputProps={{ "aria-label": "New name" }}
-          />
-          <TextField
-            fullWidth
-            label="Display name"
-            value={displayName}
-            onChange={(e) => {
-              setDisplayName(e.target.value);
-              setLabelEdited(true);
-            }}
-            onKeyDown={submitOnEnter}
-            helperText={
-              suggested
-                ? "Suggested from the new name. Change it if you like."
-                : "Leave blank to show the name instead."
-            }
-            inputProps={{ "aria-label": "Display name" }}
-          />
-        </Stack>
-        {error && (
-          <Alert severity="error" sx={{ mt: 2 }}>
-            {error}
-          </Alert>
-        )}
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={saving}>
-          Cancel
-        </Button>
-        <Button
-          variant="contained"
-          onClick={() => void submit()}
-          disabled={saving || unchanged || !trimmed}
-        >
-          {saving ? "Saving…" : "Rename"}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
 function InfoLine({
   label,
   value,
@@ -437,7 +304,8 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
         label="Availability"
         value={agent.connection_model ? sentenceCase(agent.connection_model) : null}
       />
-      <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />
+      {/* How it is set up is its owner's and admins' to see; anyone else is sent none. */}
+      {agent.can_manage && <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />}
       <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
     </Stack>
   );
@@ -471,7 +339,7 @@ function OptionsSection({
   canEdit: boolean;
   onUpdated: () => void;
 }) {
-  const { data: knownTypes } = useKnownAgentTypes();
+  const { data: knownTypes, loading: typesLoading, error: typesError } = useKnownAgentTypes();
   const spec = knownTypes?.find((t) => t.key === agent.known_agent_type);
 
   const initial = useMemo(() => {
@@ -516,7 +384,19 @@ function OptionsSection({
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Options
       </Typography>
-      {!spec ? (
+      {!agent.can_manage ? (
+        // The server sends its options, which hold where it runs on its
+        // owner's machine, to its owner and admins alone.
+        <Typography variant="body2" color="text.secondary">
+          Only the agent's owner and admins can see its options.
+        </Typography>
+      ) : typesLoading ? (
+        <CircularProgress size={20} />
+      ) : typesError !== null ? (
+        <Alert severity="error">
+          Couldn't load the agent types, so this agent's options can't be shown: {typesError}
+        </Alert>
+      ) : !spec ? (
         <Alert severity="warning">
           Unknown agent type "{agent.known_agent_type}" — Switch no longer
           describes its options.

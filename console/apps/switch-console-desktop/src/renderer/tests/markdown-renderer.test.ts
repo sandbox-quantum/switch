@@ -14,7 +14,7 @@ vi.mock('@renderer/features/sessions/stores/session-selectors', () => ({
 vi.mock('@renderer/lib/stores/app-state', () => ({
   appState: {
     navigation: {
-      currentViewId: 'home',
+      currentViewId: 'noServer',
       viewParamsStore: {},
     },
   },

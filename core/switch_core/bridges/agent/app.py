@@ -39,12 +39,13 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.ui import GatewayUi, GatewayUiMiddleware
 from switch_core.logging_context import log_context
-from switch_core.observability.http import MetricsMiddleware
+from switch_core.observability.http import MetricsMiddleware, route_label
 from switch_core.open_gate import OpenGate
 from switch_core.refusal_breaker import RefusalBreaker
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.request_validation import public_errors
 from switch_core.room_service import RoomService
+from switch_core.runtime_errors import UnhandledExceptionMiddleware
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
@@ -66,13 +67,14 @@ def http_error_level(status_code: int) -> int:
 
 async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONResponse:
     if exc.status_code >= 400:
+        # The route template and the status only: the raw path carries
+        # ids and whatever the caller typed, and the detail can carry text.
         logger.log(
             http_error_level(exc.status_code),
-            "%s %s → %d: %s",
+            "%s %s → %d",
             request.method,
-            request.url.path,
+            route_label(request.scope),
             exc.status_code,
-            exc.detail,
         )
     return JSONResponse(
         status_code=exc.status_code,
@@ -90,7 +92,7 @@ async def log_validation_errors(
         http_error_level(422),
         "%s %s → 422 validation: errors=%s",
         request.method,
-        request.url.path,
+        route_label(request.scope),
         errors,
     )
     return JSONResponse(status_code=422, content={"detail": errors})
@@ -210,6 +212,9 @@ def create_agent_bridge_app(
     # Outside the bearer middleware, so a request rejected for bad credentials
     # is still counted and timed — an authentication failure is traffic, and a
     # spike of it is the thing you most want a dashboard to show.
+    # Inside the metrics, so a request that raises is still counted as a 5xx
+    # there; this counts the exception itself and lets it go on.
+    app.add_middleware(UnhandledExceptionMiddleware)
     app.add_middleware(MetricsMiddleware)
     # Tags every log line of an agent request as the agent bridge's, as a
     # field. Only agent paths: the gateway is mounted on this same app.

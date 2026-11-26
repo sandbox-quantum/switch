@@ -31,14 +31,33 @@ export function switchTiles(
     );
 }
 
-/** Who a switch reaches: the members who have connected the service, and the agents using it. */
+/**
+ * Who a switch reaches: the members who have connected the service, and the
+ * agents using it; null when the server doesn't say, as for anyone but an admin.
+ */
 export function switchStanding(
   service: Pick<WorkspaceService, 'connected_members' | 'granted_agents'>
-): string {
+): string | null {
   const members = service.connected_members;
   const agents = service.granted_agents;
+  if (members === null || agents === null) return null;
   if (members === 0 && agents === 0) return 'Nobody has connected it yet';
   const connected = `${members} ${members === 1 ? 'member' : 'members'} connected`;
   const using = `${agents} ${agents === 1 ? 'agent uses' : 'agents use'} it`;
   return `${connected} · ${using}`;
+}
+
+/**
+ * A service the server says can never work here: switched off on the server,
+ * needs https the server lacks, a key that never expires, or coming soon.
+ * Excludes operator-fixable codes (app_not_set_up, needs_public_url) where
+ * the admin may turn it on before setup.
+ */
+export function cannotWorkOnThisServer(code: string | null): boolean {
+  return (
+    code === 'switched_off' ||
+    code === 'needs_https' ||
+    code === 'key_never_expires' ||
+    code === 'coming_soon'
+  );
 }

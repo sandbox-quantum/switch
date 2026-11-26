@@ -41,7 +41,7 @@ async function initialIcon(
     iconIsGenerated: false,
   };
   function Probe() {
-    const form = useConfigureAgentForm(serverId);
+    const form = useConfigureAgentForm(serverId, 'claude');
     seen = { iconUrl: form.iconUrl, iconIsGenerated: form.iconIsGenerated };
     return null;
   }
@@ -106,7 +106,7 @@ describe('a new agent on a server that disables third-party avatars', () => {
       thirdPartyAvatarsEnabled: null,
     };
     function Probe() {
-      const form = useConfigureAgentForm('srv-1');
+      const form = useConfigureAgentForm('srv-1', 'claude');
       seen = {
         iconUrl: form.iconUrl,
         iconIsGenerated: form.iconIsGenerated,

@@ -56,6 +56,7 @@ from . import (
     INTERRUPT_LABEL,
     INTERRUPT_QUEUED_NOTE,
     NO_OPTIONS,
+    STEERED_MARKER,
     RequestReference,
     example_value,
     surface_label,
@@ -1053,7 +1054,12 @@ def render_activity(
             )
         return SlackMessage(text=state, blocks=[_context(state)])
     said = [item for item in items if item.kind == "assistant-message"]
-    did = [item for item in items if item.kind == "tool-activity"]
+    did = [
+        item
+        for item in items
+        if item.kind == "tool-activity"
+        or (item.kind == "user-message" and in_activity_log(item))
+    ]
 
     blocks: list[dict[str, Any]] = []
     hidden = max(len(said) - _MAX_MESSAGES, 0)
@@ -1125,14 +1131,18 @@ def render_activity_text(
     is skipped rather than shown quoted back.
     """
     said = [item for item in items if item.kind == "assistant-message"]
-    did = [item for item in items if item.kind == "tool-activity"]
+    did = [
+        item
+        for item in items
+        if is_tool_call(item) or (item.kind == "user-message" and in_activity_log(item))
+    ]
 
     lines: list[str] = []
     hidden = max(len(said) - _MAX_MESSAGES, 0)
     if hidden:
         lines.append(f"…{hidden} earlier in this turn, not shown.")
     lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
-    lines += _activity_lines([item for item in did if is_tool_call(item)])
+    lines += _activity_lines(did)
     lines += subagent_lines(items, fit=lambda text, size: _fit(text, size))
     lines.append(
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
@@ -1171,9 +1181,17 @@ def _activity_lines(items: list[Item]) -> list[str]:
     spent = 0
     for position, item in enumerate(reversed(items), start=1):
         title = _fit(item.title, _MAX_ACTIVITY_TITLE) if item.title else "_(untitled)_"
-        line = f"{_ACTIVITY[item.status]} {title}"
-        if item.text:
-            line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
+        if item.kind == "user-message":
+            excerpt = (
+                _fit(" ".join(item.text.split()), _MAX_ACTIVITY_DETAIL)
+                if item.text
+                else "(attachment)"
+            )
+            line = f"{STEERED_MARKER}: {excerpt}"
+        else:
+            line = f"{_ACTIVITY[item.status]} {title}"
+            if item.text:
+                line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
         if position > _MAX_ACTIVITY_LINES or spent + len(line) + 1 > _MAX_ACTIVITY:
             lines.append(f"_…and {len(items) - position + 1} more before these._")
             break
@@ -1668,6 +1686,14 @@ def _plan_task(item: Item) -> dict[str, Any]:
     and is less lossy than stripping the marks out and leaving a reader unable
     to tell a code span from a word.
     """
+    if item.kind == "user-message":
+        excerpt = " ".join(item.text.split()) or "(attachment)"
+        return {
+            "task_id": _task_id(item.item_id),
+            "title": _truncate(f"{STEERED_MARKER}: {excerpt}", _MAX_PLAN_TASK_TITLE),
+            "icon": {"type": "icon", "name": _SAID_ICON},
+            "status": "complete",
+        }
     if item.kind == "assistant-message":
         preview = f"{SAID_MARKER} {' '.join(plain_text(item.text).split())}"
         return {

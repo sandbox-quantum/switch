@@ -1,4 +1,4 @@
-import { Check, Loader2, MoreHorizontal, X } from 'lucide-react';
+import { Check, ExternalLink, Loader2, MoreHorizontal, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { toast } from 'sonner';
 import {
@@ -27,7 +27,11 @@ import type {
 import { resolveActiveInstallation, sourceKey } from '@shared/core/providers/agent-payload';
 import { buildSourceRows, provenanceLabel } from './installation-sources';
 
-export type InstallationState = 'found' | 'not-found' | 'uninstalled' | 'checking';
+/**
+ * `unavailable`: not found, and the agent offers no install command for this OS, so there is
+ * nothing below to install with.
+ */
+export type InstallationState = 'found' | 'not-found' | 'unavailable' | 'uninstalled' | 'checking';
 
 export type DependencyInstallationStatusCardProps = {
   vm: HostDependencyInstallation;
@@ -72,6 +76,8 @@ export const DependencyInstallationStatusCard = observer(function DependencyInst
   const selectedKey = sourceKey(selectedSource);
   const selectedRow = sourceRows.find((r) => sourceKey(r.ref) === selectedKey);
 
+  const docsUrl = agentPayload?.installDocs ?? agentPayload?.websiteUrl;
+
   // Build a human-readable label for the currently-selected source
   const selectedLabel = (() => {
     if (selectedInstall && selectedSource.kind !== 'auto') {
@@ -98,7 +104,7 @@ export const DependencyInstallationStatusCard = observer(function DependencyInst
             <Loader2 className="size-3.5 animate-spin text-foreground-muted" />
           </div>
         )}
-        {(state === 'not-found' || state === 'uninstalled') && (
+        {(state === 'not-found' || state === 'unavailable' || state === 'uninstalled') && (
           <div className="flex size-6 items-center justify-center rounded-lg bg-background-2">
             <X className="size-3.5 shrink-0 text-foreground-passive" strokeWidth={2.5} />
           </div>
@@ -118,7 +124,23 @@ export const DependencyInstallationStatusCard = observer(function DependencyInst
           )}
           {state === 'checking' && <span className="text-foreground-muted">Checking…</span>}
           {state === 'not-found' && (
-            <span className="text-foreground-muted">Not found — install below</span>
+            <span className="text-foreground-muted">Not found. Install it below.</span>
+          )}
+          {state === 'unavailable' && (
+            <>
+              <span className="text-foreground-muted">Not available to install on this OS.</span>
+              {docsUrl && (
+                <a
+                  href={docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="ml-1 inline-flex items-center gap-1 text-foreground-muted underline hover:text-foreground"
+                >
+                  Installation docs
+                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                </a>
+              )}
+            </>
           )}
           {state === 'uninstalled' && <span className="text-foreground-muted">Uninstalled</span>}
         </div>

@@ -24,10 +24,12 @@ from tests.switch_core.management.harness import (
     Harness,
     add_member,
     add_room,
+    archive_changed,
     build_harness,
     cookies_for,
     enroll_console,
     place_agent,
+    set_archived,
 )
 
 
@@ -69,6 +71,7 @@ def _principal(controller: EnrolledController) -> ControllerPrincipal:
         controller_id=controller.controller_id,
         owner_id=controller.owner.id,
         tenant_id=TENANT_ZERO_ID,
+        key_id=None,
     )
 
 
@@ -181,6 +184,31 @@ class TestACallIsAuthorizedAsTheControllersRequestIs:
         assert on_socket[0] == 401
         assert on_socket[1]["error"]["code"] == "controller_revoked"
 
+    async def test_an_agent_in_an_archived_workspace_is_refused_until_restored(
+        self, harness: Harness, where_am_i: None
+    ) -> None:
+        """Its binding stops with the archive, and its controller may not act
+        for it through either door, as its own key may not."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+
+        await set_archived(harness, archived=True)
+        await archive_changed(harness)
+        over_http, on_socket = await _both(
+            harness, controller, agent_id, "where_am_i", {}, room_id
+        )
+        await set_archived(harness, archived=False)
+        await archive_changed(harness)
+        restored = await _both(harness, controller, agent_id, "where_am_i", {}, room_id)
+
+        assert on_socket == over_http
+        assert on_socket[0] == 403
+        assert on_socket[1]["error"]["code"] == "workspace_archived"
+        assert [answer[0] for answer in restored] == [200, 200]
+
 
 @pytest.mark.parametrize(
     ("change", "detail"),
@@ -232,7 +260,7 @@ async def test_a_call_that_fails_is_still_answered() -> None:
         {"agent_id": "a1", "operation": "post_message"},
         "c-1",
         principal=ControllerPrincipal(
-            controller_id="c1", owner_id="o1", tenant_id=TENANT_ZERO_ID
+            controller_id="c1", owner_id="o1", tenant_id=TENANT_ZERO_ID, key_id=None
         ),
         protocol=cast(Any, None),
         authenticator=cast(Any, _Failing()),

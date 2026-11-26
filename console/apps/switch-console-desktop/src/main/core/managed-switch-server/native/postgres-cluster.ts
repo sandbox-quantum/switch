@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { isProcessAlive } from '@switch-console/agent-providers';
@@ -16,7 +16,6 @@ const execFileAsync = promisify(execFile);
 export const OWNER_ROLE = 'postgres';
 export const RUNTIME_ROLE = 'switch_app';
 export const DATABASE = 'switch';
-export const MATTERMOST_DATABASE = 'mattermost';
 
 /** Settings file the cluster includes, rewritten on every start. */
 const CONSOLE_CONF = 'switch-console.conf';
@@ -137,9 +136,6 @@ export async function initCluster(
     [
       `CREATE ROLE "${RUNTIME_ROLE}" LOGIN PASSWORD ${literal(passwords.runtime)} NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;`,
       `CREATE DATABASE "${DATABASE}";`,
-      // For the optional Mattermost, which keeps its own schema here as the
-      // owner, as in the Docker stack. Harmless when Mattermost never runs.
-      `CREATE DATABASE "${MATTERMOST_DATABASE}";`,
     ],
     onLog
   );
@@ -206,8 +202,8 @@ export async function clusterRunning(
 
 /**
  * Start the cluster in the background. `pg_ctl` detaches the server into its
- * own session, so it outlives Switch Console like the Docker stack's
- * containers do, and returns once the server accepts connections.
+ * own session, so only an explicit stop ends it (Console stops it as it quits),
+ * and returns once the server accepts connections.
  */
 export async function startCluster(
   binaries: PostgresBinaries,
@@ -245,6 +241,38 @@ export async function stopCluster(
     ['stop', '-D', layout.pgdata, '-m', 'fast', '-w', '-t', '60'],
     { cwd: layout.root, env: pgEnv(binaries), onLine: onLog, timeoutMs: 90_000 }
   );
+}
+
+/**
+ * The executable of the postmaster running the cluster, read off the process
+ * its lock file names, or null when none runs or the system will not say
+ * (Windows, or a process another account owns).
+ */
+export async function runningPostmasterBinary(layout: NativeLayout): Promise<string | null> {
+  let pid: number;
+  try {
+    const lock = await readFile(path.join(layout.pgdata, 'postmaster.pid'), 'utf8');
+    pid = Number(lock.split('\n')[0]);
+  } catch {
+    return null;
+  }
+  if (!Number.isInteger(pid) || pid <= 0 || !isProcessAlive(pid, 'recorded')) return null;
+  try {
+    if (process.platform === 'linux') return await readlink(`/proc/${pid}/exe`);
+    if (process.platform === 'darwin') {
+      const { stdout } = await execFileAsync('/bin/ps', ['-o', 'comm=', '-p', String(pid)], {
+        timeout: 10_000,
+      });
+      const binary = stdout.trim();
+      return path.isAbsolute(binary) ? binary : null;
+    }
+  } catch (error) {
+    log.warn('local-switch-server: could not tell which PostgreSQL is running', {
+      pid,
+      error: String(error),
+    });
+  }
+  return null;
 }
 
 /**

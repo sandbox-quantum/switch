@@ -113,6 +113,11 @@ Add hooks only for what really differs:
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
 | `clientCapabilities` | Client capabilities to announce in `initialize` beyond the protocol's own, for requests your `extensions` answer. An agent that asks its questions as ACP form elicitations needs only `FORM_ELICITATION_CAPABILITIES` here and `answerFormElicitations` as `extensions`, both from `src/acp/elicitation.ts`, as Antigravity and Mistral Vibe use them. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
+| `conversationMissing` | How the agent says it has no conversation to resume (OpenCode answers `session/load` with "session not found"). The session then starts a fresh conversation instead of failing to start. |
+| `steerMethod` | The vendor request that adds a message to the running turn (OpenCode's `_session/steering`). Set `capabilities.steering` with it. A message that changes the model, or would pass messages already waiting, is queued instead. |
+| `compaction` | The prompt that compacts the conversation and how a session update reports its progress, for an agent Switch can compact (OpenCode's `/compact`). |
+| `thoughtTokensSeparate` | The agent's `outputTokens` leaves out its `thoughtTokens`, so a turn's usage adds them (OpenCode). |
+| `modelOptionAliases` | Model option keys an earlier release saved, mapped to the config option that now takes their value (OpenCode 1's `variant` is OpenCode 2's `effort`). A saved option the agent does not offer fails the turn. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:
 
@@ -136,6 +141,8 @@ The plugin is what Console shows and how it finds the CLI. Copy
   Optional fields, all documented in
   `console/packages/core/src/agents/plugins/index.ts`:
   - `cliLabel`: for when the name alone is ambiguous ("Cursor CLI").
+  - `shortName`: the bare product name when the display name carries the
+    vendor ("Codex" for "OpenAI Codex"); it prefixes suggested agent names.
   - `knownAgentType`: defaults to the id.
   - `sessionStartMaySignIn`: set it when starting a session can open a sign-in
     browser, so model listing checks sign-in first.
@@ -251,7 +258,9 @@ what the video has to show.
 
 A CLI with its own protocol needs an adapter that implements `ProviderAdapter`
 (`console/packages/agent-providers/src/adapter.ts`). Codex (JSON-RPC
-app-server), OpenCode (HTTP and SSE), Pi (its RPC mode, with an extension of
-Switch's own) and Claude (the Agent SDK) are the examples. Register it in
+app-server), OpenCode 1.x (HTTP and SSE), Pi (its RPC mode, with an extension of
+Switch's own) and Claude (the Agent SDK) are the examples. OpenCode 2 is ACP, and
+`opencode/runtime.ts` picks between the two by the installed version as each
+session starts. Register it in
 `PROVIDER_RUNTIMES` with its own `createAdapter`, `checkSignIn` and
 `loginCommand`. Everything after step 1 is the same.

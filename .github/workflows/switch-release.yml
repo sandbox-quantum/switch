@@ -1,6 +1,6 @@
 name: switch release
 
-# Builds and publishes the Switch core stack — the switch-core, gateway, setup,
+# Builds and publishes the Switch core stack — the switch-core, gateway,
 # switch-decision, switch-decision-strands and switch-hosted-controller
 # container images, the switch and
 # switch-hosted-controller Helm charts, and the standalone Docker Compose file
@@ -49,8 +49,10 @@ name: switch release
 # that package into the switch chart's switchCore.controllerRelease, so Core
 # tells controllers to run the controller of the Switch they talk to. The
 # package is published with its signature (`.tgz.sig`, made with the
-# CONTROLLER_RELEASE_SIGNING_KEY secret), which controllers verify before they
-# install it; a publishing run without the secret fails.
+# CONTROLLER_RELEASE_SIGNING_KEY secret of the `controller-signing` environment,
+# which only main and switch-v* tags can enter), which controllers verify before
+# they install it; a publishing run without the secret fails. This is the only
+# workflow that publishes the controller.
 #
 # Artifacts go to GHCR by default, and the packages are public alongside the
 # repo. REGISTRY / IMAGE_NAMESPACE are the only things to change to retarget
@@ -189,7 +191,8 @@ jobs:
         if: ${{ steps.version.outputs.channel == 'release' }}
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
-          python-version: '3.12'
+          # No python-version: with it, setup-uv activates an empty .venv, and
+          # the python3 steps below lose the runner's PyYAML.
           enable-cache: true
 
       - name: Refuse an official template change with no revision
@@ -204,7 +207,9 @@ jobs:
         # scripts/pin_chart_images.py is the one list of first-party images; the
         # build matrix, the pin and the recorded pins all come from it.
         id: images
-        run: echo "images=$(python3 scripts/pin_chart_images.py images)" | tee -a "$GITHUB_OUTPUT"
+        run: |
+          images="$(python3 scripts/pin_chart_images.py images)"
+          echo "images=$images" | tee -a "$GITHUB_OUTPUT"
 
       - name: Set up Helm
         if: ${{ steps.version.outputs.push == 'true' }}
@@ -352,6 +357,10 @@ jobs:
   controller:
     name: Package & publish agent controller
     needs: prep
+    # The signing key lives only in this environment, whose deployment rules
+    # admit main and switch-v* tags, so a workflow on any other branch cannot
+    # read it. A dry run signs nothing and stays out of it.
+    environment: ${{ needs.prep.outputs.push == 'true' && 'controller-signing' || '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -437,9 +446,7 @@ jobs:
         run: node packages/agent-controller/scripts/sign-release.mjs "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" "$VERSION"
 
       - name: Release
-        # The tag is created from this commit by the release itself. A tag
-        # pushed with the workflow token starts no workflow, so
-        # agent-controller-release.yml does not publish it a second time.
+        # The tag is created from this commit by the release itself.
         if: needs.prep.outputs.push == 'true'
         env:
           GH_TOKEN: ${{ github.token }}

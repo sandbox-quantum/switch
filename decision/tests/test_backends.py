@@ -111,6 +111,7 @@ def test_read_systemone_choice_uses_probability():
     )
     assert (a.choice, a.confidence) == ("deploy-bot", 0.9)
     assert a.reason.startswith("probabilities: deploy-bot=0.90")
+    assert a.runner_up == 0.05
 
 
 def test_read_systemone_none():
@@ -131,8 +132,9 @@ def test_read_systemone_refuses_malformed():
         read_systemone({"answers": {}}, OPTIONS)
 
 
-def _settings(url="http://model.test/v1/systemone", threshold=0.6):
+def _settings(url="http://model.test/v1/systemone", threshold=0.6, min_lead=None):
     return Settings(
+        min_lead=min_lead,
         backend="systemone",
         model="clef-flash",
         systemone_url=url,
@@ -217,6 +219,115 @@ def test_decide_none_is_nobody(monkeypatch):
     assert tc.post("/decide", json=_payload()).json()["agent"] is None
 
 
+# ── Lead rule (DECISION_MIN_LEAD) ──────────────────────────────────────────
+
+
+def _lead_client(monkeypatch, choice, probs, **kw):
+    return _client(
+        monkeypatch,
+        lambda r: httpx.Response(200, json=_answer(choice, probs)),
+        threshold=0.5,
+        min_lead=0.05,
+        **kw,
+    )
+
+
+def test_lead_rule_delivers_a_top_agent_under_the_threshold(monkeypatch, caplog):
+    # A pilot message for the right agent: top, but under half.
+    tc = _lead_client(
+        monkeypatch,
+        "deploy-bot",
+        {"deploy-bot": 0.445, NONE: 0.372, "billing-bot": 0.183},
+    )
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] == "deploy-bot"
+    assert body["rule"] == "lead" and body["min_lead"] == 0.05
+    assert abs(body["lead"] - 0.073) < 1e-9
+    line = next(
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("decide ")
+    )
+    assert "picked=deploy-bot" in line and "rule=lead lead=0.07" in line
+
+
+def test_lead_rule_refuses_a_near_tie_with_none(monkeypatch):
+    tc = _lead_client(
+        monkeypatch,
+        "billing-bot",
+        {"billing-bot": 0.48, NONE: 0.457, "deploy-bot": 0.063},
+    )
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] is None and body["model_choice"] == "billing-bot"
+    assert body["rule"] == "lead"
+
+
+def test_lead_rule_refuses_a_near_tie_between_agents(monkeypatch):
+    tc = _lead_client(
+        monkeypatch, "deploy-bot", {"deploy-bot": 0.62, "billing-bot": 0.6, NONE: 0.0}
+    )
+    # Above the threshold, but too close to call between the two agents.
+    assert tc.post("/decide", json=_payload()).json()["agent"] is None
+
+
+def test_lead_rule_counts_a_lead_of_exactly_min_lead(monkeypatch):
+    # 0.48 - 0.43 is 0.04999... in floating point.
+    tc = _lead_client(
+        monkeypatch, "deploy-bot", {"deploy-bot": 0.48, NONE: 0.43, "billing-bot": 0.09}
+    )
+    assert tc.post("/decide", json=_payload()).json()["agent"] == "deploy-bot"
+
+
+def test_lead_rule_none_on_top_is_nobody(monkeypatch):
+    tc = _lead_client(
+        monkeypatch, NONE, {NONE: 0.6, "deploy-bot": 0.3, "billing-bot": 0.1}
+    )
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] is None and body["rule"] == "lead"
+
+
+def test_a_request_threshold_keeps_the_threshold_rule(monkeypatch):
+    tc = _lead_client(
+        monkeypatch,
+        "deploy-bot",
+        {"deploy-bot": 0.445, NONE: 0.372, "billing-bot": 0.183},
+    )
+    body = tc.post("/decide", json=_payload(confidence_threshold=0.5)).json()
+    assert body["agent"] is None and body["rule"] == "threshold"
+    assert body["min_lead"] is None
+
+
+def test_without_min_lead_the_threshold_rule_applies(monkeypatch):
+    tc = _client(
+        monkeypatch,
+        lambda r: httpx.Response(
+            200,
+            json=_answer(
+                "deploy-bot", {"deploy-bot": 0.445, NONE: 0.372, "billing-bot": 0.183}
+            ),
+        ),
+        threshold=0.5,
+    )
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] is None and body["rule"] == "threshold"
+    assert abs(body["lead"] - 0.073) < 1e-9
+
+
+def test_a_single_confidence_backend_keeps_the_threshold_rule():
+    # Haiku and Ollama rate one confidence and score no other option.
+    one = backends.ModelAnswer(choice="deploy-bot", confidence=0.45, reason="")
+    assert app_module.pick(one, 0.5, 0.05) == (None, "threshold", None)
+    sure = replace(one, confidence=0.9)
+    assert app_module.pick(sure, 0.5, 0.05) == ("deploy-bot", "threshold", None)
+
+
+def test_health_reports_min_lead(monkeypatch):
+    tc = _client(
+        monkeypatch,
+        lambda r: httpx.Response(200, json={"status": "ok", "model": "clef-flash"}),
+        min_lead=0.05,
+    )
+    assert tc.get("/health").json()["min_lead"] == 0.05
+
+
 def test_decide_unknown_name_is_nobody(monkeypatch):
     tc = _client(
         monkeypatch,
@@ -254,7 +365,8 @@ def test_health_reports_backend_model_threshold(monkeypatch):
         and body["model"] == "clef-flash"
         and body["confidence_threshold"] == 0.6
     )
-    assert body["backends_available"] == ["default", "anthropic"]
+    # The default backend can be named too.
+    assert body["backends_available"] == ["default", "anthropic", "systemone"]
 
 
 def test_health_fails_when_model_server_down(monkeypatch):
@@ -416,6 +528,7 @@ def test_letter_readout_renormalises_over_options():
         lettered_options(["deploy-bot", "billing-bot"]),
     )
     assert a.choice == "deploy-bot" and abs(a.confidence - 0.6 / 0.9) < 1e-9
+    assert abs(a.runner_up - 0.2 / 0.9) < 1e-9
 
 
 def test_letter_readout_with_no_option_letter_fails():
@@ -537,3 +650,198 @@ def test_the_instructions_say_an_agent_spoken_to_by_name_answers():
         assert "only mentioned" in text
         assert "named person who is not an agent" in text
     assert "only mentioned or talked about" in NONE_CRITERION
+
+
+# ── Google's Decisions API (gemini_decision) ────────────────────────────────
+
+GEMINI_KEY = "fake-gemini-key-0001"
+
+
+def _gemini_settings(**kw):
+    fields = dict(
+        backend="gemini_decision",
+        model="gemini-decision-1",
+        gemini_decision_api_key=GEMINI_KEY,
+        gemini_decision_url="https://decisions.test/v1beta/decisions",
+    )
+    return replace(_settings(), **{**fields, **kw})
+
+
+def _gemini_answer(choice, probs):
+    return {
+        "answers": {
+            SPEAKER_QUESTION: {
+                "type": "choice",
+                "choice": choice,
+                "confidence": probs.get(choice),
+                "probabilities": probs,
+            }
+        },
+        "usage": {"total_input_tokens": 900, "total_output_tokens": 0},
+    }
+
+
+def test_gemini_request_is_one_choice_question_over_the_agents_and_nobody():
+    from switch_decision.prompt import (
+        GEMINI_NOBODY_CRITERION,
+        gemini_decision_request,
+        speaker_instructions,
+    )
+
+    body = gemini_decision_request(_req(), "gemini-decision-1", 30, "nobody")
+    assert set(body) == {"model", "input", "questions"}
+    assert body["model"] == "gemini-decision-1"
+    q = body["questions"][SPEAKER_QUESTION]
+    assert q["type"] == "choice"
+    # The same routing rules SystemOne gets, as the whole question.
+    assert q["instructions"] == speaker_instructions(_req(), 30)
+    assert q["criteria"] == {
+        "deploy-bot": "deploy-bot: CI and deploys",
+        "billing-bot": "billing-bot: invoices (role: finance)",
+        "nobody": GEMINI_NOBODY_CRITERION,
+    }
+    text = body["input"]
+    # The routing rules, then the room state; no answer-format instructions.
+    assert text.startswith("You decide which single agent")
+    assert "Give a short reason" not in text
+    for part in ("Room: eng", "deploy started", "why did the deploy fail?"):
+        assert part in text
+
+
+def test_gemini_request_carries_the_conversation_rule_mid_exchange():
+    from switch_decision.prompt import (
+        CONVERSATION_RULE,
+        SYSTEM_CONVERSATION_RULE,
+        gemini_decision_request,
+    )
+
+    req = _req(
+        message=Incoming(sender="sara", text="yes"),
+        thread=[],
+        recent=[
+            Message(sender="sara", text="can you redeploy?", addressed=["deploy-bot"]),
+            Message(
+                sender="deploy-bot",
+                sender_kind="agent",
+                text="redeploy staging?",
+                addressed=["sara"],
+            ),
+        ],
+    )
+    body = gemini_decision_request(req, "gemini-decision-1", 30, "nobody")
+    assert SYSTEM_CONVERSATION_RULE in body["input"]
+    assert CONVERSATION_RULE in body["questions"][SPEAKER_QUESTION]["instructions"]
+
+
+def test_the_nobody_key_steps_aside_for_an_agent_of_that_name():
+    from switch_decision.prompt import gemini_nobody_key
+
+    assert gemini_nobody_key(["deploy-bot"]) == "nobody"
+    assert gemini_nobody_key(["nobody", "nobody_"]) == "nobody__"
+    assert gemini_nobody_key(["x"], "no_agent") == "no_agent"
+
+
+def test_read_gemini_maps_probabilities_to_choice_and_runner_up():
+    a = backends.read_gemini_decision(
+        _gemini_answer(
+            "deploy-bot", {"deploy-bot": 0.7, "nobody": 0.25, "billing-bot": 0.05}
+        ),
+        ["deploy-bot", "billing-bot"],
+        "nobody",
+    )
+    assert (a.choice, a.confidence, a.runner_up, a.reason) == (
+        "deploy-bot",
+        0.7,
+        0.25,
+        "",
+    )
+
+
+def test_read_gemini_nobody_is_none():
+    a = backends.read_gemini_decision(
+        _gemini_answer("no_agent", {"no_agent": 0.9, "deploy-bot": 0.1}),
+        ["deploy-bot"],
+        "no_agent",
+    )
+    assert (a.choice, a.confidence, a.runner_up) == (NONE, 0.9, 0.1)
+
+
+def test_read_gemini_refuses_unknown_and_malformed():
+    with pytest.raises(InvalidChoiceError) as exc:
+        backends.read_gemini_decision(
+            _gemini_answer("ghost-bot", {"ghost-bot": 0.8, "nobody": 0.2}),
+            ["deploy-bot"],
+            "nobody",
+        )
+    assert (exc.value.choice, exc.value.confidence) == ("ghost-bot", 0.8)
+    # "none" is not an option key here: the nobody option is "nobody".
+    with pytest.raises(InvalidChoiceError):
+        backends.read_gemini_decision(
+            _gemini_answer("none", {"none": 1.0}), ["deploy-bot"], "nobody"
+        )
+    with pytest.raises(ModelServerError, match="no 'speaker' answer"):
+        backends.read_gemini_decision({"answers": {}}, ["deploy-bot"], "nobody")
+
+
+def test_gemini_ask_posts_the_request_with_the_key_header():
+    s = _gemini_settings()
+    request = _ask_recording(
+        s, _gemini_answer("deploy-bot", {"deploy-bot": 0.9, "nobody": 0.1})
+    )
+    assert str(request.url) == "https://decisions.test/v1beta/decisions"
+    assert request.headers["x-goog-api-key"] == GEMINI_KEY
+    assert "authorization" not in request.headers
+    body = json.loads(request.content)
+    assert body["model"] == "gemini-decision-1"
+    assert list(body["questions"][SPEAKER_QUESTION]["criteria"]) == [
+        "deploy-bot",
+        "billing-bot",
+        "nobody",
+    ]
+
+
+def test_decide_via_gemini_uses_the_lead_rule(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=_gemini_answer(
+                "deploy-bot",
+                {"deploy-bot": 0.445, "nobody": 0.372, "billing-bot": 0.183},
+            ),
+        )
+
+    tc = _client(monkeypatch, handler)
+    monkeypatch.setattr(
+        app_module,
+        "settings",
+        _gemini_settings(min_lead=0.05, confidence_threshold=0.5),
+    )
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] == "deploy-bot" and body["rule"] == "lead"
+    assert body["backend"] == "gemini_decision" and body["model"] == "gemini-decision-1"
+    assert abs(body["lead"] - 0.073) < 1e-9 and body["reason"] == ""
+
+
+def test_decide_via_gemini_nobody_on_top_is_nobody(monkeypatch):
+    tc = _client(
+        monkeypatch,
+        lambda r: httpx.Response(
+            200, json=_gemini_answer("nobody", {"nobody": 0.8, "deploy-bot": 0.2})
+        ),
+    )
+    monkeypatch.setattr(app_module, "settings", _gemini_settings())
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] is None and body["model_choice"] == NONE
+
+
+def test_gemini_health_needs_the_key(monkeypatch):
+    tc = _client(monkeypatch, lambda r: pytest.fail("no call to Google on /health"))
+    monkeypatch.setattr(app_module, "settings", _gemini_settings())
+    body = tc.get("/health").json()
+    assert body["model_server"] == "decisions.test"
+    assert body["backends_available"] == ["default", "anthropic", "gemini_decision"]
+    monkeypatch.setattr(
+        app_module, "settings", _gemini_settings(gemini_decision_api_key=None)
+    )
+    r = tc.get("/health")
+    assert r.status_code == 503 and "GEMINI_DECISION_API_KEY" in r.json()["detail"]

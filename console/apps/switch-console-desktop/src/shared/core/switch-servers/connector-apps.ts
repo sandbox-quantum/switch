@@ -56,6 +56,14 @@ export const connectorAppSchema = z.object({
   scopes: z.array(z.string()).default([]),
   /** Why it can't be set up here, before any vendor is asked. */
   setup_blocked: z.string().nullable(),
+  /**
+   * A GitHub App short of the write permissions, as GitHub last answered:
+   * agents can only read through it, and a write grant is refused. False
+   * from a server older than this.
+   */
+  read_only: z.boolean().default(false),
+  /** The permissions it lacks to write, as the App's settings page names them. */
+  lacks_write: z.array(z.string()).default([]),
   install_url: z.string().nullable(),
   updated_by_name: z.string().nullable(),
   updated_at: z.string().nullable(),
@@ -141,3 +149,17 @@ export type SaveConnectorAppResult =
       field: ConnectorAppField | null;
       checks: ConnectorAppCheck[];
     };
+
+/**
+ * Who sets up the server's connector apps, as its session answers for the
+ * signed-in account. Each is null from a server that does not say.
+ */
+export type ConnectorAppManagement = {
+  /** `can_manage_connector_apps`: whether this account may set them up, as
+   * the server's operator, or an admin of its only organization. */
+  canManage: boolean | null;
+  /** `connector_apps_in_dashboard`: whether they are set up in the web
+   * dashboard, by the admins of the server's one organization, rather than
+   * with the `switch-connector-apps` command, as on a server with several. */
+  inDashboard: boolean | null;
+};

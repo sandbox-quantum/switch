@@ -86,7 +86,9 @@ class _FakeProvisioning:
     def __init__(self, events: list[Any]) -> None:
         self._events = events
 
-    async def kick_user(self, transport_room_id: str, transport_user_id: str) -> None:
+    async def kick_user(
+        self, transport_room_id: str, transport_user_id: str, **_kwargs: object
+    ) -> None:
         self._events.append(("kick", transport_user_id))
 
     async def delete_room(self, transport_room_id: str) -> None:
@@ -117,7 +119,13 @@ def _build_service(
     svc._client_lifecycle = _FakeClientLifecycle(clients)  # type: ignore[assignment]
     svc._provisioning = _FakeProvisioning(events)  # type: ignore[assignment]
     svc._room_cache = _FakeRoomCache()  # type: ignore[assignment]
+    svc._record_room_change = _audit_unrecorded  # type: ignore[method-assign]
     return svc, room_store
+
+
+async def _audit_unrecorded(*_: Any) -> None:
+    """The fake session holds no rows; recording the deletion is tested
+    against Postgres (`test_room_audit_events.py`)."""
 
 
 class TestDeleteRoom:

@@ -5,7 +5,8 @@ import * as api from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { ALL_OFF } from "../../data/featureFlags";
 import * as hooks from "../../data/hooks";
-import AgentDetailPage, { labelFromName } from "./AgentDetailPage";
+import AgentDetailPage from "./AgentDetailPage";
+import { labelFromName } from "./RenameAgentDialog";
 
 vi.mock("react-router", () => ({
   useNavigate: () => vi.fn(),
@@ -72,7 +73,9 @@ const agent: AgentDetail = {
   can_edit_options: true,
   can_transfer: true,
   transfer_blocked_reason: null,
+  suspension: null,
   can_change_manage_agents: true,
+  can_widen_addressing: true,
   can_grant_services: true,
 };
 

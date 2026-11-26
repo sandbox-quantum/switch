@@ -46,6 +46,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 import switch_core
+from switch_core.db.audit_history_ddl import PURGE_FUNCTION_NAME
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -54,9 +55,9 @@ from switch_core.db.models import (
     Invitation,
     MessagingInstall,
     Organization,
+    OrganizationMember,
     PendingDecision,
     Room,
-    ServerConnector,
     Tenant,
     TenantJoinDomain,
     TenantMember,
@@ -75,7 +76,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_invitation,
     tenant_of_messaging_install,
     tenant_of_room,
-    tenant_of_server_connector,
+    tenants_bindable_by_user,
     tenants_inviting_email,
     tenants_of_organization,
     tenants_of_user,
@@ -96,7 +97,10 @@ _LOOKUP_REVISION = "9c41a7b0e5d8"
 # today. The two agree only once the drops between them are accounted for,
 # and naming the revision here is what keeps 'we removed it from the module'
 # from passing as 'we removed it from the database'.
-_DROPPED_SINCE = {"tenant_of_client": "b1d7c4f0a92e"}
+_DROPPED_SINCE = {
+    "tenant_of_client": "b1d7c4f0a92e",
+    "tenant_of_server_connector": "e223eae63078",
+}
 
 # The same bookkeeping in the other direction: a lookup the live module names
 # that `9c41a7b0e5d8` never created, and the revision that did create it. The
@@ -127,7 +131,10 @@ _ADDED_SINCE = {
 # the schema reveals. So the revision that last wrote the body is named here
 # and compared against the module, while the creating revision above goes on
 # owning the drop.
-_REDEFINED_SINCE = {"tenant_of_messaging_install": "a7f2c3e9b481"}
+_REDEFINED_SINCE = {
+    "tenant_of_messaging_install": "a7f2c3e9b481",
+    "tenants_bindable_by_user": "e2c7a94f1b38",
+}
 
 
 def _revision_module(revision: str) -> ModuleType:
@@ -157,7 +164,6 @@ class _Fixture:
         self.client_a: str = ""
         self.room_a: str = ""
         self.bridge_a: str = ""
-        self.connector_a: str = ""
         self.key_hash_a: str = ""
         self.workspace_a: str = ""
         self.workspace_b: str = ""
@@ -242,15 +248,7 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
                 connection_config={},
                 client_id=client.id,
             )
-            connector = ServerConnector(
-                tenant_id=tenant_id,
-                type="opencode",
-                display_name=f"connector {tag}",
-                api_key_id=key.id,
-                status="active",
-                connection_config={},
-            )
-            session.add_all([bridge, connector])
+            session.add(bridge)
             invitation = Invitation(
                 tenant_id=tenant_id,
                 role="member",
@@ -293,7 +291,6 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
                 fixture.client_a = client.id
                 fixture.room_a = room.id
                 fixture.bridge_a = bridge.id
-                fixture.connector_a = connector.id
                 fixture.invitation_token_hash_a = invitation.token_hash
             else:
                 fixture.invitation_token_hash_b = invitation.token_hash
@@ -306,7 +303,9 @@ class TestTheCatalogueIsWhatIsInstalled:
         self, rls_harness: RLSHarness
     ) -> None:
         """The set of exempt functions in the database is exactly the list in
-        `db/tenant_lookup.py`.
+        `db/tenant_lookup.py`, plus the audit-history purge
+        (`db/audit_history_ddl.py`), which deletes rather than looks up and
+        so is not a lookup.
 
         Both directions matter, and the second more than the first: a
         `SECURITY DEFINER` function nobody has written down is an exemption
@@ -328,7 +327,9 @@ class TestTheCatalogueIsWhatIsInstalled:
                 )
             ).scalars()
             installed = set(rows)
-        assert installed == {lookup.name for lookup in TENANT_LOOKUPS}
+        assert installed == {lookup.name for lookup in TENANT_LOOKUPS} | {
+            PURGE_FUNCTION_NAME
+        }
 
     async def test_each_one_is_stable_and_cannot_have_its_tables_shadowed(
         self, rls_harness: RLSHarness
@@ -346,11 +347,13 @@ class TestTheCatalogueIsWhatIsInstalled:
                         FROM pg_proc p
                         JOIN pg_namespace n ON n.oid = p.pronamespace
                         WHERE n.nspname = 'public' AND p.prosecdef
+                          AND p.proname = ANY(:names)
                         """
-                    )
+                    ),
+                    {"names": [lookup.name for lookup in TENANT_LOOKUPS]},
                 )
             ).all()
-        assert rows
+        assert len(rows) == len(TENANT_LOOKUPS)
         for name, volatility, config in rows:
             assert volatility == "s", f"{name} is not STABLE"
             assert config is not None, f"{name} sets no search_path"
@@ -492,6 +495,49 @@ class TestWhatTheyAnswer:
             await tenants_of_user(rls_harness.restricted, fixture.user_in_both)
         ) == sorted([fixture.tenant_a, fixture.tenant_b])
 
+    async def test_an_archived_workspace_is_bindable_only_by_its_org_admins(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A member keeps the membership row, so `tenants_of_user` still lists
+        it and Restore gives the workspace back; only binding it is refused.
+        The organization's `org_admin` still binds it, to restore it."""
+        fixture = await _two_populated_tenants(rls_harness)
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with rls_harness.owner() as session:
+            session.add(
+                Organization(id=organization_id, slug=organization_id, name="O")
+            )
+            await session.flush()
+            session.add(
+                OrganizationMember(
+                    organization_id=organization_id,
+                    user_id=fixture.user_in_both,
+                    role="org_admin",
+                )
+            )
+            tenant_a = await session.get(Tenant, fixture.tenant_a)
+            assert tenant_a is not None
+            tenant_a.organization_id = organization_id
+            tenant_a.archived_at = datetime.now(UTC)
+            await session.commit()
+
+        restricted = rls_harness.restricted
+        assert await tenants_bindable_by_user(restricted, fixture.user_a) == []
+        assert await tenants_of_user(restricted, fixture.user_a) == [fixture.tenant_a]
+        assert await tenants_bindable_by_user(
+            restricted, fixture.user_in_both
+        ) == sorted([fixture.tenant_a, fixture.tenant_b])
+
+        async with rls_harness.owner() as session:
+            tenant_a = await session.get(Tenant, fixture.tenant_a)
+            assert tenant_a is not None
+            tenant_a.archived_at = None
+            await session.commit()
+
+        assert await tenants_bindable_by_user(restricted, fixture.user_a) == [
+            fixture.tenant_a
+        ]
+
     async def test_an_api_key_hash_resolves_to_its_tenant(
         self, rls_harness: RLSHarness
     ) -> None:
@@ -515,7 +561,7 @@ class TestWhatTheyAnswer:
         await _two_populated_tenants(rls_harness)
         assert await tenant_of_api_key(rls_harness.restricted, "no-such-hash") is None
 
-    async def test_a_room_bridge_and_connector_resolve_to_their_tenant(
+    async def test_a_room_and_bridge_resolve_to_their_tenant(
         self, rls_harness: RLSHarness
     ) -> None:
         fixture = await _two_populated_tenants(rls_harness)
@@ -523,10 +569,6 @@ class TestWhatTheyAnswer:
         assert await tenant_of_room(restricted, fixture.room_a) == fixture.tenant_a
         assert (
             await tenant_of_collaboration_bridge(restricted, fixture.bridge_a)
-            == fixture.tenant_a
-        )
-        assert (
-            await tenant_of_server_connector(restricted, fixture.connector_a)
             == fixture.tenant_a
         )
 
@@ -920,7 +962,7 @@ class TestTheMigrationInstallsTheSameThing:
                 f"DROP FUNCTION IF EXISTS {lookup.signature}"
             )
 
-    def test_the_dropped_lookup_is_dropped_by_a_revision_and_not_only_here(
+    def test_each_dropped_lookup_is_dropped_by_a_revision_and_not_only_here(
         self,
     ) -> None:
         """Removing a function from `db/tenant_lookup.py` removes it from what
@@ -935,27 +977,26 @@ class TestTheMigrationInstallsTheSameThing:
 
         The downgrade is checked against `9c41a7b0e5d8`'s frozen text rather
         than against what the module would build, because the module no longer
-        builds it at all: a rollback past this revision has to land on the
-        schema the revision below it created.
+        builds it at all: a rollback past the dropping revision has to land on
+        the schema the revision below it created.
         """
         installed = _migration_module()
-        dropped = _revision_module(_DROPPED_SINCE["tenant_of_client"])
-        assert (
-            dropped.DROP_TENANT_OF_CLIENT
-            == "DROP FUNCTION IF EXISTS tenant_of_client(text)"
-        )
         frozen = {
-            name: (parameters, body)
-            for name, parameters, _signature, body in installed.LOOKUPS
+            name: (parameters, signature, body)
+            for name, parameters, signature, body in installed.LOOKUPS
         }
-        parameters, body = frozen["tenant_of_client"]
-        assert dropped.CREATE_TENANT_OF_CLIENT == installed.create_lookup_ddl(
-            "tenant_of_client", parameters, body
-        ), (
-            "the downgrade would recreate tenant_of_client with different DDL "
-            "from the one 9c41a7b0e5d8 installed, so a rollback past it lands "
-            "on a schema that revision would not recognise."
-        )
+        for name, revision in _DROPPED_SINCE.items():
+            dropped = _revision_module(revision)
+            parameters, signature, body = frozen[name]
+            assert getattr(dropped, f"DROP_{name.upper()}") == (
+                f"DROP FUNCTION IF EXISTS {signature}"
+            )
+            create = getattr(dropped, f"CREATE_{name.upper()}")
+            assert create == installed.create_lookup_ddl(name, parameters, body), (
+                f"the downgrade would recreate {name} with different DDL from "
+                "the one 9c41a7b0e5d8 installed, so a rollback past it lands on "
+                "a schema that revision would not recognise."
+            )
 
     def test_the_statement_it_would_run_is_the_statement_the_module_builds(
         self,

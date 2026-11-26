@@ -12,31 +12,61 @@ import {
 } from "@mui/material";
 import { useRef, useState } from "react";
 import { AccessSelect } from "../../components/AccessControls";
-import { createTemplate } from "../../data/api";
+import { type TemplateUseCase, createTemplate } from "../../data/api";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
+import UseCaseSelect from "../templates/UseCaseSelect";
 import TemplateFindings from "./TemplateFindings";
 import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import { MAX_DOCUMENT_BYTES, formatBytes } from "./templateFormat";
 import { useTemplateValidation } from "./useTemplateValidation";
 
+/** A template to start the form from, as Duplicate fills it in. */
+export interface TemplateDraft {
+  name: string;
+  description: string;
+  kind: string;
+  use_case: TemplateUseCase | null;
+  access: AccessLevel;
+  content: string;
+}
+
+const EMPTY: TemplateDraft = {
+  name: "",
+  description: "",
+  kind: "room",
+  use_case: null,
+  // Read-only, the registry's own default: the workspace can use it, the
+  // owner or an admin changes it.
+  access: "read_only",
+  content: "",
+};
+
 interface Props {
   open: boolean;
+  title: string;
+  submitLabel: string;
+  /** What the form starts from, or null for an empty one. Read when the
+   * dialog mounts, and again when it is closed. */
+  initial: TemplateDraft | null;
   onClose: () => void;
   onCreated: (id: string) => void;
 }
 
 export default function CreateTemplateDialog({
   open,
+  title,
+  submitLabel,
+  initial,
   onClose,
   onCreated,
 }: Props) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [kind, setKind] = useState("room");
-      // Read-only, the registry's own default: the workspace can use it, the
-  // owner or an admin changes it.
-  const [access, setAccess] = useState<AccessLevel>("read_only");
-  const [content, setContent] = useState("");
+  const start = initial ?? EMPTY;
+  const [name, setName] = useState(start.name);
+  const [description, setDescription] = useState(start.description);
+  const [kind, setKind] = useState(start.kind);
+  const [useCase, setUseCase] = useState<TemplateUseCase | null>(start.use_case);
+  const [access, setAccess] = useState<AccessLevel>(start.access);
+  const [content, setContent] = useState(start.content);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -45,11 +75,12 @@ export default function CreateTemplateDialog({
   });
 
   const reset = () => {
-    setName("");
-    setDescription("");
-    setKind("room");
-    setAccess("read_only");
-    setContent("");
+    setName(start.name);
+    setDescription(start.description);
+    setKind(start.kind);
+    setUseCase(start.use_case);
+    setAccess(start.access);
+    setContent(start.content);
     setError(null);
   };
 
@@ -90,6 +121,7 @@ export default function CreateTemplateDialog({
         description,
         kind: kind.trim(),
         content,
+        use_case: useCase,
         ...fromAccessLevel(access),
       });
       reset();
@@ -114,7 +146,7 @@ export default function CreateTemplateDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} fullWidth maxWidth="md">
-      <DialogTitle>Upload template</DialogTitle>
+      <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField
@@ -140,6 +172,7 @@ export default function CreateTemplateDialog({
             disabled={submitting}
             helperText="What this template provisions — room, group, agent."
           />
+          <UseCaseSelect value={useCase} onChange={setUseCase} disabled={submitting} />
           <AccessSelect
             value={access}
             onChange={setAccess}
@@ -190,7 +223,7 @@ export default function CreateTemplateDialog({
           disabled={!canSubmit}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
-          Upload
+          {submitLabel}
         </Button>
       </DialogActions>
     </Dialog>

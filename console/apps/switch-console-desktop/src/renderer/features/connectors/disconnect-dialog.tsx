@@ -14,6 +14,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { disconnectCopy } from './connector-copy';
 import { useConnectionAgents, useReloadConnectors } from './connectors-queries';
+import { LinkedText } from './linked-text';
 
 /**
  * Disconnecting a service from its profile, in the profile's workspace, after
@@ -69,7 +70,7 @@ export function DisconnectServiceDialog({
       <DialogContentArea className="space-y-3 pt-0">
         {done ? (
           <p role="status" className="rounded-md border p-3 text-sm text-foreground-muted">
-            {warning}
+            {warning && <LinkedText text={warning} />}
           </p>
         ) : (
           <>

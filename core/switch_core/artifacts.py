@@ -20,18 +20,17 @@ class ContractRange(NamedTuple):
 # Where each artifact is. Says nothing about compatibility — that is
 # CONTRACTS below. The two must never be derived from one another.
 ARTIFACT_VERSIONS: Final[dict[str, str]] = {
-    "switch-core": "0.31.0",
-    "switch-console": "0.40.1",
-    "agent-runtime": "0.8.3",
+    "switch-core": "0.32.2",
+    "switch-console": "0.41.1",
+    "agent-runtime": "0.8.5",
     "sidecar": "1.9.12",
-    "gateway": "0.31.0",
-    "setup": "0.31.0",
-    "switch-decision": "0.31.0",
-    "switch-decision-strands": "0.31.0",
-    "helm-chart": "0.31.0",
-    "hosted-controller": "0.31.0",
-    "hosted-controller-chart": "0.31.0",
-    "compose": "0.31.0",
+    "gateway": "0.32.2",
+    "switch-decision": "0.32.2",
+    "switch-decision-strands": "0.32.2",
+    "helm-chart": "0.32.2",
+    "hosted-controller": "0.32.2",
+    "hosted-controller-chart": "0.32.2",
+    "compose": "0.32.2",
 }
 
 CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
@@ -40,10 +39,10 @@ CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
         "switch-core": ContractRange(speaks=9, accepts=8),
         "agent-runtime": ContractRange(speaks=9, accepts=8),
     },
-    # The HTTP API switch-core serves to first-party UI clients. Excludes the authentication surface, which is deliberately frozen and unversioned so that a client can always authenticate far enough to be told what is wrong.
+    # The HTTP API switch-core serves to first-party UI clients. Excludes signing in, refreshing a session and signing out, which are deliberately frozen and unversioned so that a client can always sign in far enough to be told what is wrong. The rest of /auth is part of it, sign-up and the browser sign-in link included.
     "gateway-api": {
-        "switch-core": ContractRange(speaks=2, accepts=2),
-        "switch-console": ContractRange(speaks=2, accepts=1),
+        "switch-core": ContractRange(speaks=7, accepts=2),
+        "switch-console": ContractRange(speaks=7, accepts=1),
     },
     # The interface of the published standalone compose artifact — its service names, profiles, and environment variables — which Switch Console's local-server mode drives.
     "stack-compose": {

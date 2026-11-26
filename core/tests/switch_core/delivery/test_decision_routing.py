@@ -235,6 +235,32 @@ class TestWhichMessagesAreAsked:
         assert await room.reached(told) == {"reviewer"}
         assert service.requests == []
 
+    async def test_the_only_agent_of_a_one_to_one_room_wins(
+        self, world: World, room: Journey, service: DecisionService
+    ) -> None:
+        # Journey puts alice and bob in the room; a one-to-one room has alice.
+        await world.remove_agent("reviewer")
+        await world.leave("bob")
+
+        told = await room.say("alice", "can you check why the deploy failed?", at=10)
+        root = await room.say("alice", "a question", at=20)
+        reply = await room.say("alice", "and another", at=900, thread=root)
+
+        assert await room.reached(told) == {"helper"}
+        assert await room.reached(reply) == {"helper"}
+        assert service.requests == []
+        assert (await room.payloads(told))["helper"].follow_up == "one_to_one"
+        assert await _pending(world) == []
+
+    async def test_a_second_person_brings_the_decision_back(
+        self, world: World, room: Journey, service: DecisionService
+    ) -> None:
+        await world.remove_agent("reviewer")
+
+        await room.say("alice", "can you check why the deploy failed?", at=10)
+
+        assert len(service.requests) == 1
+
     async def test_an_agent_is_not_asked_about(
         self, room: Journey, service: DecisionService
     ) -> None:
@@ -988,7 +1014,9 @@ class TestTheTriageAgent:
     ) -> None:
         reply = await room.command("bob", "auto-route", "fallback @reviewer", at=5)
 
-        assert reply.startswith("Only the room's owner or a workspace admin")
+        assert reply.startswith(
+            "Only the room's owner, a room admin or a workspace admin"
+        )
         async with world.session_factory() as session:
             assert await RoomStore().auto_route_fallback(session, world.room_id) is None
 

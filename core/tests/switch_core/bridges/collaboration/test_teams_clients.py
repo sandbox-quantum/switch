@@ -138,7 +138,7 @@ def test_create_subscription_sends_expected_body() -> None:
     assert str(rec.last.url) == "https://graph.microsoft.com/v1.0/subscriptions"
     assert rec.last.headers["Authorization"] == "Bearer graph-tok"
     body = rec.last_json()
-    assert body["changeType"] == "created,updated"
+    assert body["changeType"] == "created,updated,deleted"
     assert body["includeResourceData"] is True
     assert body["resource"] == "teams/t1/channels/c1/messages"
     assert body["encryptionCertificate"] == "CERT"

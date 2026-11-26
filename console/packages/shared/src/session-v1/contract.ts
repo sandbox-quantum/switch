@@ -45,6 +45,12 @@ export type Item = {
   text: string;
   attachments: Attachment[];
   origin: Origin | null;
+  /**
+   * For a user message sent while another turn was running: `steered` when it
+   * was delivered into that running turn, `queued` when it waits to run as a
+   * turn of its own. Absent for a message that started a turn straight away.
+   */
+  delivery?: 'steered' | 'queued';
 };
 export type ApprovalOption = {
   optionId: Id;

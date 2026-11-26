@@ -106,8 +106,10 @@ class _NotAssigned:
     def is_controller_token(self, token: str) -> bool:
         return True
 
-    async def authenticate(self, token: str) -> ControllerPrincipal:
-        return ControllerPrincipal(controller_id="c1", owner_id="u1", tenant_id="t1")
+    async def authenticate(self, token: str, path: str) -> ControllerPrincipal:
+        return ControllerPrincipal(
+            controller_id="c1", owner_id="u1", tenant_id="t1", key_id=None
+        )
 
 
 async def test_a_controller_refused_on_the_socket_is_told_why_in_a_close() -> None:

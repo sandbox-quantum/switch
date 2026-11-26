@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 _GRAPH_HOST = urlsplit(GRAPH_BASE).hostname
+# What a channel-message subscription is notified of.
+SUBSCRIPTION_CHANGE_TYPES = "created,updated,deleted"
 # How old our token must be before an authorization refusal is worth re-minting
 # it for. A token issued seconds ago cannot have missed a grant.
 _TOKEN_RETRY_AGE = 30.0
@@ -186,12 +188,17 @@ class GraphClient:
     ) -> dict[str, Any]:
         """Create a change-notification subscription with resource data.
 
+        Asks for `SUBSCRIPTION_CHANGE_TYPES`: a deleted or edited post is
+        followed in the room as well as a new one captured. Graph cannot change
+        a subscription's change types afterwards; see
+        `TeamsAdapter._adopt_existing_subscriptions`.
+
         Channel-message subscriptions must include an encryption certificate
         (Graph encrypts the message body) and, because their lifetime exceeds an
         hour's worth of renewals, a lifecycle notification URL.
         """
         body = {
-            "changeType": "created,updated",
+            "changeType": SUBSCRIPTION_CHANGE_TYPES,
             "notificationUrl": notification_url,
             "lifecycleNotificationUrl": lifecycle_notification_url,
             "resource": resource,
@@ -378,6 +385,33 @@ class GraphClient:
         if resp.status_code >= 300 and resp.status_code != 409:
             raise _graph_error(
                 f"add member {user_aad_id} to channel {channel_id}", resp
+            )
+
+    async def list_channel_members(
+        self, *, team_id: str, channel_id: str
+    ) -> list[dict[str, Any]]:
+        """A channel's members across Graph's pages: for a standard channel,
+        the team's. Each carries `id` (the membership), `userId` (the Entra
+        object id) and `displayName`."""
+        return await self._all_pages(
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{_segment(channel_id)}/members",
+            params=None,
+            what=f"list the members of channel {channel_id}",
+        )
+
+    async def remove_channel_member(
+        self, *, team_id: str, channel_id: str, membership_id: str
+    ) -> None:
+        """Take one membership out of a private or shared channel. Already
+        gone is success."""
+        resp = await self._send(
+            "DELETE",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{_segment(channel_id)}"
+            f"/members/{_segment(membership_id)}",
+        )
+        if resp.status_code >= 300 and resp.status_code != 404:
+            raise _graph_error(
+                f"remove member {membership_id} from channel {channel_id}", resp
             )
 
     async def add_team_member(self, *, team_id: str, user_aad_id: str) -> None:

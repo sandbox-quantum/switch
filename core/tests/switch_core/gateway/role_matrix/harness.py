@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import importlib.util
 import json
+import secrets
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.suspension import SuspensionEffects
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
@@ -89,6 +91,7 @@ from switch_core.process_lease import ProcessLease
 from switch_core.providers.github import GitHubConnections, GitHubReach
 from switch_core.signals import SignalBus
 from switch_core.tenant_context import tenant_scope
+from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.github_seed import github_broker
@@ -241,8 +244,22 @@ class _Bridges:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
+    def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
+        return True
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
+
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
 
     def receives_webhooks(self, bridge_type: str) -> bool:
         return False
@@ -294,6 +311,7 @@ def _management(
         status_interval_seconds=STATUS_INTERVAL,
         server_url=SERVER_URL,
         third_party_avatars=True,
+        feature_flags=settings.feature_flags,
         controller_release=None,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
@@ -305,6 +323,7 @@ def _management(
             session_factory=session_factory,
             processes=SwitchCoreProcessStore(),
             key_ids=[key.id for key in settings.keyring.keys],
+            booting=False,
         ),
         user_changes=SignalUserChanges(local=LocalUserChanges(), bus=signal_bus),
     )
@@ -312,6 +331,11 @@ def _management(
 
 def config() -> SwitchConfig:
     return SURFACE._config(frozenset(KNOWN_FEATURE_FLAGS))  # type: ignore[no-any-return]
+
+
+async def _trust_connection_check(**_: Any) -> Any:
+    """Switch Trust, asked to check a policy an organization connects."""
+    raise Reached("trust_connection_check")
 
 
 def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
@@ -326,6 +350,8 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         listener=_FakeListener(),
         activity=_FakeActivityListener(),
         connections=protocol.connections,
+        message_observer=IgnoreParticipantMessages(),
+        telemetry=None,
     )
     resource_service = ResourceService(
         reference_store=ReferenceStore(),
@@ -367,6 +393,7 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
             ConnectorApps, "connector_apps", github_app=lambda: None
         ),
         config=settings,
+        trust_connection_check=_trust_connection_check,  # type: ignore[arg-type]
     )
     management = _management(session_factory, protocol, settings)
     init_management_dependencies(
@@ -383,7 +410,15 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         "organization_apps",
         _store=OrganizationAppCredentialStore(settings.keyring),
     )
+    gateway.state.suspension_effects = SuspensionEffects(
+        session_factory=session_factory,
+        connections=protocol.connections,
+        api_key_cache=protocol.api_key_cache,
+        broker=gateway.state.service_broker,
+        management=management.service,
+    )
     gateway.state.controller_revoker = management.service
+    gateway.state.workspace_archive = Fake("workspace_archive")
     # Auto-route's decision client, asking nothing: the decision settings
     # routes read and save the workspace's row, and Test meets a service that
     # is down.
@@ -469,6 +504,7 @@ class People:
             TENANT,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
         return {"cookie": f"switch_auth={token}"}
 

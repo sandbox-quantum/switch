@@ -18,7 +18,7 @@ export default function RoomGroupSection({
   canFile: boolean;
   onChanged: () => void;
 }) {
-  const { data: groups, refetch: refetchGroups } = useRoomGroups();
+  const { data: groups, error: groupsError, refetch: refetchGroups } = useRoomGroups();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,6 +52,11 @@ export default function RoomGroupSection({
         Group
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
+      {groupsError && (
+        <Alert severity="error">
+          Couldn't load the room groups, so the room can't be moved to another one: {groupsError}
+        </Alert>
+      )}
       <Stack direction="row" spacing={1.5} alignItems="center">
         {room.group_id && (
           <Box
@@ -64,7 +69,7 @@ export default function RoomGroupSection({
             }}
           />
         )}
-        {canFile ? (
+        {canFile && !groupsError ? (
           <TextField
             select
             size="small"

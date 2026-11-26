@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration import (
     collaboration_core as collaboration_core_module,
@@ -173,7 +175,9 @@ async def test_app_sender_human_actor_is_provisioned_then_awaited() -> None:
     ]
 
 
-async def test_first_message_from_app_sender_is_relayed() -> None:
+async def test_first_message_from_app_sender_is_relayed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # End-to-end for the guaranteed case: a third-party app posts into a channel
     # for the first time (bot-id sender, no human actor anywhere) and the post must
     # land in the room rather than being swallowed.
@@ -205,6 +209,8 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
         _trust_client=NullTrustClient(),
+        _session_factory=session_factory,
+        _room_tenant=AsyncMock(return_value="tenant-1"),
     )
 
     await CollaborationCore._handle_inbound_message(
@@ -226,7 +232,9 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
     assert relayed == [("$event-1", "slack-post-1")]
 
 
-async def test_first_message_from_unknown_member_is_relayed() -> None:
+async def test_first_message_from_unknown_member_is_relayed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     human_actor = _FakeHumanActor()
     relayed: list[tuple[str, str]] = []
 
@@ -252,6 +260,8 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
         _trust_client=NullTrustClient(),
+        _session_factory=session_factory,
+        _room_tenant=AsyncMock(return_value="tenant-1"),
     )
 
     await CollaborationCore._handle_inbound_message(

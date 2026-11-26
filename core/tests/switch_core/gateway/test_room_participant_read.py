@@ -151,6 +151,6 @@ async def test_participants_read_a_private_room_and_change_nothing(
 
         with pytest.raises(HTTPException) as hidden:
             await _read(session, room.id, stranger)
-        assert hidden.value.status_code == 403
+        assert hidden.value.status_code == 404
         with pytest.raises(_GatePassed):
             await _write(session, room.id, owner)

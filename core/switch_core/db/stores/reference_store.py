@@ -61,6 +61,11 @@ class ReferenceStore:
         )
         return list(result.scalars().all())
 
+    async def list_all(self, session: AsyncSession) -> list[Reference]:
+        """Every reference in the bound tenant, whoever owns it."""
+        result = await session.execute(select(Reference))
+        return list(result.scalars().all())
+
     async def list_readable_with_owner_names(
         self,
         session: AsyncSession,
@@ -178,14 +183,16 @@ class ReferenceStore:
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, reference_id: str
-    ) -> None:
-        await session.execute(
+    ) -> bool:
+        """Detach it from a room, saying whether it was attached."""
+        result = await session.execute(
             delete(room_references).where(
                 room_references.c.room_id == room_id,
                 room_references.c.reference_id == reference_id,
             )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def list_for_room(
         self, session: AsyncSession, room_id: str

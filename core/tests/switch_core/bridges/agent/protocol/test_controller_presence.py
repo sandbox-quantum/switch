@@ -9,6 +9,7 @@ where its sessions are, so it never promises a session for it.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -279,6 +280,53 @@ class TestTheRegistryAsksTheController:
         assert registry.live_connection_count() == 0
 
 
+class TestAMachineMoving:
+    """A controller whose process shut down reads as connected while it
+    reattaches to another (`ControllerPresence.moving`)."""
+
+    async def test_it_is_live_until_its_time_is_up_and_then_told_gone(self) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "agent")
+        presence = registry.controllers
+        gone: list[tuple[str, str]] = []
+        presence.use_gone_listener(
+            lambda tenant, controller: gone.append((tenant, controller))
+        )
+        presence.held_elsewhere(CONTROLLER, "the-old-process", TENANT_ZERO_ID)
+        mark = presence.connection_mark()
+
+        presence.moving(CONTROLLER, TENANT_ZERO_ID, time.monotonic() + 0.2)
+
+        assert presence.connection_changed_since(CONTROLLER, mark)
+        assert registry.is_live("agent")
+        assert presence.process_holding("agent") is None
+        await asyncio.sleep(0.4)
+        assert not registry.is_live("agent")
+        assert gone == [(TENANT_ZERO_ID, CONTROLLER)]
+
+    async def test_a_reattach_or_a_newer_row_ends_it_and_nothing_is_told(
+        self,
+    ) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "agent")
+        presence = registry.controllers
+        gone: list[tuple[str, str]] = []
+        presence.use_gone_listener(
+            lambda tenant, controller: gone.append((tenant, controller))
+        )
+
+        presence.moving(CONTROLLER, TENANT_ZERO_ID, time.monotonic() + 0.2)
+        presence.held_elsewhere(CONTROLLER, "the-new-process", TENANT_ZERO_ID)
+        assert registry.is_live("agent")
+        presence.moving(CONTROLLER, TENANT_ZERO_ID, time.monotonic() + 0.2)
+        # The row says its socket went from where it reattached.
+        presence.held_elsewhere(CONTROLLER, None, TENANT_ZERO_ID)
+        assert not registry.is_live("agent")
+
+        await asyncio.sleep(0.4)
+        assert gone == []
+
+
 class TestRoleLeases:
     async def test_a_seat_held_by_a_controller_backed_agent_lives_with_it(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -504,7 +552,9 @@ class TestTheAgentClientsReplies:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="stopped", revision=4, owner_stopped=False),
+            CloudMachineState(
+                state="stopped", revision=4, owner_stopped=False, admin_stopped=False
+            ),
         )
 
         first = await client._reply_when_unavailable_here(object(), agent, meta, "u")
@@ -525,7 +575,9 @@ class TestTheAgentClientsReplies:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="stopped", revision=4, owner_stopped=True),
+            CloudMachineState(
+                state="stopped", revision=4, owner_stopped=True, admin_stopped=False
+            ),
         )
         reply = await client._reply_when_unavailable_here(
             object(), _agent("auto", "auto_session"), meta, "u"
@@ -533,6 +585,27 @@ class TestTheAgentClientsReplies:
         assert reply == (
             "My device, **machine**, is stopped, so I can't answer. My owner "
             "(@owner) can start it again in Switch Console."
+        )
+
+    async def test_a_cloud_machine_an_administrator_stopped_names_them(self) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
+        client = _client(
+            registry,
+            "auto",
+            CloudMachineState(
+                state="error", revision=4, owner_stopped=False, admin_stopped=True
+            ),
+        )
+        reply = await client._reply_when_unavailable_here(
+            object(), _agent("auto", "auto_session"), meta, "u"
+        )
+        assert reply == (
+            "My device, **machine**, was stopped by a server administrator, so "
+            "I can't answer until they release it."
         )
 
     async def test_an_offline_or_removed_machine_is_named_not_console(
@@ -629,6 +702,7 @@ def _addressing_client(
         return None
 
     ns._sender_role = _sender_role
+    ns._mid_turn_delivery = lambda: "steer"
 
     async def _no_notice(*_args: Any) -> None:
         return None

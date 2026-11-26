@@ -56,6 +56,7 @@ function codexHostDependency(): HostDependencyDescriptor {
     command: CODEX_WINDOWS_INSTALL_SCRIPT,
     updateCommand: CODEX_WINDOWS_INSTALL_SCRIPT,
     uninstallCommand: CODEX_WINDOWS_UNINSTALL_SCRIPT,
+    installedAt: ['AppData\\Local\\Programs\\OpenAI\\Codex\\'],
     recommended: true,
   };
   const windowsNpm = (descriptor.installCommands.windows ?? []).map(
@@ -73,7 +74,8 @@ function codexHostDependency(): HostDependencyDescriptor {
 export const plugin = definePlugin(
   {
     id: 'codex',
-    name: 'Codex',
+    name: 'OpenAI Codex',
+    shortName: 'Codex',
     description:
       'CLI that connects to OpenAI models for project-aware code assistance and terminal workflows.',
     websiteUrl: 'https://github.com/openai/codex',
@@ -113,9 +115,10 @@ export const provider = registerPluginBehavior(plugin, {
   prompt: {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
-        // Approvals only — the sandbox is left to the user's config. "Bypass
-        // permissions" promises unattended approval, not unattended filesystem
-        // and network access.
+        // Approvals only — the sandbox is left to the user's config, which
+        // also wins over the default a controller-started session falls back
+        // to (`prepareCodexSessionHome`). "Bypass permissions" promises
+        // unattended approval, not unattended filesystem and network access.
         autoApproveFlag: '-c approval_policy="never"',
         // Codex's automatic reviewer answers what the sandbox escalates.
         autoModeFlag: '-c approval_policy="on-request" -c approvals_reviewer="auto_review"',

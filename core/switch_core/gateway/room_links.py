@@ -90,7 +90,7 @@ async def create_linked_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> LinkedRoomDetail:
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    await require_room_access(session, room_store, room_id, user, "configure", is_admin)
     # The link shows the target's name and description, so it must be readable.
     await require_room_access(
         session, room_store, req.target_room_id, user, "read", is_admin
@@ -120,7 +120,7 @@ async def delete_linked_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> Response:
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    await require_room_access(session, room_store, room_id, user, "configure", is_admin)
     removed = await resource_service.detach_linked_room(
         session, source_room_id=room_id, target_room_id=target_room_id
     )

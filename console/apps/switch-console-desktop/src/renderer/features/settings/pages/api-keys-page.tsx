@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, Plus, Trash2 } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { PageHeader } from '@renderer/lib/components/page-header';
@@ -24,7 +25,7 @@ import {
   NEVER_EXPIRES_WARNING,
   splitApiKeys,
 } from './api-keys';
-import { OnSignedInServer, SectionLabel } from './settings-server';
+import { OnSignedInServer, SectionLabel, settingsServer } from './settings-server';
 
 /** Keyed on the person as well as the server, so one person's keys are never shown to the next to sign in. */
 export const apiKeysQueryKey = (serverId: string, userId: string) => [
@@ -38,20 +39,21 @@ export const apiKeysQueryKey = (serverId: string, userId: string) => [
  * with, and your agents' own keys. Everyone's keys are the workspace's
  * business, in the gateway; these are only yours.
  */
-export function ApiKeysSettingsPage() {
+export const ApiKeysSettingsPage = observer(function ApiKeysSettingsPage() {
+  const { server } = settingsServer();
   return (
     <div className="space-y-8 pb-10">
       <PageHeader
         sticky
         title="API keys"
-        description="Your keys: the ones you register agents with, and your agents' own."
+        description={`Manage registration tokens for connecting agents to ${server?.name ?? 'this Switch server'}.`}
       />
       <OnSignedInServer>
         {({ server, user }) => <ApiKeys serverId={server.id} userId={user.id} />}
       </OnSignedInServer>
     </div>
   );
-}
+});
 
 function ApiKeys({ serverId, userId }: { serverId: string; userId: string }) {
   const queryClient = useQueryClient();
@@ -83,9 +85,6 @@ function ApiKeys({ serverId, userId }: { serverId: string; userId: string }) {
     <div className="space-y-8">
       <section className="space-y-3">
         <SectionLabel>Registration keys</SectionLabel>
-        <p className="text-sm text-foreground-muted">
-          An agent registers with Switch using one of these.
-        </p>
         <CreateRegistrationKey
           serverId={serverId}
           onCreated={(key) => {

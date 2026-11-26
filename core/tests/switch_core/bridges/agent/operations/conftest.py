@@ -38,6 +38,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.room_policy import visibility_for_channel
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import RoomYamlService
 
@@ -78,8 +79,9 @@ class FakeRoomService:
                 kickoff_hash=config.kickoff_hash,
                 template_name=config.template_name,
                 owner_id=config.owner_id,
-                read_visibility=config.read_visibility,
-                write_visibility=config.write_visibility,
+                read_visibility=config.read_visibility
+                or visibility_for_channel(config.channel_type or "channel_public"),
+                write_visibility="private",
                 group_id=config.group_id,
             )
             session.add(room)
@@ -187,6 +189,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_group_store=RoomGroupStore(),
         room_role_store=RoomRoleStore(),
         connections={},
+        telemetry=None,
     )
     # Runs are the real service's; only its collaborators are fakes.
     fake_protocol.run_service = partial(AgentCore.run_service, fake_protocol)
@@ -201,7 +204,9 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_role_store=fake_protocol.room_role_store,
         session_factory=fake_protocol.session_factory,
         room_group_store=fake_protocol.room_group_store,
+        console_rooms=None,
         client_lifecycle=fake_protocol.client_lifecycle,
+        telemetry=fake_protocol.telemetry,
     )
 
     async with session_factory() as session:

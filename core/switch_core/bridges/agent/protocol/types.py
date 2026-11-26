@@ -5,6 +5,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+# The most subagents one bulk registration may name: each is registered on its
+# own, with a call to every messaging app of its workspace.
+SUBAGENTS_MAX = 50
+
 # ── Agent integration profile ─────────────────────────────────────────────────
 
 
@@ -97,10 +101,17 @@ class RoomDescriptor(BaseModel):
     # moved. Same value in both; nothing dereferences either.
     matrix_room_id: str
     archived: bool = False
+    # Frozen by a workspace admin: read-only until they unfreeze it.
+    frozen: bool = False
     # The room's collaboration bridge, or None for an internal-only room.
     # Carried so a caller that already resolved the room does not have to read
     # it again to decide whether an outbound signal has anywhere to go.
     bridge_id: str | None = None
+
+
+# Whether an agent is up at all, outside any one room: `not_tracked` for an
+# agent that only polls, which holds nothing Switch can see between polls.
+OverallStatus = Literal["online", "offline", "not_tracked"]
 
 
 class AgentStatus(StrEnum):
@@ -210,6 +221,9 @@ class RoomDetailDescriptor(BaseModel):
     bridge_id: str | None
     bridge_display_name: str | None
     external_channel_id: str | None
+    # An https link that opens the room's channel on its app, or None (no
+    # channel, the bridge is down, or the app gives no web link).
+    channel_url: str | None
     # The group this room belongs to (navigation layer), or null if standalone.
     # `group_path` is the human-readable ancestry, e.g. "Parent / Child".
     group_id: str | None
@@ -218,7 +232,8 @@ class RoomDetailDescriptor(BaseModel):
     agent_names: list[str]
     agent_statuses: dict[str, str]
     connected_user_names: list[str]
-    # Names of agents configured to receive `room_join` events in this room.
+    # Names of agents configured to receive `room_join` and `room_leave`
+    # events in this room.
     join_event_listeners: list[str] = []
     # Per-room agent aliases, keyed by agent name → alias (only agents that
     # have an alias in this room appear).
@@ -234,6 +249,7 @@ EventType = Literal[
     "message",
     "command",
     "room_join",
+    "room_leave",
 ]
 
 
@@ -252,7 +268,7 @@ class AttachmentRef(BaseModel):
     msgtype: str
 
 
-FollowUp = Literal["thread_follow_up", "channel_follow_up", "main_agent"]
+FollowUp = Literal["thread_follow_up", "channel_follow_up", "main_agent", "one_to_one"]
 
 
 class MessagePayload(BaseModel):
@@ -278,6 +294,9 @@ class MessagePayload(BaseModel):
     # arrived: "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
+    # The receiving agent's setting for messages sent while it works: "steer"
+    # into the running turn, or "queue" behind it.
+    mid_turn_delivery: Literal["steer", "queue"] = "steer"
     # What Switch has to tell the agent before this message, such as that
     # its template has a new revision it was not brought fully up to; told
     # with every message until the agent reads about it. None for nothing.
@@ -294,7 +313,9 @@ class MessagePayload(BaseModel):
     # nobody (`delivery/conversation.py`): "thread_follow_up", a reply in a
     # thread the agent spoke or was tagged in last; "channel_follow_up", the
     # sender's next channel message in an exchange with the agent;
-    # "main_agent", the agent is the room's assigned agent. The agent may stay
+    # "main_agent", the agent is the room's assigned agent; "one_to_one", the
+    # agent is the only one in an auto-route room whose only person sent it.
+    # The agent may stay
     # silent on such a message. None when the message named the agent, or was
     # routed (`routed_reason`).
     follow_up: FollowUp | None = None
@@ -324,12 +345,28 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-Payload = MessagePayload | CommandPayload | RoomJoinPayload
+class RoomLeavePayload(BaseModel):
+    # The member who left (their participant id) and display name, as on
+    # `RoomJoinPayload`. room_id / bridge_id / channel_type live on the
+    # enclosing AgentEvent.
+    member: str
+    member_name: str
+    timestamp: int
+    # Whether the receiving agent is set to hear about members coming and
+    # going in this room: the same per-room, per-agent setting as join events.
+    listening: bool
+    # Who took them out, when someone did; None when they left on their own
+    # (or their platform did not say).
+    removed_by: str | None = None
+
+
+Payload = MessagePayload | CommandPayload | RoomJoinPayload | RoomLeavePayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
+    "room_leave": RoomLeavePayload,
 }
 
 

@@ -147,6 +147,10 @@ spec:
             - name: DECISION_CONFIDENCE_THRESHOLD
               value: {{ . | quote }}
             {{- end }}
+            {{- with $d.minLead }}
+            - name: DECISION_MIN_LEAD
+              value: {{ . | quote }}
+            {{- end }}
             - name: DECISION_BEDROCK_ENABLED
               value: {{ ternary "1" "0" $d.bedrock.enabled | quote }}
             {{- with $d.bedrock.model }}
@@ -162,7 +166,7 @@ spec:
             # only: the service exports no metrics; switch-core measures
             # decisions.
             - name: LOG_FORMAT
-              value: {{ .Values.switchCore.logging.format | quote }}
+              value: {{ .Values.switchCore.logging.format | default "json" | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.switchCore.logging.rootLevel | quote }}
             - name: SERVICE_NAME

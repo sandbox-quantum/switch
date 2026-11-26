@@ -21,7 +21,7 @@ vi.hoisted(() => {
 const rooms = vi.hoisted(() => ({ list: null as unknown as { all: RemoteRoomSummary[] } }));
 const archivedRooms = vi.hoisted(() => ({ list: [] as RemoteRoomSummary[] }));
 const setRoomArchived = vi.hoisted(() => vi.fn(async () => ({})));
-const serverState = vi.hoisted(() => ({ managed: false, canWrite: true }));
+const serverState = vi.hoisted(() => ({ managed: false, canArchive: true }));
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
@@ -91,7 +91,7 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
         : rooms.list.all.filter((room) => room.ownerId === 'me' || room.viewerIsMember),
     readableRoomsInWorkspace: () => rooms.list.all,
     noteRooms: () => {},
-    roomPermissions: () => ({ canWrite: serverState.canWrite, canManage: false }),
+    roomPermissions: () => ({ canArchive: serverState.canArchive, canManage: false }),
     refreshRoomState: async () => {},
   },
 }));
@@ -111,6 +111,7 @@ function room(id: string, extra: Partial<RemoteRoomSummary>): RemoteRoomSummary 
     externalChannelUrl: null,
     ownerId: 'bob',
     viewerIsMember: false,
+    viewerIsRoomAdmin: false,
     isConsoleChat: false,
     archived: false,
     createdAt: '',
@@ -135,7 +136,7 @@ function chat(id: string) {
 beforeEach(() => {
   archivedRooms.list = [];
   serverState.managed = false;
-  serverState.canWrite = true;
+  serverState.canArchive = true;
   setRoomArchived.mockClear();
   rooms.list = observable({
     all: [
@@ -246,7 +247,7 @@ it('says who owns a room and what is in it in words, and marks one only its peop
 it('offers archiving only where the server lets you', async () => {
   await render();
   expect(cardFor('yaml-room').querySelector('[aria-label="yaml-room actions"]')).not.toBeNull();
-  serverState.canWrite = false;
+  serverState.canArchive = false;
   await act(async () => toggle('All rooms')!.click());
   expect(cardFor('yaml-room').querySelector('[aria-label="yaml-room actions"]')).toBeNull();
 });

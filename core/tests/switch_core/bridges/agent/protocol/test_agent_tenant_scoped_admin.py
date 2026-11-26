@@ -174,7 +174,9 @@ class TestAgentInheritsOwnerTenantScopedAdmin:
         room_id = await _private_room(session_factory, TENANT_ZERO_ID, someone_else)
 
         async with session_factory() as session:
-            room = await svc._require_room_action(session, agent_id, room_id, "write")
+            room = await svc._require_room_action(
+                session, agent_id, room_id, "configure"
+            )
             assert room.id == room_id
 
     async def test_agent_cannot_administer_a_tenant_where_owner_is_only_a_member(
@@ -193,7 +195,7 @@ class TestAgentInheritsOwnerTenantScopedAdmin:
 
         async with session_factory() as session:
             with tenant_scope(TENANT_B), pytest.raises(PermissionError):
-                await svc._require_room_action(session, agent_id, room_id, "write")
+                await svc._require_room_action(session, agent_id, room_id, "configure")
 
     async def test_operator_owned_agent_administers_every_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -211,6 +213,6 @@ class TestAgentInheritsOwnerTenantScopedAdmin:
         async with session_factory() as session:
             with tenant_scope(TENANT_B):
                 room = await svc._require_room_action(
-                    session, agent_id, room_id, "write"
+                    session, agent_id, room_id, "configure"
                 )
             assert room.id == room_id

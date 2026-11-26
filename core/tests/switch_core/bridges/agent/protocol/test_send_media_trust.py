@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.tenant_context import tenant_scope
 from switch_core.trust.client import (
     GuardrailBlockedError,
     TrustCheckResult,
@@ -23,15 +26,25 @@ _BROKEN_PDF = b"%PDF-1.4\x00garbage"
 _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high"),)
 
 
+@pytest.fixture(autouse=True)
+def _bound_workspace() -> Iterator[None]:
+    """A workspace bound, as agent authentication binds one before any send:
+    each check names the workspace whose organization's policy applies."""
+    with tenant_scope("tenant-a"):
+        yield
+
+
 class _ContentTrustClient:
     def __init__(self, *, active: bool = True) -> None:
         self._active = active
         self.checked: list[tuple[str, str]] = []
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return self._active
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.checked.append((role, content))
         if "FORBIDDEN" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)
@@ -66,7 +79,9 @@ class _FakeClient:
 
 
 def _build(
-    trust: _ContentTrustClient, notice_error: str | None = None
+    session_factory: async_sessionmaker[AsyncSession],
+    trust: _ContentTrustClient,
+    notice_error: str | None = None,
 ) -> tuple[AgentCore, _FakeClient, list[Any]]:
     client = _FakeClient()
     notices: list[Any] = []
@@ -85,6 +100,7 @@ def _build(
         return None
 
     svc = object.__new__(AgentCore)
+    svc.session_factory = session_factory  # type: ignore[assignment]
     svc.require_room_poster = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
         get_by_agent_id=lambda agent_id: client
@@ -97,9 +113,11 @@ def _build(
     return svc, client, notices
 
 
-async def test_blocked_caption_sends_nothing_and_raises() -> None:
+async def test_blocked_caption_sends_nothing_and_raises(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     trust = _ContentTrustClient()
-    svc, client, notices = _build(trust)
+    svc, client, notices = _build(session_factory, trust)
 
     with pytest.raises(GuardrailBlockedError):
         await svc.send_media(
@@ -114,8 +132,10 @@ async def test_blocked_caption_sends_nothing_and_raises() -> None:
     assert ("assistant", "FORBIDDEN") in trust.checked
 
 
-async def test_redacted_caption_is_sent_redacted() -> None:
-    svc, client, _notices = _build(_ContentTrustClient())
+async def test_redacted_caption_is_sent_redacted(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, _notices = _build(session_factory, _ContentTrustClient())
 
     result = await svc.send_media(
         "agent-1",
@@ -129,8 +149,10 @@ async def test_redacted_caption_is_sent_redacted() -> None:
     assert result["trust"] == {"outcome": "redacted", "delivered": "here is [redacted]"}
 
 
-async def test_a_caption_redaction_that_changed_nothing_is_still_reported() -> None:
-    svc, client, _notices = _build(_ContentTrustClient())
+async def test_a_caption_redaction_that_changed_nothing_is_still_reported(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, _notices = _build(session_factory, _ContentTrustClient())
 
     result = await svc.send_media(
         "agent-1",
@@ -146,8 +168,10 @@ async def test_a_caption_redaction_that_changed_nothing_is_still_reported() -> N
     }
 
 
-async def test_blocked_file_text_sends_nothing_and_says_which_file() -> None:
-    svc, client, notices = _build(_ContentTrustClient())
+async def test_blocked_file_text_sends_nothing_and_says_which_file(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, notices = _build(session_factory, _ContentTrustClient())
 
     with pytest.raises(GuardrailBlockedError, match="leak.env"):
         await svc.send_media(
@@ -163,8 +187,10 @@ async def test_blocked_file_text_sends_nothing_and_says_which_file() -> None:
     assert notices == [("blocked", None)]
 
 
-async def test_image_is_sent_without_a_notice() -> None:
-    svc, client, notices = _build(_ContentTrustClient())
+async def test_image_is_sent_without_a_notice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, notices = _build(session_factory, _ContentTrustClient())
 
     result = await svc.send_media("agent-1", "room-1", [(_PNG, "cat.png", "image/png")])
 
@@ -174,8 +200,10 @@ async def test_image_is_sent_without_a_notice() -> None:
     assert "trust" not in result
 
 
-async def test_unreadable_document_is_sent_with_a_not_checked_notice() -> None:
-    svc, client, notices = _build(_ContentTrustClient())
+async def test_unreadable_document_is_sent_with_a_not_checked_notice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, notices = _build(session_factory, _ContentTrustClient())
 
     result = await svc.send_media(
         "agent-1", "room-1", [(_BROKEN_PDF, "scan.pdf", "application/pdf")]
@@ -188,9 +216,13 @@ async def test_unreadable_document_is_sent_with_a_not_checked_notice() -> None:
     assert result["trust"] == {"outcome": "errored", "note": annotation}
 
 
-async def test_a_notice_that_could_not_be_posted_is_reported_as_such() -> None:
+async def test_a_notice_that_could_not_be_posted_is_reported_as_such(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     svc, client, notices = _build(
-        _ContentTrustClient(), notice_error="no admin client is running to post it"
+        session_factory,
+        _ContentTrustClient(),
+        notice_error="no admin client is running to post it",
     )
 
     result = await svc.send_media(
@@ -205,10 +237,12 @@ async def test_a_notice_that_could_not_be_posted_is_reported_as_such() -> None:
     }
 
 
-async def test_agents_receive_the_not_checked_note_with_the_file() -> None:
+async def test_agents_receive_the_not_checked_note_with_the_file(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # The room notice is an admin event that agents are never routed; the
     # caption of the file itself is what reaches them.
-    svc, client, _notices = _build(_ContentTrustClient())
+    svc, client, _notices = _build(session_factory, _ContentTrustClient())
 
     await svc.send_media(
         "agent-1",
@@ -226,8 +260,10 @@ async def test_agents_receive_the_not_checked_note_with_the_file() -> None:
     assert second["caption"] is None
 
 
-async def test_a_later_failed_upload_still_posts_the_notice_for_files_sent() -> None:
-    svc, client, notices = _build(_ContentTrustClient())
+async def test_a_later_failed_upload_still_posts_the_notice_for_files_sent(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, notices = _build(session_factory, _ContentTrustClient())
 
     with pytest.raises(RuntimeError):
         await svc.send_media(
@@ -246,9 +282,11 @@ async def test_a_later_failed_upload_still_posts_the_notice_for_files_sent() -> 
     assert "did not check scan.pdf" in annotation
 
 
-async def test_with_trust_off_nothing_is_checked() -> None:
+async def test_with_trust_off_nothing_is_checked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     trust = _ContentTrustClient(active=False)
-    svc, client, notices = _build(trust)
+    svc, client, notices = _build(session_factory, trust)
 
     result = await svc.send_media(
         "agent-1",
