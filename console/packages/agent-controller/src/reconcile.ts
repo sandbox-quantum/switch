@@ -391,3 +391,10 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
   }
   return actions;
 }
+
+/**
+ * What `ensureCredentials` changed for an agent: nothing (`false`), or the
+ * reason its host must pick up new credentials. Box only for now: the box
+ * tells a login change, a withdrawn login and a moved relay apart.
+ */
+export type CredentialChange = false | 'login' | 'withdrawn' | 'relay' | boolean;

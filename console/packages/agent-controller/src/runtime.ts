@@ -105,14 +105,27 @@ export type RelayCredentials = {
   hub: string;
   /** A login Switch gave the machine for the agent's provider, which it has none of its own for. */
   providerLogin: GivenLogin | null;
+  /**
+   * Box only: when the login goes through the provider gateway instead, the
+   * agent's opaque gateway token and which login it fronts. The login itself
+   * is then not in the file (`providerLogin` is null). Never set on desktop or v1.
+   */
+  gateway?: GatewayRecord | null;
 };
+
+/** An agent's place on the provider gateway, as its credentials file keeps it (no secret). */
+export type GatewayRecord = { token: string; provider: string; kind: string; revision: string };
 
 /** Runs agent hosts one way: in this controller's process, or each in a process of its own. */
 export interface AgentRunner {
   observe(agentId: string): Promise<AgentObservation>;
   launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void>;
   /** Turns the agent host off; with `wait`, returns once it and its sessions are gone. */
-  stop(agentId: string, options: { wait: boolean }): Promise<void>;
+  /**
+   * `asked: false` (box only) says nobody in the agent's rooms asked for this
+   * stop, so a turn it cuts off owes its room a line. Absent: asked, as before.
+   */
+  stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void>;
   /** The controller is exiting. */
   close(): Promise<void>;
 }

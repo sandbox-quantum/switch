@@ -2,6 +2,9 @@ import { sealedLoginSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import { PROVIDERS } from './providers';
 
+/** No box has a petabyte: a memory reading past this is not a reading. */
+export const MEMINFO_MAX_BYTES = 2 ** 50;
+
 /**
  * The wire messages between this controller and Management, as v1 uses them.
  * Field names and types follow `docs/design/controller-contract-v1.md`; where
@@ -245,6 +248,19 @@ export const agentStatusSchema = z
     process: z.enum(PROCESS_STATES),
     attached: z.boolean(),
     sessions: z.object({ active: z.number().int().nonnegative(), ids: z.array(z.string()) }),
+    /**
+     * Box only: the agent's sessions, `waking` while one is being started for
+     * a message, `active` if one's host runs, `parked` if all are saved and
+     * unloaded. Null when it has none, or nothing reported it.
+     */
+    session: z.enum(['active', 'waking', 'parked']).nullable().optional(),
+    /**
+     * Box only: room messages waiting for room in a full box, and since when
+     * the oldest. Absent when none wait, and always on desktop and v1.
+     */
+    waiting_for_room: z
+      .object({ count: z.number().int().positive(), oldest_since: time.nullable() })
+      .optional(),
     restarts_10m: z.number().int().nonnegative(),
     oom_kills: z.number().int().nonnegative(),
     /** The absolute working directory the agent runs in, or null before one was resolved. */
@@ -281,12 +297,61 @@ export const statusReportSchema = z.object({
     platform: platformSchema,
     disk_free_bytes: z.number().nonnegative(),
     disk_total_bytes: z.number().nonnegative(),
+    /**
+     * Box only: which disk the figures are, `workspace` when they are the
+     * agents' own volume, `unknown` otherwise. Absent on desktop and v1.
+     */
+    disk_scope: z.enum(['workspace', 'unknown']).optional(),
     mem_free_bytes: z.number().nonnegative(),
     mem_total_bytes: z.number().nonnegative(),
     sessions_running: z.number().int().nonnegative(),
     sessions_max: z.number().int().nonnegative(),
     /** The absolute directory agents' workspaces are made in when nothing else names one. */
     workspaces_dir: z.string().min(1),
+    /**
+     * Box only: the memory guard's note while the box is high and no agent's
+     * processes explain it (memory in `/dev/shm`, say). Absent otherwise.
+     */
+    memory_note: z.enum(['unexplained', 'sustained']).optional(),
+    /** Box only: the box's reading and its shared-memory part when the note was made, in bytes. */
+    memory_note_box_bytes: z.number().int().nonnegative().optional(),
+    memory_note_shmem_bytes: z.number().int().nonnegative().optional(),
+    /**
+     * Box only: the box valve's isolated hosts connected to the hub, and how
+     * many were proved and joined it. Absent where the valve is off.
+     */
+    valve_hosts: z.number().int().nonnegative().optional(),
+    valve_hosts_joined: z.number().int().nonnegative().optional(),
+    /**
+     * Box only: the box valve's memory problem, `unprotected` when it has
+     * never read the box's memory, `failing` while readings fail after good
+     * ones. Absent when readings are fine or the valve is off.
+     */
+    valve_memory: z.enum(['unprotected', 'failing']).optional(),
+    /**
+     * Box only: the provider gateway's agents whose login it fronts, and calls
+     * it refused since the controller started. Absent where it is off.
+     */
+    gateway_agents: z.number().int().nonnegative().optional(),
+    gateway_refused: z.number().int().nonnegative().optional(),
+    /** Box only, split test boxes: an operator may exec into the agents container. */
+    operator_exec: z.boolean().optional(),
+    /**
+     * Box only: the operator's daily call cap on the gateway, where one is
+     * set: calls today, whether the cap is reached, and the cap.
+     */
+    gateway_calls_today: z.number().int().nonnegative().optional(),
+    gateway_capped: z.boolean().optional(),
+    gateway_daily_cap: z.number().int().min(1).max(1_000_000_000).optional(),
+    /**
+     * Box only, since the controller started: agents the memory guard stopped,
+     * and sessions the box valve parked. Capped.
+     */
+    guard_stops: z.number().int().nonnegative().max(1_000_000).optional(),
+    valve_parks: z.number().int().nonnegative().max(1_000_000).optional(),
+    /** Box only: `/proc/meminfo`'s `AnonPages` and `Cached`, in bytes. */
+    mem_anon_bytes: z.number().int().nonnegative().max(MEMINFO_MAX_BYTES).optional(),
+    mem_cached_bytes: z.number().int().nonnegative().max(MEMINFO_MAX_BYTES).optional(),
     /** Which machine, OS account and data folder this is (`readDeviceId`); left out when unknown. */
     device_id: deviceIdSchema.optional(),
   }),
