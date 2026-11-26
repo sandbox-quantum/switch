@@ -1915,6 +1915,7 @@ class TelegramAdapter(PlatformAdapter):
                 elapsed_seconds=content.elapsed_seconds,
                 mention=mention,
                 error_summary=content.error_summary,
+                cancel_command=content.cancel_command,
                 tool_detail=False,
                 # The step of the moment is the live part of a running card;
                 # the full log is folded under it once the turn ends.

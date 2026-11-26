@@ -2363,6 +2363,7 @@ class TeamsAdapter(PlatformAdapter):
                     elapsed_seconds=content.elapsed_seconds,
                     mention=mention,
                     error_summary=content.error_summary,
+                    cancel_command=content.cancel_command,
                     tool_detail=True,
                 )
                 + tail

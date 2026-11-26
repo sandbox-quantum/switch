@@ -73,6 +73,9 @@ function ToolGroup({
   );
 }
 
+/** What a turn withdrawn from the queue says; it never ran, so it is not a failure. */
+export const CANCELLED_LABEL = 'Cancelled before the agent started';
+
 /** How a turn ended, with the host's reason for it muted after it. */
 export function turnEndLabel(label: string, reason: string | null): ReactNode {
   if (!reason) return label;
@@ -155,6 +158,7 @@ export function turnShown(
     isThinking(turn) ||
     turn.status === 'interrupted' ||
     turn.status === 'error' ||
+    turn.status === 'cancelled' ||
     turn.requests.length > 0 ||
     turnWarnings(turn).length > 0 ||
     turnDeliveries(turn).length > 0
@@ -273,6 +277,11 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           {turn.status === 'error' && turn.messageId && (
             <RetryTurn activity={activity} turn={turn} />
           )}
+        </div>
+      )}
+      {turn.status === 'cancelled' && (
+        <div role="status">
+          <WorkLogRow icon={<FailedIcon />} label={CANCELLED_LABEL} tone="passive" />
         </div>
       )}
       {requests.length > 0 && <ChatRequests activity={activity} requests={requests} />}
