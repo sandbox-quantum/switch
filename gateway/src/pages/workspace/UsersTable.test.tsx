@@ -8,6 +8,10 @@ import UsersTable, { USER_SEARCH, compareRoles, roleFilter } from "./UsersTable"
 
 vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
 
+vi.mock("../../data/AuthContext", () => ({
+  useAuth: () => ({ user: { id: "me" }, capabilities: { features: {} } }),
+}));
+
 const LAST_ADMIN = "This is the workspace's last admin. Make someone else an admin first.";
 const SERVICE_ACCOUNT = "Agents added with the shared registration token act with this account's role, so it can't be made an admin.";
 
