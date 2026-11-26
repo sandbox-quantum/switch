@@ -187,7 +187,6 @@ it('answers the offered permission ID and excludes persistent permissions', asyn
 it('interrupts the native turn, cancels pending approvals and waits for cancellation before draining', async () => {
   const { adapter, events, server } = await setup();
   await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
-  await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
   const prompt = await server.waitFor('session/prompt');
   server.send({
     id: 98,
@@ -198,6 +197,9 @@ it('interrupts the native turn, cancels pending approvals and waits for cancella
       options: [],
     },
   });
+  await flush();
+  // Waiting on an approval, the turn cannot be steered, so this one queues.
+  await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
   await adapter.interruptTurn('s');
   await flush();
   expect(server.received.find((m) => m.method === 'session/cancel')?.params).toEqual({
@@ -219,6 +221,18 @@ it('interrupts the native turn, cancels pending approvals and waits for cancella
 it('settles active and queued turns on process exit without starting another prompt', async () => {
   const { adapter, events, server } = await setup();
   await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
+  await server.waitFor('session/prompt');
+  server.send({
+    id: 98,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { title: 'Run', kind: 'execute', toolCallId: 'tool' },
+      options: [],
+    },
+  });
+  await flush();
+  // Waiting on an approval, the turn cannot be steered, so this one queues.
   await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
   server.kill('SIGKILL');
   await flush();
