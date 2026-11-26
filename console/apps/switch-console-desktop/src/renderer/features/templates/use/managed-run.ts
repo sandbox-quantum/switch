@@ -3,6 +3,7 @@ import type {
   TemplateConnection,
 } from '@main/core/agent-templates/template-document';
 import type { TemplateRunAgent } from '@main/core/switch-servers/gateway-client';
+import { newAgentPermissions } from '@shared/core/agents/agents';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { hasPlaceholder, interpolate, type Values } from './use-template-model';
@@ -149,7 +150,7 @@ export function runAgent(params: {
   const autoMode =
     typeof entry.autoMode === 'string'
       ? values[entry.autoMode.replace(/^\{|\}$/g, '')] === true
-      : entry.autoMode !== false;
+      : (entry.autoMode ?? newAgentPermissions(params.provider).autoMode);
   const autoApprove =
     typeof entry.autoApprove === 'string'
       ? values[entry.autoApprove.replace(/^\{|\}$/g, '')] === true

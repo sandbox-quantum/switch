@@ -11,6 +11,18 @@
           "display_name": "54423496af3307c6fbda3ff9390a89cb"
         }
       }
+    },
+    {
+      "revision": 2,
+      "document": "0a75bce12f522da56b879f74454edee0",
+      "agents": {
+        "expert": {
+          "instructions": "8259d2b26cab914459d1cc5c38e1094a",
+          "description": "4aedf8f613aa6cf04684e604470fec04",
+          "icon_url": "74234e98afe7498fb5daf1f36ac2d78a",
+          "display_name": "54423496af3307c6fbda3ff9390a89cb"
+        }
+      }
     }
   ]
 }

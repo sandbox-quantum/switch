@@ -9,7 +9,7 @@ import { Input } from '@renderer/lib/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { cn } from '@renderer/utils/utils';
-import { isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
+import { agentAvatarUrlForNewAgent, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 
 type PickerTab = 'generated' | 'url';
 
@@ -48,6 +48,7 @@ export function AgentIconPicker({
   onChange,
   size = 84,
   disabled = false,
+  forNewAgent = false,
 }: {
   /** The Switch server whose generated icons are offered. */
   serverId: string | null;
@@ -58,6 +59,12 @@ export function AgentIconPicker({
   onChange: (iconUrl: string | null) => void;
   /** Diameter of the avatar that opens the picker. */
   size?: number;
+  /**
+   * The agent does not exist yet, so "nothing chosen" means the icon it will
+   * be created with (`agentAvatarUrlForNewAgent`, drawn from a digest of the
+   * name) rather than the face an existing agent's name draws.
+   */
+  forNewAgent?: boolean;
   disabled?: boolean;
 }) {
   const [tab, setTab] = useState<PickerTab>('generated');
@@ -85,6 +92,10 @@ export function AgentIconPicker({
   // An unnamed agent still needs something to seed the grid, or every tile is
   // the same face drawn from the empty string.
   const seedName = name.trim() || 'agent';
+  // What the agent wears now: its choice, or for a new agent the icon it will
+  // be created with. An existing agent with no choice keeps the face its name
+  // draws, which `AgentAvatar` falls back to on its own.
+  const shownIconUrl = iconUrl ?? (forNewAgent ? agentAvatarUrlForNewAgent(seedName) : null);
   // The server generates the icons on offer, so every client offers the same
   // ones and an agent created anywhere looks the same. Not asked at all until
   // the server has said it allows them: a server that disables them answers
@@ -132,7 +143,7 @@ export function AgentIconPicker({
           !disabled && 'cursor-pointer hover:opacity-80'
         )}
       >
-        <AgentAvatar name={seedName} iconUrl={iconUrl} serverId={serverId} size={size} />
+        <AgentAvatar name={seedName} iconUrl={shownIconUrl} serverId={serverId} size={size} />
         {/* Shown at rest rather than on hover: that the picture is editable at
             all is not guessable, and a hover-only affordance answers the
             question only for someone who already suspected the answer. */}
@@ -203,7 +214,7 @@ export function AgentIconPicker({
         ) : (
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2.5 rounded-md bg-background-tertiary p-2.5">
-              <AgentAvatar name={seedName} iconUrl={iconUrl} serverId={serverId} size={44} />
+              <AgentAvatar name={seedName} iconUrl={shownIconUrl} serverId={serverId} size={44} />
               <Input
                 value={urlDraft}
                 placeholder="https://example.com/avatar.png"

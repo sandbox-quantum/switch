@@ -88,8 +88,8 @@ function deps(): AgentMigrationDeps {
       get: async (agentId) => (agentId === PARENT.id ? PARENT : null),
       list: async () => [PARENT],
       stoppedByHand: async () => world.stoppedByHand,
-      forget: async (agentId) => {
-        world.calls.push(`forget ${agentId}`);
+      forget: async (agentId, cause) => {
+        world.calls.push(`forget ${agentId} (${cause})`);
       },
     },
     definitions: {
@@ -924,7 +924,7 @@ describe('moving every agent automatically', () => {
     world.eligibility = { management: true, owner: null, ownedByMe: false, gone: true };
     const migration = service();
     await migration.migrateEverything();
-    expect(world.calls).toContain(`forget ${PARENT.id}`);
+    expect(world.calls).toContain(`forget ${PARENT.id} (gone_from_server)`);
     expect(adopted()).toHaveLength(0);
     const overview = await migration.overview();
     expect(overview.leftAlone).toBe(0);
@@ -1014,7 +1014,7 @@ describe('moving every agent automatically', () => {
     world.calls = [];
     world.eligibility = { management: true, owner: null, ownedByMe: false, gone: true };
     await migration.migrateEverything();
-    expect(world.calls).toEqual([`forget ${PARENT.id}`]);
+    expect(world.calls).toEqual([`forget ${PARENT.id} (gone_from_server)`]);
   });
 
   it('asks whether a moved agent still exists at most once per heal interval', async () => {
@@ -1037,11 +1037,11 @@ describe('moving every agent automatically', () => {
     world.eligibility = { management: true, owner: null, ownedByMe: false, gone: true };
     await migration.migrateEverything();
     expect(asked).toBe(1);
-    expect(world.calls).not.toContain(`forget ${PARENT.id}`);
+    expect(world.calls).not.toContain(`forget ${PARENT.id} (gone_from_server)`);
     world.clock += 5_000;
     await migration.migrateEverything();
     expect(asked).toBe(2);
-    expect(world.calls).toContain(`forget ${PARENT.id}`);
+    expect(world.calls).toContain(`forget ${PARENT.id} (gone_from_server)`);
   });
 
   it('keeps a moved agent when Switch cannot be asked whether it still exists', async () => {
@@ -1061,7 +1061,7 @@ describe('moving every agent automatically', () => {
     failing = true;
     world.calls = [];
     await migration.migrateEverything();
-    expect(world.calls).not.toContain(`forget ${PARENT.id}`);
+    expect(world.calls).not.toContain(`forget ${PARENT.id} (gone_from_server)`);
     expect(world.records.has(PARENT.id)).toBe(true);
     expect(migration.migrationProblems()).toEqual([]);
   });
@@ -1070,7 +1070,7 @@ describe('moving every agent automatically', () => {
     const SAME_ID_ELSEWHERE: MigrationAgent = { ...OTHER_SERVER, switchAgentId: 'switch-2' };
     all = [PARENT, REMOTE, SAME_ID_ELSEWHERE];
     await service().forgetDeleted('server-1', 'switch-2');
-    expect(world.calls).toEqual([`forget ${REMOTE.id}`]);
+    expect(world.calls).toEqual([`forget ${REMOTE.id} (managed_agent_deleted)`]);
   });
 
   it('runs one pass at a time', async () => {

@@ -4,7 +4,7 @@ Measures how much load switch-core carries in one environment, so the same run c
 
 A run signs in as the environment's admin, creates its own API key, agents and rooms, connects the agents over the agent WebSocket the way the agent runtime does, sends the planned traffic, and samples every switch-core pod and the database while it does. At the end it deletes what it created and writes a summary.
 
-It never restarts, scales or edits anything in Kubernetes. It only runs `kubectl get` (to find the pods, the deployed URLs and the admin login), `kubectl exec` (to run `pod_sampler.py` inside the pods) and, with `--via port-forward`, `kubectl port-forward`. That makes it safe on GitOps environments: ArgoCD has nothing to fight over. It refuses the pilot's namespace and hostnames, and anything with `prod` in the name.
+It never restarts, scales or edits anything in Kubernetes. It only runs `kubectl get` (to find the pods, the deployed URLs and the admin login), `kubectl exec` (to run `pod_sampler.py` inside the pods, and `bulk_rooms.py` for the `admin-bulk` scenario) and, with `--via port-forward`, `kubectl port-forward`. That makes it safe on GitOps environments: ArgoCD has nothing to fight over. It refuses the pilot's namespace and hostnames, and anything with `prod` in the name.
 
 ## Running it
 
@@ -23,6 +23,23 @@ At each step in `--steps`, the harness brings that many agents online and then r
 - `idle`: the agents stay connected and answer the server's pings, nothing else.
 - `steady`: messages at `--rate` per second, spread over the rooms, each posted by a member of the room. Receivers record the time from send to arrival, and a share of them (`--read-fraction`, 10% by default) follow a delivery with a `read_context` call, as a runtime catching up would.
 - `burst`: the steady traffic plus `--burst-size` messages packed into `--burst-window` seconds, every `--burst-every` seconds. `--hot-room` sends all the spikes to one room, to measure the per-room lock.
+
+### Switch Console windows
+
+People with Switch Console open load the gateway too. A window re-reads its sidebar every 20 seconds while it is visible: the room list and the rooms of every agent it tracks, all at once. `--consoles N` keeps N such windows open on the run's agents for the whole run (`consoles.py`), each tracking `--console-agents` of them and re-reading every `--console-interval` seconds. `--console-mode per-agent` reads each agent's rooms with `GET /gateway/agents/{id}`, as Consoles from before `GET /gateway/agents/rooms` do; `batch` reads them with that route, 100 agents a request, and counts its 404 on an older server as an error. The summary gets a Switch Console table (re-reads, their p50 and p99, requests and failed requests), and failed Console requests count as errors.
+
+### An admin's bulk change (`admin-bulk`)
+
+The other scenarios are agents' messages. `admin-bulk` is one admin's clicks: the steady traffic at `--rate`, and over it the workspace admin making `--bulk-rooms` rooms Private (400 by default) through the "Public rooms on private channels" page's route, then archiving and unarchiving them through the Rooms page's bulk action, `--bulk-batch` rooms a click (200, the server's cap on both). The first click comes `--bulk-at` seconds into the window (15) and each next one `--bulk-gap` seconds after the one before has answered (2), as an admin confirms one page after another.
+
+```sh
+uv run --project core python loadtest/run.py --namespace <namespace> \
+    --scenarios admin-bulk --steps 200 --rate 5 --bulk-rooms 400
+```
+
+Only rooms bound to a private channel can be made Private, and a load run's rooms are bound to none, so this scenario is the one place the harness writes to the database itself. `bulk_rooms.py`, run in a switch-core pod over `kubectl exec` with the pod's own database login and bound to the run's workspace, makes one bridge row of the run's own that stays inactive (no pod starts it, no messaging app is called), binds the run's bulk rooms to private channels of it, and makes them Public. Before each window it makes them Public and unarchived again; at the end, and on `--cleanup`, it unbinds them and deletes the bridge, and they are archived with the rest.
+
+`summary.md` gets an "Admin bulk change" table, one row a window: the clicks, the rooms changed, the slowest click, the database connections, and a verdict. A window fails on a click that failed or left rooms unchanged, on any error in the agents' traffic, or on an agents' send p99 over 2 s, and a failed window makes the run exit 1. The pool's own timeouts and a pod handing its bridges away happen inside switch-core, where the harness cannot see them: read `switch.db.pool.timeouts` and the pods' logs for the window.
 
 ### Keeping the agents between runs
 
@@ -45,7 +62,7 @@ uv run --project core python loadtest/run.py --namespace <namespace> \
 
 Each run writes `loadtest/runs/<run_id>/` (gitignored):
 
-- `summary.md`, one row per scenario and step: agents connected, messages per second sent and delivered, delivery latency p50 and p99, errors, CPU and memory per pod, database connections, transactions per second, and RDS CPU when `--rds-instance` is given.
+- `summary.md`, one row per scenario and step: agents connected, messages per second sent and delivered, delivery latency p50 and p99, errors, CPU and memory per pod, database connections, the busiest pod's pool, transactions per second, and RDS CPU when `--rds-instance` is given. The busiest pod is the most connections one switch-core pod had checked out at once (running a statement or inside a transaction), as the database saw them once a second by client address, against the most its pool hands out (`DB_POOL_SIZE` plus `DB_MAX_OVERFLOW`, from the release). A window where it came within a tenth of that ceiling is marked `full`: sampled once a second, the database seldom sees the very top of a burst, and at the ceiling every request on that pod waits for a connection.
 - `summary.json`, the same numbers plus the run's settings.
 - `samples.jsonl`, the raw per-pod and database samples, one a second.
 - `messages.jsonl`, every message sent with each receiver's latency.
@@ -62,7 +79,7 @@ RDS numbers come from CloudWatch at one-minute resolution and need AWS credentia
 `nightly.py` runs the harness from pods inside the cluster, as three CronJobs of the deployment's own load test chart, which sets the schedule and sizes:
 
 - `up` (01:45 UTC) takes staging's node group to its night size, starts the harness's node and scales switch-core to 12 pods.
-- `run` (02:00) starts ten workers of 1,000 agents each behind 50 controllers, all on the controller socket. Each worker reuses the batch of agents and rooms kept from earlier nights (`--keep`/`--reuse`, ids in S3), and the run makes them again when they are missing. The workers step their rates together: four realistic steps, one message per agent every 30, 10, 5 and 3 minutes for 10 minutes each, then a ramp from 150 messages a second, a minute a step, until a step breaks. It adds the workers up by window (`combine`), stores the night in S3, sends the numbers to Datadog (`switch.loadtest.*`) and posts the report to a webhook and, when one is set, a Switch room, as an agent in it, then puts staging back to its day size.
+- `run` (02:00) starts ten workers of 1,000 agents each behind 50 controllers, all on the controller socket. The first worker also keeps 10 Switch Console windows open on 60 of its agents each (`LOADTEST_CONSOLES`, `_CONSOLE_AGENTS`, `_CONSOLE_INTERVAL`, `_CONSOLE_MODE`; `per-agent` by default, as the Consoles in use read), so the realistic steps carry people's Consoles as well as their agents. Each worker reuses the batch of agents and rooms kept from earlier nights (`--keep`/`--reuse`, ids in S3), and the run makes them again when they are missing. The workers step their rates together: four realistic steps, one message per agent every 30, 10, 5 and 3 minutes for 10 minutes each, then a ramp from 150 messages a second, a minute a step, until a step breaks. It adds the workers up by window (`combine`), and a realistic step fails the night when it lost deliveries, broke, had errors, or filled a pod's database pool. It stores the night in S3, sends the numbers to Datadog (`switch.loadtest.*`) and posts the report to a webhook and, when one is set, a Switch room, as an agent in it, then puts staging back to its day size.
 - `down` (05:00) puts the day sizes back whatever happened, and reports a night that left no result.
 
 Inside the cluster the harness runs with `--kube-context ''` (kubectl uses the pod's service account) and reaches switch-core through its Service, which `--api-url` accepts as the namespace's own.
@@ -86,4 +103,4 @@ The cleanup prints what it removed and what is still there; a non-zero exit mean
 uv run --project core pytest loadtest/
 ```
 
-These check that the same seed gives the same rooms and schedule, that a rate sweep plans one window per rate and knows when a window is broken, that the pilot and prod are refused, and how a night adds up, reports and cleans up after itself. They make no requests.
+These check that the same seed gives the same rooms and schedule, that an admin-bulk window clicks through its rooms in batches and passes or fails as it should, that a rate sweep plans one window per rate and knows when a window is broken, that the pilot and prod are refused, and how a night adds up, reports and cleans up after itself. They make no requests.

@@ -30,6 +30,7 @@ from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
 from switch_core.bridges.collaboration.teams.auth import TokenRequestRefused
 from switch_core.bridges.collaboration.teams.install import TeamsAppInstaller
+from switch_core.config import SwitchConfig
 from switch_core.db.models import MessagingInstall, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
@@ -37,6 +38,7 @@ from switch_core.gateway.auth import require_tenant_admin
 from switch_core.gateway.dependencies import (
     get_bridge_store,
     get_collab_lifecycle,
+    get_config,
     get_install_service,
     get_install_store,
     get_session,
@@ -64,6 +66,11 @@ class TeamPlacements(BaseModel):
     # can be downloaded for a Teams admin to upload.
     in_catalog: bool
     catalog_problem: str | None
+
+
+def get_teams_app_name(config: Annotated[SwitchConfig, Depends(get_config)]) -> str:
+    """What the app is called in this deployment's organisations' Teams."""
+    return config.teams_app_name
 
 
 async def _connection(
@@ -186,6 +193,7 @@ async def add_to_team(
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
+    teams_app_name: Annotated[str, Depends(get_teams_app_name)],
     _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> Response:
     adapter, install = await _connection(
@@ -205,8 +213,8 @@ async def add_to_team(
                     "Switch cannot add itself to a team until it knows where the "
                     "app is in your organisation's Teams app list. Once a Teams "
                     "admin has uploaded it, add it to any one team from Teams "
-                    "(Apps, Built for your org, Agent Switch) and Switch can add "
-                    "it to the rest; or have a Global Administrator approve "
+                    f"(Apps, Built for your org, {teams_app_name}) and Switch can "
+                    "add it to the rest; or have a Global Administrator approve "
                     "Switch again, so Switch puts it in the list itself."
                 ),
             )
@@ -231,19 +239,33 @@ async def remove_from_team(
     adapter, _install = await _connection(
         bridge_id, session, bridge_store, install_store, collab_lifecycle
     )
+    # From the stored row, read before leaving: this process's copy may be a
+    # quiet one not yet rebuilt from the latest edit, and the copy holding the
+    # bridge clears its own default as it leaves the team.
+    bridge = await bridge_store.get(session, bridge_id)
+    was_default = (
+        bridge is not None
+        and (bridge.connection_config or {}).get("team_id") == team_id
+    )
     try:
         await adapter.remove_from_team(team_id)
     except _MICROSOFT_FAILURES as error:
         raise _microsoft_failed(error) from error
-    if adapter.default_team_id == team_id:
-        # New channels are made in the default team, and cannot be in one the
-        # app has left: channel creation goes off with the default, until
-        # another team is chosen, rather than failing at the next room.
-        await bridge_store.merge_connection_config(
-            session, bridge_id, {"team_id": None}
-        )
-        await bridge_store.set_channel_creation_enabled(session, bridge_id, False)
-        await session.commit()
+    if not was_default:
+        return Response(status_code=204)
+    # New channels are made in the default team, and cannot be in one the app
+    # has left. The holder clears it too, but perhaps in another process, a
+    # moment later, or not at all if nobody holds the bridge; it is cleared
+    # here, only if it is still that team. Channel creation stays as an admin
+    # set it: the next team Switch joins becomes the default.
+    cleared = await bridge_store.replace_team(
+        session, bridge_id, expected=team_id, team_id=None
+    )
+    await session.commit()
+    # This copy is rebuilt when it still has the team, so the next read here
+    # already has no default. The holder, when it is this one, cleared its own
+    # and needs nothing.
+    if cleared is not None or adapter.default_team_id == team_id:
         try:
             await collab_lifecycle.restart(bridge_id)
         except Exception as error:
@@ -254,10 +276,9 @@ async def remove_from_team(
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "Switch left the team, and channel creation is off until "
-                    "another default team is chosen, but the messaging app did "
-                    f"not restart ({error}). It is stopped until it is "
-                    "restarted."
+                    "Switch left the team, which was the default team, but the "
+                    f"messaging app did not restart ({error}). It is stopped "
+                    "until it is restarted."
                 ),
             ) from error
     return Response(status_code=204)

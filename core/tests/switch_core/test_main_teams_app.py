@@ -123,11 +123,13 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
     assert server.should_exit is True
 
 
-async def test_the_package_carries_the_environments_app_name() -> None:
+async def test_the_package_carries_the_environments_app_name_and_partner_id() -> None:
     installers = MessagingInstallerRegistry()
 
     app = _distributed_teams_app(
-        _config(**_APP, teams_app_name="Agent Switch (dev)"),
+        _config(
+            **_APP, teams_app_name="Switch Rooms (dev)", teams_app_partner_id="1234567"
+        ),
         installers,
         _Lifecycle([]),  # type: ignore[arg-type]
     )
@@ -137,7 +139,8 @@ async def test_the_package_carries_the_environments_app_name() -> None:
     manifest = json.loads(
         zipfile.ZipFile(io.BytesIO(installer.package.archive)).read("manifest.json")
     )
-    assert manifest["name"]["short"] == "Agent Switch (dev)"
+    assert manifest["name"]["short"] == "Switch Rooms (dev)"
+    assert manifest["developer"]["mpnId"] == "1234567"
     assert app is not None
     await app.aclose()
 

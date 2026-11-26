@@ -15,8 +15,8 @@ import { gooseAcp } from '../goose/goose-adapter';
 import { junieAcp } from '../junie/junie-adapter';
 import { kiroAcp } from '../kiro/kiro-acp';
 import { mistralVibeAcp } from '../mistral-vibe/mistral-vibe-acp';
-import { createOpencodeAdapter } from '../opencode/opencode-adapter';
-import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
+import { checkOpencodeSignInAnyLine, createOpencodeRuntimeAdapter } from '../opencode/runtime';
+import { OPENCODE_LOGIN } from '../opencode/sign-in';
 import { createPiAdapter } from '../pi/pi-adapter';
 import { checkPiSignIn, PI_INHERIT_ENV, PI_LOGIN } from '../pi/sign-in';
 import { qwenAcp } from '../qwen/qwen-acp';
@@ -59,6 +59,16 @@ export interface ProviderRuntime {
   inheritEnv: readonly string[];
   /** The platforms the CLI cannot run on, each with the reason a person is told. */
   unsupportedPlatforms: Partial<Record<NodeJS.Platform, string>>;
+  /**
+   * Whether a new agent on this provider starts in auto mode. False where
+   * nothing reviews an action before it runs in auto mode: room text reaches
+   * an agent as a prompt, so anyone who can post in its rooms could have
+   * commands run on its owner's machine. Such an agent starts
+   * approval-required, and its owner can still turn auto mode on. The same as
+   * `new_agent_auto_mode` in switch-core's `providers/registry.py`, which a
+   * core test holds this to. Read it through `newAgentPermissions`.
+   */
+  newAgentAutoMode: boolean;
   createAdapter(options: ProviderRuntimeOptions): ProviderAdapter;
   /** Whether the CLI is signed in, answered without signing it in. */
   checkSignIn(input: SignInCheckInput): Promise<ProviderReadiness>;
@@ -72,6 +82,7 @@ export function acpProviderRuntime(hooks: AcpProviderHooks): ProviderRuntime {
     ...(hooks.loginCommandFor ? { loginCommandFor: hooks.loginCommandFor } : {}),
     inheritEnv: hooks.inheritEnv ?? [],
     unsupportedPlatforms: hooks.unsupportedPlatforms ?? {},
+    newAgentAutoMode: true,
     createAdapter: ({ binaryPath, logger }) => createAcpAdapter(hooks, { binaryPath, logger }),
     checkSignIn: (input) => checkAcpSignIn(hooks, input),
   };
@@ -89,6 +100,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     loginCommand: CLAUDE_LOGIN,
     inheritEnv: [],
     unsupportedPlatforms: {},
+    newAgentAutoMode: true,
     createAdapter: ({ binaryPath, logger }) =>
       createClaudeAdapter({ claudeExecutablePath: binaryPath, ...(logger ? { logger } : {}) }),
     checkSignIn: checkClaudeSignIn,
@@ -98,6 +110,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     loginCommand: CODEX_LOGIN,
     inheritEnv: [],
     unsupportedPlatforms: {},
+    newAgentAutoMode: true,
     createAdapter: ({ binaryPath, logger }) =>
       createCodexAdapter({ binaryPath, ...(logger ? { logger } : {}) }),
     checkSignIn: checkCodexSignIn,
@@ -107,13 +120,16 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     loginCommand: OPENCODE_LOGIN,
     inheritEnv: [],
     unsupportedPlatforms: {},
+    // OpenCode's auto mode answers every permission ask itself, as its own
+    // `--auto` does: no person and no classifier sees a command first.
+    newAgentAutoMode: false,
     createAdapter: ({ binaryPath, logger, skill, serviceSkills }) =>
-      createOpencodeAdapter({
+      createOpencodeRuntimeAdapter({
         binaryPath,
-        ...(logger ? { logger } : {}),
+        logger,
         skills: [...(skill ? [{ name: 'switch', content: skill }] : []), ...serviceSkills],
       }),
-    checkSignIn: checkOpencodeSignIn,
+    checkSignIn: checkOpencodeSignInAnyLine,
   },
   acpProviderRuntime(antigravityAcp),
   acpProviderRuntime(copilotAcp),
@@ -126,6 +142,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     loginCommand: PI_LOGIN,
     inheritEnv: PI_INHERIT_ENV,
     unsupportedPlatforms: {},
+    newAgentAutoMode: true,
     createAdapter: ({ binaryPath, logger }) =>
       createPiAdapter({ binaryPath, ...(logger ? { logger } : {}) }),
     checkSignIn: checkPiSignIn,
@@ -150,6 +167,17 @@ export function isProviderRuntime(id: string): boolean {
 /** Why the provider cannot run on `platform`, or null when it can. */
 export function providerUnsupportedReason(id: string, platform: NodeJS.Platform): string | null {
   return RUNTIMES.get(id)?.unsupportedPlatforms[platform] ?? null;
+}
+
+/**
+ * The permission settings a new agent on `providerId` starts with, wherever it
+ * runs: bypass off, and auto mode as its runtime's `newAgentAutoMode` says.
+ */
+export function newAgentPermissions(providerId: string): {
+  autoApprove: false;
+  autoMode: boolean;
+} {
+  return { autoApprove: false, autoMode: providerRuntime(providerId).newAgentAutoMode };
 }
 
 export function providerRuntime(id: string): ProviderRuntime {

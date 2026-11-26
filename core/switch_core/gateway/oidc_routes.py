@@ -8,7 +8,6 @@ import logging
 import re
 import time
 from contextlib import AbstractContextManager, nullcontext
-from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -28,10 +27,12 @@ from switch_core.db.stores.user_store import (
     SignupRefusedError,
     UserStore,
 )
+from switch_core.gateway.admission import writes_on_get
 from switch_core.gateway.auth import (
     SIGNUP_REFUSED_DETAIL,
     initial_tenant_claim,
     set_session_cookie,
+    signed_in_now,
     signup_refused_by_edge,
 )
 from switch_core.gateway.dependencies import (
@@ -42,6 +43,7 @@ from switch_core.gateway.dependencies import (
     get_system_session,
     get_user_store,
 )
+from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
 from switch_core.organization_directory import (
     DirectoryUnavailable,
     OrganizationDirectory,
@@ -271,7 +273,9 @@ async def _bring_in_organizations(
         )
 
 
-@router.get("/auth/oidc/callback", name="oidc_callback")
+@router.get(
+    "/auth/oidc/callback", name="oidc_callback", dependencies=[Depends(writes_on_get)]
+)
 async def oidc_callback(
     request: Request,
     config: Annotated[SwitchConfig, Depends(get_config)],
@@ -296,6 +300,13 @@ async def oidc_callback(
         token = await client.authorize_access_token(request)
     except OAuthError as exc:
         logger.warning("OIDC callback failed: %s", exc)
+        sign_in_failed(
+            request,
+            method="oidc",
+            reason="provider_refused",
+            user_id=None,
+            tenant_id=None,
+        )
         raise HTTPException(status_code=401, detail="OIDC authentication failed")
 
     claims = token.get("userinfo")
@@ -340,6 +351,13 @@ async def oidc_callback(
     sub = claims.get("sub")
     if not email or not sub:
         logger.error("OIDC claims missing email/sub (got %s)", sorted(claims))
+        sign_in_failed(
+            request,
+            method="oidc",
+            reason="claims_missing",
+            user_id=None,
+            tenant_id=None,
+        )
         raise HTTPException(
             status_code=401, detail="OIDC token missing email or sub claim"
         )
@@ -355,6 +373,13 @@ async def oidc_callback(
                 "GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED=false.",
                 email_verified,
                 sub,
+            )
+            sign_in_failed(
+                request,
+                method="oidc",
+                reason="email_not_verified",
+                user_id=None,
+                tenant_id=None,
             )
             raise HTTPException(status_code=401, detail="OIDC email is not verified")
         # A setting, not an event: said once per process as a warning, then
@@ -434,6 +459,13 @@ async def oidc_callback(
             raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL) from exc
         except OidcIdentityConflictError as exc:
             logger.warning("OIDC identity conflict: %s", exc)
+            sign_in_failed(
+                request,
+                method="oidc",
+                reason="identity_conflict",
+                user_id=None,
+                tenant_id=None,
+            )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except OidcIdentityRaceError as exc:
             # Transient contention, not a rejected security decision (see the
@@ -453,6 +485,14 @@ async def oidc_callback(
 
     # Verify-at-login only: we don't persist the IdP tokens.
     handoff = request.session.pop(_HANDOFF_SESSION_KEY, None)
+    await record_sign_in(
+        session,
+        request,
+        user_id=user.id,
+        method="oidc",
+        details={"account_created": created, "handoff": isinstance(handoff, dict)},
+    )
+    await session.commit()
     if isinstance(handoff, dict):
         # The app on this computer that started the sign-in takes it from
         # here: the browser goes back to it with a code, and no cookie.
@@ -479,7 +519,7 @@ async def oidc_callback(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        datetime.now(UTC),
+        signed_in_now(),
     )
     return response
 
@@ -492,6 +532,7 @@ class HandoffExchange(BaseModel):
 @router.post("/auth/oidc/exchange")
 async def oidc_exchange(
     req: HandoffExchange,
+    request: Request,
     config: Annotated[SwitchConfig, Depends(get_config)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
@@ -502,21 +543,32 @@ async def oidc_exchange(
     """Trade a code a sign-in handed back to this computer for a session:
     only with the verifier its challenge was made from, and only while fresh."""
     refused = HTTPException(status_code=400, detail="The sign-in code is not valid")
+
+    def refuse(reason: str) -> HTTPException:
+        sign_in_failed(
+            request,
+            method="oidc_handoff",
+            reason=reason,
+            user_id=None,
+            tenant_id=None,
+        )
+        return refused
+
     if len(req.code) > 4096 or not _VERIFIER.match(req.verifier):
-        raise refused
+        raise refuse("malformed")
     try:
         payload = json.loads(config.keyring.decrypt(req.code))
     except Exception as exc:
-        raise refused from exc
+        raise refuse("undecryptable") from exc
     if not isinstance(payload, dict) or int(payload.get("exp", 0)) < int(time.time()):
-        raise refused
+        raise refuse("expired")
     if not hmac.compare_digest(
         str(payload.get("challenge", "")), _challenge_of(req.verifier)
     ):
-        raise refused
+        raise refuse("verifier_mismatch")
     user = await session.get(User, str(payload.get("user_id", "")))
     if user is None:
-        raise refused
+        raise refuse("unknown_account")
     response = JSONResponse({"ok": True})
     set_session_cookie(
         response,
@@ -524,6 +576,6 @@ async def oidc_exchange(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        datetime.now(UTC),
+        signed_in_now(),
     )
     return response

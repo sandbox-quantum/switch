@@ -2,8 +2,9 @@
 hold at once, checked against what the server allows.
 
 Each process holds its pool at worst (DB_POOL_SIZE plus DB_MAX_OVERFLOW) and,
-outside the pool, one connection per `LISTEN` it keeps open, plus one for the
-database-server sampler when metrics are exported. The pool is sized per
+outside the pool, one connection per `LISTEN` it keeps open, one its process
+lease is renewed on, plus one for the database-server sampler when metrics are
+exported. The pool is sized per
 process, so every replica added multiplies it, and a rolling deploy of
 several replicas starts one more before it stops an old one. A deployment that
 outgrows `max_connections` does not fail at once: it fails under load, when
@@ -34,6 +35,10 @@ logger = logging.getLogger(__name__)
 # `SignalBus`.
 LISTENING_CONNECTIONS = 4
 
+# The connection each process renews its lease on, outside the pool, so a full
+# pool cannot make the lease lapse (`db/engine.create_lease_engine`).
+LEASE_CONNECTIONS = 1
+
 
 class ConnectionBudgetError(RuntimeError):
     """The deployment's processes could hold more connections than Postgres
@@ -62,7 +67,11 @@ def per_process(config: SwitchConfig) -> int:
     """The most connections one process can hold."""
     sampler = 1 if config.observability_enabled and config.otlp_metrics_enabled else 0
     return (
-        config.db_pool_size + config.db_max_overflow + LISTENING_CONNECTIONS + sampler
+        config.db_pool_size
+        + config.db_max_overflow
+        + LISTENING_CONNECTIONS
+        + LEASE_CONNECTIONS
+        + sampler
     )
 
 

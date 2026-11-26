@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { closeSync, openSync } from 'node:fs';
+import { closeSync, existsSync, openSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,8 @@ import type { NativeLayout } from './native-paths';
 import type { SwitchCoreInstall } from './switch-core-install';
 
 const PID_FILE = 'switch-core.json';
+/** How the switch-core this Console started last exited, written as it exits. */
+const EXIT_FILE = 'switch-core-exit.json';
 /** The environment the running switch-core was started with, so what it is
  * doing (its telemetry gate, its version) can be read back off it. */
 export const CORE_ENV_FILE = 'switch-core.env';
@@ -105,9 +107,35 @@ export async function runningCore(layout: NativeLayout): Promise<CoreProcessReco
 }
 
 /**
- * Start switch-core in the background, detached from Switch Console so it keeps
- * serving after the app quits, with its output appended to a log file.
- * Migrations run inside it on boot, as in the container.
+ * The interpreter that runs switch-core. On Windows that is the environment's
+ * `pythonw.exe`, not `python.exe`: a detached console program gets a console
+ * window of its own, which Node's `windowsHide` does not hide for a detached
+ * child, and closing that window kills the server. `pythonw.exe` is the same
+ * interpreter built as a GUI program, so it gets no console at all; its output
+ * still reaches the log through the file handles it is given. The workers
+ * switch-core starts itself run on `sys.executable`, so they get none either.
+ */
+export function coreInterpreter(
+  python: string,
+  platform: NodeJS.Platform = process.platform,
+  exists: (file: string) => boolean = existsSync
+): string {
+  if (platform !== 'win32') return python;
+  const pythonw = path.win32.join(path.win32.dirname(python), 'pythonw.exe');
+  return exists(pythonw) ? pythonw : python;
+}
+
+export type CoreExit = {
+  pid: number;
+  code: number | null;
+  signal: string | null;
+};
+
+/**
+ * Start switch-core detached from Switch Console, with its output appended to a
+ * log file. Detached so that nothing but an explicit stop ends it — Console
+ * stops it as it quits — and a Console that crashed leaves it running for the
+ * next launch to adopt. Migrations run inside it on boot, as in the container.
  */
 export async function startCore(
   layout: NativeLayout,
@@ -117,9 +145,10 @@ export async function startCore(
   await mkdir(layout.logs, { recursive: true });
   await mkdir(layout.run, { recursive: true });
   await writeFile(path.join(layout.run, CORE_ENV_FILE), renderEnv(settings), { mode: 0o600 });
+  await rm(path.join(layout.run, EXIT_FILE), { force: true });
   const logFd = openSync(path.join(layout.logs, 'switch-core.log'), 'a', 0o600);
   try {
-    const child = spawn(install.python, ['-m', 'switch_core.main'], {
+    const child = spawn(coreInterpreter(install.python), ['-m', 'switch_core.main'], {
       cwd: install.projectDir,
       env: coreProcessEnv(settings),
       detached: true,
@@ -132,6 +161,19 @@ export async function startCore(
         if (child.pid === undefined) reject(new Error('switch-core started without a pid.'));
         else resolve(child.pid);
       });
+    });
+    // While this Console runs, keep how the server exited: that, not whatever
+    // error its log last mentioned, is why it stopped. A core adopted from an
+    // earlier Console is not our child, so its exit goes unrecorded.
+    child.once('exit', (code, signal) => {
+      const exit: CoreExit = { pid, code, signal };
+      try {
+        writeFileSync(path.join(layout.run, EXIT_FILE), `${JSON.stringify(exit)}\n`);
+      } catch (error) {
+        log.warn('local-switch-server: could not record how switch-core exited', {
+          error: String(error),
+        });
+      }
     });
     child.unref();
     const record = { pid, version: install.version, startedAt: new Date().toISOString() };
@@ -162,37 +204,128 @@ export async function stopCore(layout: NativeLayout): Promise<void> {
   await rm(path.join(layout.run, PID_FILE), { force: true });
 }
 
+/** How the switch-core this Console started last exited, when it saw it. */
+export async function readCoreExit(layout: NativeLayout): Promise<CoreExit | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path.join(layout.run, EXIT_FILE), 'utf8')) as unknown;
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as CoreExit).pid === 'number'
+    ) {
+      const { pid, code, signal } = parsed as CoreExit;
+      return {
+        pid,
+        code: typeof code === 'number' ? code : null,
+        signal: typeof signal === 'string' ? signal : null,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** `exited with code 1`, `was ended by SIGKILL`. Windows status codes such as
+ * 0xC000013A (its console was closed) read better in hex. */
+export function describeExit(exit: Pick<CoreExit, 'code' | 'signal'>): string {
+  if (exit.signal !== null) return `was ended by ${exit.signal}`;
+  if (exit.code === null) return 'exited';
+  const code =
+    exit.code > 0xffff || exit.code < 0
+      ? `0x${(exit.code >>> 0).toString(16).toUpperCase()}`
+      : String(exit.code);
+  return `exited with code ${code}`;
+}
+
 /**
- * The line of switch-core's log that says why it stopped, for an error the UI
- * shows on one line: the last exception or error in the final stretch of the
- * log, or else its last line.
+ * Why switch-core stopped, for an error the UI shows on one line: how it
+ * exited, when this Console saw it, then the exception it died of when its
+ * log ends in one. An error further up the log is not a reason — a bridge
+ * that keeps failing logs one every minute while the server runs on — and a
+ * server ended by a signal or exiting cleanly died of nothing it wrote.
+ *
+ * `pid` is the process to explain, when the caller knows it (the one it has
+ * just started); otherwise the one in the PID file. An exit recorded for any
+ * other process is not this one's. With no exit recorded for it there is no
+ * evidence it crashed, so nothing is said: the log's tail could be an old
+ * error the server ran on past before something else ended it.
  */
-export async function coreFailureLine(layout: NativeLayout): Promise<string | null> {
+export async function coreFailureLine(
+  layout: NativeLayout,
+  pid: number | null
+): Promise<string | null> {
+  const expected = pid ?? (await readCoreRecord(layout))?.pid ?? null;
   // A process that has just died may still be handing its last output to the
-  // file; a few short retries let a traceback land before it is read.
+  // file, and its exit to the handler that records it; a few short retries
+  // let both land before they are read.
+  let exit: CoreExit | null = null;
   let line: string | null = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     if (attempt > 0) await sleep(500);
-    let text: string;
+    const recorded = await readCoreExit(layout);
+    exit = recorded !== null && (expected === null || recorded.pid === expected) ? recorded : null;
     try {
-      text = await readFile(path.join(layout.logs, 'switch-core.log'), 'utf8');
+      const log = await readFile(path.join(layout.logs, 'switch-core.log'), 'utf8');
+      line = failureLine(log) ?? lastErrorRecord(log);
     } catch {
-      continue;
+      line = null;
     }
-    line = failureLine(text);
-    if (line !== null && /(Error|Exception|FATAL)\b/.test(line)) return line;
+    if (exit !== null && (line !== null || exit.signal !== null || exit.code === 0)) break;
   }
-  return line;
+  if (exit === null) return null;
+  const how = describeExit(exit);
+  const diedOfIt = exit.signal === null && exit.code !== 0;
+  return diedOfIt && line !== null ? `${how}: ${line}` : how;
 }
 
+/** A line switch-core's logging wrote (timestamped text, or JSON), as opposed
+ * to one the interpreter printed as it died. */
+const LOG_RECORD = /^(\d{4}-\d\d-\d\d[T ]\d\d:\d\d|\{|(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b)/;
+
+/**
+ * The message of an ERROR or CRITICAL record among the last few the log ends
+ * with, for a server that exited with an error and printed no traceback: a
+ * taken port, which uvicorn logs as `ERROR: [Errno 48] error while attempting
+ * to bind…` before its shutdown lines. Only the last few, so an error the
+ * server logged and ran on past is not taken for why it stopped.
+ */
+export function lastErrorRecord(log: string): string | null {
+  const records = log
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => LOG_RECORD.test(line))
+    .slice(-5);
+  const record = records.reverse().find((line) => /\b(ERROR|CRITICAL)\b/.test(line));
+  if (!record) return null;
+  // `LEVEL: message` (uvicorn) or `LEVEL [logger] message` (switch-core).
+  const message = record
+    .replace(/^.*?\b(ERROR|CRITICAL)\b(?::\s*|\s+\[[^\]]*\]\s*|\s+)/, '')
+    .trim();
+  const reason = message || record;
+  return reason.length > 400 ? `${reason.slice(0, 399)}…` : reason;
+}
+
+/**
+ * The exception switch-core died of: the last error named in what its log
+ * ends with after its last logged record — the traceback an uncaught
+ * exception prints. Null when the log ends in an ordinary record, so an error
+ * logged earlier, which the server ran on past, is never taken for a reason.
+ */
 export function failureLine(log: string): string | null {
   const lines = log
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-60);
-  const reason =
-    [...lines].reverse().find((line) => /(Error|Exception|FATAL)\b.*:/.test(line)) ?? lines.at(-1);
+  let lastRecord = -1;
+  lines.forEach((line, i) => {
+    if (LOG_RECORD.test(line)) lastRecord = i;
+  });
+  const reason = lines
+    .slice(lastRecord + 1)
+    .reverse()
+    .find((line) => /(Error|Exception|FATAL)\b.*:/.test(line));
   if (!reason) return null;
   return reason.length > 400 ? `${reason.slice(0, 399)}…` : reason;
 }

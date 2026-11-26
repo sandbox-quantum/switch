@@ -56,10 +56,15 @@ from tests.conftest import RLSHarness
 
 _RLS_REVISION = "265ed188ad6f"
 
-# Scoped by the frozen inventories and dropped afterwards by `b9e4d2a71c05`,
-# which removed the server-side session tables.
+# Scoped by the frozen inventories and dropped afterwards: the server-side
+# session tables by `b9e4d2a71c05`, `server_connectors` by `e223eae63078`.
 _DROPPED_BY_LATER_REVISIONS = frozenset(
-    {"sdk_sessions", "sdk_session_events", "sdk_session_commands"}
+    {
+        "sdk_sessions",
+        "sdk_session_events",
+        "sdk_session_commands",
+        "server_connectors",
+    }
 )
 
 
@@ -384,6 +389,7 @@ class TestCatalogueCoverage:
             "organization_audit_events": "organization_id",
             "organization_app_credentials": "organization_id",
             "organization_service_settings": "organization_id",
+            "organization_trust_settings": "organization_id",
         }
         assert len(scoped) >= 30, scoped
         assert scoped["tenants"] == "id"

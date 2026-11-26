@@ -5,10 +5,13 @@ from unittest.mock import AsyncMock
 import pytest
 from slack_sdk.errors import SlackApiError
 
+from switch_core.bridges.collaboration.adapter import RichContentFailed, TurnActivity
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.sessions.contract import TurnUpsert
 
 
 def refusal(code):
@@ -107,12 +110,10 @@ async def test_format_rejected_update_clears_buttons_on_the_same_message(adapter
 async def test_definitive_nonformat_post_refusal_does_not_retry_as_text(adapter, code):
     client = adapter._web_client
     client.chat_postMessage.side_effect = refusal(code)
-    assert (
+    with pytest.raises(SlackApiError):
         await adapter.post_blocks(
             "channel-demo", "worker", TEXT, BLOCKS, "1.0", reply_broadcast=False
         )
-        is None
-    )
     client.chat_postMessage.assert_called_once()
 
 
@@ -141,3 +142,62 @@ async def test_nonformat_update_error_propagates_without_a_second_message(
         await adapter.update_blocks("channel-demo", "channel-demo:2.0", TEXT, BLOCKS)
     client.chat_update.assert_called_once()
     client.chat_postMessage.assert_not_called()
+
+
+ACTIVITY = TurnActivity(
+    [],
+    TurnUpsert(
+        type="turn.upsert",
+        turn_id="turn-demo",
+        command_id="command-demo",
+        status="running",
+    ),
+    status_only=True,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "kind"),
+    [
+        ("is_archived", "permanent"),
+        ("channel_not_found", "permanent"),
+        ("not_in_channel", "bounded"),
+        ("ratelimited", "transient"),
+    ],
+)
+async def test_a_refused_activity_post_carries_slacks_error_for_the_publisher(
+    adapter, code, kind
+):
+    """Without Slack's error as its cause, every refusal read as transient and
+    the publisher retried a post to an archived channel for as long as the
+    process ran."""
+    adapter._web_client.chat_postMessage.side_effect = refusal(code)
+
+    with pytest.raises(RichContentFailed) as failed:
+        await adapter.post_rich("channel-demo", "worker", ACTIVITY, None)
+
+    assert isinstance(failed.value.__cause__, SlackApiError)
+    assert code in str(failed.value)
+    assert SlackAdapter.classify_refusal(failed.value) == kind
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["internal_error", "request_timeout"])
+async def test_an_activity_post_that_may_have_landed_is_not_called_a_refusal(
+    adapter, code
+):
+    adapter._web_client.chat_postMessage.side_effect = refusal(code)
+
+    with pytest.raises(SlackApiError):
+        await adapter.post_rich("channel-demo", "worker", ACTIVITY, None)
+
+
+@pytest.mark.asyncio
+async def test_posting_blocks_with_no_client_raises(adapter):
+    adapter._web_client = None
+
+    with pytest.raises(BridgeOperationError):
+        await adapter.post_blocks(
+            "channel-demo", "worker", TEXT, BLOCKS, None, reply_broadcast=False
+        )

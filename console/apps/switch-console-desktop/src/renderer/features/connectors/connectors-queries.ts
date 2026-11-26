@@ -56,6 +56,21 @@ export function useWorkspaceServices(workspaceId: string) {
 }
 
 /**
+ * Who sets up the server's connector apps, as the server answers it for the
+ * workspace: whether the signed-in account may, and whether they are set up
+ * in the dashboard at all. Each is null where the server does not say. Asked
+ * only where the answer decides anything.
+ */
+export function useConnectorAppManagement(workspaceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['connector-app-management', workspaceId],
+    queryFn: () => rpc.switchServers.connectorAppManagement(workspaceId),
+    enabled,
+    retry: false,
+  });
+}
+
+/**
  * Re-read everything a connection, grant or switch change can move: the
  * catalog, who uses each service, the admin's switches, and the agent pages
  * that read the same connections and grants.

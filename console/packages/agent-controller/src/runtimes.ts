@@ -56,8 +56,8 @@ export class AgentRuntimes implements AgentRuntime {
     await this.isolated.close();
   }
 
-  credentialsPath(agentId: string): string {
-    return this.shared.credentialsPath(agentId);
+  credentialsPath(agentId: string, provider: Provider): string {
+    return this.shared.credentialsPath(agentId, provider);
   }
 
   readCredentials(agentId: string): Promise<RelayCredentials | null> {
@@ -89,6 +89,10 @@ export class AgentRuntimes implements AgentRuntime {
   async warm(agentId: string, roomId: string): Promise<void> {
     if (await this.shared.warmHere(agentId, roomId)) return;
     await warmOverControlPort(join(this.agentStateRoot(agentId), CONTROL_FILE), roomId);
+  }
+
+  forgetProviderLogin(agentId: string): Promise<void> {
+    return this.shared.forgetProviderLogin(agentId);
   }
 
   /** The same for both: moving an agent between them keeps its root. */

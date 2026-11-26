@@ -213,6 +213,7 @@ async def test_switch_is_added_to_a_team_from_the_catalogue(
             _Lifecycle(_shared_adapter(graph)),
             bridge_id=bridge_id,
             team_id="team-1",
+            teams_app_name="Switch Rooms (dev)",
         )
 
     assert graph.added == [("team-1", "c-1")]
@@ -237,12 +238,18 @@ async def test_without_the_app_in_the_catalogue_it_says_what_to_do(
         )
         with pytest.raises(HTTPException) as refused:
             await _call(
-                add_to_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+                add_to_team,
+                session,
+                lifecycle,
+                bridge_id=bridge_id,
+                team_id="team-1",
+                teams_app_name="Switch Rooms (dev)",
             )
 
     assert not placements.in_catalog
     assert placements.catalog_problem == "not a Teams admin"
     assert refused.value.status_code == 409
+    assert "Built for your org, Switch Rooms (dev)" in str(refused.value.detail)
     assert graph.added == []
 
 
@@ -277,7 +284,12 @@ async def test_an_app_uploaded_by_hand_is_learned_from_the_first_team_it_is_in(
         lifecycle = _Lifecycle(_shared_adapter(graph))
 
         await _call(
-            add_to_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+            add_to_team,
+            session,
+            lifecycle,
+            bridge_id=bridge_id,
+            team_id="team-1",
+            teams_app_name="Switch Rooms (dev)",
         )
         install = await MessagingInstallStore().get_for_bridge(
             session, bridge_id=bridge_id
@@ -337,12 +349,13 @@ def test_every_route_requires_a_workspace_admin() -> None:
     )
 
 
-async def test_removing_switch_from_the_default_team_turns_channel_creation_off(
+async def test_removing_switch_from_the_default_team_clears_the_default(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """New channels are made in the default team, and cannot be in a team the
-    app has left; the default goes with it rather than failing at the next
-    room."""
+    app has left. Channel creation is the admin's to turn off: the next team
+    Switch joins becomes the default, and room creation says what to do until
+    then."""
     graph = _Graph(installed_in={"team-1": "c-1"})
     async with session_factory() as session:
         bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
@@ -364,8 +377,110 @@ async def test_removing_switch_from_the_default_team_turns_channel_creation_off(
     assert graph.removed == [("team-1", "I-team-1")]
     assert bridge is not None
     assert bridge.connection_config["team_id"] is None
-    assert bridge.channel_creation_enabled is False
+    assert bridge.channel_creation_enabled is True
     assert lifecycle.restarted == [bridge_id]
+
+
+async def test_leaving_the_default_team_through_the_holder_rebuilds_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The copy holding the bridge clears the stored default and its own as it
+    leaves the team; the route still sees it was the default, from the row it
+    read first, and has nothing left to clear or rebuild."""
+    graph = _Graph(installed_in={"team-1": "c-1"})
+    holder_writes: list[tuple[str | None, str | None]] = []
+
+    async with session_factory() as session:
+        bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
+        await CollaborationBridgeStore().merge_connection_config(
+            session, bridge_id, {"team_id": "team-1"}
+        )
+        await session.commit()
+
+    async def write(expected: str | None, team_id: str | None) -> bool:
+        holder_writes.append((expected, team_id))
+        async with session_factory() as own:
+            written = await CollaborationBridgeStore().replace_team(
+                own, bridge_id, expected=expected, team_id=team_id
+            )
+            await own.commit()
+        return written is not None
+
+    async with session_factory() as session:
+        adapter = _shared_adapter(graph)
+        adapter.set_default_team_writer(write)
+        lifecycle = _Lifecycle(adapter)
+
+        await _call(
+            remove_from_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+        )
+
+    async with session_factory() as session:
+        bridge = await CollaborationBridgeStore().get(session, bridge_id)
+    assert holder_writes == [("team-1", None)]
+    assert adapter.default_team_id is None
+    assert bridge is not None
+    assert bridge.connection_config["team_id"] is None
+    assert lifecycle.restarted == []
+
+
+async def test_a_copy_not_yet_rebuilt_still_clears_the_stored_default(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A quiet copy not yet rebuilt from the latest edit does not know the team
+    became the default. The route decides from the stored row, and clears it
+    itself: the holder may be in another process, or nobody may hold the
+    bridge to be relayed the removal."""
+    graph = _Graph(installed_in={"team-1": "c-1"})
+    async with session_factory() as session:
+        bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
+        await CollaborationBridgeStore().merge_connection_config(
+            session, bridge_id, {"team_id": "team-1"}
+        )
+        await session.commit()
+        adapter = _shared_adapter(graph)
+        adapter._config = adapter._config.model_copy(update={"team_id": None})
+        adapter.set_listening(False)
+        relayed: list[dict[str, str]] = []
+        adapter.set_holder_relay(relayed.append)
+        lifecycle = _Lifecycle(adapter)
+
+        await _call(
+            remove_from_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+        )
+
+    async with session_factory() as session:
+        bridge = await CollaborationBridgeStore().get(session, bridge_id)
+    assert relayed == [
+        {"action": "team_left", "team_id": "team-1", "release_default": "1"}
+    ]
+    assert bridge is not None
+    assert bridge.connection_config["team_id"] is None
+    assert lifecycle.restarted == [bridge_id]
+
+
+async def test_a_default_chosen_while_leaving_the_old_one_is_kept(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The holder may already have cleared the old default and taken a team
+    Switch joined since; the route clears only the team it left."""
+    graph = _Graph(installed_in={"team-1": "c-1"})
+    async with session_factory() as session:
+        bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
+        await CollaborationBridgeStore().merge_connection_config(
+            session, bridge_id, {"team_id": "team-2"}
+        )
+        await session.commit()
+        lifecycle = _Lifecycle(_shared_adapter(graph))
+
+        await _call(
+            remove_from_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+        )
+
+    async with session_factory() as session:
+        bridge = await CollaborationBridgeStore().get(session, bridge_id)
+    assert bridge is not None
+    assert bridge.connection_config["team_id"] == "team-2"
 
 
 async def test_a_connection_that_does_not_restart_after_leaving_says_what_happened(
@@ -451,7 +566,12 @@ async def test_a_microsoft_refusal_while_adding_or_removing_is_a_502(
 
         with pytest.raises(HTTPException) as adding:
             await _call(
-                add_to_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+                add_to_team,
+                session,
+                lifecycle,
+                bridge_id=bridge_id,
+                team_id="team-1",
+                teams_app_name="Switch Rooms (dev)",
             )
         with pytest.raises(HTTPException) as removing:
             await _call(
@@ -470,10 +590,11 @@ async def test_the_app_package_is_downloaded_for_a_teams_admin(
 ) -> None:
     package = build_distributed_app_package(
         app_id="11111111-2222-3333-4444-555555555555",
-        app_name="Agent Switch",
+        app_name="Switch Rooms",
         messaging_public_url="https://switch.example",
         privacy_url="https://switch.example/privacy",
         terms_url="https://switch.example/terms",
+        partner_id=None,
     )
     installer = TeamsAppInstaller(app=object(), package=package)  # type: ignore[arg-type]
     async with session_factory() as session:

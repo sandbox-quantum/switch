@@ -4,7 +4,11 @@ Everything else that depends on which providers exist — definition
 validation, the known-agent specs agents register through, advanced
 configuration, the gateway's provider list — reads this table through the
 functions below. Adding a provider is adding an entry; one with no advanced
-settings or tools needs only an `id` and a `label`.
+settings or tools needs only an `id`, a `label`, its sign-in command and the
+feature flag that offers it (None for none). What a client is offered and what
+a new agent may name are the providers whose flag is on
+(`offered_providers()`); everything that reads an agent already defined sees
+them all.
 
 Read the table through `agent_providers()` / `agent_provider()` rather than
 importing `AGENT_PROVIDERS`, so every reader sees the same table.
@@ -12,12 +16,14 @@ importing `AGENT_PROVIDERS`, so every reader sees the same table.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import AfterValidator
 
 from switch_core.bridges.agent.protocol.types import ToolSpec
+from switch_core.feature_flags import ADDITIONAL_AGENT_PROVIDERS
 from switch_core.providers.advanced_fields import (
     CLAUDE_FIELDS,
     CODEX_FIELDS,
@@ -43,6 +49,14 @@ class AgentProvider:
     in: Switch Console's `loginCommand` for the provider, which a test holds
     this to."""
 
+    flag: str | None
+    """The feature flag that offers it, or None when every deployment does.
+    Off, it is left out of what clients are offered and no new agent may name
+    it, but an agent already defined on it keeps running."""
+
+    supports_auto_mode: bool = True
+    """Whether the session interface exposes automatic permission review."""
+
     known_agent_type: str = ""
     """The known-agent spec its agents register through, stored on each agent
     as `known_agent_type`. Defaults to `id`."""
@@ -57,6 +71,15 @@ class AgentProvider:
     tools: tuple[ToolSpec, ...] = ()
     """The built-in tools its agents register."""
 
+    new_agent_auto_mode: bool = True
+    """Whether a new agent on it starts in auto mode when whoever creates it
+    does not say. False where nothing reviews an action before it runs in
+    auto mode: room text reaches an agent as a prompt, so anyone who can post
+    in its rooms could have commands run on its owner's machine. Such an agent
+    starts asking its owner instead, who can still turn auto mode on. Switch
+    Console's `newAgentAutoMode` on the provider's runtime is the same, which
+    a test holds this to."""
+
     def __post_init__(self) -> None:
         if not self.known_agent_type:
             object.__setattr__(self, "known_agent_type", self.id)
@@ -69,6 +92,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="claude",
         label="Claude Code",
         sign_in_command="claude auth login",
+        flag=None,
         known_agent_type="claude-code",
         advanced_fields=CLAUDE_FIELDS,
         tools=(
@@ -92,6 +116,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="codex",
         label="Codex",
         sign_in_command="codex login",
+        flag=None,
         connector_type="Codex CLI",
         advanced_fields=CODEX_FIELDS,
         tools=(
@@ -104,8 +129,12 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="opencode",
         label="OpenCode",
         sign_in_command="opencode auth login",
+        flag=None,
         connector_type="OpenCode CLI",
         advanced_fields=OPENCODE_FIELDS,
+        # OpenCode's auto mode answers every permission ask itself, as its own
+        # `--auto` does: no person and no classifier sees a command first.
+        new_agent_auto_mode=False,
         tools=(
             ToolSpec(name="Bash", description="Executes shell commands"),
             ToolSpec(name="Edit", description="Edits existing files"),
@@ -122,6 +151,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="antigravity",
         label="Antigravity",
         sign_in_command="agy acp --login",
+        flag=None,
         connector_type="Antigravity CLI",
         tools=(
             ToolSpec(name="run_command", description="Executes shell commands"),
@@ -143,8 +173,10 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     ),
     AgentProvider(
         id="cursor",
+        supports_auto_mode=False,
         label="Cursor CLI",
         sign_in_command="agent login",
+        flag=None,
         tools=(
             ToolSpec(name="shell", description="Executes shell commands"),
             ToolSpec(name="read_file", description="Reads file contents"),
@@ -158,6 +190,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="deepseek-harness",
         label="DeepSeek Harness",
         sign_in_command="dsh web",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         tools=(
             ToolSpec(name="bash", description="Executes shell commands"),
             ToolSpec(name="pwsh", description="Executes PowerShell commands"),
@@ -176,6 +209,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="pi",
         label="Pi",
         sign_in_command="pi",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         tools=(
             ToolSpec(name="read", description="Reads file contents"),
             ToolSpec(name="bash", description="Executes shell commands"),
@@ -187,6 +221,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="copilot",
         label="GitHub Copilot",
         sign_in_command="copilot login",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         connector_type="GitHub Copilot CLI",
         tools=(
             ToolSpec(name="bash", description="Executes shell commands"),
@@ -202,16 +237,19 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="kiro",
         label="Kiro CLI",
         sign_in_command="kiro-cli login",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
     ),
     AgentProvider(
         id="mistral-vibe",
         label="Mistral Vibe",
         sign_in_command="vibe-acp --setup",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
     ),
     AgentProvider(
         id="goose",
         label="Goose",
         sign_in_command="goose configure",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         connector_type="Goose CLI",
         tools=(
             ToolSpec(name="shell", description="Executes shell commands"),
@@ -224,6 +262,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="qwen",
         label="Qwen Code",
         sign_in_command="qwen",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         tools=(
             ToolSpec(name="run_shell_command", description="Executes shell commands"),
             ToolSpec(name="write_file", description="Writes files"),
@@ -239,12 +278,14 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="droid",
         label="Factory Droid",
         sign_in_command="droid",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         connector_type="Droid CLI",
     ),
     AgentProvider(
         id="cline",
         label="Cline CLI",
         sign_in_command="cline auth",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         tools=(
             ToolSpec(name="run_commands", description="Executes shell commands"),
             ToolSpec(name="read_files", description="Reads file contents"),
@@ -259,6 +300,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="junie",
         label="Junie",
         sign_in_command="junie",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         connector_type="Junie CLI",
         tools=(
             ToolSpec(name="Bash", description="Executes shell commands"),
@@ -282,6 +324,35 @@ def provider_ids() -> list[str]:
     return [provider.id for provider in agent_providers()]
 
 
+def offered_providers(flags: Mapping[str, bool]) -> tuple[AgentProvider, ...]:
+    """The providers whose flag is on in `flags`, in the order a client
+    offers them."""
+    return tuple(
+        provider
+        for provider in agent_providers()
+        if provider.flag is None or flags[provider.flag]
+    )
+
+
+def offered_provider_ids(flags: Mapping[str, bool]) -> frozenset[str]:
+    return frozenset(provider.id for provider in offered_providers(flags))
+
+
+class ProviderNotOffered(ValueError):
+    pass
+
+
+def require_offered_provider(provider_id: str, flags: Mapping[str, bool]) -> None:
+    """Raises UnknownProvider for a provider Switch does not run, and
+    ProviderNotOffered, naming its flag, for one this deployment has off."""
+    provider = agent_provider(provider_id)
+    if provider.flag is not None and not flags[provider.flag]:
+        raise ProviderNotOffered(
+            f"{provider.label} is not offered on this server: it needs the "
+            f"{provider.flag!r} feature flag."
+        )
+
+
 def agent_provider(provider_id: str) -> AgentProvider:
     """The provider named `provider_id`. Raises UnknownProvider, naming the
     providers there are, for one Switch does not run."""
@@ -291,6 +362,33 @@ def agent_provider(provider_id: str) -> AgentProvider:
     raise UnknownProvider(
         f"unknown provider {provider_id!r}; one of {', '.join(provider_ids())}"
     )
+
+
+def new_agent_auto_mode(provider_id: str) -> bool:
+    """Whether a new agent on `provider_id` starts in auto mode when its
+    creator does not say: never on a provider with no auto mode
+    (`supports_auto_mode`), nor on one whose auto mode reviews nothing
+    (`new_agent_auto_mode`). Raises UnknownProvider for a provider Switch
+    does not run."""
+    provider = agent_provider(provider_id)
+    return provider.supports_auto_mode and provider.new_agent_auto_mode
+
+
+def with_new_agent_auto_mode(data: Any) -> Any:
+    """A new agent's request body with `auto_mode` filled in from its
+    `provider` when the body leaves it out. A body whose provider is missing
+    or unknown is returned as it is, for the provider's own validation to
+    refuse."""
+    if not isinstance(data, dict) or "auto_mode" in data:
+        return data
+    provider = data.get("provider")
+    if not isinstance(provider, str):
+        return data
+    try:
+        default = new_agent_auto_mode(provider)
+    except UnknownProvider:
+        return data
+    return {**data, "auto_mode": default}
 
 
 def _require_agent_provider(value: str) -> str:

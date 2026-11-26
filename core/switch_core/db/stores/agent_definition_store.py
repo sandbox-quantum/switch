@@ -23,6 +23,21 @@ class Placement:
     desired_state: str
     controller_name: str | None
     controller_revoked_at: datetime | None
+    # Whether the agent is suspended (`accounts/suspension.py`), which stops
+    # its binding as an archived workspace does.
+    agent_suspended: bool
+
+
+@dataclass(frozen=True)
+class PlacedDevice:
+    """The device (agent controller) a managed agent is placed on, as a list
+    of agents shows it: its name, who owns it, and whether it was removed."""
+
+    agent_id: str
+    controller_id: str
+    name: str
+    owner_id: str
+    revoked: bool
 
 
 def _placement_hash() -> ColumnElement[int]:
@@ -34,6 +49,7 @@ def _placement_hash() -> ColumnElement[int]:
         AgentDefinition.desired_state,
         func.coalesce(AgentController.name, ""),
         cast(AgentController.revoked_at.is_not(None), Text),
+        cast(Agent.suspended_at.is_not(None), Text),
     )
 
 
@@ -100,6 +116,22 @@ class AgentDefinitionStore:
         )
         return [(row[0], row[1]) for row in result.all()]
 
+    async def list_for_tenant(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[tuple[AgentDefinition, Agent]]:
+        """Every definition in the workspace, whoever owns it."""
+        result = await session.execute(
+            select(AgentDefinition, Agent)
+            .join(
+                Agent,
+                (Agent.id == AgentDefinition.agent_id)
+                & (Agent.tenant_id == AgentDefinition.tenant_id),
+            )
+            .where(AgentDefinition.tenant_id == tenant_id)
+            .order_by(Agent.name)
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
     async def list_for_controller(
         self, session: AsyncSession, tenant_id: str, controller_id: str
     ) -> list[tuple[AgentDefinition, Agent]]:
@@ -144,9 +176,12 @@ class AgentDefinitionStore:
                 AgentDefinition.desired_state,
                 AgentController.name,
                 AgentController.revoked_at,
+                Agent.suspended_at,
                 func.count().over(),
                 func.sum(_placement_hash()).over(),
             )
+            .select_from(AgentDefinition)
+            .join(Agent, _agent_of())
             .outerjoin(AgentController, _placed_on())
             .where(*_placed_in(tenant_id))
         )
@@ -160,10 +195,47 @@ class AgentDefinitionStore:
                 desired_state=desired_state,
                 controller_name=name,
                 controller_revoked_at=revoked_at,
+                agent_suspended=suspended_at is not None,
             )
-            for agent_id, controller_id, desired_state, name, revoked_at, _, _ in rows
+            for (
+                agent_id,
+                controller_id,
+                desired_state,
+                name,
+                revoked_at,
+                suspended_at,
+                _,
+                _,
+            ) in rows
         ]
-        return placements, (int(rows[0][5]), int(rows[0][6]))
+        return placements, (int(rows[0][6]), int(rows[0][7]))
+
+    async def devices(
+        self, session: AsyncSession, tenant_id: str
+    ) -> dict[str, PlacedDevice]:
+        """The device each placed agent is on, keyed by agent id, in one
+        statement. An agent placed nowhere has no key."""
+        result = await session.execute(
+            select(
+                AgentDefinition.agent_id,
+                AgentController.id,
+                AgentController.name,
+                AgentController.owner_id,
+                AgentController.revoked_at,
+            )
+            .join(AgentController, _placed_on())
+            .where(*_placed_in(tenant_id))
+        )
+        return {
+            agent_id: PlacedDevice(
+                agent_id=agent_id,
+                controller_id=controller_id,
+                name=name,
+                owner_id=owner_id,
+                revoked=revoked_at is not None,
+            )
+            for agent_id, controller_id, name, owner_id, revoked_at in result.all()
+        }
 
     async def placements_fingerprint(
         self, session: AsyncSession, tenant_id: str
@@ -172,6 +244,7 @@ class AgentDefinitionStore:
         result = await session.execute(
             select(func.count(), func.coalesce(func.sum(_placement_hash()), 0))
             .select_from(AgentDefinition)
+            .join(Agent, _agent_of())
             .outerjoin(AgentController, _placed_on())
             .where(*_placed_in(tenant_id))
         )
@@ -220,6 +293,17 @@ class AgentDefinitionStore:
             raise LookupError(f"No definition for agent: {agent_id}")
         return row
 
+    async def agent_suspended(
+        self, session: AsyncSession, tenant_id: str, agent_id: str
+    ) -> bool:
+        """Whether the agent is suspended (`accounts/suspension.py`)."""
+        suspended_at = await session.scalar(
+            select(Agent.suspended_at).where(
+                Agent.tenant_id == tenant_id, Agent.id == agent_id
+            )
+        )
+        return suspended_at is not None
+
     async def delete(
         self, session: AsyncSession, tenant_id: str, agent_id: str
     ) -> None:
@@ -231,6 +315,12 @@ class AgentDefinitionStore:
             )
             .execution_options(synchronize_session=False)
         )
+
+
+def _agent_of() -> ColumnElement[bool]:
+    return (Agent.tenant_id == AgentDefinition.tenant_id) & (
+        Agent.id == AgentDefinition.agent_id
+    )
 
 
 def _placed_on() -> ColumnElement[bool]:

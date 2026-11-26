@@ -14,7 +14,7 @@ from botocore.exceptions import (
 
 from switch_decision import backends
 from switch_decision.backends import ERROR_KINDS
-from tests.helpers import ANTHROPIC_KEY, BODY, SECRET_TEXT, settings_for
+from tests.helpers import ANTHROPIC_KEY, BODY, GEMINI_KEY, SECRET_TEXT, settings_for
 
 ANTHROPIC_HEADERS = {
     "X-Decision-Backend": "anthropic",
@@ -242,6 +242,107 @@ def test_bedrock_failure_kinds(make_client, monkeypatch, outcome, kind):
     monkeypatch.setattr(backends, "bedrock_client", lambda s: _Bedrock(outcome))
     tc = make_client(settings_for(bedrock_enabled=True))
     _failed(tc.post("/decide", json=BODY, headers=BEDROCK_HEADERS), kind)
+
+
+# ── Google's Decisions API ────────────────────────────────────────────────
+
+GEMINI = settings_for(
+    backend="gemini_decision",
+    model="gemini-decision-1",
+    gemini_decision_api_key=GEMINI_KEY,
+)
+
+
+def _google_error(status: int, reason: str) -> dict:
+    return {
+        "error": {
+            "code": status,
+            "message": "m",
+            "status": "INVALID_ARGUMENT",
+            "details": [{"@type": "google.rpc.ErrorInfo", "reason": reason}],
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("handler", "kind"),
+    [
+        (_raise(httpx.ConnectError("refused")), "model_server_unreachable"),
+        (_raise(httpx.ReadTimeout("slow")), "model_server_timeout"),
+        (
+            lambda r: httpx.Response(400, json=_google_error(400, "API_KEY_INVALID")),
+            "backend_refused",
+        ),
+        (
+            lambda r: httpx.Response(
+                400, json={"error": {"code": "safety", "message": "blocked"}}
+            ),
+            "backend_refused",
+        ),
+        (
+            lambda r: httpx.Response(
+                400, json={"error": {"code": "invalid_request", "message": "bad"}}
+            ),
+            "model_server_error",
+        ),
+        (lambda r: httpx.Response(400, text="<html>"), "model_server_error"),
+        (
+            lambda r: httpx.Response(403, json=_google_error(403, "ACCESS_DENIED")),
+            "backend_refused",
+        ),
+        (lambda r: httpx.Response(429, text="quota"), "backend_refused"),
+        (
+            lambda r: httpx.Response(
+                404, json={"error": {"code": "not_found", "message": "no model"}}
+            ),
+            "model_unavailable",
+        ),
+        (lambda r: httpx.Response(503, text="overloaded"), "model_unavailable"),
+        (lambda r: httpx.Response(500, text="boom"), "model_server_error"),
+        (lambda r: httpx.Response(200, text="<html>"), "model_server_error"),
+        (lambda r: httpx.Response(200, json={"answers": {}}), "model_server_error"),
+    ],
+    ids=[
+        "unreachable",
+        "read-timeout",
+        "400-bad-key",
+        "400-safety-block",
+        "400-bad-request",
+        "400-not-json",
+        "403",
+        "429",
+        "404-model",
+        "503",
+        "500",
+        "non-json",
+        "no-answer",
+    ],
+)
+def test_gemini_failure_kinds(make_client, handler, kind):
+    _failed(make_client(GEMINI, handler=handler).post("/decide", json=BODY), kind)
+
+
+def test_gemini_without_a_key_is_credentials_missing(make_client):
+    tc = make_client(
+        settings_for(backend="gemini_decision", model="gemini-decision-1"),
+        handler=lambda r: pytest.fail("no call without a key"),
+    )
+    _failed(tc.post("/decide", json=BODY), "credentials_missing")
+
+
+def test_gemini_key_and_error_body_are_never_logged(make_client, caplog):
+    tc = make_client(
+        GEMINI,
+        handler=lambda r: httpx.Response(
+            400, json={"error": {"code": "safety", "message": SECRET_TEXT}}
+        ),
+    )
+    with caplog.at_level("DEBUG"):
+        r = tc.post("/decide", json=BODY)
+    _failed(r, "backend_refused")
+    assert SECRET_TEXT not in caplog.text and GEMINI_KEY not in caplog.text
+    assert GEMINI_KEY not in r.text
+    assert "error_kind=backend_refused" in caplog.text
 
 
 def test_a_failure_body_names_only_kinds_from_the_fixed_set():

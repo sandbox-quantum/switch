@@ -66,9 +66,10 @@ class UserChange:
 
 
 class UserChangePublisher(Protocol):
-    def publish(self, tenant_id: str, user_id: str, kind: str, id: str) -> None:
-        """Tell `user_id`'s sessions in `tenant_id` that this changed. Call it
-        after the change has committed, and never wait on it."""
+    def publish(self, tenant_id: str, user_id: str, kind: str, id: str | None) -> None:
+        """Tell `user_id`'s sessions in `tenant_id` that this changed, or with
+        no `id` that any of its kind may have. Call it after the change has
+        committed, and never wait on it."""
         ...
 
 
@@ -126,7 +127,7 @@ class LocalUserChanges:
     def subscriber_count(self, tenant_id: str, user_id: str) -> int:
         return len(self._subscriptions.get((tenant_id, user_id), ()))
 
-    def publish(self, tenant_id: str, user_id: str, kind: str, id: str) -> None:
+    def publish(self, tenant_id: str, user_id: str, kind: str, id: str | None) -> None:
         change = UserChange(kind, id)
         for subscription in self._subscriptions.get((tenant_id, user_id), ()):
             subscription._add(change)
@@ -151,7 +152,7 @@ class SignalUserChanges:
         bus.handle(USER_CHANGED_SIGNAL, self._on_changed)
         bus.on_resync(self._resync)
 
-    def publish(self, tenant_id: str, user_id: str, kind: str, id: str) -> None:
+    def publish(self, tenant_id: str, user_id: str, kind: str, id: str | None) -> None:
         # The bus skips a process's own signals, so this one is told here.
         self._local.publish(tenant_id, user_id, kind, id)
         self._bus.publish(

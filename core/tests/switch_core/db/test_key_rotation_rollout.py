@@ -44,6 +44,7 @@ async def _running(
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=key_ids,
+        booting=False,
     )
     await lease.renew()
     return lease

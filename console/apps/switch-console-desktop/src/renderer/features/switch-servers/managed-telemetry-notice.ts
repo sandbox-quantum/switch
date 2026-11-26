@@ -35,9 +35,11 @@ export function managedTelemetryNotice(args: {
    * shared server's sharing off, so a restart from here cannot apply a "yes". */
   sharedWithOthers: boolean;
 }): ManagedTelemetryNotice {
-  const { running, deployed, consent, sharedWithOthers } = args;
+  const { running, deployed, sharedWithOthers } = args;
   if (!running || deployed === null) return { kind: 'in-step' };
   if (!deployed.known) return { kind: 'unknown', reason: deployed.reason };
+  // A build run from source starts its servers not sharing, whatever the toggle says.
+  const consent = args.consent && deployed.buildShares;
   if (deployed.enabled && consent && !deployed.endpointCurrent) return { kind: 'stale-endpoint' };
   if (deployed.enabled === consent) return { kind: 'in-step' };
   if (consent && sharedWithOthers) return { kind: 'in-step' };

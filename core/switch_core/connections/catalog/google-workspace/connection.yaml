@@ -3,6 +3,11 @@ name: Google Workspace
 category: Productivity
 description: Work with Google Drive, Docs, Sheets, Slides and Calendar, as you.
 enabled: true
+publisher: Google
+links:
+  documentation: https://developers.google.com/workspace
+  support: https://support.google.com/a
+  privacy: https://policies.google.com/privacy
 adapter: oauth
 auth:
   type: oauth
@@ -25,6 +30,9 @@ auth:
     # Google revokes the account's whole grant, not one token: revoking the
     # sign-in a reconnect to the same account replaced would end the new one.
     revocation_ends_grant: true
+    # Revoking the refresh token ends every token of the person's sign-in to
+    # the app, the access tokens already handed to agents included.
+    revocation_ends_tokens: true
     # Google hands out a refresh token only for offline access, and again on
     # a later sign-in only when consent is asked for. The account chooser
     # comes first, so a browser signed in to another Google account (a

@@ -1,5 +1,8 @@
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import {
+  requireProvider,
+  type AgentProviderId,
+} from '@shared/core/providers/agent-provider-registry';
 
 /**
  * A Switch agent: an agent identity bound to a single provider, living at a
@@ -29,11 +32,11 @@ export type Agent = {
   status: string | null;
   /** When true, Switch Console launches this agent's CLI with its auto-approve /
    * "bypass permissions" flag, skipping every permission check. Wins over
-   * `autoMode`. Off for new agents; editable per agent. */
+   * `autoMode`. New-agent defaults depend on the provider. */
   autoApprove: boolean;
   /** When true, sessions run in the provider's own auto mode: safe actions run
-   * without asking, risky ones still ask. On for new agents, off for agents
-   * that predate it; editable per agent. */
+   * without asking, risky ones still ask. Available only when the provider
+   * supports automatic review; editable per agent. */
   autoMode: boolean;
   /** The agent's owner on the Switch server, set when the agent was loaded from
    * another install. Null for agents this Console created. */
@@ -66,6 +69,19 @@ export type CreateAgentParams = {
   providerConfig?: AgentProviderConfig | null;
 };
 
-/** The permission settings a new agent starts with, wherever it runs: the
- * provider's auto mode on, bypass off. */
-export const NEW_AGENT_PERMISSIONS = { autoApprove: false, autoMode: true } as const;
+/**
+ * The permission settings a new agent on `providerId` starts with, wherever it
+ * runs. A provider with no auto mode to offer (`supportsAutoMode`, Cursor over
+ * ACP) starts with bypass on. Every other starts with bypass off, and the
+ * provider's auto mode on unless nothing would review an action in it
+ * (OpenCode), where the agent asks its owner instead. `newAgentAutoMode` comes
+ * from the provider's runtime in `@switch-console/agent-providers`.
+ */
+export function newAgentPermissions(providerId: AgentProviderId): {
+  autoApprove: boolean;
+  autoMode: boolean;
+} {
+  const provider = requireProvider(providerId);
+  if (!provider.supportsAutoMode) return { autoApprove: true, autoMode: false };
+  return { autoApprove: false, autoMode: provider.newAgentAutoMode };
+}

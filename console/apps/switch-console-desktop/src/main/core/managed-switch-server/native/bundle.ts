@@ -137,17 +137,43 @@ export async function materializeBundle(
   return copy;
 }
 
-/** Remove copies of older bundles once a start on `keep` has succeeded. */
-export async function pruneBundleCopies(toolchainDir: string, keep: string): Promise<void> {
+/** The bundle copy under `toolchainDir` that `file` lies in, or null. */
+export function bundleCopyHolding(toolchainDir: string, file: string): string | null {
+  const relative = path.relative(toolchainDir, file);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  const [first] = relative.split(path.sep);
+  return first?.startsWith(COPY_PREFIX) ? path.join(toolchainDir, first) : null;
+}
+
+/**
+ * Remove copies of older bundles once a start on `keep` has succeeded.
+ *
+ * A copy holding any of `inUse` — the binaries of a PostgreSQL that is
+ * running, or that the server is recorded to run on — stays, whichever bundle
+ * it came from: deleting files out from under a running server breaks it
+ * without stopping it.
+ */
+export async function pruneBundleCopies(
+  toolchainDir: string,
+  keep: string,
+  inUse: string[]
+): Promise<void> {
   let entries: string[];
   try {
     entries = await readdir(toolchainDir);
   } catch {
     return;
   }
+  const held = new Set(
+    inUse.map((file) => bundleCopyHolding(toolchainDir, file)).filter((dir) => dir !== null)
+  );
   for (const entry of entries) {
     const dir = path.join(toolchainDir, entry);
     if (!entry.startsWith(COPY_PREFIX) || dir === keep) continue;
+    if (held.has(dir)) {
+      log.warn(`local-switch-server: keeping the old bundle copy ${entry}, which is still in use`);
+      continue;
+    }
     log.info(`local-switch-server: removing the old bundle copy ${entry}`);
     await rm(dir, { recursive: true, force: true });
   }

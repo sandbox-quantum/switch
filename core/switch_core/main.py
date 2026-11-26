@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import signal
+import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -26,7 +27,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+from starlette.types import ASGIApp
+from uvicorn.main import STARTUP_FAILURE
 
+from switch_core.accounts.organization_purge import OrganizationPurge
+from switch_core.accounts.suspension import SuspensionEffects
 from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -93,6 +98,7 @@ from switch_core.bridges.collaboration.webhooks import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.service import ChatService
 from switch_core.chats.signals import ChatSignals
+from switch_core.chats.stream_reads import chat_stream_slots_for
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
@@ -109,14 +115,18 @@ from switch_core.connections.loader import CATALOG, with_access_profiles
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
+from switch_core.connections.oauth_clients import (
+    check_sign_in_redirects,
+    sign_in_redirect_warnings,
+)
 from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
-    app_connect_args,
     create_engine_from_config,
+    create_lease_engine,
     create_session_factory,
     create_unpooled_engine,
 )
@@ -191,12 +201,13 @@ from switch_core.delivery.router import (
     MessageRouter,
     sweep_pending_decisions,
 )
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
+from switch_core.management.signals import REVOKED_SIGNAL
 from switch_core.management.template_updates import TemplateUpdates
 from switch_core.management.wiring import Management, create_management
 from switch_core.members_service import MembersService
@@ -223,12 +234,13 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
-from switch_core.retention.audit_history import check_purge_privilege
+from switch_core.retention.audit_history import check_purge_function
 from switch_core.retention.erasure import ErasureService, erasure_loop
 from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
 from switch_core.room_schedules import own_room_schedules
 from switch_core.room_service import RoomService
+from switch_core.runtime_errors import install_task_exception_counter
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     own_maintenance as own_session_activity_maintenance,
@@ -246,6 +258,7 @@ from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from switch_core.trust.connection_check import TrustConnectionCheck
 from switch_core.trust.setup import build_trust_client
 from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
@@ -253,6 +266,7 @@ from switch_core.version import switch_core_version
 from switch_core.workos_directory import WorkOSDirectory
 from switch_core.workos_mirror import WorkOSMirror, own_workos_mirror
 from switch_core.workos_sign_in import WorkOSOrganizationSignIn
+from switch_core.workspace_archive import WorkspaceArchive
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +287,29 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 # regardless. Anything with a deadline of its own must fit inside it — see
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
 _FORCED_EXIT_GRACE_SECONDS = 3.0
+
+
+def uvicorn_config(app: ASGIApp, config: SwitchConfig) -> uvicorn.Config:
+    """How the server listens. A request's client address is taken from
+    `X-Forwarded-For` only when it comes from `FORWARDED_ALLOW_IPS`, the
+    ingress in front of this server; the access log, sign-in events and the
+    refusal breaker all read the address this resolves."""
+    trusted = [entry.strip() for entry in config.forwarded_allow_ips.split(",")]
+    if "*" in trusted:
+        logger.warning(
+            "FORWARDED_ALLOW_IPS is '*': every caller's X-Forwarded-For is "
+            "believed, so client addresses in the access log and security "
+            "events can be forged. Set it to the ingress's address range."
+        )
+    return uvicorn.Config(
+        app,
+        host=config.server_host,
+        port=config.server_port,
+        log_level="info",
+        log_config=None,
+        proxy_headers=True,
+        forwarded_allow_ips=config.forwarded_allow_ips,
+    )
 
 
 class _Server(uvicorn.Server):
@@ -483,7 +520,7 @@ _HAND_OVER_SECONDS = 10.0
 async def _release_process(
     ownership: Ownership,
     connections: SharedConnections,
-    management: Management | None,
+    management: Management,
     lease: ProcessLease,
 ) -> None:
     """Hand the work this process owns to the others, record the agent
@@ -515,8 +552,7 @@ async def _release_process(
         async with asyncio.timeout(_RELEASE_SECONDS):
             try:
                 await connections.flush()
-                if management is not None:
-                    await management.flush()
+                await management.flush()
             finally:
                 await lease.stop()
                 ownership.gone()
@@ -716,29 +752,10 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     return True
 
 
-async def _audit_history_sessions(
-    config: SwitchConfig,
-    engine: AsyncEngine,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> tuple[AsyncEngine | None, async_sessionmaker[AsyncSession]]:
-    """The sessions the retention pass purges deleted workspaces' audit history
-    on: the schema owner's, where configured, since the runtime role may not
-    delete audit rows; the runtime ones otherwise. Says at startup, as an
-    error, when the chosen role cannot (`retention/audit_history.py`).
-
-    Returns the owner's engine, for the caller to dispose of, or None."""
-    owner_url = config.owner_database_url
-    if owner_url is None:
-        await check_purge_privilege(engine, owner=False)
-        return None, session_factory
-    owner_engine = create_async_engine(
-        owner_url, poolclass=NullPool, connect_args=app_connect_args(config)
-    )
-    await check_purge_privilege(owner_engine, owner=True)
-    return owner_engine, create_session_factory(owner_engine)
-
-
-async def run(config: SwitchConfig, process_id: str) -> None:
+async def run(config: SwitchConfig, process_id: str) -> bool:
+    """Serve until shutdown. Returns whether the server started: False when the
+    app's startup failed, which uvicorn logs and then returns from `serve()`
+    normally rather than raising."""
     # ── Database ─────────────────────────────────────────────────────────────
     # The migration and the runtime role's grant re-issue already ran, under
     # Switch's boot-time advisory lock, before this coroutine was ever started
@@ -760,9 +777,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     instrument_queries(engine)
     pool_watermark = install_pool_watermark(engine)
     install_hold_timer(engine)
-    history_engine, history_sessions = await _audit_history_sessions(
-        config, engine, session_factory
-    )
+    await check_purge_function(engine)
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -793,12 +808,20 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     # This process's row in `switch_core_processes`, claimed before anything
     # can record a connection against it and held until the process drains.
-    # What another process reads to know this one is alive.
+    # What another process reads to know this one is alive. Renewed on a
+    # connection of its own, outside the pool, so requests and streams that
+    # fill the pool cannot make it lapse and drop everything this process
+    # holds (`create_lease_engine`). Booting until its ownership can take work
+    # (`ownership.py`).
+    lease_engine = create_lease_engine(config)
+    instrument_queries(lease_engine)
     process_lease = ProcessLease(
         process_id=process_id,
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in config.keyring.keys],
+        booting=True,
+        renewal_session_factory=create_session_factory(lease_engine),
     )
     await process_lease.renew()
     logger.info("Claimed switch-core process lease %s", process_id)
@@ -893,7 +916,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Product telemetry ────────────────────────────────────────────────────
     # Before the services that report through it, switched on or not.
     telemetry, installed_at, telemetry_http = await build_telemetry(
-        config, session_factory, switch_core_version()
+        config, session_factory, switch_core_version(), keeps_deployment_state=True
     )
     message_telemetry = MessageTelemetry(
         telemetry=telemetry, session_factory=session_factory
@@ -1170,9 +1193,10 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         frontend_base_url=config.dashboard_base_url,
         follow_the_conversation_enabled=config.follow_the_conversation_enabled,
         decision_availability=decision_client.availability,
+        feature_flags=config.feature_flags,
     )
 
-    # ── Agent management (off unless the agent_management flag is on) ─────────
+    # ── Agent management ───────────────────────────────────────────────────────
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
@@ -1185,7 +1209,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         publisher=user_change_publisher,
         window_seconds=COALESCE_SECONDS,
     )
-    room_service.on_room_changed(room_changes.room_changed)
+    room_service.on_room_changed(room_changes.room_changed, room_changes.rooms_changed)
     postgres_provisioning.on_membership_changed(room_changes.room_changed)
     management = create_management(
         config,
@@ -1220,7 +1244,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         approval_outcomes=ApprovalOutcomes(
             session_activity_listener, AgentSessionActivityService(session_factory)
         ),
-        controller_auth=management.authenticator if management is not None else None,
+        controller_auth=management.authenticator,
         connections=connections,
         room_access=room_access,
         telemetry=telemetry,
@@ -1286,6 +1310,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             ),
             webhook_secret=config.telegram_app_webhook_secret,
             on_connected=_attach_shared_telegram_bridges,
+            feature_flags=config.feature_flags,
         )
         collab_lifecycle.reserve_resource(
             bot_resource(telegram_app.bot_id), "Telegram app bot"
@@ -1337,21 +1362,23 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         usage_store=usage_store,
         id_server_name=config.id_server_name,
         media_max_bytes=config.agent_media_max_bytes,
-        agent_chats_enabled=config.agent_chats_enabled,
-        group_chats_enabled=config.group_chats_enabled,
         buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
         trust_client=trust_client,
+        message_observer=message_telemetry,
+        telemetry=telemetry,
+        stream_slots=chat_stream_slots_for(config.db_pool_size, config.db_max_overflow),
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
     ChatSignals(service=chat_service, bus=signal_bus)
-    room_service.on_room_agents_changed(chat_service.sync_room)
+    room_service.use_chats(chat_service)
+    room_service.on_room_agents_changed(chat_service.sync_rooms)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
-    protocol.set_member_adder(chat_service.add_member, chat_service.require_can_join)
+    protocol.set_member_adder(chat_service.admit_member, chat_service.require_can_join)
     chat_service.on_agent_room_changed(room_changes.rooms_changed)
-    room_service.on_room_changed(chat_service.room_changed)
+    room_service.on_room_changed(chat_service.room_changed, chat_service.rooms_changed)
 
     # ── Connector app credentials ─────────────────────────────────────────────
     # Each connector's app, from configuration or a row the operator saved,
@@ -1362,8 +1389,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         keyring=config.keyring,
         public_url=config.gateway_public_url,
         server_name=config.id_server_name,
+        redirects=config.service_sign_in_redirect,
     )
-    connector_apps = _connector_apps(
+    connector_apps = build_connector_apps(
         config,
         session_factory=session_factory,
         http=service_http,
@@ -1406,9 +1434,12 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         connector_apps=connector_apps,
         config=config,
         trust_settings_changed=trust_signals.changed,
+        trust_connection_check=TrustConnectionCheck(
+            client=trust_http, timeout_seconds=config.switch_trust_timeout_seconds
+        ),
     )
 
-    register_platforms(collab_lifecycle)
+    register_platforms(collab_lifecycle, config.feature_flags)
 
     # Liveness, and cheap on purpose: the gateway Deployment and the setup Job
     # wait on it at boot, so anything it checked would become a boot-ordering
@@ -1458,20 +1489,29 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         tags=["bridge-webhooks"],
     )
 
-    if management is not None:
-        management.install(
-            agent_bridge_app=agent_bridge_app,
-            gateway_app=gateway_app,
-            protocol=protocol,
-        )
-        # What deleting an account needs of it: revoking the person's machines.
-        gateway_app.state.controller_revoker = management.service
-        # Before the bridge serves: until Core knows which agents a controller
-        # runs, their own keys would be let in and their presence misread.
-        await management.load_bindings()
-        # And which controllers the other processes hold, so their agents do
-        # not read offline here until the signal bus has connected.
-        await management.load_connections()
+    management.install(
+        agent_bridge_app=agent_bridge_app,
+        gateway_app=gateway_app,
+        protocol=protocol,
+    )
+    # What deleting an account needs of it: revoking the person's machines.
+    gateway_app.state.controller_revoker = management.service
+    # Before the bridge serves: until Core knows which agents a controller
+    # runs, their own keys would be let in and their presence misread.
+    await management.load_bindings()
+    # And which controllers the other processes hold, so their agents do
+    # not read offline here until the signal bus has connected.
+    await management.load_connections()
+
+    # What archiving or restoring a workspace sets going once it commits
+    # (`gateway/organizations.py`).
+    gateway_app.state.workspace_archive = WorkspaceArchive(
+        session_factory=session_factory,
+        connections=protocol.connections,
+        api_key_cache=protocol.api_key_cache,
+        bridges=collab_lifecycle,
+        management=management.service if management is not None else None,
+    )
 
     # Before the bridge serves, so the first presence question already knows
     # the agents connected to the other processes.
@@ -1514,7 +1554,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         if config.organization_connector_apps_enabled
         else None
     )
-    service_broker = _service_broker(
+    service_broker = build_service_broker(
         config,
         connector_apps,
         organization_apps,
@@ -1524,6 +1564,35 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # What suspending an agent or a person, or lifting it, sets going once it
+    # commits (`gateway/suspension.py`).
+    gateway_app.state.suspension_effects = SuspensionEffects(
+        session_factory=session_factory,
+        connections=protocol.connections,
+        api_key_cache=protocol.api_key_cache,
+        broker=service_broker,
+        management=management.service if management is not None else None,
+    )
+    # A bus skips signals carrying its own process id, as acted on locally
+    # already; the purge acts on nothing here, so it signals under its own id
+    # for this process to hear too, as the CLI does.
+    purge_signals = SignalBus(
+        session_factory,
+        lambda: create_unpooled_engine(config),
+        process_id=f"{process_id}-purge",
+        announcer=announcer,
+    )
+    # What resetting a test account deletes with (`accounts/account_reset.py`).
+    gateway_app.state.organization_purge = OrganizationPurge(
+        session_factory=session_factory,
+        broker=service_broker,
+        installers=installers,
+        keyring=config.keyring,
+        signals=purge_signals,
+        controller_removed=controller_removal_publisher(purge_signals),
+        admin_email=config.gateway_admin_email,
+        sign_in_issuer=config.gateway_oidc_issuer_url,
+    )
     gateway_app.state.organization_apps = organization_apps
     if config.members_service_url:
         # Checked set together, under the WorkOS directory
@@ -1550,29 +1619,28 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
     protocol.install_service = install_service
+    workos_mirror: WorkOSMirror | None = None
     if isinstance(organization_directory, WorkOSDirectory):
         # Checked present with the directory (`_validate_organization_directory`).
         assert config.gateway_oidc_issuer_url is not None
-        own_workos_mirror(
-            ownership,
-            WorkOSMirror(
-                session_factory,
-                organization_directory,
-                MirrorDependencies(
-                    revocation=AccessRevocation(
-                        agent_store=agent_store,
-                        api_key_store=api_key_store,
-                        broker=service_broker,
-                        protocol=protocol,
-                        sign_in_flows=gateway_app.state.sign_in_flows,
-                    ),
-                    organization_store=organization_store,
-                    user_store=user_store,
+        workos_mirror = WorkOSMirror(
+            session_factory,
+            organization_directory,
+            MirrorDependencies(
+                revocation=AccessRevocation(
+                    agent_store=agent_store,
+                    api_key_store=api_key_store,
+                    broker=service_broker,
+                    protocol=protocol,
+                    sign_in_flows=gateway_app.state.sign_in_flows,
                 ),
-                OwnershipLeaseStore(),
-                config.gateway_oidc_issuer_url,
+                organization_store=organization_store,
+                user_store=user_store,
             ),
+            OwnershipLeaseStore(),
+            config.gateway_oidc_issuer_url,
         )
+        own_workos_mirror(ownership, workos_mirror)
 
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
@@ -1586,6 +1654,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     async def lifespan(app: object) -> AsyncIterator[None]:
         nonlocal observability
         async with original_lifespan(app):  # type: ignore[arg-type]
+            # A background task's exception nobody retrieved is counted
+            # before asyncio logs it as it always has.
+            install_task_exception_counter(asyncio.get_running_loop())
             observability = start_observability(
                 config=config,
                 version=switch_core_version(),
@@ -1606,6 +1677,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
             )
+            if workos_mirror is not None:
+                metrics().register_observer(workos_mirror.readings)
             decision_task = None
             if config.decision_routing_enabled:
                 pending_gauge = PendingDecisionGauge(
@@ -1628,31 +1701,20 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             )
             shared_connections_task = asyncio.create_task(shared_connections.run())
             cursor_writer_task = asyncio.create_task(cursor_writer.run())
-            management_task = (
-                asyncio.create_task(management.run())
-                if management is not None
-                else None
-            )
+            management_task = asyncio.create_task(management.run())
             # Once per start, in the background: a new release may bring a
             # new revision of an official template, and the agents an older
             # one created are brought up to it (`template_updates`).
-            template_updates_task = (
-                asyncio.create_task(
-                    TemplateUpdates(
-                        engine=engine,
-                        session_factory=session_factory,
-                        management=management.service,
-                        protocol=protocol,
-                        agent_management=config.feature_flags[AGENT_MANAGEMENT],
-                        switch_buddy=config.feature_flags[SWITCH_BUDDY],
-                    ).run(tenant_ids)
-                )
-                if management is not None
-                else None
+            template_updates_task = asyncio.create_task(
+                TemplateUpdates(
+                    engine=engine,
+                    session_factory=session_factory,
+                    management=management.service,
+                    protocol=protocol,
+                    switch_buddy=config.feature_flags[SWITCH_BUDDY],
+                ).run(tenant_ids)
             )
-            data_retention_task = asyncio.create_task(
-                retention_loop(session_factory, history_sessions)
-            )
+            data_retention_task = asyncio.create_task(retention_loop(session_factory))
             erasure_task = asyncio.create_task(
                 erasure_loop(
                     session_factory,
@@ -1683,15 +1745,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
                 await _stop_tasks(data_retention_task, erasure_task)
-                if history_engine is not None:
-                    await history_engine.dispose()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 shared_connections_task.cancel()
-                if management_task is not None:
-                    management_task.cancel()
-                if template_updates_task is not None:
-                    template_updates_task.cancel()
+                management_task.cancel()
+                template_updates_task.cancel()
                 ownership_task.cancel()
                 # The lease goes on being renewed while the owned work is
                 # handed over, which can take a few seconds: it must not lapse
@@ -1771,6 +1829,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             members=config.discord_app_members,
             install_service=install_service,
             on_connected=_attach_shared_discord_bridges,
+            feature_flags=config.feature_flags,
         )
         collab_lifecycle.add_bridge_starting_listener(discord_gateway.attach_if_live)
         discord_gateway.own(ownership)
@@ -1790,7 +1849,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         )
 
     # Start the work this process owns, before it serves: with one process,
-    # all of it. Then the quiet copies of the bridges another process holds.
+    # all of it, and beside others none until its signal bus listens. Then the
+    # quiet copies of the bridges another process holds.
     await ownership.start()
     # Running from here, so the rest of the boot is covered: a lease that
     # stops being sure stops the work it holds there and then.
@@ -1806,6 +1866,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # same missing client.
     async with boot_lock(config):
         await room_service.reconcile_room_clients()
+        await room_service.retire_bundled_mattermost_bridges()
 
     logger.info(
         "Switch is running on http://%s:%d", config.server_host, config.server_port
@@ -1815,16 +1876,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # which can report a milestone this settles.
     await telemetry.settle_superseded_milestones()
     telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
-    # The funnel's first step, and only for a deployment with an install date.
-    await telemetry.emit_milestone("deployment_installed")
+    # The funnel's first step, dated to the install, and only for a
+    # deployment with an install date.
+    await telemetry.report_installed()
 
-    server_config = uvicorn.Config(
-        agent_bridge_app,
-        host=config.server_host,
-        port=config.server_port,
-        log_level="info",
-        log_config=None,
-    )
+    server_config = uvicorn_config(agent_bridge_app, config)
     server = _Server(server_config)
 
     loop = asyncio.get_event_loop()
@@ -1865,6 +1921,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # uvicorn returns once its own part is done, while `_shutdown` is still
     # stopping the rest; returning here would end the loop under it.
     await _begin_shutdown.finish()
+    return server.started
 
 
 def _freeze_boot_objects() -> None:
@@ -2365,7 +2422,7 @@ async def _bootstrap_key_tenant(
     return TENANT_ZERO_ID
 
 
-def _connector_apps(
+def build_connector_apps(
     config: SwitchConfig,
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -2385,7 +2442,18 @@ def _connector_apps(
     )
 
 
-def _service_broker(
+def controller_removal_publisher(signals: SignalBus) -> Callable[[str], None]:
+    """Tells every process a machine's controller is gone, as revoking it
+    does, for a process that runs no agent management of its own: the
+    operator's organization purge (`purge_organization.py`)."""
+
+    def publish(controller_id: str) -> None:
+        signals.publish(REVOKED_SIGNAL, controller_id=controller_id)
+
+    return publish
+
+
+def build_service_broker(
     config: SwitchConfig,
     connector_apps: ConnectorApps,
     organization_apps: OrganizationApps | None,
@@ -2420,6 +2488,7 @@ def _service_broker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=config.service_connections_enabled,
         public_url=config.gateway_public_url,
+        allow_non_expiring_keys=config.allow_non_expiring_keys,
     )
 
 
@@ -2450,6 +2519,7 @@ def _distributed_teams_app(
                 messaging_public_url=config.messaging_public_url,
                 privacy_url=config.teams_app_privacy_url,
                 terms_url=config.teams_app_terms_url,
+                partner_id=config.teams_app_partner_id,
             ),
         )
     )
@@ -2660,13 +2730,25 @@ def main() -> None:
     )
     for warning in deprecated_env_names():
         logger.warning(warning)
+    check_sign_in_redirects(CATALOG, config.service_sign_in_redirect)
+    for warning in sign_in_redirect_warnings(
+        CATALOG, config.service_sign_in_redirect, config.gateway_public_url
+    ):
+        logger.warning(warning)
 
     if config.db_migrate_on_boot:
         asyncio.run(_migrate_and_grant(config))
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    asyncio.run(run(config, process_id), loop_factory=_event_loop_factory())
+    if not asyncio.run(run(config, process_id), loop_factory=_event_loop_factory()):
+        # The startup error is already logged (uvicorn: "Application startup
+        # failed"). Exiting 0 here would read as a clean stop to anything
+        # watching the exit status (`restart: on-failure`, Kubernetes, a
+        # process supervisor), so a Core that never served would stay down
+        # unnoticed. `STARTUP_FAILURE` (3) is what `uvicorn.run` exits with.
+        logger.error("switch-core did not start; exiting %d", STARTUP_FAILURE)
+        sys.exit(STARTUP_FAILURE)
 
 
 if __name__ == "__main__":

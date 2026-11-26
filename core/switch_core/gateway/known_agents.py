@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, field_validator
@@ -15,6 +16,7 @@ from switch_core.providers.registry import (
     AgentProvider,
     agent_provider,
     agent_providers,
+    offered_providers,
 )
 
 if TYPE_CHECKING:
@@ -121,7 +123,7 @@ class ClaudeCodeKnownAgent(KnownAgent):
         return IntegrationProfile(
             connection_model=connection_model,
             message_exchange=True,
-            pre_invocation_mediation=["tool_calls"],
+            pre_invocation_mediation=[],
             post_invocation_mediation=[],
             event_reporting=["tool_calls"],
             # Reset / compact / interrupt work only on a session that Switch
@@ -209,6 +211,15 @@ def known_agents() -> dict[str, KnownAgent]:
     return {
         provider.known_agent_type: _known_agent_of(provider)
         for provider in agent_providers()
+    }
+
+
+def offered_known_agents(flags: Mapping[str, bool]) -> dict[str, KnownAgent]:
+    """The known-agent specs of the providers offered with `flags`, which a
+    new agent may register through."""
+    return {
+        provider.known_agent_type: _known_agent_of(provider)
+        for provider in offered_providers(flags)
     }
 
 

@@ -22,7 +22,7 @@ describe('switch skill', () => {
 
   it("describes each workspace's decision service, the room notice and the triage agent", () => {
     const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
-    expect(text).toContain('Switch Console → Admin → Decision routing');
+    expect(text).toContain('Switch Console → Settings → Message routing');
     expect(text).toContain('Auto-route is unavailable right now; tag an agent to reach it.');
     expect(text).toContain('`!auto-route fallback @agent`');
     expect(text).toContain('`!auto-route fallback off`');
@@ -38,9 +38,18 @@ describe('switch skill', () => {
 
   it('says who may turn auto-route on or off, and who may name the triage agent', () => {
     const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
-    expect(text).toContain('Anyone who can post in the room may turn it on or off');
     expect(text).toContain(
-      "The room's owner or a workspace admin can name a triage agent for those messages"
+      "The room's owner, a room admin or a workspace admin may turn it on or off"
     );
+    expect(text).toContain(
+      "The room's owner, a room admin or a workspace admin can name a triage agent for those messages"
+    );
+  });
+
+  it('says auto-route is only on some servers, and not to suggest it where it is missing', () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain('Automatic routing is a feature only some Switch servers have.');
+    expect(text).toContain('`!auto-route` answers "Unknown command"');
+    expect(text).toMatch(/don't suggest either, and offer what the server does have instead/);
   });
 });

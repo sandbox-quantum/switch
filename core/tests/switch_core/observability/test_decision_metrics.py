@@ -23,12 +23,12 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.metrics import MetricsRegistry
 
 EXPECTED = {
-    DECISION_REQUESTS: ("sum", {"backend", "outcome"}),
-    DECISION_FAILURES: ("sum", {"backend", "reason"}),
-    DECISION_BACKEND_ERRORS: ("sum", {"backend", "kind"}),
-    DECISION_DURATION: ("histogram", {"backend"}),
-    DECISION_MODEL_TIME: ("histogram", {"backend"}),
-    DECISION_CONFIDENCE: ("histogram", {"backend"}),
+    DECISION_REQUESTS: ("sum", {"backend", "model", "outcome"}),
+    DECISION_FAILURES: ("sum", {"backend", "model", "reason"}),
+    DECISION_BACKEND_ERRORS: ("sum", {"backend", "model", "kind"}),
+    DECISION_DURATION: ("histogram", {"backend", "model"}),
+    DECISION_MODEL_TIME: ("histogram", {"backend", "model"}),
+    DECISION_CONFIDENCE: ("histogram", {"backend", "model"}),
     DECISION_SETTLED: ("sum", {"outcome"}),
     DECISION_WAIT: ("histogram", {"outcome"}),
     DECISION_PENDING: ("gauge", set()),
@@ -70,5 +70,19 @@ def test_a_room_id_is_refused() -> None:
     with pytest.raises(ValueError, match="unexpected \\['room_id'\\]"):
         registry.increment(
             DECISION_REQUESTS,
-            {"backend": "server_default", "outcome": "agent", "room_id": "r-1"},
+            {
+                "backend": "server_default",
+                "model": "gemini-decision-1",
+                "outcome": "agent",
+                "room_id": "r-1",
+            },
+        )
+
+
+def test_the_model_cannot_be_left_off() -> None:
+    registry = MetricsRegistry()
+
+    with pytest.raises(ValueError, match="missing \\[.model.\\]"):
+        registry.increment(
+            DECISION_REQUESTS, {"backend": "server_default", "outcome": "agent"}
         )

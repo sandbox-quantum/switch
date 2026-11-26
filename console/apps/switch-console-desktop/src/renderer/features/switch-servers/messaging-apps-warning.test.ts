@@ -21,13 +21,16 @@ function bridge(id: string, displayName: string): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    directorySearchHint: 'Your name or handle',
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
     privateChannels: null,
     privateChannelNeedsLinkedAccount: false,
+    publicChannelAddsCreator: false,
     receivesWebhooks: false,
     webhookUrl: null,
+    commands: {},
   };
 }
 
@@ -189,7 +192,7 @@ describe('what is said instead, where the link step is withheld', () => {
 
     expect(note).toContain('Telegram louis');
     // Be seen first, link second — the part that cannot be guessed.
-    expect(note).toContain('Send a message in a connected group');
+    expect(note).toContain('Say hello to the bot in a private chat');
     expect(note).toContain('link your account');
   });
 

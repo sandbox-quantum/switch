@@ -16,7 +16,7 @@ import {
   isRoomNameKnown,
   isRoomViewActive,
   deleteRoomAction,
-  mayChangeRoomMembers,
+  mayInviteAgents,
   openRoomInMessagingApp,
   openRoomView,
   RoomRow,
@@ -168,7 +168,7 @@ export const RoomTree = observer(function RoomTree() {
                     : null
                 }
                 onAddAgent={
-                  mayChangeRoomMembers(roomKey)
+                  mayInviteAgents(roomKey)
                     ? () => showAddAgentsToRoomModal({ roomId: roomKey })
                     : null
                 }

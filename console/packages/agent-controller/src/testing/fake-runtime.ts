@@ -19,7 +19,8 @@ export type RuntimeCall =
   | { kind: 'launch'; agentId: string; template: SharedHostConfig; options: LaunchOptions }
   | { kind: 'stop'; agentId: string; wait: boolean }
   | { kind: 'writeCredentials'; agentId: string; endpoint: string; token: string }
-  | { kind: 'deleteCredentials'; agentId: string };
+  | { kind: 'deleteCredentials'; agentId: string }
+  | { kind: 'forgetProviderLogin'; agentId: string };
 
 /** An `AgentRuntime` that keeps every agent in memory and records what it was asked to do. */
 export class FakeRuntime implements AgentRuntime {
@@ -64,7 +65,7 @@ export class FakeRuntime implements AgentRuntime {
     return structuredClone(this.observation(agentId));
   }
 
-  credentialsPath(agentId: string): string {
+  credentialsPath(agentId: string, _provider: Provider): string {
     return `/data/agents/${agentId}/credentials.json`;
   }
 
@@ -80,6 +81,16 @@ export class FakeRuntime implements AgentRuntime {
   async deleteCredentials(agentId: string): Promise<void> {
     this.calls.push({ kind: 'deleteCredentials', agentId });
     this.credentials.delete(agentId);
+  }
+
+  /** Thrown from the next `forgetProviderLogin`, once. */
+  failNextForget: Error | null = null;
+
+  async forgetProviderLogin(agentId: string): Promise<void> {
+    this.calls.push({ kind: 'forgetProviderLogin', agentId });
+    const failure = this.failNextForget;
+    this.failNextForget = null;
+    if (failure) throw failure;
   }
 
   async workingDirectory(

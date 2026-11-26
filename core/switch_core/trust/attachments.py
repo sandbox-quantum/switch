@@ -20,6 +20,8 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from switch_core.file_text import (
     TRUST_FILE_TEXT_LIMIT,
     FileText,
@@ -83,7 +85,9 @@ def _categories(result: TrustCheckResult, fallback: str) -> str:
 
 async def check_attachments(
     client: TrustClient,
+    sessions: async_sessionmaker[AsyncSession],
     *,
+    tenant_id: str,
     role: Role,
     files: Sequence[tuple[bytes, str, str]],
     room_id: str,
@@ -109,7 +113,14 @@ async def check_attachments(
     ]
     results = await asyncio.gather(
         *(
-            check_message(client, role=role, content=text, room_id=room_id)
+            check_message(
+                client,
+                sessions,
+                tenant_id=tenant_id,
+                role=role,
+                content=text,
+                room_id=room_id,
+            )
             for _index, text in to_check
         )
     )

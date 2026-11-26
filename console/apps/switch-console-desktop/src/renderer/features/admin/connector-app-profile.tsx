@@ -29,19 +29,22 @@ import {
   menuLabel,
   notSetUpSentence,
   primaryAction,
+  readOnlySentence,
   stateLabel,
   usedBy,
 } from './connector-apps';
-import { useLastChecks } from './connector-apps-queries';
+import { useLastChecks, useReloadConnectorApps } from './connector-apps-queries';
 import { useConnectorAppDialogs } from './connector-apps-tab';
 import { CopyButton } from './copy-button';
 
 /**
  * One connector app on its own page, in front of the tiles: whether it is
  * working, what to do next with one obvious button, and the changes that
- * disconnect people kept apart in the ⋯ menu. Checking it asks the vendor
- * and stores nothing; a failed check is the page's to remember, so its tile
- * shows it too.
+ * disconnect people kept apart in the ⋯ menu. Checking it asks the vendor;
+ * the server keeps only what the vendor says of the app (a GitHub App's
+ * permissions, so whether agents can only read through it), so the apps
+ * are read again after. A failed check is the page's to remember, so its
+ * tile shows it too.
  */
 export function ConnectorAppProfile({
   serverId,
@@ -60,11 +63,13 @@ export function ConnectorAppProfile({
 }) {
   const open = useConnectorAppDialogs(serverId, publicUrl);
   const [checks, setChecks] = useLastChecks(serverId, app.slug);
+  const reload = useReloadConnectorApps(serverId);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const state = cardState(app, checkFailure);
   const needs = attention(app, checkFailure);
+  const readOnly = readOnlySentence(app);
   const primary = primaryAction(app, checkFailure);
   const menu = menuActions(app);
   const blocked = changeBlocked(app, publicUrl);
@@ -76,6 +81,7 @@ export function ConnectorAppProfile({
       const result = await rpc.switchServers.checkConnectorApp({ serverId, service: app.slug });
       setChecks(result.checks);
       onCheckFailure(result.ok ? null : (result.checks.find((c) => !c.ok)?.message ?? null));
+      await reload();
     } catch (cause) {
       setError(failureText(cause, `Could not check ${app.name}'s app.`));
     } finally {
@@ -159,6 +165,14 @@ export function ConnectorAppProfile({
           className="rounded-lg border border-border-warning bg-background-warning p-3 text-sm"
         >
           {needs.sentence}
+        </p>
+      )}
+      {readOnly && (
+        <p
+          role="status"
+          className="rounded-lg border border-border-warning bg-background-warning p-3 text-sm"
+        >
+          {readOnly}
         </p>
       )}
       {checks && (

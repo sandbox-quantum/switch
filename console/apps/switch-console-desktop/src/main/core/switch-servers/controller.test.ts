@@ -1,8 +1,21 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as WorkspaceSession from '@main/core/workspaces/workspace-session';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 
 const fetchMe = vi.hoisted(() => vi.fn());
+const probeGateway = vi.hoisted(() => vi.fn());
+const MockGatewayError = vi.hoisted(
+  () =>
+    class GatewayError extends Error {
+      constructor(
+        readonly kind: string = 'http',
+        message = '',
+        readonly status?: number
+      ) {
+        super(message);
+      }
+    }
+);
 const getServer = vi.hoisted(() => vi.fn());
 const isManagedServerRunning = vi.hoisted(() => vi.fn());
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
@@ -12,7 +25,7 @@ const addServer = vi.hoisted(() => vi.fn());
 const findServerByUrl = vi.hoisted(() => vi.fn());
 const findServerByWebAddress = vi.hoisted(() => vi.fn());
 const assertServerAddress = vi.hoisted(() => vi.fn());
-const assertServesDashboard = vi.hoisted(() => vi.fn());
+const openDashboardPage = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
 const signup = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
@@ -20,6 +33,7 @@ const listWorkspacesForServer = vi.hoisted(() => vi.fn());
 const createOrganization = vi.hoisted(() => vi.fn());
 const createOrganizationWorkspace = vi.hoisted(() => vi.fn());
 const fetchWorkspaceCreation = vi.hoisted(() => vi.fn());
+const fetchConnectorAppManagement = vi.hoisted(() => vi.fn());
 const requireWorkspaceForServer = vi.hoisted(() => vi.fn());
 const sessionScopes = vi.hoisted(() => [] as string[]);
 const acceptInvitation = vi.hoisted(() => vi.fn());
@@ -74,9 +88,8 @@ vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin, signup }));
 // Reads this install's own agent rows, and through them the database client.
 vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 // Reaches the encrypted secrets store, and through it the database client.
-vi.mock('./bundled-chat-sign-in', () => ({ bundledChatSignInFor: vi.fn() }));
 vi.mock('./managed-claude-credential', () => ({ deleteManagedClaudeCredential: vi.fn() }));
-vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));
+vi.mock('./dashboard-page', () => ({ openDashboardPage }));
 vi.mock('@main/core/feature-flags/feature-flags', () => ({
   featureFlagsService: { current: vi.fn(async () => ({ flags: serverFlags })) },
 }));
@@ -108,15 +121,16 @@ vi.mock('./gateway-client', () => ({
   createOrganization,
   createOrganizationWorkspace,
   fetchWorkspaceCreation,
+  fetchConnectorAppManagement,
   acceptInvitation,
   fetchRoomRoles: vi.fn(),
   fetchRooms: vi.fn(),
   registerKnownAgent: vi.fn(),
-  GatewayError: class GatewayError extends Error {},
+  probeGateway,
+  GatewayError: MockGatewayError,
 }));
 vi.mock('./server-address', () => ({
   assertServerAddress,
-  assertServesDashboard,
   NotTheServerAddressError,
 }));
 vi.mock('./servers-store', () => ({
@@ -188,6 +202,39 @@ describe('getConnectionStatus', () => {
     expect(status).toEqual({ serverId: 'srv', connected: true, user: USER });
     expect(isManagedServerRunning).not.toHaveBeenCalled();
     expect(fetchMe).toHaveBeenCalledOnce();
+  });
+
+  it('reads a server the session was refused by as signed out, without asking again', async () => {
+    getServer.mockResolvedValue(server({ managed: false }));
+    fetchMe.mockRejectedValue(new MockGatewayError('unauthorized', 'expired', 401));
+
+    const status = await switchServersController.getConnectionStatus('srv');
+
+    expect(status).toEqual({ serverId: 'srv', connected: false, user: null });
+    expect(probeGateway).not.toHaveBeenCalled();
+  });
+
+  it('asks a never-signed-in server whether it answers before calling it signed out', async () => {
+    getServer.mockResolvedValue(server({ managed: false }));
+    fetchMe.mockRejectedValue(new MockGatewayError('unauthorized', 'Not signed in'));
+    probeGateway.mockResolvedValue(undefined);
+
+    const status = await switchServersController.getConnectionStatus('srv');
+
+    expect(status).toEqual({ serverId: 'srv', connected: false, user: null });
+    expect(probeGateway).toHaveBeenCalledOnce();
+  });
+
+  it('fails the status read of a never-signed-in server that does not answer', async () => {
+    getServer.mockResolvedValue(server({ managed: false }));
+    fetchMe.mockRejectedValue(new MockGatewayError('unauthorized', 'Not signed in'));
+    const unreachable = new MockGatewayError(
+      'network',
+      "Can't reach x: the address doesn't resolve."
+    );
+    probeGateway.mockRejectedValue(unreachable);
+
+    await expect(switchServersController.getConnectionStatus('srv')).rejects.toBe(unreachable);
   });
 });
 
@@ -261,6 +308,20 @@ describe('an action a server whose host has gone down cannot take', () => {
       server_kind: 'remote_managed',
       outcome: 'failure',
       failure_reason: 'invalid_credentials',
+    });
+  });
+
+  it('reports a single sign-on whose sign-in settings could not be read', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    fetchAuthConfig.mockRejectedValue(new Error('502 from the server'));
+
+    await expect(switchServersController.oidcLogin('srv', null)).rejects.toThrow('502');
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'oidc',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'failed',
     });
   });
 
@@ -614,6 +675,28 @@ describe('workspaceCreation', () => {
   });
 });
 
+describe('connectorAppManagement', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionScopes.length = 0;
+  });
+
+  it("answers in the session of the workspace named, and passes on the server's nulls", async () => {
+    fetchConnectorAppManagement.mockResolvedValue({ canManage: false, inDashboard: true });
+    await expect(switchServersController.connectorAppManagement('ws-2')).resolves.toEqual({
+      canManage: false,
+      inDashboard: true,
+    });
+    expect(sessionScopes).toEqual(['ws-2']);
+
+    fetchConnectorAppManagement.mockResolvedValue({ canManage: null, inDashboard: null });
+    await expect(switchServersController.connectorAppManagement('ws-2')).resolves.toEqual({
+      canManage: null,
+      inDashboard: null,
+    });
+  });
+});
+
 describe('acceptInvitation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -726,17 +809,36 @@ describe('adding a server by URL', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    serverKindOf.mockReturnValue('external');
   });
 
-  it('reports the add that worked', async () => {
+  afterEach(() => {
+    serverKindOf.mockReturnValue('remote_managed');
+  });
+
+  it('reports the add that worked, as the kind the new row is', async () => {
     const added = server({ id: 'new' });
     addServer.mockResolvedValue(added);
+    // Switch Cloud's own address pasted in: the same server as its button adds.
+    serverKindOf.mockReturnValue('cloud');
 
     await expect(switchServersController.addServer(params)).resolves.toBe(added);
+    expect(serverKindOf).toHaveBeenCalledWith(added);
     expect(trackEvent).toHaveBeenCalledExactlyOnceWith('server_added', {
-      server_kind: 'external',
+      server_kind: 'cloud',
       outcome: 'success',
       failure_reason: 'none',
+    });
+  });
+
+  it('describes an address that failed to register by the address itself', async () => {
+    addServer.mockRejectedValue(new Error('constraint failed'));
+
+    await expect(switchServersController.addServer(params)).rejects.toThrow('constraint failed');
+    expect(serverKindOf).toHaveBeenCalledWith({
+      managed: false,
+      managementKind: null,
+      url: 'http://switch',
     });
   });
 
@@ -919,28 +1021,34 @@ describe('opening a dashboard page', () => {
     managedServerHostBlocked.mockReturnValue(null);
   });
 
-  it('checks an external server serves its dashboard before opening the page', async () => {
-    const { appService } = await import('@main/core/app/service');
-    getServer.mockResolvedValue(server({ managed: false }));
+  it('opens the page in the browser for the server it names', async () => {
+    const remote = server({ managed: false });
+    getServer.mockResolvedValue(remote);
 
     await switchServersController.openGatewayPage({
       serverId: 'srv',
       url: 'http://localhost:3300/rooms/1',
     });
 
-    expect(assertServesDashboard).toHaveBeenCalledOnce();
-    expect(appService.openExternal).toHaveBeenCalledWith('http://localhost:3300/rooms/1');
+    expect(openDashboardPage).toHaveBeenCalledExactlyOnceWith(
+      remote,
+      'http://localhost:3300/rooms/1'
+    );
   });
 
-  it('opens nothing, and says why, where no dashboard is served', async () => {
-    const { appService } = await import('@main/core/app/service');
-    getServer.mockResolvedValue(server({ managed: false }));
-    assertServesDashboard.mockRejectedValueOnce(new Error('S does not serve its dashboard'));
+  it('opens nothing on a managed server whose host cannot be reached', async () => {
+    getServer.mockResolvedValue(server({ managed: true, managementKind: 'remote', sshHost: 'h' }));
+    managedServerHostBlocked.mockReturnValue({
+      sshHost: 'h',
+      status: 'unreachable',
+      lastError: 'no route to host',
+      lastCheckedAt: null,
+    });
 
     await expect(
-      switchServersController.openGatewayPage({ serverId: 'srv', url: 'http://localhost:8000/' })
-    ).rejects.toThrow('does not serve its dashboard');
-    expect(appService.openExternal).not.toHaveBeenCalled();
+      switchServersController.openGatewayPage({ serverId: 'srv', url: 'http://localhost:3300/' })
+    ).rejects.toBeInstanceOf(HostUnreachableError);
+    expect(openDashboardPage).not.toHaveBeenCalled();
   });
 });
 

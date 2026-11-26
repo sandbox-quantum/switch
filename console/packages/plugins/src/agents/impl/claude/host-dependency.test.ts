@@ -12,12 +12,13 @@ const descriptor: DependencyDescriptor = {
 };
 
 describe('claude hostDependency on Windows', () => {
-  it("runs Anthropic's install.ps1 through PowerShell", () => {
+  it("runs Anthropic's install.ps1 through PowerShell, then puts ~\\.local\\bin on PATH", () => {
     const picked = pickInstallOption(descriptor, 'windows');
     expect(picked?.method).toBe('powershell');
-    expect(picked?.command).toBe(
-      'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
+    expect(picked?.command).toMatch(
+      /^powershell -ExecutionPolicy ByPass -c "irm https:\/\/claude\.ai\/install\.ps1 \| iex; /
     );
+    expect(picked?.command).toContain("'.local', 'bin'");
   });
 
   // The install runner's shell may be cmd.exe, Windows PowerShell or Git Bash:
@@ -27,5 +28,6 @@ describe('claude hostDependency on Windows', () => {
     const command = pickInstallOption(descriptor, 'windows')?.command ?? '';
     expect(command).not.toContain('&&');
     expect(command).not.toMatch(/[$%]/);
+    expect(command.slice(command.indexOf('"') + 1, -1)).not.toContain('"');
   });
 });

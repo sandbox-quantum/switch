@@ -71,7 +71,7 @@ describe('ensureWindowsNpmGlobalBinInPath', () => {
 });
 
 describe('ensureWindowsUserBinDirsInPath', () => {
-  it('adds the folder Google’s agy installer writes to, once, after the PATH as the controller does', () => {
+  it('adds the folders the agy, official Codex, Cursor and Kiro installers write to, once, after the PATH as the controller does', () => {
     const env: NodeJS.ProcessEnv = {
       localappdata: 'C:\\Users\\test\\AppData\\Local',
       Path: 'C:\\Windows\\System32',
@@ -79,8 +79,13 @@ describe('ensureWindowsUserBinDirsInPath', () => {
 
     expect(ensureWindowsUserBinDirsInPath(env)).toEqual([
       'C:\\Users\\test\\AppData\\Local\\agy\\bin',
+      'C:\\Users\\test\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin',
+      'C:\\Users\\test\\AppData\\Local\\cursor-agent',
+      'C:\\Users\\test\\AppData\\Local\\Kiro-Cli',
     ]);
-    expect(env.Path).toBe('C:\\Windows\\System32;C:\\Users\\test\\AppData\\Local\\agy\\bin');
+    expect(env.Path).toBe(
+      'C:\\Windows\\System32;C:\\Users\\test\\AppData\\Local\\agy\\bin;C:\\Users\\test\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin;C:\\Users\\test\\AppData\\Local\\cursor-agent;C:\\Users\\test\\AppData\\Local\\Kiro-Cli'
+    );
     expect(ensureWindowsUserBinDirsInPath(env)).toEqual([]);
   });
 

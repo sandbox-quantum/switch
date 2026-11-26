@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import MethodType, SimpleNamespace
 
-from switch_core.bridges.collaboration import collaboration_core
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundCommand
 from switch_core.transport import SendResult, TransportError
@@ -277,50 +276,26 @@ class TestCommandResultThreadingRace:
         assert await bridge._external_post_for_event("$cmd-event") is None
 
 
-async def test_link_account_in_an_unbridged_channel_does_not_make_it_a_room(
-    monkeypatch,
-) -> None:
-    """Linking is about the person, so the channel is answered, not adopted."""
+async def test_link_account_in_an_unbridged_channel_does_not_make_it_a_room() -> None:
+    """Linking is about the person, so the bridge answers it without a room
+    (`test_bridge_account_commands` covers what the answer does)."""
     created: list[object] = []
-    replies: list[tuple[str, str, str | None]] = []
-    redeemed: list[tuple[object, str]] = []
-    account = SimpleNamespace(id="ext-1")
+    handled: list[InboundCommand] = []
 
     async def _create_room_for_channel(**kwargs: object) -> None:
         created.append(kwargs)
 
-    async def ensure_external_user(**_kw: str) -> SimpleNamespace:
-        return account
+    async def _handle_account_command(cmd: InboundCommand) -> None:
+        handled.append(cmd)
 
-    async def admin_message(
-        channel_id: str, content: str, thread_root_id: str | None
-    ) -> None:
-        replies.append((channel_id, content, thread_root_id))
-
-    async def link_account_reply(
-        _sessions: object, _ext: object, _users: object, who: object, args: str
-    ) -> str:
-        redeemed.append((who, args))
-        return "✅ Linked"
-
-    monkeypatch.setattr(collaboration_core, "link_account_reply", link_account_reply)
     bridge = SimpleNamespace(
         _channel_to_room={},
-        _session_factory=None,
-        _external_user_store=None,
-        _adapter=SimpleNamespace(admin_message=admin_message),
         _create_room_for_channel=_create_room_for_channel,
-        ensure_external_user=ensure_external_user,
+        _handle_account_command=_handle_account_command,
     )
-    bridge._link_account_outside_room = MethodType(
-        CollaborationCore._link_account_outside_room, bridge
-    )
+    command = _cmd(message_ref="chan-1:5.0", command="link-account", args="7KQ2-M9XD")
 
-    await CollaborationCore._handle_inbound_command(
-        bridge,
-        _cmd(message_ref="chan-1:5.0", command="link-account", args="7KQ2-M9XD"),
-    )
+    await CollaborationCore._handle_inbound_command(bridge, command)
 
     assert created == []
-    assert redeemed == [(account, "7KQ2-M9XD")]
-    assert replies == [("chan-1", "✅ Linked", "chan-1:5.0")]
+    assert handled == [command]

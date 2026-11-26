@@ -6,6 +6,11 @@ describe("platformLabel", () => {
     expect(platformLabel("teams")).toBe("Microsoft Teams");
   });
 
+  it("spells WhatsApp and Rocket.Chat as their makers do", () => {
+    expect(platformLabel("whatsapp")).toBe("WhatsApp");
+    expect(platformLabel("rocketchat")).toBe("Rocket.Chat");
+  });
+
   it("falls back to title case for a platform with no name of its own to get wrong", () => {
     expect(platformLabel("slack")).toBe("Slack");
     expect(platformLabel("discord")).toBe("Discord");

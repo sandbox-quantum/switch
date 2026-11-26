@@ -8,8 +8,7 @@ where it deliberately stops short.
 
 ## Shape
 
-- **Management** (Core package `switch_core/management/`, off unless the
-  `agent_management` feature flag is on): the source of truth for managed agents. It holds agent
+- **Management** (Core package `switch_core/management/`, always on): the source of truth for managed agents. It holds agent
   definitions, which controller each one runs on, controller enrollment and credentials,
   controller status, and operations.
 - **Agent controller** (`console/packages/agent-controller`, a Node CLI): one per
@@ -33,11 +32,10 @@ where it deliberately stops short.
 ## Core
 
 ### Config (`config.py`)
-- `agent_management_enabled`: whether the `agent_management` feature flag is on
-  (`FEATURE_FLAGS_ENABLED`). `AGENT_MANAGEMENT_ENABLED=true`, the setting it replaced,
-  stops startup.
-- `controller_token_secret: str | None = None` (`CONTROLLER_TOKEN_SECRET`). **Required
-  when the flag is on**: a model validator raises if it is missing or shorter than 32 chars. It is
+- Agent management is always on. The `agent_management` feature flag is still accepted.
+  `AGENT_MANAGEMENT_ENABLED=true`, the setting it replaced, stops startup.
+- `controller_token_secret: str | None = None` (`CONTROLLER_TOKEN_SECRET`). **Required**:
+  a model validator raises if it is missing or shorter than 32 chars. It is
   separate from `jwt_secret_key` on purpose.
 - `controller_status_interval_seconds: int = 60`. Returned to controllers as `report_within_s`.
   Placement needs a status within 3 intervals. Whether a machine is online is read from its
@@ -131,11 +129,15 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
     A controller resyncs fully on every reconnect.
 
 ### Gateway routes (cookie, `get_current_user`, owner-only)
-- `POST   /gateway/management/enrollment-codes` returns `{code, expires_at, server_url}`.
+- `POST   /gateway/management/enrollment-codes` returns `{code, expires_at, server_url, remote_devices}`.
   `server_url` is the agent bridge's public origin (`GATEWAY_PUBLIC_URL`), the
   `--server` to enroll with, or null when it is not configured; the gateway
   page's own address is not a stand-in, since a gateway need not serve the
-  agent bridge.
+  agent bridge. `remote_devices` is `{supported, reason}`: whether a device
+  other than the one Switch runs on could enroll at all. It is false, with a
+  reason to show, on a server Switch Console runs and when `server_url` is a
+  loopback address; the code is issued either way, since Console enrolls the
+  SSH hosts it sets up with one.
 - `POST   /gateway/management/controllers`
   - Console enrollment by a signed-in user.
   - Body: `{name, description?, kind:"console", platform, version, public_key?}`.
@@ -209,8 +211,10 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
  "auto_approve": false, "directory": null, "isolation": "shared"}
 ```
 
-`auto_mode` (default `true` on create) asks the provider for its own automatic review:
-safe actions run, risky ones still ask a person. `auto_approve` is bypass, every permission
+`auto_mode` asks the provider for its own automatic review: safe actions run, risky ones
+still ask a person. Left out on create, it is the provider's default for a new agent
+(`new_agent_auto_mode` in `providers/registry.py`): `true`, except `false` for `opencode`,
+whose auto mode has no review and answers every permission ask itself. `auto_approve` is bypass, every permission
 check skipped, and wins over `auto_mode`. A definition stored before `auto_mode` existed has
 no such key and reads as `false` (`schemas.stored_definition`): the managed-agent view, the
 assignment entry and an agent's update all fill it in that way, so an existing agent keeps
@@ -531,6 +535,8 @@ stream. The flag and everything else above stay as they are.
   A machine is online while its socket is recorded attached and its holding
   process's lease was renewed within 15 s and is not stopped; so a process that
   dies without writing its closings takes its machines offline within 15 s.
+  A process that shuts down leaves its machines online for 15 s from the stop,
+  as long as one that died, while they reattach to another process.
   Leases are written and compared on the database's clock.
 - **Holder id.** A controller-backed agent holds things under
   `controller:{controller_id}:{agent_id}`: the operation caller's session key

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from switch_core.bridges.agent.protocol.types import (
+    SUBAGENTS_MAX,
     AgentEvent,
     AgentStatus,
     IntegrationProfile,
@@ -72,7 +73,7 @@ class RegisterKnownAgentBulkRequest(BaseModel):
     agent_type: str
     parent_agent_id: str
     options: dict[str, Any] = {}
-    subagents: list[BulkSubagentSpec]
+    subagents: list[BulkSubagentSpec] = Field(max_length=SUBAGENTS_MAX)
     overwrite: bool = False
 
 
@@ -234,62 +235,6 @@ class ParticipantInfo(BaseModel):
 
 class ParticipantsResponse(BaseModel):
     participants: list[ParticipantInfo]
-
-
-# ── Mediation ────────────────────────────────────────────────────────────────
-
-
-class PreToolCallRequest(BaseModel):
-    room_id: str
-    tool_name: str
-    arguments: dict[str, Any]
-    request_id: str
-
-
-class PreToolCallResponse(BaseModel):
-    verdict: Literal["proceed", "blocked", "modified"]
-    reason: str | None = None
-    modified_arguments: dict[str, Any] | None = None
-
-
-class PreLlmRequestRequest(BaseModel):
-    room_id: str
-    model: str
-    messages: list[dict[str, Any]]
-    request_id: str
-
-
-class PreLlmRequestResponse(BaseModel):
-    verdict: Literal["proceed", "blocked", "modified"]
-    reason: str | None = None
-    modified_messages: list[dict[str, Any]] | None = None
-
-
-class PostToolResultRequest(BaseModel):
-    room_id: str
-    tool_name: str
-    result: Any
-    request_id: str
-
-
-class PostToolResultResponse(BaseModel):
-    verdict: Literal["ok", "blocked", "redacted"]
-    reason: str | None = None
-    result: Any | None = None
-
-
-class PostLlmResponseRequest(BaseModel):
-    room_id: str
-    model: str
-    response: Any
-    usage: dict[str, Any] | None = None
-    request_id: str
-
-
-class PostLlmResponseResponse(BaseModel):
-    verdict: Literal["ok", "blocked", "redacted"]
-    reason: str | None = None
-    result: Any | None = None
 
 
 # ── Reporting ────────────────────────────────────────────────────────────────

@@ -3,6 +3,11 @@ name: Azure DevOps
 category: Source control
 description: Read and change Azure DevOps work items, repos, pull requests, pipelines and wikis, as you.
 enabled: true
+publisher: Microsoft
+links:
+  documentation: https://learn.microsoft.com/en-us/azure/devops/mcp-server/remote-mcp-server
+  support: https://azure.microsoft.com/en-us/support/devops/
+  privacy: https://privacy.microsoft.com/en-us/privacystatement
 adapter: oauth
 auth:
   type: oauth

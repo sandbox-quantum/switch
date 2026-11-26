@@ -53,6 +53,7 @@ from switch_core.transport import (
     TransportError,
     TransportHandlers,
 )
+from switch_core.transport import observer as observer_module
 from switch_core.transport import postgres as postgres_module
 from switch_core.transport.cursors import FromHead
 from switch_core.transport.ephemeral import EphemeralBus
@@ -555,7 +556,7 @@ class TestTheParticipantMessageObserver:
         registry = MetricsRegistry()
         install(registry)
         monkeypatch.setattr(
-            postgres_module, "_observer_failures", WarningThrottle(60.0)
+            observer_module, "_observer_failures", WarningThrottle(60.0)
         )
         async with session_factory() as session:
             room_id, transport_room_id, client_id, user_id = await _make_room(session)
@@ -2418,13 +2419,12 @@ class TestBeingRemovedFromARoom:
         )
 
         await asyncio.wait_for(kicked.wait(), timeout=5)
-        # Let the rest of the startup path run and decide what to subscribe
-        # to. Bailing out the moment it subscribes keeps a regression fast to
-        # see rather than making every run wait out the window.
-        for _ in range(100):
-            await asyncio.sleep(0.01)
-            if room_id in removed._watching:
-                break
+        # The startup read holds this lock until it has decided what to
+        # subscribe to. Polling `_watching` instead caught the room's claim,
+        # which is taken before the membership read and released after it.
+        async with asyncio.timeout(5):
+            async with removed._reading_rooms:
+                pass
         assert room_id not in removed._watching
         assert room_id not in removed._cursors
 

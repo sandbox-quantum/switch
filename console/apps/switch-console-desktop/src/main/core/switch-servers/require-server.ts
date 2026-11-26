@@ -28,8 +28,8 @@ export function hostUnreachable(server: SwitchServer): HostUnreachableError | nu
  * Resolve a server and refuse to touch its gateway while the host it is managed
  * on is unreachable (CHOO-1780). `gatewayFetch` enforces the same rule at the
  * transport, so this is for the paths that reach the gateway some other way —
- * sign-in and the dashboard window — and for failing before the side effects a
- * write would otherwise start.
+ * sign-in and opening a dashboard page — and for failing before the side
+ * effects a write would otherwise start.
  */
 export async function requireReachableServer(serverId: string): Promise<SwitchServer> {
   const server = await requireServer(serverId);

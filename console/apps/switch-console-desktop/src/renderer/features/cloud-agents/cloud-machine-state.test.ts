@@ -7,6 +7,7 @@ const sleepingMachine: CloudMachine = {
   state: 'stopped',
   desired_state: 'stopped',
   stop_reason: 'idle',
+  stopped_by_admin: false,
   sleeping: true,
   revision: 5,
   instance_type: 'c7i.2xlarge',
@@ -286,5 +287,38 @@ describe('isMachineAsleep', () => {
     ['running', machine(running), false],
   ])('%s', (_name, input, asleep) => {
     expect(isMachineAsleep(input, NOW)).toBe(asleep);
+  });
+});
+
+describe('a machine an administrator stopped', () => {
+  it.each([
+    ['stopped', machine({ ...ownerStopped, stopped_by_admin: true })],
+    [
+      'isolated, in error',
+      machine({
+        ...ownerStopped,
+        stopped_by_admin: true,
+        state: 'error',
+        error_code: 'machine_needs_attention',
+      }),
+    ],
+    [
+      'retained',
+      machine({
+        state: 'retained',
+        desired_state: 'retained',
+        stop_reason: null,
+        stopped_by_admin: true,
+      }),
+    ],
+  ])('is shown as held and offers nothing while %s', (_name, input) => {
+    const shown = present(input);
+    expect(shown.label).toBe('Stopped by an administrator');
+    expect(shown.problem).toBe(
+      'A server administrator stopped the machine. Contact them to have it released.'
+    );
+    expect(shown.actions).toEqual([]);
+    expect(shown.retainUntil).toBeNull();
+    expect(isMachineAsleep(input, NOW)).toBe(false);
   });
 });

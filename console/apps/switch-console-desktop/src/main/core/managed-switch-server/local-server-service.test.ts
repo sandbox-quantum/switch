@@ -28,8 +28,8 @@ vi.mock('@shared/app-identity', async (importOriginal) => ({
 vi.mock('@main/lib/events', () => ({ events: { emit: m.emit } }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock('@main/core/telemetry/managed-server', () => ({
-  reportManagedServerOutcome: vi.fn(),
-  reportManagedServerStart: vi.fn(),
+  reportManagedServerOutcome: telemetry.outcome,
+  reportManagedServerStart: telemetry.start,
   reportManagedServerStartThrew: vi.fn(),
 }));
 vi.mock('@main/core/switch-servers/delete-server-agents', () => ({
@@ -70,6 +70,15 @@ vi.mock('./deployed-version', () => ({
       : { deployedVersion: null, drift: null },
 }));
 vi.mock('./telemetry-consent', () => ({ readDeployedTelemetry: vi.fn() }));
+const launch = vi.hoisted(() => ({
+  read: vi.fn(async () => false),
+  write: vi.fn(async () => {}),
+}));
+vi.mock('./start-at-launch', () => ({
+  readStartAtLaunch: launch.read,
+  writeStartAtLaunch: launch.write,
+}));
+const telemetry = vi.hoisted(() => ({ outcome: vi.fn(), start: vi.fn() }));
 vi.mock('./managed-upgrade', async (importOriginal) => ({
   ...(await importOriginal<typeof ManagedUpgrade>()),
   readUpgradeJournal: m.journal,
@@ -95,17 +104,11 @@ vi.mock('./paths', () => ({
   localServerBundleRoot: () => null,
 }));
 const native = vi.hoisted(() => ({
-  start: vi.fn<
-    (opts: unknown) => Promise<{
-      result: StartLocalServerResult;
-      bringUpMattermost: ((onProgress: (m: string) => void) => Promise<void>) | null;
-    }>
-  >(),
+  start: vi.fn<(opts: unknown) => Promise<StartLocalServerResult>>(),
   stop: vi.fn(async () => {}),
   reset: vi.fn(async () => {}),
   running: vi.fn(async () => false),
   deployed: vi.fn(),
-  launcher: vi.fn(),
   discard: vi.fn(async () => {}),
   failureLine: vi.fn(async (): Promise<string | null> => null),
 }));
@@ -120,7 +123,6 @@ vi.mock('./native/native-stack', () => ({
   readNativeDeployedVersion: native.deployed,
   readNativeTelemetry: vi.fn(async () => ({ known: true, enabled: false })),
   readNativeAdminPages: vi.fn(async () => 'served'),
-  nativeMattermostLauncher: native.launcher,
   discardNativeData: native.discard,
   nativeCoreFailureLine: native.failureLine,
 }));
@@ -131,15 +133,6 @@ const move = vi.hoisted(() => ({
 vi.mock('./native/migrate-from-docker', () => ({
   exportDockerStack: move.export,
   moveBlockedReason: move.blocked,
-}));
-const mattermost = vi.hoisted(() => ({
-  write: vi.fn(async () => {}),
-  stop: vi.fn(async () => {}),
-}));
-vi.mock('./native/mattermost', () => ({
-  readMattermostEnabled: async () => null,
-  writeMattermostEnabled: mattermost.write,
-  stopMattermost: mattermost.stop,
 }));
 
 const { LocalServerService } = await import('./local-server-service');
@@ -182,11 +175,138 @@ beforeEach(() => {
   runtime.read.mockResolvedValue('docker');
   native.running.mockResolvedValue(false);
   native.deployed.mockResolvedValue({ kind: 'absent' });
-  native.start.mockResolvedValue({ result: started, bringUpMattermost: null });
+  native.start.mockResolvedValue(started);
   native.failureLine.mockResolvedValue(null);
   watch.health.mockResolvedValue(true);
   // Docker servers stay on Docker unless a test is about moving them.
   move.blocked.mockResolvedValue('not moved in this test');
+  // Most tests are about a server the boot finds as it is; starting it at
+  // launch has tests of its own.
+  launch.read.mockResolvedValue(false);
+});
+
+it('starts a server the last quit stopped when the app opens, without switching to it', async () => {
+  m.running.mockResolvedValue(false);
+  launch.read.mockResolvedValue(true);
+  const service = new LocalServerService();
+  await boot(service);
+
+  expect(launch.read).toHaveBeenCalledWith('/data/local-switch-server');
+  expect(m.start).toHaveBeenCalledOnce();
+  expect(m.start).toHaveBeenCalledWith(expect.objectContaining({ activate: false }));
+  expect(service.getStatus()).toMatchObject({ phase: 'running', upgrade: null });
+  await expect(service.ensureReady('Local')).resolves.toBeUndefined();
+  // Nobody pressed Start: counted apart from one someone asked for.
+  expect(telemetry.start).toHaveBeenCalledWith('local', 'automatic', expect.anything());
+});
+
+it('leaves a server stopped from the app stopped when the app opens', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  launch.read.mockResolvedValue(false);
+  const service = new LocalServerService();
+  await boot(service);
+
+  expect(m.start).not.toHaveBeenCalled();
+  expect(service.getStatus().phase).toBe('stopped');
+});
+
+it('leaves the server stopped, and says why in the log, when it cannot tell whether to start it', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  launch.read.mockRejectedValue(new Error('start-at-launch.json is not JSON'));
+  const { log } = await import('@main/lib/logger');
+  const service = new LocalServerService();
+  await boot(service);
+
+  expect(m.start).not.toHaveBeenCalled();
+  expect(service.getStatus()).toMatchObject({ phase: 'stopped', checked: true });
+  expect(log.error).toHaveBeenCalledWith(
+    expect.stringContaining('could not read whether to start at launch'),
+    { error: 'start-at-launch.json is not JSON' }
+  );
+});
+
+it('remembers a Stop across launches, and the next start undoes it', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  m.start.mockResolvedValue(started);
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.stop();
+  expect(launch.write).toHaveBeenLastCalledWith('/data/local-switch-server', false);
+  expect(telemetry.outcome).toHaveBeenCalledWith('stop', 'local', 'success');
+
+  await service.start();
+  expect(launch.write).toHaveBeenLastCalledWith('/data/local-switch-server', true);
+  expect(telemetry.start).toHaveBeenLastCalledWith('local', 'user', started);
+});
+
+it('stops the server at quit, to start again at the next launch, without counting it as a stop', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  await boot(service);
+  expect(service.getStatus().phase).toBe('running');
+
+  await service.stopForQuit();
+
+  expect(m.stop).toHaveBeenCalledOnce();
+  expect(service.getStatus().phase).toBe('stopped');
+  expect(launch.write).not.toHaveBeenCalled();
+  expect(telemetry.outcome).not.toHaveBeenCalled();
+  expect(m.record).toHaveBeenCalledWith('stopped', null);
+});
+
+it('stops a native server at quit through its own stop', async () => {
+  runtime.read.mockResolvedValue('native');
+  native.running.mockResolvedValue(true);
+  native.deployed.mockResolvedValue({ kind: 'deployed', version: '0.11.0' });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.stopForQuit();
+
+  expect(native.stop).toHaveBeenCalledOnce();
+  expect(m.stop).not.toHaveBeenCalled();
+});
+
+it('waits out a start in flight at quit, then stops what it brought up', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  let finish: (result: StartLocalServerResult) => void = () => {};
+  let signal: AbortSignal | null = null;
+  m.start.mockImplementationOnce(
+    (opts) =>
+      new Promise((resolve) => {
+        signal = opts.signal;
+        finish = resolve;
+      })
+  );
+  const service = new LocalServerService();
+  await service.initialize();
+  void service.start();
+  await vi.waitFor(() => expect(m.start).toHaveBeenCalledOnce());
+
+  const quit = service.stopForQuit();
+  expect(signal!.aborted).toBe(true);
+  expect(m.stop).not.toHaveBeenCalled();
+  finish(started);
+  await quit;
+
+  expect(m.stop).toHaveBeenCalledOnce();
+  expect(service.getStatus().phase).toBe('stopped');
+});
+
+it('leaves a stopped server alone at quit', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.stopForQuit();
+
+  expect(m.stop).not.toHaveBeenCalled();
+  expect(native.stop).not.toHaveBeenCalled();
 });
 
 it('upgrades a running server that is behind at boot, without switching to it', async () => {
@@ -414,7 +534,7 @@ it('moves only the service on the port that was taken, then starts', async () =>
   m.running.mockResolvedValue(false);
   m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
   m.start.mockResolvedValue(started);
-  m.ports.mockResolvedValue({ gateway: 8000, api: 8001, mattermost: 8065, postgres: 5432 });
+  m.ports.mockResolvedValue({ gateway: 8000, api: 8001, postgres: 5432 });
   const service = new LocalServerService();
   await boot(service);
 
@@ -422,14 +542,13 @@ it('moves only the service on the port that was taken, then starts', async () =>
   expect(m.remember).toHaveBeenCalledWith(expect.anything(), {
     gateway: 51234,
     api: 8001,
-    mattermost: 8065,
     postgres: 5432,
   });
   expect(m.start).toHaveBeenCalledOnce();
 });
 
 it('refuses to move a port the server does not use', async () => {
-  m.ports.mockResolvedValue({ gateway: 8000, api: 8001, mattermost: 8065, postgres: 5432 });
+  m.ports.mockResolvedValue({ gateway: 8000, api: 8001, postgres: 5432 });
   const service = new LocalServerService();
   await expect(service.useAnotherPort(9999)).rejects.toThrow('port 9999');
   expect(m.remember).not.toHaveBeenCalled();
@@ -530,93 +649,6 @@ it('moves a Docker server to native when it is reset', async () => {
   expect(service.getStatus()).toMatchObject({ phase: 'stopped', runtime: 'native' });
 });
 
-it('brings Mattermost up after the start has returned, and says so when it fails', async () => {
-  runtime.read.mockResolvedValue('native');
-  let fail: (error: Error) => void = () => {};
-  native.start.mockResolvedValue({
-    result: started,
-    bringUpMattermost: () =>
-      new Promise<void>((_resolve, reject) => {
-        fail = reject;
-      }),
-  });
-  const service = new LocalServerService();
-  await boot(service);
-
-  await expect(service.start()).resolves.toEqual(started);
-  expect(service.getStatus()).toMatchObject({ phase: 'running', mattermostState: 'starting' });
-
-  fail(new Error('Docker is not available'));
-  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('failed'));
-  expect(service.getStatus()).toMatchObject({
-    phase: 'running',
-    notice: 'The server is running, but Mattermost could not be set up: Docker is not available',
-  });
-});
-
-it('reports Mattermost running once it is up', async () => {
-  runtime.read.mockResolvedValue('native');
-  native.start.mockResolvedValue({ result: started, bringUpMattermost: async () => {} });
-  const service = new LocalServerService();
-  await boot(service);
-
-  await service.start();
-  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('running'));
-});
-
-it('turns Mattermost on for a running server without restarting it', async () => {
-  runtime.read.mockResolvedValue('native');
-  native.running.mockResolvedValue(true);
-  native.deployed.mockResolvedValue({ kind: 'deployed', version: '0.11.0', source: 'env-file' });
-  const bringUp = vi.fn(async () => {});
-  native.launcher.mockResolvedValue(bringUp);
-  const service = new LocalServerService();
-  await boot(service);
-
-  await service.setMattermost(true);
-
-  expect(native.start).not.toHaveBeenCalled();
-  expect(mattermost.write).toHaveBeenCalledWith('/data/local-switch-server', true);
-  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('running'));
-  expect(bringUp).toHaveBeenCalledOnce();
-
-  await service.setMattermost(false);
-  expect(mattermost.stop).toHaveBeenCalledWith(expect.anything(), false);
-  expect(service.getStatus()).toMatchObject({ phase: 'running', mattermostState: 'off' });
-});
-
-it('brings up a Mattermost that failed at start when it is turned on again', async () => {
-  runtime.read.mockResolvedValue('native');
-  native.start.mockResolvedValue({
-    result: started,
-    bringUpMattermost: () =>
-      Promise.reject(new Error('Mattermost needs Docker, which is not available.')),
-  });
-  const bringUp = vi.fn(async () => {});
-  native.launcher.mockResolvedValue(bringUp);
-  const service = new LocalServerService();
-  await boot(service);
-  await service.start();
-  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('failed'));
-
-  await service.setMattermost(true);
-
-  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('running'));
-  expect(bringUp).toHaveBeenCalledOnce();
-  expect(service.getStatus()).toMatchObject({ phase: 'running', notice: null });
-});
-
-it('says Mattermost is off when a native server starts without it', async () => {
-  runtime.read.mockResolvedValue('native');
-  native.start.mockResolvedValue({ result: started, bringUpMattermost: null });
-  const service = new LocalServerService();
-  await boot(service);
-
-  await service.start();
-
-  expect(service.getStatus()).toMatchObject({ phase: 'running', mattermostState: 'off' });
-});
-
 const exported = { dir: '/data/backups/moved', dumps: [], deployedVersion: '0.11.0' };
 
 it('moves a Docker server off Docker on its own at the next start, keeping its data', async () => {
@@ -630,9 +662,7 @@ it('moves a Docker server off Docker on its own at the next start, keeping its d
   await expect(service.start()).resolves.toEqual(started);
 
   expect(move.export).toHaveBeenCalledOnce();
-  expect(native.start).toHaveBeenCalledWith(
-    expect.objectContaining({ importFrom: exported, mattermost: true })
-  );
+  expect(native.start).toHaveBeenCalledWith(expect.objectContaining({ importFrom: exported }));
   expect(m.start).not.toHaveBeenCalled();
   expect(runtime.write).toHaveBeenCalledWith('/data/local-switch-server', 'native');
   expect(service.getStatus()).toMatchObject({ phase: 'running', runtime: 'native' });
@@ -776,10 +806,21 @@ it('notices a native server whose switch-core has exited, and says why', async (
   );
 });
 
-it('gives no reason for a killed server rather than its last ordinary log line', async () => {
+it('says how a killed server exited', async () => {
   const service = await bootRunningNative();
   native.running.mockResolvedValue(false);
-  native.failureLine.mockResolvedValue('INFO [uvicorn.access] "GET /gateway/auth/config" 200');
+  native.failureLine.mockResolvedValue('exited with code 0xC000013A');
+  await service.watch();
+
+  expect(service.getStatus().error).toMatch(
+    /^switch-core stopped unexpectedly: exited with code 0xC000013A \(full log: .*switch-core\.log\)$/
+  );
+});
+
+it('gives no reason when nothing says why the server stopped', async () => {
+  const service = await bootRunningNative();
+  native.running.mockResolvedValue(false);
+  native.failureLine.mockResolvedValue(null);
   await service.watch();
 
   expect(service.getStatus().error).toMatch(
@@ -842,10 +883,7 @@ it('tells a Docker server whose core container is gone from one Docker cannot be
 
 it('leaves a server alone while one of its own operations is running', async () => {
   const service = await bootRunningNative();
-  let finish: (value: {
-    result: StartLocalServerResult;
-    bringUpMattermost: null;
-  }) => void = () => {};
+  let finish: (value: StartLocalServerResult) => void = () => {};
   native.start.mockImplementation(
     () =>
       new Promise((resolve) => {
@@ -860,7 +898,7 @@ it('leaves a server alone while one of its own operations is running', async () 
   expect(watch.health).not.toHaveBeenCalled();
 
   native.running.mockResolvedValue(true);
-  finish({ result: started, bringUpMattermost: null });
+  finish(started);
   await restart;
   expect(service.getStatus().phase).toBe('running');
 });

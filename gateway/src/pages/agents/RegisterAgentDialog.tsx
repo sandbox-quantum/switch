@@ -39,7 +39,7 @@ export default function RegisterAgentDialog({
   onClose,
   onRegistered,
 }: Props) {
-  const { data: knownTypes } = useKnownAgentTypes();
+  const { data: knownTypes, error: typesError } = useKnownAgentTypes();
 
   const [selectedKey, setSelectedKey] = useState("");
   const selectedKind: SelectedKind =
@@ -219,6 +219,11 @@ export default function RegisterAgentDialog({
           ) : (
             <>
               {error && <Alert severity="error">{error}</Alert>}
+              {typesError && (
+                <Alert severity="error">
+                  Couldn't load the known agent types, so only an external agent can be added: {typesError}
+                </Alert>
+              )}
               <TextField
                 select
                 label="Type"

@@ -7,9 +7,11 @@ being continuously present: a stream rejected at the room claim and retried,
 and a stream whose heartbeat lapsed (`HEARTBEAT_TTL_SECONDS`) closing itself so
 the client reopens. Per connection, both read as a session every few seconds.
 
-So this reports on the **agent**: a session begins when one that had no live
-connection acquires its first, and ends only once it has had none for
-`_RECONNECT_GRACE_SECONDS`. The duration is the whole span.
+So this reports on the **agent**: it comes online when one that had no live
+connection acquires its first, and goes offline only once it has had none for
+`_RECONNECT_GRACE_SECONDS`. The grace is how long it waits to be sure, not part
+of the time online: the offline event is dated, and the time online measured,
+to the moment the last connection closed.
 """
 
 from __future__ import annotations
@@ -17,16 +19,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
+    UNRECORDED,
     AgentConnection,
     AgentConnectionRegistry,
-    CloseCode,
+    Closure,
 )
 from switch_core.db.models import Agent
 from switch_core.telemetry import TelemetryService, emit_safely
-from switch_core.telemetry.catalogue import PropertyValue
+from switch_core.telemetry.service import emit_safely_at
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 
 logger = logging.getLogger(__name__)
@@ -35,11 +39,27 @@ logger = logging.getLogger(__name__)
 # triggered by that TTL lapsing. Too tight and every lapse is a new session.
 _RECONNECT_GRACE_SECONDS = HEARTBEAT_TTL_SECONDS * 4
 
-_SESSION_END_REASONS: dict[CloseCode, str] = {
-    "heartbeat_lapsed": "heartbeat_lapsed",
-    "taken_over": "replaced",
-    "closed": "error",
-}
+
+def end_reason(closure: Closure | None) -> str:
+    """Why an agent went offline, as `agent_disconnected` reports it.
+
+    `normal` for a close Switch made on purpose: the agent deleted, its key
+    re-issued, it moved onto an agent controller, its controller revoked.
+    `room_claimed` for a stream closed because a room it declared could not be
+    served to it. `replaced` for another stream taking the connection over,
+    `heartbeat_lapsed` for a client that stopped beating, and `error` for a
+    connection that could not be recorded, or that closed with no reason at
+    all, which should not happen.
+    """
+    if closure is None or closure is UNRECORDED:
+        return "error"
+    if closure.code == "heartbeat_lapsed":
+        return "heartbeat_lapsed"
+    if closure.code in ("taken_over", "launch_superseded"):
+        return "replaced"
+    if closure.room_id is not None:
+        return "room_claimed"
+    return "normal"
 
 
 class _Session:
@@ -54,7 +74,8 @@ class _Session:
 
 
 class SessionReporter:
-    """Reports agent sessions, coalescing the connections they are made of."""
+    """Reports agents coming online and going offline, coalescing the
+    connections that make up each stretch online."""
 
     def __init__(
         self,
@@ -84,16 +105,8 @@ class SessionReporter:
 
         runtime = normalise_known_agent_type(agent.metadata_)
         self._sessions[conn.agent_id] = _Session(time.monotonic(), runtime)
-        # Both names until the old ones are retired: `agent_session_*` and
-        # `first_session_started` are connections, which the new names say.
-        emit_safely(
-            self._telemetry, "agent_session_started", {"known_agent_type": runtime}
-        )
         emit_safely(self._telemetry, "agent_connected", {"known_agent_type": runtime})
         if self._telemetry is not None:
-            await self._telemetry.emit_milestone(
-                "first_session_started", known_agent_type=runtime
-            )
             await self._telemetry.emit_milestone(
                 "first_agent_connected", known_agent_type=runtime
             )
@@ -112,18 +125,20 @@ class SessionReporter:
             # Still connected by another stream; the session did not end.
             return
 
-        reason = (
-            "error" if conn.closure is None else _SESSION_END_REASONS[conn.closure.code]
-        )
+        reason = end_reason(conn.closure)
+        closed = time.monotonic()
+        closed_at = datetime.now(UTC)
         try:
             session.ending = asyncio.get_running_loop().create_task(
-                self._end_after_grace(conn.agent_id, reason)
+                self._end_after_grace(conn.agent_id, reason, closed, closed_at)
             )
         except RuntimeError:
             # Synchronous teardown. The grace period is an optimisation.
-            self._report_end(conn.agent_id, reason)
+            self._report_end(conn.agent_id, reason, closed, closed_at)
 
-    async def _end_after_grace(self, agent_id: str, reason: str) -> None:
+    async def _end_after_grace(
+        self, agent_id: str, reason: str, closed: float, closed_at: datetime
+    ) -> None:
         try:
             await asyncio.sleep(_RECONNECT_GRACE_SECONDS)
         except asyncio.CancelledError:
@@ -134,18 +149,25 @@ class SessionReporter:
             if session is not None:
                 session.ending = None
             return
-        self._report_end(agent_id, reason)
+        self._report_end(agent_id, reason, closed, closed_at)
 
-    def _report_end(self, agent_id: str, reason: str) -> None:
+    def _report_end(
+        self, agent_id: str, reason: str, closed: float, closed_at: datetime
+    ) -> None:
+        """`closed` and `closed_at` are when the last connection closed, on
+        the monotonic clock for the duration and the wall clock for the date."""
         session = self._sessions.pop(agent_id, None)
         if session is None:
             return
-        properties: dict[str, PropertyValue] = {
-            "duration_seconds": max(time.monotonic() - session.started_at, 0.0),
-            "reason": reason,
-        }
-        emit_safely(self._telemetry, "agent_session_ended", properties)
-        emit_safely(self._telemetry, "agent_disconnected", properties)
+        emit_safely_at(
+            self._telemetry,
+            "agent_disconnected",
+            closed_at,
+            {
+                "duration_seconds": max(closed - session.started_at, 0.0),
+                "reason": reason,
+            },
+        )
 
     async def aclose(self) -> None:
         """Cancel any pending ends at shutdown, without reporting them: every

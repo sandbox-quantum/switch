@@ -11,6 +11,7 @@ import {
   type ProviderSendTurnInput,
   type ProviderSession,
   ProviderSessionError,
+  SteerNotSentError,
   ProviderConversationUnavailableError,
   type ProviderSessionStartInput,
   type ProviderTurnStartResult,
@@ -273,7 +274,9 @@ async function defaultModelFor(
 }
 
 /**
- * The sandbox a thread runs in. Auto mode never runs unsandboxed: in
+ * The sandbox a thread runs in: the configured one (the host's own, else the
+ * agent's or a managed default, `prepareCodexSessionHome`), only ever
+ * tightened. Auto mode never runs unsandboxed: in
  * `danger-full-access` nothing asks for approval, so Codex's automatic review
  * would never see a request and auto would quietly be full access.
  */
@@ -578,11 +581,19 @@ export class CodexAdapter implements ProviderAdapter {
     const codexInput = toCodexInput(input.text, input.attachments);
 
     const active = state.activeNativeTurnId;
+    if (
+      input.expectedTurnId &&
+      (!active || state.turnIdByNative.get(active) !== input.expectedTurnId)
+    )
+      throw new SteerNotSentError('The authorized turn is no longer running.');
     if (active) {
       const steered = await this.trySteer(state, active, codexInput);
       if (steered) {
         return { turnId: input.turnId, steeredInto: state.turnIdByNative.get(steered) ?? steered };
       }
+      // A steer is for one turn only: the host queues it rather than have
+      // Codex start it as a turn the host is not tracking.
+      if (input.expectedTurnId) throw new SteerNotSentError('Codex refused to steer the turn.');
     }
 
     state.unboundTurnIds.push(input.turnId);

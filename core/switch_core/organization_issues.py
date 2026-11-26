@@ -69,7 +69,7 @@ async def organization_wide_issues(
         issues.append(
             OrganizationIssue(OrganizationIssueKind.NO_ORG_ADMIN, None, None, [])
         )
-    if await _directory_organization_deleted(session, organization_id):
+    if await directory_organization_deleted(session, organization_id):
         issues.append(
             OrganizationIssue(
                 OrganizationIssueKind.DIRECTORY_ORGANIZATION_DELETED, None, None, []
@@ -146,7 +146,7 @@ async def _stranded_agents(
     )
 
 
-async def _directory_organization_deleted(
+async def directory_organization_deleted(
     session: AsyncSession, organization_id: str
 ) -> bool:
     """Whether the WorkOS organization this one follows now was reported
@@ -159,6 +159,15 @@ async def _directory_organization_deleted(
     )
     if linked is None:
         return False
+    return await workos_organization_deleted(session, organization_id, linked)
+
+
+async def workos_organization_deleted(
+    session: AsyncSession, organization_id: str, workos_organization_id: str
+) -> bool:
+    """Whether `workos_organization_id`, the WorkOS organization
+    `organization_id` follows, was reported deleted, for a caller that has
+    already read the link."""
     found = await session.scalar(
         select(OrganizationAuditEvent.id)
         .where(
@@ -166,7 +175,8 @@ async def _directory_organization_deleted(
             OrganizationAuditEvent.action == OrganizationAuditAction.DIRECTORY_CONFLICT,
             OrganizationAuditEvent.details["kind"].astext
             == OrganizationIssueKind.DIRECTORY_ORGANIZATION_DELETED,
-            OrganizationAuditEvent.details["workos_organization_id"].astext == linked,
+            OrganizationAuditEvent.details["workos_organization_id"].astext
+            == workos_organization_id,
         )
         .limit(1)
     )

@@ -19,9 +19,10 @@ import {
 } from '@renderer/lib/ui/input-group';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
-import type {
-  ConnectionAgent,
-  ConnectionCatalogEntry,
+import {
+  type ConnectionAgent,
+  type ConnectionCatalogEntry,
+  githubThroughApp,
 } from '@shared/core/switch-servers/connection-catalog';
 import { agentLinkFor, openAgentConnections } from './agent-links';
 import {
@@ -43,8 +44,11 @@ import {
   addableAgents,
   agentsSummary,
   agentsUnlistedText,
+  noAddableAgentsText,
   noAgentsText,
   offersAddAgent,
+  staleGrantsText,
+  usesService,
 } from './grant-agents';
 
 /**
@@ -79,7 +83,8 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
   const remote = useWorkspaceAgents(workspaceId);
   const iconFor = (agentId: string) =>
     remote.data?.find((agent) => agent.id === agentId)?.iconUrl ?? null;
-  const usedBy = agents.data?.filter((agent) => agent.granted) ?? [];
+  const usedBy = agents.data?.filter(usesService) ?? [];
+  const stale = agents.data?.filter((agent) => agent.granted && !usesService(agent)) ?? [];
   const { navigate } = useNavigate();
   const managed = useManagedAgents(serverId);
   const local = agentsStore.agentsInWorkspace(workspaceId);
@@ -214,6 +219,14 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
           })}
         </div>
       )}
+      {stale.length > 0 && (
+        <p className="text-xs text-foreground-muted">
+          {staleGrantsText(
+            stale.map((agent) => agent.name),
+            name
+          )}
+        </p>
+      )}
       {removal.error && (
         <p role="alert" className="text-xs text-destructive">
           Not turned off — {removal.error}
@@ -240,7 +253,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
           Turn it on for an agent from the agent&apos;s Connections.
         </p>
       )}
-      {connection.slug === 'github' && usedBy.length > 0 && (
+      {githubThroughApp(connection) && usedBy.length > 0 && (
         <p className="text-xs text-foreground-muted">
           Each agent has its own repositories and access, changed from its Connections.
         </p>
@@ -273,7 +286,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
   notice: string | null;
 }) {
   const name = connection.name;
-  const isGitHub = connection.slug === 'github';
+  const isGitHub = githubThroughApp(connection);
   const reload = useReloadConnectors(workspaceId);
   const github = useGitHubConnection(workspaceId, isGitHub);
   const [choice, setChoice] = useState<GitHubGrantChoice | null>(null);
@@ -287,6 +300,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
   const [warning, setWarning] = useState<string | null>(null);
   const candidates = addableAgents(agents, filter);
   const query = filter.trim();
+  const noAddable = noAddableAgentsText(agents, name, query);
   const reach = connectedGitHub(github.data);
   const resources = isGitHub ? (choice ? githubGrantResources(choice) : null) : {};
   const noRepositories = reach !== null && reach.installations.length === 0;
@@ -323,6 +337,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
         <GitHubAddAgentChoice
           github={reach}
           choice={choice}
+          readOnlyReason={connection.read_only_reason}
           onChange={setChoice}
           choosing={choosing}
           onChoosingChange={setChoosing}
@@ -379,11 +394,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
       )}
 
       {candidates.length === 0 ? (
-        <p className="px-1 py-2 text-sm text-foreground-muted">
-          {query === ''
-            ? `Every one of your agents already uses ${name}.`
-            : `No agent here matches “${query}”.`}
-        </p>
+        noAddable !== null && <p className="px-1 py-2 text-sm text-foreground-muted">{noAddable}</p>
       ) : (
         <div className="divide-y divide-border overflow-hidden rounded-[10px] border border-border">
           {candidates.map((agent) => {

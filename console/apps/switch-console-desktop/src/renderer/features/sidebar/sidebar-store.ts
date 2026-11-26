@@ -189,9 +189,6 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   filterBridgeTypes = observable.set<string>();
   filterRoomHasLiveSession = false;
 
-  /** Whether the first-run setup checklist is collapsed to its header row. */
-  onboardingChecklistCollapsed = false;
-
   /** Whether to hide the provider mark beside an agent's name, in the sidebar
    * and in search alike — a reader who does not want to be told what an agent
    * runs on does not want it in one list and not the other. Stated as "hide" so
@@ -481,7 +478,6 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
       roomSortBy: this.roomSortBy,
       filterBridgeTypes: [...this.filterBridgeTypes],
       filterRoomHasLiveSession: this.filterRoomHasLiveSession,
-      onboardingChecklistCollapsed: this.onboardingChecklistCollapsed,
       hideProviderMark: this.hideProviderMark,
     };
   }
@@ -531,16 +527,9 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
     if (snapshot.filterRoomHasLiveSession !== undefined) {
       this.filterRoomHasLiveSession = snapshot.filterRoomHasLiveSession;
     }
-    if (snapshot.onboardingChecklistCollapsed !== undefined) {
-      this.onboardingChecklistCollapsed = snapshot.onboardingChecklistCollapsed;
-    }
     if (snapshot.hideProviderMark !== undefined) {
       this.hideProviderMark = snapshot.hideProviderMark;
     }
-  }
-
-  toggleOnboardingChecklistCollapsed(): void {
-    this.onboardingChecklistCollapsed = !this.onboardingChecklistCollapsed;
   }
 
   setHideProviderMark(hidden: boolean): void {

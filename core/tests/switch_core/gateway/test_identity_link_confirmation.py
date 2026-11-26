@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.models import KnownUserLabel
 from switch_core.db.audit import AuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -822,7 +823,59 @@ class TestCancelling:
         assert refused.value.status_code == 404
 
 
+class _NoBridges:
+    """No bridge running: accounts are named by their stored handle."""
+
+    def get_adapter(self, _bridge_id: str) -> None:
+        return None
+
+
+_NO_BRIDGES = _NoBridges()
+
+
+class _MadeUpHandles:
+    """A running bridge whose accounts have no handle of their own (a
+    Telegram account without a username)."""
+
+    def get_adapter(self, _bridge_id: str) -> object:
+        return self
+
+    def known_user_label(
+        self, _external_user_id: str, _username: str
+    ) -> KnownUserLabel:
+        return KnownUserLabel(display_name="Ada L", has_handle=False)
+
+
 class TestListingYourLinks:
+    async def test_an_account_without_a_handle_is_listed_by_its_name(
+        self, world: _World
+    ) -> None:
+        """The list Console names your accounts from carries the name the
+        bridge gives each, so a made-up Telegram handle is not shown."""
+        async with world.session_factory() as session:
+            session.add(
+                ExternalUserClaim(
+                    external_user_id=world.account.id, user_id=world.ada.id
+                )
+            )
+            await session.commit()
+        await _claim(world, world.bob, for_user=world.ada, is_admin=True)
+
+        async with world.session_factory() as session:
+            linked = await my_identities(
+                session, _STORE, CollaborationBridgeStore(), world.ada, _MadeUpHandles()
+            )
+            stopped = await my_identities(
+                session, _STORE, CollaborationBridgeStore(), world.ada, _NO_BRIDGES
+            )
+
+        assert [(i.external_display_name, i.has_handle) for i in linked] == [
+            ("Ada L", False)
+        ]
+        assert [(i.external_display_name, i.has_handle) for i in stopped] == [
+            (world.account.external_username, True)
+        ]
+
     async def test_a_waiting_link_is_listed_apart_from_the_ones_that_count(
         self, world: _World
     ) -> None:
@@ -830,10 +883,15 @@ class TestListingYourLinks:
 
         async with world.session_factory() as session:
             linked = await my_identities(
-                session, _STORE, CollaborationBridgeStore(), world.ada
+                session, _STORE, CollaborationBridgeStore(), world.ada, _NO_BRIDGES
             )
             pending = await my_pending_identities(
-                session, _STORE, CollaborationBridgeStore(), UserStore(), world.ada
+                session,
+                _STORE,
+                CollaborationBridgeStore(),
+                UserStore(),
+                world.ada,
+                _NO_BRIDGES,
             )
 
         assert linked == []
@@ -853,14 +911,83 @@ class TestListingYourLinks:
 
         async with world.session_factory() as session:
             linked = await my_identities(
-                session, _STORE, CollaborationBridgeStore(), world.ada
+                session, _STORE, CollaborationBridgeStore(), world.ada, _NO_BRIDGES
             )
             pending = await my_pending_identities(
-                session, _STORE, CollaborationBridgeStore(), UserStore(), world.ada
+                session,
+                _STORE,
+                CollaborationBridgeStore(),
+                UserStore(),
+                world.ada,
+                _NO_BRIDGES,
             )
 
         assert [(i.id, i.verified) for i in linked] == [(world.account.id, False)]
         assert pending == []
+
+    async def test_a_link_says_when_it_started_counting(self, world: _World) -> None:
+        await _claim(world, world.ada)
+        await _verify(world, world.ada, _Adapter("U-ada"))
+        async with world.session_factory() as session:
+            confirmed = await _STORE.get_claim(session, world.account.id, world.ada.id)
+            linked = await my_identities(
+                session, _STORE, CollaborationBridgeStore(), world.ada, _NO_BRIDGES
+            )
+
+        assert confirmed is not None
+        assert [(i.verified, i.linked_at) for i in linked] == [
+            (True, confirmed.created_at)
+        ]
+
+    async def test_confirming_an_old_link_keeps_when_it_started_counting(
+        self, world: _World
+    ) -> None:
+        started = datetime.fromisoformat("2026-01-14T09:00:00+00:00")
+        async with world.session_factory() as session:
+            session.add(
+                ExternalUserClaim(
+                    external_user_id=world.account.id,
+                    user_id=world.ada.id,
+                    created_at=started,
+                )
+            )
+            await session.commit()
+        await _issue(world, world.ada)
+        await _verify(world, world.ada, _Adapter("U-ada"))
+
+        async with world.session_factory() as session:
+            linked = await my_identities(
+                session, _STORE, CollaborationBridgeStore(), world.ada, _NO_BRIDGES
+            )
+
+        assert [(i.verified, i.linked_at) for i in linked] == [(True, started)]
+
+    async def test_an_old_link_says_while_a_confirmation_waits_for_it(
+        self, world: _World
+    ) -> None:
+        async with world.session_factory() as session:
+            session.add(
+                ExternalUserClaim(
+                    external_user_id=world.account.id, user_id=world.ada.id
+                )
+            )
+            await session.commit()
+
+        async def waiting() -> list[bool]:
+            async with world.session_factory() as session:
+                linked = await my_identities(
+                    session, _STORE, CollaborationBridgeStore(), world.ada, _NO_BRIDGES
+                )
+            return [i.awaiting_confirmation for i in linked]
+
+        assert await waiting() == [False]
+        await _issue(world, world.ada)
+        assert await waiting() == [True]
+        async with world.session_factory() as session:
+            await _STORE.cancel_link_request(session, world.account, world.ada.id)
+            await session.commit()
+        # The request went (a wrong number tapped, say) and the link stayed.
+        assert await waiting() == [False]
 
     async def test_confirming_an_old_link_does_not_list_it_as_waiting(
         self, world: _World
@@ -876,7 +1003,12 @@ class TestListingYourLinks:
 
         async with world.session_factory() as session:
             pending = await my_pending_identities(
-                session, _STORE, CollaborationBridgeStore(), UserStore(), world.ada
+                session,
+                _STORE,
+                CollaborationBridgeStore(),
+                UserStore(),
+                world.ada,
+                _NO_BRIDGES,
             )
 
         assert pending == []
@@ -950,7 +1082,12 @@ class TestRequiringConfirmationForOlderLinks:
         async with world.session_factory() as session:
             assert await _STORE.claimant_ids(session, world.account.id) == []
             pending = await my_pending_identities(
-                session, _STORE, CollaborationBridgeStore(), UserStore(), world.ada
+                session,
+                _STORE,
+                CollaborationBridgeStore(),
+                UserStore(),
+                world.ada,
+                _NO_BRIDGES,
             )
         assert [(p.id, p.requested_by_name) for p in pending] == [
             (world.account.id, "bob")
