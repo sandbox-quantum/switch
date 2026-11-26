@@ -14,6 +14,7 @@ same files.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal, Self
 
@@ -77,6 +78,35 @@ class Platform(_StatusBody):
     os_version: str
 
 
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+MAX_SKILLS = 16
+MAX_SKILL_BYTES = 64 * 1024
+
+
+class SkillV1(_GatewayBody):
+    """A template/agent skill installed as `<name>/SKILL.md`."""
+
+    name: str
+    content: str
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_safe(cls, value: str) -> str:
+        if not _SKILL_NAME_RE.match(value):
+            raise ValueError(
+                "skill name must start with a lowercase letter or digit and "
+                "contain only lowercase letters, digits, '-' or '_' (max 64 chars)"
+            )
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def _content_fits(cls, value: str) -> str:
+        if len(value.encode()) > MAX_SKILL_BYTES:
+            raise ValueError(f"skill content must be at most {MAX_SKILL_BYTES} bytes")
+        return value
+
+
 class DefinitionV1(_GatewayBody):
     """The v1 agent definition, as a person's client submits it."""
 
@@ -86,6 +116,8 @@ class DefinitionV1(_GatewayBody):
     # `advanced_config`.
     advanced_config: dict[str, Any] = Field(default_factory=dict)
     instructions: str = ""
+    # Template/agent skills (`{name, content}`), installed as `<name>/SKILL.md`.
+    skills: list[SkillV1] = Field(default_factory=list)
     # The provider's own automatic review: safe actions run, risky ones still
     # ask. A body without it gets its provider's default for a new agent
     # (`_auto_mode_from_provider`); the False here only stands in for a body
@@ -112,6 +144,16 @@ class DefinitionV1(_GatewayBody):
             raise ValueError(
                 f"instructions must be at most {MAX_INSTRUCTIONS_BYTES} bytes"
             )
+        return value
+
+    @field_validator("skills")
+    @classmethod
+    def _skills_fit(cls, value: list[SkillV1]) -> list[SkillV1]:
+        if len(value) > MAX_SKILLS:
+            raise ValueError(f"skills must contain at most {MAX_SKILLS} entries")
+        names = [s.name for s in value]
+        if len(names) != len(set(names)):
+            raise ValueError("skill names must be unique")
         return value
 
     @model_validator(mode="after")
@@ -498,6 +540,7 @@ def assignment_entry(
             "model": definition.get("model"),
             "advanced_config": definition.get("advanced_config", {}),
             "instructions": definition.get("instructions", ""),
+            **({"skills": definition["skills"]} if definition.get("skills") else {}),
             "auto_mode": definition.get("auto_mode", False),
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),

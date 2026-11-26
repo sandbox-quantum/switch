@@ -150,15 +150,22 @@ def test_switch_buddy_puts_itself_in_the_rooms_it_creates():
 
 
 def test_switch_buddy_describes_the_default_addressing():
-    instructions = " ".join(
-        (_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split()
-    )
+    instructions = _buddy_and_playbook_words()
     assert "A new agent answers its owner and the owner's own agents" in instructions
     assert "A new agent answers only its owner" not in instructions
 
 
 def _buddy_words() -> str:
     return " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+
+
+def _buddy_and_playbook_words() -> str:
+    return " ".join(
+        [
+            _buddy_words(),
+            " ".join(_PLAYBOOK.read_text().split()),
+        ]
+    )
 
 
 def _playbook_table(heading: str) -> dict[str, list[str]]:
@@ -228,7 +235,7 @@ def test_switch_buddy_suggests_only_room_templates_switch_ships():
 
 
 def test_switch_buddy_offers_templates_for_a_new_room_and_confirms_first():
-    instructions = _buddy_words()
+    instructions = _buddy_and_playbook_words()
     assert (
         "Unless this chat already says what they work on, ask the work question first."
         in instructions
@@ -243,13 +250,15 @@ def test_switch_buddy_offers_templates_for_a_new_room_and_confirms_first():
 
 
 def test_switch_buddy_knows_both_home_chips_and_template_rooms_are_private():
-    instructions = _buddy_words()
+    instructions = _buddy_and_playbook_words()
     assert (
         '"Create a new room" and "Create a room for my team" send just that'
         in instructions
     )
     assert (
-        "or ran an official room template whose room came back private" in instructions
+        "from an official room template whose room came back private" in instructions
+        or "or ran an official room template whose room came back private"
+        in instructions
     )
 
 
@@ -257,7 +266,7 @@ def test_switch_buddy_never_loops_on_a_refused_room():
     """A run refused for lack of "can manage agents" falls back to building the
     room; one refused over their linked account offers linking or public, and
     is never retried into the same refusal."""
-    instructions = _buddy_words()
+    instructions = _buddy_and_playbook_words()
     assert "A refusal: say why, once, in plain words." in instructions
     # Every linked-account refusal from a private channel ends with these words.
     assert (
@@ -432,21 +441,38 @@ def test_switch_buddy_offers_choices_in_its_question_form():
 
 
 def test_every_playbook_section_switch_buddy_is_pointed_at_exists():
-    """switch-buddy fetches the playbook from the repository's main branch
-    when its instructions point at a section, so the path and each section
-    named must exist as written."""
+    """switch-buddy reads its playbook from its installed skill file
+    (`.switch/skills/switch-buddy-playbook/SKILL.md`, delivered via
+    `definition.skills` from the running server — never GitHub `main`), and
+    every section named in `AGENT.md` must exist as written."""
     text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
-    paths = re.findall(
-        r"`https://raw\.githubusercontent\.com/sandbox-quantum/switch/main/(\S+?PLAYBOOK\.md)`",
-        text,
+    assert "raw.githubusercontent.com" not in text
+    assert ".switch/skills/switch-buddy-playbook/SKILL.md" in text
+    assert "Never turn bypass (`auto_approve`) on for an existing agent" in text
+    assert "Never ask them to paste a token into this chat" in text
+    assert "never ask for an account-link code or post it yourself" in text
+    assert (
+        "A request made earlier in the chat is not a yes for granting a service" in text
     )
-    assert paths
-    for path in paths:
-        assert (_REPO / path).resolve() == _PLAYBOOK.resolve(), path
     headings = set(re.findall(r"^## (.+)$", _PLAYBOOK.read_text(), re.MULTILINE))
     named = set(re.findall(r'§ "([^"]+)"', text))
     assert len(named) >= 10
     assert named - headings == set()
+    # The compiled switch-buddy template ships PLAYBOOK.md as a template skill.
+    buddy_doc = yaml.safe_load(
+        next(
+            t for t in _agent_templates(True) if t.id == "official:switch-buddy"
+        ).content
+    )
+    buddy_agent = next(
+        r for r in buddy_doc["resources"].values() if r["type"] == "agent"
+    )
+    assert buddy_agent["skills"] == [
+        {
+            "name": "switch-buddy-playbook",
+            "content": _PLAYBOOK.read_text(encoding="utf-8"),
+        }
+    ]
 
 
 def test_switch_buddy_checks_the_services_an_agent_needs_before_proposing():

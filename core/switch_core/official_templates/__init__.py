@@ -132,9 +132,13 @@ def _strip_front_matter(text: str) -> str:
     return text
 
 
-def _with_instructions(document: str, instructions: str) -> str:
-    """The document with ``instructions`` written into each agent that has
-    none of its own."""
+def _with_instructions(
+    document: str,
+    instructions: str,
+    skills: list[dict[str, str]] | None = None,
+) -> str:
+    """The document with ``instructions`` (and optional template ``skills``)
+    written into each agent that has none of its own."""
     data: dict[str, Any] = yaml.safe_load(document)
     agents: list[dict[str, Any]] = []
     resources = data.get("resources")
@@ -151,6 +155,8 @@ def _with_instructions(document: str, instructions: str) -> str:
     for agent in agents:
         if not str(agent.get("instructions") or "").strip():
             agent["instructions"] = instructions
+        if skills and not agent.get("skills"):
+            agent["skills"] = skills
     return str(yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=1000))
 
 
@@ -162,7 +168,8 @@ def _document(slug: str) -> str:
 def document_in(folder: Path, agent_management: bool) -> str:
     """The document a template's folder serves: its ``template.yaml`` (or,
     without agent management, its ``template.console.yaml`` where it has
-    one), with ``AGENT.md`` written in as its agents' instructions."""
+    one), with ``AGENT.md`` written in as its agents' instructions and any
+    companion ``PLAYBOOK.md`` attached as a template skill."""
     console = folder / "template.console.yaml"
     path = (
         folder / "template.yaml"
@@ -173,8 +180,19 @@ def document_in(folder: Path, agent_management: bool) -> str:
     text = path.read_text(encoding="utf-8")
     if not instructions.exists():
         return text
+    skills: list[dict[str, str]] = []
+    playbook = folder / "PLAYBOOK.md"
+    if playbook.exists():
+        skills.append(
+            {
+                "name": f"{folder.name}-playbook",
+                "content": playbook.read_text(encoding="utf-8"),
+            }
+        )
     return _with_instructions(
-        text, _strip_front_matter(instructions.read_text(encoding="utf-8"))
+        text,
+        _strip_front_matter(instructions.read_text(encoding="utf-8")),
+        skills=skills or None,
     )
 
 

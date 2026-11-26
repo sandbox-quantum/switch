@@ -26,6 +26,7 @@ every revision of it released.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import AsyncIterator, Sequence
@@ -377,7 +378,9 @@ class TemplateUpdates:
                 continue
             if current[name] == new[name]:
                 fingerprints[name] = fingerprint(new[name])
-            elif fingerprints.get(name) == fingerprint(current[name]):
+            elif fingerprints.get(name) == fingerprint(current[name]) or (
+                name == "skills" and name not in fingerprints and current[name] is None
+            ):
                 changes[name] = new[name]
                 fingerprints[name] = fingerprint(new[name])
             else:
@@ -404,7 +407,9 @@ class TemplateUpdates:
     ) -> None:
         """Write `changes`, each only while the agent still has the value it
         was read with; `LostRace` when it no longer does."""
-        profile = {k: v for k, v in changes.items() if k != "instructions"}
+        profile = {
+            k: v for k, v in changes.items() if k not in {"instructions", "skills"}
+        }
         if profile:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 written = await session.execute(
@@ -429,13 +434,14 @@ class TemplateUpdates:
                     await self._protocol.update_bridge_identities(agent.id)
                 if {"icon_url", "display_name"} & profile.keys():
                     await self._protocol.agent_profile_changed(agent.id)
-        if "instructions" in changes and row is not None:
-            definition = DefinitionV1.model_validate(
-                {
-                    **stored_definition(row.definition),
-                    "instructions": changes["instructions"],
-                }
-            )
+        if ({"instructions", "skills"} & changes.keys()) and row is not None:
+            patched = dict(stored_definition(row.definition))
+            if "instructions" in changes:
+                patched["instructions"] = changes["instructions"]
+            if "skills" in changes:
+                raw_skills = changes["skills"]
+                patched["skills"] = json.loads(raw_skills) if raw_skills else []
+            definition = DefinitionV1.model_validate(patched)
             try:
                 async with tenant_session(self._session_factory, tenant_id) as session:
                     await self._management.patch_managed_agent(

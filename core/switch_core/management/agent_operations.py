@@ -263,6 +263,7 @@ class ManagementAgentOperations:
                         "model": spec.model,
                         "advanced_config": spec.advanced_config,
                         "instructions": spec.instructions,
+                        **({"skills": list(spec.skills)} if spec.skills else {}),
                         **(
                             {}
                             if spec.auto_mode is None

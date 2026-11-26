@@ -136,12 +136,33 @@ describe('received messages', () => {
           agent_id: 'a',
           revision: 1,
           desired_state: 'running',
-          definition: { ...definition, skills: [] },
+          definition: { ...definition, future_def_field: [] },
         },
       ],
     });
     expect(parsed).not.toHaveProperty('future_field');
-    expect(parsed.agents[0]!.definition).not.toHaveProperty('skills');
+    expect(parsed.agents[0]!.definition).not.toHaveProperty('future_def_field');
+    expect(parsed.agents[0]!.definition.skills).toBeUndefined();
+  });
+
+  it('parses template skills on an agent definition', () => {
+    const parsed = assignmentSchema.parse({
+      revision: 1,
+      agents: [
+        {
+          agent_id: 'a',
+          revision: 1,
+          desired_state: 'running',
+          definition: {
+            ...definition,
+            skills: [{ name: 'switch-buddy-playbook', content: '# Playbook\n' }],
+          },
+        },
+      ],
+    });
+    expect(parsed.agents[0]!.definition.skills).toEqual([
+      { name: 'switch-buddy-playbook', content: '# Playbook\n' },
+    ]);
   });
 
   it('reads a definition without auto_mode, from a server older than the setting, as off', () => {

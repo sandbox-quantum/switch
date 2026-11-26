@@ -1,3 +1,5 @@
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   providerLoginEnvironment,
   providerUnsupportedReason,
@@ -241,6 +243,13 @@ export async function startAgent(
     await deps.ensureCredentials(agentId, provider);
     const login = await deps.givenLogin(provider);
     const cwd = await deps.runtime.workingDirectory(agentId, definition.name, definition.directory);
+    if (definition.skills && definition.skills.length > 0) {
+      const skillsRoot =
+        definition.directory === null
+          ? join(cwd, '.switch', 'skills')
+          : join(deps.runtime.agentStateRoot(agentId), 'skills');
+      await syncDefinitionSkills(skillsRoot, definition.skills);
+    }
     const binaryPath = await deps.binaryPath(provider);
     if (!binaryPath)
       throw new ReasonedError(
@@ -378,4 +387,28 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
     }
   }
   return actions;
+}
+
+/**
+ * Sync template/agent skills into `<skillsRoot>/<name>/SKILL.md`, pruning
+ * stale managed skill directories no longer present in `skills`.
+ */
+export async function syncDefinitionSkills(
+  skillsRoot: string,
+  skills: ReadonlyArray<{ name: string; content: string }>
+): Promise<void> {
+  const wanted = new Set(skills.map((s) => s.name));
+  await mkdir(skillsRoot, { recursive: true });
+  for (const skill of skills) {
+    if (!isSafeSegment(skill.name)) continue;
+    const dir = join(skillsRoot, skill.name);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'SKILL.md'), skill.content, 'utf8');
+  }
+  const existing = await readdir(skillsRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of existing) {
+    if (!wanted.has(entry.name)) {
+      await rm(join(skillsRoot, entry.name), { recursive: true, force: true });
+    }
+  }
 }

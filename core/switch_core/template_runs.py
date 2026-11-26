@@ -104,6 +104,7 @@ class NewAgentPlan:
     connections: list[ConnectionPlan] = field(default_factory=list)
     # Rooms that already exist, by name, the agent is added to once created.
     joins: list[str] = field(default_factory=list)
+    skills: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -490,6 +491,7 @@ class TemplateAgents:
             auto_approve=plan.auto_approve,
             isolation=plan.isolation,
             start=True,
+            skills=plan.skills,
         )
 
     async def create(

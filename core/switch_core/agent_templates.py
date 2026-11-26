@@ -883,6 +883,28 @@ class _Planner:
         )
         display_name = entry.get("display_name")
 
+        skills_raw = entry.get("skills") or []
+        skills: list[dict[str, str]] = []
+        if not isinstance(skills_raw, list):
+            self.problem(slot, "invalid_skills", "skills is not a list.")
+        else:
+            for item in skills_raw:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("name"), str)
+                    or not item["name"].strip()
+                    or not isinstance(item.get("content"), str)
+                ):
+                    self.problem(
+                        slot,
+                        "invalid_skills",
+                        "each skill must be a mapping with string name and content.",
+                    )
+                    break
+                skills.append(
+                    {"name": item["name"].strip(), "content": item["content"]}
+                )
+
         if len(self.problems) > before:
             return None
         assert machine is not None and provider is not None
@@ -909,6 +931,7 @@ class _Planner:
             can_manage_agents=bool(can_manage_agents),
             connections=connections,
             joins=join,
+            skills=tuple(skills),
         )
 
     def connections(

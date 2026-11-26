@@ -173,6 +173,15 @@ export const agentDefinitionSchema = z.object({
     z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])
   ),
   instructions: z.string(),
+  /** Template/agent skills (`{ name, content }`), installed as `<name>/SKILL.md`. */
+  skills: z
+    .array(
+      z.object({
+        name: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
+        content: z.string(),
+      })
+    )
+    .optional(),
   auto_approve: z.boolean(),
   /** The provider's own automatic review. Absent from servers older than the setting. */
   auto_mode: z.boolean().default(false),

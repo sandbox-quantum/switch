@@ -1,8 +1,14 @@
+---
+name: switch-buddy-playbook
+description: Reference procedures for switch-buddy (Telegram and Teams private channels, cloud machine setup, folder lookup, Switch Console links, messaging-app and connector setup, new rooms, approvals, and common setup requests).
+---
+
 # switch-buddy playbook
 
-Details switch-buddy fetches from the Switch repository when its instructions
-(`AGENT.md`, next to this file) point at a section here. Each
-section stands on its own: read the one you were pointed at, then act.
+Details switch-buddy reads from its installed skill file
+(`.switch/skills/switch-buddy-playbook/SKILL.md`, matched to this Switch server's
+version) when its instructions (`AGENT.md`, next to this file) point at a section here.
+Each section stands on its own: read the one you were pointed at, then act.
 
 ## Telegram private channel
 
@@ -50,18 +56,35 @@ cloud machine (`kind` "ec2" in `list_machines`).
 
 ## Finding their folder
 
-When they're vague ("my API repo", "the docs folder", "somewhere with my notes"): then,
-and only then, look. Keep it shallow: the usual places (`~/code`, `~/src`, `~/Projects`,
-`~/Developer`, `~/Documents`, the desktop) and a level or two down, matching what they
-said. List folder names and look for signs only (a version-control folder, `CLAUDE.md`,
-`AGENTS.md`, `.claude/`, `.codex/`, `.cursor/`); don't open their files. Offer at most
-three, each with one line on why ("a repository, already has a CLAUDE.md"), and let
-them pick.
+- **Named folder:** expand `~`, check it exists before proposing.
+- **Vague ("my API repo", "the docs folder", "somewhere with my notes"):** then, and only
+  then, look. Keep it shallow: the usual places (`~/code`, `~/src`, `~/Projects`,
+  `~/Developer`, `~/Documents`, the desktop) and a level or two down, matching what they
+  said. List folder names and look for signs only (a version-control folder, `CLAUDE.md`,
+  `AGENTS.md`, `.claude/`, `.codex/`, `.cursor/`); don't open their files. Offer at most
+  three, each with one line on why ("a repository, already has a CLAUDE.md"), and let
+  them pick.
+- **No folder:** omit `directory` for a fresh one.
+- **Existing folder — say once:** it can read and edit files there (without asking if
+  bypass is on), inherits that folder's provider setup (instructions, skills, MCP), and
+  shares edits with other agents in that folder.
 
 ## More Switch Console links
 
+Use a Markdown link in words they would say (e.g.
+`[Connect a messaging app](switchdash://open/messaging-apps/connect)`). One link per place,
+when needed; never a list of every page.
+
 | Page | Link |
 |---|---|
+| Link their chat accounts (Messaging apps in Switch Console's settings) | `switchdash://open/settings?tab=messaging-apps` |
+| Every agent | `switchdash://open/agents` |
+| Add a new agent | `switchdash://open/agents/new` |
+| An agent's page (`tab=chats`, `tab=connections` for its services, or `tab=settings`) | `switchdash://open/agent/<agent-id>?tab=settings` |
+| A direct chat with an agent | `switchdash://open/chat/<room-id>` |
+| Your own page (`tab=settings` for your settings) | `switchdash://open/buddy?tab=settings` |
+| Connect a messaging app | `switchdash://open/messaging-apps/connect` |
+| Connectors: services such as GitHub | `switchdash://open/connections` |
 | The server's home: the workspace at a glance (not where accounts or guardrails are) | `switchdash://open/home` |
 | This server's own settings, when their Switch Console runs it: start, stop, restart, update | `switchdash://open/server` |
 | Every room | `switchdash://open/rooms` |
@@ -72,8 +95,15 @@ them pick.
 | Admin, for workspace admins: the workspace's messaging apps (`tab=messaging-apps`) and which connectors it offers (`tab=connectors`); for whoever runs the server, Switch Trust guardrails (`tab=switch-trust`) and, on a Switch run without Docker, the apps connectors sign in through (`tab=apps`). A server's status is in settings (`tab=status`) | `switchdash://open/admin` |
 | Switch Console's settings (`tab=preferences`, `messaging-apps` to link their accounts, `clis-models` for agent providers, `api-keys`, `devices`, `remote-hosts` for SSH hosts, `managed-agents`, `status` or `account`) | `switchdash://open/settings` |
 
-- A room's id comes from `list_rooms`, a template's from `list_templates` (only
-  templates saved on the server have a page).
+- An agent's id comes from `list_managed_agents`, a room's from `list_rooms` or the tool
+  that made it, a template's from `list_templates` (only templates saved on the server
+  have a page). An agent's page exists only for the person's own agents.
+- **Console-only actions (say so early and link the page):** connecting a messaging app
+  (`switchdash://open/messaging-apps/connect`), inviting people (`switchdash://open/invite`,
+  not on a Console-run server), changing guardrails
+  (`switchdash://open/admin?tab=switch-trust`), server lifecycle (`§ "Server settings"`),
+  connecting services when there's no web dashboard URL (`switchdash://open/connections`),
+  and deleting an agent (`switchdash://open/agent/<agent-id>?tab=settings`).
 
 ## Server settings
 
@@ -280,3 +310,81 @@ line before a message says your template has a new revision. Then:
 
 Don't bring it up again once they have decided, and don't hold up what they asked for: answer
 that first, then mention the update in a line or two.
+
+## Creating a new room
+
+When they ask for a new room (Switch Console's home chips "Create a new room" and
+"Create a room for my team" send just that):
+
+1. Unless this chat already says what they work on, ask the work question first.
+2. One form, "Start from a template?": up to three official room templates that fit
+   (§ "Room templates by work"), only ones `list_templates` lists, each a name and one
+   line, plus "Start from scratch". None listed: leave the form out.
+3. A template: `get_template` it, then confirm in one proposal (the room's name, the
+   agents it adds, where it lives), asking only for the inputs it requires;
+   `run_template` after a yes. Then join and introduce the room. "Start from scratch":
+   ask what it's for and which agents should be in it, then create it (`channel_type`
+   "channel_private", `read_visibility` and `write_visibility` "private") and introduce it.
+4. A refusal: say why, once, in plain words. One ending "or choose a public channel" is
+   about their linked account. Offer the two ways out: link it in
+   [Messaging apps](switchdash://open/settings?tab=messaging-apps) and try again, or a
+   public room from scratch (`create_room` with `channel_type` "channel_public"). A
+   template can't be made public: never offer that. Never retry into the same refusal.
+   Any other refusal of a template (you can't manage agents, say): go on as for "Start
+   from scratch".
+
+If `run_template` gives an agent `listening` false, it may have missed a `kickoff`: once
+it is running, ask the first question there yourself.
+
+## Asking before acting
+
+- **Cursor:** Cursor's ACP interface has no automatic review, so new Cursor agents default
+  to `auto_mode: false`, `auto_approve: true`. Disclose in the proposal that it runs
+  without asking (set both false if they ask for approvals). Never turn bypass on for an
+  existing agent without an explicit request.
+- **OpenCode:** OpenCode's auto mode runs every command unreviewed, so new OpenCode agents
+  start with auto mode off and ask before each action (turn it on only if they ask, after
+  disclosing commands will run unreviewed).
+- **Other providers:** default to `auto_mode` on (safe actions run, risky ones ask).
+  Bypass (`auto_approve`) runs everything without asking and overrides auto mode — unsafe,
+  so leave bypass off and omit `auto_mode` (provider default) unless they explicitly say
+  yes in the proposal ("It will ask you before anything risky. Should it instead go ahead
+  on everything without asking?").
+- **For yourself:** you can't change your own settings. The first time a task needs
+  several approvals, note once that they can enable Bypass permissions in
+  [my settings](switchdash://open/buddy?tab=settings).
+- **Other agents:** change via `update_agent_detail` only after a yes to that exact change
+  (`auto_mode`/`auto_approve` in `list_managed_agents` or `get_my_context`).
+
+## Setting up messaging apps and services
+
+- **A messaging app (Slack, Discord, Teams, Telegram, Mattermost):** first look in
+  `messaging_apps.connected`: an app listed there is already connected, so say so and help
+  them use it; never walk them through setting it up again. Only for an app not connected,
+  look the platform up in `messaging_apps.how_to_add`:
+  - `official_app`: one step. Link
+    [Connect a messaging app](switchdash://open/messaging-apps/connect), where they pick
+    the platform and add the Switch app. No tokens to copy.
+  - `own_app`: they create an app on the platform first (§ "Their own messaging app").
+    Never ask them to paste a token into this chat.
+- **Their chat account:** when `your_account_link` is not `verified`, read
+  § "Linking their chat account". Never ask for the code or post it yourself.
+- **A service such as GitHub:** if `services[].connection` is "not_connected", link
+  `services[].url` from `get_my_context` (or `server.connectors_url` /
+  `[Connectors](switchdash://open/connections)` if there's no web URL). Once "active",
+  give an agent access with `set_agent_service` only after a yes to that exact grant
+  (which agent, which service, read or write). For a service that needs their choice (such
+  as which GitHub repositories), link the agent's Connectors tab:
+  `switchdash://open/agent/<agent-id>?tab=connections`.
+
+## Common setup requests
+
+- **"I want my team to talk to you" / to another agent:** A new agent answers its owner
+  and the owner's own agents; other people and their agents cannot. The setting is "Who
+  can talk to your agent" (`switchdash://open/agent/<agent-id>?tab=settings`); "Anyone"
+  admits anyone in the rooms the agent is in. You can change it for another agent with
+  `update_agent_detail` once they say so. Warn them: a person whose chat account is not
+  linked to Switch is not recognised, and the agent won't answer them until they link it.
+- **"Put you (or an agent) in a channel":** read § "Putting an agent in a channel" first.
+- **"How does one agent ask another to do something?":** a targeted message in a room they
+  are both in. That is the whole answer.

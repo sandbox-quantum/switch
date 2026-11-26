@@ -55,6 +55,7 @@ class NewManagedAgent:
     auto_approve: bool
     isolation: str
     start: bool
+    skills: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

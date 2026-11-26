@@ -44,10 +44,25 @@ logger = logging.getLogger(__name__)
 
 AGENT_FIELDS: tuple[str, ...] = (
     "instructions",
+    "skills",
     "description",
     "icon_url",
     "display_name",
 )
+
+
+def _canonical_skills(raw: Any) -> str | None:
+    if not raw:
+        return None
+    normalized = sorted(
+        (
+            {"name": str(s["name"]), "content": str(s["content"])}
+            for s in raw
+            if isinstance(s, dict) and "name" in s and "content" in s
+        ),
+        key=lambda item: item["name"],
+    )
+    return json.dumps(normalized, sort_keys=True) if normalized else None
 
 
 def fingerprint(value: str | None) -> str:
@@ -59,6 +74,7 @@ def agent_fields(plan: NewAgentPlan) -> dict[str, str | None]:
     """The values a template sets on an agent that an update may change."""
     return {
         "instructions": plan.instructions,
+        "skills": _canonical_skills(plan.skills),
         "description": plan.description,
         "icon_url": plan.icon_url,
         "display_name": plan.display_name,
@@ -258,6 +274,7 @@ def agent_values(agent: Agent, row: AgentDefinition | None) -> dict[str, str | N
     }
     if row is not None:
         values["instructions"] = str(row.definition.get("instructions") or "")
+        values["skills"] = _canonical_skills(row.definition.get("skills"))
     return values
 
 
