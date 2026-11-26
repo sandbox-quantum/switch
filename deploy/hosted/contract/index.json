@@ -30,7 +30,11 @@
     },
     {
       "path": "admission/bad/evict-another-pod.json",
-      "sha256": "db7dc43f173a7c2f58e1368be7b2c1e364bd876898f21078baa2dd6fece94611"
+      "sha256": "c4b8f143296757833c8c24450ee2ff6ce1c02ff72a76ecd10d16439cd79d7284"
+    },
+    {
+      "path": "admission/bad/evict-outside-a-box-namespace.json",
+      "sha256": "208abecb78ef53761e50498d3537b658fe9b0bd4ff58530e551b305b07fe97f7"
     },
     {
       "path": "admission/bad/gvisor-a-class-outside-the-box-namespaces.json",

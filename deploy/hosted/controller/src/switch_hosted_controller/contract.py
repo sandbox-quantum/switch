@@ -1032,6 +1032,25 @@ def _evict_other_pod(s: dict) -> None:
     _to(s, "POST", f"/api/v1/namespaces/{ns}/pods/box-1/eviction", body)
 
 
+def _evict_outside_a_box_namespace(s: dict) -> None:
+    """The drain worker's eviction, aimed at a pod named box-0 in a namespace that isn't a box's. RBAC lets it
+    through (the eviction grant is by pod name, in any namespace), so only the policy can refuse it. The pod is a
+    plain one: a box pod's gVisor class is refused outside the box namespaces."""
+    pod = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": "box-0", "namespace": "contract-plain"},
+        "spec": {"containers": [{"name": "c", "image": IMAGE["pause"]}]},
+    }
+    s["setup"] = [
+        {"path": "/api/v1/namespaces/contract-plain", "object": _ns_obj("contract-plain")},
+        {"path": "/api/v1/namespaces/contract-plain/pods/box-0", "object": pod},
+    ]
+    body = copy.deepcopy(_body(s))
+    body["metadata"]["namespace"] = "contract-plain"
+    _to(s, "POST", "/api/v1/namespaces/contract-plain/pods/box-0/eviction", body)
+
+
 def _scale_elsewhere(s: dict) -> None:
     """The scaler's start, aimed at a StatefulSet named box in a namespace that isn't a box's."""
     ns = parse_path(s["request"]["path"]).namespace
@@ -1156,7 +1175,8 @@ BAD: list[Bad] = [
     Bad("cordon-already-cordoned", CORDON, _node(lambda n: n["spec"].__setitem__("unschedulable", True)), (CORDON_ONLY,), "the operator may only cordon (unschedulable false to true)"),
     Bad("cordon-and-taint", CORDON, _set(("spec", "taints"), [{"key": "example.com/x", "effect": "NoSchedule"}]), (CORDON_ONLY,), "the operator may not change a node's spec beyond cordoning it"),
     Bad("cordon-and-label", CORDON, _set(("metadata", "labels"), {"example.com/x": "y"}), (CORDON_ONLY,), "the operator may not change a node's labels"),
-    Bad("evict-another-pod", EVICT, _evict_other_pod, (EVICT_ONLY,), "the operator may only evict box-0 in a box namespace"),
+    Bad("evict-another-pod", EVICT, _evict_other_pod, rbac=True),  # the eviction grant names box-0 only
+    Bad("evict-outside-a-box-namespace", EVICT, _evict_outside_a_box_namespace, (EVICT_ONLY,), "the operator may only evict box-0 in a box namespace"),
     Bad("placeholder-elsewhere", ROOM, lambda s: _to(s, "POST", f"/api/v1/namespaces/{HOME}/pods", _body(s)), rbac=True),
     Bad("placeholder-a-long-name", ROOM, _set(("metadata", "name"), "drain-room-" + "a" * 21), (PLACEHOLDER,), "a placeholder is named drain-room-<id>"),
     Bad("placeholder-with-env", ROOM, _room_container("env", [{"name": "X", "value": "y"}]), (PLACEHOLDER,), "a placeholder is one pause container"),
