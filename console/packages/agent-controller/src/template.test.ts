@@ -37,6 +37,18 @@ describe('buildWatcherTemplate', () => {
     expect(template.session.capabilities.input).toBe(input);
   });
 
+  it('advertises queueing for an Antigravity agent on the retired antigravity-acp runtime', () => {
+    const template = buildWatcherTemplate({
+      agentId: 'agent-1',
+      provider: 'antigravity',
+      definition,
+      cwd: '/work/scout',
+      credentialsPath: '/data/agents/agent-1/credentials.json',
+      binaryPath: '/home/u/.local/bin/antigravity-acp',
+    });
+    expect(template.session.capabilities.input).toBe('queue');
+  });
+
   it.each(PROVIDERS)('builds a configuration the shared host accepts for %s', (provider) => {
     const template = buildWatcherTemplate({
       agentId: 'agent-1',

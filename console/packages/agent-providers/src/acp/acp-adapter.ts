@@ -157,7 +157,13 @@ interface State {
    * it has one: a steered prompt the agent rejects hands the turn back to the
    * one before it.
    */
-  turnPrompts: Array<{ seq: number; answer?: PromptAnswer }>;
+  turnPrompts: SentPrompt[];
+  /**
+   * What steered prompts the agent rejected carried, sent again once the
+   * turn's other prompts have been answered: the host has already counted
+   * them as delivered into the turn, so they are never dropped quietly.
+   */
+  undelivered: Array<Array<Record<string, unknown>>>;
   /** How many `session/prompt` requests the session has sent. */
   prompts: number;
   queue: ProviderSendTurnInput[];
@@ -199,6 +205,37 @@ interface State {
 
 /** How the agent answered one `session/prompt`. */
 type PromptAnswer = { reason: string } | { error: unknown };
+
+/** One `session/prompt` of the running turn. */
+interface SentPrompt {
+  seq: number;
+  content: Array<Record<string, unknown>>;
+  /** `steered` was sent into a running turn; `resent` again after the agent rejected that. */
+  kind: 'first' | 'steered' | 'resent';
+  answer?: PromptAnswer;
+}
+
+/**
+ * A turn's spend with another answer's added: each `session/prompt` answer
+ * reports only its own, and a turn whose rejected steer was sent again ran
+ * more than one.
+ */
+function addUsage(total: TokenUsage[], more: TokenUsage[]): TokenUsage[] {
+  const sum = total.map((entry) => ({ ...entry }));
+  for (const entry of more) {
+    const same = sum.find((existing) => existing.model === entry.model);
+    if (!same) sum.push({ ...entry });
+    else
+      for (const key of [
+        'inputTokens',
+        'outputTokens',
+        'cacheReadTokens',
+        'cacheWriteTokens',
+      ] as const)
+        same[key] += entry[key];
+  }
+  return sum;
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -279,6 +316,7 @@ export class AcpAdapter implements ProviderAdapter {
       steering: this.capabilities.steering,
       latestPrompt: undefined,
       turnPrompts: [],
+      undelivered: [],
       prompts: 0,
       queue: [],
       compaction: null,
@@ -485,7 +523,11 @@ export class AcpAdapter implements ProviderAdapter {
         // attachments were read.
         if (state.turn === turnId && this.canSteer(state, input)) {
           if (state.context === context) state.context = '';
-          this.settle(state, turnId, Promise.resolve(this.prompt(state, turnId, content)));
+          this.settle(
+            state,
+            turnId,
+            Promise.resolve(this.prompt(state, turnId, content, 'steered'))
+          );
           return { turnId: input.turnId, steeredInto: turnId };
         }
       }
@@ -527,6 +569,7 @@ export class AcpAdapter implements ProviderAdapter {
     state.turn = input.turnId;
     state.latestPrompt = undefined;
     state.turnPrompts = [];
+    state.undelivered = [];
     state.interrupted = false;
     state.refusedRequest = false;
     state.messageId = randomUUID();
@@ -542,16 +585,16 @@ export class AcpAdapter implements ProviderAdapter {
   /**
    * Ends turn `turnId` with the answer to one of its prompts, unless a later
    * prompt has been sent into it since: that one's answer ends it instead. A
-   * steered prompt the agent rejects outright was never taken into the turn,
-   * so the turn goes back to the prompt before it, and ends with that one's
-   * answer, already in or still to come, rather than failing.
+   * steered prompt the agent rejects outright was never taken into the turn:
+   * it leaves the turn's prompts, the turn goes on to end with the latest
+   * real answer, and its message is sent again first, still in this turn.
    */
   private settle(
     state: State,
     turnId: string,
     prompt: Promise<{ seq: number; stopReason: Promise<string> }>
   ): void {
-    let entry: { seq: number; answer?: PromptAnswer } | undefined;
+    let entry: SentPrompt | undefined;
     const answered = (answer: PromptAnswer) => {
       if (state.turn !== turnId) return;
       if (!entry) {
@@ -560,20 +603,29 @@ export class AcpAdapter implements ProviderAdapter {
         return;
       }
       entry.answer = answer;
-      if (entry.seq !== state.latestPrompt) return;
-      const index = state.turnPrompts.indexOf(entry);
-      if ('error' in answer && index > 0 && !state.interrupted) {
-        state.turnPrompts.splice(index, 1);
-        const previous = state.turnPrompts[index - 1]!;
-        state.latestPrompt = previous.seq;
+      if ('error' in answer && entry.kind !== 'first' && !state.interrupted) {
+        state.turnPrompts.splice(state.turnPrompts.indexOf(entry), 1);
+        if (entry.kind === 'resent') {
+          this.complete(
+            state,
+            'error',
+            `${this.hooks.label} did not take a message sent mid-turn, sent again after the turn: ${errorText(answer.error)}`
+          );
+          return;
+        }
+        state.undelivered.push(entry.content);
         this.emit(state, {
           type: 'runtime.warning',
-          message: `${this.hooks.label} did not take the message sent mid-turn (${errorText(answer.error)}); it was not delivered, and the turn carries on.`,
+          message: `${this.hooks.label} did not take the message sent mid-turn (${errorText(answer.error)}); it will be sent again when the turn's current work is done.`,
         });
-        if (previous.answer) this.finish(state, previous.answer);
+        if (entry.seq !== state.latestPrompt) return;
+        const latest = state.turnPrompts.at(-1)!;
+        state.latestPrompt = latest.seq;
+        if (latest.answer) this.conclude(state, turnId, latest.answer);
         return;
       }
-      this.finish(state, answer);
+      if (entry.seq !== state.latestPrompt) return;
+      this.conclude(state, turnId, answer);
     };
     void prompt
       .then((sent) => {
@@ -584,6 +636,34 @@ export class AcpAdapter implements ProviderAdapter {
         (reason) => answered({ reason }),
         (error: unknown) => answered({ error })
       );
+  }
+
+  /**
+   * The turn's latest prompt has its answer. Messages the agent rejected
+   * mid-turn are sent again first, together, as the turn's next prompt; once
+   * none are left the turn ends with the answer.
+   */
+  private conclude(state: State, turnId: string, answer: PromptAnswer): void {
+    const undelivered = state.undelivered.splice(0);
+    if (
+      undelivered.length &&
+      !state.interrupted &&
+      !('error' in answer) &&
+      answer.reason === 'end_turn'
+    ) {
+      this.settle(
+        state,
+        turnId,
+        Promise.resolve(this.prompt(state, turnId, undelivered.flat(), 'resent'))
+      );
+      return;
+    }
+    if (undelivered.length)
+      this.emit(state, {
+        type: 'runtime.warning',
+        message: `${undelivered.length === 1 ? 'A message' : `${undelivered.length} messages`} sent mid-turn that ${this.hooks.label} did not take ${undelivered.length === 1 ? 'was' : 'were'} not sent again: the turn ended first.`,
+      });
+    this.finish(state, answer);
   }
 
   /** Ends the running turn with the answer to its latest prompt. */
@@ -622,29 +702,33 @@ export class AcpAdapter implements ProviderAdapter {
     const context = state.context;
     const content = await this.promptContent(state, input, context);
     if (state.context === context) state.context = '';
-    return this.prompt(state, input.turnId, content);
+    return this.prompt(state, input.turnId, content, 'first');
   }
 
   /**
    * Sends one `session/prompt` into turn `turnId` and makes it the turn's
    * latest. Its number is taken as it is sent, so a later prompt is always
-   * later here. The answer that carries usage is the one that ends the turn.
+   * later here. agy reports usage only on the answer that ends its turn (an
+   * earlier prompt it answers early carries none), and every answer's usage
+   * is added to the turn's.
    */
   private prompt(
     state: State,
     turnId: string,
-    prompt: Array<Record<string, unknown>>
+    prompt: Array<Record<string, unknown>>,
+    kind: SentPrompt['kind']
   ): { seq: number; stopReason: Promise<string> } {
     const seq = ++state.prompts;
     state.latestPrompt = seq;
-    state.turnPrompts.push({ seq });
+    state.turnPrompts.push({ seq, content: prompt, kind });
     const stopReason = state.client
       .request<{ stopReason: string; usage?: AcpPromptUsage }>('session/prompt', {
         sessionId: state.nativeId,
         prompt,
       })
       .then(({ stopReason, usage }) => {
-        if (usage && state.turn === turnId) state.usage = this.turnUsage(state, usage);
+        if (usage && state.turn === turnId)
+          state.usage = addUsage(state.usage, this.turnUsage(state, usage));
         return stopReason;
       });
     return { seq, stopReason };

@@ -835,46 +835,95 @@ it('interrupts a steered turn through its latest prompt', async () => {
   expect(turnEvents(events)).toEqual(['turn.started:t', 'turn.completed:t:interrupted']);
 });
 
-it('hands the turn back to the earlier prompt when the agent rejects a steer', async () => {
-  const reject = (server: FakeAppServer, prompt: { id?: unknown }) =>
-    server.send({ id: prompt.id as number, error: { code: -32603, message: 'busy' } });
-  const warnings = (events: ProviderRuntimeEvent[]) =>
-    events.flatMap((e) => (e.type === 'runtime.warning' ? [e.message] : []));
+const reject = (server: FakeAppServer, prompt: { id?: unknown }) =>
+  server.send({ id: prompt.id as number, error: { code: -32603, message: 'busy' } });
+const warnings = (events: ProviderRuntimeEvent[]) =>
+  events.flatMap((e) => (e.type === 'runtime.warning' ? [e.message] : []));
+const promptText = (prompt: { params?: Record<string, unknown> }) =>
+  ((prompt.params?.prompt ?? []) as Array<{ text?: string }>).map((part) => part.text).join(' | ');
 
+it('sends a rejected steer again in the same turn once the earlier prompt is answered', async () => {
   // agy's own order: the earlier prompt is answered as the later one arrives.
-  const answeredFirst = await start(steering);
-  await answeredFirst.adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
-  await answeredFirst.server.waitFor('session/prompt');
-  await answeredFirst.adapter.sendTurn({ sessionId: 's', turnId: 'u', text: 'more' });
+  const { adapter, events, server } = await start(steering);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await server.waitFor('session/prompt');
+  await adapter.sendTurn({ sessionId: 's', turnId: 'u', expectedTurnId: 't', text: 'more' });
   await flush();
-  const [first, second] = prompts(answeredFirst.server);
-  answer(answeredFirst.server, first!, 'end_turn');
+  const [first, second] = prompts(server);
+  answer(server, first!, 'end_turn');
   await flush();
-  expect(turnEvents(answeredFirst.events)).toEqual(['turn.started:t']);
-  reject(answeredFirst.server, second!);
+  reject(server, second!);
   await flush();
-  expect(turnEvents(answeredFirst.events)).toEqual([
-    'turn.started:t',
-    'turn.completed:t:completed',
+  expect(warnings(events)).toEqual([
+    "Dummy ACP did not take the message sent mid-turn (busy); it will be sent again when the turn's current work is done.",
   ]);
-  expect(warnings(answeredFirst.events)).toEqual([
-    'Dummy ACP did not take the message sent mid-turn (busy); it was not delivered, and the turn carries on.',
-  ]);
+  const resent = prompts(server)[2]!;
+  expect(promptText(resent)).toBe('more');
+  expect(turnEvents(events)).toEqual(['turn.started:t']);
+  answer(server, resent, 'end_turn');
+  await flush();
+  expect(turnEvents(events)).toEqual(['turn.started:t', 'turn.completed:t:completed']);
+});
 
-  // Rejected while the earlier prompt still runs: the turn waits for it.
-  const stillRunning = await start(steering);
-  await stillRunning.adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
-  await stillRunning.server.waitFor('session/prompt');
-  await stillRunning.adapter.sendTurn({ sessionId: 's', turnId: 'u', text: 'more' });
+it('waits for the running prompt when steers are rejected, then sends them again together', async () => {
+  const { adapter, events, server } = await start(steering);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await server.waitFor('session/prompt');
+  await adapter.sendTurn({ sessionId: 's', turnId: 'u', text: 'two' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 'v', text: 'three' });
   await flush();
-  const [running, rejected] = prompts(stillRunning.server);
-  reject(stillRunning.server, rejected!);
+  const [running, second, third] = prompts(server);
+  reject(server, second!);
   await flush();
-  expect(turnEvents(stillRunning.events)).toEqual(['turn.started:t']);
-  expect(warnings(stillRunning.events)).toHaveLength(1);
-  answer(stillRunning.server, running!, 'end_turn');
+  reject(server, third!);
   await flush();
-  expect(turnEvents(stillRunning.events)).toEqual(['turn.started:t', 'turn.completed:t:completed']);
+  // Two rejections in a row leave the turn running on its first prompt.
+  expect(turnEvents(events)).toEqual(['turn.started:t']);
+  expect(prompts(server)).toHaveLength(3);
+  answer(server, running!, 'end_turn');
+  await flush();
+  const resent = prompts(server)[3]!;
+  expect(promptText(resent)).toBe('two | three');
+  expect(turnEvents(events)).toEqual(['turn.started:t']);
+  answer(server, resent, 'end_turn');
+  await flush();
+  expect(turnEvents(events)).toEqual(['turn.started:t', 'turn.completed:t:completed']);
+});
+
+it('fails the turn, naming the message, when a resent steer is rejected again', async () => {
+  const { adapter, events, server } = await start(steering);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await server.waitFor('session/prompt');
+  await adapter.sendTurn({ sessionId: 's', turnId: 'u', text: 'more' });
+  await flush();
+  const [first, second] = prompts(server);
+  reject(server, second!);
+  await flush();
+  answer(server, first!, 'end_turn');
+  await flush();
+  reject(server, prompts(server)[2]!);
+  await flush();
+  expect(events.find((e) => e.type === 'turn.completed')).toMatchObject({
+    turnId: 't',
+    outcome: 'error',
+    message: 'Dummy ACP did not take a message sent mid-turn, sent again after the turn: busy',
+  });
+});
+
+it('adds up the usage of every answer in a steered turn', async () => {
+  const { adapter, events, server } = await start(steering);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await server.waitFor('session/prompt');
+  await adapter.sendTurn({ sessionId: 's', turnId: 'u', text: 'more' });
+  await flush();
+  const [first, second] = prompts(server);
+  const usage = { inputTokens: 10, outputTokens: 2, cachedReadTokens: 1, cachedWriteTokens: 0 };
+  server.send({ id: first!.id as number, result: { stopReason: 'end_turn', usage } });
+  server.send({ id: second!.id as number, result: { stopReason: 'end_turn', usage } });
+  await flush();
+  expect(events.find((e) => e.type === 'turn.completed')).toMatchObject({
+    usage: [{ inputTokens: 20, outputTokens: 4, cacheReadTokens: 2, cacheWriteTokens: 0 }],
+  });
 });
 
 it('refuses a steer it cannot take, sending nothing, so the host can queue it', async () => {
