@@ -1,0 +1,17 @@
+[
+  {
+    "service": "switch-hosted-remover",
+    "source": "remover.py",
+    "words": "Remover ALERT"
+  },
+  {
+    "service": "switch-hosted-provisioner",
+    "source": "box_operator.py",
+    "words": "Box operator ALERT"
+  },
+  {
+    "service": "switch-egress-lists",
+    "source": "egress_lists.py",
+    "words": "egress-held ALERT"
+  }
+]

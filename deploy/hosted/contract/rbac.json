@@ -1,0 +1,317 @@
+{
+  "box_namespace": "^agents-(user|box)-k1-[0-9a-f]{16}$",
+  "calls": {
+    "system:serviceaccount:switch-hosted:switch-hosted-controller": [
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "events",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "",
+        "name": "egress-held",
+        "namespace": "switch-hosted",
+        "resource": "configmaps",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "box-0",
+        "namespace": "(box)",
+        "resource": "pods",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "box-map",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "box-removals",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "apps",
+        "name": "box",
+        "namespace": "(box)",
+        "resource": "statefulsets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "apps",
+        "name": "box",
+        "namespace": "(box)",
+        "resource": "statefulsets",
+        "subresource": "scale",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "events",
+        "subresource": "",
+        "verb": "list"
+      },
+      {
+        "group": "",
+        "name": "switch-enrol",
+        "namespace": "(box)",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "patch"
+      },
+      {
+        "group": "apps",
+        "name": "box",
+        "namespace": "(box)",
+        "resource": "statefulsets",
+        "subresource": "scale",
+        "verb": "patch"
+      },
+      {
+        "group": "",
+        "name": "egress-held",
+        "namespace": "switch-hosted",
+        "resource": "configmaps",
+        "subresource": "",
+        "verb": "update"
+      }
+    ],
+    "system:serviceaccount:switch-hosted:switch-hosted-provisioner": [
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "configmaps",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "",
+        "name": "",
+        "namespace": "",
+        "resource": "namespaces",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "persistentvolumeclaims",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "resourcequotas",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "serviceaccounts",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "apps",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "statefulsets",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "networking.k8s.io",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "networkpolicies",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "rbac.authorization.k8s.io",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "rolebindings",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "",
+        "name": "(box)",
+        "namespace": "",
+        "resource": "namespaces",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "box-map",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "box-owners",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "box-removals",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "pool-map",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "",
+        "namespace": "",
+        "resource": "persistentvolumes",
+        "subresource": "",
+        "verb": "list"
+      },
+      {
+        "group": "",
+        "name": "box-map",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "update"
+      },
+      {
+        "group": "",
+        "name": "box-owners",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "update"
+      },
+      {
+        "group": "",
+        "name": "box-removals",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "update"
+      },
+      {
+        "group": "",
+        "name": "pool-map",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "update"
+      }
+    ],
+    "system:serviceaccount:switch-hosted:switch-hosted-reaper": [
+      {
+        "group": "",
+        "name": "(box)",
+        "namespace": "",
+        "resource": "namespaces",
+        "subresource": "",
+        "verb": "delete"
+      },
+      {
+        "group": "",
+        "name": "(box)",
+        "namespace": "",
+        "resource": "namespaces",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "box-map",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "box-owners",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "pool-map",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      }
+    ],
+    "system:serviceaccount:switch-hosted:switch-hosted-remover": [
+      {
+        "group": "",
+        "name": "(box)",
+        "namespace": "",
+        "resource": "namespaces",
+        "subresource": "",
+        "verb": "delete"
+      },
+      {
+        "group": "",
+        "name": "(box)",
+        "namespace": "",
+        "resource": "namespaces",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "box-removals",
+        "namespace": "switch-hosted",
+        "resource": "secrets",
+        "subresource": "",
+        "verb": "get"
+      }
+    ]
+  }
+}
