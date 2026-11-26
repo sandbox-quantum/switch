@@ -183,9 +183,7 @@ def test_an_alert_line_left_out_of_the_catalogue_is_caught(monkeypatch):
 
 
 # Policy rules no service request here can reach, and why.
-NOT_REACHED = {
-    "switch-v0-p5b-box-templates": "no code in this package writes box-templates",
-}
+NOT_REACHED: dict[str, str] = {}
 
 
 def _policy_messages() -> dict[str, list[str]]:

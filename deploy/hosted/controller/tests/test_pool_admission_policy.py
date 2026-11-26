@@ -235,7 +235,7 @@ def test_the_provisioner_may_write_exactly_the_four_lists():
     assert "  - box-map\n  - pool-map\n  - box-owners\n  - box-removals\n" in role
     assert role.rstrip().endswith("verbs:\n  - get\n  - update")
     p6 = policy("switch-v0-p6-provisioner-catch-all")
-    assert "in ['box-map', 'box-templates', 'pool-map', 'box-owners', 'box-removals']" in p6
+    assert "in ['box-map', 'pool-map', 'box-owners', 'box-removals']" in p6
     assert "matches('^agents-(user|box)-k1-[0-9a-f]{16}$')" in p6
 
 
