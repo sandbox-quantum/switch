@@ -2,6 +2,7 @@ import {
   AgentManagementUnavailableError,
   enrollConsoleController,
   fetchManagedAgents,
+  fetchMe,
   fetchManagementControllers,
   type ManagedAgent,
   type ManagementController,
@@ -12,6 +13,11 @@ import {
 } from '@main/core/switch-servers/gateway-client';
 import { withReachableWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import type { EmbeddedControllerRemote } from '@shared/core/embedded-controller/embedded-controller';
+import {
+  THIS_CONSOLE,
+  gatewayCompatibility,
+} from '@shared/core/switch-servers/gateway-compatibility';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { ManagementPort } from './embedded-controller-service';
 
 /** This computer's controller in the server's lists, and the managed agents placed on it. */
@@ -45,12 +51,31 @@ export function placedOn(
   };
 }
 
+/** The first gateway API revision that takes `device_id` when Console enrolls this computer. */
+export const DEVICE_ID_REVISION = 7;
+
+/**
+ * Whether the server takes a device id from Console enrolling this computer.
+ * Its body refuses a field it does not know, so an older server, or one that
+ * does not say what it speaks, is sent none and adds a device as it always did.
+ */
+async function takesDeviceId(server: SwitchServer): Promise<boolean> {
+  const compatibility = gatewayCompatibility(
+    server.name,
+    (await fetchMe(server)).server,
+    THIS_CONSOLE
+  );
+  return compatibility.kind === 'compatible' && compatibility.revision >= DEVICE_ID_REVISION;
+}
+
 /** The management routes, through the signed-in session of the workspace the controller belongs to. */
 export const gatewayManagementPort: ManagementPort = {
   enroll: async (workspaceId, body) => {
     try {
       return await withReachableWorkspaceSession(workspaceId, async (server) => {
-        const enrolled = await enrollConsoleController(server, body);
+        const deviceId =
+          body.deviceId !== null && (await takesDeviceId(server)) ? body.deviceId : null;
+        const enrolled = await enrollConsoleController(server, { ...body, deviceId });
         return { serverId: server.id, apiUrl: server.url, ...enrolled };
       });
     } catch (error) {

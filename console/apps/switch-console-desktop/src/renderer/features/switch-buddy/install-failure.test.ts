@@ -25,6 +25,25 @@ describe('installFailure', () => {
     expect(said).toContain('EACCES');
   });
 
+  it('says what is missing and how to get it instead of the shell error', () => {
+    const said = installFailure('OpenCode', {
+      type: 'command-failed',
+      message: 'The install needs npm, which this computer does not have.',
+      output: "npm : The term 'npm' is not recognized… Check the spelling of the name",
+      missingCommand: 'npm',
+    } as never);
+    expect(said).toContain('needs Node.js');
+    expect(said).not.toContain('Check the spelling');
+    expect(
+      installFailure('GitHub Copilot', {
+        type: 'command-failed',
+        message: '',
+        output: '',
+        missingCommand: 'winget',
+      } as never)
+    ).toContain('needs winget');
+  });
+
   it('gives the reason for anything else', () => {
     expect(
       installFailure('Codex', { type: 'permission-denied', message: 'Not allowed.' } as never)

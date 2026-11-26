@@ -11,6 +11,8 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
+from switch_core.loopback import https_or_loopback
+
 
 class GitHubError(Exception):
     pass
@@ -86,6 +88,63 @@ def sso_hidden_organizations(header: str | None) -> list[int]:
 
 
 @dataclass(frozen=True)
+class TokenOwner:
+    """The account a personal access token acts as, and whether GitHub says
+    it ends: `expires` where GitHub names its expiration date
+    (`GitHub-Authentication-Token-Expiration`), which it does for every
+    token made with one."""
+
+    user_id: int
+    login: str
+    expires: bool
+
+
+async def token_owner(headers: dict[str, str]) -> TokenOwner:
+    """`GET /user` with a personal access token in `headers`."""
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+            response = await client.get(
+                "https://api.github.com/user",
+                headers={
+                    **headers,
+                    "Accept": "application/json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+    except httpx.HTTPError:
+        raise GitHubUnavailableError(
+            "Could not reach GitHub to check the token. Please try again."
+        ) from None
+    if response.status_code == 401:
+        raise GitHubAuthorizationError(
+            "GitHub refused the token, which may be wrong, revoked or expired."
+        )
+    if rate_limited(response) or response.status_code >= 500:
+        raise GitHubUnavailableError(
+            "GitHub is unavailable or reached its rate limit. Please try again."
+        )
+    if response.status_code != 200:
+        raise GitHubError(
+            f"GitHub would not say whose the token is (HTTP {response.status_code})."
+        )
+    try:
+        user = response.json()
+    except ValueError:
+        raise GitHubError("GitHub's answer for the token is not JSON.") from None
+    if (
+        not isinstance(user, dict)
+        or type(user.get("id")) is not int
+        or not isinstance(user.get("login"), str)
+        or not user["login"]
+    ):
+        raise GitHubError("GitHub did not name the token's account.")
+    expiration = response.headers.get("GitHub-Authentication-Token-Expiration")
+    return TokenOwner(
+        user["id"], user["login"], bool(expiration and expiration.strip())
+    )
+
+
+@dataclass(frozen=True)
 class GitHubReach:
     """The App's installations a person reaches, and the organizations whose
     single sign-on hid installations from their sign-in (`sso_hidden`), which
@@ -104,19 +163,34 @@ class GitHubConnections:
         self.slug = slug
         self.origin = origin.rstrip("/")
         url = urlsplit(self.origin)
+        # Only the scheme, host and port: an origin can carry a password.
+        shown = f"{url.scheme}://{url.netloc.rpartition('@')[2]}"
+        if not https_or_loopback(self.origin):
+            raise ValueError(
+                f"The GitHub App's origin {shown!r} is neither https nor "
+                "loopback http (localhost, 127.0.0.1 or ::1): GitHub sends people "
+                "back to Switch only there."
+            )
         if (
-            url.scheme != "https"
-            or not url.hostname
+            not url.hostname
             or url.username
             or url.password
             or url.path
             or url.query
             or url.fragment
-            or not re.fullmatch(r"[a-z0-9-]+", self.slug)
-            or not self.client_id
-            or not self.client_secret
         ):
-            raise ValueError("GitHub connection configuration is invalid")
+            raise ValueError(
+                f"The GitHub App's origin at {shown!r} is not a bare origin: "
+                "a scheme and host, and a port if it needs one, with nothing "
+                "before the host or after."
+            )
+        if not re.fullmatch(r"[a-z0-9-]+", self.slug):
+            raise ValueError(
+                f"The GitHub App's slug {self.slug!r} is not its name as its URL "
+                "has it: lowercase letters, digits and hyphens."
+            )
+        if not self.client_id or not self.client_secret:
+            raise ValueError("The GitHub App needs a client id and a client secret.")
         self.callback = self.origin + "/gateway/provider-connections/github/callback"
         self.install_url = f"https://github.com/apps/{self.slug}/installations/new"
 

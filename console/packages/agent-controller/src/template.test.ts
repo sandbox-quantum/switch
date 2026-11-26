@@ -19,6 +19,24 @@ const definition = {
 };
 
 describe('buildWatcherTemplate', () => {
+  it.each([
+    ['claude', 'steer'],
+    ['codex', 'steer'],
+    ['opencode', 'steer'],
+    ['cursor', 'queue'],
+    ['antigravity', 'queue'],
+  ] as const)('advertises what %s does with a message sent mid-turn', (provider, input) => {
+    const template = buildWatcherTemplate({
+      agentId: 'agent-1',
+      provider,
+      definition,
+      cwd: '/work/scout',
+      credentialsPath: '/data/agents/agent-1/credentials.json',
+      binaryPath: `/usr/bin/${provider}`,
+    });
+    expect(template.session.capabilities.input).toBe(input);
+  });
+
   it.each(PROVIDERS)('builds a configuration the shared host accepts for %s', (provider) => {
     const template = buildWatcherTemplate({
       agentId: 'agent-1',
@@ -48,11 +66,10 @@ describe('buildWatcherTemplate', () => {
     expect(template.execution).toMatchObject({
       credentialsPath: '/data/agents/agent-1/credentials.json',
       binaryPath: `/usr/bin/${provider}`,
-      codexConfig:
-        provider === 'codex'
-          ? 'sandbox_mode = "workspace-write"\ndeveloper_instructions = "Review pull requests."\n'
-          : '',
+      codexConfig: provider === 'codex' ? 'developer_instructions = "Review pull requests."\n' : '',
     });
+    if (provider === 'codex') expect(template.execution!.defaultCodexSandbox).toBe(true);
+    else expect(template.execution).not.toHaveProperty('defaultCodexSandbox');
     expect(template.execution!.inheritEnv).toEqual(
       expect.arrayContaining(['PATH', 'HOME', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'])
     );
@@ -88,7 +105,7 @@ describe('buildWatcherTemplate', () => {
   });
 
   it.each(PROVIDERS)(
-    'runs %s in auto mode, which bypass wins over, keeping Codex in its workspace sandbox',
+    'runs %s in auto mode, which bypass wins over, leaving Codex’s sandbox to its host',
     (provider) => {
       const build = (auto_approve: boolean) =>
         buildWatcherTemplate({
@@ -104,10 +121,11 @@ describe('buildWatcherTemplate', () => {
       expect(auto.start.input.runtimeMode).toBe('auto');
       expect(build(true).start.input.runtimeMode).toBe('full-access');
       if (provider === 'codex') {
-        expect(auto.execution!.codexConfig).toMatch(/^sandbox_mode = "workspace-write"\n/);
-        expect(build(true).execution!.codexConfig).toMatch(
-          /^sandbox_mode = "danger-full-access"\n/
-        );
+        // The default is applied on the host, under any sandbox_mode its own
+        // Codex configuration names (`prepareCodexSessionHome`).
+        expect(auto.execution!.codexConfig).not.toContain('sandbox_mode');
+        expect(build(true).execution!.codexConfig).not.toContain('sandbox_mode');
+        expect(build(true).execution!.defaultCodexSandbox).toBe(true);
       }
     }
   );
@@ -141,11 +159,9 @@ describe('buildWatcherTemplate', () => {
       ...advanced,
     });
     expect(template.start.input.model).toEqual({ id: 'gpt-5.5', options: { effort: 'high' } });
-    expect(template.execution!.codexConfig).toBe(
-      `sandbox_mode = "workspace-write"\n${console.codexConfig}`
-    );
+    expect(template.execution!.codexConfig).toBe(console.codexConfig);
     expect(template.execution!.codexConfig).toContain('model_verbosity = "low"');
-    expect(template.execution!.codexConfig).toContain('web_search = true');
+    expect(template.execution!.codexConfig).toContain('web_search = "live"');
     expect(template.start.input).not.toHaveProperty('agentDefinition');
   });
 

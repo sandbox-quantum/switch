@@ -12,7 +12,12 @@ from switch_core.accounts.transfer import (
     agent_transfer_facts,
     agent_transfer_refusal,
 )
-from switch_core.addressing import never_allows
+from switch_core.addressing import (
+    AddressingPolicy,
+    lets_in_more,
+    never_allows,
+    parse_policy,
+)
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
 from switch_core.agent_icon import (
     InvalidIconUrl,
@@ -28,25 +33,30 @@ from switch_core.bridges.agent.protocol.agent_core import (
 )
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentOptionsNotEditable,
+    agent_room_memberships,
     apply_agent_options,
     assemble_agent_detail,
     build_agent_summary,
     list_agent_summaries,
+    shown_to,
 )
+from switch_core.bridges.agent.protocol.statuses import overall_statuses
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
 )
+from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import User, require_tenant_id
-from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import (
-    get_current_user,
-    get_tenant_is_admin,
-    readable_room_ids,
+from switch_core.db.stores.agent_definition_store import (
+    AgentDefinitionStore,
+    PlacedDevice,
 )
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.room_store import RoomStore, readable_by
+from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.chats import get_chat_service
 from switch_core.gateway.dependencies import (
     get_agent_store,
@@ -56,15 +66,18 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
-from switch_core.gateway.known_agents import known_agent, known_agents
+from switch_core.gateway.known_agents import known_agent, offered_known_agents
 from switch_core.gateway.schemas import (
     AgentCapabilities,
     AgentDetail,
+    AgentDevice,
+    AgentRooms,
     AgentSummary,
     AvatarSettingsResponse,
     BulkRegisterResult,
     DeleteAgentResponse,
     GatewayAgentDetail,
+    GatewayAgentListEntry,
     GatewayAgentSummary,
     IconChoicesResponse,
     KnownAgentType,
@@ -80,14 +93,23 @@ from switch_core.gateway.schemas import (
     UpdateAgentDescriptionRequest,
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
+    UpdateAgentMidTurnDeliveryRequest,
     UpdateAgentOptionsRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
+from switch_core.providers.registry import ProviderNotOffered, require_offered_provider
 from switch_core.request_validation import public_errors
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_DEFINITIONS = AgentDefinitionStore()
+
+# The most agents `GET /agents/rooms` takes at once, which keeps the request
+# line well inside what proxies accept. Switch Console asks in batches of this
+# size.
+AGENT_ROOMS_PER_REQUEST = 100
 
 
 def _has_known_spec(summary: AgentSummary) -> bool:
@@ -122,7 +144,8 @@ def _with_capabilities(
     summary: AgentSummary, principal: Principal, facts: dict[str, AgentTransferFacts]
 ) -> GatewayAgentSummary:
     return GatewayAgentSummary(
-        **summary.model_dump(), **_capabilities(summary, principal, facts[summary.id])
+        **shown_to(principal, summary).model_dump(),
+        **_capabilities(summary, principal, facts[summary.id]),
     )
 
 
@@ -157,6 +180,24 @@ async def _summary_for_caller(
     return found[0]
 
 
+async def _may_widen_addressing(
+    session: AsyncSession, principal: Principal, owner_id: str | None
+) -> bool:
+    """Whether `principal` may let more people or agents address an agent:
+    its owner, whose service access it acts with; or a workspace admin when
+    the agent acts for no person, being owned by nobody or by the
+    registration service account, which signs in to nothing and holds no
+    one's service access. Without that, nobody could ever open such an agent."""
+    if owns(principal, owner_id):
+        return True
+    if not principal.is_admin:
+        return False
+    if owner_id is None:
+        return True
+    owner = await session.get(User, owner_id)
+    return owner is None or is_bootstrap_owner(owner)
+
+
 async def _detail_for_caller(
     session: AsyncSession,
     detail: AgentDetail,
@@ -177,9 +218,12 @@ async def _detail_for_caller(
         raise _agent_gone(detail.id)
     owner = owns(principal, detail.owner_id)
     return GatewayAgentDetail(
-        **detail.model_dump(exclude={"children"}),
+        **shown_to(principal, detail).model_dump(exclude={"children"}),
         **_capabilities(detail, principal, facts[detail.id]),
         can_change_manage_agents=owner,
+        can_widen_addressing=await _may_widen_addressing(
+            session, principal, detail.owner_id
+        ),
         can_grant_services=owner
         and config.service_connections_enabled
         and _has_known_spec(detail),
@@ -191,16 +235,95 @@ async def _detail_for_caller(
     )
 
 
+def _sees_device(placed: PlacedDevice, user: User, is_admin: bool) -> bool:
+    """A device is named to its owner, and to the workspace's admins, who see
+    every device in it."""
+    return is_admin or placed.owner_id == user.id
+
+
+def _device_for(
+    placed: PlacedDevice | None,
+    user: User,
+    is_admin: bool,
+    owner_names: dict[str, str],
+) -> AgentDevice | None:
+    if placed is None or not _sees_device(placed, user, is_admin):
+        return None
+    return AgentDevice(
+        id=placed.controller_id,
+        name=placed.name,
+        # The device's row names its owner, a user that exists, so this is found.
+        owner_name=owner_names[placed.owner_id],
+        removed=placed.revoked,
+    )
+
+
 @router.get("")
 async def list_agents(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> list[GatewayAgentSummary]:
+) -> list[GatewayAgentListEntry]:
     summaries = await list_agent_summaries(session, agent_store, user_store)
-    return await _summaries_for_caller(session, summaries, user, is_admin)
+    agents = await _summaries_for_caller(session, summaries, user, is_admin)
+    statuses = await overall_statuses(
+        session,
+        {agent.id: agent.connection_model for agent in agents},
+        protocol.agent_session_store,
+        protocol.connections,
+    )
+    devices = await _DEFINITIONS.devices(session, require_tenant_id())
+    device_owners = await user_store.names_by_id(
+        session,
+        {
+            placed.owner_id
+            for placed in devices.values()
+            if _sees_device(placed, user, is_admin)
+        },
+    )
+    return [
+        GatewayAgentListEntry(
+            **agent.model_dump(),
+            status=statuses[agent.id],
+            device=_device_for(devices.get(agent.id), user, is_admin, device_owners),
+        )
+        for agent in agents
+    ]
+
+
+@router.get("/rooms")
+async def list_agent_rooms(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    agent_id: Annotated[
+        list[str], Query(min_length=1, max_length=AGENT_ROOMS_PER_REQUEST)
+    ],
+) -> list[AgentRooms]:
+    """The rooms of every agent in `agent_id`, as `GET /agents/{agent_id}`
+    lists them, in one request and the same few statements however many
+    agents are asked about. An id with no agent behind it is left out."""
+    agents = await agent_store.get_many(session, agent_id)
+    memberships = await agent_room_memberships(
+        session,
+        agents=agents,
+        visible=readable_by(user.id, is_admin=is_admin),
+        room_store=room_store,
+        agent_session_store=protocol.agent_session_store,
+        room_role_store=protocol.room_role_store,
+        connections=protocol.connections,
+    )
+    return [
+        AgentRooms(agent_id=asked, rooms=memberships[asked])
+        for asked in dict.fromkeys(agent_id)
+        if asked in memberships
+    ]
 
 
 @router.delete("/by-name/{agent_name}")
@@ -274,7 +397,9 @@ async def delete_agent(
 
 
 @router.get("/known-types")
-async def list_known_agent_types() -> list[KnownAgentType]:
+async def list_known_agent_types(
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> list[KnownAgentType]:
     return [
         KnownAgentType(
             key=key,
@@ -282,7 +407,7 @@ async def list_known_agent_types() -> list[KnownAgentType]:
             tool_count=len(spec.tools),
             options_schema=spec.options_schema.model_json_schema(),
         )
-        for key, spec in known_agents().items()
+        for key, spec in offered_known_agents(config.feature_flags).items()
     ]
 
 
@@ -321,6 +446,7 @@ async def register_known_agent(
     req: RegisterKnownAgentRequest,
     user: Annotated[User, Depends(get_current_user)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> RegisterAgentResponse:
     spec = known_agent(req.agent_type)
     if spec is None:
@@ -328,6 +454,10 @@ async def register_known_agent(
             status_code=400,
             detail=f"Unknown agent type: {req.agent_type}",
         )
+    try:
+        require_offered_provider(spec.provider.id, config.feature_flags)
+    except ProviderNotOffered as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         options = spec.parse_options(req.options)
@@ -399,16 +529,13 @@ async def register_known_subagents(
         raise HTTPException(
             status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
         )
-    try:
-        require_manage(
-            Principal(user.id, is_admin),
-            parent.owner_id,
-        )
-    except PermissionError as exc:
+    # Not an admin: the subagents would sit under someone else's agent, in
+    # its working directory, as the caller's own with keys of their own.
+    if not owns(Principal(user.id, is_admin), parent.owner_id):
         raise HTTPException(
             status_code=403,
-            detail="Only the parent agent's owner or an admin can register its subagents.",
-        ) from exc
+            detail="Only the parent agent's owner can register its subagents.",
+        )
 
     # Derive names + per-subagent options (inheriting parent settings); reject
     # in-batch duplicates before touching the DB.
@@ -536,6 +663,39 @@ async def update_agent_options(
     owner_name = user.name if agent.owner_id == user.id else None
     summary = await build_agent_summary(session, agent_store, agent, owner_name)
     return await _summary_for_caller(session, summary, user, is_admin)
+
+
+@router.put("/{agent_id}/mid-turn-delivery")
+async def update_mid_turn_delivery(
+    agent_id: str,
+    req: UpdateAgentMidTurnDeliveryRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> AgentSummary:
+    """Choose what a message sent while the agent is working does: steer into
+    the running turn where its sender may, or always queue behind it.
+
+    Only the agent's owner (or an admin) can change it. It is sent with every
+    message, so the next one follows it without restarting the agent.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    try:
+        require_manage(Principal(user.id, is_admin), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can change how it takes messages sent while it works.",
+        )
+    await agent_store.update(session, agent_id, mid_turn_delivery=req.mid_turn_delivery)
+    await session.commit()
+    await session.refresh(agent)
+    return await build_agent_summary(
+        session, agent_store, agent, user.name if agent.owner_id == user.id else None
+    )
 
 
 @router.put("/{agent_id}/icon")
@@ -823,22 +983,41 @@ async def update_addressing_policy(
 ) -> GatewayAgentDetail:
     """Set or clear an agent's scoped addressing policy (CHOO-1585).
 
-    ``policy: null`` clears it (the agent becomes open to anyone). Only the
-    agent's owner (or an admin) may change it.
+    ``policy: null`` clears it (the agent becomes open to anyone). Its owner
+    may set any policy. A workspace admin may only narrow it, to stop an
+    agent misbehaving, never let in anyone it did not already admit
+    (`lets_in_more`): the agent acts with the service access its owner
+    granted it, often on its owner's machine, so whoever may address it acts
+    for its owner. An agent that acts for no person (`_may_widen_addressing`)
+    an admin may open too. A change by anyone but the owner is recorded in
+    the audit log.
     """
     agent = await agent_store.get(session, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
+    principal = Principal(user.id, is_admin)
     try:
-        require_manage(
-            Principal(user.id, is_admin),
-            agent.owner_id,
-        )
+        require_manage(principal, agent.owner_id)
     except PermissionError:
         raise HTTPException(
             status_code=403,
             detail="Only the agent's owner or an admin can change its addressing policy.",
+        )
+    before = agent.addressing_policy
+    owner = owns(principal, agent.owner_id)
+    if not await _may_widen_addressing(
+        session, principal, agent.owner_id
+    ) and lets_in_more(
+        req.policy if req.policy is not None else AddressingPolicy(),
+        parse_policy(before),
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the agent's owner can let more people or agents address "
+                "it. You can remove its rules, or restrict it to its owner."
+            ),
         )
 
     dead = [
@@ -853,6 +1032,21 @@ async def update_addressing_policy(
         )
     stored = req.policy.model_dump() if req.policy is not None else None
     await agent_store.update(session, agent_id, addressing_policy=stored)
+    if not owner:
+        await record_audit_event(
+            session,
+            tenant_id=require_tenant_id(),
+            actor_user_id=user.id,
+            action=AuditAction.AGENT_ADDRESSING_CHANGED,
+            target_type="agent",
+            target_id=agent.id,
+            details={
+                "agent_name": agent.name,
+                "owner_id": agent.owner_id,
+                "before": before,
+                "after": stored,
+            },
+        )
     await session.commit()
 
     logger.info(
@@ -865,7 +1059,7 @@ async def update_addressing_policy(
     detail = await assemble_agent_detail(
         session,
         agent=agent,
-        visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
+        visible=readable_by(user.id, is_admin=is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
@@ -906,7 +1100,22 @@ async def update_can_manage_agents(
             detail="Only the agent's owner can change whether it can manage agents.",
         )
 
+    was_enabled = agent.can_manage_agents
     await agent_store.update(session, agent_id, can_manage_agents=req.enabled)
+    if req.enabled != was_enabled:
+        await record_audit_event(
+            session,
+            tenant_id=agent.tenant_id,
+            actor_user_id=user.id,
+            action=(
+                AuditAction.AGENT_MANAGEMENT_GRANTED
+                if req.enabled
+                else AuditAction.AGENT_MANAGEMENT_REVOKED
+            ),
+            target_type="agent",
+            target_id=agent_id,
+            details={"agent_name": agent.name},
+        )
     await session.commit()
     await session.refresh(agent)
 
@@ -920,7 +1129,7 @@ async def update_can_manage_agents(
     detail = await assemble_agent_detail(
         session,
         agent=agent,
-        visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
+        visible=readable_by(user.id, is_admin=is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
@@ -952,7 +1161,7 @@ async def get_agent_detail(
     detail = await assemble_agent_detail(
         session,
         agent=agent,
-        visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
+        visible=readable_by(user.id, is_admin=is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,

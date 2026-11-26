@@ -1,6 +1,6 @@
 [project]
 name = "switch-core"
-version = "0.31.0"
+version = "0.32.2"
 description = "Switch — AI agent orchestration and governance platform"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -60,6 +60,12 @@ switch-migrate = "switch_core.main:migrate"
 switch-link-workos = "switch_core.workos_linking:main"
 switch-purge-organization = "switch_core.purge_organization:main"
 switch-cloud-machine = "switch_core.cloud_machine_admin:main"
+switch-orgs = "switch_core.organizations_admin:main"
+switch-accounts = "switch_core.accounts_admin:main"
+switch-connector-apps = "switch_core.connector_apps_admin:main"
+switch-promote-org-admin = "switch_core.promote_org_admin:main"
+switch-room-moderation = "switch_core.room_moderation_admin:main"
+switch-suspend = "switch_core.suspension_admin:main"
 
 [build-system]
 requires = ["hatchling"]

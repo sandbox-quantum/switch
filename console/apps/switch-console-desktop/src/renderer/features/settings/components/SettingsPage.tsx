@@ -9,17 +9,30 @@ import {
   servesWebGateway,
   webGatewayNeedsRestart,
 } from '@renderer/features/switch-servers/server-gateway';
+import {
+  administersWorkspaceInScope,
+  operatesServer,
+} from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarSections } from '@renderer/lib/components/page-layout';
-import { useAnyServerFeatureFlag } from '@renderer/lib/hooks/useFeatureFlags';
+import { useAnyServerFeatureFlag, useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { dashboardOrigin } from '@shared/core/switch-servers/switch-servers';
+import { log } from '@renderer/utils/logger';
+import { settingsPagePath } from '@shared/core/switch-servers/dashboard-pages';
+import { dashboardPageUrl, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { administersOrganization } from '@shared/core/workspaces/workspaces';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
 import { AccountSettingsPage } from '../pages/account-page';
+import {
+  ConnectorAppsSettingsPage,
+  ConnectorsSettingsPage,
+  DecisionRoutingSettingsPage,
+  GuardrailsSettingsPage,
+} from '../pages/admin-pages';
 import { ApiKeysSettingsPage } from '../pages/api-keys-page';
 import { MessagingAppsSettingsPage } from '../pages/messaging-apps-page';
 import { settingsServer } from '../pages/settings-server';
@@ -31,7 +44,6 @@ import {
   shownSettingsTab,
 } from '../settings-tabs';
 import NotificationSettingsCard from './NotificationSettingsCard';
-import { OnboardingChecklistRow } from './OnboardingSettingsRow';
 import { ReplayOnboardingRow } from './ReplayOnboardingRow';
 import {
   AutoGenerateSessionNamesRow,
@@ -49,17 +61,58 @@ function PreferencesSettingsPage() {
       <PageHeader
         sticky
         title="Preferences"
-        description="How Switch Console looks and behaves on this computer."
+        description="Customize how Switch Console looks and behaves on this computer."
       />
       <ThemeCard />
       <AutoGenerateSessionNamesRow />
       <AutoTrustWorktreesRow />
       <PreserveSessionNameCapitalizationRow />
       <NotificationSettingsCard />
-      <OnboardingChecklistRow />
       <ReplayOnboardingRow />
       <TelemetrySettingsCard />
     </div>
+  );
+}
+
+/**
+ * Whether the server's gateway has its new layout on. Its flags are read first
+ * when they never have been, so a click made before they arrive still lands on
+ * the settings home. Flags belong to the deployment, not to a workspace, so
+ * the answer holds for every workspace on the server.
+ *
+ * Flags that cannot be read count as off, which opens today's addresses: every
+ * server serves them and the new layout redirects them, but there Workspace
+ * settings then lands on its Users page, so the fallback is logged.
+ */
+async function newGatewayLayout(server: SwitchServer): Promise<boolean> {
+  let cause: unknown;
+  try {
+    const res = await rpc.featureFlags.current(server.id);
+    if (res.success && res.data.fetchedAt !== null) return res.data.flags.gateway_v2;
+    cause = res.success ? (res.data.error ?? 'not read yet') : res.error;
+  } catch (thrown) {
+    cause = thrown;
+  }
+  log.warn(
+    "Settings: could not read the server's feature flags, so its gateway settings open at their older addresses",
+    { serverId: server.id, cause }
+  );
+  return false;
+}
+
+/**
+ * Open a workspace's or an organization's settings in the gateway, for the
+ * workspace `tenantId` names and in the layout the server has on.
+ */
+async function openGatewaySettings(
+  server: SwitchServer,
+  link: 'workspace-settings' | 'organization-settings',
+  tenantId: string | null
+): Promise<void> {
+  const newLayout = await newGatewayLayout(server);
+  await openServerPage(
+    server.id,
+    dashboardPageUrl(server, settingsPagePath(link, newLayout), tenantId)
   );
 }
 
@@ -67,6 +120,10 @@ const TAB_CONTENT: Record<SettingsPageTab, () => React.ReactNode> = {
   preferences: () => <PreferencesSettingsPage />,
   'messaging-apps': () => <MessagingAppsSettingsPage />,
   'clis-models': () => <AgentsSettingsPage />,
+  connectors: () => <ConnectorsSettingsPage />,
+  'decision-routing': () => <DecisionRoutingSettingsPage />,
+  guardrails: () => <GuardrailsSettingsPage />,
+  'connector-apps': () => <ConnectorAppsSettingsPage />,
   'api-keys': () => <ApiKeysSettingsPage />,
   'remote-hosts': () => <RemoteHostsSettingsPage />,
   devices: () => <DevicesSettingsPage />,
@@ -97,11 +154,20 @@ export const SettingsPage = observer(function SettingsPage({
   const workspace = server !== null ? workspacesStore.onServerInScope(server.id) : null;
   const organizationSettings =
     workspaceSettings && workspace !== null && administersOrganization(workspace);
+  const serverFlags = useFeatureFlags(server?.id ?? null);
+  const serviceConnections = serverFlags.service_connections;
+  // What you administer is what the server says of you once signed in.
+  const operator = server !== null && user !== null && operatesServer(server.id);
   const sections = settingsSections({
     hasServer: server !== null,
     agentManagement,
     workspaceSettings,
     organizationSettings,
+    workspaceAdmin: server !== null && user !== null && administersWorkspaceInScope(server.id),
+    operatesGatewaylessServer: operator && server !== null && !servesWebGateway(server),
+    serviceConnections,
+    // Auto-route does not exist on a server with it off, so neither does its page.
+    decisionRouting: serverFlags.decision_routing,
   });
   const shownTab = shownSettingsTab(activeTab, sections);
 
@@ -119,8 +185,7 @@ export const SettingsPage = observer(function SettingsPage({
           onSuccess: () => startManagedServer(server),
         });
       } else {
-        const page = workspacePage ? 'workspace' : 'organization';
-        void openServerPage(server.id, `${dashboardOrigin(server)}/${page}`);
+        void openGatewaySettings(server, id, workspace?.tenantId ?? null);
       }
     } else {
       onTabChange(id);

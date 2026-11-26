@@ -8,6 +8,7 @@ from switch_core.addressing import (
     AddressingRule,
     can_address,
     default_agent_policy,
+    lets_in_more,
     never_allows,
     owner_and_owner_agents_policy,
     owner_only_policy,
@@ -910,3 +911,62 @@ class TestNeverAllows:
             assert [never_allows(rule) for rule in policy.rules] == [None] * len(
                 policy.rules
             )
+
+
+class TestLetsInMore:
+    """Whether a new policy admits someone besides the owner that the old one
+    did not: what only the owner may do (`PUT /agents/{id}/addressing-policy`)."""
+
+    OPEN = AddressingPolicy()
+    OWNER_ONLY = owner_only_policy([])
+
+    def test_opening_a_restricted_agent_does(self) -> None:
+        assert lets_in_more(self.OPEN, self.OWNER_ONLY) is True
+        assert lets_in_more(self.OPEN, default_agent_policy()) is True
+
+    def test_restricting_an_open_agent_does_not(self) -> None:
+        assert lets_in_more(self.OWNER_ONLY, self.OPEN) is False
+        assert lets_in_more(default_agent_policy(), self.OPEN) is False
+        assert lets_in_more(self.OPEN, self.OPEN) is False
+
+    def test_the_owner_alone_never_does(self) -> None:
+        anywhere = AddressingPolicy(
+            rules=[AddressingRule(users=[], agents=[], owner=True)]
+        )
+        in_one_room = AddressingPolicy(
+            rules=[AddressingRule(rooms=["r1"], users=[], agents=[], owner=True)]
+        )
+        assert lets_in_more(anywhere, in_one_room) is False
+
+    def test_the_owners_agents_do(self) -> None:
+        assert lets_in_more(default_agent_policy(), self.OWNER_ONLY) is True
+        assert lets_in_more(self.OWNER_ONLY, default_agent_policy()) is False
+
+    def test_naming_someone_new_does(self) -> None:
+        one = AddressingPolicy(rules=[AddressingRule(users=["u1"], agents=[])])
+        two = AddressingPolicy(rules=[AddressingRule(users=["u1", "u2"], agents=[])])
+        assert lets_in_more(two, one) is True
+        assert lets_in_more(one, two) is False
+        assert lets_in_more(owner_only_policy(["a1"]), self.OWNER_ONLY) is True
+
+    def test_more_rooms_for_someone_else_does(self) -> None:
+        narrow = AddressingPolicy(
+            rules=[AddressingRule(rooms=["r1"], users="*", agents=[])]
+        )
+        wide = AddressingPolicy(rules=[AddressingRule(users="*", agents=[])])
+        assert lets_in_more(wide, narrow) is True
+        assert lets_in_more(narrow, wide) is False
+
+    def test_removing_a_rule_does_not(self) -> None:
+        people = AddressingRule(rooms=["r1"], users=["u1"], agents=[])
+        both = AddressingPolicy(rules=[*self.OWNER_ONLY.rules, people])
+        assert lets_in_more(self.OWNER_ONLY, both) is False
+        assert lets_in_more(AddressingPolicy(rules=[people]), both) is False
+
+    def test_the_platform_does_even_on_an_open_agent(self) -> None:
+        """An open policy still keeps the platform's own messages out."""
+        with_platform = AddressingPolicy(
+            rules=[AddressingRule(users=[], agents=[], owner=True, platform=True)]
+        )
+        assert lets_in_more(with_platform, self.OPEN) is True
+        assert lets_in_more(with_platform, with_platform) is False

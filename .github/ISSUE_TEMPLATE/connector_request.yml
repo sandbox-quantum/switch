@@ -1,0 +1,36 @@
+name: Connector request
+description: Ask for a service your agents should be able to reach.
+title: 'Connector request: '
+labels: ['enhancement']
+body:
+  - type: input
+    id: service
+    attributes:
+      label: Which service?
+      placeholder: For example, Salesforce
+    validations:
+      required: true
+
+  - type: textarea
+    id: tasks
+    attributes:
+      label: What would your agents do with it?
+      description: A sentence is enough.
+      placeholder: For example, look up a customer's open deals before a call.
+
+  - type: markdown
+    attributes:
+      value: |
+        ### Optional details
+        Only if you know them. They help us add the service sooner.
+
+  - type: input
+    id: docs
+    attributes:
+      label: Link to its MCP server or API documentation
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Such as the plan or edition you use, or a workaround you use today.

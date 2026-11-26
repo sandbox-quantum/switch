@@ -5,11 +5,27 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+from switch_core.bridges.agent import commands
 from switch_core.bridges.agent.commands import (
     COMMANDS_BY_NAME,
     _cmd_list_aliases,
     _cmd_set_alias,
 )
+from switch_core.room_policy import RoomDecision
+
+
+@pytest.fixture(autouse=True)
+def _room_policy_allows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Who may change a room is `test_commands_room_permissions`'s; these
+    test what the command does once it may."""
+
+    async def allowed(*_args: object, **_kwargs: object) -> RoomDecision:
+        return RoomDecision(True, None)
+
+    monkeypatch.setattr(commands, "_room_decision", allowed)
+
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
 _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
@@ -81,7 +97,9 @@ def _event(args: str) -> SimpleNamespace:
 def _agent(
     agent_id: str, name: str, display_name: str | None = None
 ) -> SimpleNamespace:
-    return SimpleNamespace(id=agent_id, name=name, display_name=display_name)
+    return SimpleNamespace(
+        id=agent_id, name=name, display_name=display_name, owner_id=None
+    )
 
 
 _AGENTS = {

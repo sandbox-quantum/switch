@@ -89,7 +89,7 @@ export const browserSettingsSchema = z
   );
 
 /**
- * Whether the user lets the app send anonymous usage data, and when they were
+ * Whether the user lets the app send usage data, and when they were
  * asked.
  *
  * `enabled` defaults to on, and is the whole of the answer: see
@@ -109,18 +109,6 @@ export const openInSettingsSchema = z.object({
   default: openInAppIdSchema,
 });
 
-/**
- * Whether the first-run setup checklist is shown (CHOO-2022).
- *
- * Dismissing the checklist with its ✕ clears this, and the Settings toggle is
- * the way back — a dismissal that could not be undone would make the checklist
- * a one-shot, which is the wrong shape for something a user may dismiss before
- * they know what it was.
- */
-export const onboardingSettingsSchema = z.object({
-  showChecklist: z.boolean(),
-});
-
 export const APP_SETTINGS_SCHEMA_MAP = {
   localLocation: localLocationSettingsSchema,
   sessions: sessionSettingsSchema,
@@ -132,7 +120,6 @@ export const APP_SETTINGS_SCHEMA_MAP = {
   browserPreview: browserPreviewSettingsSchema,
   browser: browserSettingsSchema,
   changesViewMode: changesViewModeSchema,
-  onboarding: onboardingSettingsSchema,
   telemetry: telemetrySettingsSchema,
 } as const;
 
@@ -163,6 +150,5 @@ export const appSettingsSchema = z.object({
   browserPreview: browserPreviewSettingsSchema,
   browser: browserSettingsSchema,
   changesViewMode: changesViewModeSchema,
-  onboarding: onboardingSettingsSchema,
   telemetry: telemetrySettingsSchema,
 });

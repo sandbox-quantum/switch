@@ -27,8 +27,8 @@ export type RunLocationOption = {
 
 /**
  * The server's machines as Run location entries. Offline machines are listed,
- * but cannot be picked; but the owner's Switch cloud machine, which the Switch
- * cloud entry starts, is listed only while it is online.
+ * but cannot be picked; but the owner's Switch Cloud machine, which the Switch
+ * Cloud entry starts, is listed only while it is online.
  */
 export function machineRunLocations(machines: OwnedMachine[]): RunLocationOption[] {
   return machines

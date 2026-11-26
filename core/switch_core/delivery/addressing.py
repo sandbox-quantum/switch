@@ -91,13 +91,23 @@ ADDRESSING_DENIED_MESSAGE = (
 
 # The same refusal, for the case worth telling apart: the agent answers only to
 # its owner, and the sender's chat account is not linked to any Switch user, so
-# it cannot be recognised as the owner even if it is. Without this the owner
-# gets refused by their own agent with no idea why.
+# it cannot be recognised as the owner even if it is. Two people read it: the
+# owner on an account they have not linked yet, who needs to link it, and far
+# more often a colleague with no Switch account, who needs the owner to let
+# them in (GitHub #1185). It says both, owner's half first.
 ADDRESSING_UNCLAIMED_MESSAGE = (
     "I only take instructions from my owner, and this chat account isn't "
-    "linked to a Switch user yet — so I can't tell whether that's you. If it "
-    "is, link this account to your Switch user in Switch Console, post the "
-    "code it shows you from this account, and try again."
+    "linked to a Switch user, so I can't tell whether that's you. If you're my "
+    "owner, link this account in Switch and try again. Otherwise, ask "
+    "my owner to let you in: they can change who can talk to me in my settings."
+)
+
+# The refusal when the owner has already linked an account on this platform:
+# the unlinked sender is then almost certainly someone else, and telling them
+# to link an account would send them after something that cannot help them.
+ADDRESSING_OWNER_ONLY_MESSAGE = (
+    "I only take instructions from my owner. To use me, ask them to let you "
+    "in: they can change who can talk to me in my settings."
 )
 
 
@@ -369,6 +379,23 @@ class AddressingResolver:
         claimed = await self._external_user_store.get_by_user(session, user_id)
         return [ext.id for ext in claimed]
 
+    async def owner_linked_beside(
+        self, session: AsyncSession, owner_id: str | None, external_user_id: str
+    ) -> bool:
+        """Whether the agent's owner has a link that counts to an account on
+        the same platform workspace as this one.
+
+        Asked only on the way to a refusal, never on the path that admits a
+        message, so its reads cost nothing a permitted message pays for.
+        """
+        if owner_id is None:
+            return False
+        sender = await self._external_user_store.get(session, external_user_id)
+        if sender is None:
+            return False
+        claimed = await self._external_user_store.get_by_user(session, owner_id)
+        return any(ext.bridge_id == sender.bridge_id for ext in claimed)
+
     # ── Permitted ─────────────────────────────────────────────────────────────
 
     async def permitted(
@@ -468,12 +495,13 @@ class AddressingResolver:
                 principal.id,
                 room_id,
             )
-        return AddressingDecision(
-            allowed=False,
-            refusal=(
-                ADDRESSING_UNCLAIMED_MESSAGE if unclaimed else ADDRESSING_DENIED_MESSAGE
-            ),
-        )
+        if not unclaimed:
+            refusal = ADDRESSING_DENIED_MESSAGE
+        elif await self.owner_linked_beside(session, agent.owner_id, principal.id):
+            refusal = ADDRESSING_OWNER_ONLY_MESSAGE
+        else:
+            refusal = ADDRESSING_UNCLAIMED_MESSAGE
+        return AddressingDecision(allowed=False, refusal=refusal)
 
     async def resolve_sender(
         self,

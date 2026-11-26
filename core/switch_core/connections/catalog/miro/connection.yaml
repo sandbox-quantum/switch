@@ -1,0 +1,7 @@
+slug: miro
+name: Miro
+category: Design
+description: Read and add to Miro boards.
+enabled: false
+auth:
+  type: oauth

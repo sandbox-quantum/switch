@@ -236,6 +236,22 @@ def test_deleted_machine_keeps_the_latest_retention_deadline(tmp_path: Path):
     store.close()
 
 
+def test_an_expedited_deletion_takes_an_earlier_retention_deadline(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    machine = store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
+    machine = store.set_observed(machine, ObservedState.RETAINED, None)
+    with pytest.raises(StoreError, match="desired deleted"):
+        store.expedite_deletion(machine.machine_id, None)
+    later = datetime(2026, 1, 31, tzinfo=UTC)
+    earlier = datetime(2026, 1, 1, tzinfo=UTC)
+    machine = store.set_desired(machine.machine_id, DesiredState.DELETED, later)
+    assert store.expedite_deletion(machine.machine_id, earlier).retain_until == earlier
+    assert store.expedite_deletion(machine.machine_id, later).retain_until == earlier
+    assert store.expedite_deletion(machine.machine_id, None).retain_until is None
+    store.close()
+
+
 def test_retained_release_starts_the_next_instance_sequence(tmp_path: Path):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)

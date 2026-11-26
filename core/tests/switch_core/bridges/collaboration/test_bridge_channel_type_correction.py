@@ -180,7 +180,19 @@ class _StartableAdapter:
     def set_channel_migration_handler(self, handler: Any) -> None:
         return None
 
+    def set_user_left_handler(self, handler: Any) -> None:
+        pass
+
+    def set_member_sync_hooks(self, **hooks: Any) -> None:
+        pass
+
     def set_agent_presentation_resolver(self, resolver: Any) -> None:
+        return None
+
+    def set_interaction_handler(self, handler: Any) -> None:
+        return None
+
+    def set_takeback_handlers(self, **handlers: Any) -> None:
         return None
 
     async def start(self, **kwargs: Any) -> None:
@@ -202,6 +214,10 @@ def _startable_core(refresh: Any) -> tuple[CollaborationCore, _StartableAdapter]
         "_adapter": adapter,
         "_identity_task": None,
         "_channel_type_refresh_task": None,
+        "_member_sync_tasks": set(),
+        "_member_sync_pending": {},
+        "_member_sync_everything": False,
+        "_member_sync_running": False,
         "_load_channel_map": _noop,
         "_load_existing_human_actors": _noop,
         "_ensure_channel_captures": _noop,

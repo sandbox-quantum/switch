@@ -357,6 +357,9 @@ export function withDefinitionOf(
     else next.execution.instructions = template.execution.instructions;
     next.execution.skill = template.execution.skill;
     next.execution.codexConfig = template.execution.codexConfig;
+    if (template.execution.defaultCodexSandbox === undefined)
+      delete next.execution.defaultCodexSandbox;
+    else next.execution.defaultCodexSandbox = template.execution.defaultCodexSandbox;
   }
   return next;
 }
@@ -923,9 +926,21 @@ export async function runAgentHost(
         void pending.catch((error: Error) => fail(error));
       })
     );
+    /**
+     * The watcher's template as it last read it from disk, and whether
+     * `config.json` has been replaced since. Applying the definition reads the
+     * file again only when it was: the grants check runs it on a timer, and on
+     * Windows a read in flight refuses the rename that replaces the file.
+     */
+    let latestTemplate = template;
+    let templateReplaced = true;
     /** The watcher's template as it stands now, which admitting a room reads too. */
-    const currentTemplate = async (): Promise<SharedHostConfig> =>
-      sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
+    const currentTemplate = async (): Promise<SharedHostConfig> => {
+      latestTemplate = sharedConfigSchema.parse(
+        JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      );
+      return latestTemplate;
+    };
     /**
      * The shape of the agent's grants as last read (`servicesShape`), which
      * every session's host is compared against: null until first read.
@@ -1566,7 +1581,9 @@ export async function runAgentHost(
     const redefinitionDue = new Set<string>();
     let redefining = false;
     const applyDefinition = async () => {
-      const current = await currentTemplate();
+      const replaced = templateReplaced;
+      templateReplaced = false;
+      const current = replaced ? await currentTemplate() : latestTemplate;
       redefinitionDue.clear();
       const ours = new Set(
         assignments.sessions().map((config) => sharedSessionRoot(config.session.sessionId))
@@ -1631,7 +1648,10 @@ export async function runAgentHost(
       void pending.catch((error: Error) => fail(error));
     };
     unbind.push(
-      onConfigReplaced(root, stop.signal, redefine),
+      onConfigReplaced(root, stop.signal, () => {
+        templateReplaced = true;
+        redefine();
+      }),
       links.onBusy((busyRoot) => {
         if (redefinitionDue.has(busyRoot) && links.busy(busyRoot)?.busy === false) redefine();
       }),
@@ -1651,7 +1671,7 @@ export async function runAgentHost(
       if (checkingGrants || !anyLive()) return;
       checkingGrants = true;
       void (async () => {
-        const shape = await currentServicesShape(await currentTemplate());
+        const shape = await currentServicesShape(latestTemplate);
         if (shape === null) return;
         servicesNow = shape;
         redefine();

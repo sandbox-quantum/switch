@@ -1,6 +1,16 @@
-import { mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { prepareCodexSessionHome } from '../codex/home';
 import {
@@ -8,7 +18,11 @@ import {
   SERVICE_ACCOUNT_KEY_FIXTURE,
   vertexCredentialFixture,
 } from '../testing/vertex-fixtures';
-import { materializeHostedProvider, type HostedCredential } from './hosted-provider';
+import {
+  clearHostedProvider,
+  materializeHostedProvider,
+  type HostedCredential,
+} from './hosted-provider';
 
 let root: string;
 beforeEach(async () => {
@@ -116,6 +130,7 @@ it('keeps the prepared Codex home and refreshes its auth before provider startup
     sessionId: 'session',
     sourceHome,
     config: 'model = "fixture-model"',
+    defaultSandbox: null,
   });
   expect(keyringLogin).toBe(false);
   env.CODEX_HOME = home;
@@ -178,7 +193,33 @@ it('clears the Vertex AI variables when Claude is given another login', async ()
   expect(env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-given' });
 });
 
-it('refuses a Vertex AI login for another provider than Claude, or one that is not valid', async () => {
+it('writes a Vertex AI login’s Google credential, and signs agy in with application-default credentials', async () => {
+  const env: Record<string, string> = { GEMINI_API_KEY: 'inherited', AGY_ADC_AUTH: 'false' };
+  const login = { ...vertex(AUTHORIZED_USER_FIXTURE), provider: 'antigravity' as const };
+  await materializeHostedProvider(root, env, login, '/home/u/.local/bin/agy');
+  const path = join(root, 'provider-home', 'google-credentials.json');
+  expect(env).toEqual({
+    AGY_ADC_AUTH: 'true',
+    GOOGLE_CLOUD_PROJECT: 'acme-ai',
+    GOOGLE_CLOUD_QUOTA_PROJECT: 'acme-ai',
+    GOOGLE_CLOUD_LOCATION: 'global',
+    GOOGLE_APPLICATION_CREDENTIALS: path,
+  });
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(AUTHORIZED_USER_FIXTURE);
+});
+
+it('refuses a Vertex AI login for the retired antigravity-acp runtime, which cannot use it', async () => {
+  await expect(
+    materializeHostedProvider(
+      root,
+      {},
+      { ...vertex(SERVICE_ACCOUNT_KEY_FIXTURE), provider: 'antigravity' },
+      '/home/u/.local/bin/antigravity-acp'
+    )
+  ).rejects.toThrow(/only with Google's agy CLI/);
+});
+
+it('refuses a Vertex AI login for another provider than Claude or Antigravity, or one that is not valid', async () => {
   await expect(
     materializeHostedProvider(
       root,
@@ -196,4 +237,95 @@ it('refuses a Vertex AI login for another provider than Claude, or one that is n
     )
   ).rejects.toThrow(/Only a service account key/);
   await expect(stat(join(root, 'provider-home'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('removes every login file it wrote, and leaves the rest of the provider’s state', async () => {
+  const env: Record<string, string> = {};
+  await materializeHostedProvider(
+    root,
+    env,
+    credential('{"tokens":{"access_token":"fixture-original"}}'),
+    'fixture-cli'
+  );
+  await writeFile(join(root, 'provider-home', 'config.toml'), 'model = "fixture"');
+  const removed = await clearHostedProvider(root, null);
+  expect(removed.sort()).toEqual(
+    [
+      join(root, 'provider-home', 'auth.json'),
+      join(root, 'provider-home', 'auth.json.switch-credential'),
+    ].sort()
+  );
+  expect(await readdir(join(root, 'provider-home'))).toEqual(['config.toml']);
+  expect(await clearHostedProvider(root, null)).toEqual([]);
+});
+
+it('removes OpenCode’s database only when a console login was imported into it', async () => {
+  const opencode = join(root, 'provider-data', 'opencode');
+  await mkdir(opencode, { recursive: true });
+  await writeFile(join(opencode, 'opencode.db'), 'sessions');
+  expect(await clearHostedProvider(root, null)).toEqual([]);
+  expect(await readdir(opencode)).toEqual(['opencode.db']);
+  await writeFile(join(opencode, '.switch-console-credential'), 'fingerprint');
+  await writeFile(join(opencode, 'opencode.db-wal'), 'wal');
+  await clearHostedProvider(root, null);
+  expect(await readdir(opencode)).toEqual([]);
+});
+
+it.skipIf(process.platform === 'win32')(
+  'names every login file it could not remove, after trying them all',
+  async () => {
+    await mkdir(join(root, 'provider-home'), { recursive: true });
+    await writeFile(join(root, 'provider-home', 'auth.json'), 'login');
+    await mkdir(join(root, 'provider-data', 'opencode'), { recursive: true });
+    await writeFile(join(root, 'provider-data', 'opencode', 'auth.json'), 'login');
+    await chmod(join(root, 'provider-home'), 0o500);
+    try {
+      await expect(clearHostedProvider(root, null)).rejects.toThrow(/provider-home\/auth\.json/);
+    } finally {
+      await chmod(join(root, 'provider-home'), 0o700);
+    }
+    expect(await readdir(join(root, 'provider-data', 'opencode'))).toEqual([]);
+  }
+);
+
+it.skipIf(process.platform === 'win32')(
+  'opens the directories it writes a login in to the agents’ group under the shared group',
+  async () => {
+    vi.stubEnv('SWITCH_HOST_SHARED_GROUP', '1');
+    try {
+      const env: Record<string, string> = {};
+      await mkdir(join(root, 'provider-home'), { mode: 0o700 });
+      await materializeHostedProvider(
+        root,
+        env,
+        credential('{"tokens":{"access_token":"fixture-original"}}'),
+        'fixture-cli'
+      );
+      // Made private by an earlier agent host, opened now; the login itself stays the agent's.
+      expect((await stat(join(root, 'provider-home'))).mode & 0o777).toBe(0o770);
+      expect((await stat(join(root, 'provider-home', 'auth.json'))).mode & 0o777).toBe(0o600);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }
+);
+
+it('removes the copies the agent’s Codex sessions made of a login it wrote, and only then', async () => {
+  const sessions = join(root, 'sessions-base');
+  const copy = join(sessions, 'session-a', 'provider-home', 'home-a', 'auth.json');
+  await mkdir(dirname(copy), { recursive: true });
+  await writeFile(copy, 'the machine’s own login');
+  // No login of Switch's: the copy is of the machine's own, and stays.
+  await clearHostedProvider(root, sessions);
+  expect(await readFile(copy, 'utf8')).toBe('the machine’s own login');
+  await materializeHostedProvider(
+    root,
+    {},
+    credential('{"tokens":{"access_token":"fixture-original"}}'),
+    'fixture-cli'
+  );
+  await writeFile(copy, 'a copy of the given login');
+  const removed = await clearHostedProvider(root, sessions);
+  expect(removed).toContain(copy);
+  expect(await readdir(dirname(copy))).toEqual([]);
 });

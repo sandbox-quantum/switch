@@ -101,7 +101,8 @@ run:
 # For testing Switch Console against this checkout instead of whatever a shared
 # deployment runs. Needs `just up` first. Invitation e-mails go to the Mailpit
 # catcher, and their links point at :8000 so that pasting one into the Console
-# matches the stand-in. docs/old/LOCAL_DEVELOPMENT.md, "A local Switch Cloud".
+# matches the stand-in. `just gateway-dev` on :5173 can sign in to it too.
+# docs/old/LOCAL_DEVELOPMENT.md, "A local Switch Cloud".
 # Run switch-core as Switch Cloud, with invitation e-mail caught at :8025
 local-cloud:
     docker compose -f deploy/local/docker-compose.yml --project-directory . --profile mail up -d mailpit
@@ -109,6 +110,7 @@ local-cloud:
     GATEWAY_SMTP_USERNAME= GATEWAY_SMTP_PASSWORD= \
     GATEWAY_SMTP_FROM="Switch <invites@switch.local>" \
     FRONTEND_BASE_URL=http://localhost:8000 GATEWAY_COOKIE_SECURE=false \
+    GATEWAY_EXTRA_ORIGINS='["http://localhost:5173"]' \
     uv run --project core python -m switch_core.main
 
 # Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in
@@ -116,22 +118,15 @@ local-cloud:
 local-cloud-console:
     cd console && SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
 
-# Made by the gateway admin from .env, so it joins the admin's workspace, as
-# every admin-made account does. Use the admin's domain (switch.local by
-# default) for an account that should be able to join by domain.
-#   just local-cloud-user ada@switch.local "Ada Lovelace" <password>
+# Made with `switch-accounts create`, in no workspace: invite it from one (the
+# e-mail lands in Mailpit), or give it an address at a domain a workspace is
+# open to. The password is asked for twice on a terminal, or read from a
+# pipe; it is never taken from the command line.
+#   just local-cloud-user ada@switch.local "Ada Lovelace"
+#   printf '%s' "$PASSWORD" | just local-cloud-user ada@switch.local "Ada Lovelace"
 # Create an account on `just local-cloud` to sign in with
-local-cloud-user email name password:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    jar="$(mktemp)"
-    trap 'rm -f "$jar"' EXIT
-    curl -fsS -c "$jar" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg e "$GATEWAY_ADMIN_EMAIL" --arg p "$GATEWAY_ADMIN_PASSWORD" '{email: $e, password: $p}')" \
-      http://localhost:8000/gateway/auth/login >/dev/null
-    curl -fsS -b "$jar" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg e '{{ email }}' --arg n '{{ name }}' --arg p '{{ password }}' '{email: $e, name: $n, password: $p}')" \
-      http://localhost:8000/gateway/users | jq .
+local-cloud-user email name:
+    uv run --project core switch-accounts create {{ quote(email) }} --name {{ quote(name) }}
 
 # ── Format code with ruff ──────────────────────────────────────────────────────
 # Run from the repo root so ruff's hierarchical config discovery applies the
@@ -276,33 +271,32 @@ gateway-test:
 
 # Create the local accounts the dev role switcher signs in as, one per
 # permission level (operator, org admin, workspace admin, member), and save
-# their logins where `just gateway-dev` serves them to it. The switcher shows
-# with the `gateway_v2` flag on. Needs `just up` and `just run`; safe to run
-# again.
+# their logins where `just gateway-dev` serves them to it. Needs `just up`
+# and `just run`; safe to run again.
 seed-dev-roles:
     uv run --project core python scripts/seed_dev_roles.py
 
 # ── Standalone deployment (all-in-one Docker, no host toolchain) ──────────────
 # Repo users build from source: the build override re-adds the `build:` blocks
 # so images come from the working tree, not GHCR. All profiles are enabled to
-# bring up the full all-in-one stack (Mattermost bridge + gateway).
+# bring up the full all-in-one stack (core + gateway).
 standalone-up:
-    docker compose -f deploy/local/standalone-docker-compose.yml -f deploy/local/standalone-docker-compose.build.yml --profile collab --profile gateway --project-directory . up -d --build
+    docker compose -f deploy/local/standalone-docker-compose.yml -f deploy/local/standalone-docker-compose.build.yml --profile gateway --project-directory . up -d --build
 
 standalone-down:
-    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down
 
 standalone-reset:
     #!/usr/bin/env bash
     set -euo pipefail
     read -r -p "⚠️  This deletes ALL standalone data volumes (rooms, messages, agents, users). Continue? [y/N] " ans
     [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
-    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down -v
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down -v
 
 # ── Documentation ──────────────────────────────────────────────────────────────
-# Clones the docs repository unless --source names a checkout of it:
-#     just sync-docs --source ../docs
-# Everything under docs/official is rewritten, so edit the source pages instead.
-# Convert the published Switch pages into docs/official as Markdown
-sync-docs *args:
-    python3 scripts/sync_docs.py {{ args }}
+# The docs are published at https://docs.switchagents.ai; read them there.
+# Download the whole site as one Markdown file (docs/llms-full.txt, gitignored) for offline use
+docs:
+    curl -fsSL https://docs.switchagents.ai/llms-full.txt -o docs/llms-full.txt.tmp || { rm -f docs/llms-full.txt.tmp; exit 1; }
+    mv docs/llms-full.txt.tmp docs/llms-full.txt
+    @echo "Wrote docs/llms-full.txt"

@@ -22,6 +22,7 @@ from switch_core.bridges.agent.protocol.types import (
 from switch_core.db.models import Client, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.keys import Keyring
@@ -69,6 +70,7 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.api_key_store = ApiKeyStore()  # type: ignore[attr-defined]
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
+    svc.external_user_store = ExternalUserStore()  # type: ignore[attr-defined]
     svc.user_store = UserStore()  # type: ignore[attr-defined]
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]

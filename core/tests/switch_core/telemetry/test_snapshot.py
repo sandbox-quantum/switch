@@ -14,10 +14,17 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
+from switch_core.bridges.agent.commands import AGENT_GREETING_KEY
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    AUTO_REPLY_FLAG,
+    PLATFORM_MARKER,
+    SAID_FOR_AGENT_FLAG,
+)
 from switch_core.clients.consumer import Consumer
 from switch_core.db.models import (
     Agent,
@@ -578,6 +585,89 @@ class TestOnlyWhatSomeoneSaidCounts:
         assert counts.agent_active_7d == 0
         assert counts.turn_human_to_agent_1d == 0
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            {
+                "body": "Hey there! Tag @agent if you need me.",
+                SAID_FOR_AGENT_FLAG: True,
+                AGENT_GREETING_KEY: True,
+            },
+            {"body": "Hi! I'm agent — how can I help?", SAID_FOR_AGENT_FLAG: True},
+            {"body": "Welcome! Ask me anything.", SAID_FOR_AGENT_FLAG: True},
+            {"body": "🎭 Took the reviewer role.", SAID_FOR_AGENT_FLAG: True},
+            {"body": "Reset: a fresh conversation.", SAID_FOR_AGENT_FLAG: True},
+        ],
+        ids=[
+            "greeting",
+            "direct-room greeting",
+            "opening message",
+            "notice",
+            "command",
+        ],
+    )
+    async def test_what_switch_says_under_an_agents_name_is_not_the_agent_talking(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        content: dict[str, object],
+    ) -> None:
+        """An agent added to a room greets it whether or not it ever runs.
+        Counted, it reads as active for a week, and as answering whoever spoke
+        before it."""
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _say(session, room, human, seq=1)
+            await _stored(
+                session,
+                room,
+                agent,
+                seq=2,
+                event_type="m.room.message",
+                content={"msgtype": "m.text", **content},
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_count_1d == 1
+        assert counts.message_from_agent_1d == 0
+        assert counts.agent_active_7d == 0
+        assert counts.turn_human_to_agent_1d == 0
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            {ADMIN_MARKER: {"type": "command_result"}},
+            {PLATFORM_MARKER: {"on_behalf_of": {"user_id": "u1", "name": "Ada"}}},
+        ],
+        ids=["admin notice", "template kickoff"],
+    )
+    async def test_what_switch_posts_as_itself_is_not_a_message(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        marker: dict[str, object],
+    ) -> None:
+        """`message_sent` counts neither, and `message_count` is the check on
+        it: counted here, the gap would read as messages lost."""
+        async with session_factory() as session:
+            room = await _room(session)
+            system = await _client(session, "system")
+            human = await _client(session, "user")
+            await _say(session, room, human, seq=1)
+            await _stored(
+                session,
+                room,
+                system,
+                seq=2,
+                event_type="m.room.message",
+                content={"msgtype": "m.text", "body": "notice", **marker},
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_count_1d == 1
+
     async def test_a_person_added_to_a_room_does_not_activate_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -1137,6 +1227,69 @@ class TestTheFourPathsAgreeOnActivity:
         assert newly_active[0].first_active_at == NOW - timedelta(minutes=90)
 
 
+class TestASwitchConsoleChat:
+    """A room used only from Switch Console chat, through a person's `member`
+    client. It becomes active and reads as ever active, as it counts in the
+    period counts; the snapshot's released gauges keep their definition, which
+    counts people on messaging platforms only."""
+
+    async def test_it_becomes_active_and_was_ever_active(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(
+                session, created_at=NOW - timedelta(hours=5), channel_type="direct"
+            )
+            person = await _client(session, "member")
+            agent = await _client(session, "agent")
+            await _join(session, person, room)
+            await _join(session, agent, room)
+            await _say(session, room, person, seq=1, when=NOW - timedelta(hours=2))
+            await session.flush()
+
+            counts = await _counts(session)
+            was_ever_active = await room_had_human_activity(
+                session, TENANT_ZERO, room.id
+            )
+            await session.commit()
+
+        newly_active = await newly_active_rooms(
+            session_factory, since=NOW - timedelta(hours=4), now=NOW
+        )
+
+        assert was_ever_active is True
+        assert len(newly_active) == 1
+        assert newly_active[0].first_active_at == NOW - timedelta(hours=2)
+        assert newly_active[0].channel_type == "direct"
+        assert counts.room_active_1d == 0
+        assert counts.chat_identity_active_1d == 0
+
+    async def test_a_chat_with_no_agent_is_not_active(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session, created_at=NOW - timedelta(hours=5))
+            first = await _client(session, "member")
+            second = await _client(session, "member")
+            await _join(session, first, room)
+            await _join(session, second, room)
+            await _say(session, room, first, seq=1, when=NOW - timedelta(hours=2))
+            await _say(session, room, second, seq=2, when=NOW - timedelta(hours=1))
+            await session.flush()
+
+            was_ever_active = await room_had_human_activity(
+                session, TENANT_ZERO, room.id
+            )
+            await session.commit()
+
+        newly_active = await newly_active_rooms(
+            session_factory, since=NOW - timedelta(hours=4), now=NOW
+        )
+
+        assert was_ever_active is False
+        assert newly_active == []
+
+
 class TestTheDeploymentTotal:
     async def test_users_are_counted_once_for_the_deployment(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1190,6 +1343,8 @@ class TestNormalising:
 
     def test_a_runtime_switch_does_not_know_becomes_other(self) -> None:
         assert normalise_known_agent_type({"known_agent_type": "codex"}) == "codex"
+        assert normalise_known_agent_type({"known_agent_type": "cursor"}) == "cursor"
+        assert normalise_known_agent_type({"known_agent_type": "junie"}) == "junie"
         assert normalise_known_agent_type({"known_agent_type": "zed"}) == "other"
         assert normalise_known_agent_type({}) == "none"
         assert normalise_known_agent_type(None) == "none"

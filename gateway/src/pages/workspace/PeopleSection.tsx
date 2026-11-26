@@ -11,7 +11,7 @@ import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { type Erasure, type Person, fetchErasures, fetchPeople } from "../../data/api";
-import { formatDate, sentenceCase, titleCase } from "../../theme/format";
+import { formatDate, platformLabel, sentenceCase } from "../../theme/format";
 import EraseDialog from "./EraseDialog";
 import { useLoad } from "./useLoad";
 
@@ -87,7 +87,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
         valueGetter: (_value, row) =>
           row.kind === "member"
             ? "Switch Console"
-            : `${row.bridge_name ?? "Disconnected app"} (${titleCase(row.platform)})`,
+            : `${row.bridge_name ?? "Disconnected app"} (${platformLabel(row.platform)})`,
       },
       { field: "message_count", headerName: "Messages", width: 110, type: "number" },
       {
@@ -121,7 +121,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
     <Stack spacing={1.5}>
       <Typography variant="h6">People</Typography>
       <Typography variant="body2" sx={{ color: "text.secondary" }}>
-        Everyone seen in this workspace&apos;s rooms, through a chat app (including apps since
+        Everyone seen in this workspace&apos;s rooms, through a messaging app (including apps since
         disconnected) or Switch Console (including deleted accounts, shown as Former member).
         Erasing
         someone permanently deletes every message they sent and their files, for example to
@@ -150,7 +150,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
       />
       {people.loading ? (
         <CircularProgress />
-      ) : (
+      ) : people.error !== null ? null : (
         <DataTable
           rows={rows}
           columns={columns}

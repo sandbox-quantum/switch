@@ -80,6 +80,7 @@ function showPageWith(flags: AgentFlags) {
       ...agent,
       ...flags,
       can_change_manage_agents: false,
+      can_widen_addressing: false,
       can_grant_services: false,
     },
     loading: false,
@@ -118,9 +119,14 @@ describe("agent rename and options", () => {
 
     expect(screen.queryByRole("button", { name: "Rename agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    expect(
-      screen.getByText("Only the agent's owner and admins can edit these options."),
-    ).toBeTruthy();
+  });
+
+  it("are not shown to anyone else, who is sent none, rather than shown the defaults as its options", () => {
+    showPageWith(OUTSIDER);
+
+    expect(screen.getByText("Only the agent's owner and admins can see its options.")).toBeTruthy();
+    expect(screen.queryByText(/can edit these options/)).toBeNull();
+    expect(screen.queryByText(/OAuth client/)).toBeNull();
   });
 
   it("keeps rename from an agent the server will not rename, leaving its options", () => {
@@ -164,5 +170,40 @@ describe("agent transfer", () => {
     showPageWith(OUTSIDER);
 
     expect(screen.queryByRole("button", { name: "Transfer ownership" })).toBeNull();
+  });
+});
+
+describe("a read-only agent page", () => {
+  it("says so at the top for someone who may not manage the agent", () => {
+    showPageWith(OUTSIDER);
+
+    expect(screen.getByRole("status").textContent).toContain(
+      "only its owner and this workspace's admins can change it",
+    );
+  });
+
+  it("says nothing of the kind to whoever may manage it", () => {
+    showPageWith(MANAGER);
+
+    expect(screen.queryByText(/only its owner and this workspace's admins/)).toBeNull();
+  });
+});
+
+describe("agent options when the agent types couldn't be loaded", () => {
+  it("says the types couldn't be loaded, not that Switch no longer knows this one", () => {
+    showPageWith(MANAGER);
+    cleanup();
+    vi.mocked(hooks.useKnownAgentTypes).mockReturnValue({
+      data: null,
+      loading: false,
+      error: "503 Service Unavailable",
+      refetch: vi.fn(),
+    });
+    render(<AgentDetailPage />);
+
+    expect(
+      screen.getByText("Couldn't load the agent types, so this agent's options can't be shown: 503 Service Unavailable"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Switch no longer describes its options/)).toBeNull();
   });
 });

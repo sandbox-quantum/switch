@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 import telegram
 from telegram.error import InvalidToken
@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 ALLOWED_UPDATES: tuple[str, ...] = (
     "message",
     "channel_post",
+    "edited_message",
+    "edited_channel_post",
     "my_chat_member",
     "callback_query",
 )
@@ -109,8 +111,11 @@ class TelegramAppClient:
         webhook_url: str,
         webhook_secret: str,
         on_connected: Callable[[TelegramAppClient], Awaitable[None]],
+        feature_flags: Mapping[str, bool],
     ) -> None:
         self._bot = bot
+        # The deployment's: which commands the `/` menu offers.
+        self._feature_flags = feature_flags
         self._on_connected = on_connected
         self._webhook_url = webhook_url
         self._webhook_secret = webhook_secret
@@ -198,7 +203,7 @@ class TelegramAppClient:
         full without it, and a missing menu is a far better outcome than an app
         that offers no links because a cosmetic call failed.
         """
-        menu = command_menu()
+        menu = command_menu(self._feature_flags)
         try:
             await self._bot.set_my_commands(menu)
         except Exception:

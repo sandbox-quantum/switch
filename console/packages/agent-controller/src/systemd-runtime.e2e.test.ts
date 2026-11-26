@@ -92,7 +92,9 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
     await running?.catch(() => {});
     await core?.stop();
     for (const slot of [1, 2, 3])
-      await systemctl(['stop', separateUserNames(config.uid).agentUnit(slot)]).catch(() => {});
+      await systemctl(['stop', separateUserNames(config.uid).agentUnit(slot, 'standard')]).catch(
+        () => {}
+      );
     store?.close();
   });
 
@@ -128,6 +130,7 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
             env: { ...process.env, ANTHROPIC_API_KEY: "sk-e2e-not-real-'quoted'" },
             log: silentLogger,
             now: Date.now,
+            codexTemplate: true,
           }),
         locator: {
           locate: async (provider) =>
@@ -138,7 +141,6 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
         rechecks: new ProviderRechecks(),
         refreshPath: async () => {},
         providerSeed: [],
-        sessionStarted: () => {},
         tools: async () => [],
         fetch,
         openWebSocket: core.openWebSocket,
@@ -146,8 +148,10 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
         dataDir: dataDir!,
         workspacesFor: () => join(dataDir!, 'workspaces'),
         version: '0.1.0',
+        deviceId: null,
         updatedBy: 'self',
         selfUpdate: null,
+        supervised: false,
         now: Date.now,
         random: () => 0,
         timing: {
@@ -158,6 +162,7 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
           streamIdleMs: 5_000,
           streamInitialBackoffMs: 50,
           streamMaxBackoffMs: 500,
+          streamSuspendedRetryMs: 500,
           eventBufferLimit: 100,
         },
       },
@@ -173,8 +178,8 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
     const first = store.agentUser('e2e-agent-1');
     const second = store.agentUser('e2e-agent-2');
     expect(new Set([first, second])).toEqual(new Set([1, 2]));
-    expect(await unitUser(names.agentUnit(first!))).toBe(names.agentUser(first!));
-    expect(await unitUser(names.agentUnit(second!))).toBe(names.agentUser(second!));
+    expect(await unitUser(names.agentUnit(first!, 'standard'))).toBe(names.agentUser(first!));
+    expect(await unitUser(names.agentUnit(second!, 'standard'))).toBe(names.agentUser(second!));
     const root = agentRoot(config, first!);
     expect(readFileSync(join(root, '.switch-agent-id'), 'utf8').trim()).toBe('e2e-agent-1');
     const environment = readFileSync(join(dataDir!, 'units', `0${first}`, 'environment'), 'utf8');
@@ -224,7 +229,7 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
     core.setAssignment({ revision: 2, agents: [agent('e2e-agent-1', 'first')] });
     core.push('assignment.changed', { revision: 2 });
     await waitFor(() => store.agentUser('e2e-agent-2') === null, 'the second agent’s user freed');
-    const state = await systemctl(['is-active', names.agentUnit(second!)]).catch(
+    const state = await systemctl(['is-active', names.agentUnit(second!, 'standard')]).catch(
       (error: { stdout?: string }) => error.stdout ?? ''
     );
     expect(state.trim()).toBe('inactive');
@@ -259,7 +264,7 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
     );
     const moved = store.agentUser('e2e-agent-2')!;
     expect(moved).not.toBe(second);
-    expect(await unitUser(names.agentUnit(moved))).toBe(names.agentUser(moved));
+    expect(await unitUser(names.agentUnit(moved, 'standard'))).toBe(names.agentUser(moved));
     const back = JSON.parse(
       readFileSync(join(agentRoot(config, moved), 'watcher', 'config.json'), 'utf8')
     );
@@ -284,6 +289,8 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
     stop.abort();
     expect(await running).toBe('stopped');
     // Agents outlive the controller.
-    expect((await systemctl(['is-active', names.agentUnit(first!)])).trim()).toBe('active');
+    expect((await systemctl(['is-active', names.agentUnit(first!, 'standard')])).trim()).toBe(
+      'active'
+    );
   }, 120_000);
 });

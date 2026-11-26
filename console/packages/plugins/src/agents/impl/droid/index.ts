@@ -3,7 +3,7 @@ import { icon } from './icon';
 
 export const DROID_INSTALL_UNIX = 'curl -fsSL https://app.factory.ai/cli | sh';
 export const DROID_INSTALL_WINDOWS =
-  'powershell -ExecutionPolicy ByPass -c "irm https://app.factory.ai/cli.ps1 | iex"';
+  'powershell -ExecutionPolicy ByPass -c "irm https://app.factory.ai/cli/windows | iex"';
 
 export const plugin = definePlugin(
   {

@@ -5,7 +5,8 @@ refresh, check a grant, issue, revoke, all counted. `FakeOAuthServer` plays
 the HTTP side of an OAuth vendor with MCP servers, for the generic OAuth/MCP
 adapter to talk to: its metadata, authorization, token, registration,
 revocation, introspection and account endpoints, and an MCP server that takes
-its tokens.
+its tokens. `FakeSites` plays one vendor at several sites, each a
+`FakeOAuthServer` of its own, as a vendor with regional deployments is.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import json
 import secrets
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -39,6 +40,7 @@ class FakeVendor:
 
     def __init__(self) -> None:
         self.can_issue = True
+        self.read_only = False
         self.refreshes = 0
         self.refresh_error: Exception | None = None
         self.issue_error: Exception | None = None
@@ -52,12 +54,13 @@ class FakeVendor:
         self.issued: list[tuple[str, str]] = []
         self.revoked: list[str] = []
         self.connections_revoked: list[ConnectionSecret] = []
+        self.revoke_connection_error: Exception | None = None
         self.grant_error: Exception | None = None
         self.checked: list[tuple[str, dict[str, Any]]] = []
         self.resolved: list[list[str]] = []
         self.client_id: str | None = None
 
-    def current_client_id(self) -> str | None:
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return self.client_id
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
@@ -100,8 +103,11 @@ class FakeVendor:
     async def revoke_issued(self, token: str) -> None:
         self.revoked.append(token)
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None:
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> bool:
+        if self.revoke_connection_error is not None:
+            raise self.revoke_connection_error
         self.connections_revoked.append(secret)
+        return True
 
     async def resolve_repositories(
         self, access_token: str, names: list[str]
@@ -130,9 +136,10 @@ class FakeVendor:
         return f"{agent_name} can {verb} {count} repositories, as the GitHub App."
 
 
-MCP_URL = "https://mcp.example.test/v1/mcp"
-ISSUER = "https://auth.example.test"
-IDENTITY_URL = "https://api.example.test/me"
+SITE = "example.test"
+MCP_URL = f"https://mcp.{SITE}/v1/mcp"
+ISSUER = f"https://auth.{SITE}"
+IDENTITY_URL = f"https://api.{SITE}/me"
 STATIC_CLIENT_ID = "example-client"
 STATIC_CLIENT_SECRET = "SYNTHETIC-CLIENT-SECRET"
 MCP_TOOLS = [
@@ -317,7 +324,8 @@ class FakeOAuthServer:
     """An OAuth vendor with an MCP server, over `httpx.MockTransport`.
 
     Codes are checked against their PKCE challenge, redirect URI and client;
-    rotating refresh tokens are spent on use, as the vendor's would be.
+    rotating refresh tokens are spent on use, as the vendor's would be, and
+    refresh only for the client they were issued to (RFC 6749 §6).
     `fail` answers a path with a fixed status and body, before anything else.
 
     The MCP server's metadata is where `resource_metadata_path` says, which
@@ -328,9 +336,16 @@ class FakeOAuthServer:
     method out unless `answer_names_method`.
     """
 
-    def __init__(self, *, rotating: bool = True, lifetime: int = 3600) -> None:
+    def __init__(
+        self, *, rotating: bool = True, lifetime: int = 3600, site: str = SITE
+    ) -> None:
         self.rotating = rotating
         self.lifetime = lifetime
+        # Where it answers: `mcp.<site>`, `auth.<site>` and `api.<site>`.
+        self.site = site
+        self.mcp_url = f"https://mcp.{site}/v1/mcp"
+        self.issuer = f"https://auth.{site}"
+        self.identity_url = f"https://api.{site}/me"
         self.resource_metadata_path = "/.well-known/oauth-protected-resource/v1/mcp"
         self.advertise = True
         # Some vendors issue long codes: Atlassian's run past 2,000 characters.
@@ -349,6 +364,8 @@ class FakeOAuthServer:
         self.codes: dict[str, _Code] = {}
         self.live_access: dict[str, list[str]] = {}
         self.live_refresh: dict[str, list[str]] = {}
+        # The client each refresh token was issued to.
+        self.refresh_clients: dict[str, str] = {}
         self.spent_refresh: set[str] = set()
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
@@ -357,12 +374,12 @@ class FakeOAuthServer:
         self.paths: list[str] = []
         self.fail: dict[str, tuple[int, Any]] = {}
         self.metadata: dict[str, Any] = {
-            "issuer": ISSUER,
-            "authorization_endpoint": f"{ISSUER}/authorize",
-            "token_endpoint": f"{ISSUER}/token",
-            "registration_endpoint": f"{ISSUER}/register",
-            "revocation_endpoint": f"{ISSUER}/revoke",
-            "introspection_endpoint": f"{ISSUER}/introspect",
+            "issuer": self.issuer,
+            "authorization_endpoint": f"{self.issuer}/authorize",
+            "token_endpoint": f"{self.issuer}/token",
+            "registration_endpoint": f"{self.issuer}/register",
+            "revocation_endpoint": f"{self.issuer}/revoke",
+            "introspection_endpoint": f"{self.issuer}/introspect",
             "response_types_supported": ["code"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": [
@@ -381,6 +398,11 @@ class FakeOAuthServer:
         self.introspect_without_active = False
         # Fields every token response carries beside the tokens.
         self.token_extras: dict[str, Any] = {}
+        # Credentials people paste rather than sign in for, each with whether
+        # it may read the account: tokens, sent as a bearer, and pairs of
+        # keys, sent in the example's own headers with the site they are for.
+        self.pasted_tokens: dict[str, bool] = {}
+        self.pasted_keys: dict[tuple[str, str], bool] = {}
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -390,7 +412,9 @@ class FakeOAuthServer:
     def authorize(self, url: str) -> str:
         """Consent at `url`; the redirect the browser is sent back to."""
         parts = urlsplit(url)
-        assert f"{parts.scheme}://{parts.netloc}{parts.path}" == f"{ISSUER}/authorize"
+        assert (
+            f"{parts.scheme}://{parts.netloc}{parts.path}" == f"{self.issuer}/authorize"
+        )
         query = {key: values[0] for key, values in parse_qs(parts.query).items()}
         assert query["response_type"] == "code"
         assert query["code_challenge_method"] == "S256"
@@ -410,11 +434,12 @@ class FakeOAuthServer:
         separator = "&" if "?" in query["redirect_uri"] else "?"
         return f"{query['redirect_uri']}{separator}code={code}&state={query['state']}"
 
-    def mint(self, scopes: list[str]) -> dict[str, Any]:
+    def mint(self, scopes: list[str], client_id: str) -> dict[str, Any]:
         access = f"vendor_access_{secrets.token_hex(8)}"
         refresh = f"vendor_refresh_{secrets.token_hex(8)}"
         self.live_access[access] = scopes
         self.live_refresh[refresh] = scopes
+        self.refresh_clients[refresh] = client_id
         return {
             "access_token": access,
             "token_type": "Bearer",
@@ -433,35 +458,42 @@ class FakeOAuthServer:
         if where in self.fail:
             status, body = self.fail[where]
             return _json(status, body)
-        if where == f"https://mcp.example.test{self.resource_metadata_path}":
-            return _json(200, {"resource": MCP_URL, "authorization_servers": [ISSUER]})
-        if where == "https://mcp.example.test/.well-known/oauth-protected-resource":
+        mcp_origin = f"https://mcp.{self.site}"
+        if where == f"{mcp_origin}{self.resource_metadata_path}":
+            return _json(
+                200, {"resource": self.mcp_url, "authorization_servers": [self.issuer]}
+            )
+        if where == f"{mcp_origin}/.well-known/oauth-protected-resource":
             # Another, older server's on the same host.
             return _json(
                 200,
                 {
-                    "resource": "https://mcp.example.test/v0",
-                    "authorization_servers": ["https://legacy.example.test"],
+                    "resource": f"{mcp_origin}/v0",
+                    "authorization_servers": [f"https://legacy.{self.site}"],
                 },
             )
-        if where == f"{ISSUER}/.well-known/oauth-authorization-server":
+        if where == f"{self.issuer}/.well-known/oauth-authorization-server":
             return _json(200, self.metadata)
-        if where == f"{ISSUER}/token" and request.method == "POST":
+        if where == f"{self.issuer}/token" and request.method == "POST":
             return self._token(request)
-        if where == f"{ISSUER}/register" and request.method == "POST":
+        if where == f"{self.issuer}/register" and request.method == "POST":
             return self._register(request)
-        if where == f"{ISSUER}/revoke" and request.method == "POST":
+        if where == f"{self.issuer}/revoke" and request.method == "POST":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
-        if where == f"{ISSUER}/introspect" and request.method == "POST":
+        if where == f"{self.issuer}/introspect" and request.method == "POST":
             return self._introspect(request)
-        if where == IDENTITY_URL and request.method == "GET":
+        if where == self.identity_url and request.method == "GET":
             if self._bearer(request) is None:
-                return _json(401, {"error": "invalid_token"})
+                reads = self._pasted(request)
+                if reads is None:
+                    return _json(401, {"error": "invalid_token"})
+                if not reads:
+                    return _json(403, {"errors": ["Forbidden"]})
             return _json(200, {"account": self.account})
-        if where == MCP_URL:
+        if where == self.mcp_url:
             return self._mcp(request)
         return _json(404, {"error": "not_found"})
 
@@ -470,6 +502,21 @@ class FakeOAuthServer:
         if not header.startswith("Bearer "):
             return None
         return self.live_access.get(header.removeprefix("Bearer "))
+
+    def _pasted(self, request: httpx.Request) -> bool | None:
+        """Whether the pasted credential `request` carries may read the
+        account; None where it carries none this site knows."""
+        header = request.headers.get("authorization", "")
+        if header.startswith("Bearer "):
+            return self.pasted_tokens.get(header.removeprefix("Bearer "))
+        if request.headers.get("x-example-site") != self.site:
+            return None
+        return self.pasted_keys.get(
+            (
+                request.headers.get("x-example-api-key", ""),
+                request.headers.get("x-example-app-key", ""),
+            )
+        )
 
     def _client_ok(self, request: httpx.Request, form: dict[str, str]) -> bool:
         """A known client, with its secret where it has one, sent one way
@@ -516,17 +563,21 @@ class FakeOAuthServer:
                 or pending.resource != form.get("resource")
             ):
                 return _json(400, {"error": "invalid_grant"})
-            return _json(200, self.mint(pending.scopes))
+            return _json(200, self.mint(pending.scopes, pending.client_id))
         if form.get("grant_type") == "refresh_token":
             refresh = form.get("refresh_token", "")
             scopes = self.live_refresh.get(refresh)
-            if scopes is None or refresh in self.spent_refresh:
+            if (
+                scopes is None
+                or refresh in self.spent_refresh
+                or self.refresh_clients.get(refresh) != form["client_id"]
+            ):
                 return _json(400, {"error": "invalid_grant"})
             if self.rotating:
                 self.spent_refresh.add(refresh)
                 del self.live_refresh[refresh]
-                return _json(200, self.mint(scopes))
-            minted = self.mint(scopes)
+                return _json(200, self.mint(scopes, form["client_id"]))
+            minted = self.mint(scopes, form["client_id"])
             del self.live_refresh[minted.pop("refresh_token")]
             return _json(200, minted)
         return _json(400, {"error": "unsupported_grant_type"})
@@ -554,7 +605,7 @@ class FakeOAuthServer:
     def _register(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.registrations.append(body)
-        client_id = f"registered-{len(self.registrations)}"
+        client_id = f"registered-{len(self.registrations)}-at-{self.site}"
         method = self.register_as or body.get(
             "token_endpoint_auth_method", "client_secret_basic"
         )
@@ -574,8 +625,8 @@ class FakeOAuthServer:
         return _json(201, answer)
 
     def _mcp(self, request: httpx.Request) -> httpx.Response:
-        if self._bearer(request) is None:
-            named = f"https://mcp.example.test{self.resource_metadata_path}"
+        if self._bearer(request) is None and self._pasted(request) is None:
+            named = f"https://mcp.{self.site}{self.resource_metadata_path}"
             return _json(
                 401,
                 {"error": "invalid_token"},
@@ -610,3 +661,32 @@ class FakeOAuthServer:
                 },
             )
         return _json(200, {"jsonrpc": "2.0", "id": message["id"], "result": result})
+
+
+class FakeSites:
+    """One vendor at several sites: a `FakeOAuthServer` for each, each with
+    its own MCP server, accounts and authorization server, and none knowing
+    another's clients or tokens. A request goes to the site whose host it
+    names."""
+
+    def __init__(self, *sites: str) -> None:
+        self.sites = {site: FakeOAuthServer(site=site) for site in sites}
+
+    def __getitem__(self, site: str) -> FakeOAuthServer:
+        return self.sites[site]
+
+    def client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
+
+    def _at(self, host: str) -> FakeOAuthServer:
+        # The longest site a host names: `api.eu.example.test` is at
+        # `eu.example.test`, not `example.test`.
+        named = [site for site in self.sites if host.endswith(f".{site}")]
+        assert named, f"no site serves {host}"
+        return self.sites[max(named, key=len)]
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        return self._at(request.url.host).handle(request)
+
+    def authorize(self, url: str) -> str:
+        return self._at(urlsplit(url).hostname or "").authorize(url)

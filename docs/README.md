@@ -2,19 +2,17 @@
 
 Two sets of documents, with different owners and different audiences.
 
-## `official/`
+## Published docs
 
-The reader-facing Switch documentation, published at
-[docs.switchagents.ai](https://docs.switchagents.ai). It is written in
-[`sandbox-quantum/docs`](https://github.com/sandbox-quantum/docs) as Mintlify MDX
-and converted to Markdown here so that agents working in this repository can read
-what users are told.
-
-**Generated — do not edit.** Change the source pages in the docs repository, then
-run `just sync-docs`. Every file under `official/` is rewritten on each run, so
-an edit made here is lost without warning. Start at
-[`official/TOC.md`](official/TOC.md), which lists the pages in the order the
-site presents them.
+The reader-facing Switch documentation is published at
+[docs.switchagents.ai](https://docs.switchagents.ai) and written in
+[`sandbox-quantum/docs`](https://github.com/sandbox-quantum/docs). It is not
+copied into this repository. Read it on the site:
+[`llms.txt`](https://docs.switchagents.ai/llms.txt) lists every page,
+[`llms-full.txt`](https://docs.switchagents.ai/llms-full.txt) is the whole site
+in one file, and `https://docs.switchagents.ai/mcp` serves the pages over MCP.
+For offline use, `just docs` downloads `llms-full.txt` to `docs/llms-full.txt`
+(gitignored).
 
 ## `old/`
 
@@ -22,7 +20,7 @@ Design and operator material written for this repository: the architecture
 overview, the agent protocol, per-bridge setup guides, gateway OIDC sign-in
 setup, the multi-tenancy design and its phased plan, and running Switch
 locally for development. None of it is published,
-and none of it is covered by the pages under `official/` — where the two
+and none of it is covered by the published docs — where the two
 describe the same thing, this is the deeper account and the published page is
 the one users act on.
 

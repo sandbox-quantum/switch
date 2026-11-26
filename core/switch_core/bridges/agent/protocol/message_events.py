@@ -11,7 +11,7 @@ the same event whichever path produced it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -19,6 +19,7 @@ from switch_core.bridges.agent.protocol.types import (
     FollowUp,
     MessagePayload,
     RoomJoinPayload,
+    RoomLeavePayload,
 )
 from switch_core.clients.admin_messages import PLATFORM_MARKER, platform_on_behalf_of
 
@@ -52,6 +53,7 @@ def message_event(
     attachments: list[AttachmentRef] | None = None,
     opening_message: str | None = None,
     sender_role: str | None = None,
+    mid_turn_delivery: Literal["steer", "queue"] = "steer",
     switch_notice: str | None = None,
     routed_reason: Literal["decided", "fallback"] | None = None,
     follow_up: FollowUp | None = None,
@@ -89,6 +91,7 @@ def message_event(
             attachments=attachments or [],
             opening_message=opening_message,
             sender_role=sender_role,
+            mid_turn_delivery=mid_turn_delivery,
             switch_notice=switch_notice,
             routed=routed_reason is not None,
             routed_reason=routed_reason,
@@ -124,3 +127,43 @@ def room_join_event(
             listening=listening,
         ),
     )
+
+
+def room_leave_event(
+    *,
+    room_id: str,
+    bridge_id: str | None,
+    channel_type: str | None,
+    member: str,
+    member_name: str,
+    timestamp: int,
+    listening: bool,
+    removed_by: str | None = None,
+) -> AgentEvent:
+    """Build the `room_leave` event for someone leaving a room, or taken out
+    of it by `removed_by`.
+
+    `listening` says whether this agent is set to hear about members coming
+    and going in that room (the join-events setting). The rest of the event is
+    the same either way.
+    """
+    return AgentEvent(
+        type="room_leave",
+        room_id=room_id,
+        bridge_id=bridge_id,
+        channel_type=channel_type,
+        payload=RoomLeavePayload(
+            member=member,
+            member_name=member_name,
+            timestamp=timestamp,
+            listening=listening,
+            removed_by=removed_by,
+        ),
+    )
+
+
+def removed_by(content: dict[str, Any] | None) -> str | None:
+    """Who took a member out, from a departure's stored content, or None when
+    they left on their own. Written by `PostgresProvisioning.kick_user`."""
+    value = (content or {}).get("removed_by")
+    return value if isinstance(value, str) and value else None

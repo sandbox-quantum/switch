@@ -12,6 +12,8 @@ def test_defaults(monkeypatch):
         "DECISION_SERVICE_TOKEN",
         "DECISION_BEDROCK_ENABLED",
         "MODEL_SERVER_TOKEN",
+        "DECISION_MIN_LEAD",
+        "GEMINI_DECISION_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
     s = load_settings()
@@ -23,6 +25,9 @@ def test_defaults(monkeypatch):
     assert s.llamacpp_url == "http://127.0.0.1:8300"
     assert (s.service_token, s.bedrock_enabled) == (None, False)
     assert s.model_server_token is None
+    assert s.min_lead is None
+    assert s.gemini_decision_api_key is None
+    assert s.gemini_decision_model == "gemini-decision-1"
 
 
 def test_ollama_backend_default_model(monkeypatch):
@@ -50,7 +55,7 @@ def test_bedrock_backend_defaults(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     s = load_settings()
     assert (s.model, s.aws_region, s.aws_profile) == (
-        "us.anthropic.claude-haiku-5-5-v1:0",
+        "us.anthropic.claude-haiku-5-5",
         "us-east-1",
         None,
     )
@@ -81,3 +86,45 @@ def test_model_server_token(monkeypatch):
     assert load_settings().model_server_token == "s3cret"
     monkeypatch.setenv("MODEL_SERVER_TOKEN", "")
     assert load_settings().model_server_token is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("0.05", 0.05), ("0", 0.0), ("", None), (" ", None)]
+)
+def test_min_lead(monkeypatch, value, expected):
+    monkeypatch.setenv("DECISION_MIN_LEAD", value)
+    assert load_settings().min_lead == expected
+
+
+@pytest.mark.parametrize("value", ["-0.01", "1.5"])
+def test_min_lead_out_of_range_refused(monkeypatch, value):
+    monkeypatch.setenv("DECISION_MIN_LEAD", value)
+    with pytest.raises(ValueError, match="DECISION_MIN_LEAD must be between 0 and 1"):
+        load_settings()
+
+
+def test_gemini_backend_without_a_key_fails_at_startup(monkeypatch):
+    monkeypatch.setenv("DECISION_BACKEND", "gemini_decision")
+    monkeypatch.setenv("GEMINI_DECISION_API_KEY", " ")
+    with pytest.raises(ValueError, match="GEMINI_DECISION_API_KEY"):
+        load_settings()
+
+
+def test_gemini_backend_settings(monkeypatch):
+    monkeypatch.setenv("DECISION_BACKEND", "gemini_decision")
+    monkeypatch.setenv("GEMINI_DECISION_API_KEY", "g-key")
+    for k in ("DECISION_MODEL", "DECISION_GEMINI_MODEL", "GEMINI_DECISION_URL"):
+        monkeypatch.delenv(k, raising=False)
+    s = load_settings()
+    assert (s.backend, s.model, s.gemini_decision_api_key) == (
+        "gemini_decision",
+        "gemini-decision-1",
+        "g-key",
+    )
+    assert s.gemini_decision_url == (
+        "https://generativelanguage.googleapis.com/v1beta/decisions"
+    )
+    # The key never shows in the settings' repr, so never in a log of them.
+    assert "g-key" not in repr(s)
+    monkeypatch.setenv("DECISION_GEMINI_MODEL", "gemini-decision-2")
+    assert load_settings().model == "gemini-decision-2"

@@ -21,6 +21,7 @@ import {
   hasSessionError,
 } from '@renderer/features/sessions/stores/session-selectors';
 import { useAgentConnection } from '@renderer/features/switch-rooms/connection-health';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { ProviderIssueIndicator } from '@renderer/lib/components/provider-issue-indicator';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
@@ -104,6 +105,9 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
 
   const sshHost = location.data?.sshHost ?? null;
   const hostUnreachable = hostReachabilityStore.isBlocked(sshHost);
+  const hostLabel = hostUnreachable
+    ? `${sshHost} cannot be reached. The agent resumes when it reconnects.`
+    : `Runs remotely on ${sshHost}${location.data?.dir ? ` · ${location.data.dir}` : ''}`;
 
   const presence = agentPresence(
     connection.state,
@@ -131,18 +135,24 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
           marks={
             location.data?.sshHost != null && (
               <Tooltip>
-                <TooltipTrigger>
-                  {hostUnreachable ? (
-                    <ServerOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
-                  ) : (
-                    <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
-                  )}
-                </TooltipTrigger>
-                <TooltipContent>
-                  {hostUnreachable
-                    ? `${location.data.sshHost} cannot be reached. The agent resumes when it reconnects.`
-                    : `Runs remotely on ${location.data.sshHost}${location.data.dir ? ` · ${location.data.dir}` : ''}`}
-                </TooltipContent>
+                <TooltipTrigger
+                  render={
+                    <span role="img" aria-label={hostLabel} className="flex shrink-0 items-center">
+                      {hostUnreachable ? (
+                        <ServerOff
+                          aria-hidden="true"
+                          className="h-3.5 w-3.5 shrink-0 text-foreground-destructive"
+                        />
+                      ) : (
+                        <Server
+                          aria-hidden="true"
+                          className="h-3.5 w-3.5 shrink-0 text-foreground-muted"
+                        />
+                      )}
+                    </span>
+                  }
+                />
+                <TooltipContent>{hostLabel}</TooltipContent>
               </Tooltip>
             )
           }
@@ -187,9 +197,20 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                   </Tooltip>
                 ) : (
                   <Tooltip>
-                    <TooltipTrigger>
-                      <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
-                    </TooltipTrigger>
+                    <TooltipTrigger
+                      render={
+                        <span
+                          role="img"
+                          aria-label="A session failed to connect"
+                          className="flex shrink-0 items-center"
+                        >
+                          <TriangleAlert
+                            aria-hidden="true"
+                            className="h-3.5 w-3.5 shrink-0 text-foreground-destructive"
+                          />
+                        </span>
+                      }
+                    />
                     <TooltipContent>A session failed to connect</TooltipContent>
                   </Tooltip>
                 ))}
@@ -273,7 +294,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
               agentId: agent.id,
               locationLabel: label,
               onDeleted: () => {
-                if (isActive) navigate('home');
+                if (isActive) navigateHome();
               },
             });
           }}

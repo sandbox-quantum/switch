@@ -32,7 +32,9 @@ export class UndecryptableSecretError extends Error {
 
 const LINUX_KEYRING_HINT =
   'Run a Secret Service such as gnome-keyring with an unlocked "login" keyring, then restart ' +
-  'Switch Console. Under KDE, start it with --password-store=kwallet5 or kwallet6.';
+  'Switch Console. If a Secret Service is already running (common under window managers such ' +
+  'as Hyprland, Sway or i3), start Switch Console with --password-store=gnome-libsecret. ' +
+  'Under KDE, start it with --password-store=kwallet5 or kwallet6.';
 
 export class EncryptedAppSecretsStore {
   constructor(

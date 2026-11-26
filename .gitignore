@@ -243,3 +243,7 @@ download.xml
 # ships with a placeholder app id on purpose; a built package carries a real
 # tenant's, and this directory is where people naturally build one.
 docs/bridges/teams-app/*.zip
+
+# Offline copy of the published docs (just docs)
+docs/llms-full.txt
+docs/llms-full.txt.tmp

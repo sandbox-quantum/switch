@@ -49,6 +49,7 @@ const item = z.strictObject({
   text: z.string(),
   attachments: z.array(attachmentSchema),
   origin: origin.nullable(),
+  delivery: z.enum(['steered', 'queued']).optional(),
 });
 const option = z.strictObject({
   optionId: id,

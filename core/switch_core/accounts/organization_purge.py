@@ -16,10 +16,13 @@ account that belongs to nothing else. `switch-purge-organization`
   purge back until it is revoked or expires, as it holds back deleting a
   workspace.
 - **Cloud machines.** Each machine of an account the purge deletes is set to
-  be deleted, and the purge waits until the hosted controller has terminated
-  it: deleting its rows first would leave the instance running with nothing
-  to tear it down. A machine whose owner keeps their account is not torn
-  down; it only loses the organization's workspaces.
+  be deleted with its disk's retention ended (`retain_until` now, with
+  `expedite_deletion` so the controller takes the date even for a machine it
+  already holds as deleted with a later one), and the purge waits until the hosted controller reports it deleted, which it does
+  only once the instance is terminated and the data volume is gone: deleting
+  its rows first would leave both with nothing to tear them down. A machine
+  whose owner keeps their account is not torn down; it only loses the
+  organization's workspaces.
 
 A purge that has to wait says what for and deletes nothing; running it again
 carries on from where things are.
@@ -44,12 +47,18 @@ row left in another workspace from one it was in. Anyone else keeps their
 account and loses only what was here. The server's administrator account is
 always kept.
 
+**Outside.** The plan names, and the start record keeps for a resumed
+run, the WorkOS users of the people involved and every room id of every
+workspace. `purge_organization.py` splits a run into `prepare` and `delete`
+so that, in between, `purge_elsewhere.py` can have Switch Trust delete
+those rooms' sessions with the organization's own settings, which go with
+its rows; a Trust deletion that fails stops the run before anything is
+deleted. It takes the organization out of WorkOS once this is done.
+
 **What stays.** The workspaces' audit history, for two years
 (`retention/audit_history.py`), and the server's own audit log, which records
 the purge. The organization's audit log stays too, as a workspace's does;
-nothing purges it later. Nothing at WorkOS is touched: the WorkOS
-environment can be shared with other products, so the purge reports the
-WorkOS organization and users to remove there, for whoever owns it.
+nothing purges it later.
 """
 
 from __future__ import annotations
@@ -92,6 +101,7 @@ from switch_core.db.models import (
     OidcIdentity,
     Organization,
     OrganizationMember,
+    Room,
     ServerAuditEvent,
     ServiceConnection,
     Tenant,
@@ -185,6 +195,18 @@ class PurgePlan:
     # Live cloud machines of accounts that stay, serving the organization:
     # they lose its workspaces and keep running.
     detached_machines: list[str]
+    # Cloud machines of accounts the purge deletes that the hosted controller
+    # has already deleted, instance and disk.
+    removed_machines: list[str]
+    # The WorkOS user id of each person in the plan who signs in through the
+    # server's sign-in, with their account id: what to take out of WorkOS
+    # (`purge_elsewhere.py`). Earlier runs' records add those whose accounts
+    # are gone.
+    workos_users: dict[str, str]
+    # Every room id of every workspace, the session ids Switch Trust holds
+    # checked messages under. Earlier runs' records add those of workspaces
+    # already deleted.
+    trust_sessions: list[str]
     # Why the purge can't go ahead; empty when it can.
     refusals: list[str]
 
@@ -200,6 +222,10 @@ class PurgeOutcome:
     waiting: list[str] = field(default_factory=list)
     # What was withdrawn only in part, to follow up by hand.
     warnings: list[str] = field(default_factory=list)
+    # Service sign-ins removed and revoked at their vendors.
+    revoked_sign_ins: int = 0
+    # Messaging installs ended at their platforms, as "platform id".
+    ended_installs: list[str] = field(default_factory=list)
     deleted_accounts: list[Account] = field(default_factory=list)
     failed_accounts: list[tuple[Account, str]] = field(default_factory=list)
 
@@ -216,6 +242,10 @@ class OrganizationPurge:
     # import it.
     controller_removed: Callable[[str], None]
     admin_email: str
+    # The issuer of the server's own sign-in (`GATEWAY_OIDC_ISSUER_URL`),
+    # whose subjects are WorkOS user ids where that sign-in is WorkOS. None
+    # for a server without one.
+    sign_in_issuer: str | None
 
     async def find(self, reference: str) -> str:
         """The id of the organization `reference` names, by id, slug or
@@ -282,9 +312,17 @@ class OrganizationPurge:
             )
         workspaces = []
         machine_ids: set[str] = set()
+        trust_sessions: set[str] = set()
+        for record in records:
+            trust_sessions.update(record.get("trust_sessions", []))
         for tenant_id in tenant_ids:
             async with tenant_session(self.session_factory, tenant_id) as session:
                 workspaces.append(await _contents(session, tenant_id))
+                trust_sessions.update(
+                    await session.scalars(
+                        select(Room.id).where(Room.tenant_id == tenant_id)
+                    )
+                )
                 member_ids.update(
                     await session.scalars(
                         select(TenantMember.user_id).where(
@@ -308,6 +346,18 @@ class OrganizationPurge:
         machines, detached, machine_refusals = await self._machines(
             machine_ids, deleted, set(tenant_ids)
         )
+        workos_users: dict[str, str] = {}
+        for record in records:
+            workos_users.update(record.get("workos_users", {}))
+        for account in accounts:
+            for issuer, subject in account.identities:
+                # "" is a row from before issuers were recorded: the
+                # server's one sign-in too.
+                if self.sign_in_issuer is not None and issuer in (
+                    self.sign_in_issuer,
+                    "",
+                ):
+                    workos_users[subject] = account.id
         if organization is not None:
             slug, name = organization.slug, organization.name
             workos_organization_id = organization.workos_organization_id
@@ -328,6 +378,9 @@ class OrganizationPurge:
             accounts=accounts,
             machines=machines,
             detached_machines=detached,
+            removed_machines=await self._removed_machines(deleted),
+            workos_users=workos_users,
+            trust_sessions=sorted(trust_sessions),
             refusals=refusals + machine_refusals,
         )
 
@@ -339,6 +392,17 @@ class OrganizationPurge:
         Raises `PurgeRefused` for a plan with refusals, before anything
         changes. Returns unfinished, having deleted nothing, while it waits
         on something outside Switch."""
+        outcome = await self.prepare(plan, request)
+        if outcome.waiting:
+            return outcome
+        return await self.delete(plan, request, outcome)
+
+    async def prepare(self, plan: PurgePlan, request: str) -> PurgeOutcome:
+        """The part of `run` that deletes nothing: withdraw what lives outside
+        Switch and, once nothing is left to wait on, record the run as
+        started. Unfinished, with `waiting` set, while it waits; ready for
+        `delete` when `waiting` is empty. Raises `PurgeRefused` as `run`
+        does."""
         if plan.refusals:
             raise PurgeRefused(" ".join(plan.refusals))
         if not request.strip():
@@ -353,12 +417,21 @@ class OrganizationPurge:
         await self._tear_down_machines(plan.machines, outcome)
         if outcome.waiting:
             return outcome
-
         await self._record_start(plan, request)
+        return outcome
+
+    async def delete(
+        self, plan: PurgePlan, request: str, outcome: PurgeOutcome
+    ) -> PurgeOutcome:
+        """The deleting part of `run`, given what `prepare` returned with
+        nothing left to wait on."""
+        if outcome.waiting:
+            raise PurgeRefused("The purge is still waiting; nothing to delete yet.")
+        members = {account.id for account in plan.accounts}
         for workspace in plan.workspaces:
             await self._check_newcomers(workspace, members)
             with tenant_scope(workspace.id):
-                await self._end_installs(workspace)
+                await self._end_installs(workspace, outcome)
             await self._purge_workspace(workspace, members, request)
         await self._detach_machines(plan.detached_machines)
         if not plan.resuming:
@@ -392,7 +465,7 @@ class OrganizationPurge:
         for workspace in workspaces:
             await self._check_newcomers(workspace, members[workspace.id])
             with tenant_scope(workspace.id):
-                await self._end_installs(workspace)
+                await self._end_installs(workspace, outcome)
             await self._purge_workspace(workspace, members[workspace.id], request)
         outcome.finished = True
         return outcome
@@ -475,6 +548,8 @@ class OrganizationPurge:
     ) -> str | None:
         if is_server_administrator(user, self.admin_email):
             return "the server's administrator account"
+        if user.role == "admin":
+            return "a platform operator account"
         elsewhere = set(await tenants_of_user(self.session_factory, user.id))
         if elsewhere - tenant_ids:
             return "a member of another workspace"
@@ -517,6 +592,20 @@ class OrganizationPurge:
                 )
         return torn_down, detached, refusals
 
+    async def _removed_machines(self, deleted_accounts: set[str]) -> list[str]:
+        """The machines of accounts the purge deletes that the hosted
+        controller reported deleted. It reports that only once the data
+        volume is gone too."""
+        async with self.session_factory() as session:
+            return sorted(
+                await session.scalars(
+                    select(CloudMachine.id).where(
+                        CloudMachine.state == "deleted",
+                        CloudMachine.owner_id.in_(deleted_accounts),
+                    )
+                )
+            )
+
     # ── Withdrawing what lives outside Switch ────────────────────────────────
 
     async def _revoke_services(
@@ -534,6 +623,7 @@ class OrganizationPurge:
             async with tenant_session(self.session_factory, workspace.id) as session:
                 removed = await self.broker.remove_connections(session, user_id)
                 await session.commit()
+                outcome.revoked_sign_ins += len(removed)
                 warning = await self.broker.finish_disconnect(session, user_id, removed)
             if warning:
                 outcome.warnings.append(f"{workspace.slug}: {warning}")
@@ -556,17 +646,37 @@ class OrganizationPurge:
                 machine = await store.locked(session, machine_id)
                 if machine is None or machine.state == "deleted":
                     continue
-                if machine.desired_state != "deleted":
+                now = datetime.now(UTC)
+                # The hosted controller deletes the data volume only once
+                # `retain_until` has passed, and for a machine it already
+                # holds as deleted (its owner deleted it earlier, with
+                # retention) it never brings that date forward unless asked
+                # with `expedite_deletion`. A controller from before the flag
+                # ignores it and keeps the later date; Core cannot see the
+                # date a controller holds, so such a machine reads as still
+                # being torn down until that date passes.
+                if (
+                    machine.desired_state != "deleted"
+                    or not machine.expedite_deletion
+                    or (machine.retain_until is not None and machine.retain_until > now)
+                ):
                     machine.desired_state = "deleted"
-                    bump_revision(machine, datetime.now(UTC))
-                    logger.info("Set cloud machine %s to be deleted", machine_id)
+                    machine.retain_until = now
+                    machine.expedite_deletion = True
+                    bump_revision(machine, now)
+                    logger.info(
+                        "Set cloud machine %s to be deleted, disk included", machine_id
+                    )
                 state = machine.state
                 await session.commit()
             outcome.waiting.append(
-                f"Cloud machine {machine_id} is being torn down (now {state})."
+                f"Cloud machine {machine_id} is being torn down, its instance "
+                f"and disk deleted (now {state})."
             )
 
-    async def _end_installs(self, workspace: WorkspaceContents) -> None:
+    async def _end_installs(
+        self, workspace: WorkspaceContents, outcome: PurgeOutcome
+    ) -> None:
         """End the workspace's live installs, just before its rows go, so a
         bridge never runs for long on a token revoked under it."""
         store = MessagingInstallStore()
@@ -597,6 +707,9 @@ class OrganizationPurge:
                     session, install_id=install.id, status=INSTALL_DISCONNECTED
                 )
                 await session.commit()
+            outcome.ended_installs.append(
+                f"{install.platform} {install.external_workspace_id}"
+            )
             logger.info(
                 "Ended the %s install of %s in workspace %s",
                 install.platform,
@@ -627,6 +740,8 @@ class OrganizationPurge:
                     "accounts_to_delete": [
                         account.id for account in plan.deleted_accounts
                     ],
+                    "workos_users": plan.workos_users,
+                    "trust_sessions": plan.trust_sessions,
                     "request": request,
                 },
             )

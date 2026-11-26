@@ -43,6 +43,7 @@ async def test_every_google_app_offers_the_profile_the_server_chose(
         keyring=TEST_KEYRING,
         public_url=config.gateway_public_url,
         server_name="switch.local",
+        redirects={},
     )
     async with httpx.AsyncClient() as http:
         apps = build_connector_apps(

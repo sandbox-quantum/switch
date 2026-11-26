@@ -1,6 +1,6 @@
-# The Switch cloud machine image
+# The Switch Cloud machine image
 
-A Switch cloud machine runs `switch-agent-controller`, the program any machine
+A Switch Cloud machine runs `switch-agent-controller`, the program any machine
 runs agents with: one controller per workspace that uses the machine, up to 8.
 Each workspace's managed agents placed on it run under that workspace's
 controller, each as a Linux user of its own, and they use the provider logins
@@ -71,7 +71,7 @@ the workspace gives the machine.
      controllers, which are ordered after it. That workspace then shows the
      machine in error in Switch Console, and a stop and start of the machine
      tries again.
-5. Core links each controller to the machine as a Switch cloud controller
+5. Core links each controller to the machine as a Switch Cloud controller
    (kind `ec2`). The controllers' status reports are the machine's heartbeat:
    the first one after the instance was seen running makes the machine
    `ready`.
@@ -140,11 +140,50 @@ of its agents still running stopped. Its data stays on the volume and its
 index stays reserved; the boot logs a warning. If the workspace comes back
 with the same seat key, its controller starts again from that data.
 
+## Security updates and reboots
+
+A machine runs the packages it was baked with plus the security updates it
+installs itself, and a new kernel only runs after a reboot. So that a machine
+that is never idle still gets kernel fixes, the image does three things:
+
+- **Daily security updates.** unattended-upgrades installs updates from
+  Ubuntu's security pocket every day (`52switch-machine-upgrades` in
+  `/etc/apt/apt.conf.d`, over Ubuntu's own `50unattended-upgrades`). It never
+  reboots by itself.
+- **Service restarts.** needrestart restarts the services that run an
+  outdated library without asking, except the agent controllers, their agents
+  and the boot service (`switch-agent*`, `switch-machine-boot`): restarting
+  them would end agent sessions. They pick the new libraries up at the next
+  reboot.
+- **A reboot deadline.** `switch-machine-reboot.timer` runs
+  `switch_machine_reboot.py` every hour. A reboot is pending when
+  `/run/reboot-required` exists (the kernel, libc, systemd and a few others
+  create it) or the newest kernel in `/boot` is not the one running. Once a
+  reboot has been pending for 6 days, the machine reboots in the next quiet
+  hour (07:00 UTC); once it has been pending for 7 days, at any hour. A
+  machine therefore runs a kernel fix within 7 days of installing it, and one
+  that sleeps when idle usually gets it at its next start.
+
+**A reboot ends every agent session on the machine, without asking its
+owner.** This is a deliberate exception to letting users decide when what
+they run is restarted: a security fix that waits for a quiet moment that a
+busy machine never has is no fix. The machine keeps its instance, root volume
+and data volume, and the boot service starts the controllers again, as after
+a stop and start; the machine is back within a few minutes. The reboot is
+logged in the machine's journal (`journalctl -u switch-machine-reboot`).
+
+A machine that gets a new instance (new user data, a recovery, a new image)
+starts from the image's root volume, so it goes back to the packages the
+image was baked with until the next daily run updates it again. Rebake the
+image from a current Ubuntu base regularly, so that this window stays short.
+
 ## Baking the image
 
+Start from a current Ubuntu 24.04 image and bring its packages up to date.
 Put Node.js 24 at `/opt/switch/node`, and the provider CLIs under
 `/opt/switch/<provider>/bin`. Agents cannot reach anything under a home
-directory. Then, as root:
+directory. `unattended-upgrades` and `needrestart` must be installed (Ubuntu's
+server images carry both). Then, as root:
 
     install.sh <switch-agent-controller .tgz> <node-sha256> [agent-users]
 
@@ -156,6 +195,8 @@ directory. Then, as root:
   agents' group `switch-agents-2000` (gid 2001) and one user per agent,
   `sa2000-01`… (uid 2101…). The boot creates the other indexes' users.
 - Installs the boot service, and orders index 0's controller service after it.
+- Turns on daily security updates and the reboot timer (see "Security
+  updates and reboots").
 - Writes `/etc/switch-hosted/machine.json` with the controller user, Node.js, the CLI,
   the `PATH` the controller and its agents run with, and the number of agent
   users.
@@ -174,8 +215,8 @@ key built into that package.
 
 ## Running it
 
-- Core needs the `hosted_agents` and `agent_management` feature flags as
-  well as the hosted settings; see
+- Core needs the `hosted_agents` feature flag as well as the hosted
+  settings; see
   [../README.md](../README.md).
 - The hosted controller's `image_id` must be an image baked here.
 - A machine is stopped once its status reports say no session has

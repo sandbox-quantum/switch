@@ -13,12 +13,15 @@ from fastapi import FastAPI
 from pydantic import ValidationError
 
 from switch_core.chats.views import _provider
+from switch_core.feature_flags import ADDITIONAL_AGENT_PROVIDERS
 from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.dependencies import get_config
 from switch_core.gateway.known_agents import (
     ClaudeCodeKnownAgent,
     GenericKnownAgent,
     known_agent_for,
     known_agents,
+    offered_known_agents,
     provider_known_agent,
 )
 from switch_core.gateway.providers import router as providers_router
@@ -31,10 +34,14 @@ from switch_core.management.service import _known_agent_registration
 from switch_core.providers import registry
 from switch_core.providers.registry import (
     AgentProvider,
+    ProviderNotOffered,
     UnknownProvider,
     agent_provider,
     agent_providers,
+    new_agent_auto_mode,
+    offered_provider_ids,
     provider_ids,
+    require_offered_provider,
 )
 from switch_core.providers.schema import advanced_config_schema
 
@@ -146,7 +153,9 @@ def test_only_claude_has_a_known_agent_of_its_own() -> None:
     )
 
 
-NEW = AgentProvider(id="newcli", label="New CLI", sign_in_command="newcli login")
+NEW = AgentProvider(
+    id="newcli", label="New CLI", sign_in_command="newcli login", flag=None
+)
 
 
 @pytest.fixture
@@ -156,7 +165,8 @@ def new_provider(monkeypatch: pytest.MonkeyPatch) -> AgentProvider:
 
 
 class TestANewProvider:
-    """A provider added with nothing but an id and a label."""
+    """A provider added with nothing but an id, a label, a sign-in command and
+    no flag."""
 
     def test_its_defaults(self, new_provider: AgentProvider) -> None:
         assert new_provider.known_agent_type == "newcli"
@@ -171,6 +181,9 @@ class TestANewProvider:
         app = FastAPI()
         app.include_router(providers_router, prefix="/gateway")
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="u")
+        app.dependency_overrides[get_config] = lambda: SimpleNamespace(
+            feature_flags={ADDITIONAL_AGENT_PROVIDERS: False}
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -236,3 +249,125 @@ class TestANewProvider:
         assert _provider(claude, None) == "claude"  # type: ignore[arg-type]
         unknown = SimpleNamespace(metadata_={"known_agent_type": "gemini"})
         assert _provider(unknown, None) is None  # type: ignore[arg-type]
+
+
+ADDITIONAL = {
+    "deepseek-harness",
+    "pi",
+    "copilot",
+    "kiro",
+    "mistral-vibe",
+    "goose",
+    "qwen",
+    "droid",
+    "cline",
+    "junie",
+}
+
+
+class TestTheAdditionalProvidersFlag:
+    def test_it_gates_exactly_the_additional_providers(self) -> None:
+        gated = {
+            p.id for p in agent_providers() if p.flag == ADDITIONAL_AGENT_PROVIDERS
+        }
+        assert gated == ADDITIONAL
+        assert all(
+            p.flag in (None, ADDITIONAL_AGENT_PROVIDERS) for p in agent_providers()
+        )
+
+    def test_off_they_are_not_offered(self) -> None:
+        off = {ADDITIONAL_AGENT_PROVIDERS: False}
+        assert offered_provider_ids(off) == {
+            "claude",
+            "codex",
+            "opencode",
+            "antigravity",
+            "cursor",
+        }
+        assert set(offered_known_agents(off)) == {
+            "claude-code",
+            "codex",
+            "opencode",
+            "antigravity",
+            "cursor",
+        }
+        with pytest.raises(ProviderNotOffered, match="additional_agent_providers"):
+            require_offered_provider("goose", off)
+        require_offered_provider("claude", off)
+
+    def test_on_every_provider_is_offered(self) -> None:
+        on = {ADDITIONAL_AGENT_PROVIDERS: True}
+        assert offered_provider_ids(on) == set(provider_ids())
+        require_offered_provider("goose", on)
+
+    def test_an_agent_already_on_one_still_resolves(self) -> None:
+        assert provider_known_agent("goose").connector_type == "Goose CLI"
+        assert known_agents()["goose"].connector_type == "Goose CLI"
+
+
+_CONSOLE_PROVIDER_REGISTRY = (
+    Path(__file__).resolve().parents[4]
+    / "console/apps/switch-console-desktop/src/shared/core/providers/agent-provider-registry.ts"
+)
+
+
+def test_switch_console_gates_the_same_providers_behind_the_same_flags() -> None:
+    text = _CONSOLE_PROVIDER_REGISTRY.read_text()
+    block = re.search(r"PROVIDER_FLAGS[^=]*= \{(.*?)\};", text, re.DOTALL)
+    assert block is not None
+    console = dict(re.findall(r"'?([a-z-]+)'?: '([a-z_.]+)'", block.group(1)))
+    assert console == {p.id: p.flag for p in agent_providers() if p.flag is not None}
+
+
+def test_a_new_opencode_agent_is_not_in_auto_mode() -> None:
+    # OpenCode's auto mode answers every permission ask itself, so nothing
+    # reviews a command before it runs.
+    assert new_agent_auto_mode("opencode") is False
+    assert {p.id for p in agent_providers() if not p.new_agent_auto_mode} == {
+        "opencode"
+    }
+    with pytest.raises(UnknownProvider):
+        new_agent_auto_mode("nope")
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "expected"),
+    [("claude", True), ("codex", True), ("opencode", False)],
+)
+def test_a_definition_without_auto_mode_takes_the_providers_default(
+    provider_id: str, expected: bool
+) -> None:
+    assert DefinitionV1.model_validate({"provider": provider_id}).auto_mode is expected
+    assert (
+        DefinitionV1.model_validate(
+            {"provider": provider_id, "auto_mode": not expected}
+        ).auto_mode
+        is not expected
+    )
+
+
+def test_a_definition_with_an_unknown_provider_is_refused_for_the_provider() -> None:
+    with pytest.raises(ValidationError) as refused:
+        DefinitionV1.model_validate({"provider": "nope"})
+    assert [error["loc"] for error in refused.value.errors()] == [("provider",)]
+
+
+_CONSOLE_PROVIDER_RUNTIMES = (
+    Path(__file__).resolve().parents[4]
+    / "console/packages/agent-providers/src/providers/registry.ts"
+)
+
+
+def test_switch_console_starts_the_same_providers_new_agents_outside_auto_mode() -> (
+    None
+):
+    text = _CONSOLE_PROVIDER_RUNTIMES.read_text()
+    block = re.search(r"PROVIDER_RUNTIMES[^=]*= \[(.*?)\n\];", text, re.DOTALL)
+    assert block is not None
+    console = set(
+        re.findall(
+            r"id: '([a-z-]+)',(?:(?!\bid: ')[\s\S])*?newAgentAutoMode: false",
+            block.group(1),
+        )
+    )
+    assert console == {p.id for p in agent_providers() if not p.new_agent_auto_mode}

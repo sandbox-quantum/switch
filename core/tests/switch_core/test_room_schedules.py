@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.clients.actor import SystemActor
@@ -20,6 +20,7 @@ from switch_core.db.models import (
     Client,
     Room,
     RoomSchedule,
+    Tenant,
     User,
 )
 from switch_core.db.stores.room_schedule_store import RoomScheduleStore
@@ -30,6 +31,7 @@ from switch_core.room_schedules import (
     first_run,
     next_cron_run,
     scheduled_text,
+    skip_missed_runs,
 )
 
 LONDON = "Europe/London"
@@ -412,6 +414,102 @@ async def test_a_process_that_cannot_post_leaves_the_run_for_one_that_can(
     await _scheduler(session_factory, None).fire_due(due)
 
     assert (await _stored(session_factory, schedule_id)).next_run_at == due
+
+
+async def _archive_the_workspace(
+    session_factory: async_sessionmaker[AsyncSession], at: datetime
+) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(Tenant).where(Tenant.id == TENANT_ZERO_ID).values(archived_at=at)
+        )
+        await session.commit()
+
+
+async def test_an_archived_workspaces_runs_are_not_posted(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    due = _utc(2026, 11, 4, 9, 0)
+    _, schedule_id, _ = await _schedule(session_factory, due_at=due)
+    await _archive_the_workspace(session_factory, due - timedelta(days=1))
+    admin = _Admin()
+
+    await _scheduler(session_factory, admin).fire_due(due)
+
+    assert admin.posts == []
+    assert admin.notices == []
+    assert (await _stored(session_factory, schedule_id)).next_run_at == due
+
+
+async def test_a_run_read_before_an_archive_is_not_claimed_after_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Archived between `fire_due` reading the runs due and the run being
+    claimed: it is left due, for the restore to skip."""
+    due = _utc(2026, 11, 4, 9, 0)
+    _, schedule_id, _ = await _schedule(session_factory, due_at=due)
+    schedule = await _stored(session_factory, schedule_id)
+    await _archive_the_workspace(session_factory, due)
+    admin = _Admin()
+
+    await _scheduler(session_factory, admin)._fire(
+        TENANT_ZERO_ID,
+        admin,  # type: ignore[arg-type]
+        schedule,
+        due,
+    )
+
+    assert admin.posts == []
+    assert (await _stored(session_factory, schedule_id)).next_run_at == due
+
+
+async def test_runs_missed_while_archived_are_skipped_as_for_a_paused_schedule(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """What Restore does: a recurring schedule moves to its next run after
+    now and a one-off that has gone by to none, both unsent; a paused one and
+    one not yet due are left as they are."""
+    missed = _utc(2026, 11, 2, 9, 0)
+    now = _utc(2026, 11, 4, 14, 0)
+    later = _utc(2026, 11, 20, 9, 0)
+    _, recurring_id, author_id = await _schedule(session_factory, due_at=missed)
+    room_id = (await _stored(session_factory, recurring_id)).room_id
+    store = RoomScheduleStore()
+
+    async def another(*, cron: str | None, due_at: datetime, paused: bool) -> str:
+        async with session_factory() as session:
+            schedule = await store.create(
+                session,
+                RoomSchedule(
+                    room_id=room_id,
+                    author_id=author_id,
+                    agent_ids=[],
+                    text="Another.",
+                    cron=cron,
+                    run_at=None if cron else due_at,
+                    timezone=LONDON,
+                    paused=paused,
+                    next_run_at=due_at,
+                ),
+            )
+            await session.commit()
+            return schedule.id
+
+    one_off_id = await another(cron=None, due_at=missed, paused=False)
+    paused_id = await another(cron="0 9 * * *", due_at=missed, paused=True)
+    future_id = await another(cron="0 9 * * *", due_at=later, paused=False)
+
+    async with session_factory() as session:
+        skipped = await skip_missed_runs(session, store, now)
+        await session.commit()
+
+    assert skipped == 2
+    recurring = await _stored(session_factory, recurring_id)
+    assert recurring.next_run_at == _utc(2026, 11, 5, 9, 0)
+    assert recurring.last_run_at is None
+    assert (await _stored(session_factory, one_off_id)).next_run_at is None
+    assert (await _stored(session_factory, paused_id)).next_run_at == missed
+    assert (await _stored(session_factory, future_id)).next_run_at == later
 
 
 async def test_the_loop_reads_the_time_off_the_database_every_pod_shares(

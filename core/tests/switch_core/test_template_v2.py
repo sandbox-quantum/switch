@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from switch_core.agent_templates import agent_slots, plan_template, template_kind
+from switch_core.providers.registry import provider_ids
 from switch_core.rooms_yaml import ExistingPackageById, ExistingPackageByName, RoomSpec
 from switch_core.template_lint import lint_template
 from switch_core.template_v2 import TemplateError, compile_v2, holds
@@ -173,6 +174,7 @@ def test_plan_resolves_the_machine_and_keeps_the_room_addressing():
         {"start_in": "new_room"},
         builtins={"$creator": "ada"},
         machines=MACHINES,
+        providers=frozenset(provider_ids()),
     )
     (agent,) = plan.new_agents
     assert (agent.name, agent.machine, agent.provider) == (
@@ -195,7 +197,12 @@ def test_an_agent_without_addressing_is_planned_on_the_default():
         "",
     )
     plan = plan_template(
-        document, {}, {}, builtins={"$creator": "ada"}, machines=MACHINES
+        document,
+        {},
+        {},
+        builtins={"$creator": "ada"},
+        machines=MACHINES,
+        providers=frozenset(provider_ids()),
     )
     (agent,) = plan.new_agents
     assert agent.addressing == "owner-agents"
@@ -219,6 +226,7 @@ def test_an_input_that_refers_to_a_resource_is_resolved():
         {"name": "Expert N1", "directory": "{$agents_dir}/{expert.name}"},
         builtins={"$creator": "ada"},
         machines=MACHINES,
+        providers=frozenset(provider_ids()),
     )
     (agent,) = plan.new_agents
     assert agent.directory == "{$agents_dir}/expert-n1"
@@ -231,6 +239,7 @@ def test_an_existing_room_to_join_comes_from_the_input():
         {"start_in": "existing_room", "existing_room": "gamma-room"},
         builtins={"$creator": "ada"},
         machines=MACHINES,
+        providers=frozenset(provider_ids()),
     )
     assert plan.new_agents[0].joins == ["gamma-room"]
 
@@ -245,5 +254,46 @@ def test_an_existing_room_left_out_is_refused():
             {"start_in": "existing_room"},
             builtins={"$creator": "ada"},
             machines=MACHINES,
+            providers=frozenset(provider_ids()),
         )
     assert {p.code for p in e.value.problems} == {"input_missing"}
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        ("", (False, True)),
+        ("    auto_approve: false\n", (False, False)),
+        ("    auto_mode: false\n", (False, False)),
+    ],
+)
+def test_cursor_defaults_to_bypass_but_honors_manual_approval(written, expected):
+    template = (
+        """version: 2
+resources:
+  helper:
+    type: agent
+    name: helper
+    instructions: Help.
+    provider: cursor
+    machine: laptop
+    directory: /srv/helper
+"""
+        + written
+    )
+    machines = [
+        {
+            **MACHINES[0],
+            "providers": [{"provider": "cursor", "installed": True, "auth": "ok"}],
+        }
+    ]
+    plan = plan_template(
+        template,
+        {},
+        {},
+        builtins={},
+        machines=machines,
+        providers=frozenset(provider_ids()),
+    )
+    (agent,) = plan.new_agents
+    assert (agent.auto_mode, agent.auto_approve) == expected

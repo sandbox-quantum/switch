@@ -251,6 +251,11 @@ async def test_a_turns_steps_are_read_in_the_order_first_reported(service):
     [
         ({"kind": "tool.exploded"}, "Unknown activity kind"),
         ({"kind": "user-message", "subagent": True}, "Only tool activity"),
+        ({"delivery": "steered"}, "Only a person's message says how it was delivered"),
+        (
+            {"kind": "user-message", "status": "completed", "delivery": "sideways"},
+            "Only a person's message says how it was delivered",
+        ),
         ({"status": "running"}, "not a status"),
         ({"item_id": "turn"}, "Only the turn's own row"),
         ({"kind": "turn", "status": "running"}, "Only the turn's own row"),
@@ -828,6 +833,27 @@ async def test_a_room_control_takes_the_agents_addressing_policy(
             "guarded", room, PlatformPerson(stranger), doing="stop it"
         )
     assert error.value.code == "NOT_AUTHORIZED"
+
+
+async def test_a_message_sent_mid_turn_keeps_how_it_was_delivered(service):
+    values = _step(
+        item_id="user-correction",
+        kind="user-message",
+        status="completed",
+        title="",
+        delivery="steered",
+    )
+    assert await service.report_item(AGENT, SESSION, **values)
+    assert await service.report_item(
+        AGENT,
+        SESSION,
+        **_step(item_id="user-plain", kind="user-message", status="completed"),
+    )
+    rows = {
+        row.item_id: row for row in await service.turn_items(AGENT, SESSION, "turn-1")
+    }
+    assert rows["user-correction"].delivery == "steered"
+    assert rows["user-plain"].delivery is None
 
 
 async def test_subagent_progress_survives_duplicate_and_out_of_order_reports(service):

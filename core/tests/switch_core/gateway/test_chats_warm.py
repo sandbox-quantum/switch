@@ -209,7 +209,9 @@ async def test_a_warm_reaches_a_controller_another_process_holds(
     # What Management keeps in every process from the controller's rows: the
     # agent's binding, and which process holds the controller's socket.
     _bind(here.connections, agent)
-    here.connections.controllers.held_elsewhere(CONTROLLER, there.bus.process_id)
+    here.connections.controllers.held_elsewhere(
+        CONTROLLER, there.bus.process_id, TENANT_ZERO_ID
+    )
 
     response = await _warm(chats, chats.alice, room_id, agent)
 

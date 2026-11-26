@@ -7,17 +7,31 @@ holds for it, when its owner asks (`accounts/organization_purge.py`).
   purges it. `REFERENCE` says which request this answers (a ticket or
   similar reference) and is kept in the server's audit log.
 
-`ORGANIZATION` is its id, slug or WorkOS organization id. A purge that has to
-wait for something outside Switch (a cloud machine being torn down, a service
-token its vendor has not yet revoked) says so and exits 3; run the same
-command again later. It never touches WorkOS: it prints the WorkOS
-organization and users to remove there instead.
+`ORGANIZATION` is its id, slug or WorkOS organization id. Before it
+deletes anything it has Switch Trust delete what it holds, and once
+Switch's side is done it takes the organization out of WorkOS
+(`accounts/purge_elsewhere.py`).
+
+Exit codes:
+
+- `0`: done, in Switch and outside it.
+- `1`: refused, or something failed (an account, a WorkOS or Switch Trust
+  call). Run the same command again to retry. A Switch Trust deletion that
+  fails stops the run before anything in Switch is deleted.
+- `3`: waiting for something outside Switch (a cloud machine being torn
+  down, a service token its vendor has not yet revoked); nothing deleted
+  yet. Run the same command again later.
+- `4`: done in Switch, but what it prints is left for a person to remove:
+  the WorkOS organization, users or memberships, when the server has no
+  `WORKOS_API_KEY`; or the Switch Trust sessions, on a run resumed after an
+  earlier one deleted the organization and with it its Switch Trust
+  settings, which this tool can then no longer delete.
 
 Run it where switch-core runs, with the same configuration: it revokes
-messaging apps and service sign-ins with the server's own credentials. It
-refuses a database connection that row-level security does not bind (the
-schema owner's, a superuser's), as the server does with
-DB_REQUIRE_RESTRICTED_ROLE on.
+messaging apps and service sign-ins, and calls WorkOS with the server's own
+credentials and Switch Trust with the organization's. It refuses a database connection that
+row-level security does not bind (the schema owner's, a superuser's), as the
+server does with DB_REQUIRE_RESTRICTED_ROLE on.
 """
 
 from __future__ import annotations
@@ -35,6 +49,16 @@ from switch_core.accounts.organization_purge import (
     PurgeOutcome,
     PurgePlan,
     PurgeRefused,
+)
+from switch_core.accounts.purge_elsewhere import (
+    ElsewhereOutcome,
+    PurgeElsewhere,
+    TrustErasure,
+)
+from switch_core.accounts.workos_offboarding import (
+    WorkOSError,
+    WorkOSOffboarding,
+    WorkOSSteps,
 )
 from switch_core.announcer import Announcer
 from switch_core.bridges.collaboration.discord.install import DiscordAppInstaller
@@ -73,10 +97,20 @@ from switch_core.main import (
 )
 from switch_core.outbound import guarded_async_client
 from switch_core.signals import SignalBus
+from switch_core.trust.client import GuardrailsCheckError
+from switch_core.trust.setup import build_trust_client
 
 logger = logging.getLogger(__name__)
 
 EXIT_WAITING = 3
+EXIT_LEFT_BY_HAND = 4
+
+BACKUPS_NOTE = (
+    "Backups still hold the organization: the nightly database dumps and "
+    "point-in-time restore keep it for up to 37 days, after which it is gone "
+    "from them too. Restoring one within that time brings it back; purge it "
+    "again after a restore."
+)
 
 
 async def _installers(config: SwitchConfig) -> MessagingInstallerRegistry:
@@ -116,6 +150,7 @@ async def _installers(config: SwitchConfig) -> MessagingInstallerRegistry:
                     messaging_public_url=config.messaging_public_url,
                     privacy_url=config.teams_app_privacy_url,
                     terms_url=config.teams_app_terms_url,
+                    partner_id=config.teams_app_partner_id,
                 ),
             )
         )
@@ -135,6 +170,7 @@ async def _installers(config: SwitchConfig) -> MessagingInstallerRegistry:
                     ),
                     webhook_secret=config.telegram_app_webhook_secret,
                     on_connected=_never_connected,
+                    feature_flags=config.feature_flags,
                 ),
                 webhook_secret=config.telegram_app_webhook_secret,
             )
@@ -163,7 +199,10 @@ def _print_plan(plan: PurgePlan) -> None:
     for account in kept:
         print(f"  {account.email} ({account.id}): {account.kept_because}")
     if plan.machines:
-        print(f"\nCloud machines to tear down ({len(plan.machines)}):")
+        print(
+            "\nCloud machines to delete, instance and disk, without waiting out "
+            f"the disk's retention ({len(plan.machines)}):"
+        )
         for machine_id in plan.machines:
             print(f"  {machine_id}")
     if plan.detached_machines:
@@ -184,7 +223,39 @@ def _print_plan(plan: PurgePlan) -> None:
             print(f"  - {refusal}")
 
 
-def _print_outcome(plan: PurgePlan, outcome: PurgeOutcome) -> None:
+def _print_workos_steps(steps: WorkOSSteps, plan: PurgePlan, done: bool) -> None:
+    removed, deleted = ("Removed", "Deleted") if done else ("Remove", "Delete")
+    organization = plan.workos_organization_id
+    for membership in steps.memberships:
+        print(
+            f"  - {removed} membership {membership.id} of user "
+            f"{membership.user_id} in {organization}"
+        )
+    for user_id in steps.users_deleted:
+        print(f"  - {deleted} user {user_id}{_account_of(plan, user_id)}")
+    for user_id, why in sorted(steps.users_kept.items()):
+        print(f"  - Keep user {user_id}{_account_of(plan, user_id)}: {why}")
+    if organization is None:
+        print("  - No WorkOS organization: the organization was never linked.")
+    elif steps.organization_deleted:
+        print(f"  - {deleted} organization {organization}")
+    elif steps.organization_kept:
+        print(f"  - Keep organization {organization}: {steps.organization_kept}")
+    for failure in steps.failures:
+        print(f"  ERROR: {failure}")
+
+
+def _account_of(plan: PurgePlan, user_id: str) -> str:
+    account_id = plan.workos_users[user_id]
+    for account in plan.accounts:
+        if account.id == account_id:
+            return f" ({account.email})"
+    return f" (account {account_id})"
+
+
+def _print_outcome(
+    plan: PurgePlan, outcome: PurgeOutcome, elsewhere: ElsewhereOutcome | None
+) -> None:
     for warning in outcome.warnings:
         print(f"WARNING: {warning}")
     if not outcome.finished:
@@ -193,26 +264,169 @@ def _print_outcome(plan: PurgePlan, outcome: PurgeOutcome) -> None:
             print(f"  - {waiting}")
         print("Run the same command again later.")
         return
+    assert elsewhere is not None
     print(f"\nPurged organization {plan.slug} and {len(plan.workspaces)} workspace(s).")
     print(f"Deleted {len(outcome.deleted_accounts)} account(s).")
     for account, error in outcome.failed_accounts:
         print(f"ERROR: account {account.email} ({account.id}) not deleted: {error}")
-    if outcome.failed_accounts:
-        print("Run the same command again to retry them.")
-    print("\nStill to do at WorkOS, by whoever owns the environment:")
-    if plan.workos_organization_id:
-        print(f"  - the organization {plan.workos_organization_id}")
-    for account in outcome.deleted_accounts:
-        for issuer, subject in account.identities:
-            print(f"  - user {subject} ({account.email}, signed in via {issuer})")
-    for account in plan.accounts:
-        if account.kept_because:
-            for issuer, subject in account.identities:
+
+    print("\nOutside Switch:")
+    print(
+        f"  Service sign-ins removed and revoked at their vendors by this run: "
+        f"{outcome.revoked_sign_ins}"
+    )
+    print(
+        "  Messaging installs ended at their platforms: "
+        f"{', '.join(outcome.ended_installs) or 'none'}"
+    )
+    print(
+        "  Cloud machines deleted by the hosted controller, instance and disk: "
+        f"{', '.join(plan.removed_machines) or 'none'}"
+    )
+    if plan.detached_machines:
+        print(
+            "  Cloud machines of kept accounts, taken off the organization's "
+            f"workspaces: {', '.join(plan.detached_machines)}"
+        )
+    if elsewhere.workos is not None:
+        print("  WorkOS:")
+        _print_workos_steps(elsewhere.workos, plan, done=True)
+    else:
+        leftover = elsewhere.workos_leftover
+        assert leftover is not None
+        if leftover.empty:
+            print("  WorkOS: nothing there for this organization.")
+        else:
+            print(
+                "  WorkOS: NOT CLEANED. This server has no WORKOS_API_KEY. Remove "
+                "these there by hand, if its sign-in is WorkOS:"
+            )
+            if leftover.organization:
                 print(
-                    f"  - membership of user {subject} ({account.email}, via "
-                    f"{issuer}) in the organization, not the user: "
-                    f"{account.kept_because}"
+                    f"    - the organization {leftover.organization}, unless "
+                    "another product still uses it"
                 )
+            for user_id in leftover.users:
+                print(
+                    f"    - user {user_id}{_account_of(plan, user_id)}, unless "
+                    "another product's organization still has them"
+                )
+            for user_id in leftover.memberships_only:
+                print(
+                    f"    - only the membership of user {user_id}"
+                    f"{_account_of(plan, user_id)} in the organization: Switch "
+                    "still uses the user"
+                )
+    _print_trust(plan, elsewhere.trust)
+    print(f"\n{BACKUPS_NOTE}")
+    if outcome.failed_accounts or elsewhere.failed:
+        print("\nRun the same command again to retry what failed.")
+
+
+def _print_trust(plan: PurgePlan, trust: TrustErasure) -> None:
+    if trust.settings_gone:
+        print(
+            "  Switch Trust: NOT CLEANED, and this tool can no longer clean it. "
+            "An earlier run deleted the organization with its Switch Trust "
+            "settings, so there is nothing left to send a deletion with. If it "
+            "connected a policy, ask Switch Trust to delete these "
+            f"{len(trust.left_by_hand)} room session(s):"
+        )
+        for session_id in trust.left_by_hand:
+            print(f"    - {session_id}")
+    elif not trust.configured:
+        print(
+            "  Switch Trust: the organization connected no policy, so no "
+            "message of it was sent there and nothing is to delete."
+        )
+    else:
+        earlier = (
+            f" ({trust.deleted_earlier} by an earlier run)"
+            if trust.deleted_earlier
+            else ""
+        )
+        print(
+            f"  Switch Trust: {trust.deleted + trust.deleted_earlier} of "
+            f"{len(plan.trust_sessions)} room session(s) deleted{earlier}."
+        )
+        for session_id, error in trust.failed:
+            print(f"  ERROR: Switch Trust session {session_id}: {error}")
+
+
+def _print_trust_stopped(plan: PurgePlan, trust: TrustErasure) -> None:
+    print("\nSwitch Trust did not delete everything; nothing in Switch is deleted:")
+    _print_trust(plan, trust)
+    print(
+        "Run the same command again to retry. The organization's Switch Trust "
+        "settings are kept until every deletion there has gone through."
+    )
+
+
+async def _print_dry_run_elsewhere(
+    plan: PurgePlan, elsewhere: PurgeElsewhere, trust_configured: bool
+) -> None:
+    """What `--execute` would do outside Switch. Raises `WorkOSError` when
+    WorkOS can't be read."""
+    steps = await elsewhere.plan_workos(plan)
+    if steps is not None:
+        print("\nAt WorkOS, once Switch's side is done:")
+        _print_workos_steps(steps, plan, done=False)
+    elif plan.workos_organization_id is None and not plan.workos_users:
+        print("\nWorkOS: nothing there for this organization.")
+    else:
+        print(
+            "\nWorkOS: this server has no WORKOS_API_KEY, so nothing there will "
+            "change; the purge will list these to remove by hand and exit 4:"
+        )
+        if plan.workos_organization_id:
+            print(f"  - the organization {plan.workos_organization_id}")
+        for user_id in sorted(plan.workos_users):
+            print(f"  - user {user_id}{_account_of(plan, user_id)}")
+    if trust_configured:
+        print(
+            "\nSwitch Trust: before anything in Switch is deleted, delete what it "
+            f"holds for {len(plan.trust_sessions)} room session(s), with the "
+            "organization's own policy settings. If any deletion fails, nothing "
+            "in Switch is deleted and the purge exits 1."
+        )
+    elif plan.resuming and plan.trust_sessions:
+        print(
+            "\nSwitch Trust: the organization's settings went with it in an "
+            "earlier run, so this tool can no longer delete anything there. Of "
+            f"its {len(plan.trust_sessions)} room session(s), any an earlier "
+            "run did not delete there will be listed for a person to have "
+            "deleted, and the purge exits 4."
+        )
+    else:
+        print(
+            "\nSwitch Trust: the organization connected no policy; nothing to delete."
+        )
+    print(f"\n{BACKUPS_NOTE}")
+
+
+async def execute(
+    purge: OrganizationPurge, elsewhere: PurgeElsewhere, plan: PurgePlan, request: str
+) -> int:
+    """Purge what `plan` found, print the receipt, and return the exit code.
+
+    Switch Trust is erased after everything the purge waits on is done and
+    before anything is deleted, while the organization's settings to erase
+    with are still there; a Trust deletion that fails stops the run there.
+    Raises `PurgeRefused` as `OrganizationPurge.run` does."""
+    outcome = await purge.prepare(plan, request)
+    if outcome.waiting:
+        _print_outcome(plan, outcome, None)
+        return EXIT_WAITING
+    trust = await elsewhere.erase_at_trust(plan, request)
+    if trust.failed:
+        _print_trust_stopped(plan, trust)
+        return 1
+    outcome = await purge.delete(plan, request, outcome)
+    elsewhere_outcome = await elsewhere.run(plan, request, trust)
+    _print_outcome(plan, outcome, elsewhere_outcome)
+    if outcome.failed_accounts or elsewhere_outcome.failed:
+        return 1
+    return EXIT_LEFT_BY_HAND if elsewhere_outcome.left_by_hand else 0
 
 
 async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
@@ -230,6 +444,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
         print(f"Refused: {error}", file=sys.stderr)
         return 1
     session_factory = create_session_factory(engine)
+    trust_client, trust_http = build_trust_client(session_factory, config)
     announcer = Announcer(session_factory)
     signals = SignalBus(
         session_factory,
@@ -245,6 +460,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                 keyring=config.keyring,
                 public_url=config.gateway_public_url,
                 server_name=config.id_server_name,
+                redirects=config.service_sign_in_redirect,
             )
             connector_apps = build_connector_apps(
                 config,
@@ -276,26 +492,45 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                 signals=signals,
                 controller_removed=controller_removal_publisher(signals),
                 admin_email=config.gateway_admin_email,
+                sign_in_issuer=config.gateway_oidc_issuer_url,
             )
             try:
                 plan = await purge.plan(await purge.find(arguments.organization))
                 _print_plan(plan)
+                # Read before the purge: the organization's Switch Trust
+                # settings go with its rows, so Trust is erased before them.
+                elsewhere = PurgeElsewhere(
+                    session_factory=session_factory,
+                    workos=WorkOSOffboarding(
+                        http, config.workos_api_key, config.workos_api_url
+                    )
+                    if config.workos_api_key
+                    else None,
+                    trust=await trust_client.session_eraser(plan.organization_id),
+                    sign_in_issuer=config.gateway_oidc_issuer_url,
+                )
                 if not arguments.execute:
+                    await _print_dry_run_elsewhere(
+                        plan, elsewhere, elsewhere.trust is not None
+                    )
                     print(
                         "\nNothing changed. Add --execute --request REFERENCE to purge."
                     )
                     return 1 if plan.refusals else 0
-                outcome = await purge.run(plan, arguments.request)
+                return await execute(purge, elsewhere, plan, arguments.request)
             except PurgeRefused as refused:
                 print(f"\nRefused: {refused}", file=sys.stderr)
                 return 1
-            _print_outcome(plan, outcome)
-            if not outcome.finished:
-                return EXIT_WAITING
-            return 1 if outcome.failed_accounts else 0
+            except (WorkOSError, GuardrailsCheckError) as error:
+                print(
+                    f"\nCould not read what to do outside Switch: {error}",
+                    file=sys.stderr,
+                )
+                return 1
     finally:
         # Sends the signals that tell the running servers what went.
         await announcer.stop()
+        await trust_http.aclose()
         await engine.dispose()
 
 

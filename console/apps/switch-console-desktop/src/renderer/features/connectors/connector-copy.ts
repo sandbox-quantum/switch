@@ -9,11 +9,11 @@ const NAMED_AGENTS = 4;
 /**
  * What disconnecting says before it happens: how many of the person's agents
  * lose the service and which (the first four, then how many more), or, where
- * that cannot be known, that every one does; and, for a key, that Switch can
- * only forget it, not revoke it.
+ * that cannot be known, that every one does; and, for a key or anything
+ * pasted, that Switch can only forget it, not revoke it.
  */
 export function disconnectCopy(
-  entry: Pick<ConnectionCatalogEntry, 'name' | 'auth_type'>,
+  entry: Pick<ConnectionCatalogEntry, 'name' | 'auth_type' | 'method'>,
   grantedAgents: string[] | null
 ): { title: string; lines: string[] } {
   const { name } = entry;
@@ -26,6 +26,14 @@ export function disconnectCopy(
           ? `${grantedAgents[0]} loses ${name}.`
           : `${grantedAgents.length} agents lose ${name}: ${namedAgents(grantedAgents)}. Disconnecting removes their access.`,
   ];
+  if (entry.method === 'token' || entry.method === 'keys') {
+    const until =
+      entry.method === 'token' ? 'it expires or you delete it there' : 'you delete it there';
+    lines.push(
+      `Switch forgets what you pasted for ${name} but can't revoke it, so it keeps working in ${name} until ${until}.`
+    );
+    return { title: `Disconnect ${name}?`, lines };
+  }
   if (entry.auth_type === 'api_key') {
     lines.push('Switch removes the key it keeps.');
     lines.push(`Switch can't revoke this key at ${name}; delete it there.`);
@@ -45,14 +53,16 @@ function namedAgents(names: string[]): string {
 /**
  * What an admin is asked before switching a service off for the workspace, or
  * null when nobody is connected and no agent uses it: switching it off then
- * changes nothing anyone has, and is done without asking.
+ * changes nothing anyone has, and is done without asking. Null too when the
+ * server doesn't say who it reaches, as it says only to an admin: the switch
+ * is then refused, so there is nothing to weigh.
  */
 export function switchOffConfirmation(
   service: Pick<WorkspaceService, 'name' | 'connected_members' | 'granted_agents'>
 ): { title: string; description: string } | null {
   const members = service.connected_members;
   const agents = service.granted_agents;
-  if (members === 0 && agents === 0) return null;
+  if (members === null || agents === null || (members === 0 && agents === 0)) return null;
   const connected = `${members} ${members === 1 ? 'member is' : 'members are'} connected`;
   const using = `${agents} ${agents === 1 ? 'agent uses' : 'agents use'} it`;
   return {

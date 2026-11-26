@@ -33,6 +33,41 @@ provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;
 its initial prompt is not automatically sent again.
 
+### Messages sent while the agent is working
+
+On a provider that can steer a running turn (Claude Code, Codex and OpenCode),
+a message sent while the agent is working reaches that turn instead of waiting
+for it to end. Any message that reaches the agent does: from the person who
+started the turn or anyone else who can talk to the agent, from another agent,
+or a schedule or kickoff; in any thread, at the top level of a channel, in a
+direct room, or typed in the session's own view in Switch Console. Who can
+reach the agent at all is still its addressing policy's choice. Each message
+tells the agent who sent it and from which room and thread, so it can handle
+several at once.
+
+A provider reads a steered message at its next step, not mid-sentence: Claude
+Code reads it after the tool call in progress, or after the answer it is
+writing. If the turn ends just as the message arrives, or the provider declines
+it (Codex sometimes does), the message runs as the next turn instead, with a
+notice in the transcript; it is never lost or sent twice, and a message whose
+delivery is uncertain is shown as such and not resent. Running a failed message
+again always queues. A steer never answers or cancels an open approval: answer
+the request, or interrupt the turn.
+
+Room activity cards on every platform say how many messages were steered into
+a turn, with a line for each in its sender's words, and a turn waiting behind
+another says so. A steered message carries the working reaction while its turn
+runs. The Console transcript labels each mid-turn message as steered or queued.
+
+An agent's **Steer messages sent while it works** setting turns this off for
+the messages Switch delivers from rooms: with it off, every one waits for the
+turn to end, as before. It is on by default, lives on the agent in Switch (so it
+survives the agent re-registering), and applies to the next message without a
+restart. Change it in Switch Console's agent settings, on the agent's page in
+the web dashboard (its owner or a workspace admin), or with the
+`update_agent_detail` tool (`mid_turn_delivery`). Providers that cannot steer
+always queue.
+
 ## Server isolation
 
 SDK sessions, transcript events, commands and attachments are scoped to the
@@ -237,17 +272,26 @@ model change stops further execution until recovery, without repeating the chang
 Codex offers **Keep current effort** because omitting its turn override preserves
 the native thread setting. Choose an explicit effort to replace it. Claude
 **Provider default** clears the previous session effort override.
+An ACP agent that offers a `thought_level` session option (OpenCode 2's `effort`)
+offers its levels on the current model, under the option's id. A selection sets
+the model first, then the level, because a model change can change the levels
+on offer.
 
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
-boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
-`session.summarize` with native busy/idle completion. Console shows progress and the
+boundary, Codex's `thread/compact/start` with turn completion, or OpenCode 1.x's
+`session.summarize` with native busy/idle completion. OpenCode 2 runs through
+`opencode acp`: Console sends its `/compact` command between turns and waits for
+the `opencode/compaction` status it reports in `session_info_update`, failing
+with OpenCode's reason when that status is `failed`. A compaction OpenCode 2 runs
+on its own inside a turn shows in that turn as a compaction item. Messages sent
+while a compaction runs wait behind it. Console shows progress and the
 outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation, and Kiro's `_kiro/session/compact` extension is not used. None receives a substitute summarization prompt. Pi compacts with its own RPC `compact` command.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
 | Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
 | Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
-| OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
+| OpenCode | Yes | Connected models and native variants on 1.x; the ACP `model` and `effort` options on 2 | Native session compaction on 1.x; `/compact` over ACP on 2 | Staged file URLs |
 | Antigravity (`agy acp`) | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 | DeepSeek Harness | Yes | ACP `model` option (its `[provider, model]` routes) | Unavailable | Staged file references |
@@ -399,19 +443,26 @@ resumes or attaches, including ones started automatically:
 
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
-  automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
+  automatic reviewer and keeps its sandbox, Cursor
   uses Smart Auto, Mistral Vibe uses Smart Approve where Vibe offers it, and
   Antigravity, Pi (and Mistral Vibe without Smart Approve) approve edits and ask
   before commands. DeepSeek Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
   Junie uses its Auto brave mode, and Kiro applies its own trust policy and safety check before anything reaches
-  Console, which asks about the rest.
+  Console, which asks about the rest. OpenCode runs with `--auto`, which has no
+  review at all: every ask is allowed once.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 
 Together they select the session's runtime mode (`runtimeModeFor` in
 `@switch-console/agent-providers`): `full-access` with bypass on, `auto` with
 only auto mode on, `approval-required` with both off. New agents start with auto
-mode on and bypass off, on this computer, on SSH hosts and as managed agents.
+mode on and bypass off, on this computer, on SSH hosts and as managed agents,
+except OpenCode agents, which start with both off (`newAgentAutoMode` on the
+provider's runtime in `@switch-console/agent-providers`, read through
+`newAgentPermissions`). OpenCode has no automatic review: in auto mode the
+adapter answers every permission ask itself, as OpenCode's own `--auto` does,
+so no one sees a command before it runs. Its owner can still turn auto mode
+on, and the switch says what that means.
 Agents that existed before auto mode keep the behaviour they had: auto mode
 reads as off for them until someone turns it on.
 

@@ -5,7 +5,9 @@ import { useState } from 'react';
 import { workspaceRosterQuery } from '@renderer/features/chats/chat-people';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { forgetBuddyChat } from '@renderer/features/switch-buddy/buddy-chat';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { ParticipantPicker } from '@renderer/lib/components/participant-picker';
@@ -17,6 +19,10 @@ import {
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import {
+  invitableAgents,
+  useRoomAgentCandidates,
+} from '@renderer/lib/stores/use-room-agent-candidates';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -30,7 +36,6 @@ import { type ChatSummary } from '@shared/core/chats/chats';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
-import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 import { addableAgents, addableBridgePeople, addablePeople } from './room-labels';
 import { agentKindFor, localAgentFor, PersonMark, roomDetailKey } from './room-participants';
 
@@ -50,15 +55,14 @@ export async function addToChat(
   | { kind: 'agent'; chat: ChatSummary }
   | { kind: 'person'; members: Awaited<ReturnType<typeof rpc.chats.addMember>> }
 > {
-  if (participant.kind === 'agent')
-    return {
-      kind: 'agent',
-      chat: await api.addAgent({ serverId, roomId, agentId: participant.id }),
-    };
-  return {
-    kind: 'person',
-    members: await api.addMember({ serverId, roomId, userId: participant.id }),
-  };
+  if (participant.kind === 'agent') {
+    const chat = await api.addAgent({ serverId, roomId, agentId: participant.id });
+    forgetBuddyChat(serverId, roomId);
+    return { kind: 'agent', chat };
+  }
+  const members = await api.addMember({ serverId, roomId, userId: participant.id });
+  forgetBuddyChat(serverId, roomId);
+  return { kind: 'person', members };
 }
 
 const ADD_PARTICIPANT_INPUT = 'chat-add-participant';
@@ -157,7 +161,8 @@ export const ChatAddParticipantPanel = observer(function ChatAddParticipantPanel
             inputId={ADD_PARTICIPANT_INPUT}
             autoFocus={false}
             busy={adding}
-            overlay
+            // It is shown in a dialog, which clips a list floating past its edge.
+            overlay={false}
             candidates={candidates}
             picked={picked}
             onChange={setPicked}
@@ -197,36 +202,28 @@ export const ChatAddParticipantPanel = observer(function ChatAddParticipantPanel
           </p>
         )
       )}
-      <InviteHint workspaceId={workspaceId} canInvite={canInvite(serverId, workspaceId)} />
+      <InviteHint serverId={serverId} workspaceId={workspaceId} />
     </div>
   );
 });
 
-/** Whether the viewer may invite people to the workspace, as the workspace menu decides it. */
-function canInvite(serverId: string, workspaceId: string | null): boolean {
-  const workspace = workspacesStore.workspaces.find((each) => each.id === workspaceId) ?? null;
-  const server = switchServersStore.servers.find((each) => each.id === serverId) ?? null;
-  return (
-    workspace !== null &&
-    server !== null &&
-    administersWorkspace(workspace) &&
-    !runsOnThisComputer(server)
-  );
-}
-
 /** Where to go for someone the roster does not have yet. */
-export function InviteHint({
+export const InviteHint = observer(function InviteHint({
+  serverId,
   workspaceId,
-  canInvite,
 }: {
+  serverId: string;
   workspaceId: string | null;
-  canInvite: boolean;
 }) {
   const showInvitePeopleModal = useShowModal('invitePeopleModal');
+  const server = switchServersStore.serverById(serverId);
+  const onThisComputer = server !== null && runsOnThisComputer(server);
   return (
     <p className="px-1 text-xs text-foreground-muted">
       Don&apos;t see someone?{' '}
-      {canInvite && workspaceId !== null ? (
+      {onThisComputer ? (
+        'To invite new people, use a Switch server they can reach. This server runs on your computer.'
+      ) : workspaceId !== null && server !== null && administersWorkspaceById(workspaceId) ? (
         <button
           type="button"
           className="cursor-pointer underline hover:text-foreground"
@@ -239,7 +236,7 @@ export function InviteHint({
       )}
     </p>
   );
-}
+});
 
 /**
  * Invite people to a bridged room from the messaging app's users Switch knows.
@@ -272,7 +269,7 @@ export const AddPeoplePanel = observer(function AddPeoplePanel({
         loadError={people.isError ? failureText(people.error, 'Could not list the people.') : null}
         candidates={addableBridgePeople(people.data ?? [], present).map((person) => ({
           ...person,
-          mark: <PersonMark name={person.name} size="sm" />,
+          mark: <PersonMark name={person.name} userId={null} size="sm" />,
         }))}
         footer={
           <p className="px-1 text-xs text-foreground-muted">
@@ -297,6 +294,50 @@ export const AddPeoplePanel = observer(function AddPeoplePanel({
     </>
   );
 });
+
+/**
+ * Make someone in the room one of its room admins: the people in it with a
+ * Switch account, less its owner and those who already are, as the server
+ * lists them for whoever may choose.
+ */
+export function AddRoomAdminPanel({
+  workspaceId,
+  room,
+}: {
+  workspaceId: string;
+  room: RemoteRoomDetail;
+}) {
+  const queryClient = useQueryClient();
+  return (
+    <AddParticipantPanel
+      noun="person"
+      searchPlaceholder="Search people in this room…"
+      allInText="Everyone here who can be a room admin already is."
+      loading={false}
+      loadError={null}
+      candidates={room.roomAdminCandidates.map((person) => ({
+        id: person.userId,
+        name: person.name,
+        mark: <PersonMark name={person.name} userId={person.userId} size="sm" />,
+        detail: '',
+      }))}
+      footer={
+        <p className="px-1 text-xs text-foreground-muted">
+          Only people in the room with a Switch account can be room admins.
+        </p>
+      }
+      onAdd={async (userId) => {
+        const updated = await rpc.workspaces.setRoomAdmin({
+          workspaceId,
+          roomId: room.id,
+          userId,
+          admin: true,
+        });
+        queryClient.setQueryData(roomDetailKey(workspaceId, room.id), updated);
+      }}
+    />
+  );
+}
 
 type Candidate = { id: string; name: string; mark: React.ReactNode; detail: string };
 
@@ -428,6 +469,8 @@ export const AddAgentPanel = observer(function AddAgentPanel({
 }) {
   const members = new Set(room.agentIds);
   const remoteAgents = useWorkspaceAgents(workspaceId);
+  // Only the agents the server would let this person invite are listed.
+  const candidates = useRoomAgentCandidates(workspaceId, room.id);
   const serverId = workspacesStore.serverIdFor(workspaceId);
   const viewerId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
   return (
@@ -438,13 +481,19 @@ export const AddAgentPanel = observer(function AddAgentPanel({
       allInText={
         (remoteAgents.data ?? []).length === 0
           ? 'There are no agents on this server yet.'
-          : 'Every agent on this server is already in this room.'
+          : candidates.data
+            ? 'No other agents you can invite. You can bring in your own agents and agents that anyone may address.'
+            : 'Every agent on this server is already in this room.'
       }
-      loading={remoteAgents.isPending}
+      loading={remoteAgents.isPending || candidates.isPending}
       loadError={
-        remoteAgents.isError ? failureText(remoteAgents.error, 'Could not list the agents.') : null
+        remoteAgents.isError
+          ? failureText(remoteAgents.error, 'Could not list the agents.')
+          : candidates.isError
+            ? failureText(candidates.error, 'Could not work out which agents you can invite.')
+            : null
       }
-      candidates={(remoteAgents.data ?? [])
+      candidates={invitableAgents(remoteAgents.data ?? [], candidates.data)
         .filter((agent) => !members.has(agent.id))
         .map((agent) => ({
           id: agent.id,

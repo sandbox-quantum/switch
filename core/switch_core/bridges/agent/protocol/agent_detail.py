@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import (
@@ -29,11 +29,13 @@ from switch_core.addressing import (
 )
 from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import normalise_icon_url, refuse_third_party_avatar
+from switch_core.authz import Principal, can_manage
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.statuses import agent_statuses_by_room
 from switch_core.db.models import (
     Agent,
     AgentSession,
+    AgentSessionActivityItem,
     Client,
     ExternalUser,
     Room,
@@ -44,6 +46,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.known_agents import known_agent
 from switch_core.gateway.schemas import (
@@ -54,9 +57,40 @@ from switch_core.gateway.schemas import (
     AgentRoomMembership,
     AgentSessionDetail,
     AgentSummary,
+    AgentSuspension,
     AgentToolSummary,
     NamedEntry,
 )
+
+# How an agent is set up on its owner's machine: its options, which hold the
+# directory its sessions run in, and its OAuth client. Shown to its owner and
+# the workspace's admins; anyone else may still find the agent, invite it and
+# talk to it, and has no use for them.
+OWNER_ONLY_FIELDS = ("known_agent_options", "oauth_client_id")
+
+
+def shown_to[S: (AgentSummary, AgentDetail)](viewer: Principal, agent: S) -> S:
+    """`agent`, a summary or a detail, as `viewer` is shown it: whole if they
+    may manage it (`can_manage`), else without `OWNER_ONLY_FIELDS` and, for a
+    detail, without the device a session runs on. A detail's children are
+    each shown by the same rule."""
+    if isinstance(agent, AgentDetail):
+        children = [shown_to(viewer, child) for child in agent.children]
+        if can_manage(viewer, agent.owner_id):
+            return agent.model_copy(update={"children": children})
+        sessions = [
+            row.model_copy(update={"controller_id": None}) for row in agent.sessions
+        ]
+        return agent.model_copy(
+            update={
+                **dict.fromkeys(OWNER_ONLY_FIELDS),
+                "sessions": sessions,
+                "children": children,
+            }
+        )
+    if can_manage(viewer, agent.owner_id):
+        return agent
+    return agent.model_copy(update=dict.fromkeys(OWNER_ONLY_FIELDS))
 
 
 class AgentOptionsNotEditable(Exception):
@@ -113,6 +147,7 @@ def agent_summary(
         agent.integration_profile if isinstance(agent.integration_profile, dict) else {}
     )
     return AgentSummary(
+        suspension=agent_suspension(agent),
         id=agent.id,
         name=agent.name,
         description=agent.description,
@@ -133,11 +168,23 @@ def agent_summary(
         known_agent_options=known_agent_options
         if isinstance(known_agent_options, dict)
         else None,
+        mid_turn_delivery="queue" if agent.mid_turn_delivery == "queue" else "steer",
         addressing_policy=(
             AddressingPolicy.model_validate(agent.addressing_policy)
             if isinstance(agent.addressing_policy, dict)
             else None
         ),
+    )
+
+
+def agent_suspension(agent: Agent) -> AgentSuspension | None:
+    if agent.suspended_at is None or agent.suspended_by_role is None:
+        return None
+    return AgentSuspension(
+        suspended_at=agent.suspended_at,
+        reason=agent.suspended_reason,
+        by_role=agent.suspended_by_role,
+        with_owner=agent.suspended_with_owner,
     )
 
 
@@ -196,11 +243,72 @@ def session_state(row: AgentSession, now: datetime) -> str:
     return "live" if cast(datetime, row.last_seen_at) > now - ttl else "stale"
 
 
+async def agent_room_memberships(
+    session: AsyncSession,
+    *,
+    agents: list[Agent],
+    visible: ColumnElement[bool],
+    room_store: RoomStore,
+    agent_session_store: AgentSessionStore,
+    room_role_store: RoomRoleStore,
+    connections: AgentConnectionRegistry,
+) -> dict[str, list[AgentRoomMembership]]:
+    """The rooms each agent is a member of that `visible` holds for, archived
+    rooms included, with the agent's status and role in each and whether it
+    has had a turn there, keyed by agent id.
+
+    The same number of statements for one agent and for many, and none of them
+    reads a room these agents are not in: whether the reader may see a room is
+    asked in the query that finds the agents' rooms."""
+    rooms_by_agent = await room_store.rooms_of_agents(
+        session, [agent.id for agent in agents], visible
+    )
+    room_ids = sorted(
+        {room.room_id for rooms in rooms_by_agent.values() for room in rooms}
+    )
+    statuses = await agent_statuses_by_room(
+        session, agents, room_ids, agent_session_store, connections
+    )
+    roles = await room_role_store.room_roles_of_agents(
+        session, list(rooms_by_agent), room_ids, connections.live_connection_ids()
+    )
+    # A turn in a room means someone addressed the agent there.
+    answered = set(
+        (
+            await session.execute(
+                select(
+                    AgentSessionActivityItem.agent_id, AgentSessionActivityItem.room_id
+                )
+                .where(
+                    AgentSessionActivityItem.agent_id.in_(list(rooms_by_agent)),
+                    AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                    AgentSessionActivityItem.room_id.in_(room_ids),
+                )
+                .distinct()
+            )
+        ).tuples()
+    )
+    return {
+        agent_id: [
+            AgentRoomMembership(
+                room_id=room.room_id,
+                room_name=room.name,
+                archived=room.archived,
+                status=statuses[room.room_id][agent_id].value,
+                room_role=roles.get((agent_id, room.room_id)),
+                answered_here=(agent_id, room.room_id) in answered,
+            )
+            for room in rooms
+        ]
+        for agent_id, rooms in rooms_by_agent.items()
+    }
+
+
 async def assemble_agent_detail(
     session: AsyncSession,
     *,
     agent: Agent,
-    visible_room_ids: set[str],
+    visible: ColumnElement[bool],
     agent_store: AgentStore,
     room_store: RoomStore,
     user_store: UserStore,
@@ -208,6 +316,10 @@ async def assemble_agent_detail(
     room_role_store: RoomRoleStore,
     connections: AgentConnectionRegistry,
 ) -> AgentDetail:
+    """`agent` in full, for a reader who may see the rooms `visible` holds for.
+    Any other room is never named to them: it is left out of the agent's
+    rooms, and so is a session in one. `room_name_by_id` ends up holding
+    exactly the readable rooms, so it is what the sessions are filtered by."""
     tools = await agent_store.get_tools(session, agent.id)
     models = await agent_store.get_models(session, agent.id)
     child_agents = await agent_store.get_children(session, [agent.id])
@@ -221,33 +333,18 @@ async def assemble_agent_detail(
         len(models),
     )
 
-    # Rooms the viewer may not read (outside `visible_room_ids`) are never
-    # named to them: they are left out of the agent's rooms, and a session in
-    # one carries no room name.
-    rooms = await room_store.get_rooms_for_agent(
-        session, agent.id, include_archived=True
-    )
-    rooms = [room for room in rooms if room.id in visible_room_ids]
-    room_name_by_id = {room.id: room.name for room in rooms}
-
-    room_ids = [room.id for room in rooms]
-    live_connection_ids = connections.live_connection_ids()
-    statuses = await agent_statuses_by_room(
-        session, [agent], room_ids, agent_session_store, connections
-    )
-    room_roles = await room_role_store.agent_room_roles(
-        session, agent.id, room_ids, live_connection_ids
-    )
-    memberships = [
-        AgentRoomMembership(
-            room_id=room.id,
-            room_name=room.name,
-            archived=room.archived_at is not None,
-            status=statuses[room.id][agent.id].value,
-            room_role=room_roles.get(room.id),
+    memberships = (
+        await agent_room_memberships(
+            session,
+            agents=[agent],
+            visible=visible,
+            room_store=room_store,
+            agent_session_store=agent_session_store,
+            room_role_store=room_role_store,
+            connections=connections,
         )
-        for room in rooms
-    ]
+    )[agent.id]
+    room_name_by_id = {room.room_id: room.room_name for room in memberships}
 
     session_rows = await agent_session_store.get_sessions_for_agent(session, agent.id)
     agent_connections = connections.for_agent(agent.id)
@@ -261,13 +358,15 @@ async def assemble_agent_detail(
         ]
         if room_id is not None and room_id not in room_name_by_id
     }
-    shown_others = other_room_ids & visible_room_ids
-    for other in (await room_store.get_many(session, shown_others)).values():
-        room_name_by_id[other.id] = other.name
+    room_name_by_id.update(
+        await room_store.visible_names(session, other_room_ids, visible)
+    )
 
     now = datetime.now(UTC)
     sessions: list[AgentSessionDetail] = []
     for row in session_rows:
+        if row.room_id is not None and row.room_id not in room_name_by_id:
+            continue
         sessions.append(
             AgentSessionDetail(
                 room_id=row.room_id,
@@ -292,7 +391,9 @@ async def assemble_agent_detail(
         # session, not none.
         conn_rooms: list[str | None] = list(sorted(conn.rooms)) or [None]
         for conn_room in conn_rooms:
-            if conn_room in listed_rooms:
+            if conn_room in listed_rooms or (
+                conn_room is not None and conn_room not in room_name_by_id
+            ):
                 continue
             listed_rooms.add(conn_room)
             sessions.append(
@@ -528,6 +629,7 @@ class AgentProfileUpdate:
         display_name: str | None,
         icon_url: str | None,
         addressing: str | None,
+        mid_turn_delivery: str | None,
         third_party_avatars: bool,
     ) -> AgentProfileUpdate:
         """None leaves a field as it is; an empty `display_name` or `icon_url`
@@ -547,4 +649,10 @@ class AgentProfileUpdate:
             )
         if addressing is not None:
             columns["addressing_policy"] = addressing_policy_for(addressing)
+        if mid_turn_delivery is not None:
+            if mid_turn_delivery not in ("steer", "queue"):
+                raise ValueError(
+                    f'mid_turn_delivery must be "steer" or "queue", not {mid_turn_delivery!r}'
+                )
+            columns["mid_turn_delivery"] = mid_turn_delivery
         return cls(columns=columns)

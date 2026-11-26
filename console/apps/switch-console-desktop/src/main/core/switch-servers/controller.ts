@@ -26,9 +26,11 @@ import {
 } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type {
+  ConnectorAppManagement,
   SaveConnectorAppInput,
   SaveConnectorAppResult,
 } from '@shared/core/switch-servers/connector-apps';
+import type { ServicePaste } from '@shared/core/switch-servers/service-connection';
 import {
   type InviteServer,
   SWITCH_CLOUD_NAME,
@@ -38,11 +40,11 @@ import {
   normaliseServerUrl,
   type AddServerParams,
   type ApiKeyLifetime,
-  type BundledChatSignIn,
   type ClearDecisionSettingsResult,
   type ClearTrustSettingsResult,
   type CreatedRegistrationKey,
   type FetchDecisionSettingsResult,
+  type FetchWorkspaceGuardrailsResult,
   type FetchTrustSettingsResult,
   type PasswordLoginParams,
   type RenameServerParams,
@@ -73,7 +75,7 @@ import {
   type SignupError,
   signup,
 } from './auth';
-import { bundledChatSignInFor } from './bundled-chat-sign-in';
+import { openDashboardPage } from './dashboard-page';
 import {
   clearDecisionSettingsOnServer,
   fetchDecisionSettingsFromServer,
@@ -90,6 +92,7 @@ import {
   listCloudMachines,
   disconnectGitHub,
   connectServiceWithKey,
+  connectServiceWithPaste,
   disconnectService,
   acceptInvitation,
   acceptPendingInvitation,
@@ -106,11 +109,13 @@ import {
   revealApiKey,
   updateMyName,
   fetchMe,
+  probeGateway,
   fetchJoinableWorkspaces,
   fetchPendingInvitations,
   GatewayError,
   type RemoteTenant,
   checkConnectorApp,
+  fetchConnectorAppManagement,
   fetchConnectorAppImpact,
   fetchConnectorApps,
   importConnectorApp,
@@ -119,7 +124,6 @@ import {
   fetchWorkspaceCreation,
   type WorkspaceCreation,
 } from './gateway-client';
-import { openAuthenticatedGatewayPage } from './gateway-web';
 import {
   startGitHubBrowserFlow,
   getGitHubBrowserFlow,
@@ -127,11 +131,7 @@ import {
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
-import {
-  assertServerAddress,
-  assertServesDashboard,
-  NotTheServerAddressError,
-} from './server-address';
+import { assertServerAddress, NotTheServerAddressError } from './server-address';
 import {
   addServer,
   DuplicateServerUrlError,
@@ -155,12 +155,15 @@ import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud'
 import {
   clearTrustSettingsOnServer,
   fetchTrustSettingsFromServer,
+  fetchWorkspaceGuardrailsFromServer,
   updateTrustSettingsOnServer,
 } from './trust-settings';
 
 /** A sign-in's own error union, as a reportable code. Never its message. */
 const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
   invalid_credentials: 'invalid_credentials',
+  paused: 'rate_limited',
+  unreachable: 'unreachable',
   cancelled: 'cancelled',
   failed: 'failed',
 };
@@ -349,14 +352,14 @@ export const switchServersController = createRPCController({
       server = await addServer(params);
     } catch (error) {
       trackEvent('server_added', {
-        server_kind: 'external',
+        server_kind: serverKindOf({ managed: false, managementKind: null, url: params.url }),
         outcome: 'failure',
         failure_reason: serverAddFailureOf(error),
       });
       throw error;
     }
     trackEvent('server_added', {
-      server_kind: 'external',
+      server_kind: serverKindOf(server),
       outcome: 'success',
       failure_reason: 'none',
     });
@@ -431,9 +434,9 @@ export const switchServersController = createRPCController({
     withReachableServerWorkspaceSession(serverId, (server) => cancelGitHubBrowserFlow(server, id)),
   disconnectGitHub: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectGitHub(server)),
-  startServiceConnection: (serverId: string, service: string) =>
+  startServiceConnection: (serverId: string, service: string, choices: Record<string, string>) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
-      startServiceBrowserFlow(server, service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(server, service, choices, (url) => appService.openExternal(url))
     ),
   getServiceFlow: (serverId: string, service: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
@@ -447,12 +450,18 @@ export const switchServersController = createRPCController({
     withReachableServerWorkspaceSession(serverId, (server) =>
       connectServiceWithKey(server, service, fields)
     ),
+  connectServiceWithPaste: (serverId: string, service: string, paste: ServicePaste) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      connectServiceWithPaste(server, service, paste)
+    ),
   disconnectService: (serverId: string, service: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectService(server, service)),
   openGitHubInstallation: async (serverId: string) => {
     const connection = await withReachableServerWorkspaceSession(serverId, (server) =>
       getGitHubConnection(server)
     );
+    if (connection.install_url === null)
+      throw new Error('The Switch GitHub App is not set up on this server.');
     if (
       !/^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(connection.install_url)
     )
@@ -591,6 +600,11 @@ export const switchServersController = createRPCController({
   clearTrustSettings: async (serverId: string): Promise<ClearTrustSettingsResult> =>
     clearTrustSettingsOnServer(await requireReachableServer(serverId)),
 
+  /** The policy that checks a workspace's messages, for anyone in it to read;
+   * its organization's admins change it in the dashboard. */
+  getWorkspaceGuardrails: (workspaceId: string): Promise<FetchWorkspaceGuardrailsResult> =>
+    withReachableWorkspaceSession(workspaceId, fetchWorkspaceGuardrailsFromServer),
+
   /**
    * A workspace's decision routing settings, its admins only. Scoped to the
    * workspace named, not the server: each workspace chooses its own decision
@@ -628,6 +642,15 @@ export const switchServersController = createRPCController({
    */
   getConnectorApps: async (serverId: string) =>
     fetchConnectorApps(await requireReachableServer(serverId)),
+
+  /**
+   * Who sets up the server's connector apps, as the server answers it for the
+   * session `workspaceId` selects: whether this account may, and whether
+   * they are set up in the dashboard or with the server's command. Each is
+   * null where the server does not say, and only its operator may.
+   */
+  connectorAppManagement: (workspaceId: string): Promise<ConnectorAppManagement> =>
+    withReachableWorkspaceSession(workspaceId, fetchConnectorAppManagement),
 
   /** Check a connector's app with its vendor, and save it if the vendor accepts it. */
   saveConnectorApp: async (params: {
@@ -684,8 +707,15 @@ export const switchServersController = createRPCController({
       reportSignIn('oidc', server, 'unreachable');
       throw unreachable;
     }
-    const config = await fetchAuthConfig(server);
-    const result = await oidcLogin(server, provider, config.oidcBrowserHandoff);
+    let result: Result<true, LoginError>;
+    try {
+      const config = await fetchAuthConfig(server);
+      result = await oidcLogin(server, provider, config.oidcBrowserHandoff);
+    } catch (error) {
+      // The server's sign-in settings could not be read, or the sign-in threw.
+      reportSignIn('oidc', server, 'failed');
+      throw error;
+    }
     reportSignIn('oidc', server, signInFailureReason(result));
     if (result.success) await adoptWorkspaces(server);
     return result;
@@ -786,22 +816,14 @@ export const switchServersController = createRPCController({
   },
 
   /**
-   * Open a gateway web page (operator dashboard). For the managed local server —
-   * whose session Switch Console owns — this opens an in-app window with the
-   * `switch_auth` cookie injected, so the dashboard loads already signed in.
-   * Remote servers open in the OS browser as before: we can't inject our
-   * httponly cookie into the system browser, so an authenticated in-app window
-   * is reserved for the local server. `url` must be on the server's gateway
-   * origin.
+   * Open a dashboard page in the default browser, signed in as Console's
+   * account where Console is signed in, through a one-time sign-in link
+   * rather than Console's own session (`openDashboardPage`). `url` must be on
+   * the server's dashboard origin.
    */
   openGatewayPage: async (params: { serverId: string; url: string }): Promise<void> => {
     const server = await requireReachableServer(params.serverId);
-    if (server.managed) {
-      await openAuthenticatedGatewayPage(server, params.url);
-    } else {
-      await assertServesDashboard(server);
-      await appService.openExternal(params.url);
-    }
+    await openDashboardPage(server, params.url);
   },
 
   getConnectionStatus: async (serverId: string): Promise<ServerConnectionStatus> => {
@@ -818,19 +840,13 @@ export const switchServersController = createRPCController({
       return { serverId, connected: true, user };
     } catch (cause) {
       if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
+        // Without a status, the refusal is this app's own: there was no session
+        // to send, so the server was never asked. Ask it now, so a server that
+        // cannot be reached reads as that rather than as signed out.
+        if (cause.status === undefined) await probeGateway(server);
         return { serverId, connected: false, user: null };
       }
       throw cause;
     }
   },
-
-  /**
-   * The bundled chat's address and sign-in for a managed server (CHOO-1787).
-   *
-   * The password crosses IPC only when the renderer asks — the card fetches on
-   * expand, not on render — so it is not sitting in every server page's memory.
-   * Do not log the result.
-   */
-  getBundledChatSignIn: async (serverId: string): Promise<BundledChatSignIn> =>
-    bundledChatSignInFor(await getServer(serverId)),
 });

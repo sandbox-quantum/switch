@@ -8,8 +8,8 @@ import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 /**
  * Draggable regions are geometric rectangles Chromium derives from layout, not
  * an inherited DOM property. Dialogs portal to `document.body`, so the drag rect
- * a view declares (the home panel since CHOO-1430, plus `page-header`,
- * `page-layout`, `Titlebar` and `sidebar-space`) stays live underneath an open
+ * a view declares (the home panel since CHOO-1430, plus `Titlebar` and
+ * `sidebar-space`) stays live underneath an open
  * dialog and takes its pointer-down events: the window moves and form text
  * cannot be selected (CHOO-1953).
  *

@@ -39,13 +39,16 @@ import {
   type FilterSelection,
   filterOptions,
   isQuickFilterOn,
+  pickOnly,
+  pruneSelection,
   type QuickFilter,
+  type SelectFilter,
   type TableNoun,
   toggleQuickFilter,
   toggleValue,
 } from "./tableFilters";
 
-export type { ColumnFilter, QuickFilter, TableNoun } from "./tableFilters";
+export type { ColumnFilter, FilterOption, QuickFilter, SelectFilter, TableNoun } from "./tableFilters";
 
 /** A grid column, plus how its header menu filters it. */
 export type TableColumn<T extends GridValidRowModel> = GridColDef<T> & { filter?: ColumnFilter<T> };
@@ -81,6 +84,10 @@ interface DataTableProps<T extends { id: string | number }> {
   search?: { label: string; text: (row: T) => string };
   /** One-click shortcuts for a single value of a filterable column. */
   quickFilters?: QuickFilter[];
+  /** Dropdowns above the toolbar, one per filterable column named. */
+  selectFilters?: SelectFilter[];
+  /** The order the table opens in, before anyone sorts it. */
+  initialSort?: { field: string; sort: "asc" | "desc" };
   /** Fields held against the right edge while the other columns scroll,
    *  usually the row's actions. Each needs a fixed `width`, and they render
    *  last, in this order. */
@@ -90,6 +97,9 @@ interface DataTableProps<T extends { id: string | number }> {
    *  role: "No agents in this workspace yet" for someone who administers
    *  the workspace, "You don't own any agents" for anyone else. */
   emptyState?: ReactNode;
+  /** The rows are the viewer's own, as a member's list is, so a search or
+   *  filter that matches none says "None of your agents match…". */
+  yours?: boolean;
 }
 
 /** A hovered or selected row takes the muted fill. A grey chip shares that
@@ -126,6 +136,10 @@ const GRID_SX: SxProps<Theme> = {
     letterSpacing: "-0.01em",
   },
   "& .MuiDataGrid-columnHeaderTitle": { fontWeight: 500, opacity: 0.7 },
+  // A column's menu button sits in a box the grid narrows to nothing until
+  // the header is hovered. Unclipped, it pokes out past the column, and in
+  // the last column past the table, which then scrolls sideways by its width.
+  "& .MuiDataGrid-menuIcon": { overflow: "hidden" },
   // The sort and menu buttons paint the grid's own header fill, which shows
   // as a solid square on the cream band.
   "& .MuiDataGrid-sortButton:not(:hover), & .MuiDataGrid-menuIconButton:not(:hover)": {
@@ -187,6 +201,14 @@ const PINNED = "table-pinned-right";
  *  would rebuild the grid's columns, and the grid would rebuild its whole
  *  column model, on each keystroke in the search box. */
 const NOT_PINNED: string[] = [];
+const NO_SELECTS: SelectFilter[] = [];
+
+/** A select filter's value with nothing picked, and with several picked from
+ *  the header menu. Neither can be a column's value, "" included: filter
+ *  values are text a row holds, and these start with a character no text a
+ *  person reads does. */
+const ALL_VALUES = "\u0000all";
+const SEVERAL_VALUES = "\u0000several";
 
 /** The free grid has no column pinning, so a pinned column is a sticky one:
  *  the scrolling columns pass under it, which needs an opaque fill that
@@ -350,11 +372,14 @@ export default function DataTable<T extends { id: string | number }>({
   noun,
   search,
   quickFilters = [],
+  selectFilters = NO_SELECTS,
+  initialSort,
   pinnedRight = NOT_PINNED,
   emptyState,
+  yours = false,
 }: DataTableProps<T>) {
   const apiRef = useGridApiRef();
-  const [selection, setSelectionState] = useState<FilterSelection>({});
+  const [storedSelection, setSelectionState] = useState<FilterSelection>({});
   const [query, setQueryState] = useState("");
   const filterHeadingId = useId();
 
@@ -377,8 +402,27 @@ export default function DataTable<T extends { id: string | number }>({
       throw new Error(`quick filter "${quick.label}" names column "${quick.field}", which has no filter`);
     }
   }
+  for (const select of selectFilters) {
+    if (!filterable.some((column) => column.field === select.field)) {
+      throw new Error(`select filter "${select.label}" names column "${select.field}", which has no filter`);
+    }
+  }
+  if (initialSort && !columns.some((column) => column.field === initialSort.field)) {
+    throw new Error(`initialSort names "${initialSort.field}", which is not a column`);
+  }
 
-  const hasToolbar = Boolean(noun || search || quickFilters.length > 0);
+  // A pick whose value no row holds any more matches nothing; it goes,
+  // rather than leave a chip over an empty table. It is left out from the
+  // render the rows change in, and then dropped from the state for good.
+  const selection = useMemo(
+    () => pruneSelection(storedSelection, filterable, rows),
+    [storedSelection, filterable, rows],
+  );
+  useEffect(() => {
+    setSelectionState((current) => pruneSelection(current, filterable, rows));
+  }, [filterable, rows]);
+
+  const hasToolbar = Boolean(noun || search || quickFilters.length > 0 || selectFilters.length > 0);
   const ownFiltering = hasToolbar || filterable.length > 0;
   const grid = useMemo(
     () => gridColumns(columns, pinnedRight, ownFiltering),
@@ -408,7 +452,9 @@ export default function DataTable<T extends { id: string | number }>({
     ) : (
       <>
         <Typography variant="body2" color="text.secondary">
-          {noun ? `No ${noun.other} match the current filters.` : "Nothing matches the current filters."}
+          {noun
+            ? `${yours ? "None of your" : "No"} ${noun.other} match the current filters.`
+            : "Nothing matches the current filters."}
         </Typography>
         <Button size="small" onClick={clearFilters} sx={{ mt: 1 }}>
           {searching && picking ? "Clear search and filters" : searching ? "Clear search" : "Clear filters"}
@@ -486,6 +532,7 @@ export default function DataTable<T extends { id: string | number }>({
       columns={grid.columns}
       initialState={{
         pagination: { paginationModel: { pageSize } },
+        ...(initialSort && { sorting: { sortModel: [initialSort] } }),
       }}
       pageSizeOptions={[...new Set([pageSize, 25, 50, 100])].sort((a, b) => a - b)}
       pagination
@@ -547,6 +594,52 @@ export default function DataTable<T extends { id: string | number }>({
           flex column it would ignore a fixed `height` and size to its rows.
           Only a table that fills its parent is laid out as one. */}
       <Box sx={fillHeight ? { flex: 1, minHeight: 0, width: "100%", display: "flex", flexDirection: "column" } : { width: "100%" }}>
+        {selectFilters.length > 0 && rows.length > 0 && (
+          <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 2.5 }}>
+            {selectFilters.map((select) => {
+              const column = filterable.find((c) => c.field === select.field) as TableColumn<T>;
+              const picked = selection[select.field] ?? [];
+              const value = picked.length === 0 ? ALL_VALUES : picked.length === 1 ? picked[0] : SEVERAL_VALUES;
+              return (
+                <TextField
+                  key={select.field}
+                  select
+                  value={value}
+                  onChange={(event) =>
+                    setSelection((current) =>
+                      pickOnly(current, select.field, event.target.value === ALL_VALUES ? null : event.target.value),
+                    )
+                  }
+                  fullWidth={false}
+                  slotProps={{
+                    select: {
+                      // A column's value may be "", which a select otherwise shows as nothing.
+                      displayEmpty: true,
+                      // No label on screen: "All owners" already says what the
+                      // dropdown is. The select would otherwise be named by
+                      // its own value alone.
+                      SelectDisplayProps: { "aria-label": select.label, "aria-labelledby": undefined },
+                    },
+                  }}
+                  sx={{ width: 208 }}
+                >
+                  <MenuItem value={ALL_VALUES}>{select.allLabel}</MenuItem>
+                  {/* Picked from the header menu, where several values may be. */}
+                  {picked.length > 1 && (
+                    <MenuItem value={SEVERAL_VALUES} disabled>
+                      {picked.length} selected
+                    </MenuItem>
+                  )}
+                  {filterOptions(column, rows).map((option) => (
+                    <MenuItem key={option.value} value={option.value}>
+                      {option.label}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              );
+            })}
+          </Stack>
+        )}
         {hasToolbar && (
           <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 2 }}>
             {noun && (
@@ -586,7 +679,10 @@ export default function DataTable<T extends { id: string | number }>({
                     ),
                   },
                 }}
-                sx={{ width: 224 }}
+                // Wide enough for its placeholder, which some lists use to
+                // say what the search reaches ("Search by name, description
+                // or owner"): `ch` is a little wider than an average letter.
+                sx={{ width: `max(224px, calc(${search.label.length}ch + 56px))` }}
               />
             )}
           </Stack>
@@ -624,6 +720,11 @@ export default function DataTable<T extends { id: string | number }>({
             Filter by {pickerColumn.headerName ?? pickerColumn.field}
           </Typography>
           <Stack>
+            {filterOptions(pickerColumn, rows).length === 0 && (
+              <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 0.5 }}>
+                Nothing to filter by yet.
+              </Typography>
+            )}
             {filterOptions(pickerColumn, rows).map((option) => (
               <FormControlLabel
                 key={option.value}

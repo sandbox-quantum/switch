@@ -1,4 +1,4 @@
-import { Emitter, err, ok, type Result } from '@switch-console/shared';
+import { compareVersions, Emitter, err, ok, type Result } from '@switch-console/shared';
 import type { IExecutionContext } from '../../exec/execution-context';
 import { isTransportFailure } from '../../exec/transport-error';
 import { consoleLogger, type Logger } from '../../lib/logger';
@@ -22,6 +22,7 @@ import type {
   DependencyStatus,
   DependencyStatusUpdatedEvent,
   DependencyUninstallResult,
+  DependencyUpdateError,
   DependencyUpdateResult,
   HostDependency,
   HostDependencySelection,
@@ -46,25 +47,40 @@ export type InstallCommandRunner = (
 
 const VERSION_RE = /(\d+\.\d+[\d.]*)/;
 
-/**
- * Compare two dotted version strings numerically, segment by segment. Returns a
- * negative number when `a < b`, positive when `a > b`, and 0 when equal. Missing
- * trailing segments count as 0 (so '18' === '18.0.0'). Non-numeric input yields 0.
- */
-function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map((s) => Number.parseInt(s, 10));
-  const pb = b.split('.').map((s) => Number.parseInt(s, 10));
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const x = pa[i] ?? 0;
-    const y = pb[i] ?? 0;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return 0;
-    if (x !== y) return x - y;
-  }
-  return 0;
-}
-
 /** Methods that are non-PM origins — cannot be used for PM routing. */
 const NON_PM_KINDS = new Set(['manual', 'version-manager', 'unknown']);
+
+/**
+ * `detected`, or the method of the dependency's own install option that installed the
+ * binary at `realpath` (`InstallOption.installedAt`, relative to `homeDir`) when no
+ * package manager confirmed it. A provider's own installer knows where it writes; the
+ * generic location hints do not.
+ *
+ * A path ending in a separator is a folder the binary is anywhere under; any other is the
+ * binary itself. Both are anchored at the home directory, so a copy with the same name
+ * elsewhere, or beside it (`claude.exe.old`), is not taken for the one the option's
+ * uninstall removes.
+ */
+export function ownProvenance(
+  detected: Provenance,
+  descriptor: Pick<DependencyDescriptor, 'installCommands'>,
+  platform: Platform,
+  realpath: string,
+  homeDir: string | undefined
+): Provenance {
+  if (detected.confidence === 'confirmed' || !homeDir) return detected;
+  const normalise = (path: string) => path.replace(/[\\/]+/g, '/').toLowerCase();
+  const where = normalise(realpath);
+  const home = normalise(homeDir).replace(/\/$/, '');
+  const owns = (path: string) => {
+    const at = `${home}/${normalise(path).replace(/^\//, '')}`;
+    return at.endsWith('/') ? where.startsWith(at) : where === at;
+  };
+  const owner = descriptor.installCommands?.[platform]?.find((option) =>
+    option.installedAt?.some(owns)
+  );
+  return owner ? { kind: owner.method, confidence: 'confirmed' } : detected;
+}
 
 /** Returns true when a provenance kind is a real InstallMethod that can be PM-routed. */
 function isRealInstallMethod(kind: Provenance['kind'] | null | undefined): kind is InstallMethod {
@@ -187,6 +203,11 @@ export type HostDependencyManagerOptions = {
    * Inject a stub in tests to avoid live brew/npm queries.
    */
   installMethodDetector?: InstallMethodDetector;
+  /**
+   * The target machine's home directory, which `InstallOption.installedAt` paths are
+   * relative to. Without it, no installation is matched to an install option by where it is.
+   */
+  homeDir?: string;
 };
 
 /**
@@ -209,6 +230,7 @@ export class HostDependencyManager {
   private readonly _dependencies: DependencyDescriptor[];
   private readonly _getDependencyDescriptor: (id: string) => DependencyDescriptor | undefined;
   private readonly detector: InstallMethodDetector;
+  private readonly homeDir: string | undefined;
   /** Platform of the target machine. Defaults to process.platform; SSH callers pass the remote platform. */
   readonly platform: Platform;
 
@@ -225,6 +247,7 @@ export class HostDependencyManager {
     this.ctx = ctx;
     this.connectionId = options.connectionId;
     this.platform = options.platform ?? toPlatform(process.platform);
+    this.homeDir = options.homeDir;
     this.getSelection = options.getSelection ?? (() => Promise.resolve(null));
     this.logger = options.logger ?? consoleLogger;
     this._dependencies = options.dependencies ?? [];
@@ -378,7 +401,13 @@ export class HostDependencyManager {
       seenRealpaths.add(realpath);
 
       const isActive = isFirstOverall;
-      const provenance = await this.detector.detect(realpath);
+      const provenance = ownProvenance(
+        await this.detector.detect(realpath),
+        descriptor,
+        this.platform,
+        realpath,
+        this.homeDir
+      );
       const manageable = computeManageable(provenance, descriptor);
 
       // For the active (first) installation, reuse the already-computed fullState
@@ -685,7 +714,7 @@ export class HostDependencyManager {
 
     await this.ctx.refreshShellEnv?.();
 
-    const installResult = await this.runInstallCommand(command);
+    const installResult = await this.runCommandLogged('install', id, command);
     if (!installResult.success) {
       return err(installResult.error);
     }
@@ -727,6 +756,7 @@ export class HostDependencyManager {
 
     // Determine effective routing method from provenance or explicit override
     let effectiveMethod: InstallMethod | null | undefined;
+    let activeVersion = this.state.get(id)?.version ?? null;
 
     if (method) {
       effectiveMethod = method;
@@ -740,6 +770,7 @@ export class HostDependencyManager {
         if (activeInst && !activeInst.manageable) {
           return err({ type: 'no-update-strategy', id });
         }
+        if (activeInst) activeVersion = activeInst.version;
         const provKind = activeInst?.provenance.kind;
         effectiveMethod = isRealInstallMethod(provKind) ? (provKind as InstallMethod) : null;
       } else {
@@ -753,10 +784,181 @@ export class HostDependencyManager {
 
     await this.ctx.refreshShellEnv?.();
 
+    const option = effectiveMethod
+      ? pickInstallOption(descriptor, this.platform, effectiveMethod)
+      : undefined;
+    const migration = option?.lineMigration;
+    if (
+      option &&
+      migration &&
+      activeVersion !== null &&
+      compareVersions(activeVersion, migration.below) < 0
+    ) {
+      const migrated = await this.migrateLine(id, option.command, migration, activeVersion);
+      if (!migrated.success) return migrated;
+    } else {
+      const updated = await this.runUpdatePlan(id, descriptor, effectiveMethod);
+      if (!updated.success) return updated;
+    }
+
+    await this.ctx.refreshShellEnv?.();
+    this.detector.invalidate();
+
+    const state = await this.probe(id);
+    if (state.status !== 'available') {
+      return err({ type: 'not-detected-after-update', id });
+    }
+
+    this.onExecutableInvalidated.emit({ id });
+    return ok(state);
+  }
+
+  /**
+   * Replaces `previousVersion`, on an earlier release line, with what `installCommand`
+   * installs. The earlier line is removed first, since the two own the same command; if the
+   * install then fails, the exact previous version is put back.
+   */
+  private async migrateLine(
+    id: DependencyId,
+    installCommand: string,
+    migration: {
+      below: string;
+      removeCommand: string;
+      restoreCommand: string;
+      precheck?: { command: string; blockedMessage: string };
+    },
+    previousVersion: string
+  ): Promise<Result<void, DependencyUpdateError>> {
+    if (migration.precheck) {
+      const checked = await this.runInstallCommand(migration.precheck.command);
+      if (!checked.success) {
+        this.logger.warn(
+          `[HostDependencyManager] Not moving ${id} ${previousVersion} to a new release line: ${migration.precheck.command} failed`,
+          checked.error
+        );
+        return err({
+          type: 'line-migration-blocked',
+          id,
+          message: migration.precheck.blockedMessage,
+        });
+      }
+    }
+    this.logger.info(
+      `[HostDependencyManager] Moving ${id} ${previousVersion} to a new release line: ${migration.removeCommand}; ${installCommand}`
+    );
+    const removed = await this.runInstallCommand(migration.removeCommand);
+    if (!removed.success) {
+      await this.ctx.refreshShellEnv?.();
+      this.detector.invalidate();
+      const state = await this.probe(id);
+      if (state.status === 'available' && state.version === previousVersion) {
+        this.logger.warn(
+          `[HostDependencyManager] Removing ${id} ${previousVersion} failed; it is still installed`,
+          removed.error
+        );
+        return err({ type: 'line-migration-unremoved', id, previousVersion, cause: removed.error });
+      }
+      this.logger.warn(
+        `[HostDependencyManager] Removing ${id} ${previousVersion} failed partway; it now probes as ${state.status} ${String(state.version)}`
+      );
+      return this.restoreLine(id, installCommand, migration, previousVersion, removed.error);
+    }
+    this.detector.invalidate();
+    const installed = await this.runInstallCommand(installCommand);
+    const cause = installed.success
+      ? await this.stillOnEarlierLine(id, migration.below)
+      : installed.error;
+    if (cause === null) return ok();
+    this.logger.warn(`[HostDependencyManager] Installing the new line of ${id} failed`, cause);
+    return this.restoreLine(id, installCommand, migration, previousVersion, cause);
+  }
+
+  /** Puts `previousVersion` back after moving to a new release line failed with `cause`. */
+  private async restoreLine(
+    id: DependencyId,
+    installCommand: string,
+    migration: { restoreCommand: string },
+    previousVersion: string,
+    cause: InstallCommandError
+  ): Promise<Result<void, DependencyUpdateError>> {
+    const restoreCommand = migration.restoreCommand.replaceAll('{version}', previousVersion);
+    this.logger.warn(
+      `[HostDependencyManager] Restoring ${id} ${previousVersion}: ${restoreCommand}`
+    );
+    const restored = await this.runInstallCommand(restoreCommand);
+    await this.ctx.refreshShellEnv?.();
+    this.detector.invalidate();
+    const state = await this.probe(id);
+    if (restored.success && state.status === 'available' && state.version === previousVersion)
+      return err({ type: 'line-migration-failed', id, restoredVersion: previousVersion, cause });
+    const restoreError: InstallCommandError = restored.success
+      ? {
+          type: 'command-failed',
+          message:
+            state.status === 'available'
+              ? `It finished, but ${state.version ?? 'an unreadable version'} runs instead.`
+              : `It finished, but ${this._getDependencyDescriptor(id)?.name ?? id} can’t be found afterwards.`,
+          output: '',
+        }
+      : restored.error;
+    this.logger.error(
+      `[HostDependencyManager] Restoring ${id} ${previousVersion} failed too; it now probes as ${state.status} ${String(state.version)}`,
+      restoreError
+    );
+    return err({
+      type: 'line-migration-unrestored',
+      id,
+      previousVersion,
+      cause,
+      restoreError,
+      installCommand,
+      restoreCommand,
+    });
+  }
+
+  /**
+   * Why an install that reported success did not move `id` to its new line: nothing is found
+   * to run, or it still runs a version below `below`, as when the command fetched a release of
+   * the earlier line. Null when it moved, including to a version that can't be read.
+   */
+  private async stillOnEarlierLine(
+    id: DependencyId,
+    below: string
+  ): Promise<InstallCommandError | null> {
+    await this.ctx.refreshShellEnv?.();
+    this.detector.invalidate();
+    const state = await this.probe(id);
+    const name = this._getDependencyDescriptor(id)?.name ?? id;
+    if (state.status !== 'available') {
+      this.logger.warn(
+        `[HostDependencyManager] Installing the new line of ${id} left nothing to run`
+      );
+      return {
+        type: 'command-failed',
+        message: `It finished, but ${name} can’t be found afterwards.`,
+        output: '',
+      };
+    }
+    if (state.version === null || compareVersions(state.version, below) >= 0) return null;
+    this.logger.warn(
+      `[HostDependencyManager] Installing the new line of ${id} left ${state.version} in place`
+    );
+    return {
+      type: 'command-failed',
+      message: `It installed ${state.version} instead of ${name} ${below.split('.')[0]}.`,
+      output: '',
+    };
+  }
+
+  private async runUpdatePlan(
+    id: DependencyId,
+    descriptor: DependencyDescriptor,
+    effectiveMethod: InstallMethod | null | undefined
+  ): Promise<Result<void, DependencyUpdateError>> {
     const plan = this.resolveUpdatePlan(effectiveMethod, descriptor, 'update');
 
     if (plan.kind === 'package-manager') {
-      const runResult = await this.runInstallCommand(plan.command);
+      const runResult = await this.runCommandLogged('update', id, plan.command);
       if (!runResult.success) return err(runResult.error);
     } else if (plan.kind === 'cli') {
       const resolvedPath = await this.resolveFirstPath(descriptor);
@@ -770,22 +972,12 @@ export class HostDependencyManager {
         args = plan.args;
       }
 
-      const runResult = await this.runInstallCommand({ command, args });
+      const runResult = await this.runCommandLogged('update', id, { command, args });
       if (!runResult.success) return err(runResult.error);
     } else {
       return err({ type: 'no-update-strategy', id });
     }
-
-    await this.ctx.refreshShellEnv?.();
-    this.detector.invalidate();
-
-    const state = await this.probe(id);
-    if (state.status !== 'available') {
-      return err({ type: 'not-detected-after-update', id });
-    }
-
-    this.onExecutableInvalidated.emit({ id });
-    return ok(state);
+    return ok();
   }
 
   /**
@@ -979,7 +1171,7 @@ export class HostDependencyManager {
         if (!verify.success) return verify;
       }
 
-      const runResult = await this.runInstallCommand(plan.command);
+      const runResult = await this.runCommandLogged('uninstall', id, plan.command);
       if (!runResult.success) return err(runResult.error);
     } else if (plan.kind === 'cli') {
       const resolvedPath = await this.resolveFirstPath(descriptor);
@@ -993,7 +1185,7 @@ export class HostDependencyManager {
         args = plan.args;
       }
 
-      const runResult = await this.runInstallCommand({ command, args });
+      const runResult = await this.runCommandLogged('uninstall', id, { command, args });
       if (!runResult.success) return err(runResult.error);
     } else {
       return err({ type: 'no-uninstall-command', id });
@@ -1017,6 +1209,28 @@ export class HostDependencyManager {
     const descriptor = this._getDependencyDescriptor(id);
     if (!descriptor) return [];
     return resolveInstallOptions(descriptor, this.platform);
+  }
+
+  /**
+   * Runs an install, update or uninstall command and, when it fails, logs everything it
+   * printed and its exit code: the UI can show only a line of it, and the log is where
+   * the rest of a failure can be read.
+   */
+  private async runCommandLogged(
+    action: 'install' | 'update' | 'uninstall',
+    id: DependencyId,
+    command: InstallCommandSpec
+  ): Promise<Result<void, InstallCommandError>> {
+    const result = await this.runInstallCommand(command);
+    if (!result.success) {
+      const error = result.error;
+      this.logger.warn(`[HostDependencyManager] Failed to ${action} ${id}: ${error.message}`, {
+        type: error.type,
+        exitCode: 'exitCode' in error ? (error.exitCode ?? null) : null,
+        output: 'output' in error ? error.output : '',
+      });
+    }
+    return result;
   }
 
   private async resolveFirstPath(descriptor: DependencyDescriptor): Promise<string | null> {

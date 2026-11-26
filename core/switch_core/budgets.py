@@ -13,11 +13,13 @@ check stops the next piece of work, not the one in flight, and a budget can be
 overshot by whatever was already running when it was reached.
 """
 
+from datetime import UTC, datetime
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.stores.budget_store import BudgetStanding
+from switch_core.security_events import SecuritySignal, log_security_event
 
 
 class BudgetStandings(Protocol):
@@ -57,9 +59,13 @@ class BudgetExceeded(Exception):
 class BudgetGuard:
     def __init__(self, store: BudgetStandings) -> None:
         self._store = store
+        # (tenant, agent, budget, period end) already reported as a security
+        # event by this guard: an exhausted agent is refused on every message
+        # until the period turns over, and one event per period is the signal.
+        self._reported: set[tuple[str, str, str, datetime]] = set()
 
     async def require_within(
-        self, session: AsyncSession, *, tenant_id: str, agent_id: str
+        self, session: AsyncSession, *, tenant_id: str, agent_id: str, room_id: str
     ) -> bool:
         """Raise `BudgetExceeded` if the agent has reached any budget covering
         it. When several have, the one that resets last is reported, because
@@ -70,5 +76,35 @@ class BudgetGuard:
         )
         exhausted = [standing for standing in standings if standing.exhausted]
         if exhausted:
-            raise BudgetExceeded(max(exhausted, key=lambda s: s.resets_at))
+            reported = max(exhausted, key=lambda s: s.resets_at)
+            self._report(tenant_id, agent_id, room_id, reported)
+            raise BudgetExceeded(reported)
         return bool(standings)
+
+    def _report(
+        self, tenant_id: str, agent_id: str, room_id: str, standing: BudgetStanding
+    ) -> None:
+        now = datetime.now(UTC)
+        self._reported = {key for key in self._reported if key[3] > now}
+        key = (tenant_id, agent_id, standing.id, standing.resets_at)
+        if key in self._reported:
+            return
+        self._reported.add(key)
+        log_security_event(
+            SecuritySignal.BUDGET_EXCEEDED,
+            tenant_id=tenant_id,
+            actor_user_id=None,
+            target_type="budget",
+            target_id=standing.id,
+            agent_id=agent_id,
+            room_id=room_id,
+            details={
+                "budget_agent_id": standing.agent_id,
+                "metric": standing.metric,
+                "model": standing.model,
+                "amount_limit": standing.amount_limit,
+                "spent": standing.spent,
+                "period_hours": standing.period_hours,
+                "resets_at": standing.resets_at.isoformat(),
+            },
+        )

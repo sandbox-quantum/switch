@@ -56,7 +56,7 @@ import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-con
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 
 const NO_BACKEND =
-  'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Decision routing.';
+  'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Settings → Message routing.';
 
 const OFF: RoomAutoRoute = {
   on: false,
@@ -64,10 +64,12 @@ const OFF: RoomAutoRoute = {
   reason: null,
   fallbackAgent: null,
   fallbackAgentName: null,
+  assignedAgent: null,
+  assignedAgentName: null,
 };
 
 /** What the server says the signed-in account may do in the room. */
-type Access = { canWrite: boolean; canManage: boolean };
+type Access = { canWrite: boolean; canManage: boolean; viewerIsRoomAdmin?: boolean };
 
 const MANAGER: Access = { canWrite: true, canManage: true };
 
@@ -75,7 +77,11 @@ function room(autoRoute: RoomAutoRoute | undefined, access: Access) {
   return {
     id: 'room-1',
     ownerId: 'user-owner',
-    serverPermissions: { ...access, canUnlink: access.canWrite },
+    serverPermissions: {
+      canWrite: access.canWrite,
+      canManage: access.canManage,
+      canUnlink: access.canWrite,
+    },
     name: 'ops',
     description: '',
     instructions: null,
@@ -84,6 +90,9 @@ function room(autoRoute: RoomAutoRoute | undefined, access: Access) {
     externalChannelUrl: null,
     agentIds: ['agent-deploy', 'agent-triage'],
     connectedUserNames: [],
+    roomAdmins: [],
+    roomAdminCandidates: [],
+    viewerIsRoomAdmin: access.viewerIsRoomAdmin ?? false,
     readVisibility: 'public',
     writeVisibility: 'private',
     groupId: null,
@@ -224,6 +233,8 @@ it('shows auto-route unavailable with the server’s reason, and holds the switc
     reason: NO_BACKEND,
     fallbackAgent: null,
     fallbackAgentName: null,
+    assignedAgent: null,
+    assignedAgentName: null,
   });
   await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
 
@@ -238,10 +249,34 @@ it('still lets auto-route be turned off where it is on but unavailable', async (
     reason: NO_BACKEND,
     fallbackAgent: null,
     fallbackAgentName: null,
+    assignedAgent: null,
+    assignedAgentName: null,
   });
   await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
 
   expect(el.textContent).toContain(`On, but unavailable: ${NO_BACKEND}`);
+  expect(disabled(el)).toBe(false);
+});
+
+it('holds the switch while an agent is assigned, and says how to unassign it', async () => {
+  const el = await render({ ...OFF, assignedAgent: 'agent-helper', assignedAgentName: 'helper' });
+  await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
+
+  expect(el.textContent).toContain('Every message goes to helper');
+  expect(el.textContent).toContain('!unassign-agent');
+  expect(disabled(el)).toBe(true);
+});
+
+it('lets a room that has both turn auto-route off, saying it is not acting', async () => {
+  const el = await render({
+    ...OFF,
+    on: true,
+    assignedAgent: 'agent-helper',
+    assignedAgentName: 'helper',
+  });
+  await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
+
+  expect(el.textContent).toContain('On, but not acting');
   expect(disabled(el)).toBe(false);
 });
 
@@ -303,8 +338,10 @@ it('lets someone who may write to the room turn it on, but not name the triage a
 
   expect(disabled(el)).toBe(false);
   expect(pickerHeld(el)).toBe(true);
-  expect(el.textContent).toContain('Only the room’s owner or a workspace admin can change this.');
-  expect(el.textContent).not.toContain('needs write access');
+  expect(el.textContent).toContain(
+    'Only the room’s owner, a room admin or a workspace admin can change this.'
+  );
+  expect(el.textContent).not.toContain('can turn auto-route on or off');
 
   await act(async () => toggle(el).click());
 
@@ -316,6 +353,15 @@ it('lets someone who may write to the room turn it on, but not name the triage a
   await vi.waitFor(() => expect(checked(el)).toBe(true));
 });
 
+it('offers both to a room admin', async () => {
+  const el = await render(OFF, { canWrite: true, canManage: false, viewerIsRoomAdmin: true });
+  await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
+
+  expect(disabled(el)).toBe(false);
+  expect(pickerHeld(el)).toBe(false);
+  expect(el.textContent).not.toContain('can change this.');
+});
+
 it('holds the switch and picker for a read-only viewer, with the reason', async () => {
   const el = await render({ ...OFF, on: true }, { canWrite: false, canManage: false });
   await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
@@ -323,8 +369,12 @@ it('holds the switch and picker for a read-only viewer, with the reason', async 
   expect(checked(el)).toBe(true);
   expect(disabled(el)).toBe(true);
   expect(pickerHeld(el)).toBe(true);
-  expect(el.textContent).toContain('Turning auto-route on or off needs write access to this room.');
-  expect(el.textContent).toContain('Only the room’s owner or a workspace admin can change this.');
+  expect(el.textContent).toContain(
+    "Only the room's owner, a room admin or a workspace admin can turn auto-route on or off."
+  );
+  expect(el.textContent).toContain(
+    'Only the room’s owner, a room admin or a workspace admin can change this.'
+  );
 });
 
 it('offers both to the room’s owner or a workspace admin', async () => {
@@ -336,7 +386,7 @@ it('offers both to the room’s owner or a workspace admin', async () => {
   // The access section above says its own "Only the room’s owner and
   // workspace admins" to managers; the triage picker's refusal is absent.
   expect(el.textContent).not.toContain(
-    'Only the room’s owner or a workspace admin can change this.'
+    'Only the room’s owner, a room admin or a workspace admin can change this.'
   );
-  expect(el.textContent).not.toContain('needs write access');
+  expect(el.textContent).not.toContain('can turn auto-route on or off');
 });

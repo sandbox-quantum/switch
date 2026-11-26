@@ -50,6 +50,15 @@ describe('reporting a CLI install, update or removal', () => {
     });
   });
 
+  it('reports a missing prerequisite as its own reason', async () => {
+    await reportedCliAction('install', 'local', 'opencode', 'npm', async () => ({
+      success: false,
+      error: { type: 'command-failed', missingCommand: 'npm' },
+    }));
+
+    expect(reported()).toMatchObject({ failure_reason: 'missing_prerequisite' });
+  });
+
   /**
    * The gap this exists to close.
    *

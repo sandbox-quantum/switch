@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ class ProcessLeaseRow:
     stopped_at: datetime | None
     # None for a process from before the column was written.
     key_ids: tuple[str, ...] | None
+    booting: bool
 
 
 class SwitchCoreProcessStore:
@@ -28,21 +29,33 @@ class SwitchCoreProcessStore:
     """
 
     async def renew(
-        self, session: AsyncSession, process_id: str, key_ids: list[str]
+        self,
+        session: AsyncSession,
+        process_id: str,
+        key_ids: list[str],
+        *,
+        booting: bool,
     ) -> None:
         """Claim the lease, or renew it: its beat is now. A row pruned while
-        this process could not reach the database is claimed again."""
+        this process could not reach the database is claimed again.
+
+        `booting` only ever goes from true to false, so a renewal sent before
+        the process stopped booting and committed after cannot set it back."""
+        claim = insert(SwitchCoreProcess).values(
+            id=process_id,
+            started_at=func.now(),
+            beat_at=func.now(),
+            key_ids=key_ids,
+            booting=booting,
+        )
         await session.execute(
-            insert(SwitchCoreProcess)
-            .values(
-                id=process_id,
-                started_at=func.now(),
-                beat_at=func.now(),
-                key_ids=key_ids,
-            )
-            .on_conflict_do_update(
+            claim.on_conflict_do_update(
                 index_elements=[SwitchCoreProcess.id],
-                set_={"beat_at": func.now(), "stopped_at": None},
+                set_={
+                    "beat_at": func.now(),
+                    "stopped_at": None,
+                    "booting": and_(SwitchCoreProcess.booting, claim.excluded.booting),
+                },
             )
         )
 
@@ -66,14 +79,17 @@ class SwitchCoreProcessStore:
     async def read(
         self, session: AsyncSession
     ) -> tuple[datetime, dict[str, ProcessLeaseRow]]:
-        """The database's now, and every lease as it stands then."""
-        now = (await session.execute(select(func.now()))).scalar_one()
+        """The database's now, and every lease as it stands then. Its clock
+        now, not its transaction's start: a reader may have done more in the
+        same transaction first."""
+        now = (await session.execute(select(func.clock_timestamp()))).scalar_one()
         rows = await session.execute(
             select(
                 SwitchCoreProcess.id,
                 SwitchCoreProcess.beat_at,
                 SwitchCoreProcess.stopped_at,
                 SwitchCoreProcess.key_ids,
+                SwitchCoreProcess.booting,
             )
         )
         return now, {
@@ -81,6 +97,7 @@ class SwitchCoreProcessStore:
                 beat_at=beat_at,
                 stopped_at=stopped_at,
                 key_ids=None if key_ids is None else tuple(key_ids),
+                booting=booting,
             )
-            for process_id, beat_at, stopped_at, key_ids in rows.all()
+            for process_id, beat_at, stopped_at, key_ids, booting in rows.all()
         }

@@ -45,6 +45,7 @@ async def test_a_packaged_reference_is_deleted_and_leaves_its_package(
         owner = await _owner(session)
         ref = await svc.create_reference(
             session,
+            created_by_kind="user",
             owner_id=owner.id,
             is_admin=False,
             read_visibility="public",

@@ -17,13 +17,13 @@ from __future__ import annotations
 import inspect
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 import discord
 from discord import app_commands
 
-from switch_core.bridges.agent.commands import COMMANDS, Command, CommandArg
+from switch_core.bridges.agent.commands import Command, CommandArg, commands_for
 from switch_core.clients.mentions import NAME_CHAR
 
 logger = logging.getLogger(__name__)
@@ -216,7 +216,7 @@ def _make_callback(command: Command, invoke: SlashInvoke) -> Any:
 
 
 def build_app_commands(
-    invoke: SlashInvoke,
+    invoke: SlashInvoke, flags: Mapping[str, bool]
 ) -> list[app_commands.Command[Any, ..., Any]]:
     """Build one Discord application command per registered in-room command.
 
@@ -225,7 +225,7 @@ def build_app_commands(
     with no handler, which would answer nothing.
     """
     built: list[app_commands.Command[Any, ..., Any]] = []
-    for command in COMMANDS:
+    for command in commands_for(flags):
         if command.hidden or command.handler is None:
             continue
         if not command.description:

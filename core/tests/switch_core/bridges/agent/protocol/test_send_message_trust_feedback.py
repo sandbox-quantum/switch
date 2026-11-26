@@ -5,10 +5,13 @@ and nothing when it let it through untouched."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.operations import definitions
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, _trust_feedback
@@ -18,6 +21,8 @@ from switch_core.bridges.agent.protocol.types import (
     TrustFeedback,
 )
 from switch_core.clients.actor import SystemActor
+from switch_core.db.audit import AuditAction
+from switch_core.db.models import AuditEvent
 from switch_core.tenant_context import tenant_scope
 from switch_core.trust.client import (
     GuardrailBlockedError,
@@ -29,8 +34,18 @@ from switch_core.ui_spec import UI_CONTENT_KEY, UISpecError, parse_ui_spec
 _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high"),)
 
 
+@pytest.fixture(autouse=True)
+def _bound_workspace() -> Iterator[None]:
+    """A workspace bound, as agent authentication binds one before any send:
+    each check names the workspace whose organization's policy applies."""
+    with tenant_scope("tenant-a"):
+        yield
+
+
 class _ContentTrustClient:
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         if "forbidden" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)
         if "nothing-to-cut" in content:
@@ -61,6 +76,7 @@ class _FakeClient:
 
 
 def _build(
+    session_factory: async_sessionmaker[AsyncSession],
     notice_error: str | None = None,
 ) -> tuple[AgentCore, _FakeClient, list[Any]]:
     """`notice_error` is what the alert notice answers: None when it was
@@ -79,6 +95,7 @@ def _build(
         return None
 
     svc = object.__new__(AgentCore)
+    svc.session_factory = session_factory  # type: ignore[assignment]
     svc.require_room_poster = _require  # type: ignore[assignment]
     svc.require_room_member = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
@@ -90,8 +107,10 @@ def _build(
     return svc, client, notices
 
 
-async def test_a_redacted_message_reports_what_the_room_received() -> None:
-    svc, client, _ = _build()
+async def test_a_redacted_message_reports_what_the_room_received(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, _ = _build(session_factory)
 
     sent = await svc.send_message("agent-1", "room-1", "the key is token-123")
 
@@ -107,10 +126,12 @@ async def test_a_redacted_message_reports_what_the_room_received() -> None:
     )
 
 
-async def test_a_redaction_that_changed_nothing_is_still_reported() -> None:
+async def test_a_redaction_that_changed_nothing_is_still_reported(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """A redacted verdict with nothing it could cut sends the words as they
     were; the agent is told all the same."""
-    svc, client, _ = _build()
+    svc, client, _ = _build(session_factory)
 
     sent = await svc.send_message("agent-1", "room-1", "nothing-to-cut here")
 
@@ -143,8 +164,10 @@ def test_a_redaction_does_not_hide_a_file_that_was_flagged_or_not_checked() -> N
     }
 
 
-async def test_a_redacted_status_update_reports_what_the_room_received() -> None:
-    svc, client, _ = _build()
+async def test_a_redacted_status_update_reports_what_the_room_received(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, _ = _build(session_factory)
 
     feedback = await svc.update_status("agent-1", "room-1", "reading token-123")
 
@@ -157,8 +180,10 @@ async def test_a_redacted_status_update_reports_what_the_room_received() -> None
     )
 
 
-async def test_a_flagged_status_update_reports_the_notice_posted_under_it() -> None:
-    svc, _, notices = _build()
+async def test_a_flagged_status_update_reports_the_notice_posted_under_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, _, notices = _build(session_factory)
 
     feedback = await svc.update_status("agent-1", "room-1", "something suspicious")
 
@@ -167,14 +192,18 @@ async def test_a_flagged_status_update_reports_the_notice_posted_under_it() -> N
     assert feedback.note == notices[0][1]
 
 
-async def test_a_clean_status_update_reports_nothing_about_trust() -> None:
-    svc, _, _ = _build()
+async def test_a_clean_status_update_reports_nothing_about_trust(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, _, _ = _build(session_factory)
 
     assert await svc.update_status("agent-1", "room-1", "working on it") is None
 
 
-async def test_a_flagged_message_reports_the_notice_posted_under_it() -> None:
-    svc, client, notices = _build()
+async def test_a_flagged_message_reports_the_notice_posted_under_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, notices = _build(session_factory)
 
     sent = await svc.send_message("agent-1", "room-1", "something suspicious")
 
@@ -185,8 +214,12 @@ async def test_a_flagged_message_reports_the_notice_posted_under_it() -> None:
     assert sent.trust.note == notices[0][1]
 
 
-async def test_a_flagged_message_whose_notice_failed_says_so() -> None:
-    svc, client, notices = _build(notice_error="no admin client is running to post it")
+async def test_a_flagged_message_whose_notice_failed_says_so(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, notices = _build(
+        session_factory, notice_error="no admin client is running to post it"
+    )
 
     sent = await svc.send_message("agent-1", "room-1", "something suspicious")
 
@@ -258,8 +291,10 @@ async def test_an_alert_notice_not_posted_says_why(
     assert "Switch Trust" in caplog.text
 
 
-async def test_a_clean_message_reports_nothing_about_trust() -> None:
-    svc, _, _ = _build()
+async def test_a_clean_message_reports_nothing_about_trust(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, _, _ = _build(session_factory)
 
     sent = await svc.send_message("agent-1", "room-1", "hello")
 
@@ -362,8 +397,10 @@ def _card(text: str) -> dict[str, Any]:
     }
 
 
-async def test_a_clean_card_is_sent_with_the_body() -> None:
-    svc, client, _ = _build()
+async def test_a_clean_card_is_sent_with_the_body(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, _ = _build(session_factory)
     spec = parse_ui_spec(_card("all good"))
 
     sent = await svc.send_message("agent-1", "room-1", "status", ui=spec)
@@ -373,8 +410,10 @@ async def test_a_clean_card_is_sent_with_the_body() -> None:
     assert sent.trust is None
 
 
-async def test_a_blocked_card_blocks_the_send() -> None:
-    svc, client, _ = _build()
+async def test_a_blocked_card_blocks_the_send(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, _ = _build(session_factory)
     blocked: list[Any] = []
 
     async def _blocked_notice(*args: Any) -> None:
@@ -389,10 +428,19 @@ async def test_a_blocked_card_blocks_the_send() -> None:
 
     assert client.sent == []
     assert len(blocked) == 1
+    async with session_factory() as session:
+        [row] = (await session.execute(select(AuditEvent))).scalars().all()
+    assert row.action == AuditAction.TRUST_MESSAGE_BLOCKED
+    assert (row.target_type, row.target_id) == ("room", "room-1")
+    assert row.details is not None
+    assert row.details["role"] == "assistant"
+    assert "forbidden" not in str(row.details)
 
 
-async def test_a_redacted_card_is_dropped_and_the_body_sent_alone() -> None:
-    svc, client, _ = _build()
+async def test_a_redacted_card_is_dropped_and_the_body_sent_alone(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, _ = _build(session_factory)
 
     sent = await svc.send_message(
         "agent-1", "room-1", "status", ui=parse_ui_spec(_card("key token-123"))
@@ -423,9 +471,11 @@ def _button_card(button_id: str) -> dict[str, Any]:
     }
 
 
-async def test_a_card_redacted_only_in_a_button_id_is_dropped() -> None:
+async def test_a_card_redacted_only_in_a_button_id_is_dropped(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """A button's id goes out as its action, and as its value when it has none."""
-    svc, client, _ = _build()
+    svc, client, _ = _build(session_factory)
 
     sent = await svc.send_message(
         "agent-1", "room-1", "status", ui=parse_ui_spec(_button_card("token-123"))
@@ -436,8 +486,10 @@ async def test_a_card_redacted_only_in_a_button_id_is_dropped() -> None:
     assert sent.trust.to_result()["card"] == "dropped"
 
 
-async def test_a_card_blocked_only_in_a_button_id_blocks_the_send() -> None:
-    svc, client, _ = _build()
+async def test_a_card_blocked_only_in_a_button_id_blocks_the_send(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, _ = _build(session_factory)
 
     async def _blocked_notice(*args: Any) -> None:
         return None
@@ -452,8 +504,10 @@ async def test_a_card_blocked_only_in_a_button_id_blocks_the_send() -> None:
     assert client.sent == []
 
 
-async def test_a_flagged_card_is_sent_with_a_notice() -> None:
-    svc, client, notices = _build()
+async def test_a_flagged_card_is_sent_with_a_notice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, notices = _build(session_factory)
 
     sent = await svc.send_message(
         "agent-1", "room-1", "status", ui=parse_ui_spec(_card("suspicious"))
@@ -464,8 +518,10 @@ async def test_a_flagged_card_is_sent_with_a_notice() -> None:
     assert notices[0][2] == "alerted"
 
 
-async def test_a_card_rides_beside_the_room_wide_marker() -> None:
-    svc, client, _ = _build()
+async def test_a_card_rides_beside_the_room_wide_marker(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, client, _ = _build(session_factory)
 
     await svc.send_message(
         "agent-1",

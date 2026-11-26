@@ -8,11 +8,23 @@ to the organization it has bound, directly or through a bound workspace.
 
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import OrganizationServiceSetting
+
+
+async def hold_setting(
+    session: AsyncSession, organization_id: str, service: str
+) -> None:
+    """Hold the organization's say in `service` until the transaction ends.
+    Changing it takes this, and so does a workspace switch that reads it, so
+    a workspace never acts on a lock that changes before it commits."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"organization-service:{organization_id}:{service}"},
+    )
 
 
 class OrganizationServiceStore:

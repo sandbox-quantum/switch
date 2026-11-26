@@ -1,8 +1,6 @@
 """Building the management module and attaching it to the two apps.
 
-`create_management` returns None when the `agent_management` feature flag is off, and
-with None nothing is mounted and the bearer middleware has no controller
-branch. When it is on, the authenticator goes to the middleware as the agent
+`create_management` builds it: the authenticator goes to the middleware as the agent
 bridge app is built, `install` adds the routes once both apps exist, and
 `load_bindings` tells Core which controller runs each agent before the bridge
 serves. `install` also hands Core the agent-facing side
@@ -11,7 +9,7 @@ machines and managed agents exist.
 
 Each process writes its controllers' connection transitions
 (`connection_ledger.py`), read against the lease the server holds for the
-process whether or not management is on (`switch_core/process_lease.py`): `run` writes
+process (`switch_core/process_lease.py`): `run` writes
 transitions until cancelled, and `flush` writes what is left as the process
 drains, before the server marks its lease stopped. `load_connections` reads
 which controllers the other processes hold, before the bridge serves.
@@ -20,7 +18,7 @@ which controllers the other processes hold, before the bridge serves.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -53,6 +51,9 @@ from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
+from switch_core.management.organization_devices import (
+    router as organization_devices_router,
+)
 from switch_core.management.service import ManagementService, ManagementSettings
 from switch_core.management.signals import ControllerSignals
 from switch_core.process_lease import ProcessLease
@@ -134,6 +135,7 @@ def build_management(
     status_interval_seconds: int,
     server_url: str | None,
     third_party_avatars: bool,
+    feature_flags: Mapping[str, bool],
     controller_release: ControllerRelease | None,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
@@ -182,6 +184,7 @@ def build_management(
             status_interval_seconds=status_interval_seconds,
             server_url=server_url,
             third_party_avatars=third_party_avatars,
+            feature_flags=feature_flags,
             controller_release=controller_release,
         ),
         signals=signals,
@@ -195,7 +198,7 @@ def build_management(
         presence=presence,
         clock=clock,
     )
-    # Switch cloud machines that run the controller enroll with codes it mints.
+    # Switch Cloud machines that run the controller enroll with codes it mints.
     set_cloud_enrollment(service)
     authenticator = ManagementAuthenticator(
         session_factory=session_factory,
@@ -224,6 +227,7 @@ def mount_gateway_routes(gateway_app: FastAPI) -> None:
     route added here reaches the coverage gate.
     """
     gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
+    gateway_app.include_router(organization_devices_router)
 
 
 def create_management(
@@ -233,19 +237,17 @@ def create_management(
     signal_bus: SignalBus,
     lease: ProcessLease,
     user_changes: UserChangePublisher,
-) -> Management | None:
-    if not config.agent_management_enabled:
-        return None
+) -> Management:
     if config.controller_token_secret is None:
         raise RuntimeError(
-            "The agent_management feature flag is on without CONTROLLER_TOKEN_SECRET; the "
-            "config validator should have refused this"
+            "CONTROLLER_TOKEN_SECRET is not set; the config validator should have refused this"
         )
     return build_management(
         token_secret=config.controller_token_secret,
         status_interval_seconds=config.controller_status_interval_seconds,
         server_url=config.gateway_public_url,
         third_party_avatars=config.third_party_avatars_enabled,
+        feature_flags=config.feature_flags,
         controller_release=config.controller_release,
         session_factory=session_factory,
         presence=presence,
