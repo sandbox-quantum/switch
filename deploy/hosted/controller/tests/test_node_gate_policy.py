@@ -159,7 +159,7 @@ def test_check_pods_allow_only_the_two_pinned_images_and_gvisor():
 def test_check_pods_allow_metadata_updates_but_not_spec_changes_or_ephemeral_containers():
     pods = doc("ValidatingAdmissionPolicy", "switch-node-gate-check-pods")
     assert "request.operation == 'CREATE' || object.spec == oldObject.spec" in pods
-    assert "request.subResource == ''" in pods and "pods/ephemeralcontainers" in pods
+    assert "request.?subResource.orValue('') == ''" in pods and "pods/ephemeralcontainers" in pods
 
 
 def test_the_gate_can_reach_the_pod_identity_agent_and_the_responder_is_read_only():
