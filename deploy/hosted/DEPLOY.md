@@ -190,6 +190,14 @@ Roll out: the server reads the switch once, at start-up.
 
 Check end to end: a new user's box is made by itself, their agent answers, and sleep and wake work.
 
+**The warm pool and the two ceilings.** The chart turns on a pool of 10 spare boxes by default (`hostedPoolSize`).
+Spares count towards Core's `hostedBoxCeiling` and `hostedLaunchCapacity`, and the chart and Core both refuse a pool
+that leaves fewer than 2 of either for people. The box operator's own `ceiling` (in `switch-box-operator-config`, 20
+as shipped) counts box-map entries, and a spare has none until it's bound to a person, so waiting spares don't use
+it. Every person's box does, bound spares included. So set the operator's `ceiling` to at least the number of people's
+boxes you allow, which is Core's `hostedBoxCeiling` less the pool, and raise the two together: the lower one wins.
+Each spare is a running box, so size the pool to how many new people arrive at once.
+
 **To go back to v1:** drain every box to 0 first, then set `hostedBoxProvisioning: false` and roll out. Boxes
 keep their data, and switching on again resumes them.
 

@@ -407,10 +407,10 @@ class SwitchConfig(BaseSettings):
     hosted_launch_capacity_per_workspace: int = Field(default=0, ge=0, le=100)
     # Hosted agents v2's warm pool: how many boxes wait, made ahead, for the
     # next person's first start. 0 makes none (and retires any waiting); at
-    # most 5. Waiting and requested pool boxes count towards
+    # most 50. Waiting and requested pool boxes count towards
     # `hosted_launch_capacity` and `hosted_box_ceiling`, and Core refuses to
     # start if the pool would leave fewer than 2 of either for people.
-    hosted_pool_size: int = Field(default=0, ge=0, le=5)
+    hosted_pool_size: int = Field(default=0, ge=0, le=50)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     # How long a message may wait for room on a full box before it's let go and the agent shows
     # `waiting_too_long`. Sent to each box controller in Core's answer to its status report.

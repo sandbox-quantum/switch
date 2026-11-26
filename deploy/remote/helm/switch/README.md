@@ -536,7 +536,7 @@ switchCore:
   hostedLaunchCapacity: 20
   hostedProvisionsPerMinute: 5       # optional; switch-core's default is 5
   hostedBoxCeiling: 50               # optional; switch-core's default is 50
-  hostedPoolSize: 1                  # optional; the warm pool, default 0 (none)
+  hostedPoolSize: 10                 # optional; the warm pool, default 10 (0 for none, at most 50)
   hostedLaunchCapacityPerWorkspace: 0  # optional; 0 (the default) is no limit
   visibilityKeyedIdKeySecret: switch-visibility-key          # key: keyed-id.key
   visibilityOperatorsSecret: switch-visibility-operators     # key: operators.json
@@ -550,6 +550,16 @@ switchCore:
   above). The chart refuses to render without them: without the others no
   box would ever be made, and without the keyed-id key the Hosted area and
   the box operator's restart and drain actions can't work.
+- **The warm pool** (`hostedPoolSize`, 10 by default) keeps that many boxes
+  made ahead, so a new person's first start takes one rather than waiting for
+  a box to be made. It's rendered only with v2 on, so a v1 install is
+  unchanged. Spare boxes count towards `hostedLaunchCapacity` and
+  `hostedBoxCeiling` (50 when empty), and the chart refuses to render unless
+  each is at least the pool plus 2, which switch-core also checks at start-up.
+  Each spare is a running box, so the pool is a standing cost: set it to how
+  many new people you expect at once (0 for none, at most 50). Spares count
+  against no workspace's `hostedLaunchCapacityPerWorkspace` until one is bound
+  to a person, which is checked before the bind.
 - **The Hosted area** (for Switch operators) needs the keyed-id key and the
   operator list. Each Secret is mounted as a single file with mode 0400
   (`subPath`), because switch-core refuses either one if it's a link or anyone

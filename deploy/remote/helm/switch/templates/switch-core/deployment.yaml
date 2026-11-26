@@ -124,6 +124,18 @@ spec:
             {{- if not .Values.switchCore.visibilityKeyedIdKeySecret }}
             {{- fail "switchCore.hostedBoxProvisioning needs switchCore.visibilityKeyedIdKeySecret: without the keyed-id key the Hosted area and the box operator's actions can't work." }}
             {{- end }}
+            {{- with .Values.switchCore.hostedPoolSize }}
+            {{- $pool := int . }}
+            {{- $ceiling := int (default 50 $.Values.switchCore.hostedBoxCeiling) }}
+            {{- if gt (add $pool 2) (int $.Values.switchCore.hostedLaunchCapacity) }}
+            {{- fail (printf "switchCore.hostedPoolSize %d needs switchCore.hostedLaunchCapacity of at least %d: the pool's spare boxes count towards it, and at least 2 must stay free for people." $pool (add $pool 2)) }}
+            {{- end }}
+            {{- if gt (add $pool 2) $ceiling }}
+            {{- fail (printf "switchCore.hostedPoolSize %d needs switchCore.hostedBoxCeiling (empty: 50) of at least %d: the pool's spare boxes count towards it, and at least 2 must stay free for people." $pool (add $pool 2)) }}
+            {{- end }}
+            - name: HOSTED_POOL_SIZE
+              value: {{ . | quote }}
+            {{- end }}
             - name: HOSTED_BOX_PROVISIONING
               value: "true"
             {{- end }}
@@ -133,10 +145,6 @@ spec:
             {{- end }}
             {{- with .Values.switchCore.hostedBoxCeiling }}
             - name: HOSTED_BOX_CEILING
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with .Values.switchCore.hostedPoolSize }}
-            - name: HOSTED_POOL_SIZE
               value: {{ . | quote }}
             {{- end }}
             {{- with .Values.switchCore.hostedLaunchCapacityPerWorkspace }}

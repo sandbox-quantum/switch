@@ -246,12 +246,16 @@ switchCore:
   # and 50).
   hostedProvisionsPerMinute: ""
   hostedBoxCeiling: ""
-  # v2 only. The warm pool: how many boxes wait, made ahead, for the next
-  # person's first start (0-5; switch-core refuses to start if it would leave
-  # fewer than 2 of hostedLaunchCapacity or hostedBoxCeiling for people). And
-  # the most live machines serving one workspace (0-100, 0 for no limit).
-  # Empty uses switch-core's defaults (0 and 0).
-  hostedPoolSize: ""
+  # v2 only, and set only with hostedBoxProvisioning on. The warm pool: how
+  # many boxes wait, made ahead, for the next person's first start (0-50).
+  # Spare boxes count towards hostedLaunchCapacity and hostedBoxCeiling (empty:
+  # switch-core's 50), so the chart refuses to render v2 unless each is at
+  # least the pool plus 2. 0 or empty makes none. Each spare is a running box,
+  # so the pool is a standing cost: size it to how many new people arrive.
+  # And the most live machines serving one workspace (0-100, 0 for no limit;
+  # spares count against no workspace until they're bound to a person).
+  # Empty uses switch-core's default (0).
+  hostedPoolSize: 10
   hostedLaunchCapacityPerWorkspace: ""
   # v2's Hosted area for Switch operators. Each is an existing Secret,
   # mounted as a single file (subPath, mode 0400), because switch-core

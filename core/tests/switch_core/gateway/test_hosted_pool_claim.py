@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from switch_core.db.audit import ServerAuditAction
 from switch_core.db.models import (
@@ -585,7 +585,9 @@ async def test_the_full_sweep_runs_the_pool_pass(
 # ── the pool counts towards both ceilings ──
 
 
-async def _claim_new(app, person: User, capacity: int, *, revoke=None):
+async def _claim_new(
+    app, person: User, capacity: int, *, revoke=None, per_workspace: int = 0
+):
     async with app.factory() as session:
         await lock_claims(session)
         claimed = await CloudMachineStore().claim(
@@ -596,6 +598,7 @@ async def _claim_new(app, person: User, capacity: int, *, revoke=None):
             now=datetime.now(UTC),
             backend="box",
             revoke=revoke,
+            per_workspace=per_workspace,
             pool_pick=pool_pick_for(app.config, app.settings),  # type: ignore[arg-type]
         )
         await session.commit()
@@ -639,7 +642,19 @@ async def test_pool_boxes_count_towards_the_box_ceiling(
 
 @pytest.mark.parametrize(
     ("size", "capacity", "ceiling", "refused"),
-    [(1, 3, 50, False), (2, 3, 50, True), (2, 10, 3, True), (0, 0, 1, False)],
+    [
+        (1, 3, 50, False),
+        (2, 3, 50, True),
+        (2, 10, 3, True),
+        (0, 0, 1, False),
+        # The chart's default pool of 10 needs 12 of each.
+        (10, 12, 12, False),
+        (10, 11, 50, True),
+        (10, 12, 11, True),
+        # The most a pool may be.
+        (50, 52, 52, False),
+        (50, 51, 52, True),
+    ],
 )
 def test_core_refuses_a_pool_that_leaves_fewer_than_two_for_people(
     size: int, capacity: int, ceiling: int, refused: bool
@@ -654,6 +669,94 @@ def test_core_refuses_a_pool_that_leaves_fewer_than_two_for_people(
             _config(**overrides)
     else:
         assert _config(**overrides).hosted_pool_size == size
+
+
+def test_core_refuses_a_pool_above_50() -> None:
+    with pytest.raises(ValueError, match="less than or equal to 50"):
+        _config(hosted_pool_size=51, hosted_launch_capacity=100, hosted_box_ceiling=100)
+
+
+async def test_waiting_and_retired_spares_count_against_no_workspace(
+    provisioner_app,  # noqa: F811
+) -> None:
+    """Spares belong to no workspace: with the fixture's machine the only one
+    serving this workspace, a per-workspace limit of 2 still lets a new person
+    take a waiting spare, however many wait or have retired."""
+    app = provisioner_app
+    _pooled(app, 3)
+    await _operator(app.factory)
+    waiting = {await _waiting_box(app.factory), await _waiting_box(app.factory)}
+    retired = await _waiting_box(app.factory)
+    await _retire_waiting(app, retired)
+    person = await _person(app.factory, "spare@example.com")
+    claimed = await _claim_new(app, person, capacity=10, per_workspace=2)
+    assert claimed.from_pool
+    assert claimed.machine.id in waiting
+    assert set(await _waiting_ids(app)) == waiting - {claimed.machine.id}
+
+
+@pytest.mark.parametrize("capacity", [10, 2])
+async def test_a_bind_is_refused_when_the_workspace_is_at_its_limit(
+    provisioner_app,  # noqa: F811
+    capacity: int,
+) -> None:
+    """The workspace already has its one machine (the fixture's), so a new
+    person there is refused before any spare is bound to them, whether the
+    server has room (capacity 10) or is full and would hand out a waiting
+    spare (capacity 2): the spare stays waiting and nothing is claimed."""
+    app = provisioner_app
+    _pooled(app)
+    await _operator(app.factory)
+    box_id = await _waiting_box(app.factory)
+    person = await _person(app.factory, "capped@example.com")
+
+    with pytest.raises(CloudMachineConflict, match="this workspace may have"):
+        await _claim_new(app, person, capacity=capacity, per_workspace=1)
+
+    assert (await _pool_row(app.factory, box_id)).state == "waiting"
+    assert await _claimed_entries(app.factory) == []
+    async with app.factory() as session:
+        assert await session.get(CloudMachine, box_id) is None
+
+
+async def test_a_retired_spare_stops_counting_towards_both_ceilings(
+    provisioner_app,  # noqa: F811
+) -> None:
+    """A spare counts towards the capacity and the box ceiling while it's
+    requested or waiting, and not once it's retired."""
+    app = provisioner_app
+    async with app.factory() as session:
+        before = await boxes_made(session)
+    box_id = await _waiting_box(app.factory)
+    async with app.factory() as session:
+        assert await boxes_made(session) == before + 1
+    await _retire_waiting(app, box_id)
+    async with app.factory() as session:
+        assert await boxes_made(session) == before
+    # The fixture's machine alone, at a capacity of 2: one is free again.
+    person = await _person(app.factory, "after-retire@example.com")
+    claimed = await _claim_new(app, person, capacity=2)
+    assert not claimed.from_pool
+
+
+async def _retire_waiting(app, box_id: str) -> None:
+    async with app.factory() as session:
+        await session.execute(
+            update(HostedPoolBox)
+            .where(HostedPoolBox.id == box_id)
+            .values(
+                state="retiring", retire_reason="size", retired_at=datetime.now(UTC)
+            )
+        )
+        await session.commit()
+
+
+async def _waiting_ids(app) -> list[str]:
+    async with app.factory() as session:
+        rows = await session.scalars(
+            select(HostedPoolBox.id).where(HostedPoolBox.state == "waiting")
+        )
+        return list(rows)
 
 
 # ── metrics ──

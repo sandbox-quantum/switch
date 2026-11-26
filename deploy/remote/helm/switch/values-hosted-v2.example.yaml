@@ -22,7 +22,8 @@ switchCore:
   # switch-hosted namespace.
   hostedControllerSecret: switch-hosted-controller
 
-  # How many boxes may be awake at once on this server. Above 0 for v2.
+  # How many boxes may be awake at once on this server. Above 0 for v2, and
+  # at least hostedPoolSize + 2.
   hostedLaunchCapacity: 20
 
   # Optional. How many boxes switch-core asks for per minute, and how many may
@@ -31,10 +32,12 @@ switchCore:
   hostedProvisionsPerMinute: 5
   hostedBoxCeiling: 50
 
-  # Optional. The warm pool (boxes made ahead for new people's first start; 0
-  # for none) and the most live machines one workspace may have (0 for no
-  # limit). A pool must leave at least 2 of the capacity and the ceiling free.
-  hostedPoolSize: 1
+  # Optional. The warm pool (boxes made ahead for new people's first start;
+  # 10 by default, 0 for none, at most 50) and the most live machines one
+  # workspace may have (0 for no limit). A pool must leave at least 2 of the
+  # capacity and the ceiling free, or the chart refuses to render. Each spare
+  # is a running box, so match it to how many new people arrive.
+  hostedPoolSize: 10
   hostedLaunchCapacityPerWorkspace: 0
 
   # The Hosted area for Switch operators. Secret with keyed-id.key (random

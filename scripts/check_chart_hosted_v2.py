@@ -118,10 +118,11 @@ def test_on_with_every_value_renders_v2_and_the_key() -> None:
 
 
 def test_the_pool_and_per_workspace_limit_render_only_when_set() -> None:
-    """The warm pool's size and the per-workspace limit reach switch-core as
-    given, and are left out (switch-core's defaults) when empty."""
+    """The warm pool's size (10 by default) and the per-workspace limit reach
+    switch-core as given, and are left out (switch-core's defaults) when empty
+    or 0."""
     env = core_env(render(*ON))
-    assert env["HOSTED_POOL_SIZE"] == "1"
+    assert env["HOSTED_POOL_SIZE"] == "10"
     assert "HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE" not in env  # 0 is the default
     env = core_env(
         render(
@@ -134,8 +135,82 @@ def test_the_pool_and_per_workspace_limit_render_only_when_set() -> None:
     )
     assert env["HOSTED_POOL_SIZE"] == "2"
     assert env["HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE"] == "3"
-    env = core_env(render(*ON, "--set", "switchCore.hostedPoolSize="))
-    assert "HOSTED_POOL_SIZE" not in env
+    for empty in ("", "0"):
+        env = core_env(render(*ON, "--set", f"switchCore.hostedPoolSize={empty}"))
+        assert "HOSTED_POOL_SIZE" not in env, empty
+
+
+def test_with_v2_off_the_default_pool_renders_nothing() -> None:
+    """The pool's default of 10 is v2's: with v2 off, no HOSTED_POOL_SIZE,
+    whatever the pool is set to, and no refusal for a small capacity."""
+    for args in (
+        [],
+        ["--set", "switchCore.hostedPoolSize=10"],
+        [*ON, "--set", "switchCore.hostedBoxProvisioning=false"],
+        [
+            *ON,
+            "--set",
+            "switchCore.hostedBoxProvisioning=false",
+            "--set",
+            "switchCore.hostedLaunchCapacity=3",
+        ],
+    ):
+        assert "HOSTED_POOL_SIZE" not in core_env(render(*args)), args
+
+
+#: A pool must leave 2 of the capacity and the ceiling for people.
+POOL_REFUSALS = [
+    (
+        ["--set", "switchCore.hostedLaunchCapacity=11"],
+        "switchCore.hostedPoolSize 10 needs switchCore.hostedLaunchCapacity of at least 12",
+    ),
+    (
+        ["--set", "switchCore.hostedBoxCeiling=11"],
+        "switchCore.hostedPoolSize 10 needs switchCore.hostedBoxCeiling (empty: 50) of at least 12",
+    ),
+    (
+        [
+            "--set",
+            "switchCore.hostedPoolSize=49",
+            "--set",
+            "switchCore.hostedLaunchCapacity=60",
+            "--set",
+            "switchCore.hostedBoxCeiling=",
+        ],
+        "switchCore.hostedPoolSize 49 needs switchCore.hostedBoxCeiling (empty: 50) of at least 51",
+    ),
+]
+
+
+def test_a_pool_leaving_fewer_than_two_for_people_refuses() -> None:
+    for args, words in POOL_REFUSALS:
+        error = render_error(*ON, *args)
+        assert words in error, f"{args}: {error}"
+
+
+def test_a_pool_leaving_exactly_two_renders() -> None:
+    env = core_env(
+        render(
+            *ON,
+            "--set",
+            "switchCore.hostedLaunchCapacity=12",
+            "--set",
+            "switchCore.hostedBoxCeiling=12",
+        )
+    )
+    assert env["HOSTED_POOL_SIZE"] == "10"
+    env = core_env(
+        render(
+            *ON,
+            "--set",
+            "switchCore.hostedPoolSize=48",
+            "--set",
+            "switchCore.hostedLaunchCapacity=50",
+            "--set",
+            "switchCore.hostedBoxCeiling=",
+        )
+    )
+    assert env["HOSTED_POOL_SIZE"] == "48"
 
 
 #: Each value v2 needs, emptied, and the words its refusal must contain.
@@ -186,6 +261,9 @@ TESTS = [
     test_off_renders_nothing_of_v2,
     test_on_with_every_value_renders_v2_and_the_key,
     test_the_pool_and_per_workspace_limit_render_only_when_set,
+    test_with_v2_off_the_default_pool_renders_nothing,
+    test_a_pool_leaving_fewer_than_two_for_people_refuses,
+    test_a_pool_leaving_exactly_two_renders,
     test_on_without_a_needed_value_refuses_and_names_it,
     test_off_needs_none_of_them,
 ]
