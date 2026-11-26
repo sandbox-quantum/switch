@@ -51,6 +51,7 @@ auth:
     # chooser comes first, so a browser signed in to another Microsoft
     # account does not pick it unasked.
     prompt: select_account
+    request_offline_access: true
     unchecked: >-
       Switch can't check the redirect URI, the app's Azure DevOps MCP
       permissions or the tenant's admin consent. Connect once to confirm.
@@ -90,11 +91,8 @@ access:
   # tenant here, so no read level is built on them: Switch asks for this one
   # scope, every connection is granted the write level, and Console labels
   # it "Read and write". `read` repeats it only because every entry needs a
-  # read level. offline_access, for a refresh token, is Entra's own.
-  #
-  # Unverified: the level is read by comparing these with the scopes Entra's
-  # token answer names, and Entra's own example answer leaves offline_access
-  # out of them.
+  # read level. offline_access is requested at sign-in for the refresh token,
+  # not as an API permission.
   #
   # A call succeeds only where the person's own Azure DevOps permissions
   # allow it too. Within those, the connection reaches every tool the server
@@ -109,9 +107,7 @@ access:
   read:
     scopes:
       - api://2a72489c-aab2-4b65-b93a-a91edccf33b8/Ado.Mcp.Tools
-      - offline_access
   write:
     scopes:
       - api://2a72489c-aab2-4b65-b93a-a91edccf33b8/Ado.Mcp.Tools
-      - offline_access
 tools: { mode: pass_through }

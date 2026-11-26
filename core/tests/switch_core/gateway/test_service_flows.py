@@ -2539,6 +2539,46 @@ def _granting(vendor: FakeOAuthServer, granted: list[str]) -> None:
     vendor.mint = lambda scopes, client_id: mint(granted, client_id)  # type: ignore[method-assign]
 
 
+class TestOfflineAccess:
+    @pytest.mark.parametrize(
+        ("granted", "status"),
+        [
+            (["read:items", "write:items"], 200),
+            (["offline_access"], 400),
+        ],
+    )
+    async def test_refresh_scope_does_not_replace_api_permissions(
+        self, session_factory, tmp_path, granted, status
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            entry=OAUTH_ENTRY.replace(
+                "    registration: dynamic\n",
+                "    registration: dynamic\n    request_offline_access: true\n",
+            ),
+        )
+        _granting(world.vendor, granted)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            assert world.vendor.authorizations[-1]["scope"].split() == [
+                "read:items",
+                "write:items",
+                "offline_access",
+            ]
+            completed = await console.complete(code)
+            assert completed.status_code == status, completed.text
+        connection = await _connection(session_factory, ada.id)
+        if status == 200:
+            assert connection is not None
+            assert connection.consent == "write"
+            assert connection.granted_scopes == granted
+        else:
+            assert connection is None
+
+
 class TestConsentMarkers:
     """A vendor whose token lists its own permissions, rather than the
     scopes asked for, is read by the entry's consent markers."""

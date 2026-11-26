@@ -587,6 +587,7 @@ def test_the_shipped_azure_devops_entry_signs_in_as_microsoft_documents_it():
         "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
     )
     assert oauth.prompt == "select_account"
+    assert oauth.request_offline_access
     assert oauth.authorization_params == {}
     assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
     assert oauth.remove_access is not None and "Revoke sessions" in oauth.remove_access
@@ -614,7 +615,6 @@ def test_the_shipped_azure_devops_entry_asks_for_one_documented_scope():
     assert access is not None and access.write is not None
     scopes = [
         "api://2a72489c-aab2-4b65-b93a-a91edccf33b8/Ado.Mcp.Tools",
-        "offline_access",
     ]
     assert access.read.scopes == scopes
     assert access.write.scopes == scopes

@@ -102,9 +102,13 @@ def every_scope(definition: ConnectionDefinition) -> list[str]:
     access = definition.access
     assert access is not None
     levels = [access.read, *([access.write] if access.write is not None else [])]
-    return list(
+    scopes = list(
         dict.fromkeys(scope for level in levels for scope in level.scopes or [])
     )
+    oauth = definition.auth.oauth
+    if oauth is not None and oauth.request_offline_access:
+        scopes.append("offline_access")
+    return scopes
 
 
 def build_adapter(
