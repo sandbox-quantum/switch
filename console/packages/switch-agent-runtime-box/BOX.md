@@ -5,13 +5,27 @@ upstream's `agent-controller`, `agent-providers` and `switch-agent-runtime`. Onl
 They are private workspace packages: nothing outside the three depends on them, and the public registry is never
 asked for them.
 
-Upstream's packages beside them stay byte for byte as upstream main `3b503b563`, so the desktop app and v1 cloud
+Upstream's packages beside them stay byte for byte as upstream main `a6c987624`, so the desktop app and v1 cloud
 machines run upstream's code whatever the hosted switch says. `switch-agent-runtime-box/src/upstream-packages.test.ts`
 fails on any change to those four packages (`agent-controller`, `agent-providers`, `switch-agent-runtime`,
 `shared`), and on any package outside the box ones depending on a box package.
 
-The box copies are synced to upstream `3b503b563`, the same commit `upstream-packages.json` pins. Move the pin
-only together with a port of upstream's changes into the box copies, never on its own.
+The box copies are synced to upstream `3b503b563`. `upstream-packages.json` pins `a6c987624`, ahead of that, so
+upstream's own packages can be checked against today's main; the changes between the two are listed below as not yet
+in the box copies. Move the pin otherwise only together with a port of upstream's changes into the box copies.
+
+Not yet in the box copies (upstream `3b503b563` to `a6c987624`), to be ported next:
+
+- `3a3cbc63f`: new OpenCode agents start approval-required, not in auto mode.
+- `786341f82`: the host's Codex `sandbox_mode` is kept for controller-started sessions.
+- `33e0a46b5`: the agent controller removes given provider logins from disk, and limits agent units. Boxes already
+  have both halves another way: the box controller deletes every login file it can write, Vertex credentials and
+  half-written copies included, when a login is withdrawn, at host start and when an agent is removed; and a box's
+  memory, process and syscall limits come from its Kubernetes limits and gVisor, not from systemd units.
+- `93d905e37`: the controller signing key moves into its own environment.
+- `43324d6f5`: test fixes for main's recurring CI failures.
+- `a6c987624`: OpenCode 2, with an upgrade from 1.x.
+- `da554326b`, `46cebdfb0`: a release version and a merge, with no box change of their own.
 
 ## What the box versions change
 

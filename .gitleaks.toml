@@ -73,7 +73,7 @@ condition = "AND"
 targetRules = ["generic-api-key"]
 paths = ['''^console/packages/switch-agent-runtime-box/upstream-packages\.json$''']
 regexTarget = "line"
-regexes = ['''^\s*"[^"]+\.(ts|tsx|json)": "[0-9a-f]{40}",?$''']
+regexes = ['''^\s*"[^"]+\.(ts|tsx|json|mjs)": "[0-9a-f]{40}",?$''']
 
 [[allowlists]]
 description = "Test fixture in split-runtime.test.ts"
