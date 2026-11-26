@@ -417,7 +417,7 @@ service is reported as short.
 The extra reads are in `placer/cluster-report-rbac.PROPOSED.yaml`, for review
 before they're applied. They're for the hosted controller's account
 (`switch-hosted-controller` in `switch-hosted`):
-- `get` and `list` on nodes, and `get` on node totals in `metrics.k8s.io`;
+- `list` on nodes, and `get` on node totals in `metrics.k8s.io`;
 - `get` on each listed Deployment by name, one Role per namespace.
 
 Nothing is written, there's no cluster-wide pod read, and there's no `list`

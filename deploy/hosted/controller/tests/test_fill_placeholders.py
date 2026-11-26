@@ -41,7 +41,6 @@ def _run(
         "--pause-image": PAUSE,
         "--ca-cert": str(ca),
         "--kubernetes-service-ip": "10.100.0.1",
-        "--daily-calls": "300",
         "--cluster-vpc-cidr": "10.64.0.0/16",
         "--cluster-service-cidr": "172.20.0.0/16",
         **{f"--{k.replace('_', '-')}": v for k, v in overrides.items()},
@@ -96,7 +95,7 @@ def test_fills_every_placeholder_in_the_provisioners_shape(tmp_path: Path) -> No
     )
     assert loaded.image == BOX
     assert loaded.allowed_images == {BOX, OLDER, OLDEST}
-    assert config["daily_calls"] == 300 and loaded.daily_calls == 300
+    assert "daily_calls" not in config
 
     policies = (out / "30-admission-policies.yaml").read_text()
     assert "matches('^(xx-test-1a|xx-test-1b)$')" in policies
@@ -144,10 +143,6 @@ def test_no_earlier_images_leaves_an_empty_allowed_list(tmp_path: Path) -> None:
             "at most 2",
         ),
         ((), {"kubernetes_service_ip": "kubernetes.default"}, "IPv4 address"),
-        ((), {"daily_calls": "0"}, "--daily-calls"),
-        ((), {"daily_calls": "unlimited"}, "--daily-calls"),
-        ((), {"daily_calls": "-5"}, "--daily-calls"),
-        ((), {"daily_calls": "1000000001"}, "--daily-calls"),
         ((), {"cluster_vpc_cidr": "0.0.0.0/0"}, "wider than /8"),
         ((), {"cluster_vpc_cidr": "10.0.0.0/7"}, "wider than /8"),
         ((), {"cluster_vpc_cidr": "10.64.0.1/16"}, "--cluster-vpc-cidr"),
@@ -167,6 +162,13 @@ def test_refuses_a_bad_value_and_writes_nothing(
     result = _run(tmp_path, *extra, **overrides)
     assert result.returncode == 1
     assert "REFUSED" in result.stderr and said in result.stderr
+    assert not (tmp_path / "out").exists()
+
+
+def test_has_no_daily_call_cap_to_set(tmp_path: Path) -> None:
+    """The gateway has no daily call cap any more: the flag is unknown, and nothing is written."""
+    result = _run(tmp_path, "--daily-calls", "300")
+    assert result.returncode != 0 and "--daily-calls" in result.stderr
     assert not (tmp_path / "out").exists()
 
 

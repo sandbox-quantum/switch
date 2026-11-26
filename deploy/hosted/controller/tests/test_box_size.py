@@ -33,7 +33,6 @@ def _config_json() -> dict:
     match = re.search(r"^  config\.json: \|\n((?:    .*\n)+)", MANIFEST, re.M)
     assert match
     text = "\n".join(line[4:] for line in match.group(1).splitlines())
-    text = text.replace("__DAILY_CALLS__", "500")
     return json.loads(re.sub(r'"__[A-Z0-9_]+__"', '"x"', text))
 
 

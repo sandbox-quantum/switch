@@ -59,7 +59,7 @@ deploy/hosted/fill-placeholders.py --out <new folder> \
   --agents-subnet <cidr> [--agents-subnet <cidr> ...] --zone <zone> [--zone <zone> ...] \
   --box-image <repo@sha256:...> \
   --controller-image <repo@sha256:...> --pause-image <repo@sha256:...> \
-  --kubernetes-service-ip <ip> --ca-cert <file.pem> --daily-calls <n> \
+  --kubernetes-service-ip <ip> --ca-cert <file.pem> \
   --cluster-vpc-cidr <cidr> --cluster-service-cidr <cidr>
 ```
 
@@ -67,29 +67,15 @@ deploy/hosted/fill-placeholders.py --out <new folder> \
 They join squid's block list, so no box can reach the cluster's own addresses through the proxy, whatever name it
 asks for.
 
-`--daily-calls` is every box's daily **ceiling** on AI calls through its gateway. A box enforces the lower of this
-ceiling and its workspace's daily AI budget (set in the dashboard), so a budget above the ceiling is held to it: set
-`--daily-calls` at or above the largest workspace budget you want honoured. A workspace with no budget set gets the
-ceiling in full, so choose a number you'd be content to see any one box spend in a day, not a large placeholder. Each
-box counts its own calls, one box per person. It's required and finite, and the provisioner refuses to start without it. A box made before a change keeps
-the ceiling it was made with, as it keeps its image, until it's updated.
-
-**Upgrading a cluster that already runs v2:** add `--daily-calls` (it becomes `"daily_calls"` in
-`switch-box-operator-config`) and apply the filled files **before** rolling the new hosted controller image. The new
-provisioner refuses to start with a config that has no `daily_calls`, so no new boxes are made until it's set.
-
-**A box made before this version has no per-box cap until it's recreated.** Such boxes keep working and are re-used
-as before (the provisioner logs a warning naming each one it re-uses in the older shape), but the provisioner may
-create a box's StatefulSet, not change it, so the cap reaches a box only when the box is made again. Bringing old
-boxes up to date in place is a later change, with the admission policy extended to cover it.
-
-**Changing `daily_calls` reaches only new or recreated boxes.** An existing box keeps the cap it was made with (the
-provisioner logs the difference when it re-uses one). So **lowering** it, say to stop abuse, does not cut existing
-boxes' caps: an urgent cut needs those boxes recreated, or the workspace's daily AI budget lowered in Core, since
-the box enforces the lower of the two.
+**A box made while the provider gateway had a daily call cap still carries `SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS`.**
+Nothing reads it any more, and such a box is re-used as before (the provisioner logs a warning naming each one it
+re-uses in that earlier shape); it loses the setting when it is next recreated. **Upgrading:** take `"daily_calls"`
+out of `switch-box-operator-config` (refill the files, which no longer take `--daily-calls`) and apply them with the
+new hosted controller image: the provisioner refuses a config that still names it, as it refuses any key it does not
+know.
 
 **A box made by a build older than this provisioner's reviewed template (the old all-in-one builds) can't be
-re-used and must be recreated**, as was already true before the cap: only today's template and the shapes it lists
+re-used and must be recreated**: only today's template and the shapes it lists
 as earlier (`_earlier_templates`) count as a box's own.
 
 **Changing the box CA bundle (`box-ca.crt`) needs the old bundle listed in the same change.** Each box's
@@ -141,7 +127,7 @@ any public host: CONNECT to port 443, and GET or HEAD on port 80. What stays ref
 box's rule: the block list (private, local, reserved, multicast and metadata ranges, IPv6's loopback, unique-local,
 link-local and IPv4-mapped ranges and the IPv6 forms that carry an IPv4 address (NAT64, 6to4, Teredo), and the box cluster's own VPC and service ranges), every other port and method,
 and any request without a box's login. On a split box the AI provider hosts stay the controller's: the agents'
-login is refused them, so every AI call goes through the controller's gateway and its daily cap. Each box may hold
+login is refused them, so every AI call goes through the controller's gateway. Each box may hold
 128 connections at once, and its traffic is paced at 5 MB/s down (after a 100 MB burst) and 2 MB/s up (after
 20 MB). A box refused for its connection limit writes one fixed line to squid's access log. Set the variable to
 `false` to go back to the per-box allow-lists (`egress-settings`' parts), which are still read and checked either
