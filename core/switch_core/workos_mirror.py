@@ -45,16 +45,19 @@ People are matched to WorkOS users by the sign-in identity linking them
 
 **Members who never signed in.** For a member WorkOS lists with no account
 linked, the mirror makes one: a user with WorkOS's name and address, no
-password, `first_signed_in_at` NULL, and the identity linking it to the
-WorkOS user, written together so the account is never without it. Their
-organization's admins then see them and can add them to a workspace, and
-their role follows WorkOS like anyone's. Their first sign-in finds the
+password, `first_signed_in_at` NULL, `created_by_directory` set, and the
+identity linking it to the WorkOS user, written together so the account is
+never without it. Their organization's admins then see them and can add
+them to a workspace, and their role follows WorkOS like anyone's. Their first sign-in finds the
 account by that identity and sets `first_signed_in_at`. No account is made
 where one already has the address: that is an account from before WorkOS,
 which `switch-link-workos accounts` links. The daily check keeps such an
-account's name and address as WorkOS has them until its first sign-in, and
-an account of this kind removed from its last organization is deleted
-(`organization_mirror.py`).
+account's name and address as WorkOS has them until its first sign-in. One
+removed from its last organization is deleted
+(`organization_mirror.delete_if_unheld`), and the daily check deletes any
+such account left in no organization or workspace, so a deletion that failed
+or never ran is made up. An account the mirror did not make (an operator's,
+or one from a sign-in) is never renamed or deleted by it.
 
 One process runs it (`ownership.py`, kind `workos_mirror`), under the fence
 it was started with: each change and each move of the cursor is made only
@@ -103,7 +106,11 @@ from switch_core.observability.catalogue import (
 )
 from switch_core.observability.metrics import GaugeReading, metrics
 from switch_core.organization_issues import workos_organization_deleted
-from switch_core.organization_mirror import MirrorDependencies, apply_from_directory
+from switch_core.organization_mirror import (
+    MirrorDependencies,
+    apply_from_directory,
+    delete_if_unheld,
+)
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.tenant_context import no_tenant
 from switch_core.workos_directory import EventCursorRejected, WorkOSDirectory
@@ -231,6 +238,7 @@ class WorkOSMirror:
         """Compare every linked organization's members with WorkOS's, and
         apply the differences."""
         await self._check_all(fence, await self._linked(), only=None)
+        await self._delete_unheld_accounts(fence)
         self._last_full_check = self._clock()
 
     async def run(self, fence: Fence) -> None:
@@ -627,6 +635,7 @@ class WorkOSMirror:
                     role="user",
                     password_hash=None,
                     first_signed_in_at=None,
+                    created_by_directory=True,
                 )
                 try:
                     async with session.begin_nested():
@@ -662,6 +671,7 @@ class WorkOSMirror:
                     await session.scalars(
                         select(User.id).where(
                             User.id.in_(list(users.values())),
+                            User.created_by_directory,
                             User.first_signed_in_at.is_(None),
                         )
                     )
@@ -697,7 +707,11 @@ class WorkOSMirror:
                 user = await session.scalar(
                     select(User).where(User.id == user_id).with_for_update()
                 )
-                if user is None or user.first_signed_in_at is not None:
+                if (
+                    user is None
+                    or not user.created_by_directory
+                    or user.first_signed_in_at is not None
+                ):
                     return
                 if user.name == name and user.email == email.lower():
                     return
@@ -724,6 +738,35 @@ class WorkOSMirror:
                         user_id,
                         subject,
                     )
+
+    async def _delete_unheld_accounts(self, fence: Fence) -> None:
+        """Delete each account the mirror made that was never signed in to
+        and is in no organization or workspace any more: one whose deletion
+        on its removal failed, or never ran because the process stopped
+        between the two (`organization_mirror.delete_if_unheld`)."""
+        with no_tenant():
+            async with self._session_factory() as session:
+                candidates = list(
+                    await session.scalars(
+                        select(User.id)
+                        .where(
+                            User.created_by_directory,
+                            User.first_signed_in_at.is_(None),
+                            User.password_hash.is_(None),
+                        )
+                        .order_by(User.id)
+                    )
+                )
+        for user_id in candidates:
+            await self._ensure_held(fence)
+            try:
+                await delete_if_unheld(self._session_factory, user_id)
+            except Exception:
+                logger.exception(
+                    "Deleting account %s, made for a WorkOS member who never "
+                    "signed in, failed; tried again on the next full check",
+                    user_id,
+                )
 
     async def _subjects_of(self, user_ids: list[str]) -> dict[str, str]:
         """The WorkOS user each of `user_ids` signs in as, where linked."""

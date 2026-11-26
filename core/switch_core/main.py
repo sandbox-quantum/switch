@@ -1636,7 +1636,6 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 ),
                 organization_store=organization_store,
                 user_store=user_store,
-                admin_email=config.gateway_admin_email,
             ),
             OwnershipLeaseStore(),
             config.gateway_oidc_issuer_url,

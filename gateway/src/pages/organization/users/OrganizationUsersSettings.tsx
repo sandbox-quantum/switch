@@ -152,9 +152,13 @@ export default function OrganizationUsersSettings({
 }) {
   const { session } = useAuth();
   const selfId = session?.user.id ?? "";
-  // A member who is no admin sees the list and changes nothing; the operator,
-  // in no role here, comes in only to restore an admin.
-  const asOperator = organization.role === null;
+  // A member who is no admin sees the list and changes nothing; the operator
+  // comes in only to restore an admin, also one who is a member here, and one
+  // in no role here sees nothing while the organization has an admin.
+  const asOperator =
+    (session?.user.is_operator ?? false) &&
+    !organization.administers &&
+    (organization.role === null || organization.can_manage_members);
   const lockedOut = asOperator && !organization.can_manage_members;
   const fromDirectory = organization.members_from_directory;
   const labels: RoleLabels = fromDirectory ? DIRECTORY_ROLE_LABELS : ROLE_LABELS;

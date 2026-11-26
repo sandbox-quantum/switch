@@ -86,6 +86,12 @@ class OidcIdentityRaceError(Exception):
     """
 
 
+class AccountGoneError(Exception):
+    """The account a sign-in found was deleted before the sign-in could be
+    recorded on it: one the directory mirror made for someone who had not
+    signed in yet, or one an administrator deleted meanwhile."""
+
+
 class SignupRefusedError(Exception):
     """An OIDC sign-in would have created a new account, and the caller said
     new accounts may not be created for this request. Existing accounts are
@@ -393,9 +399,9 @@ class UserStore:
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             user = await self.get_by_oidc_identity(session, iss=iss, sub=sub)
             if user is not None:
-                if not await self.mark_signed_in(session, user):
-                    # Deleted since it was read: an account the directory
-                    # mirror made for someone who had not signed in yet.
+                try:
+                    await self.mark_signed_in(session, user)
+                except AccountGoneError:
                     self._raise_if_exhausted(attempt)
                     continue
                 return OidcUser(user, created=False)
@@ -422,10 +428,10 @@ class UserStore:
                             sub=sub,
                             join_tenant=join_tenant,
                         )
-                except IntegrityError:
+                    await self.mark_signed_in(session, existing)
+                except (IntegrityError, AccountGoneError):
                     self._raise_if_exhausted(attempt)
                     continue
-                await self.mark_signed_in(session, existing)
                 return OidcUser(existing, created=False)
 
             if not create_allowed:
@@ -460,11 +466,11 @@ class UserStore:
 
         raise AssertionError("unreachable: the loop above always returns or raises")
 
-    async def mark_signed_in(self, session: AsyncSession, user: User) -> bool:
+    async def mark_signed_in(self, session: AsyncSession, user: User) -> None:
         """Record `user`'s first sign-in, if this is it, on `session`. The
         row stays locked until the caller's transaction ends, so the directory
         mirror cannot delete it as an account nobody signed in to meanwhile.
-        False when the account is already gone."""
+        Raises `AccountGoneError` when the account is already gone."""
         first = await session.scalar(
             update(User)
             .where(User.id == user.id)
@@ -475,9 +481,8 @@ class UserStore:
             .execution_options(synchronize_session=False)
         )
         if first is None:
-            return False
+            raise AccountGoneError(f"Account {user.id} no longer exists")
         set_committed_value(user, "first_signed_in_at", first)
-        return True
 
     def _raise_if_exhausted(self, attempt: int) -> None:
         # The savepoint above already rolled back just the failed write, not

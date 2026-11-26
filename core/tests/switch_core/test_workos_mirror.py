@@ -17,6 +17,7 @@ from switch_core import workos_mirror
 from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
     DirectoryEventCursor,
+    Invitation,
     OidcIdentity,
     Organization,
     OrganizationAuditEvent,
@@ -24,6 +25,7 @@ from switch_core.db.models import (
     OwnershipLease,
     ServerAuditEvent,
     SwitchCoreProcess,
+    Tenant,
     User,
 )
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
@@ -47,8 +49,6 @@ pytestmark = pytest.mark.no_ambient_tenant
 ISSUER = "https://auth.example.test"
 
 
-# They signed in once: only an account never signed in to is deleted with
-# its last membership.
 SIGNED_IN = datetime(2026, 1, 1, tzinfo=UTC)
 
 
@@ -157,7 +157,6 @@ async def _person(owner, subject: str | None) -> str:
                 name=user_id,
                 email=f"{user_id}@example.invalid",
                 role="user",
-                first_signed_in_at=SIGNED_IN,
             )
         )
         await session.flush()
@@ -818,6 +817,7 @@ class TestMembersWhoNeverSignedIn:
         assert zoe is not None
         assert (zoe.name, zoe.email) == ("Zoe Ng", f"{subject.lower()}@example.invalid")
         assert (zoe.password_hash, zoe.first_signed_in_at) == (None, None)
+        assert zoe.created_by_directory
         assert await _roles(owner, organization_id) == {zoe.id: "member"}
 
         workos.change(subject, workos_id, "org_admin")
@@ -945,12 +945,23 @@ class TestMembersWhoNeverSignedIn:
         assert f"Account {yan.id} keeps its address" in caplog.text
         assert f"{taken}@example.invalid" not in caplog.text
 
-    async def test_a_signed_in_account_is_not_refreshed(
-        self, rls_harness: RLSHarness
+    @pytest.mark.parametrize("made_by_directory", [True, False])
+    async def test_an_account_signed_in_or_not_made_by_it_is_not_refreshed(
+        self, rls_harness: RLSHarness, made_by_directory: bool
     ) -> None:
         owner = rls_harness.owner
         _, workos_id = await _linked(owner)
         ada = await _person(owner, "user_ADA")
+        async with owner() as session:
+            await session.execute(
+                update(User)
+                .where(User.id == ada)
+                .values(
+                    created_by_directory=made_by_directory,
+                    first_signed_in_at=SIGNED_IN if made_by_directory else None,
+                )
+            )
+            await session.commit()
         workos = _WorkOS()
         workos.memberships = {("user_ADA", workos_id): "member"}
 
@@ -983,7 +994,16 @@ class TestMembersWhoNeverSignedIn:
         async with owner() as session:
             assert await session.get(User, zoe.id) is None
 
-    @pytest.mark.parametrize("kept_by", ["sign_in", "password", "other_organization"])
+    @pytest.mark.parametrize(
+        "kept_by",
+        [
+            "sign_in",
+            "password",
+            "not_made_by_directory",
+            "other_organization",
+            "organization_not_following_workos",
+        ],
+    )
     async def test_a_removal_keeps_an_account_something_else_holds(
         self, rls_harness: RLSHarness, kept_by: str
     ) -> None:
@@ -1000,17 +1020,26 @@ class TestMembersWhoNeverSignedIn:
         await mirror.poll_once()
         zoe = await _account_of(owner, subject)
         assert zoe is not None
-        if kept_by != "other_organization":
-            async with owner() as session:
-                await session.execute(
-                    update(User)
-                    .where(User.id == zoe.id)
-                    .values(
-                        first_signed_in_at=SIGNED_IN if kept_by == "sign_in" else None,
-                        password_hash="hash" if kept_by == "password" else None,
+        async with owner() as session:
+            await session.execute(
+                update(User)
+                .where(User.id == zoe.id)
+                .values(
+                    first_signed_in_at=SIGNED_IN if kept_by == "sign_in" else None,
+                    password_hash="hash" if kept_by == "password" else None,
+                    created_by_directory=kept_by != "not_made_by_directory",
+                )
+            )
+            if kept_by == "organization_not_following_workos":
+                unlinked = _id("org")
+                session.add(Organization(id=unlinked, slug=unlinked, name="Own"))
+                await session.flush()
+                session.add(
+                    OrganizationMember(
+                        organization_id=unlinked, user_id=zoe.id, role="member"
                     )
                 )
-                await session.commit()
+            await session.commit()
 
         workos.change(subject, workos_id, None)
         await mirror.poll_once()
@@ -1018,3 +1047,67 @@ class TestMembersWhoNeverSignedIn:
         assert await _roles(owner, organization_id) == {}
         async with owner() as session:
             assert await session.get(User, zoe.id) is not None
+
+    async def test_a_removal_leaves_invitations_to_their_address(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        inviter = await _person(owner, None)
+        subject = _id("user_ZOE")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        workos.change(subject, workos_id, "member")
+        await mirror.poll_once()
+        zoe = await _account_of(owner, subject)
+        assert zoe is not None
+        tenant_id = _id("tenant")
+        async with owner() as session:
+            session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+            await session.flush()
+            session.add(
+                Invitation(
+                    tenant_id=tenant_id,
+                    role="member",
+                    email=zoe.email,
+                    token_hash=_id("hash"),
+                    expires_at=datetime.now(UTC) + timedelta(days=7),
+                    uses_remaining=1,
+                    created_by=inviter,
+                )
+            )
+            await session.commit()
+
+        workos.change(subject, workos_id, None)
+        await mirror.poll_once()
+
+        async with owner() as session:
+            assert await session.get(User, zoe.id) is None
+            invitations = list(
+                await session.scalars(
+                    select(Invitation.id).where(Invitation.tenant_id == tenant_id)
+                )
+            )
+        assert len(invitations) == 1
+
+    async def test_the_full_check_deletes_one_left_in_no_organization(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        await _linked(owner)
+        left, operators = (
+            await _person(owner, _id("user_LEFT")),
+            await _person(owner, _id("user_OPS")),
+        )
+        async with owner() as session:
+            await session.execute(
+                update(User).where(User.id == left).values(created_by_directory=True)
+            )
+            await session.commit()
+
+        await (await _mirror(rls_harness, _WorkOS())).check_once()
+
+        async with owner() as session:
+            assert await session.get(User, left) is None
+            assert await session.get(User, operators) is not None

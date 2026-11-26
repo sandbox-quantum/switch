@@ -17,7 +17,7 @@ The directory is the record, so whatever it says is applied:
   of its workspaces, with their keys, service connections and sign-ins there.
   An account the mirror made for them that was never signed in to, and is in
   no other organization or workspace, is deleted with it
-  (`workos_mirror.py`).
+  (`delete_if_unheld`, `workos_mirror.py`).
 
 Each is recorded in the organization's audit log, with where it came from
 (`source`). A change that breaks a rule Switch keeps itself (the last Org
@@ -41,7 +41,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.accounts.deletion import delete_account_rows
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.db.audit import (
@@ -49,6 +48,7 @@ from switch_core.db.audit import (
     record_organization_audit_event,
 )
 from switch_core.db.models import (
+    OidcIdentity,
     Organization,
     OrganizationMember,
     Tenant,
@@ -60,6 +60,7 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import (
     directory_organizations_of_user,
+    organizations_of_user,
     tenants_of_user,
 )
 from switch_core.gateway.auth import (
@@ -123,9 +124,6 @@ class MirrorDependencies:
     revocation: AccessRevocation
     organization_store: OrganizationStore
     user_store: UserStore
-    # Who keeps the server-wide settings a deleted account last saved
-    # (`accounts/deletion.delete_account_rows`).
-    admin_email: str
 
 
 async def apply_from_directory(
@@ -268,19 +266,22 @@ async def apply_from_directory(
         )
         await session.commit()
     if wanted is None:
-        await _delete_if_never_signed_in(session_factory, dependencies, user_id)
+        await delete_if_unheld(session_factory, user_id)
 
 
-async def _delete_if_never_signed_in(
-    session_factory: async_sessionmaker[AsyncSession],
-    dependencies: MirrorDependencies,
-    user_id: str,
+async def delete_if_unheld(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
 ) -> None:
-    """Delete `user_id` if it is an account the mirror made for someone who
-    never signed in, and nothing holds it any more: no password, and no
-    organization or workspace membership. The row is locked first, so a
-    sign-in under way (`UserStore.mark_signed_in`) either finishes before
-    and keeps the account, or finds it gone."""
+    """Delete `user_id` if it is an account the mirror made
+    (`created_by_directory`) for someone who never signed in, and nothing
+    holds it any more: no password, and no membership of any organization or
+    workspace. Only the account and its WorkOS identity are deleted; a row
+    anywhere else naming it keeps it, with a warning.
+
+    The row is locked first. A sign-in under way (`UserStore.mark_signed_in`)
+    then either finishes before and keeps the account, or finds it gone, and
+    a membership added meanwhile waits on the lock and then fails rather than
+    land on a deleted account."""
     with no_tenant():
         async with session_factory() as session:
             user = await session.scalar(
@@ -288,23 +289,22 @@ async def _delete_if_never_signed_in(
             )
             if (
                 user is None
+                or not user.created_by_directory
                 or user.first_signed_in_at is not None
                 or user.password_hash is not None
             ):
                 return
-            # A placeholder only ever joins organizations that follow WorkOS:
-            # any other takes a sign-in to join.
-            if await directory_organizations_of_user(
-                session_factory, user_id, []
+            if await organizations_of_user(
+                session_factory, user_id
             ) or await tenants_of_user(session_factory, user_id):
                 return
             try:
-                await delete_account_rows(
-                    session_factory, session, user, dependencies.admin_email
-                )
-                await session.commit()
+                async with session.begin_nested():
+                    await session.execute(
+                        delete(OidcIdentity).where(OidcIdentity.user_id == user_id)
+                    )
+                    await session.execute(delete(User).where(User.id == user_id))
             except IntegrityError as error:
-                await session.rollback()
                 logger.warning(
                     "Account %s, made for a WorkOS member who never signed in, "
                     "is in no organization now but is kept: rows still name it "
@@ -313,6 +313,7 @@ async def _delete_if_never_signed_in(
                     error.orig,
                 )
                 return
+            await session.commit()
     logger.warning(
         "Deleted account %s, made for a WorkOS member who never signed in, "
         "now in no organization",

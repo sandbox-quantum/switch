@@ -58,12 +58,12 @@ function member(
 
 // Only `session` and `refresh` are read by this page and what it renders;
 // who administers the organization, and what the operator may do, come from
-// `CurrentOrganization`, not the session.
+// `CurrentOrganization`; the session says only that this is the operator.
 function signedIn() {
   const refresh = vi.fn(async () => {});
   vi.mocked(useAuth).mockReturnValue({
     session: {
-      user: { id: "me", name: "Me", email: "me@example.com", is_operator: false },
+      user: { id: "me", name: "Me", email: "me@example.com", is_operator: true },
       tenant: null,
       tenants: [],
       state: "ready",

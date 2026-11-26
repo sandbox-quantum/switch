@@ -46,7 +46,11 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
-from switch_core.db.stores.user_store import UserStore, email_taken
+from switch_core.db.stores.user_store import (
+    AccountGoneError,
+    UserStore,
+    email_taken,
+)
 from switch_core.gateway.auth import (
     SIGNUP_REFUSED_DETAIL,
     AuthenticatedCaller,
@@ -219,7 +223,13 @@ async def login(
     await attempt.succeeded(session)
 
     tenant_claim = await initial_tenant_claim(session_factory, user_store, user)
-    await user_store.mark_signed_in(session, user)
+    try:
+        await user_store.mark_signed_in(session, user)
+    except AccountGoneError:
+        # Deleted while the password was being checked.
+        raise HTTPException(
+            status_code=401, detail="Invalid email or password"
+        ) from None
     await record_sign_in(
         session,
         request,

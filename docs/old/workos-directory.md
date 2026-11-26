@@ -208,14 +208,19 @@ account; no second one is made.
 - Until the first sign-in, the daily check updates the account's name and
   address from WorkOS. A new address another account already has is left,
   and logged at `warning` (without the address).
-- Removed in WorkOS from its last linked organization, an account that was
-  never signed in to, has no password and is in no workspace is deleted.
-  One that rows still point at is kept, and logged at `warning`.
-- An account made before this, by an operator, counts as signed in when it
-  was made.
-- To take the accounts away again, delete each account with no
-  `first_signed_in_at` and no password (`accounts/deletion.py`,
-  `delete_account_rows`).
+- Removed in WorkOS from its last linked organization, an account the
+  mirror made that was never signed in to, has no password and is in no
+  organization (linked or not) and no workspace is deleted: the account and
+  its WorkOS identity only. Invitations to its address stay. One that other
+  rows still point at is kept, and logged at `warning`. The daily check
+  deletes any such account left behind, so a deletion that failed, or never
+  ran because the process stopped, is made up.
+- Only accounts the mirror made (`users.created_by_directory`) are updated or
+  deleted by it. An account made any other way, by an operator, a sign-up or
+  a sign-in (also by a release from before this one), is never touched.
+- To take the accounts away again, delete each account with
+  `created_by_directory` set and no `first_signed_in_at`
+  (`accounts/deletion.py`, `delete_account_rows`).
 
 Every member of an organization, not only its admins, sees its Users page,
 read-only unless they are an Org Admin.

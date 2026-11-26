@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as eighteen functions.
+"""The whole exemption from row-level security, written out as twenty functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -212,6 +212,14 @@ on anywhere in it. It discloses which workspaces have a decision waiting at
 that moment, which says that auto-route is on and in use there; the sweep is
 its only caller.
 
+**`organizations_of_user` is the twentieth**: which organizations a person
+is in. The WorkOS directory mirror makes an account for a member who has
+never signed in, and deletes it once they are in no organization and no
+workspace; it acts for no organization and has to read the person's
+membership rows in all of them, including one no longer following WorkOS,
+before it may. It discloses which organizations a person belongs to, what
+`tenants_of_user` discloses one level up; the mirror is its only caller.
+
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
 version is that returning rows instead of tenant ids would put a second copy
@@ -305,7 +313,7 @@ class TenantLookup:
         return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The eighteen of them. Ordered as the three shapes above: enumeration, then
+# The twenty of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -521,6 +529,19 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
     ),
     TenantLookup(
+        name="organizations_of_user",
+        arguments=("user_id",),
+        query=(
+            "SELECT organization_id FROM organization_members "
+            "WHERE user_id = p_user_id ORDER BY organization_id"
+        ),
+        purpose=(
+            "Which organizations a person is in, every one of them, for the "
+            "directory mirror to tell whether an account it made for someone "
+            "who never signed in still has anywhere to be."
+        ),
+    ),
+    TenantLookup(
         name="tenants_with_pending_decisions",
         arguments=(),
         query="SELECT DISTINCT tenant_id FROM pending_decisions ORDER BY tenant_id",
@@ -603,12 +624,12 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the eighteen names are fixed and known here, so there is nothing
+# at call time: the twenty names are fixed and known here, so there is nothing
 # for a call site to build. Each bind is named after the lookup's own argument,
 # which is what lets `_call` zip them positionally against the dataclass and
 # fail loudly on a mismatch rather than binding the workspace to the platform.
 # The assertion below is what keeps this dict from quietly falling behind
-# `TENANT_LOOKUPS`: a nineteenth lookup with no entry here fails at import, not
+# `TENANT_LOOKUPS`: a twenty-first lookup with no entry here fails at import, not
 # with a `KeyError` on whatever request reaches it first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
@@ -662,6 +683,9 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     ),
     "tenants_of_organization": text(
         "SELECT tenant_id FROM tenants_of_organization(:organization_id) AS tenant_id"
+    ),
+    "organizations_of_user": text(
+        "SELECT organization_id FROM organizations_of_user(:user_id) AS organization_id"
     ),
     "tenants_with_pending_decisions": text(
         "SELECT tenant_id FROM tenants_with_pending_decisions() AS tenant_id"
@@ -870,4 +894,12 @@ async def tenants_of_organization(
         session_factory,
         TENANT_LOOKUPS_BY_NAME["tenants_of_organization"],
         organization_id,
+    )
+
+
+async def organizations_of_user(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> list[str]:
+    return await _call(
+        session_factory, TENANT_LOOKUPS_BY_NAME["organizations_of_user"], user_id
     )

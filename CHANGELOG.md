@@ -67,9 +67,11 @@ version of their own to them without also giving them a release of their own.
   so admins see them and can add them to a workspace; their first sign-in
   uses it. No account is made where one already has the address. Until that
   sign-in the daily check keeps the name and address as WorkOS has them, and
-  removal from the last organization deletes the account. `users` has a new
+  removal from the last organization deletes the account. Only accounts the
+  mirror made are ever updated or deleted by it. `users` has two new columns:
   `first_signed_in_at` (existing accounts: when they were made), set by the
-  first password or WorkOS sign-in or by sign-up.
+  first password or WorkOS sign-in or by sign-up, and
+  `created_by_directory`.
 - **Every member of an organization sees its Users page**, read-only unless
   they are an Org Admin (`GET /organizations/current/members` answers any
   member). Someone brought in from WorkOS who has not signed in yet is marked

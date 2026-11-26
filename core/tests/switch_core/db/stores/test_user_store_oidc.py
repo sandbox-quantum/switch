@@ -15,6 +15,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.user_store import (
+    AccountGoneError,
     OidcIdentityConflictError,
     OidcIdentityRaceError,
     SignupRefusedError,
@@ -933,20 +934,54 @@ class TestTheFirstSignIn:
             session.add(user)
             await session.commit()
 
-            assert await store.mark_signed_in(session, user)
+            await store.mark_signed_in(session, user)
             first = user.first_signed_in_at
             await session.commit()
-            assert await store.mark_signed_in(session, user)
+            await store.mark_signed_in(session, user)
             await session.commit()
 
         assert first is not None
         assert user.first_signed_in_at == first
 
-    async def test_an_account_gone_is_not_marked(
+    async def test_an_account_gone_raises(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
-            assert not await UserStore().mark_signed_in(
+            with pytest.raises(AccountGoneError):
+                await UserStore().mark_signed_in(
+                    session,
+                    User(
+                        id="nobody", name="Nobody", email="n@example.com", role="user"
+                    ),
+                )
+
+    async def test_an_account_deleted_once_found_is_looked_up_again(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        class _FindsOneDeletedFirst(UserStore):
+            found_stale = False
+
+            async def get_by_oidc_identity(self, session, *, iss, sub):
+                if not self.found_stale:
+                    self.found_stale = True
+                    return User(
+                        id="deleted", name="Gone", email="gone@example.com", role="user"
+                    )
+                return await super().get_by_oidc_identity(session, iss=iss, sub=sub)
+
+        async with session_factory() as session:
+            made = await _FindsOneDeletedFirst().get_or_create_oidc_user(
                 session,
-                User(id="nobody", name="Nobody", email="n@example.com", role="user"),
+                iss=_ISS,
+                email="again@example.com",
+                name="Again",
+                sub="user_AGAIN",
+                email_verified=True,
+                join_tenant=False,
+                link_by_email=False,
+                create_allowed=True,
             )
+            await session.commit()
+
+        assert made.created
+        assert made.user.email == "again@example.com"

@@ -414,6 +414,12 @@ class User(Base):
     first_signed_in_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Made by the WorkOS directory mirror rather than by a sign-in, sign-up or
+    # an operator. Only such an account, until its first sign-in, does the
+    # mirror rename or delete.
+    created_by_directory: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     # Workspaces this person has created through self-service, which is what
     # `GATEWAY_MAX_WORKSPACES_PER_USER` bounds. A count of creations rather
     # than of workspaces administered now, so handing a workspace to another

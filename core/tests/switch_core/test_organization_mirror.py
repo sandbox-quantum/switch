@@ -6,7 +6,6 @@ results."""
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
@@ -23,11 +22,6 @@ from switch_core.organization_mirror import bring_in_memberships
 from tests.conftest import RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
-
-
-# They signed in once: only an account never signed in to is deleted with
-# its last membership.
-SIGNED_IN = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _id(prefix: str) -> str:
@@ -58,7 +52,6 @@ async def _person(session_factory) -> str:
                 name=user_id,
                 email=f"{user_id}@example.invalid",
                 role="user",
-                first_signed_in_at=SIGNED_IN,
             )
         )
         await session.commit()
