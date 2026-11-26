@@ -1231,29 +1231,17 @@ function boxCountsOf(counts: BoxCounts | null): { valve_parks?: number } {
   return { valve_parks: counts.valveParks };
 }
 
-/** The provider gateway's counts; `callsToday`, `capped` and `dailyCap` only where a daily cap is set. */
+/** The provider gateway's counts. */
 export type GatewayCounts = {
   agents: number;
   refused: number;
-  callsToday?: number;
-  capped?: boolean;
-  dailyCap?: number;
 };
 
 /** The provider gateway's counts, for the report: absent where it is off. */
 function gatewayCountsOf(counts: GatewayCounts | null): {
   gateway_agents?: number;
   gateway_refused?: number;
-  gateway_calls_today?: number;
-  gateway_capped?: boolean;
-  gateway_daily_cap?: number;
 } {
   if (!counts) return {};
-  return {
-    gateway_agents: counts.agents,
-    gateway_refused: counts.refused,
-    ...(counts.callsToday === undefined ? {} : { gateway_calls_today: counts.callsToday }),
-    ...(counts.capped === undefined ? {} : { gateway_capped: counts.capped }),
-    ...(counts.dailyCap === undefined ? {} : { gateway_daily_cap: counts.dailyCap }),
-  };
+  return { gateway_agents: counts.agents, gateway_refused: counts.refused };
 }

@@ -50,6 +50,7 @@ describe('prepareBoxRun', () => {
     const env: NodeJS.ProcessEnv = {
       SWITCH_CONTROLLER_REST_AFTER_MS: '600000',
       SWITCH_CONTROLLER_PROVIDER_GATEWAY: '1',
+      // No longer a setting: the gateway has no daily call cap.
       SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS: '500',
       SWITCH_OWNER_MARKER: 'inherited',
     };
@@ -71,8 +72,8 @@ describe('prepareBoxRun', () => {
     expect(run.deps).toMatchObject({
       restAfterMs: 600_000,
       providerGateway: true,
-      providerGatewayDailyCalls: '500',
     });
+    expect(run.deps).not.toHaveProperty('providerGatewayDailyCalls');
     expect(run.deps.split).toBeUndefined();
     expect(run.deps.checkGivenLogin).toBeTypeOf('function');
     // A marker in the controller's own environment never passes on.

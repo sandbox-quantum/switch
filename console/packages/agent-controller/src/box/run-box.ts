@@ -313,8 +313,6 @@ export async function prepareBoxRun(input: {
       controllerReserve,
       // Off unless the box's template sets it; the gateway starts beside the relay.
       providerGateway: agentRuntime === 'default' && env.SWITCH_CONTROLLER_PROVIDER_GATEWAY === '1',
-      // The box's daily call cap, the operator's setting; a bad value stops the controller.
-      providerGatewayDailyCalls: env.SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS,
       // Claude's own check can't tell a good Vertex key from a made-up one
       // here (the box buys Google's tokens itself), so the box asks Google.
       checkGivenLogin: givenLoginCheck(),

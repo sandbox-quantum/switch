@@ -1439,7 +1439,7 @@ describe('StatusCollector', () => {
       sessionsMax: () => 12,
       valveHosts: () => ({ joined: 2, hosts: 3 }),
       valveMemory: () => 'unprotected',
-      gatewayCounts: () => ({ agents: 4, refused: 1, callsToday: 37, capped: false }),
+      gatewayCounts: () => ({ agents: 4, refused: 1 }),
       // The valve's count is left out while the valve is off.
       boxCounts: () => ({ valveParks: null }),
       dataDir: dir,
@@ -1484,9 +1484,11 @@ describe('StatusCollector', () => {
     expect(first.machine).toMatchObject({
       gateway_agents: 4,
       gateway_refused: 1,
-      gateway_calls_today: 37,
-      gateway_capped: false,
     });
+    // The gateway has no daily call cap.
+    expect(first.machine).not.toHaveProperty('gateway_calls_today');
+    expect(first.machine).not.toHaveProperty('gateway_capped');
+    expect(first.machine).not.toHaveProperty('gateway_daily_cap');
     expect(first.machine).not.toHaveProperty('valve_parks');
     expect(awakeSeen).toEqual([['agent-1', 2]]);
     expect(agentsSeen).toEqual([['agent-1']]);
@@ -1601,7 +1603,7 @@ describe('StatusCollector', () => {
       sessionsMax: () => 12,
       valveHosts: () => ({ joined: 2, hosts: 3 }),
       valveMemory: () => 'unprotected',
-      gatewayCounts: () => ({ agents: 4, refused: 1, callsToday: 37, capped: false }),
+      gatewayCounts: () => ({ agents: 4, refused: 1 }),
       boxCounts: () => ({ valveParks: 1 }),
       operatorExec: true,
       meminfo: async () => {
