@@ -26,6 +26,7 @@ const cloud: NewAgentDevice = {
     { provider: 'claude', ready: true, problem: null },
     { provider: 'codex', ready: false, problem: 'not signed in' },
   ],
+  providersSettled: false,
 };
 
 const providers: NewAgentProvider[] = [
@@ -36,6 +37,7 @@ const providers: NewAgentProvider[] = [
 function hostWith(overrides: Partial<NewAgentHost>): NewAgentHost {
   return {
     cloudOnly: false,
+    cloudNote: null,
     devices: [cloud],
     devicesError: null,
     providers,
@@ -178,11 +180,28 @@ describe('NewAgentDialog', () => {
     expect(screen.getByText('Give Switch Cloud a antigravity login')).toBeTruthy();
   });
 
+  it('says a provider left out of a settled report is not available, offering no login for it', () => {
+    show(
+      hostWith({
+        devices: [{ ...cloud, providersSettled: true }],
+        providers: [...providers, { id: 'opencode', name: 'OpenCode', fields: [] }],
+        loginOffered: () => true,
+      })
+    );
+    expect(screen.getByRole('button', { name: /^OpenCode/ }).textContent).toContain(
+      'Not available on Switch Cloud'
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Give Switch Cloud a login for OpenCode' })
+    ).toBeNull();
+  });
+
   it('asks no Run location where the agent always runs on Switch Cloud', async () => {
-    const host = hostWith({ cloudOnly: true });
+    const host = hostWith({ cloudOnly: true, cloudNote: <p>Run agents elsewhere</p> });
     show(host);
     expect(screen.queryByText('Run location')).toBeNull();
     expect(screen.getByText('Runs on your Switch Cloud device.')).toBeTruthy();
+    expect(screen.getByText('Run agents elsewhere')).toBeTruthy();
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /^Claude/ }).getAttribute('aria-pressed')).toBe(
         'true'

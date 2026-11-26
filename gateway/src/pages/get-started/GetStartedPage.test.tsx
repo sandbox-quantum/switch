@@ -3,6 +3,7 @@ import { userEvent } from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudMachine, Controller, ManagedAgent } from "../../data/management";
+import { GET_SWITCH_CONSOLE_URL } from "../templates/OpenInConsoleDialog";
 import GetStartedPage from "./GetStartedPage";
 import type { CloudSnapshot } from "./useCloudDevice";
 
@@ -262,7 +263,7 @@ describe("GetStartedPage", () => {
     renderPage();
     await pickClaudeWithToken("bad");
     expect(await screen.findByText("That token was refused.", {}, { timeout: 4000 })).toBeTruthy();
-    expect(screen.getByText("Pick an AI provider to power switch-buddy:")).toBeTruthy();
+    expect(screen.getByText(/Pick an AI provider to power switch-buddy/)).toBeTruthy();
     expect(onboarding.createBuddy).not.toHaveBeenCalled();
   });
 
@@ -411,6 +412,55 @@ describe("GetStartedPage", () => {
     expect(card(/Antigravity/).disabled).toBe(false);
   });
 
+  it("says a provider the device left out of its settled report is not available, not checking", async () => {
+    const reported = (observedAt: string) =>
+      ({
+        ...reporting(["claude", "codex", "antigravity", "cursor"]),
+        connection: { connected_at: "2026-11-26T10:00:00Z", disconnected_at: null, disconnect_reason: null },
+        status: {
+          ...reporting(["claude", "codex", "antigravity", "cursor"]).status!,
+          observed_at: observedAt,
+        },
+      }) as unknown as Controller;
+    device.snapshot = snapshot({ controller: reported("2026-11-26T10:00:20Z") });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
+    const openCode = () => screen.getByRole("button", { name: /OpenCode/, pressed: false }) as HTMLButtonElement;
+    expect(openCode().textContent).toMatch(/Checking Switch Cloud/);
+
+    setDevice(snapshot({ controller: reported("2026-11-26T10:02:00Z") }));
+    await waitFor(() => expect(openCode().textContent).toMatch(/Not available on Switch Cloud/));
+    expect(openCode().disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Sign in to OpenCode" })).toBeNull();
+  });
+
+  it("leaves a picked provider alone above its login, with the login's first field focused", async () => {
+    device.snapshot = snapshot({ controller: reporting(["claude", "codex"]) });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
+    expect(
+      screen.getByText("Your Switch Cloud starts with no AI logins. Pick an AI provider to power switch-buddy and sign in to it:"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in to Claude Code" }));
+
+    expect(document.activeElement).toBe(screen.getByPlaceholderText("Setup token"));
+    expect(screen.getByText(/claude setup-token/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Codex/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose another provider" }));
+    expect(screen.getByRole("button", { name: /Codex/, pressed: false })).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Setup token")).toBeNull();
+  });
+
+  it("says switch-buddy runs on Switch Cloud, and where to get Switch Console to run agents locally", async () => {
+    renderPage();
+    await screen.findByRole("button", { name: "Set up AI provider" });
+    expect(screen.getByText(/switch-buddy runs on your Switch Cloud\. To run agents on your own computer/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Switch Console" }).getAttribute("href")).toBe(
+      GET_SWITCH_CONSOLE_URL,
+    );
+  });
+
   it("puts a Sign in button in each card that needs a login, and it opens that login", async () => {
     device.snapshot = snapshot({
       controller: {
@@ -446,6 +496,7 @@ describe("GetStartedPage", () => {
     expect(screen.getByRole("button", { name: "Sign-in file" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Vertex AI" })).toBeTruthy();
 
+    fireEvent.click(screen.getByRole("button", { name: "Choose another provider" }));
     fireEvent.click(screen.getByRole("button", { name: /OpenCode/, pressed: false }));
     expect(screen.getByText(/opencode\/auth\.json/)).toBeTruthy();
     const auth = '{"opencode":{"type":"api","key":"placeholder"}}';
@@ -558,6 +609,9 @@ describe("GetStartedPage", () => {
     renderPage();
 
     expect(await screen.findByText(/Signed in on My Laptop/, {}, { timeout: 6000 })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Switch Console" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "use other providers" }));
+    expect(screen.getByText("Pick an AI provider to power switch-buddy:")).toBeTruthy();
   });
 
   it("shows device selector when multiple local devices available", async () => {

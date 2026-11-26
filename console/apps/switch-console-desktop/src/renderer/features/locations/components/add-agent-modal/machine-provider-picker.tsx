@@ -24,7 +24,8 @@ export function machineProviderOptions(
   machine: OwnedMachine,
   flags: FeatureFlags
 ): MachineProviderOption<AgentProviderId>[] {
-  return optionsOnMachine(offeredAgentProviders(flags), machine.providers);
+  // When it connected is not known here, so one it has not reported stays not checked yet.
+  return optionsOnMachine(offeredAgentProviders(flags), machine.providers, false);
 }
 
 /**

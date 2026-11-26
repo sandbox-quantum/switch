@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { loginHint, machineProviderOptions, providerLoginKinds } from './provider-catalogue';
+import {
+  loginHint,
+  machineProviderOptions,
+  providerLoginKinds,
+  providerReportSettled,
+} from './provider-catalogue';
 
 describe('providerLoginKinds', () => {
   it('offers a browser what can be pasted or picked, a sign-in file among them', () => {
@@ -42,11 +47,42 @@ describe('machineProviderOptions', () => {
           { id: 'claude', name: 'Claude Code' },
           { id: 'antigravity', name: 'Antigravity' },
         ],
-        [{ provider: 'claude', ready: false, problem: 'not installed' }]
+        [{ provider: 'claude', ready: false, problem: 'not installed' }],
+        false
       )
     ).toEqual([
       { id: 'claude', name: 'Claude Code', ready: false, problem: 'not installed' },
       { id: 'antigravity', name: 'Antigravity', ready: false, problem: 'not checked yet' },
     ]);
+  });
+
+  it('says a provider the machine left out of a settled report is not available there', () => {
+    expect(
+      machineProviderOptions(
+        [
+          { id: 'claude', name: 'Claude Code' },
+          { id: 'opencode', name: 'OpenCode' },
+        ],
+        [{ provider: 'claude', ready: false, problem: 'not signed in' }],
+        true
+      )
+    ).toEqual([
+      { id: 'claude', name: 'Claude Code', ready: false, problem: 'not signed in' },
+      { id: 'opencode', name: 'OpenCode', ready: false, problem: 'not available' },
+    ]);
+  });
+});
+
+describe('providerReportSettled', () => {
+  const connected = '2026-11-26T10:00:00Z';
+
+  it('waits a minute after the machine connects for the checks it starts with', () => {
+    expect(providerReportSettled(connected, '2026-11-26T10:00:30Z')).toBe(false);
+    expect(providerReportSettled(connected, '2026-11-26T10:01:00Z')).toBe(true);
+  });
+
+  it('is not settled while either time is unknown', () => {
+    expect(providerReportSettled(null, '2026-11-26T10:05:00Z')).toBe(false);
+    expect(providerReportSettled(connected, null)).toBe(false);
   });
 });

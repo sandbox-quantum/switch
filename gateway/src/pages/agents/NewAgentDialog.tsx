@@ -6,6 +6,7 @@ import {
 } from "@switch-console/chat-ui/components/new-agent-dialog";
 import type { AddressingPolicy } from "@switch-console/chat-ui/contracts/switch-servers";
 import { NO_PROVIDER_PERMISSIONS, type NewAgentFormState } from "@switch-console/chat-ui/model/new-agent-form";
+import { providerReportSettled } from "@switch-console/chat-ui/model/provider-catalogue";
 import { Button } from "@switch-console/chat-ui/primitives/button";
 import { Dialog, DialogContent } from "@switch-console/chat-ui/primitives/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@switch-console/chat-ui/primitives/select";
@@ -47,6 +48,7 @@ import {
   needsWaking,
   wakeCloudMachine,
 } from "../get-started/onboarding";
+import { ConsoleHint } from "../get-started/ConsoleHint";
 import { ProviderIcon } from "../get-started/ProviderIcon";
 
 /** Who can talk to the agent, as the three answers the dialog offers; the rule editor is on the agent's page. */
@@ -112,6 +114,10 @@ function deviceOf(device: Controller): NewAgentDevice {
     workspacesDir: device.workspaces_dir ?? null,
     acceptsLogins: Boolean(device.public_key),
     providers: (device.status?.providers ?? []).map(providerReport),
+    providersSettled: providerReportSettled(
+      device.connection?.connected_at ?? null,
+      device.status?.observed_at ?? null,
+    ),
   };
 }
 
@@ -195,6 +201,7 @@ function NewAgent({
 
   const host: NewAgentHost = {
     cloudOnly,
+    cloudNote: <ConsoleHint lead={null} />,
     devices: devices.data && (!cloudOnly || cloudMachine) ? controllers.map(deviceOf) : undefined,
     devicesError: wakeError ?? hosted.error ?? devices.error,
     providers: providers.data?.map((each) => ({ id: each.id, name: each.label, fields: each.advanced_fields })),

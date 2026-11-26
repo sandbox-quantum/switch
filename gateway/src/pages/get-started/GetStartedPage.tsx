@@ -19,6 +19,7 @@ import {
   loginHint,
   machineProviderOptions,
   providerLoginKinds,
+  providerReportSettled,
 } from "@switch-console/chat-ui/model/provider-catalogue";
 import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
 import { type ProviderLogin, signInFileCredential } from "@switch-console/chat-ui/model/seal-login";
@@ -61,6 +62,7 @@ import {
   welcomeChat,
 } from "./onboarding";
 import { forgetGetStartedVisit } from "./CloudWarmUp";
+import { ConsoleHint } from "./ConsoleHint";
 import { ProviderIcon } from "./ProviderIcon";
 import { type CloudSnapshot, deviceReady, useCloudDevice } from "./useCloudDevice";
 import { useLocalDevice, localDeviceReady } from "./useLocalDevice";
@@ -388,17 +390,20 @@ function MeetPage({
                 </>
               )}
               {!useLocal && (
-                <BuddyStartCard
-                  checking={snapshot === null || providers === null}
-                  ready={signedInHere}
-                  starting={null}
-                  onStart={onStart}
-                  onSetUp={onSetUp}
-                  onSkip={onSkip}
-                  icon={(id, size) => <ProviderIcon provider={id} size={size} />}
-                  readyTag="Signed in on Switch Cloud"
-                  info={null}
-                />
+                <>
+                  <BuddyStartCard
+                    checking={snapshot === null || providers === null}
+                    ready={signedInHere}
+                    starting={null}
+                    onStart={onStart}
+                    onSetUp={onSetUp}
+                    onSkip={onSkip}
+                    icon={(id, size) => <ProviderIcon provider={id} size={size} />}
+                    readyTag="Signed in on Switch Cloud"
+                    info={null}
+                  />
+                  <ConsoleHint lead="switch-buddy runs on your Switch Cloud." />
+                </>
               )}
             </>
           )
@@ -463,7 +468,8 @@ type ProviderCard = {
  * Every provider Switch runs, as a card saying where it stands on the device:
  * signed in, ready for a login given here, or why it cannot be picked. Until
  * a cloud device has checked a provider, it can be picked if every cloud
- * device installs it, and waits for the check otherwise.
+ * device installs it, and waits for the check otherwise; one the device left
+ * out of a settled report is not available there.
  */
 function providerCards(
   providers: ProviderInfo[],
@@ -475,6 +481,10 @@ function providerCards(
   const options = machineProviderOptions(
     providers.map((each) => ({ id: each.id, name: each.label })),
     reports,
+    providerReportSettled(
+      controller?.connection?.connected_at ?? null,
+      controller?.status?.observed_at ?? null,
+    ),
   );
   return options.map(({ id, name, ready, problem }) => {
     const logins = providerLoginKinds(id, false);
@@ -482,6 +492,8 @@ function providerCards(
     if (ready) return { ...card, tag: `Signed in on ${deviceName}`, tone: "ready", disabled: false };
     if (problem === "not installed")
       return { ...card, tag: `Not installed on ${deviceName}`, tone: "plain", disabled: true };
+    if (problem === "not available")
+      return { ...card, tag: `Not available on ${deviceName}`, tone: "plain", disabled: true };
     if (problem === "not checked yet" && !(cloud && CLOUD_DEVICE_PROVIDERS.includes(id)))
       return { ...card, tag: `Checking ${deviceName}…`, tone: "checking", disabled: true };
     if (logins.length === 0)
@@ -522,6 +534,9 @@ function ProviderPage({
   const deviceName = localDevice?.snapshot?.selected?.name ?? "Switch Cloud";
   const cards = providerCards(providers ?? [], controller, deviceName, localDevice === null);
   const selected = cards.find((card) => card.id === selectedId && !card.disabled) ?? null;
+  // Picking one that needs a login leaves it alone above its login, so the login is in view.
+  const signingIn = selected !== null && !signedIn(controller, selected.id);
+  const shown = signingIn ? [selected] : cards;
   return (
     <OnboardingSurface
       exit={exit}
@@ -538,9 +553,13 @@ function ProviderPage({
     >
       <BuddyHeader />
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-foreground">Pick an AI provider to power switch-buddy:</p>
+        <p className="text-sm text-foreground">
+          {localDevice === null
+            ? "Your Switch Cloud starts with no AI logins. Pick an AI provider to power switch-buddy and sign in to it:"
+            : "Pick an AI provider to power switch-buddy:"}
+        </p>
         <ul className="grid gap-3 sm:grid-cols-3">
-          {cards.map((card) => (
+          {shown.map((card) => (
             <ProviderChoiceCard
               key={card.id}
               icon={<ProviderIcon provider={card.id} size={28} />}
@@ -550,10 +569,19 @@ function ProviderPage({
               selected={selected?.id === card.id}
               disabled={card.disabled}
               onSelect={() => setSelectedId(card.id)}
-              signIn={card.disabled || card.tone === "ready" ? null : () => setSelectedId(card.id)}
+              signIn={
+                card.disabled || card.tone === "ready" || signingIn
+                  ? null
+                  : () => setSelectedId(card.id)
+              }
             />
           ))}
         </ul>
+        {signingIn && (
+          <Button variant="ghost" size="sm" className="self-start" onClick={() => setSelectedId(null)}>
+            Choose another provider
+          </Button>
+        )}
         {providers === null && !error && (
           <p className="flex items-center gap-2 text-xs text-foreground-muted">
             <Spinner className="size-3" />
@@ -677,7 +705,7 @@ function LoginForm({
 
   const filePicker = (
     <div className="flex items-center gap-2">
-      <Button variant="outline" onClick={() => picker.current?.click()}>
+      <Button variant="outline" autoFocus={signInFile} onClick={() => picker.current?.click()}>
         Choose JSON file
       </Button>
       <input
@@ -727,6 +755,7 @@ function LoginForm({
               <span>Google Cloud project</span>
               <input
                 aria-label="Google Cloud project"
+                autoFocus
                 placeholder="my-gcp-project"
                 className={INPUT_CLASS}
                 value={project}
@@ -751,6 +780,7 @@ function LoginForm({
         <input
           type="password"
           aria-label={shown.label}
+          autoFocus
           placeholder={shown.label}
           autoComplete="off"
           className={INPUT_CLASS}

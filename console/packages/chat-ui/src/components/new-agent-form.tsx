@@ -480,7 +480,11 @@ export function MachineProviderPicker<P extends string>({
   // Installed there but not signed in, with a login the machine can be given.
   const givable = acceptsLogins
     ? options.filter(
-        (option) => !option.ready && option.problem !== 'not installed' && loginOffered(option.id)
+        (option) =>
+          !option.ready &&
+          option.problem !== 'not installed' &&
+          option.problem !== 'not available' &&
+          loginOffered(option.id)
       )
     : [];
   const [giving, setGiving] = useState<P | null>(null);
@@ -529,7 +533,9 @@ export function MachineProviderPicker<P extends string>({
                   ? 'Ready'
                   : loginInCard && option.problem === 'not installed'
                     ? `Not installed on ${machineName}`
-                    : capitalize(option.problem)}
+                    : loginInCard && option.problem === 'not available'
+                      ? `Not available on ${machineName}`
+                      : capitalize(option.problem)}
               </span>
             </button>
             {loginInCard && givable.includes(option) && (

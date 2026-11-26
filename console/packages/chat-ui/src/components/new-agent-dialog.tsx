@@ -61,6 +61,8 @@ export type NewAgentDevice = {
   acceptsLogins: boolean;
   /** Each provider it reported: ready (installed and signed in), or why not. Empty before it has. */
   providers: { provider: string; ready: boolean; problem: string | null }[];
+  /** It has reported every provider it runs (`providerReportSettled`): one missing is not available there. */
+  providersSettled: boolean;
 };
 
 /** A field of a provider's advanced configuration, as Switch describes it. */
@@ -111,6 +113,8 @@ export type NewAgentHost = {
    * so no Run location is asked; otherwise it is picked among `devices`.
    */
   cloudOnly: boolean;
+  /** Drawn under where a `cloudOnly` agent runs: where else agents can run. */
+  cloudNote: ReactNode;
   /** Undefined while they load. */
   devices: NewAgentDevice[] | undefined;
   devicesError: unknown;
@@ -329,7 +333,12 @@ export function NewAgentDialog({ host }: { host: NewAgentHost }) {
   useEffect(() => setAdvanced(emptyForm(fields)), [fields]);
 
   const options = useMemo(
-    () => machineProviderOptions(host.providers ?? [], device?.providers ?? []),
+    () =>
+      machineProviderOptions(
+        host.providers ?? [],
+        device?.providers ?? [],
+        device?.providersSettled ?? false
+      ),
     [host.providers, device]
   );
   // Picked for the person only where there is nothing to choose.
@@ -503,9 +512,12 @@ export function NewAgentDialog({ host }: { host: NewAgentHost }) {
               {deviceReason}
             </p>
           ) : (
-            <RunLocationLine icon="cloud" status>
-              {deviceReason ?? `Runs on your Switch Cloud ${word}.`}
-            </RunLocationLine>
+            <>
+              <RunLocationLine icon="cloud" status>
+                {deviceReason ?? `Runs on your Switch Cloud ${word}.`}
+              </RunLocationLine>
+              {host.cloudNote}
+            </>
           )
         ) : (
           <RunLocationField

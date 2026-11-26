@@ -79,14 +79,30 @@ export type MachineProviderOption<P extends string> = {
   problem: string | null;
 };
 
+/** How long after a machine connects the checks it starts with may still be reporting. */
+const REPORT_PATIENCE_MS = 60_000;
+
+/**
+ * Whether a machine has reported every provider it runs: it checks them all
+ * as it starts and reports each as its check ends, so one still missing from
+ * a report made a minute after it connected is one it does not run. False
+ * while either time is unknown.
+ */
+export function providerReportSettled(connectedAt: string | null, observedAt: string | null): boolean {
+  if (!connectedAt || !observedAt) return false;
+  return Date.parse(observedAt) - Date.parse(connectedAt) >= REPORT_PATIENCE_MS;
+}
+
 /**
  * Each provider offered, in the order offered, with where it stands on the
  * machine: ready (installed and signed in), or why not. One the machine has
- * not reported is "not checked yet", never left out.
+ * not reported is "not checked yet" while its report may still be coming
+ * (`settled`, `providerReportSettled`), and "not available" once it is not.
  */
 export function machineProviderOptions<P extends string>(
   offered: readonly { id: P; name: string }[],
-  reported: readonly { provider: string; ready: boolean; problem: string | null }[]
+  reported: readonly { provider: string; ready: boolean; problem: string | null }[],
+  settled: boolean
 ): MachineProviderOption<P>[] {
   return offered.map((provider) => {
     const report = reported.find((entry) => entry.provider === provider.id);
@@ -94,7 +110,7 @@ export function machineProviderOptions<P extends string>(
       id: provider.id,
       name: provider.name,
       ready: report?.ready ?? false,
-      problem: report ? report.problem : 'not checked yet',
+      problem: report ? report.problem : settled ? 'not available' : 'not checked yet',
     };
   });
 }
