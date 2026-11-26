@@ -344,7 +344,7 @@ class ConnectionIdentity(BaseModel):
     """Read account identity from an authenticated URL, an MCP tool result,
     or the vendor's RFC 7662 introspection answer for the token.
 
-    A URL uses GET by default, or POST with an optional static JSON body.
+    A URL names GET or POST; a POST can send a static JSON body.
 
     `arguments` go to the MCP tool in place of `{}`. They are fixed catalog
     text, such as a self-reference that the vendor documents as the caller
@@ -380,8 +380,8 @@ class ConnectionIdentity(BaseModel):
             raise ValueError(
                 "identity needs exactly one of url, mcp_tool or introspection"
             )
-        if self.method is not None and self.url is None:
-            raise ValueError("a method needs an identity url")
+        if (self.method is not None) != (self.url is not None):
+            raise ValueError("an identity call to a url names its method, GET or POST")
         if self.body is not None and self.method != "POST":
             raise ValueError("only a POST identity call sends a body")
         if self.arguments is not None and self.mcp_tool is None:

@@ -881,9 +881,10 @@ class OAuthAdapter:
             body = await self._introspect(access_token, checked)
         else:
             assert self._identity.url is not None
+            assert self._identity.method is not None
             response = await self._send(
                 self._http.build_request(
-                    self._identity.method or "GET",
+                    self._identity.method,
                     render(self._identity.url, checked),
                     json=self._identity.body,
                     headers={
@@ -1260,9 +1261,10 @@ class OAuthAdapter:
         shows (`alias`), or the service and the choices."""
         # The loader refuses paste methods on an entry with no identity url.
         assert self._identity.url is not None
+        assert self._identity.method is not None
         response = await self._send(
             self._http.build_request(
-                self._identity.method or "GET",
+                self._identity.method,
                 render(self._identity.url, choices),
                 json=self._identity.body,
                 headers={

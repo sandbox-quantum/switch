@@ -47,8 +47,8 @@ auth:
                                   # remove_access: where people remove Switch
     # revocation_ends_tokens: true   # revoking the sign-in ends its tokens too
     #   (Google's, GitLab's); unsaid, they are taken to live until they expire
-  identity:                   # GET by default; dotted paths in its JSON
-    # method: POST           # with an optional static JSON body
+  identity:                   # dotted paths in its JSON
+    method: GET             # or POST, with an optional static JSON body
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
@@ -681,8 +681,8 @@ Then:
 
 `auth.identity.mcp_tool` names an MCP tool that identifies the account. An
 entry names exactly one of `url`, `mcp_tool` or `introspection: true`. A
-`url` is for an authenticated JSON GET by default, or POST with an optional
-static JSON body. Entries with a `url` keep their REST
+`url` names an authenticated GET or POST; a POST can send a static JSON
+body. Entries with a `url` keep their REST
 identity.
 
 Before Core calls the tool, it checks these things:

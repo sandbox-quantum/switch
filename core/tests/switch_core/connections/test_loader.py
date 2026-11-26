@@ -875,6 +875,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -915,6 +916,23 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+@pytest.mark.parametrize(
+    ("method", "body", "error"),
+    [
+        ("", "", "names its method"),
+        ("    method: GET\n", "    body: { include: all }\n", "only a POST"),
+        ("    method: PUT\n", "", "method"),
+    ],
+)
+def test_refuses_an_invalid_rest_identity(catalog_copy, method, body, error):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("    method: GET\n", method + body),
+    )
+    with pytest.raises(CatalogError, match=error):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -975,7 +993,7 @@ def test_rejects_revocation_ending_tokens_on_an_entry_that_passes_none_through(
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -1110,6 +1128,7 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
 
 GET_IDENTITY = (
     "  identity:\n"
+    "    method: GET\n"
     "    url: https://api.example.test/me\n"
     "    account_id: account.id\n"
     "    label: account.email\n"

@@ -238,8 +238,8 @@ class TestSignIn:
         adapter, _ = _adapter(
             vendor,
             STATIC.replace(
-                "    url: https://api.example.test/me\n",
-                "    method: POST\n    url: https://api.example.test/me\n",
+                "    method: GET\n",
+                "    method: POST\n",
             ),
         )
         secret = await _sign_in(adapter, vendor)
@@ -255,9 +255,8 @@ class TestSignIn:
         adapter, _ = _adapter(
             vendor,
             STATIC.replace(
-                "    url: https://api.example.test/me\n",
-                "    method: POST\n    body: { include: all }\n"
-                "    url: https://api.example.test/me\n",
+                "    method: GET\n",
+                "    method: POST\n    body: { include: all }\n",
             ),
         )
         secret = await _sign_in(adapter, vendor)
@@ -311,6 +310,7 @@ class TestSignIn:
 
 
 INTROSPECTED = STATIC.replace(
+    "    method: GET\n"
     "    url: https://api.example.test/me\n"
     "    account_id: account.id\n"
     "    label: account.email\n",
