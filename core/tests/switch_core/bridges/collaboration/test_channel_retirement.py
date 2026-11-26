@@ -18,6 +18,10 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.irc.adapter import (
+    IRCAdapter,
+    IRCConnectionConfig,
+)
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
@@ -54,6 +58,7 @@ def test_every_platform_declares_what_deleting_a_room_does() -> None:
         "matrix": "left",
         "rocketchat": "archived",
         "webex": "left",
+        "irc": "left",
     }
 
 
@@ -296,3 +301,50 @@ async def test_teams_leaves_the_channel_in_place() -> None:
     assert await adapter.retire_channel("19:abc@thread.tacv2") == RetireOutcome(
         outcome="kept"
     )
+
+
+# ── IRC ──────────────────────────────────────────────────────────────────────
+
+
+class _IRCClient:
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error
+        self.parted: list[list[str]] = []
+
+    async def send_line(self, command: str, params: list[str]) -> None:
+        assert command == "PART"
+        self.parted.append(params)
+        if self._error is not None:
+            raise self._error
+
+
+def _irc(client: _IRCClient | None) -> IRCAdapter:
+    adapter = IRCAdapter(
+        config=IRCConnectionConfig(
+            host="irc.example.net", nick="switchbot", channels=["#c"]
+        )
+    )
+    adapter._client = client  # type: ignore[assignment]
+    return adapter
+
+
+async def test_irc_parts_the_channel() -> None:
+    client = _IRCClient()
+
+    assert await _irc(client).retire_channel("#switch") == RetireOutcome(outcome="left")
+    assert client.parted == [["#switch", "Room deleted in Switch"]]
+
+
+async def test_irc_reports_a_refusal() -> None:
+    outcome = await _irc(_IRCClient(RuntimeError("not connected"))).retire_channel(
+        "#switch"
+    )
+
+    assert outcome.outcome == "failed"
+    assert outcome.reason == "not connected"
+
+
+async def test_irc_not_connected_at_all_is_a_failure_not_a_crash() -> None:
+    outcome = await _irc(None).retire_channel("#switch")
+
+    assert outcome.outcome == "failed"

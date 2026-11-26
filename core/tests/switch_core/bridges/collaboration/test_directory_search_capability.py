@@ -16,6 +16,7 @@ import pytest
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
+from switch_core.bridges.collaboration.irc.adapter import IRCAdapter
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
@@ -23,6 +24,7 @@ from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 
 ADAPTERS = [
     DiscordAdapter,
+    IRCAdapter,
     MattermostAdapter,
     SlackAdapter,
     TeamsAdapter,
@@ -63,9 +65,9 @@ async def test_a_platform_without_one_refuses_rather_than_answering_emptily() ->
         await adapter.search_directory_users("lou")
 
 
-def test_telegram_is_the_one_that_cannot_be_searched() -> None:
+def test_telegram_and_irc_are_the_ones_that_cannot_be_searched() -> None:
     # Pinned rather than inferred: if a new platform arrives with no directory
     # this list should be updated deliberately, by someone who checked.
     unsearchable = {c.__name__ for c in ADAPTERS if not c.supports_directory_search}
 
-    assert unsearchable == {"TelegramAdapter"}
+    assert unsearchable == {"TelegramAdapter", "IRCAdapter"}
