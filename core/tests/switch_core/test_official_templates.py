@@ -178,9 +178,10 @@ def _playbook_table(heading: str) -> dict[str, list[str]]:
 def test_switch_buddy_asks_the_work_question_openly_with_skip():
     instructions = _buddy_words()
     assert (
-        "one open, inviting message asking what they mostly work on and what slows "
-        "down their day-to-day that they'd like an agent to handle"
+        "one open, inviting message asking what they mostly work on and what bogs "
+        "down their day-to-day"
     ) in instructions
+    assert 'don\'t ask "what do you want an agent to handle?"' in instructions
     assert "as much detail as they're comfortable with" in instructions
     assert (
         '"Skip for now" anytime to just explore. Not a question form.' in instructions
