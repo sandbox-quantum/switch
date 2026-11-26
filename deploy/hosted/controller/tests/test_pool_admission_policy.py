@@ -432,3 +432,15 @@ def test_the_provisioner_may_list_volumes_to_see_a_removed_boxs_disks_are_gone()
     assert role.rstrip().endswith(
         "- apiGroups:\n  - ''\n  resources:\n  - persistentvolumes\n  verbs:\n  - list"
     )
+
+
+def test_the_drain_may_evict_only_box_pods_by_name():
+    """The drain only ever evicts a box's one pod, `box-0`, so its grant names it: any other pod
+    is refused by RBAC before the eviction policy is even asked."""
+    rbac = (K8S / "20-cluster-rbac.yaml").read_text()
+    role = doc(rbac, "ClusterRole", "switch-operator-drain")
+    assert (
+        "- apiGroups:\n  - ''\n  resourceNames:\n  - box-0\n  resources:\n  - pods/eviction\n"
+        "  verbs:\n  - create" in role
+    )
+    assert role.count("pods/eviction") == 1

@@ -238,6 +238,8 @@ rules:
   - get
 - apiGroups:
   - ''
+  resourceNames:
+  - box-0
   resources:
   - pods/eviction
   verbs:
