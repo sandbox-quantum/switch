@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { appState } from '@renderer/lib/stores/app-state';
 
 vi.mock('@renderer/lib/ipc', () => ({

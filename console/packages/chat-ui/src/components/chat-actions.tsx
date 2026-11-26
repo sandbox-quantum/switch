@@ -1,9 +1,9 @@
-import type { ChatSummary } from '../contracts/chats';
-import { chatRemovalNavigation } from '../model/chat-removal';
 import { Archive, ArchiveRestore, LogOut, Pencil, Trash2 } from 'lucide-react';
 import { Fragment, type ReactNode } from 'react';
+import type { ChatSummary } from '../contracts/chats';
+import type { ChatHost } from '../host';
+import { chatRemovalNavigation } from '../model/chat-removal';
 import { failureText } from '../model/failures';
-import { useChatHost } from '../host';
 import { DropdownMenuItem, DropdownMenuSeparator } from '../primitives/dropdown-menu';
 
 export type ChatAction = {
@@ -14,7 +14,11 @@ export type ChatAction = {
   run: () => void;
 };
 
-async function attempt(run: () => Promise<void>, failure: string, toast: (t: { title: string; variant?: 'destructive' }) => void): Promise<void> {
+async function attempt(
+  run: () => Promise<void>,
+  failure: string,
+  toast: (t: { title: string; variant?: 'destructive' }) => void
+): Promise<void> {
   try {
     await run();
   } catch (error) {
@@ -29,7 +33,7 @@ export type ChatRemovalContext = {
   agentRoomId?: string;
 };
 
-function leaveIfOpen(roomId: string, context: ChatRemovalContext, host: ReturnType<typeof useChatHost>): void {
+function leaveIfOpen(roomId: string, context: ChatRemovalContext, host: ChatHost): void {
   const { leaveChatView } = chatRemovalNavigation(roomId, context);
   if (leaveChatView) host.navigate('home');
   if (host.isOpenChat(roomId)) host.leaveOpenChat(roomId);
@@ -39,19 +43,23 @@ export function confirmLeaveChat(
   serverId: string,
   chat: ChatSummary,
   context: ChatRemovalContext,
-  host: ReturnType<typeof useChatHost>
+  host: ChatHost
 ): void {
   void (async () => {
     const confirmed = await host.confirm({
       title: `Leave ${chat.name}?`,
-      description: 'You stop seeing its messages and it leaves your lists. Someone who manages it can add you back.',
+      description:
+        'You stop seeing its messages and it leaves your lists. Someone who manages it can add you back.',
       confirmLabel: 'Leave room',
     });
     if (!confirmed) return;
     try {
       await host.chats.leave(serverId, chat.roomId);
     } catch (error) {
-      host.toast({ title: failureText(error, 'Could not leave the room.'), variant: 'destructive' });
+      host.toast({
+        title: failureText(error, 'Could not leave the room.'),
+        variant: 'destructive',
+      });
       return;
     }
     leaveIfOpen(chat.roomId, context, host);
@@ -62,7 +70,7 @@ export function chatActions(
   serverId: string,
   chat: ChatSummary,
   context: ChatRemovalContext,
-  host: ReturnType<typeof useChatHost>
+  host: ChatHost
 ): ChatAction[] {
   const leave: ChatAction = {
     key: 'leave',
@@ -78,15 +86,21 @@ export function chatActions(
     key: 'rename',
     label: 'Rename…',
     icon: <Pencil className="size-4" />,
-    run: () => void (async () => {
-      const newName = await host.rename({ roomId, currentName: chat.name });
-      if (!newName) return;
-      await attempt(async () => {
-        await host.chats.rename(serverId, roomId, newName);
-      }, 'Could not rename the chat.', host.toast);
-    })(),
+    run: () =>
+      void (async () => {
+        const newName = await host.rename({ roomId, currentName: chat.name });
+        if (!newName) return;
+        await attempt(
+          async () => {
+            await host.chats.rename(serverId, roomId, newName);
+          },
+          'Could not rename the chat.',
+          host.toast
+        );
+      })(),
   });
-  actions.push(host.chats.archived.has(roomId)
+  actions.push(
+    host.chats.archived.has(roomId)
       ? {
           key: 'unarchive',
           label: 'Unarchive',
@@ -103,27 +117,38 @@ export function chatActions(
           label: 'Archive',
           icon: <Archive className="size-4" />,
           run: () =>
-            void attempt(async () => {
-              await host.chats.archive(serverId, roomId);
-              leaveIfOpen(roomId, context, host);
-            }, 'Could not archive the chat.', host.toast),
-        });
+            void attempt(
+              async () => {
+                await host.chats.archive(serverId, roomId);
+                leaveIfOpen(roomId, context, host);
+              },
+              'Could not archive the chat.',
+              host.toast
+            ),
+        }
+  );
   actions.push({
-      key: 'delete',
-      label: 'Delete chat…',
-      icon: <Trash2 className="size-4" />,
-      separatorBefore: true,
-      run: () => void (async () => {
+    key: 'delete',
+    label: 'Delete chat…',
+    icon: <Trash2 className="size-4" />,
+    separatorBefore: true,
+    run: () =>
+      void (async () => {
         const confirmed = await host.confirm({
           title: 'Delete this chat?',
-          description: "This deletes the chat and its messages for everyone, including the agent. This can't be undone.",
+          description:
+            "This deletes the chat and its messages for everyone, including the agent. This can't be undone.",
           confirmLabel: 'Delete chat',
         });
         if (!confirmed) return;
-        await attempt(async () => {
-          await host.chats.delete(serverId, roomId);
-          leaveIfOpen(roomId, context, host);
-        }, 'Could not delete the chat.', host.toast);
+        await attempt(
+          async () => {
+            await host.chats.delete(serverId, roomId);
+            leaveIfOpen(roomId, context, host);
+          },
+          'Could not delete the chat.',
+          host.toast
+        );
       })(),
   });
   actions.push(leave);

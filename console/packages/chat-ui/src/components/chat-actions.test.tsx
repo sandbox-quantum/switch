@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { chatActions, confirmLeaveChat, type ChatRemovalContext } from './chat-actions';
 import type { ChatSummary } from '../contracts/chats';
+import type { ChatsStore } from '../stores/chats-store';
 import { stubChatHost } from '../testing';
+import { chatActions, confirmLeaveChat, type ChatRemovalContext } from './chat-actions';
 
 describe('chat-actions', () => {
   const serverId = 'test-server';
@@ -33,10 +34,10 @@ describe('chat-actions', () => {
       isOpenChat,
       leaveOpenChat,
       chats: {
-        ...stubChatHost().chats,
+        userId: 'me',
         archive,
         archived: new Map(),
-      } as any,
+      } as unknown as ChatsStore,
     });
 
     const actions = chatActions(serverId, mockChat, mockContext, host);
@@ -61,10 +62,10 @@ describe('chat-actions', () => {
       leaveOpenChat,
       confirm,
       chats: {
-        ...stubChatHost().chats,
+        userId: 'me',
         delete: deleteChat,
         archived: new Map(),
-      } as any,
+      } as unknown as ChatsStore,
     });
 
     const actions = chatActions(serverId, mockChat, mockContext, host);
@@ -90,10 +91,10 @@ describe('chat-actions', () => {
       leaveOpenChat,
       confirm,
       chats: {
-        ...stubChatHost().chats,
+        userId: 'me',
         leave,
         archived: new Map(),
-      } as any,
+      } as unknown as ChatsStore,
     });
 
     confirmLeaveChat(serverId, { ...mockChat, canManage: false }, mockContext, host);
@@ -113,10 +114,10 @@ describe('chat-actions', () => {
       isOpenChat,
       leaveOpenChat,
       chats: {
-        ...stubChatHost().chats,
+        userId: 'me',
         archive,
         archived: new Map(),
-      } as any,
+      } as unknown as ChatsStore,
     });
 
     const actions = chatActions(serverId, mockChat, mockContext, host);
