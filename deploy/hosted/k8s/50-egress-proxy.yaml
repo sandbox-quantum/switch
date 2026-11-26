@@ -114,6 +114,17 @@ spec:
         - mountPath: "/var/log/squid"
           name: logs
           readOnly: true
+      # The gVisor class adds the agent pool's toleration, so without this squid could land beside boxes on an
+      # agent node. It's a shared service: keep it on the system nodes.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: switch.dev/pool
+                operator: In
+                values:
+                - system
       dnsPolicy: ClusterFirst
       priorityClassName: switch-shared-services
       restartPolicy: Always
