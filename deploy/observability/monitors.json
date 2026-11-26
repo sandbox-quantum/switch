@@ -1686,5 +1686,30 @@
       }
     },
     "priority": 3
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Security: a hosted box matched a watch list",
+    "type": "log alert",
+    "query": "logs(\"service:REPLACE-WITH-SERVICE @switch.event:security.hosted.box_network\").index(\"*\").rollup(\"sum\", \"@security_details.watched_total\").by(\"@switch.target_id\").last(\"15m\") > 0",
+    "message": "{{#is_alert}}Cloud machine {{[@switch.target_id].name}} (owner {{[@switch.actor_user_id].name}}) made {{value}} request(s) in 15 minutes to hosts on one of the box egress proxy's watch lists (`squid-denylists`, `<reason>.watch.*`). Watch lists refuse nothing: the requests may have gone through.\n\n**Check:** `security_details.watched` in the log sample says which list, by its reason, and `security_details.hosts` the host by random id (its `watched` count); the box's sessions in the operator's Hosted area show what the agent was doing.\n\n**To stop it:** pause the person's hosted agents from the operator's Hosted area, or suspend the person or their agents with `switch-suspend`; to refuse the hosts from now on, move the list to a deny list (drop `.watch` from its name). To keep evidence, snapshot the box's disks before it is removed.{{/is_alert}}{{#is_recovery}}Recovered: cloud machine {{[@switch.target_id].name}} has stopped matching watch lists.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:security"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": true,
+      "thresholds": {
+        "critical": 0
+      }
+    },
+    "priority": 3
   }
 ]

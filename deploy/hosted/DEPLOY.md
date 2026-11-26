@@ -155,6 +155,11 @@ that fails the parse keeps the last good config, with a `squid-reload: WARN` lin
 is tagged with its list's reason; the network reporter counts it per box (`blocked`, by reason, with the host's
 random id), and the monitor "a hosted box asked for a blocked host" alerts on any. No list, no rule.
 
+A list named `<reason>.watch.hosts` or `<reason>.watch.ips` is a watch list: it refuses nothing, but every request it
+matches is counted per box under that reason (`watched`), and the monitor "a hosted box matched a watch list" alerts
+on any. Use one to see who reaches a host before deciding to block it; dropping `.watch` from its name makes it a
+deny list.
+
 Lists of one sentinel address each are how a DNS-level block becomes a counted one. Where the box cluster's VPC
 answers a blocked name with a fixed address instead (Route 53 Resolver DNS Firewall, with an override per list), a
 list `<reason>.ips` holding that address refuses the request and counts it per box under that reason. squid does

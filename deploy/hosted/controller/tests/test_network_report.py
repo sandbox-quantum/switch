@@ -29,8 +29,9 @@ def line(
     up: int = 100,
     down: int = 1000,
     tag: str = "-",
+    watch: str = "-",
 ) -> str:
-    return f"1795680000.123 {login} {status} {host} 443 {up} {down} {tag}"
+    return f"1795680000.123 {login} {status} {host} 443 {up} {down} {tag} {watch}"
 
 
 def test_a_line_names_its_box_by_either_login_and_counts_a_refusal() -> None:
@@ -173,3 +174,23 @@ def test_refusals_are_counted_by_the_reason_of_the_list_that_refused_them() -> N
     by_host = {h["host"]: h for h in box["hosts"]}
     assert by_host[ids.of("bad.example:443")]["blocked"] == {"malware": 2}
     assert by_host[ids.of("github.com:443")]["blocked"] == {}
+
+
+def test_a_watched_request_is_counted_whether_or_not_it_was_refused() -> None:
+    agg = Aggregator()
+    ids = HostIds()
+    agg.add_line(line(f"box-{BOX}", "x.pool.example", watch="miners"))
+    agg.add_line(
+        line(f"box-{BOX}", "y.pool.example", status="TCP_DENIED/403", tag="ours", watch="miners")
+    )
+    agg.add_line(line(f"box-{BOX}", "github.com"))
+    [box] = report_body(agg.take(), 60, 0, ids)["boxes"]
+    assert (box["requests"], box["denied"]) == (3, 1)
+    assert box["watched"] == {"miners": 2} and box["blocked"] == {"ours": 1}
+    by_host = {h["host"]: h for h in box["hosts"]}
+    assert by_host[ids.of("x.pool.example:443")]["watched"] == {"miners": 1}
+    assert by_host[ids.of("github.com:443")]["watched"] == {}
+
+
+def test_a_line_without_the_watch_field_is_unreadable() -> None:
+    assert parse("1795680000.123 box-x TCP_TUNNEL/200 github.com 443 1 2 -") is None

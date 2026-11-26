@@ -358,8 +358,9 @@ data:
     # Each request's box, host, outcome and bytes, for the network reporter beside squid, which follows this file, sums
     # it per box every minute, sends Core one report, and keeps the file short (network_report.py). Flushed per line.
     buffered_logs off
-    # The last field is the reason of the deny list that refused the request (DEPLOY.md, "Deny lists"), or `-` for none.
-    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st %{switch_blocked}note
+    # The last two fields are the reasons of the deny list that refused the request and of a watch list it matched
+    # (DEPLOY.md, "Deny lists"), each `-` for none.
+    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st %{switch_blocked}note %{switch_watched}note
     access_log stdio:/var/log/squid/box.log logformat=switch_box
     cache_log /var/log/squid/cache.log
     pinger_enable off   # the ICMP pinger needs NET_RAW, which this pod rightly lacks
@@ -397,7 +398,8 @@ data:
     #   the pod's last good file if it has one, and otherwise allows no box at all;
     # - deny lists (squid-denylists), one per reason (`<reason>.hosts`, `<reason>.ips`), become rules at the head of
     #   that same staged file: after a box's login and before any box's own rules, each refusal tagged with its
-    #   reason (`switch_blocked`). They go live with it, after the same parse.
+    #   reason (`switch_blocked`); watch lists (`<reason>.watch.hosts`, `<reason>.watch.ips`) only tag a request
+    #   they match (`switch_watched`), refusing nothing. They go live with it, after the same parse.
     # It checks every $poll seconds, takes checksums and counts, and never prints a file's content.
     set -u
     conf=${SQUID_CONF:-/etc/squid/conf.d/squid.conf}
@@ -415,9 +417,10 @@ data:
     count() { files "$1" | wc -l | tr -d ' '; }
     sig_rules() { sig "$src_boxes"; sig "$src_deny"; }
 
-    # One acl, note and deny per list file, in name order (a host on two lists is tagged by the first). A file
-    # name that isn't `<reason>.hosts` or `<reason>.ips`, with a reason of lowercase letters, digits and dashes,
-    # or more than $max_lists reasons, fails the whole stage, like a box file that doesn't parse.
+    # One acl, note and deny per deny list file, and one acl and note per watch list file, in name order (a host
+    # on two lists is tagged by the first). A file name that isn't `<reason>.hosts`, `<reason>.ips`,
+    # `<reason>.watch.hosts` or `<reason>.watch.ips`, with a reason of lowercase letters, digits and dashes, or more
+    # than $max_lists lists, fails the whole stage, like a box file that doesn't parse.
     deny_rules() {
       reasons=$(files "$src_deny" | sed 's#.*/##; s#\.[a-z]*$##' | sort -u | wc -l | tr -d ' ')
       if [ "$reasons" -gt "$max_lists" ]; then
@@ -429,19 +432,26 @@ data:
       n=0
       for f in $(files "$src_deny"); do
         name=${f##*/}
+        list=${name%.*}
+        watch=""
+        case "$list" in *.watch) list=${list%.watch} watch=1 ;; esac
         case "$name" in
-          *.hosts) reason=${name%.hosts} type="dstdomain -n" ;;
-          *.ips) reason=${name%.ips} type=dst ;;
+          *.hosts) reason=$list type="dstdomain -n" ;;
+          *.ips) reason=$list type=dst ;;
           *) reason="" ;;
         esac
         if ! printf '%s\n' "$reason" | grep -Eq '^[a-z0-9][a-z0-9-]{0,31}$'; then
-          echo "squid-reload: WARN a deny list file isn't named <reason>.hosts or <reason>.ips: $name" >&2
+          echo "squid-reload: WARN a deny list file isn't named <reason>[.watch].hosts or <reason>[.watch].ips: $name" >&2
           return 1
         fi
         n=$((n + 1))
         echo "acl switch_deny_$n $type \"$f\""
-        echo "note switch_blocked $reason switch_deny_$n"
-        echo "http_access deny switch_box_login switch_deny_$n"
+        if [ -n "$watch" ]; then
+          echo "note switch_watched $reason switch_deny_$n"
+        else
+          echo "note switch_blocked $reason switch_deny_$n"
+          echo "http_access deny switch_box_login switch_deny_$n"
+        fi
       done
     }
 

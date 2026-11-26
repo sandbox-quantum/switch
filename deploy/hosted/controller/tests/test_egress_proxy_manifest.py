@@ -660,7 +660,21 @@ def test_a_badly_named_deny_list_keeps_the_last_good_config(wrapper) -> None:  #
     w.set_denylists({"malware.ips": "198.51.100.1\n"})
     w.until(lambda: "switch_deny_1" in (w.live / "boxes.conf").read_text())
     w.set_denylists({"malware.ips": "198.51.100.1\n", "Bad Reason.ips": "203.0.113.7\n"})
-    w.until(lambda: "isn't named <reason>.hosts or <reason>.ips" in w.output())
+    w.until(lambda: "isn't named <reason>[.watch].hosts or <reason>[.watch].ips" in w.output())
     w.until(lambda: "WARN box files failed squid -k parse" in w.output())
     live = (w.live / "boxes.conf").read_text()
     assert "note switch_blocked malware switch_deny_1" in live and "203.0.113.7" not in live
+
+
+def test_a_watch_list_tags_without_refusing(wrapper) -> None:  # type: ignore[no-untyped-def]
+    """`<reason>.watch.*` is counted, never refused: a note and no deny."""
+    w = wrapper(GOOD, f"{HASH_ADA}\n")
+    w.set_denylists({"miners.watch.hosts": ".pool.example\n", "ours.ips": "203.0.113.0/24\n"})
+    w.until(lambda: "switch_deny_2" in (w.live / "boxes.conf").read_text())
+    live = (w.live / "boxes.conf").read_text().splitlines()
+    assert f'acl switch_deny_1 dstdomain -n "{w.src_deny}/miners.watch.hosts"' in live
+    assert "note switch_watched miners switch_deny_1" in live
+    assert not [
+        line for line in live if line.startswith("http_access") and line.endswith("switch_deny_1")
+    ]
+    assert "http_access deny switch_box_login switch_deny_2" in live

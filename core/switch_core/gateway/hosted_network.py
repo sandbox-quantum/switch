@@ -52,9 +52,10 @@ HOST_MAX_LENGTH = 32
 MAX_HOSTS = 10
 MAX_BOXES = 2000
 COUNT = Field(ge=0, le=1 << 50)
-# Refusals by the reason of the box cluster's deny list that refused them (counted in `denied` too); squid takes at
-# most 32 lists. Empty from a reporter that doesn't count them.
-Blocked = Annotated[
+# Counts by the reason of a box cluster list: under `blocked`, the deny list that refused a request (counted in
+# `denied` too), and under `watched`, the watch list it matched (refused or not). squid takes at most 32 lists. Empty
+# from a reporter that doesn't count them.
+Reasons = Annotated[
     dict[
         Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")],
         Annotated[int, Field(ge=0, le=1 << 50)],
@@ -71,7 +72,8 @@ class HostTotals(BaseModel):
     denied: int = COUNT
     bytes_up: int = COUNT
     bytes_down: int = COUNT
-    blocked: Blocked = Field(default_factory=dict)
+    blocked: Reasons = Field(default_factory=dict)
+    watched: Reasons = Field(default_factory=dict)
 
 
 class BoxNetwork(BaseModel):
@@ -82,7 +84,8 @@ class BoxNetwork(BaseModel):
     denied: int = COUNT
     bytes_up: int = COUNT
     bytes_down: int = COUNT
-    blocked: Blocked = Field(default_factory=dict)
+    blocked: Reasons = Field(default_factory=dict)
+    watched: Reasons = Field(default_factory=dict)
     # Every host the box reached in the window, the controller's login and
     # the agents' together; `hosts` names the busiest of them.
     distinct_hosts: int = COUNT
@@ -169,6 +172,10 @@ async def report(
                     box.blocked, separators=(",", ":"), sort_keys=True
                 ),
                 "blocked_total": sum(box.blocked.values()),
+                "watched": json.dumps(
+                    box.watched, separators=(",", ":"), sort_keys=True
+                ),
+                "watched_total": sum(box.watched.values()),
                 "bytes_up": box.bytes_up,
                 "bytes_down": box.bytes_down,
                 "distinct_hosts": box.distinct_hosts,

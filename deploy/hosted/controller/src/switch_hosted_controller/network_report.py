@@ -16,9 +16,11 @@ digits) this process gives it the first time it sees it and keeps only in memory
 its id while this process runs and gets a new one after a restart. Another squid replica's reporter has its own ids.
 
 squid's line (`switch_box`): `<epoch> <login> <squid status>/<http status> <host> <port> <bytes up> <bytes down>
-<blocked by>`. A refusal is squid's `TCP_DENIED` other than a 407: a 407 asks the client for its proxy login, which it
-then sends. The last field is the reason of the deny list that refused it (squid's `switch_blocked` note, from the
-operator's `squid-denylists`), or `-` for none; each reason is counted per box and host under `blocked`. A box's
+<blocked by> <watched by>`. A refusal is squid's `TCP_DENIED` other than a 407: a 407 asks the client for its proxy
+login, which it then sends. `<blocked by>` is the reason of the deny list that refused it (squid's `switch_blocked`
+note, from the operator's `squid-denylists`), and `<watched by>` that of a watch list it matched, which counts without
+refusing (`switch_watched`); each is `-` for none, and each reason is counted per box and host, under `blocked` and
+`watched`. A box's
 agents log in as `box-<id>` and its controller as `box-<id>-ctl` (`egress_lists.BoxEgress`); both count for the box.
 A line without a box login (refused before any box's rule) is counted as unattributed.
 
@@ -71,7 +73,7 @@ POLL_S = 1.0
 # `box-<id>` and `box-<id>-ctl`, where <id> is `box-k1-<16 hex>` (box-keyed) or `k1-<16 hex>` (person-keyed).
 LOGIN_RE = re.compile(r"^box-((?:box-)?k1-[0-9a-f]{16})(?:-ctl)?$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.:\[\]_-]{1,253}$")
-# A deny list's reason, as squid's reload wrapper requires it of the list's file name.
+# A deny or watch list's reason, as squid's reload wrapper requires it of the list's file name.
 BLOCKED_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
@@ -83,6 +85,8 @@ class Totals:
     bytes_down: int = 0
     # Refusals by the reason of the deny list that refused them (counted in `denied` too).
     blocked: dict[str, int] = field(default_factory=dict)
+    # Requests by the reason of the watch list they matched, whatever became of them.
+    watched: dict[str, int] = field(default_factory=dict)
 
     def add(self, other: Totals) -> None:
         self.requests += other.requests
@@ -91,6 +95,8 @@ class Totals:
         self.bytes_down += other.bytes_down
         for by, count in other.blocked.items():
             self.blocked[by] = self.blocked.get(by, 0) + count
+        for by, count in other.watched.items():
+            self.watched[by] = self.watched.get(by, 0) + count
 
 
 @dataclass
@@ -122,9 +128,9 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
     """(box id or None, host:port, one request's totals) from one `switch_box` line; None for a line that isn't
     one."""
     parts = line.split()
-    if len(parts) != 8:
+    if len(parts) != 9:
         return None
-    _, login, status, host, port, up, down, by = parts
+    _, login, status, host, port, up, down, by, watched = parts
     try:
         bytes_up, bytes_down = int(up), int(down)
     except ValueError:
@@ -143,6 +149,7 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
             max(bytes_up, 0),
             max(bytes_down, 0),
             {by: 1} if BLOCKED_RE.fullmatch(by) else {},
+            {watched: 1} if BLOCKED_RE.fullmatch(watched) else {},
         ),
     )
 
