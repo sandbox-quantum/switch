@@ -247,6 +247,14 @@
         "verb": "get"
       },
       {
+        "group": "metrics.k8s.io",
+        "name": "box-0",
+        "namespace": "(box)",
+        "resource": "pods",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
         "group": "",
         "name": "",
         "namespace": "(box)",

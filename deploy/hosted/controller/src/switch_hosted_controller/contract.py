@@ -626,6 +626,8 @@ def run_services() -> Cluster:
     with cluster.acting(ACCOUNT["controller"], "scaler: a box looked at"):
         scaler.scale(base)
         scaler.box_pods(base)
+        # No metrics yet (they can't be set up as an object), but it's still the call RBAC must grant.
+        scaler.box_metrics(base)
         scaler.events(base)
     with cluster.acting(ACCOUNT["controller"], "scaler: a box held without its proxy login"):
         scaler.write_egress_held({base})
