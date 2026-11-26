@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Agent,
     AgentEventRow,
     ApiKey,
@@ -42,7 +43,7 @@ from switch_core.db.stores.erasure_store import (
     UnknownIdentity,
 )
 from switch_core.db.stores.message_store import MessageStore
-from switch_core.retention.erasure import ErasureService
+from switch_core.retention.erasure import ErasureService, erase_once
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 
@@ -405,6 +406,21 @@ class TestErasing:
         assert still_there is not None
         assert await service.work_once(datetime.now(UTC)) is None
         await _queue(session_factory, [person_id])
+
+    async def test_a_pass_with_a_failed_request_says_it_failed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            person = await _person(session, await _bridge(session), "ana")
+            await session.commit()
+            person_id = person.id
+        await _queue(session_factory, [person_id])
+        failing = ErasureService(
+            session_factory, _Clients(fail_on_stop=True), _Bridges()
+        )
+
+        assert await erase_once(failing, [TENANT_ZERO_ID]) is True
+        assert await erase_once(failing, [TENANT_ZERO_ID]) is False
 
     async def test_a_failure_after_the_identity_is_gone_does_not_fail_the_request(
         self, session_factory: async_sessionmaker[AsyncSession]

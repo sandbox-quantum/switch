@@ -28,8 +28,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 from uuid import uuid4
 
-import aiohttp
-import httpx
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -37,6 +35,7 @@ from switch_core import messaging_platforms
 from switch_core.archived_workspace import is_archived
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
+from switch_core.bridges.collaboration.error_kind import NETWORK_EXCEPTIONS
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint, CallbackIngress
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
@@ -179,28 +178,6 @@ def _started_from(bridge: CollaborationBridge) -> str:
     ).hexdigest()
 
 
-# Reaching the platform failed outright, in the transports Switch itself
-# depends on: aiohttp (Slack's Socket Mode, Teams' inbound listener) and httpx
-# (Teams' token exchange and Graph calls). A platform whose SDK has a transport
-# of its own names those exceptions in its adapter's `classify_failure`.
-#
-# Each library's own base class for "the transport failed", not the individual
-# leaves. A timeout is the case that makes this worth stating: `ConnectTimeout`
-# is a `TimeoutException` rather than a `ConnectError` in httpx, and
-# `ServerTimeoutError` is not a `ClientOSError` in aiohttp — so a list of
-# leaves classifies a refusal as `network` and the timeout beside it as
-# `unknown`, which are the two outcomes an operator most needs to tell apart.
-_NETWORK_EXCEPTIONS = (
-    aiohttp.ClientConnectionError,
-    httpx.TransportError,
-    # The two builtins, for a failure that reaches here without a library's
-    # name on it: `asyncio.wait_for` raises the first, and a raw socket
-    # connect the second.
-    TimeoutError,
-    ConnectionError,
-)
-
-
 # Waits before each try at a bridge that crashed on a passing failure: doubling
 # from the first, then the last one for as long as it keeps failing.
 CRASH_RETRY_DELAYS = (5.0, 15.0, 60.0, 300.0)
@@ -260,7 +237,7 @@ def _failure_reason(
         if claimed is not None:
             return claimed
 
-    if isinstance(exc, _NETWORK_EXCEPTIONS):
+    if isinstance(exc, NETWORK_EXCEPTIONS):
         return "network"
 
     if isinstance(exc, BridgeOperationError):

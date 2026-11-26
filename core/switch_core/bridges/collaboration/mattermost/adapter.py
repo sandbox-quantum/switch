@@ -79,6 +79,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeErrorKind,
     BridgeOperationError,
     ChannelMembers,
     ChannelNotUsable,
@@ -98,6 +99,7 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
+    error_kind_for_status,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
@@ -572,6 +574,34 @@ class MattermostAdapter(PlatformAdapter):
             | sync_requests.exceptions.InvalidJSONError,
         ):
             return "platform_error"
+        return None
+
+    @classmethod
+    def classify_error(cls, exc: BaseException) -> BridgeErrorKind | None:
+        """The driver's named exceptions carry no response, so the class says
+        the status; any other status arrives as the `requests` error with the
+        response still on it. Its errors are `OSError`s, so they are read here
+        rather than left to the shared rules."""
+        if isinstance(exc, NoAccessTokenProvided):
+            return "auth"
+        if isinstance(exc, NotEnoughPermissions):
+            return "forbidden"
+        if isinstance(exc, ResourceNotFound):
+            return "not_found"
+        if isinstance(exc, FeatureDisabled):
+            return "platform_error"
+        if isinstance(
+            exc,
+            sync_requests.exceptions.ConnectionError | sync_requests.exceptions.Timeout,
+        ):
+            return "network"
+        if isinstance(exc, sync_requests.exceptions.HTTPError):
+            response = exc.response
+            return (
+                None
+                if response is None
+                else error_kind_for_status(response.status_code)
+            )
         return None
 
     @classmethod

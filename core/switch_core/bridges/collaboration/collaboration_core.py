@@ -40,6 +40,7 @@ from switch_core.bridges.collaboration.adapter import (
     SupportsSharedConnection,
     agent_identity,
 )
+from switch_core.bridges.collaboration.error_kind import classify_bridge_error
 from switch_core.bridges.collaboration.link_prompts import answer_prompt
 from switch_core.bridges.collaboration.models import (
     ChannelInUse,
@@ -605,13 +606,14 @@ class CollaborationCore:
         started = time.perf_counter()
         try:
             yield
-        except Exception:
+        except Exception as exc:
             metrics().increment(
                 BRIDGE_ERRORS,
                 {
                     "bridge": "collaboration",
                     "platform": self._bridge_type,
                     "direction": "outbound",
+                    "kind": classify_bridge_error(exc, type(self._adapter)),
                 },
             )
             raise
@@ -695,7 +697,7 @@ class CollaborationCore:
                     with tenant_scope(tenant_id), log_context(room_id=room_id):
                         try:
                             await handler(event)
-                        except Exception:
+                        except Exception as exc:
                             # Counted here and re-raised unchanged: whoever handles
                             # it above still does. An inbound handler that fails is
                             # a message a person sent and nobody received, which is
@@ -706,6 +708,9 @@ class CollaborationCore:
                                     "bridge": "collaboration",
                                     "platform": self._bridge_type,
                                     "direction": "inbound",
+                                    "kind": classify_bridge_error(
+                                        exc, type(self._adapter)
+                                    ),
                                 },
                             )
                             raise

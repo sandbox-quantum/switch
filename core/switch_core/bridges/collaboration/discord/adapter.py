@@ -75,6 +75,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeErrorKind,
     BridgeOperationError,
     ChannelMembers,
     ChannelNotUsable,
@@ -93,6 +94,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserLeave,
     PrivateNoticeDelivery,
     RetireOutcome,
+    error_kind_for_status,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
@@ -784,6 +786,23 @@ class DiscordAdapter(PlatformAdapter):
             return "auth_failed"
         if isinstance(exc, discord.DiscordException):
             return "platform_error"
+        return None
+
+    @classmethod
+    def classify_error(cls, exc: BaseException) -> BridgeErrorKind | None:
+        """`Forbidden`, `NotFound` and `DiscordServerError` are all
+        `HTTPException`s carrying their status, so the status decides: a 403
+        (the bot lacks a permission in that channel) is `forbidden`, a 401 a
+        token Discord no longer accepts. A 429 the library declined to sleep
+        through is `RateLimited`, which is not one."""
+        if isinstance(exc, discord.LoginFailure):
+            return "auth"
+        if isinstance(exc, discord.RateLimited):
+            return "rate_limited"
+        if isinstance(exc, discord.HTTPException):
+            return error_kind_for_status(exc.status)
+        if isinstance(exc, discord.GatewayNotFound | discord.ConnectionClosed):
+            return "network"
         return None
 
     # Discord linkifies only http(s), so the `switchdash://` deeplink needs the

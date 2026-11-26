@@ -54,6 +54,7 @@ from switch_core.db.stores.erasure_store import (
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.retention.health import SweepHealth
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -278,25 +279,43 @@ class ErasureService:
         return len(deleted.event_ids)
 
 
-async def erase_once(service: ErasureService, tenant_ids: list[str]) -> None:
+async def erase_once(service: ErasureService, tenant_ids: list[str]) -> bool:
+    """Work each tenant's queue to its end. Returns whether anything failed:
+    a tenant's upkeep, or a request, which is left failed with its error."""
+    failed = False
     for tenant_id in tenant_ids:
         with tenant_scope(tenant_id):
             try:
-                while await service.work_once(datetime.now(UTC)) is not None:
-                    pass
+                while (
+                    finished := await service.work_once(datetime.now(UTC))
+                ) is not None:
+                    failed = failed or finished.error is not None
             except Exception:
                 # One tenant's failure must not stop the others' erasures.
                 logger.exception("Erasure upkeep failed for tenant %s", tenant_id)
+                failed = True
+    return failed
 
 
 async def erasure_loop(
-    session_factory: async_sessionmaker[AsyncSession], service: ErasureService
+    session_factory: async_sessionmaker[AsyncSession],
+    service: ErasureService,
+    health: SweepHealth,
 ) -> None:
-    """Work every tenant's erasure queue every few seconds."""
-    with no_tenant():
-        while True:
-            try:
-                await erase_once(service, await all_tenant_ids(session_factory))
-            except Exception:
-                logger.exception("Erasure upkeep could not list tenants")
-            await asyncio.sleep(ERASURE_INTERVAL_SECONDS)
+    """Work every tenant's erasure queue every few seconds, reporting each
+    pass in `health` while it runs (`retention/health.py`)."""
+    health.start(("erasure",))
+    try:
+        with no_tenant():
+            while True:
+                try:
+                    failed = await erase_once(
+                        service, await all_tenant_ids(session_factory)
+                    )
+                except Exception:
+                    logger.exception("Erasure upkeep could not list tenants")
+                    failed = True
+                health.record("erasure", failed=failed)
+                await asyncio.sleep(ERASURE_INTERVAL_SECONDS)
+    finally:
+        health.stop(("erasure",))

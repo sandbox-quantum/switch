@@ -72,6 +72,9 @@ def test_the_dashboard_covers_what_matters() -> None:
     deliberately_unpanelled = {
         # A curiosity rather than a signal; emitted for a memory question.
         "switch.runtime.gc_collections",
+        # Panelled where the dashboards are maintained now, outside this tree.
+        "switch.retention.last_success_age",
+        "switch.retention.failures",
     }
     missing = sorted(set(CATALOGUE) - referenced - deliberately_unpanelled)
     assert not missing, (
@@ -224,6 +227,7 @@ _READ_WITH_MAX = (
     "switch.workos.cursor_age",
     "switch.workos.recheck.",
     "switch.workos.full_check.",
+    "switch.retention.last_success_age",
 )
 
 

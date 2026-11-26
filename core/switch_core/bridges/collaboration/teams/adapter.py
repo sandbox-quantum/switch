@@ -38,6 +38,7 @@ from switch_core.bridges.collaboration.adapter import (
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeErrorKind,
     BridgeOperationError,
     ChannelMembers,
     ChannelType,
@@ -51,6 +52,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     InboundUserLeave,
     PrivateNoticeDelivery,
+    error_kind_for_status,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_QUEUED_NOTE,
@@ -91,6 +93,7 @@ from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorGone,
     BotConnectorRefused,
     BotConnectorThrottled,
+    BotConnectorUnavailable,
     checked_payload,
 )
 from switch_core.bridges.collaboration.teams.crypto import (
@@ -829,6 +832,22 @@ class TeamsAdapter(PlatformAdapter):
     """
 
     display_name: ClassVar[str] = "Microsoft Teams"
+
+    @classmethod
+    def classify_error(cls, exc: BaseException) -> BridgeErrorKind | None:
+        """Bot Connector and Graph errors carry the status Teams answered
+        with. A Bot Connector call Teams never answered has none: the cause
+        it was raised from, when there is one, says why."""
+        if isinstance(exc, BotConnectorThrottled):
+            return "rate_limited"
+        if isinstance(exc, BotConnectorGone):
+            return "not_found"
+        if isinstance(exc, BotConnectorError | GraphError) and exc.status is not None:
+            return error_kind_for_status(exc.status)
+        if isinstance(exc, BotConnectorUnavailable) and exc.__cause__ is None:
+            return "network"
+        return None
+
     # Graph's people search matches a name, a handle or an address.
     directory_search_hint: ClassVar[str] = "Your name, handle or email"
     # Switch is not granted Channel.Delete.All, so a deleted room's channel

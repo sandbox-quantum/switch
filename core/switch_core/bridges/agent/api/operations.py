@@ -38,6 +38,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     UnknownConnectionError,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.collaboration.error_kind import classify_bridge_error
 from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
@@ -165,10 +166,15 @@ async def call_operation(
             result = fn(**call_args)
             if inspect.isawaitable(result):
                 result = await result
-        except Exception:
+        except Exception as exc:
             metrics().increment(
                 BRIDGE_ERRORS,
-                {"bridge": "agent", "platform": "switch", "direction": "inbound"},
+                {
+                    "bridge": "agent",
+                    "platform": "switch",
+                    "direction": "inbound",
+                    "kind": classify_bridge_error(exc, None),
+                },
             )
             raise
     metrics().observe(

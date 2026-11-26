@@ -354,7 +354,31 @@ handled in a way that leaves no trace.
   perfectly flat while that happens as fast as it can.
 - **`switch.bridge.errors`** — an inbound bridge failure is a message a person
   sent that nobody received; from the platform it is indistinguishable from
-  being ignored.
+  being ignored. `kind` says what went wrong, from a fixed set: `auth` (the
+  credentials themselves invalid or revoked: a 401, a revoked Slack token, a
+  token Telegram or Discord rejects; an operator reconnects the app),
+  `forbidden` (the credentials work but this chat or action was refused: a
+  403, a Telegram bot removed from a group or blocked by the person, a Discord
+  channel permission missing, Slack's `not_in_channel` or `missing_scope`; one
+  conversation, or one capability, rather than the whole bridge),
+  `rate_limited` (a 429 or the platform's throttling),
+  `not_found` (the channel or chat gone), `network` (a timeout or connection
+  failure), `platform_error` (a 5xx) and `other`. Each adapter reads its own
+  SDK's exceptions (`PlatformAdapter.classify_error`: Slack's error code,
+  Discord's status, Telegram's and the Mattermost driver's classes, Teams'
+  Bot Connector and Graph statuses), and shared rules read the rest
+  (`bridges/collaboration/error_kind.py`): an `httpx` or `aiohttp` status, a
+  transport failure, a throttle Switch raised. The causes an error was raised
+  from are read too, outermost first, and the outermost answer wins — except
+  that `auth` gives way to a cause beneath it that is `network`,
+  `rate_limited` or `platform_error`: a credential error raised because the
+  token endpoint was unreachable or answered 503 (Google Chat's token exchange
+  raises one for both) is counted as that failure. Anything else, including most inbound
+  handler failures, which are Switch's own, is `other`, never a new value.
+- **`switch.retention.failures`** — the retention and erasure sweeps log a
+  failure and carry on, so one workspace cannot stop the others; a sweep that
+  fails every pass would otherwise look like one with nothing to do. See
+  below.
 - **`switch.bridge.throttle.held`** — how long a platform rate limit held a
   publication back. On a shared app bot one tenant's burst holds back every
   tenant, so a rising `delivery=shared` reading is the signal that per-tenant
@@ -413,6 +437,27 @@ the moment the hold changes hands. It also counts
 `switch.workos.organization_deleted`, a WorkOS organization deleted while a
 Switch organization follows it. What each means is in
 `docs/old/workos-directory.md`.
+
+## Data retention and erasure
+
+Each process runs the retention pass (hourly) and the erasure queue (every few
+seconds), described in `docs/design/data-retention.md`. While those loops run,
+it reports `switch.retention.last_success_age`, in seconds, with one `job`
+attribute: `messages`, `media` and `leftovers` (the three steps over every
+workspace), `audit_history` (the purge of deleted workspaces' audit history)
+and `erasure`. It is the time since the job last completed a pass with no
+failure in any workspace, or since the loop started if none has yet, and like
+the WorkOS ages it is computed when the metrics are collected, so a pass stuck
+mid-way keeps it growing. A process not running the sweeps reports nothing.
+Every replica runs them, so **read it with max**: the worst replica is the one
+that says a job keeps failing. Anything well past the job's interval (an hour
+for retention, a minute for erasure) is worth a look.
+
+`switch.retention.failures` counts the passes that failed, by `job`: once per
+pass however many workspaces failed in it. An erasure pass fails when a
+request in it ends failed, or when the workspaces cannot be listed; a
+retention pass that cannot list them fails all three per-workspace jobs. The
+tracebacks are in the log.
 
 ## Health: two routes, on purpose
 

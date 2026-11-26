@@ -27,6 +27,7 @@ from switch_core.agent_icon import (
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.install import InboundWebhook, WebhookRequest
 from switch_core.bridges.collaboration.models import (
+    BridgeErrorKind,
     BridgeInstallLink,
     ChannelCreationUnsupported,
     ChannelMembers,
@@ -960,6 +961,19 @@ class PlatformAdapter(ABC):
 
         An adapter that raises only `BridgeCredentialError` and
         `BridgeOperationError` for platform refusals needs no override.
+        """
+        return None
+
+    @classmethod
+    def classify_error(cls, exc: BaseException) -> BridgeErrorKind | None:
+        """Name the kind of error this platform's own SDK raised, for
+        `switch.bridge.errors`, or None to leave it to Switch.
+
+        Asked for each exception in the chain, outermost first, before the
+        shared rules in `error_kind.classify_bridge_error`, which already read
+        `BridgeCredentialError`, `RichContentThrottled`, an `httpx` or
+        `aiohttp` status and a transport failure. Answer only for exceptions
+        of this platform's SDK.
         """
         return None
 
