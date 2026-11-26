@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from switch_core.agent_runs import TRACE_OPENING
-from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.chats import MEMBER_CLIENT_TYPE, room_kind_of
 from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
     platform_replies_in_channel,
@@ -41,6 +41,7 @@ from switch_core.delivery.addressing import (
     named_agents,
 )
 from switch_core.providers.registry import agent_providers
+from switch_core.ui_spec import UI_CONTENT_KEY
 
 MESSAGE_EVENT_TYPE = "m.room.message"
 COMMAND_EVENT_TYPE = "com.switch.command"
@@ -102,6 +103,8 @@ class ChatSummary(CamelModel):
     # Shown messages past the viewer's read position, less their own.
     unread_count: int
     last_message: ChatLastMessage | None
+    # The client app's own kind of room (`ROOM_KIND_KEY`); None for a chat.
+    room_kind: str | None
 
 
 class ChatSender(CamelModel):
@@ -164,6 +167,9 @@ class ChatMessage(CamelModel):
     thread_last_reply_seq: int | None
     # Set on a template kickoff's request; None on everything else.
     kickoff: ChatKickoff | None = None
+    # The card the message carries (`com.switch.ui`, see `ui_spec`), as
+    # posted; None when it carries none.
+    ui: dict[str, Any] | None = None
 
 
 class ChatMention(CamelModel):
@@ -348,6 +354,7 @@ async def chat_summaries(
                     if last is not None
                     else None
                 ),
+                room_kind=room_kind_of(room),
             )
         )
     return summaries
@@ -507,6 +514,7 @@ async def chat_messages(
                 thread_reply_count=thread[0] if thread is not None else 0,
                 thread_last_reply_seq=thread[1] if thread is not None else None,
                 kickoff=kickoff,
+                ui=_ui(message),
             )
         )
     return out
@@ -528,6 +536,11 @@ def _kickoff(message: Message) -> ChatKickoff | None:
         user_id=person.user_id,
         agent_note=f"{TRACE_OPENING}{note}".strip() if found else None,
     )
+
+
+def _ui(message: Message) -> dict[str, Any] | None:
+    spec = (message.content or {}).get(UI_CONTENT_KEY)
+    return spec if isinstance(spec, dict) else None
 
 
 def _named_user_ids(message: Message) -> list[str]:

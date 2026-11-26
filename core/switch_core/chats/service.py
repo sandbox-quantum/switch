@@ -55,7 +55,12 @@ from switch_core.authz import (
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.bridges.collaboration.models import BridgeOperationError
-from switch_core.chats import MEMBER_CLIENT_TYPE, is_console_chat
+from switch_core.chats import (
+    MEMBER_CLIENT_TYPE,
+    ROOM_KIND_KEY,
+    is_console_chat,
+    require_room_kind,
+)
 from switch_core.chats.stream_reads import StreamReads
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
@@ -767,8 +772,11 @@ class ChatService:
 
     # ── Listing ──────────────────────────────────────────────────────────────
 
-    async def readable_rooms(self, session: AsyncSession, user_id: str) -> list[Room]:
-        """All rooms the caller can read: member of, unarchived, tenant role."""
+    async def readable_rooms(
+        self, session: AsyncSession, user_id: str, room_kind: str | None
+    ) -> list[Room]:
+        """All rooms of `room_kind` the caller can read: member of, unarchived,
+        tenant role (`_of_kind`)."""
         client = await self.member_client(session, user_id)
         if client is None:
             return []
@@ -778,45 +786,52 @@ class ChatService:
             .where(
                 ClientRoom.client_id == client.id,
                 Room.archived_at.is_(None),
+                _of_kind(room_kind),
             )
             .order_by(Room.created_at)
         )
         return list(result.scalars().all())
 
-    async def stream_rooms(self, session: AsyncSession, user_id: str) -> list[Room]:
-        """The caller's member rooms that are chats: unarchived, and holding an
-        agent, started in Switch Console, or on no messaging app."""
+    async def stream_rooms(
+        self, session: AsyncSession, user_id: str, room_kind: str | None
+    ) -> list[Room]:
+        """The caller's member rooms of `room_kind` that are chats: unarchived,
+        and holding an agent, started in Switch Console, or on no messaging app."""
         return [
             room
-            for room, listed in await self.readable_and_listed(session, user_id)
+            for room, listed in await self.readable_and_listed(
+                session, user_id, room_kind
+            )
             if listed
         ]
 
     async def readable_and_listed(
-        self, session: AsyncSession, user_id: str
+        self, session: AsyncSession, user_id: str, room_kind: str | None
     ) -> list[tuple[Room, bool]]:
-        """The caller's member rooms, archived ones included, each with whether
-        it is one of `stream_rooms`, in one query."""
+        """The caller's member rooms of `room_kind`, archived ones included,
+        each with whether it is one of `stream_rooms`, in one query."""
         return [
             (room, is_chat and room.archived_at is None)
-            for room, is_chat in await self._member_rooms(session, user_id)
+            for room, is_chat in await self._member_rooms(session, user_id, room_kind)
         ]
 
-    async def archived_chats(self, session: AsyncSession, user_id: str) -> list[Room]:
+    async def archived_chats(
+        self, session: AsyncSession, user_id: str, room_kind: str | None
+    ) -> list[Room]:
         """The caller's member rooms that would be in `stream_rooms` but for
         being archived."""
         return [
             room
-            for room, is_chat in await self._member_rooms(session, user_id)
+            for room, is_chat in await self._member_rooms(session, user_id, room_kind)
             if is_chat and room.archived_at is not None
         ]
 
     async def _member_rooms(
-        self, session: AsyncSession, user_id: str
+        self, session: AsyncSession, user_id: str, room_kind: str | None
     ) -> list[tuple[Room, bool]]:
-        """Every room the caller's member client is in, each with whether it
-        is a chat: holding an agent, started in Switch Console, or on no
-        messaging app."""
+        """Every room of `room_kind` the caller's member client is in, each
+        with whether it is a chat: holding an agent, started in Switch
+        Console, or on no messaging app."""
         client = await self.member_client(session, user_id)
         if client is None:
             return []
@@ -828,7 +843,7 @@ class ChatService:
         result = await session.execute(
             select(Room, is_chat)
             .join(ClientRoom, ClientRoom.room_id == Room.id)
-            .where(ClientRoom.client_id == client.id)
+            .where(ClientRoom.client_id == client.id, _of_kind(room_kind))
             .order_by(Room.created_at)
         )
         return [(room, bool(chat)) for room, chat in result.all()]
@@ -911,9 +926,11 @@ class ChatService:
             return "access"
         return "unlisted"
 
-    async def list_chats(self, session: AsyncSession, user_id: str) -> list[Room]:
+    async def list_chats(
+        self, session: AsyncSession, user_id: str, room_kind: str | None
+    ) -> list[Room]:
         """`stream_rooms` less the ones the caller hid with nothing said since."""
-        rooms = await self.stream_rooms(session, user_id)
+        rooms = await self.stream_rooms(session, user_id, room_kind)
         hidden = {
             row.room_id: row.hidden_through_seq
             for row in (
@@ -1629,6 +1646,7 @@ class ChatService:
         group_id: str | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
+        room_kind: str | None = None,
     ) -> Room:
         """A private room with the agents and members, owned by and joined by
         the user.
@@ -1659,7 +1677,15 @@ class ChatService:
         a workspace admin may do, and the agents are checked as addressed in
         that group. `read_visibility` and `write_visibility`, given together,
         say who may see and change the room; none leaves it private.
+
+        `room_kind` makes the room one of a client app's own kind
+        (`ROOM_KIND_KEY`), listed only where that kind is asked for.
         """
+        if room_kind is not None:
+            try:
+                require_room_kind(room_kind)
+            except ValueError as exc:
+                raise ChatError(422, "BAD_ROOM_KIND", str(exc)) from exc
         member_user_ids = sorted(set(member_user_ids) - {user.id})
         description = (description or "").strip() or None
         instructions = (instructions or "").strip() or None
@@ -1726,6 +1752,7 @@ class ChatService:
             ("groupId", group_id),
             ("readVisibility", read_visibility),
             ("writeVisibility", write_visibility),
+            ("roomKind", room_kind),
         ):
             if value is not None:
                 request[key] = value
@@ -1860,6 +1887,7 @@ class ChatService:
                                 acting_user_id=user.id,
                                 created_by_kind="user",
                                 chat_operation_id=operation_id,
+                                room_kind=room_kind,
                                 agent_greeting=(
                                     {"agent_id": agents[0].id, "body": greeting}
                                     if greeting is not None
@@ -2799,6 +2827,13 @@ def _span_texts(body: str, spans: list[ChatMention]) -> list[str]:
             raise refusal
         texts.append(text)
     return texts
+
+
+def _of_kind(room_kind: str | None) -> ColumnElement[bool]:
+    """Rooms of `room_kind`, or with none: a room of a client app's own kind
+    is listed only where that kind is asked for."""
+    kind: ColumnElement[str] = Room.metadata_[ROOM_KIND_KEY].astext
+    return kind.is_(None) if room_kind is None else kind == room_kind
 
 
 def _owns_agent_in_room(user_id: str) -> ColumnElement[bool]:

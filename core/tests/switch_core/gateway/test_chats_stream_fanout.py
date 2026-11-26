@@ -34,7 +34,7 @@ async def _room(chats: _Harness) -> str:
 
 
 async def _streams(chats: _Harness, users: list[User]) -> list[_ChatStream]:
-    streams = [_ChatStream(chats.service, TENANT, user, {}) for user in users]
+    streams = [_ChatStream(chats.service, TENANT, user, {}, None) for user in users]
     for stream in streams:
         await stream.refresh(None, initial=True)
     return streams
@@ -196,7 +196,7 @@ async def test_a_first_catch_up_does_not_wait_for_a_slot(chats: _Harness) -> Non
     await _room(chats)
     chats.service.stream_reads = StreamReads(1)
     async with chats.service.stream_reads.slot():
-        stream = _ChatStream(chats.service, TENANT, chats.alice, {})
+        stream = _ChatStream(chats.service, TENANT, chats.alice, {}, None)
         _, alive = await asyncio.wait_for(stream.refresh(None, initial=True), 5)
         assert alive
 

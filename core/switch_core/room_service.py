@@ -42,7 +42,7 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.chats import is_console_chat
+from switch_core.chats import ROOM_KIND_KEY, is_console_chat
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.audit import AuditAction, record_audit_event, request_actor
 from switch_core.db.models import (
@@ -201,6 +201,9 @@ class RoomCreateConfig(BaseModel):
     # The Switch Console chat creation this room is for, stamped into the
     # room's metadata in the same insert so a retried creation finds it.
     chat_operation_id: str | None = None
+    # The client app's own kind of room (`ROOM_KIND_KEY`), stamped into the
+    # room's metadata; None for an ordinary room.
+    room_kind: str | None = None
     # `{agent_id, body}`: what that agent says as it joins, in place of its
     # usual line. Stamped with the room, so it is there before the agent is.
     agent_greeting: dict[str, str] | None = None
@@ -1214,6 +1217,11 @@ class RoomService:
                     **(
                         {"chat_operation_id": config.chat_operation_id}
                         if config.chat_operation_id is not None
+                        else {}
+                    ),
+                    **(
+                        {ROOM_KIND_KEY: config.room_kind}
+                        if config.room_kind is not None
                         else {}
                     ),
                     **(

@@ -28,14 +28,15 @@ from tests.switch_core.gateway.conftest import _Harness
 async def _in_room(chats: _Harness, room_id: str, user: User) -> bool:
     async with chats.factory() as session:
         return room_id in {
-            room.id for room in await chats.service.readable_rooms(session, user.id)
+            room.id
+            for room in await chats.service.readable_rooms(session, user.id, None)
         }
 
 
 async def _listed(chats: _Harness, room_id: str, user: User) -> bool:
     async with chats.factory() as session:
         return room_id in {
-            room.id for room in await chats.service.stream_rooms(session, user.id)
+            room.id for room in await chats.service.stream_rooms(session, user.id, None)
         }
 
 

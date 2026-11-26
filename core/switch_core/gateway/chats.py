@@ -36,6 +36,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, commands_for
+from switch_core.chats import require_room_kind
 from switch_core.chats.service import (
     ChatError,
     ChatService,
@@ -143,6 +144,9 @@ class CreateChatRequest(CamelModel):
     group_id: str | None = None
     read_visibility: str | None = None
     write_visibility: str | None = None
+    # Makes the room one of a client app's own kind, listed only where that
+    # kind is asked for (`?roomKind=`); older clients send none.
+    room_kind: str | None = None
 
     def chosen_agents(self) -> list[str]:
         if (self.agent_id is None) == (self.agent_ids is None):
@@ -278,6 +282,22 @@ Service = Annotated[ChatService, Depends(get_chat_service)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+def room_kind_query(
+    room_kind: Annotated[str | None, Query(alias="roomKind")] = None,
+) -> str | None:
+    """The kind of room a listing is for: only rooms of that kind, or, when
+    not given, only rooms of none."""
+    if room_kind is None:
+        return None
+    try:
+        return require_room_kind(room_kind)
+    except ValueError as exc:
+        raise ChatError(422, "BAD_ROOM_KIND", str(exc)) from exc
+
+
+RoomKind = Annotated[str | None, Depends(room_kind_query)]
+
+
 async def _summary(
     service: ChatService, session: AsyncSession, tenant_id: str, user: User, room: Room
 ) -> ChatSummary:
@@ -320,27 +340,31 @@ async def _member_list(
 
 
 @router.get("", response_model=ChatList)
-async def list_chats(user: CurrentUser, service: Service) -> ChatList:
+async def list_chats(
+    user: CurrentUser, service: Service, room_kind: RoomKind
+) -> ChatList:
     tenant_id = require_tenant_id()
     await service.sync_owned_rooms(tenant_id, user.id)
     async with tenant_session(service.session_factory, tenant_id) as session:
         if not await service.has_tenant_role(session, tenant_id, user.id):
             return ChatList(chats=[])
-        rooms = await service.list_chats(session, user.id)
+        rooms = await service.list_chats(session, user.id, room_kind)
         return ChatList(
             chats=await _summaries(service, session, tenant_id, user, rooms)
         )
 
 
 @router.get("/archived", response_model=ChatList)
-async def list_archived_chats(user: CurrentUser, service: Service) -> ChatList:
+async def list_archived_chats(
+    user: CurrentUser, service: Service, room_kind: RoomKind
+) -> ChatList:
     """The caller's archived chats: those `GET /chats` would list were they
     not archived, hidden ones included."""
     tenant_id = require_tenant_id()
     async with tenant_session(service.session_factory, tenant_id) as session:
         if not await service.has_tenant_role(session, tenant_id, user.id):
             return ChatList(chats=[])
-        rooms = await service.archived_chats(session, user.id)
+        rooms = await service.archived_chats(session, user.id, room_kind)
         return ChatList(
             chats=await _summaries(service, session, tenant_id, user, rooms)
         )
@@ -367,6 +391,7 @@ async def create_chat(
         group_id=req.group_id,
         read_visibility=req.read_visibility,
         write_visibility=req.write_visibility,
+        room_kind=req.room_kind,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return ChatEnvelope(
@@ -407,6 +432,7 @@ async def chat_events_stream(
     user: CurrentUser,
     service: Service,
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    room_kind: RoomKind,
     after: Annotated[str | None, Query()] = None,
 ) -> StreamingResponse:
     tenant_id = require_tenant_id()
@@ -416,6 +442,7 @@ async def chat_events_stream(
             tenant_id,
             user,
             parse_after(after),
+            room_kind=room_kind,
             ping_seconds=PING_SECONDS,
             recheck_seconds=RECHECK_SECONDS,
             session_current=_session_check(
@@ -455,6 +482,7 @@ async def chat_activity_stream(
     user: CurrentUser,
     service: Service,
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    room_kind: RoomKind,
 ) -> StreamingResponse:
     tenant_id = require_tenant_id()
     return StreamingResponse(
@@ -462,6 +490,7 @@ async def chat_activity_stream(
             service,
             tenant_id,
             user,
+            room_kind=room_kind,
             ping_seconds=PING_SECONDS,
             recheck_seconds=RECHECK_SECONDS,
             queue_max=ACTIVITY_QUEUE_MAX,
@@ -826,12 +855,20 @@ class _ChatStream:
     """
 
     def __init__(
-        self, service: ChatService, tenant_id: str, user: User, after: dict[str, int]
+        self,
+        service: ChatService,
+        tenant_id: str,
+        user: User,
+        after: dict[str, int],
+        room_kind: str | None,
     ) -> None:
         self.service = service
         self.tenant_id = tenant_id
         self.user = user
         self.after = after
+        # Rooms of another kind are none of this stream's: not followed, not
+        # announced, and removed as "access" when named in `after`.
+        self.room_kind = room_kind
         self.cursors: dict[str, int] = {}
         self.announced: set[str] = set()
         self.sent: dict[str, dict[str, Any]] = {}
@@ -914,7 +951,9 @@ class _ChatStream:
                     _removed(room_id, "access") for room_id in self.after if initial
                 )
                 return frames, False
-            rooms = await service.readable_and_listed(session, self.user.id)
+            rooms = await service.readable_and_listed(
+                session, self.user.id, self.room_kind
+            )
             readable = {room.id: room for room, _ in rooms}
             listed = {room.id: room for room, is_listed in rooms if is_listed}
             for room_id in [r for r in self.cursors if r not in readable]:
@@ -1051,11 +1090,13 @@ async def chat_events(
     user: User,
     after: dict[str, int],
     *,
+    room_kind: str | None,
     ping_seconds: float,
     recheck_seconds: float,
     session_current: Callable[[], Awaitable[bool]],
 ) -> AsyncIterator[bytes]:
-    """The caller's chat events as SSE frames.
+    """The caller's chat events as SSE frames, for the rooms of `room_kind`
+    (or of none).
 
     Catches every member room up from its cursor in `after`, says `ready`,
     then pushes as rooms move. A room the caller joined since is announced as
@@ -1065,7 +1106,7 @@ async def chat_events(
     anything a missed notification or a missed signal left behind, and ends
     the stream once the caller's session no longer `session_current`.
     """
-    stream = _ChatStream(service, tenant_id, user, after)
+    stream = _ChatStream(service, tenant_id, user, after, room_kind)
     service.watch_memberships(tenant_id, user.id, stream.on_memberships)
     try:
         frames, alive = await stream.refresh(None, initial=True)
@@ -1116,12 +1157,14 @@ async def chat_activity_events(
     tenant_id: str,
     user: User,
     *,
+    room_kind: str | None,
     ping_seconds: float,
     recheck_seconds: float,
     queue_max: int,
     session_current: Callable[[], Awaitable[bool]],
 ) -> AsyncIterator[bytes]:
-    """Turn steps and approval requests of the rooms the caller may read, as SSE.
+    """Turn steps and approval requests of the rooms of `room_kind` (or of
+    none) the caller may read, as SSE.
 
     Says `ready` once subscribed, so a snapshot fetched after it misses
     nothing. Only changes in the caller's rooms wake the stream; the rooms are
@@ -1173,7 +1216,7 @@ async def chat_activity_events(
     sent: dict[tuple[str, str, str, str], int] = {}
     try:
         await service.sync_owned_rooms(tenant_id, user.id)
-        rooms = await _readable_room_ids(service, tenant_id, user)
+        rooms = await _readable_room_ids(service, tenant_id, user, room_kind)
         if rooms is None:
             return
         subscription = service.activity_listener.subscribe_rooms(
@@ -1201,7 +1244,7 @@ async def chat_activity_events(
                 next_recheck = now + recheck_seconds
             if recheck or item is _RESYNC or item is _MEMBERSHIPS:
                 current = await _readable_room_ids(
-                    service, tenant_id, user, slotted=True
+                    service, tenant_id, user, room_kind, slotted=True
                 )
                 if current is None:
                     return
@@ -1227,7 +1270,12 @@ async def chat_activity_events(
 
 
 async def _readable_room_ids(
-    service: ChatService, tenant_id: str, user: User, *, slotted: bool = False
+    service: ChatService,
+    tenant_id: str,
+    user: User,
+    room_kind: str | None,
+    *,
+    slotted: bool = False,
 ) -> set[str] | None:
     """The rooms the caller may read now; None once the caller has no tenant
     role, which ends the stream. In a slot when `slotted`: a stream's first
@@ -1241,7 +1289,10 @@ async def _readable_room_ids(
     ):
         if not await service.has_tenant_role(session, tenant_id, user.id):
             return None
-        return {room.id for room in await service.readable_rooms(session, user.id)}
+        return {
+            room.id
+            for room in await service.readable_rooms(session, user.id, room_kind)
+        }
 
 
 async def _activity_frames(

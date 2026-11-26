@@ -39,7 +39,7 @@ async def test_listing_and_rechecking_do_not_grow_with_rooms(
                 "/chats", headers=chats.as_user(chats.alice)
             )
             assert response.status_code == 200
-        stream = _ChatStream(chats.service, TENANT, chats.alice, {})
+        stream = _ChatStream(chats.service, TENANT, chats.alice, {}, None)
         await stream.refresh(None, initial=True)
         with statement_counts.scope(f"idle-{count}") as idle:
             frames, alive = await stream.refresh(None, initial=False)
@@ -61,7 +61,7 @@ async def test_a_recheck_still_finds_a_message_whose_notice_was_missed(
 ) -> None:
     quiet = await _chat(chats, "quiet")
     busy = await _chat(chats, "busy")
-    stream = _ChatStream(chats.service, TENANT, chats.alice, {})
+    stream = _ChatStream(chats.service, TENANT, chats.alice, {}, None)
     await stream.refresh(None, initial=True)
     # Sent with no notification rung, as when one is lost.
     sent = await chats.send(chats.bob, busy, "late", "are you there?")
