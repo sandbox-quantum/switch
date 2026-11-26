@@ -33,6 +33,7 @@ def _session(keyring: Keyring) -> str:
         session_version=0,
         auth_time=datetime.datetime.now(datetime.UTC),
         session_id=secrets.token_urlsafe(16),
+        identity_session=None,
     )
 
 

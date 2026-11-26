@@ -9,6 +9,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from switch_core.config import WORKOS_IDENTITY_ISSUER
 from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
     OidcIdentity,
@@ -17,7 +18,13 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.user_store import UserStore
-from switch_core.workos_linking import LinkingError, link_accounts, link_organization
+from switch_core.workos_linking import (
+    LinkingError,
+    check_from_issuer,
+    label_legacy_identities,
+    link_accounts,
+    link_organization,
+)
 from tests.conftest import RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
@@ -44,6 +51,13 @@ class _WorkOS:
 
     async def users_with_email(self, email: str) -> list[dict]:
         return self.users.get(email, [])
+
+    async def user(self, user_id: str) -> dict | None:
+        for listed in self.users.values():
+            for user in listed:
+                if user.get("id") == user_id:
+                    return user
+        return None
 
 
 async def _organization(session_factory, workos_organization_id: str | None) -> str:
@@ -96,6 +110,7 @@ class TestLinkingAnOrganization:
             workos,  # type: ignore[arg-type]
             organization_id,
             workos_id,
+            replace=False,
         )
 
         assert "now follows" in said
@@ -127,6 +142,7 @@ class TestLinkingAnOrganization:
             _WorkOS(organizations={workos_id: {}}),  # type: ignore[arg-type]
             organization_id,
             workos_id,
+            replace=False,
         )
 
         assert "already follows" in said
@@ -143,6 +159,7 @@ class TestLinkingAnOrganization:
                 _WorkOS(organizations={other: {}}),  # type: ignore[arg-type]
                 organization_id,
                 other,
+                replace=False,
             )
 
     async def test_a_workos_organization_another_follows_is_refused(
@@ -158,6 +175,7 @@ class TestLinkingAnOrganization:
                 _WorkOS(organizations={workos_id: {}}),  # type: ignore[arg-type]
                 organization_id,
                 workos_id,
+                replace=False,
             )
 
     async def test_an_unknown_organization_is_refused(
@@ -171,6 +189,7 @@ class TestLinkingAnOrganization:
                 _WorkOS(organizations={workos_id: {}}),  # type: ignore[arg-type]
                 _id("org"),
                 workos_id,
+                replace=False,
             )
 
 
@@ -194,6 +213,7 @@ class TestLinkingAccounts:
             workos,  # type: ignore[arg-type]
             UserStore(),
             issuer,
+            from_issuer=None,
             apply=False,
         )
         [mine] = [link for link in reported if link.user_id == ada.id]
@@ -205,6 +225,7 @@ class TestLinkingAccounts:
             workos,  # type: ignore[arg-type]
             UserStore(),
             issuer,
+            from_issuer=None,
             apply=True,
         )
         [mine] = [link for link in applied if link.user_id == ada.id]
@@ -216,6 +237,7 @@ class TestLinkingAccounts:
             workos,  # type: ignore[arg-type]
             UserStore(),
             issuer,
+            from_issuer=None,
             apply=True,
         )
         assert ada.id not in {link.user_id for link in again}
@@ -252,6 +274,7 @@ class TestLinkingAccounts:
             workos,  # type: ignore[arg-type]
             UserStore(),
             issuer,
+            from_issuer=None,
             apply=True,
         )
 
@@ -282,9 +305,166 @@ class TestLinkingAccounts:
             workos,  # type: ignore[arg-type]
             UserStore(),
             issuer,
+            from_issuer=None,
             apply=True,
         )
 
         [mine] = [link for link in links if link.user_id == ada.id]
         assert mine.outcome == f"WorkOS user user_ADA is linked to account {bea.id}"
         assert await _identities(owner, ada.id) == []
+
+
+class TestMovingFromOneSignInToAnother:
+    async def test_an_account_is_linked_to_the_same_workos_user_its_identity_copied(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """WorkOS user ids are the same in every application of an environment,
+        so a Connect sign-in's subject is the AuthKit one. Copied, so signing
+        in the old way still works if the move is undone."""
+        owner = rls_harness.owner
+        connect = f"https://{_id('authkit')}.example.test"
+        ada = await _person(owner)
+        async with owner() as session:
+            session.add(OidcIdentity(user_id=ada.id, iss=connect, sub="user_ADA"))
+            await session.commit()
+        workos = _WorkOS(
+            users={
+                "someone-else@example.test": [
+                    {
+                        "id": "user_ADA",
+                        "email": "ada.new@example.test",
+                        "email_verified": True,
+                    }
+                ]
+            }
+        )
+
+        links = await link_accounts(
+            rls_harness.restricted,
+            workos,  # type: ignore[arg-type]
+            UserStore(),
+            WORKOS_IDENTITY_ISSUER,
+            from_issuer=connect,
+            apply=True,
+        )
+
+        [mine] = [link for link in links if link.user_id == ada.id]
+        assert mine.linked
+        assert mine.outcome == (
+            "linked WorkOS user user_ADA (as before); WorkOS has its address as "
+            "'ada.new@example.test'"
+        )
+        assert sorted(await _identities(owner, ada.id)) == sorted(
+            [(connect, "user_ADA"), (WORKOS_IDENTITY_ISSUER, "user_ADA")]
+        )
+
+    async def test_an_earlier_user_this_environment_lacks_is_linked_by_address(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Moving to another environment: the old ids mean nothing there."""
+        owner = rls_harness.owner
+        old = f"https://{_id('authkit')}.example.test"
+        ada = await _person(owner)
+        async with owner() as session:
+            session.add(OidcIdentity(user_id=ada.id, iss=old, sub="user_IN_OLD_ENV"))
+            await session.commit()
+        workos = _WorkOS(
+            users={
+                ada.email: [
+                    {"id": "user_NEW_ENV", "email": ada.email, "email_verified": True}
+                ]
+            }
+        )
+
+        links = await link_accounts(
+            rls_harness.restricted,
+            workos,  # type: ignore[arg-type]
+            UserStore(),
+            WORKOS_IDENTITY_ISSUER,
+            from_issuer=old,
+            apply=True,
+        )
+
+        [mine] = [link for link in links if link.user_id == ada.id]
+        assert mine.outcome == "linked WorkOS user user_NEW_ENV"
+        assert (WORKOS_IDENTITY_ISSUER, "user_NEW_ENV") in await _identities(
+            owner, ada.id
+        )
+
+    async def test_identities_from_before_issuers_were_tracked_are_labelled_first(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        connect = f"https://{_id('authkit')}.example.test"
+        ada = await _person(owner)
+        async with owner() as session:
+            session.add(OidcIdentity(user_id=ada.id, iss=None, sub=f"user_{ada.id}"))
+            await session.commit()
+
+        assert await label_legacy_identities(owner, connect, apply=False) >= 1
+        assert await _identities(owner, ada.id) == [(None, f"user_{ada.id}")]
+        assert await label_legacy_identities(owner, connect, apply=True) >= 1
+        assert await _identities(owner, ada.id) == [(connect, f"user_{ada.id}")]
+
+    async def test_an_issuer_no_account_signs_in_under_is_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A misspelt issuer (here a trailing slash) would label the legacy
+        identities with a name the old sign-in never matches again."""
+        owner = rls_harness.owner
+        connect = f"https://{_id('authkit')}.example.test"
+        ada = await _person(owner)
+        legacy = await _person(owner)
+        async with owner() as session:
+            session.add(OidcIdentity(user_id=ada.id, iss=connect, sub="user_ADA"))
+            session.add(OidcIdentity(user_id=legacy.id, iss=None, sub="user_OLD"))
+            await session.commit()
+
+        with pytest.raises(LinkingError) as refused:
+            await check_from_issuer(
+                rls_harness.restricted, WORKOS_IDENTITY_ISSUER, connect + "/"
+            )
+        assert f"--from-issuer '{connect}/' is not an issuer" in str(refused.value)
+        assert repr(connect) in str(refused.value)
+        assert await _identities(owner, legacy.id) == [(None, "user_OLD")]
+
+        await check_from_issuer(rls_harness.restricted, WORKOS_IDENTITY_ISSUER, connect)
+
+    async def test_the_issuer_signed_in_under_now_is_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        with pytest.raises(LinkingError, match="signs in under already"):
+            await check_from_issuer(
+                rls_harness.restricted, WORKOS_IDENTITY_ISSUER, WORKOS_IDENTITY_ISSUER
+            )
+
+
+class TestReplacingAnOrganizationsLink:
+    async def test_replace_follows_the_new_one_and_records_the_old(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner, restricted = rls_harness.owner, rls_harness.restricted
+        old, new = _id("org_old"), _id("org_new")
+        organization_id = await _organization(owner, old)
+        workos = _WorkOS(organizations={new: {"metadata": {}}})
+
+        said = await link_organization(
+            restricted,
+            workos,  # type: ignore[arg-type]
+            organization_id,
+            new,
+            replace=True,
+        )
+
+        assert f"in place of {old}" in said
+        async with owner() as session:
+            organization = await session.get(Organization, organization_id)
+            events = list(
+                await session.scalars(
+                    select(OrganizationAuditEvent).where(
+                        OrganizationAuditEvent.organization_id == organization_id
+                    )
+                )
+            )
+        assert organization is not None and organization.workos_organization_id == new
+        assert events[-1].details["replaced_workos_organization_id"] == old  # type: ignore[index]

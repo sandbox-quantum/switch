@@ -35,6 +35,9 @@ const ACTION_LABELS: Record<string, string> = {
   "organization.member_removed_from_directory": "User removed from WorkOS",
   "organization.directory_conflict": "WorkOS change broke a Switch rule",
   "organization.linked_to_directory": "Linked to WorkOS",
+  "organization.directory_invitation_sent": "Invited through WorkOS",
+  "organization.directory_invitation_resent": "Invitation resent through WorkOS",
+  "organization.directory_invitation_revoked": "Invitation revoked in WorkOS",
 };
 
 const ROLE_LABELS: Record<string, string> = {

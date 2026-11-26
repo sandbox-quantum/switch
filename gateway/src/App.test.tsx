@@ -6,8 +6,23 @@ import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
 import { gatewayFetch } from "./data/gatewayFetch";
 import type { FeatureFlagKey } from "./data/featureFlags";
-import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
+import {
+  clearPendingInvite,
+  keepSignOutNotice,
+  markSignedOut,
+  noteHandOff,
+  readSignOutNotice,
+  signedOutOnPurpose,
+  storePendingInvite,
+} from "./data/sessionState";
 import { OPERATOR_ELSEWHERE, keepLinkForSignIn } from "./data/workspaceLink";
+import { leaveFor } from "./pages/auth/handOff";
+
+// jsdom navigates nowhere; the tests watch where sign-in would have gone.
+vi.mock("./pages/auth/handOff", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./pages/auth/handOff")>()),
+  leaveFor: vi.fn(),
+}));
 
 const acme: TenantMembership = {
   id: "t1",
@@ -166,9 +181,18 @@ async function landsOn(path: string) {
 const authConfig = {
   oidc_enabled: true,
   oidc_provider_label: "Example SSO",
+  oidc_login_options: [],
   password_login_enabled: true,
   signup_mode: "open",
 };
+
+const signedOut: Routes = { "/auth/session": [401, { detail: "Not authenticated" }] };
+
+/** The screen a session that cannot be read leaves: its heading, and why. */
+async function sessionCouldNotLoad(reason: string) {
+  expect(await screen.findByRole("heading", { name: "Could not load your session" })).toBeTruthy();
+  expect(screen.getByText(reason)).toBeTruthy();
+}
 
 afterEach(() => {
   cleanup();
@@ -176,22 +200,228 @@ afterEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
   vi.unstubAllGlobals();
+  vi.mocked(leaveFor).mockClear();
 });
 
 describe("AppRoutes", () => {
   it("sends a signed-out visitor to sign in", async () => {
-    mockFetch({ "/auth/session": [401, { detail: "Not authenticated" }], "/auth/config": [200, authConfig] });
+    mockFetch({ ...signedOut, "/auth/config": [200, authConfig] });
     renderAt("/rooms");
-    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
     expect(
-      await screen.findByText("Sign in with Example SSO to create a workspace or join one."),
+      await screen.findByText("New to Switch? Sign in with Example SSO to create a workspace or join one."),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+    const sso = screen.getByRole("button", { name: "Continue with Example SSO" });
+    // A provider without a known mark gets none, and no space kept for one.
+    expect(sso.querySelector("svg")).toBeNull();
+    expect(sso.querySelector(".MuiButton-startIcon")).toBeNull();
+  });
+
+  it("offers a button for each configured way of signing in", async () => {
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [
+        200,
+        {
+          ...authConfig,
+          oidc_login_options: [
+            { id: "google", label: "Google" },
+            { id: "microsoft", label: "Microsoft" },
+          ],
+        },
+      ],
+    });
+    renderAt("/");
+    const google = await screen.findByRole("button", { name: "Continue with Google" });
+    const microsoft = screen.getByRole("button", { name: "Continue with Microsoft" });
+    // Each provider's own mark, as Switch Console shows it.
+    expect(google.querySelector('[data-logo="google"]')).not.toBeNull();
+    expect(microsoft.querySelector('[data-logo="microsoft"]')).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue with Example SSO" })).toBeNull();
+    expect(
+      screen.getByText("New to Switch? Sign in to create a workspace or join one."),
     ).toBeTruthy();
   });
 
+  it("goes straight to the identity provider when it is the only way in, to come back to the page asked for", async () => {
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false, signup_mode: "invite_only" }],
+    });
+    renderAt("/rooms");
+    await waitFor(() =>
+      expect(leaveFor).toHaveBeenCalledWith("/gateway/auth/oidc/login?next=%2Frooms"),
+    );
+    expect(leaveFor).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
+    expect(screen.getByLabelText("Loading")).toBeTruthy();
+  });
+
+  it("goes straight to the single configured login option", async () => {
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [
+        200,
+        {
+          ...authConfig,
+          password_login_enabled: false,
+          oidc_login_options: [{ id: "google", label: "Google" }],
+        },
+      ],
+    });
+    renderAt("/");
+    await waitFor(() =>
+      expect(leaveFor).toHaveBeenCalledWith("/gateway/auth/oidc/login?provider=google"),
+    );
+  });
+
+  it("offers a choice instead of going anywhere when there is one to make", async () => {
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [
+        200,
+        {
+          ...authConfig,
+          password_login_enabled: false,
+          oidc_login_options: [
+            { id: "google", label: "Google" },
+            { id: "microsoft", label: "Microsoft" },
+          ],
+        },
+      ],
+    });
+    renderAt("/");
+    expect(await screen.findByRole("button", { name: "Continue with Google" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+    expect(screen.queryByText("or")).toBeNull();
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("does not hand someone who signed out back to the identity provider", async () => {
+    markSignedOut();
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/");
+    expect(await screen.findByText("You're signed out.")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Continue with Example SSO" })).toBeTruthy();
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("remembers a sign-out, so the sign-in page that follows waits to be asked", async () => {
+    mockFetch({
+      ...signedInAs("member"),
+      "/auth/logout": [200, { ok: true }],
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+    expect(await screen.findByText("You're signed out.")).toBeTruthy();
+    expect(signedOutOnPurpose()).toBe(true);
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("forgets the sign-out once someone is signed in again", async () => {
+    markSignedOut();
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    await railLabels();
+    expect(signedOutOnPurpose()).toBe(false);
+  });
+
+  it("stops handing off, and says so, when the last sign-in did not finish", async () => {
+    noteHandOff(Date.now());
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/");
+    expect(await screen.findByText(/Signing in didn't finish, so you're back here/)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Continue with Example SSO" })).toBeTruthy();
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("says why the last sign-in failed, and waits to be asked rather than handing off again", async () => {
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/login?sign_in_error=impersonation&next=%2Frooms");
+    expect(
+      await screen.findByText(
+        "Switch can't be signed in to on someone else's behalf. Sign in as yourself.",
+      ),
+    ).toBeTruthy();
+    // Said once: dropped from the address, so a reload hands off as usual.
+    await landsOn("/login?next=%2Frooms");
+    expect(await screen.findByRole("button", { name: "Continue with Example SSO" })).toBeTruthy();
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("names a sign-in failure it has no words for", async () => {
+    mockFetch({ ...signedOut, "/auth/config": [200, authConfig] });
+    renderAt("/login?sign_in_error=something_new");
+    expect(await screen.findByText("Signing in didn't finish (something_new). Try again.")).toBeTruthy();
+  });
+
+  it("says what signing out could not end, once, on the sign-in page it comes back to", async () => {
+    keepSignOutNotice("2 sign-ins at WorkOS could not be ended.");
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/login");
+    expect(await screen.findByText("2 sign-ins at WorkOS could not be ended.")).toBeTruthy();
+    expect(leaveFor).not.toHaveBeenCalled();
+    expect(readSignOutNotice()).toBeNull();
+  });
+
+  it("comes back to the page asked for after signing in with a password", async () => {
+    mockFetch({ ...signedOut, "/auth/config": [200, authConfig] });
+    renderAt("/rooms");
+    await landsOn("/login?next=%2Frooms");
+    mockFetch({ ...signedInAs("member"), "/auth/login": [200, { id: "u1" }] });
+    fireEvent.change(await screen.findByLabelText(/Email/), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await landsOn("/rooms");
+  });
+
+  it("lands on the home page when told to come back somewhere off the dashboard", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/login?next=%2F%2Felsewhere.example.test%2F");
+    await landsOn("/");
+  });
+
+  it("offers the password form, and says why, when the ways to sign in cannot be read", async () => {
+    mockFetch({ ...signedOut, "/auth/config": [503, { detail: "Service unavailable" }] });
+    renderAt("/");
+    expect(
+      await screen.findByText(
+        /Could not load the ways to sign in, so only email and password are offered: Service unavailable/,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+  });
+
+  it("says so when no way of signing in is turned on", async () => {
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false, oidc_enabled: false }],
+    });
+    renderAt("/");
+    expect(await screen.findByText(/No way to sign in is turned on here/)).toBeTruthy();
+  });
+
   it("keeps an invite link through sign-in", async () => {
-    mockFetch({ "/auth/session": [401, { detail: "Not authenticated" }], "/auth/config": [200, authConfig] });
+    mockFetch({ ...signedOut, "/auth/config": [200, authConfig] });
     renderAt("/invite#token=abc");
-    expect(await screen.findByText("Sign in to accept your invitation.")).toBeTruthy();
+    expect(
+      await screen.findByText("You've been invited to a workspace. Sign in to accept."),
+    ).toBeTruthy();
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBe("abc");
   });
 
@@ -212,15 +442,112 @@ describe("AppRoutes", () => {
     expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
   });
 
-  it("asks someone in several workspaces to choose", async () => {
+  it("asks someone in several workspaces to choose, by organization", async () => {
+    mockFetch({
+      "/auth/session": [200, session({ state: "needs_selection", tenants: [beta, acme] })],
+      "/feature-flags": [200, { flags: [] }],
+      "/organizations": [
+        200,
+        [
+          { id: "o1", slug: "acme-group", name: "Acme Group", role: "org_admin" },
+          { id: "o2", slug: "beta-holdings", name: "Beta Holdings", role: "member" },
+        ],
+      ],
+    });
+    renderAt("/rooms");
+    expect(await screen.findByRole("heading", { name: "Choose a workspace" })).toBeTruthy();
+    const acmeGroup = await screen.findByRole("list", { name: "Acme Group" });
+    expect(within(acmeGroup).getByRole("button", { name: /Acme/ })).toBeTruthy();
+    expect(within(acmeGroup).getByText("admin")).toBeTruthy();
+    const betaHoldings = screen.getByRole("list", { name: "Beta Holdings" });
+    expect(within(betaHoldings).getByRole("button", { name: /Beta Co/ })).toBeTruthy();
+    // Organizations in name order, as the top bar's switcher lists them.
+    expect(screen.getAllByRole("list").map((list) => list.getAttribute("aria-label"))).toEqual([
+      "Acme Group",
+      "Beta Holdings",
+    ]);
+  });
+
+  it("asks to choose an organization where each has one workspace", async () => {
+    mockFetch({
+      "/auth/session": [
+        200,
+        session({
+          state: "needs_selection",
+          tenants: [beta, acme],
+          organizations_in_directory: true,
+        }),
+      ],
+      "/feature-flags": [200, { flags: [] }],
+      "/organizations": [
+        200,
+        [
+          { id: "o1", slug: "acme-group", name: "Acme Group", role: "org_admin" },
+          { id: "o2", slug: "beta-holdings", name: "Beta Holdings", role: "member" },
+        ],
+      ],
+    });
+    renderAt("/");
+    expect(await screen.findByRole("heading", { name: "Choose an organization" })).toBeTruthy();
+    // The rows are the organizations, not their workspaces, under no heading.
+    expect(await screen.findByRole("button", { name: /Acme Group/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Beta Holdings/ })).toBeTruthy();
+    expect(screen.queryByText("Acme", { exact: true })).toBeNull();
+  });
+
+  it("lists the workspaces of one organization without a heading", async () => {
+    const research: TenantMembership = { ...beta, id: "t3", name: "Research", organization_id: "o1" };
+    mockFetch({
+      "/auth/session": [200, session({ state: "needs_selection", tenants: [acme, research] })],
+      "/feature-flags": [200, { flags: [] }],
+      "/organizations": [200, [{ id: "o1", slug: "acme-group", name: "Acme Group", role: "org_admin" }]],
+    });
+    renderAt("/");
+    const list = await screen.findByRole("list", { name: "Workspaces" });
+    expect(within(list).getByRole("button", { name: "Acme admin" })).toBeTruthy();
+    expect(within(list).getByRole("button", { name: "Research member" })).toBeTruthy();
+    expect(screen.queryByText("Acme Group")).toBeNull();
+  });
+
+  it("still offers every workspace, ungrouped and saying why, when the organizations cannot be read", async () => {
     mockFetch({
       "/auth/session": [200, session({ state: "needs_selection", tenants: [acme, beta] })],
       "/feature-flags": [200, { flags: [] }],
+      "/organizations": [500, { detail: "database unavailable" }],
     });
-    renderAt("/rooms");
-    expect(await screen.findByText("Choose a workspace")).toBeTruthy();
-    expect(screen.getByText("Acme")).toBeTruthy();
-    expect(screen.getByText("Beta Co")).toBeTruthy();
+    renderAt("/");
+    expect(
+      await screen.findByText(
+        /Could not load the organizations' names, so the workspaces are not grouped: database unavailable/,
+      ),
+    ).toBeTruthy();
+    const list = screen.getByRole("list", { name: "Workspaces" });
+    expect(within(list).getAllByRole("button")).toHaveLength(2);
+  });
+
+  it("says so when the chosen workspace cannot be opened, and lets them choose again", async () => {
+    const switched = vi.fn();
+    mockFetch({
+      "/auth/session": [200, session({ state: "needs_selection", tenants: [acme, beta] })],
+      "/feature-flags": [200, { flags: [] }],
+      "/organizations": [200, []],
+    });
+    const original = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/tenants/t2/switch")) {
+          switched(init?.method);
+          return new Response(JSON.stringify({ detail: "workspace gone" }), { status: 404 });
+        }
+        return original(input, init);
+      }),
+    );
+    renderAt("/");
+    fireEvent.click(await screen.findByRole("button", { name: /Beta Co/ }));
+    expect(await screen.findByText("workspace gone")).toBeTruthy();
+    expect(switched).toHaveBeenCalledWith("POST");
+    expect(screen.getByRole("button", { name: /Beta Co/ }).getAttribute("aria-disabled")).toBeNull();
   });
 
   it("puts a pending invite before everything else", async () => {
@@ -239,7 +566,7 @@ describe("AppRoutes", () => {
     });
     renderAt("/");
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
-    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBeNull();
   });
 
@@ -253,7 +580,7 @@ describe("AppRoutes", () => {
     renderAt("/");
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
     expect(await screen.findByText("Couldn't sign out: Bad Gateway")).toBeTruthy();
-    expect(screen.queryByText("Switch Gateway")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
     // Still signed in, so still on the way to the invitation.
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBe("abc");
   });
@@ -261,10 +588,9 @@ describe("AppRoutes", () => {
   it("says so when the session cannot be read, instead of showing sign-in", async () => {
     mockFetch({ "/auth/session": [500, { detail: "database unavailable" }] });
     renderAt("/rooms");
-    expect(
-      await screen.findByText(/Could not load your session: database unavailable/),
-    ).toBeTruthy();
-    expect(screen.queryByText("Switch Gateway")).toBeNull();
+    await sessionCouldNotLoad("database unavailable");
+    expect(screen.queryByText("Sign in to Switch")).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
   it("says so when the deployment's flags cannot be read, rather than hiding pages", async () => {
@@ -273,7 +599,7 @@ describe("AppRoutes", () => {
       "/feature-flags": [500, { detail: "flags unavailable" }],
     });
     renderAt("/rooms");
-    expect(await screen.findByText(/Could not load your session: flags unavailable/)).toBeTruthy();
+    await sessionCouldNotLoad("flags unavailable");
   });
 
   it("says so when the workspace cannot be read, rather than treating everyone as a member", async () => {
@@ -282,9 +608,7 @@ describe("AppRoutes", () => {
       "/tenants/current": [500, { detail: "workspace unavailable" }],
     });
     renderAt("/rooms");
-    expect(
-      await screen.findByText(/Could not load your session: workspace unavailable/),
-    ).toBeTruthy();
+    await sessionCouldNotLoad("workspace unavailable");
   });
 
   it("says there is no page at an address that is none", async () => {
@@ -310,6 +634,23 @@ describe("AppRoutes", () => {
     expect(screen.queryByText(/FEATURE_FLAGS_ENABLED/)).toBeNull();
   });
 
+  it("signs out, and says what could not be ended, when some sign-ins elsewhere stay", async () => {
+    mockFetch({
+      ...signedInAs("member"),
+      "/auth/sessions/revoke": [
+        502,
+        { detail: "1 sign-in at WorkOS could not be ended.", end_session_url: null },
+      ],
+      "/auth/config": [200, authConfig],
+    });
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out of all devices" }));
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
+    expect(await screen.findByText("1 sign-in at WorkOS could not be ended.")).toBeTruthy();
+    expect(signedOutOnPurpose()).toBe(true);
+  });
+
   it("stays signed in, saying so, when signing out of every device from the menu fails", async () => {
     mockFetch({
       ...signedInAs("member"),
@@ -322,6 +663,61 @@ describe("AppRoutes", () => {
       await screen.findByText("Couldn't sign out of every device: Internal Server Error"),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Account menu" })).toBeTruthy();
+  });
+});
+
+describe("signing out of a sign-in at WorkOS", () => {
+  const originalLocation = window.location;
+  const assign = vi.fn();
+
+  beforeEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, assign },
+    });
+  });
+
+  afterEach(() => {
+    assign.mockClear();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
+  });
+
+  it("leaves for WorkOS to end it, coming back to a sign-in that hands straight off again", async () => {
+    // An invitation to follow, so the screen is the one before a workspace,
+    // which the next person to sign in must not inherit.
+    storePendingInvite("abc");
+    mockFetch({
+      ...signedInAs("org_admin"),
+      "/auth/logout": [200, { ok: true, end_session_url: "https://auth.example.test/logout" }],
+    });
+    renderAt("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://auth.example.test/logout"));
+    expect(signedOutOnPurpose()).toBe(false);
+    expect(window.sessionStorage.getItem("switch.pendingInvite")).toBeNull();
+  });
+
+  it("keeps what signing out of every device could not end for the page it comes back to", async () => {
+    mockFetch({
+      ...signedInAs("member"),
+      "/auth/sessions/revoke": [
+        502,
+        {
+          detail: "1 sign-in at WorkOS could not be ended.",
+          end_session_url: "https://auth.example.test/logout",
+        },
+      ],
+    });
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out of all devices" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://auth.example.test/logout"));
+    expect(readSignOutNotice()).toBe("1 sign-in at WorkOS could not be ended.");
   });
 });
 
@@ -1151,9 +1547,7 @@ describe("a page that falls behind the server", () => {
     await railLabels();
     mockFetch({ ...signedInAs("member"), "/auth/session": [503, { detail: "server restarting" }] });
     window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
-    expect(
-      await screen.findByText(/Could not load your session: server restarting/),
-    ).toBeTruthy();
+    await sessionCouldNotLoad("server restarting");
   });
 
   it("follows a change of role when the tab comes back", async () => {
@@ -1426,7 +1820,7 @@ describe("a link naming a workspace", () => {
       "/auth/login": [200, { id: "u1", name: "Ada", email: "ada@example.com" }],
     });
     renderAt("/rooms/r1?tab=documents&workspace=t2");
-    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
     expect(switchedTo("t2")).toBe(false);
 
     fireEvent.change(await screen.findByLabelText(/^Email/), {

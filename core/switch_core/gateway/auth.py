@@ -58,6 +58,7 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
     get_user_store,
 )
+from switch_core.gateway.identity_sessions import identity_sessions_of
 from switch_core.gateway.schemas import (
     OrganizationSummary,
     SessionStateResponse,
@@ -94,6 +95,11 @@ SESSION_MAX_AGE = datetime.timedelta(days=14)
 # the claim existed carries none: it cannot be signed out of on its own, and
 # is given an id the next time it is minted again.
 SESSION_ID_CLAIM = "sid"
+# The identity-provider session a sign-in through WorkOS AuthKit stands on: an
+# `identity_sessions` row id, never the provider's own session id. Absent for
+# a password or generic OIDC sign-in. Carried by every re-mint, like the
+# session's id.
+IDENTITY_SESSION_CLAIM = "isid"
 
 REVOKED_SESSIONS = RevokedSessionStore()
 # The one-time sign-ins Switch Console hands a browser
@@ -199,6 +205,7 @@ def create_jwt(
     session_version: int,
     auth_time: datetime.datetime,
     session_id: str,
+    identity_session: str | None,
 ) -> str:
     """Sign a session JWT. `tenant_id` is the caller's selected tenant, or
     `None` for a session that has not selected one yet (a fresh login, or a
@@ -212,10 +219,12 @@ def create_jwt(
     presented session's own (`session_auth_time`) for a re-mint. A session
     signed in `SESSION_MAX_AGE` ago or longer is refused with 401 rather than
     minted again. `session_id` is the session's (`SESSION_ID_CLAIM`): new for
-    a sign-in, the presented session's own for a re-mint.
+    a sign-in, the presented session's own for a re-mint. So is
+    `identity_session` (`IDENTITY_SESSION_CLAIM`), so a session stays on the
+    identity-provider session it signed in with.
     """
     now = datetime.datetime.now(datetime.UTC)
-    payload = {
+    payload: dict[str, object] = {
         "sub": user_id,
         "email": email,
         "role": role,
@@ -226,6 +235,8 @@ def create_jwt(
         "exp": session_expires_at(now, auth_time),
         "iat": now,
     }
+    if identity_session is not None:
+        payload[IDENTITY_SESSION_CLAIM] = identity_session
     return jwt.encode(
         payload,
         keyring.derive(Purpose.SESSION),
@@ -249,28 +260,35 @@ def session_expires_at(
 @dataclass(frozen=True)
 class SignedIn:
     """Which sign-in a session cookie is minted for: its id
-    (`SESSION_ID_CLAIM`) and when the person proved who they are
-    (`AUTH_TIME_CLAIM`). New for a sign-in (`signed_in_now`); the presented
-    session's own for every re-mint (`session_signed_in`)."""
+    (`SESSION_ID_CLAIM`), when the person proved who they are
+    (`AUTH_TIME_CLAIM`), and the identity-provider session it stands on
+    (`IDENTITY_SESSION_CLAIM`), if any. New for a sign-in (`signed_in_now`);
+    the presented session's own for every re-mint (`session_signed_in`)."""
 
     session_id: str
     at: datetime.datetime
+    identity_session: str | None
 
 
-def signed_in_now() -> SignedIn:
-    """A new session, for someone who has just signed in."""
+def signed_in_now(identity_session: str | None) -> SignedIn:
+    """A new session, for someone who has just signed in, standing on
+    `identity_session` for a sign-in through WorkOS AuthKit."""
     return SignedIn(
-        session_id=secrets.token_urlsafe(16), at=datetime.datetime.now(datetime.UTC)
+        session_id=secrets.token_urlsafe(16),
+        at=datetime.datetime.now(datetime.UTC),
+        identity_session=identity_session,
     )
 
 
 def session_signed_in(request: Request) -> SignedIn:
-    """The request's session, for minting it again: its id, and when it
-    signed in (`session_auth_time`). A cookie minted before sessions had ids
-    is given one here, and can be signed out of on its own from then on."""
+    """The request's session, for minting it again: its id, when it signed
+    in (`session_auth_time`) and the identity-provider session it stands on
+    (`session_identity`). A cookie minted before sessions had ids is given
+    one here, and can be signed out of on its own from then on."""
     return SignedIn(
         session_id=session_id_of(request) or secrets.token_urlsafe(16),
         at=session_auth_time(request),
+        identity_session=session_identity(request),
     )
 
 
@@ -335,6 +353,7 @@ def set_session_cookie(
         session_version=user.session_version,
         auth_time=signed_in.at,
         session_id=signed_in.session_id,
+        identity_session=signed_in.identity_session,
     )
     response.set_cookie(
         key="switch_auth",
@@ -378,6 +397,25 @@ def _session_key(token: str, keyring: Keyring) -> bytes | str:
         return keyring.derive(Purpose.SESSION, key_id)
     except KeyringError as exc:
         raise jwt.InvalidTokenError(str(exc)) from exc
+
+
+def signed_claims(request: HTTPConnection, keyring: Keyring) -> dict | None:
+    """The session cookie's claims, its signature checked but not its
+    expiry, or None with no cookie or one that is not ours. For signing out,
+    which ends what an expired cookie stood on too."""
+    token = request.cookies.get("switch_auth")
+    if token is None:
+        return None
+    try:
+        payload: dict = jwt.decode(
+            token,
+            _session_key(token, keyring),
+            algorithms=[JWT_ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except jwt.InvalidTokenError:
+        return None
+    return payload
 
 
 def session_claims(token: str, keyring: Keyring) -> dict[str, Any] | None:
@@ -425,7 +463,7 @@ async def _authenticate(
     one) and `get_authenticated_user_id` (which deliberately does not).
     """
     payload = _session_claims(request, config)
-    await _require_current_session(session_factory, user_store, payload)
+    await _require_current_session(request, session_factory, user_store, payload)
     return payload
 
 
@@ -439,6 +477,7 @@ def _session_claims(request: HTTPConnection, config: SwitchConfig) -> dict:
     payload = decode_jwt(token, config.keyring)
     request.state.session_auth_time = _auth_time(payload)
     request.state.session_id = _session_id(payload)
+    request.state.identity_session = identity_session_of(payload)
     return payload
 
 
@@ -451,6 +490,12 @@ def _auth_time(payload: dict) -> datetime.datetime:
 def _session_id(payload: dict) -> str | None:
     session_id = payload.get(SESSION_ID_CLAIM)
     return session_id if isinstance(session_id, str) else None
+
+
+def identity_session_of(payload: dict) -> str | None:
+    """The identity-provider session a session's claims stand on, if any."""
+    value = payload.get(IDENTITY_SESSION_CLAIM)
+    return value if isinstance(value, str) and value else None
 
 
 def session_auth_time(request: Request) -> datetime.datetime:
@@ -468,6 +513,18 @@ def session_auth_time(request: Request) -> datetime.datetime:
             "session_auth_time read on a request whose session was not authenticated"
         )
     return auth_time
+
+
+def session_identity(request: Request) -> str | None:
+    """The identity-provider session the request's session stands on, for
+    minting it again: a re-mint keeps it, as it keeps `session_auth_time`.
+    Raises, as that does, on a request whose session was not authenticated."""
+    if not hasattr(request.state, "identity_session"):
+        raise RuntimeError(
+            "session_identity read on a request whose session was not authenticated"
+        )
+    identity_session: str | None = request.state.identity_session
+    return identity_session
 
 
 def _session_version(payload: dict) -> int:
@@ -495,19 +552,36 @@ async def _refuse_signed_out_session(session: AsyncSession, payload: dict) -> No
         raise HTTPException(status_code=401, detail="Session ended")
 
 
+async def _check_session(
+    connection: HTTPConnection, db: AsyncSession, current_version: int, payload: dict
+) -> None:
+    """401 for a session that no longer stands: its account's sessions were
+    ended since it was minted (`_refuse_ended_session`), it was signed out of
+    (`_refuse_signed_out_session`), or the identity-provider session it signed
+    in with has ended (`gateway/identity_sessions.py`). `db` is a session the
+    caller already holds; both are read on it."""
+    _refuse_ended_session(current_version, payload)
+    await _refuse_signed_out_session(db, payload)
+    identity_session = identity_session_of(payload)
+    if identity_session is not None:
+        await identity_sessions_of(connection).require_live(
+            db, payload["sub"], identity_session
+        )
+
+
 async def _require_current_session(
+    connection: HTTPConnection,
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     payload: dict,
 ) -> None:
-    """The cookie's subject still exists, its sessions were not ended since
-    this one was minted, and this one was not signed out of."""
+    """The cookie's subject still exists and its session still stands
+    (`_check_session`)."""
     async with session_factory() as system_session:
         version = await user_store.session_version(system_session, payload["sub"])
         if version is None:
             raise HTTPException(status_code=401, detail="User not found")
-        _refuse_ended_session(version, payload)
-        await _refuse_signed_out_session(system_session, payload)
+        await _check_session(connection, system_session, version, payload)
 
 
 async def sign_out_session(
@@ -579,35 +653,52 @@ async def session_signed_out(session: AsyncSession, session_id: str | None) -> b
 
 
 async def session_is_current(
+    connection: HTTPConnection,
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     user_id: str,
     session_version: int,
     session_id: str | None,
+    identity_session: str | None,
 ) -> bool:
     """Whether a session minted with `session_version` still stands: the
-    account exists, its sessions have not been ended since, and this one,
-    `session_id`, was not signed out of. Asked again by a socket or stream
-    that stays open long after it was authenticated."""
+    account exists, its sessions have not been ended since, this one,
+    `session_id`, was not signed out of, and the identity-provider session it
+    stands on, `identity_session`, has not ended. Asked again by a socket or
+    stream that stays open long after it was authenticated."""
     async with session_factory() as system_session:
         current = await user_store.session_version(system_session, user_id)
         signed_out = await _signed_out(system_session, session_id)
-    return current == session_version and not signed_out
+        if current != session_version or signed_out:
+            return False
+        if identity_session is None:
+            return True
+        return await identity_sessions_of(connection).live_on(
+            system_session, user_id, identity_session
+        )
 
 
 async def session_still_enters(
+    connection: HTTPConnection,
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     user_id: str,
     session_version: int,
     session_id: str | None,
+    identity_session: str | None,
     tenant_id: str,
 ) -> bool:
     """`session_is_current`, and the session's workspace still one the person
     may enter: not left, removed from or archived since the socket or stream
     asking was opened (`may_bind_tenant`)."""
     return await session_is_current(
-        session_factory, user_store, user_id, session_version, session_id
+        connection,
+        session_factory,
+        user_store,
+        user_id,
+        session_version,
+        session_id,
+        identity_session,
     ) and await may_bind_tenant(session_factory, user_store, user_id, tenant_id)
 
 
@@ -694,6 +785,11 @@ async def signed_in_user(
         return None
     if await _signed_out(session, _session_id(payload)):
         return None
+    identity_session = identity_session_of(payload)
+    if identity_session is not None and not await identity_sessions_of(request).live_on(
+        session, user.id, identity_session
+    ):
+        return None
     return user
 
 
@@ -770,8 +866,7 @@ async def get_authenticated_caller(
         user = await user_store.get(system_session, payload["sub"])
         if user is None:
             raise HTTPException(status_code=401, detail="User not found")
-        _refuse_ended_session(user.session_version, payload)
-        await _refuse_signed_out_session(system_session, payload)
+        await _check_session(request, system_session, user.session_version, payload)
         refuse_suspended_account(user)
     return AuthenticatedCaller(
         id=user.id, email=user.email, is_operator=user.role == "admin"
@@ -1371,8 +1466,14 @@ def describe_session_state(
     tenants_isolated: bool,
     can_manage_connector_apps: bool,
     connector_apps_in_dashboard: bool,
+    one_workspace_organizations: frozenset[str],
+    license_to_accept: str | None,
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
+    `one_workspace_organizations` are those of the caller's organizations
+    that get no more workspaces (`workspace_creation.keeps_one_workspace`);
+    `license_to_accept` the license version creating one waits on
+    (`gateway/licenses.py`).
 
     Follows its order exactly — a claim is honoured only if it names one of
     `tenants`, or is the workspace the platform operator entered
@@ -1420,10 +1521,13 @@ def describe_session_state(
         can_add_workspace=tenants_isolated
         and tenant is not None
         and tenant.organization_role == ORGANIZATION_ADMIN_ROLE
-        and refusal(False) is None,
+        and refusal(False) is None
+        and tenant.organization_id not in one_workspace_organizations,
         invite_email_enabled=config.invite_email_enabled,
         can_manage_connector_apps=can_manage_connector_apps,
         connector_apps_in_dashboard=connector_apps_in_dashboard,
+        license_to_accept=license_to_accept,
+        organizations_in_directory=config.organizations_created_in_directory,
     )
 
 
@@ -1595,8 +1699,7 @@ async def _bound_user(
         if user is None:
             # Deleted between the two reads; rare, and still not a 500.
             raise HTTPException(status_code=401, detail="User not found")
-        _refuse_ended_session(user.session_version, payload)
-        await _refuse_signed_out_session(session, payload)
+        await _check_session(request, session, user.session_version, payload)
         refuse_suspended_account(user)
         request.state.platform_access = (
             user.role == "admin"
@@ -1637,6 +1740,9 @@ class SocketCaller:
     # id, checked again while the socket is open (`session_is_current`).
     session_version: int
     session_id: str | None
+    # The identity-provider session the cookie stands on, if any, checked
+    # again with it.
+    identity_session: str | None
 
 
 async def authenticate_socket(
@@ -1654,7 +1760,7 @@ async def authenticate_socket(
     """
     payload = _session_claims(connection, config)
     user_id: str = payload["sub"]
-    await _require_current_session(session_factory, user_store, payload)
+    await _require_current_session(connection, session_factory, user_store, payload)
     tenant_id = await _resolve_tenant_id(
         session_factory,
         user_store,
@@ -1668,6 +1774,7 @@ async def authenticate_socket(
         expires_at=float(payload["exp"]),
         session_version=_session_version(payload),
         session_id=_session_id(payload),
+        identity_session=identity_session_of(payload),
     )
 
 

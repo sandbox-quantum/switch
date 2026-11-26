@@ -66,6 +66,7 @@ from switch_core.gateway.agent_sessions import ApprovalRequestView
 from switch_core.gateway.auth import (
     get_current_user,
     session_id_of,
+    session_identity,
     session_still_enters,
 )
 from switch_core.gateway.dependencies import get_config, get_user_store
@@ -383,18 +384,21 @@ def _session_check(
 ) -> Callable[[], Awaitable[bool]]:
     """What a stream asks at each re-read: whether the session it was opened
     with still stands, and may still enter its workspace, or the account's
-    sessions have been ended, this one signed out of, or the workspace left
-    or archived since."""
+    sessions have been ended, this one signed out of, its identity-provider
+    session ended, or the workspace left or archived since."""
     session_version = user.session_version
     session_id = session_id_of(request)
+    identity_session = session_identity(request)
 
     async def still_current() -> bool:
         return await session_still_enters(
+            request,
             service.session_factory,
             user_store,
             user.id,
             session_version,
             session_id,
+            identity_session,
             tenant_id,
         )
 

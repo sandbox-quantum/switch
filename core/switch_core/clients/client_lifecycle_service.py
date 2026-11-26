@@ -253,7 +253,13 @@ class ClientLifecycleService:
                     localpart=localpart,
                 )
 
-    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ) -> Tenant:
         """Create a tenant with everything it needs to function, in one call.
 
         Nothing in the running application ever created a `tenants` row
@@ -284,7 +290,10 @@ class ClientLifecycleService:
 
         The workspace belongs to `organization_id`, which must exist: creating
         the organization, or choosing one the caller administers, is the
-        route's business, as authorising is.
+        route's business, as authorising is. `directory_workspace_id` is the
+        directory's id for it, for the one workspace of an organization the
+        directory keeps; written with the row, so a workspace never exists
+        without it.
         """
         if not self._tenants_isolated:
             raise TenantIsolationNotInForce(
@@ -295,7 +304,11 @@ class ClientLifecycleService:
                 "creating another."
             )
         tenant = Tenant(
-            id=str(uuid.uuid4()), name=name, slug=slug, organization_id=organization_id
+            id=str(uuid.uuid4()),
+            name=name,
+            slug=slug,
+            organization_id=organization_id,
+            directory_workspace_id=directory_workspace_id,
         )
         async with tenant_session(self._session_factory, tenant.id) as session:
             await self._tenant_store.create(session, tenant)

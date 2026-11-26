@@ -1624,16 +1624,41 @@ export async function login(email: string, password: string): Promise<UserInfo> 
   return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
 
+/** What signing out answers. `endSessionUrl` is set when the session stood on
+ * a WorkOS AuthKit session: the browser goes there for WorkOS to end that too,
+ * and comes back to sign-in. `notice` says what could not be ended. */
+export interface SignedOut {
+  endSessionUrl: string | null;
+  notice: string | null;
+}
+
+interface SignOutAnswer {
+  end_session_url?: string | null;
+  detail?: unknown;
+}
+
+function signedOut(answer: SignOutAnswer, notice: string | null): SignedOut {
+  return { endSessionUrl: answer.end_session_url ?? null, notice };
+}
+
 // Throws when the cookie wasn't cleared, so a failed sign-out never looks
 // like a signed-out browser that a reload would sign straight back in.
-export async function logout(): Promise<void> {
-  await jsonRequest("/auth/logout", "POST");
+export async function logout(): Promise<SignedOut> {
+  return signedOut(await jsonRequest<SignOutAnswer>("/auth/logout", "POST"), null);
 }
 
 // Ends every session the account holds, this one included: a copied cookie or
-// a browser left signed in elsewhere stops working at once.
-export async function signOutEverywhere(): Promise<void> {
-  await jsonRequest("/auth/sessions/revoke", "POST");
+// a browser left signed in elsewhere stops working at once. A 502 means some
+// sign-ins elsewhere could not be ended at WorkOS; this one is signed out all
+// the same, so it is answered, not thrown.
+export async function signOutEverywhere(): Promise<SignedOut> {
+  const res = await gatewayFetch(`${BASE}/auth/sessions/revoke`, { method: "POST" });
+  if (res.status === 502) {
+    const answer = ((await res.json().catch(() => null)) ?? {}) as SignOutAnswer;
+    return signedOut(answer, errorText(answer.detail ?? null, "Some sign-ins could not be ended."));
+  }
+  if (!res.ok) throw await failure(res);
+  return signedOut((await res.json()) as SignOutAnswer, null);
 }
 
 /** The signed-in account, as Your account shows it. */
@@ -1659,8 +1684,8 @@ export async function accountDeletionRefusal(): Promise<string | null> {
 }
 
 /** Deletes the account everywhere, confirmed by its email typed out. */
-export async function deleteMyAccount(email: string): Promise<void> {
-  await jsonRequest("/auth/me", "DELETE", { email });
+export async function deleteMyAccount(email: string): Promise<SignedOut> {
+  return signedOut(await jsonRequest<SignOutAnswer>("/auth/me", "DELETE", { email }), null);
 }
 
 /** A sign-in link Switch Console handed this browser, as its page asks about
@@ -1688,10 +1713,19 @@ export async function redeemBrowserHandoff(code: string): Promise<{ next: string
 
 export type SignupMode = "default_tenant" | "invite_only" | "open";
 
+/** One of the sign-in buttons configured for the identity provider: `id`
+ * goes back to `/auth/oidc/login` to start that way of signing in. */
+export interface OidcLoginOption {
+  id: string;
+  label: string;
+}
+
 export interface AuthConfig {
   password_login_enabled: boolean;
   oidc_enabled: boolean;
   oidc_provider_label: string | null;
+  // Empty for one button, labelled `oidc_provider_label`.
+  oidc_login_options: OidcLoginOption[];
   signup_mode: SignupMode;
 }
 
@@ -1742,6 +1776,13 @@ export interface Session {
   // operator sets them up with the switch-connector-apps command. Absent
   // from a server from before it said.
   connector_apps_in_dashboard?: boolean;
+  // The license version the caller accepts before creating an organization;
+  // null when none is asked. Absent from a server from before it asked.
+  license_to_accept?: string | null;
+  // Whether a new organization is created in the account every Switch
+  // product shares, with one workspace, so onboarding asks what Switch Trust
+  // asks. Absent from a server from before it said.
+  organizations_in_directory?: boolean;
 }
 
 /** The signed-in session, or null when nobody is signed in. Any other
@@ -1753,6 +1794,60 @@ export async function fetchSession(): Promise<Session | null> {
     if (err instanceof ApiError && err.status === 401) return null;
     throw err;
   }
+}
+
+/** Accept the license version `GET /auth/session` names, before creating an
+ * organization. */
+export async function acceptLicense(version: string): Promise<void> {
+  const res = await gatewayFetch(`${BASE}/auth/license`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version }),
+  });
+  if (!res.ok) throw await failure(res);
+}
+
+/** The most characters an organization's name may have where organizations
+ * are kept in the account every Switch product shares, as it counts them. */
+export const DIRECTORY_ORGANIZATION_NAME_MAX = 64;
+
+export type TeamSize = "just_me" | "2_10" | "11_50" | "51_200" | "201_1000" | "over_1000";
+
+export const TEAM_SIZES: { value: TeamSize; label: string }[] = [
+  { value: "just_me", label: "Just me" },
+  { value: "2_10", label: "2 to 10" },
+  { value: "11_50", label: "11 to 50" },
+  { value: "51_200", label: "51 to 200" },
+  { value: "201_1000", label: "201 to 1,000" },
+  { value: "over_1000", label: "More than 1,000" },
+];
+
+export interface OrganizationSetupAnswers {
+  team_size: TeamSize | null;
+  use_case: string | null;
+}
+
+/** Set up an organization the onboarding way: its name and what its creator
+ * says about it. The server switches the session into its workspace. */
+export async function setUpOrganization(
+  name: string,
+  answers: OrganizationSetupAnswers,
+): Promise<TenantMembership> {
+  // Creating it in the shared account can take the server up to 90 seconds,
+  // past the usual request timeout: giving up sooner shows a failure for an
+  // organization that is still being made, and trying again finds it made.
+  const res = await gatewayFetch(
+    `${BASE}/organizations`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, setup_answers: answers }),
+    },
+    LONG_REQUEST_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await failure(res);
+  const created = (await res.json()) as { workspace: TenantMembership };
+  return created.workspace;
 }
 
 /** Create an organization with a first workspace of the same name, and switch
@@ -2564,32 +2659,45 @@ export async function previewInvitation(token: string): Promise<InvitationPrevie
 }
 
 // Unauthenticated: tells the login page which methods to offer.
-export async function fetchAuthConfig(): Promise<AuthConfig | null> {
-  return fetchJson<AuthConfig>("/auth/config");
+export async function fetchAuthConfig(): Promise<AuthConfig> {
+  return jsonRequest<AuthConfig>("/auth/config", "GET");
 }
 
 // Full-page navigation (not fetch): the IdP redirect round-trip must happen
-// at the top level so cookies and the callback redirect work.
-export function oidcLoginUrl(): string {
-  return `${BASE}/auth/oidc/login`;
+// at the top level so cookies and the callback redirect work. `provider` is
+// one of the configured login options, or null for the provider's own choice;
+// `next` is where on the dashboard to land.
+export function oidcLoginUrl(provider: string | null, next: string | null): string {
+  const query = new URLSearchParams();
+  if (provider !== null) query.set("provider", provider);
+  if (next !== null) query.set("next", next);
+  const search = query.toString();
+  return `${BASE}/auth/oidc/login${search === "" ? "" : `?${search}`}`;
 }
 
-/** Where an admin signs in to their organization's WorkOS account, for the
- * token a change to its members needs, and comes back to `returnTo`. */
-// A dashboard path, and nothing that could leave it: no `//`, which a browser
-// reads as another host. The server checks the same.
-const DASHBOARD_PATH = /^\/(?!\/)[A-Za-z0-9/_.-]*$/;
-
-export function organizationSignInUrl(returnTo: string): string {
-  const path = DASHBOARD_PATH.test(returnTo) ? returnTo : "/organization";
-  return `${BASE}/auth/workos/organization?return_to=${encodeURIComponent(path)}`;
+/** Where an admin signs in again when a change to their organization's
+ * members needs it, and comes back to `next` (the server lands anywhere off
+ * the dashboard on its home instead). With the WorkOS organization the server
+ * named, the sign-in is to it, so its own way of signing in applies. */
+export function organizationSignInUrl(next: string, organizationId: string | null): string {
+  const query = new URLSearchParams({ next });
+  if (organizationId !== null) query.set("organization_id", organizationId);
+  return `${BASE}/auth/oidc/login?${query.toString()}`;
 }
 
 /** The server's answer when a change to a linked organization's members
- * waits on the admin signing in to its WorkOS account. */
+ * waits on the admin signing in again. */
 export function needsOrganizationSignIn(err: unknown): boolean {
   if (!(err instanceof ApiError) || !err.detail || typeof err.detail !== "object") return false;
   return (err.detail as Record<string, unknown>).error === "directory_sign_in_required";
+}
+
+/** The WorkOS organization a sign-in asked for by `needsOrganizationSignIn`
+ * is to, when the server named one. */
+export function organizationToSignInTo(err: unknown): string | null {
+  if (!needsOrganizationSignIn(err)) return null;
+  const named = (err as ApiError & { detail: Record<string, unknown> }).detail.organization_id;
+  return typeof named === "string" ? named : null;
 }
 
 /** Whether the change that asked for a sign-in had already taken away the

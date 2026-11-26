@@ -3331,6 +3331,25 @@
     {
       "definition": {
         "type": "timeseries",
+        "title": "WorkOS AuthKit session checks, by outcome",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.auth.identity_session_checks{$service,$flint_env} by {outcome}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 181,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
         "title": "Unhandled exceptions, by component and type",
         "show_legend": true,
         "requests": [

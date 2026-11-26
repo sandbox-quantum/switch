@@ -37,6 +37,7 @@ def _session(user_id: str, keyring: Keyring = _KEYRING) -> str:
         session_version=0,
         auth_time=datetime.now(UTC),
         session_id=f"session-{user_id}",
+        identity_session=None,
     )
 
 
@@ -372,7 +373,6 @@ def test_every_gateway_callback_is_marked_as_a_get_that_writes() -> None:
     ]
     assert {r.path for r in callbacks} >= {
         "/auth/oidc/callback",
-        "/auth/workos/callback",
         "/service-connections/{service}/flows/callback",
         "/provider-connections/github/callback",
     }

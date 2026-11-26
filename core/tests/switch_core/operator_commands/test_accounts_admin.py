@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -45,10 +46,13 @@ from switch_core.db.models import (
     TenantMember,
     User,
 )
+from switch_core.db.stores.identity_session_store import IdentitySessionStore
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.gateway.invite_mail import AdminChangeEmail
 from switch_core.operator_commands import CommandRefused
 from switch_core.tenant_context import tenant_scope
-from tests.conftest import RLSHarness
+from switch_core.workos_authkit import AuthKitUnavailable
+from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.accounts.test_account_deletion import (
     ADMIN_EMAIL,
     _agent,
@@ -56,6 +60,7 @@ from tests.switch_core.accounts.test_account_deletion import (
     _deletion,
     _invitation,
 )
+from tests.switch_core.gateway.test_identity_session_check import _AuthKitSignOut
 from tests.switch_core.operator_commands.helpers import (
     RecordingMailer,
     email_of,
@@ -65,6 +70,35 @@ from tests.switch_core.operator_commands.helpers import (
 pytestmark = pytest.mark.no_ambient_tenant
 
 COMMAND = {"platform_operator_command": True}
+
+
+async def _identity_session(
+    rls_harness: RLSHarness, user_id: str, session_id: str
+) -> str:
+    async with rls_harness.owner() as session:
+        row_id = await IdentitySessionStore().record(
+            session,
+            user_id=user_id,
+            provider="workos",
+            provider_user_id="user_ACCOUNT",
+            session_id=session_id,
+            encrypted_refresh_token="sealed-refresh-token",
+            now=datetime.now(UTC),
+        )
+        await session.commit()
+    return row_id
+
+
+async def _identity_live(rls_harness: RLSHarness, row_id: str) -> bool:
+    async with rls_harness.owner() as session:
+        row = await IdentitySessionStore().get(session, row_id)
+    return row is not None and row.ended_at is None
+
+
+def _no_authkit(rls_harness: RLSHarness) -> IdentitySessions:
+    """The accounts' identity sessions on a server that does not sign in
+    through WorkOS AuthKit."""
+    return IdentitySessions(rls_harness.restricted, None, TEST_KEYRING)
 
 
 async def _account(
@@ -237,7 +271,11 @@ class TestSignOut:
     async def test_every_session_ends_audited(self, rls_harness: RLSHarness) -> None:
         user = await _account(rls_harness, "laptop-lost")
 
-        await sign_out(rls_harness.restricted, "Laptop-Lost@example.invalid")
+        await sign_out(
+            rls_harness.restricted,
+            _no_authkit(rls_harness),
+            "Laptop-Lost@example.invalid",
+        )
 
         stored = await _user(rls_harness, user.id)
         assert stored is not None and stored.session_version == 1
@@ -249,9 +287,67 @@ class TestSignOut:
         )
         assert event.details == COMMAND
 
+    async def test_its_sign_ins_at_workos_are_revoked(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        user = await _account(rls_harness, "authkit-out")
+        row_id = await _identity_session(rls_harness, user.id, "s-cli-laptop")
+        workos = _AuthKitSignOut({"s-cli-laptop"})
+
+        await sign_out(
+            rls_harness.restricted,
+            IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
+            user.email,
+        )
+
+        assert workos.revoked == ["s-cli-laptop"]
+        assert not await _identity_live(rls_harness, row_id)
+
+    async def test_a_sign_in_workos_will_not_revoke_is_refused_after_the_rest(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        user = await _account(rls_harness, "authkit-stuck")
+        stuck = await _identity_session(rls_harness, user.id, "s-cli-stuck")
+        workos = _AuthKitSignOut({"s-cli-stuck"})
+        workos.refuse = {"s-cli-stuck"}
+
+        with pytest.raises(CommandRefused, match="1 of its sign-ins at WorkOS"):
+            await sign_out(
+                rls_harness.restricted,
+                IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
+                user.email,
+            )
+
+        # The Switch sessions ended regardless; the WorkOS one is tried again.
+        stored = await _user(rls_harness, user.id)
+        assert stored is not None and stored.session_version == 1
+        assert await _identity_live(rls_harness, stuck)
+
+    async def test_sign_ins_workos_cannot_list_are_refused_not_taken_as_ended(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        user = await _account(rls_harness, "authkit-unlisted")
+        row_id = await _identity_session(rls_harness, user.id, "s-cli-unlisted")
+        workos = _AuthKitSignOut({"s-cli-unlisted"})
+        workos.fail = AuthKitUnavailable("WorkOS answered 503.")
+
+        with pytest.raises(CommandRefused, match="1 of its sign-ins at WorkOS"):
+            await sign_out(
+                rls_harness.restricted,
+                IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
+                user.email,
+            )
+
+        assert workos.revoked == []
+        assert await _identity_live(rls_harness, row_id)
+
     async def test_an_unknown_email_is_refused(self, rls_harness: RLSHarness) -> None:
         with pytest.raises(CommandRefused, match="No account"):
-            await sign_out(rls_harness.restricted, "nobody@example.invalid")
+            await sign_out(
+                rls_harness.restricted,
+                _no_authkit(rls_harness),
+                "nobody@example.invalid",
+            )
 
 
 class TestOperators:
@@ -314,6 +410,75 @@ class TestOperators:
 
 
 class TestDelete:
+    async def test_a_sign_in_workos_will_not_revoke_stops_it_before_anything_changes(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        await _account(rls_harness, "keeper-authkit", workspace_role="admin")
+        leaving = await _account(
+            rls_harness, "leaving-authkit", workspace_role="member"
+        )
+        await _identity_session(rls_harness, leaving.id, "s-cli-delete")
+        workos = _AuthKitSignOut({"s-cli-delete"})
+        workos.refuse = {"s-cli-delete"}
+        deletion, _, _ = _deletion(rls_harness.restricted)
+        plan = await plan_deletion(deletion, rls_harness.restricted, leaving.email)
+
+        with pytest.raises(CommandRefused, match="could not be ended at WorkOS"):
+            await delete_account(
+                deletion,
+                rls_harness.restricted,
+                IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
+                plan,
+            )
+
+        assert await _user(rls_harness, leaving.id) is not None
+
+    async def test_sign_ins_workos_cannot_list_stop_it_before_anything_changes(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        await _account(rls_harness, "keeper-unlisted", workspace_role="admin")
+        leaving = await _account(
+            rls_harness, "leaving-unlisted", workspace_role="member"
+        )
+        row_id = await _identity_session(rls_harness, leaving.id, "s-cli-unlisted-2")
+        workos = _AuthKitSignOut({"s-cli-unlisted-2"})
+        workos.fail = AuthKitUnavailable("WorkOS answered 503.")
+        deletion, _, _ = _deletion(rls_harness.restricted)
+        plan = await plan_deletion(deletion, rls_harness.restricted, leaving.email)
+
+        with pytest.raises(CommandRefused, match="could not be ended at WorkOS"):
+            await delete_account(
+                deletion,
+                rls_harness.restricted,
+                IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
+                plan,
+            )
+
+        assert await _user(rls_harness, leaving.id) is not None
+        assert await _identity_live(rls_harness, row_id)
+
+    async def test_its_sign_ins_at_workos_end_before_it_is_deleted(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        await _account(rls_harness, "keeper-authkit-2", workspace_role="admin")
+        leaving = await _account(
+            rls_harness, "leaving-authkit-2", workspace_role="member"
+        )
+        await _identity_session(rls_harness, leaving.id, "s-cli-gone")
+        workos = _AuthKitSignOut({"s-cli-gone"})
+        deletion, _, _ = _deletion(rls_harness.restricted)
+        plan = await plan_deletion(deletion, rls_harness.restricted, leaving.email)
+
+        await delete_account(
+            deletion,
+            rls_harness.restricted,
+            IdentitySessions(rls_harness.restricted, workos, TEST_KEYRING),  # type: ignore[arg-type]
+            plan,
+        )
+
+        assert workos.revoked == ["s-cli-gone"]
+        assert await _user(rls_harness, leaving.id) is None
+
     async def test_an_account_is_deleted_as_the_dashboard_did_audited(
         self, rls_harness: RLSHarness
     ) -> None:
@@ -326,7 +491,9 @@ class TestDelete:
         assert [w.id for w in plan.workspaces] == [TENANT_ZERO_ID]
         assert await _user(rls_harness, leaving.id) is not None
 
-        await delete_account(deletion, rls_harness.restricted, plan)
+        await delete_account(
+            deletion, rls_harness.restricted, _no_authkit(rls_harness), plan
+        )
 
         assert await _user(rls_harness, leaving.id) is None
         [event] = await _server_events(rls_harness)
@@ -360,7 +527,9 @@ class TestDelete:
         assert plan.needs_the_server is not None
         assert "1 agent(s)" in plan.needs_the_server
         with pytest.raises(CommandRefused, match="only a running server"):
-            await delete_account(deletion, rls_harness.restricted, plan)
+            await delete_account(
+                deletion, rls_harness.restricted, _no_authkit(rls_harness), plan
+            )
 
         assert await _user(rls_harness, owner.id) is not None
         [event] = await _server_events(rls_harness)
@@ -378,7 +547,9 @@ class TestDelete:
         plan = await plan_deletion(deletion, rls_harness.restricted, only_admin.email)
         assert plan.refusal is not None and "only admin" in plan.refusal
         with pytest.raises(CommandRefused, match="only admin"):
-            await delete_account(deletion, rls_harness.restricted, plan)
+            await delete_account(
+                deletion, rls_harness.restricted, _no_authkit(rls_harness), plan
+            )
 
         assert await _user(rls_harness, only_admin.id) is not None
 
@@ -416,7 +587,9 @@ async def test_an_org_admin_deleted_is_emailed_about_once_gone_holding_nothing(
     deletion, _, _ = _deletion(rls_harness.restricted, mailer)
 
     plan = await plan_deletion(deletion, rls_harness.restricted, email_of(leaving))
-    await delete_account(deletion, rls_harness.restricted, plan)
+    await delete_account(
+        deletion, rls_harness.restricted, _no_authkit(rls_harness), plan
+    )
 
     assert sorted(mailer.seen) == sorted(
         [(email_of(leaving), False, 0), (email_of(keeper), False, 0)]
@@ -580,6 +753,7 @@ class TestDeleteCommand:
         status = await run_delete(
             deletion,
             rls_harness.restricted,
+            _no_authkit(rls_harness),
             leaving.email,
             execute=False,
             yes=False,
@@ -620,13 +794,19 @@ class TestDeleteCommand:
         deletion, _, _ = _deletion(rls_harness.restricted)
 
         dry_run = await run_delete(
-            deletion, rls_harness.restricted, only_admin.email, execute=False, yes=False
+            deletion,
+            rls_harness.restricted,
+            _no_authkit(rls_harness),
+            only_admin.email,
+            execute=False,
+            yes=False,
         )
         capsys.readouterr()
         with pytest.raises(CommandRefused, match="What has to happen first"):
             await run_delete(
                 deletion,
                 rls_harness.restricted,
+                _no_authkit(rls_harness),
                 only_admin.email,
                 execute=True,
                 yes=False,
@@ -669,14 +849,24 @@ class TestDeleteCommand:
 
         with pytest.raises(CommandRefused, match="isn't the account's e-mail"):
             await run_delete(
-                deletion, rls_harness.restricted, leaving.email, execute=True, yes=False
+                deletion,
+                rls_harness.restricted,
+                _no_authkit(rls_harness),
+                leaving.email,
+                execute=True,
+                yes=False,
             )
         assert await _user(rls_harness, leaving.id) is not None
         assert await _server_events(rls_harness) == []
 
         operator.answer = leaving.email
         status = await run_delete(
-            deletion, rls_harness.restricted, leaving.email, execute=True, yes=False
+            deletion,
+            rls_harness.restricted,
+            _no_authkit(rls_harness),
+            leaving.email,
+            execute=True,
+            yes=False,
         )
 
         assert status == 0
@@ -701,7 +891,12 @@ class TestDeleteCommand:
         deletion, _, _ = _deletion(rls_harness.restricted)
 
         status = await run_delete(
-            deletion, rls_harness.restricted, leaving.email, execute=True, yes=True
+            deletion,
+            rls_harness.restricted,
+            _no_authkit(rls_harness),
+            leaving.email,
+            execute=True,
+            yes=True,
         )
 
         assert status == 0
@@ -721,7 +916,12 @@ class TestDeleteCommand:
 
         with pytest.raises(CommandRefused, match="isn't a terminal.*--yes"):
             await run_delete(
-                deletion, rls_harness.restricted, leaving.email, execute=True, yes=False
+                deletion,
+                rls_harness.restricted,
+                _no_authkit(rls_harness),
+                leaving.email,
+                execute=True,
+                yes=False,
             )
 
         assert await _user(rls_harness, leaving.id) is not None
@@ -740,7 +940,12 @@ class TestDeleteCommand:
         deletion, _, _ = _deletion(rls_harness.restricted)
 
         status = await run_delete(
-            deletion, rls_harness.restricted, leaving.email, execute=False, yes=False
+            deletion,
+            rls_harness.restricted,
+            _no_authkit(rls_harness),
+            leaving.email,
+            execute=False,
+            yes=False,
         )
 
         assert status == 0
@@ -773,7 +978,12 @@ class TestDeleteCommand:
 
         with pytest.raises(CommandRefused, match="Run it again"):
             await run_delete(
-                deletion, rls_harness.restricted, leaving.email, execute=True, yes=False
+                deletion,
+                rls_harness.restricted,
+                _no_authkit(rls_harness),
+                leaving.email,
+                execute=True,
+                yes=False,
             )
 
         out = capsys.readouterr().out
@@ -827,6 +1037,7 @@ class TestDeleteCommand:
             await run_delete(
                 deletion,
                 rls_harness.restricted,
+                _no_authkit(rls_harness),
                 email_of(leaving_id),
                 execute=True,
                 yes=True,
@@ -903,7 +1114,9 @@ async def test_a_deletion_that_fails_partway_is_recorded_with_what_it_finished(
 
     plan = await plan_deletion(deletion, rls_harness.restricted, leaving.email)
     with pytest.raises(CommandRefused, match="failed partway"):
-        await delete_account(deletion, rls_harness.restricted, plan)
+        await delete_account(
+            deletion, rls_harness.restricted, _no_authkit(rls_harness), plan
+        )
 
     assert await _user(rls_harness, leaving.id) is not None
     [event] = await _server_events(rls_harness)
@@ -938,7 +1151,9 @@ async def test_an_org_admin_whose_deletion_fails_partway_is_emailed_about_all_th
 
     plan = await plan_deletion(deletion, rls_harness.restricted, email_of(leaving))
     with pytest.raises(CommandRefused, match="failed partway"):
-        await delete_account(deletion, rls_harness.restricted, plan)
+        await delete_account(
+            deletion, rls_harness.restricted, _no_authkit(rls_harness), plan
+        )
 
     assert await _user(rls_harness, leaving) is not None
     assert sorted(email.to for email in mailer.sent) == sorted(

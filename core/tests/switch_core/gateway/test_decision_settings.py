@@ -212,6 +212,7 @@ def _as(app: FastAPI, user: User, tenant_id: str = TENANT_ZERO_ID) -> httpx.Asyn
                 session_version=0,
                 auth_time=datetime.now(UTC),
                 session_id=secrets.token_urlsafe(16),
+                identity_session=None,
             )
         },
     )

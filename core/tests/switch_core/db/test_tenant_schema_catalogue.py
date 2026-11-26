@@ -107,6 +107,9 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             "cloud_machines",
             "users",
             "oidc_identities",
+            "identity_sessions",
+            # Which version of the license a person accepted, and when.
+            "license_acceptances",
             # Facts about the installation, not about anything in it: which
             # deployment this is to the analytics relay and when it was
             # installed, which once-ever milestones it has reported, and when

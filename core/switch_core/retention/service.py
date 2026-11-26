@@ -14,7 +14,9 @@ never holds a long lock, and each whether or not the others failed:
    links once `SETTLED_GRACE` has passed.
 
 After the tenants, it purges the audit history of workspaces deleted more than
-`AUDIT_HISTORY_HORIZON` ago (`retention/audit_history.py`). A live workspace's
+`AUDIT_HISTORY_HORIZON` ago (`retention/audit_history.py`), and the records of
+identity-provider sessions no sign-in can stand on any more
+(`IDENTITY_SESSION_HORIZON`). A live workspace's
 audit log and usage records are never touched; `docs/design/data-retention.md`
 says why, and what retention does not yet cover.
 """
@@ -31,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import require_tenant_id
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.identity_session_store import IdentitySessionStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -200,6 +203,22 @@ async def retain_once(
         logger.exception(
             "Data retention could not purge deleted workspaces' audit history"
         )
+    try:
+        await prune_identity_sessions(session_factory, now)
+    except Exception:
+        logger.exception("Data retention could not prune identity-provider sessions")
+
+
+async def prune_identity_sessions(
+    session_factory: async_sessionmaker[AsyncSession], now: datetime
+) -> int:
+    """Delete the identity-provider session records past their horizon. The
+    table is global, so no tenant is bound."""
+    async with session_factory() as db, db.begin():
+        pruned = await IdentitySessionStore().prune(db, now)
+    if pruned:
+        logger.info("Retention pruned %d identity-provider session records", pruned)
+    return pruned
 
 
 async def retention_loop(session_factory: async_sessionmaker[AsyncSession]) -> None:

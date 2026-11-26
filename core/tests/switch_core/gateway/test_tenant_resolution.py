@@ -177,6 +177,8 @@ def _session_app(
         keyring=_KEYRING,
         gateway_signup_mode=signup_mode,
         gateway_max_workspaces_per_user=3,
+        gateway_license_version=None,
+        organizations_created_in_directory=False,
         invite_email_enabled=invite_email_enabled,
     )
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: SimpleNamespace(
@@ -442,6 +444,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         response = await self._get(session_factory, token, signup_mode="default_tenant")
@@ -472,6 +475,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         body = (
@@ -496,6 +500,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         body = (
@@ -522,6 +527,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         body = (
@@ -556,6 +562,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         body = (
@@ -587,6 +594,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         body = (
@@ -610,6 +618,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         body = (await self._get(session_factory, token, signup_mode="open")).json()
@@ -656,6 +665,7 @@ class TestSessionStateEndpoint:
                     session_version=0,
                     auth_time=datetime.now(UTC),
                     session_id=secrets.token_urlsafe(16),
+                    identity_session=None,
                 ),
                 signup_mode="invite_only",
             )
@@ -672,6 +682,7 @@ class TestSessionStateEndpoint:
                     session_version=0,
                     auth_time=datetime.now(UTC),
                     session_id=secrets.token_urlsafe(16),
+                    identity_session=None,
                 ),
                 signup_mode="invite_only",
             )
@@ -732,6 +743,7 @@ class TestSessionStateEndpoint:
                 session_version=0,
                 auth_time=datetime.now(UTC),
                 session_id=secrets.token_urlsafe(16),
+                identity_session=None,
             )
 
         as_admin = (
@@ -765,6 +777,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         body = (
@@ -789,6 +802,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         body = (
@@ -814,6 +828,7 @@ class TestSessionStateEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         off = await self._get(session_factory, token, signup_mode="open")
@@ -861,6 +876,7 @@ class TestAGatewayRequestBindsTheCallersTenant:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         async with _client(_app(session_factory), token) as client:
             response = await client.get("/whoami")
@@ -905,6 +921,7 @@ class TestAClaimSelectsAMembership:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory), token) as client:
@@ -928,6 +945,7 @@ class TestAClaimSelectsAMembership:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory), token) as client:
@@ -967,6 +985,7 @@ class TestNoClaimWithSeveralMemberships:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(
@@ -992,6 +1011,7 @@ class TestNoClaimWithSeveralMemberships:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory, choice_enabled=True), token) as client:
@@ -1041,6 +1061,7 @@ class TestNoClaimWithSeveralMemberships:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory, choice_enabled=True), token) as client:
@@ -1079,6 +1100,7 @@ class TestAUserWithNoMembership:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         async with _client(_app(session_factory), token) as client:
             response = await client.get("/whoami")
@@ -1109,6 +1131,7 @@ class TestConcurrentRequests:
                 session_version=0,
                 auth_time=datetime.now(UTC),
                 session_id=secrets.token_urlsafe(16),
+                identity_session=None,
             )
             async with _client(app, token) as client:
                 response = await client.get("/whoami", params={"hold": 0.2})
@@ -1145,6 +1168,7 @@ class TestListTenantsEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1175,6 +1199,7 @@ class TestListTenantsEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1200,6 +1225,7 @@ class TestSwitchTenantEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1228,6 +1254,7 @@ class TestSwitchTenantEndpoint:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1284,6 +1311,7 @@ class TestARequestHoldsOneConnection:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_app(one_connection_session_factory), token) as client:
@@ -1307,6 +1335,7 @@ class TestARequestHoldsOneConnection:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         app = _app(one_connection_session_factory)
 
@@ -1359,6 +1388,7 @@ class TestTenantListingHoldsOneConnectionAtATime:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(
@@ -1429,6 +1459,7 @@ class TestSigningInHoldsOneConnectionAtATime:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(

@@ -3,8 +3,8 @@ import { useEffect, useState } from "react";
 import { type InvitationPreview, acceptInvitation, previewInvitation } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { clearPendingInvite } from "../../data/sessionState";
+import AuthLayout, { SignedInFooter } from "../auth/AuthLayout";
 import { workspaceRoleLabel } from "../workspace/roles";
-import CenteredCard from "./CenteredCard";
 
 /** "Join Acme in Acme Inc as Member": what the person is about to join,
  * before they accept. */
@@ -77,7 +77,7 @@ export default function AcceptInvitePage({ token }: { token: string }) {
     preview === null ? "You've been invited to a Switch workspace." : `${joinSentence(preview)}?`;
 
   return (
-    <CenteredCard title="Join a workspace" subtitle={subtitle}>
+    <AuthLayout title="Join a workspace" subtitle={subtitle} footer={<SignedInFooter />}>
       {alreadyIn !== null ? (
         <Stack spacing={2}>
           <Alert severity="info">{alreadyIn}</Alert>
@@ -88,7 +88,7 @@ export default function AcceptInvitePage({ token }: { token: string }) {
       ) : error ? (
         <Stack spacing={2}>
           <Alert severity="error">{error}</Alert>
-          <Button variant="outlined" onClick={decline}>
+          <Button variant="outlined" fullWidth onClick={decline}>
             Continue
           </Button>
         </Stack>
@@ -100,7 +100,7 @@ export default function AcceptInvitePage({ token }: { token: string }) {
           </Typography>
         </Stack>
       ) : (
-        <Stack direction="row" spacing={1}>
+        <Stack spacing={1}>
           <Button
             variant="contained"
             fullWidth
@@ -110,11 +110,11 @@ export default function AcceptInvitePage({ token }: { token: string }) {
           >
             Accept invitation
           </Button>
-          <Button onClick={decline} disabled={submitting}>
+          <Button variant="outlined" fullWidth onClick={decline} disabled={submitting}>
             Decline
           </Button>
         </Stack>
       )}
-    </CenteredCard>
+    </AuthLayout>
   );
 }

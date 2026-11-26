@@ -275,7 +275,7 @@ def _config(**overrides: object) -> SimpleNamespace:
     base = {
         "gateway_public_url": None,
         "frontend_base_url": None,
-        "gateway_oidc_enabled": False,
+        "gateway_sso_enabled": False,
         "gateway_oidc_redirect_url": None,
         "gateway_extra_origins": [],
     }
@@ -286,7 +286,7 @@ def test_the_allowed_set_comes_from_config_only() -> None:
     config = _config(
         gateway_public_url="https://switch.example.com/",
         frontend_base_url="https://ui.example.com:443",
-        gateway_oidc_enabled=True,
+        gateway_sso_enabled=True,
         gateway_oidc_redirect_url="https://login.example.com/gateway/auth/oidc/callback",
         gateway_extra_origins=["http://localhost:5173"],
     )

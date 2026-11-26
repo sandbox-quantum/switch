@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -92,6 +93,7 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.admin_tokens import signed_in_creator_token
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     AuthenticatedSession,
@@ -194,8 +196,10 @@ from switch_core.gateway.schemas import (
 from switch_core.gateway.service_connections import service_refusal
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
+    ONLY_WORKSPACE,
     create_organization_for,
     directory_failed,
+    is_its_only_kept_workspace,
     refuse_a_workspace_name_taken,
 )
 from switch_core.invitation_revocation import revoke_invitations_made_by
@@ -204,7 +208,11 @@ from switch_core.organization_access import (
     removal_heir,
     remove_membership,
 )
-from switch_core.organization_directory import DirectoryError, OrganizationDirectory
+from switch_core.organization_directory import (
+    CreatorToken,
+    DirectoryError,
+    OrganizationDirectory,
+)
 from switch_core.private_channel_rooms import PrivateChannelRooms, notice_poster
 from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_after_commit, emit_safely
@@ -444,7 +452,13 @@ async def workspace_counts(
 async def current_tenant(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     user: Annotated[User, Depends(get_current_user)],
 ) -> CurrentTenantResponse:
     """The tenant this request is bound to, and the caller's standing in it.
@@ -482,8 +496,25 @@ async def current_tenant(
         ),
         can_delete=can_delete_workspace(
             tenant_role=tenant_role, is_default=tenant.id == TENANT_ZERO_ID
+        )
+        and not await _only_kept_workspace(
+            session, session_factory, organization_directory, tenant
         ),
         can_manage_data_protection=admin_by_own_membership(tenant_role),
+    )
+
+
+async def _only_kept_workspace(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    tenant: Tenant,
+) -> bool:
+    if tenant.organization_id is None:
+        return False
+    organization = await session.get(Organization, tenant.organization_id)
+    return organization is not None and await is_its_only_kept_workspace(
+        session_factory, organization_directory, organization, tenant.id
     )
 
 
@@ -504,6 +535,7 @@ async def create_tenant(
     ],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    creator_token: Annotated[CreatorToken, Depends(signed_in_creator_token)],
 ) -> TenantMembershipResponse:
     """`POST /organizations` under its old name, kept for one release for
     clients that still call it: an organization and its first workspace, both
@@ -520,8 +552,10 @@ async def create_tenant(
         organization_directory,
         client_lifecycle,
         config,
+        creator_token,
         name=req.name,
         workspace_name=req.name,
+        setup_answers=None,
         signed_in=session_signed_in(request),
     )
     return created.workspace
@@ -639,9 +673,13 @@ async def delete_tenant(
     user: Annotated[User, Depends(get_current_user)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
-    """Delete the bound workspace, once it has been emptied.
+    """Delete the bound workspace, once it has been emptied. Not the only
+    workspace of an organization that keeps one (`keeps_one_workspace`).
 
     Its admins only, by their own admin membership: not the deployment
     operator's bypass, and not an organization admin acting as one, since
@@ -667,6 +705,21 @@ async def delete_tenant(
         raise HTTPException(
             status_code=400, detail="That name doesn't match this workspace."
         )
+    # Locked to the commit, so two of its workspaces deleted at once can't
+    # each see the other and leave it none.
+    organization = (
+        None
+        if tenant.organization_id is None
+        else await session.scalar(
+            select(Organization)
+            .where(Organization.id == tenant.organization_id)
+            .with_for_update(key_share=True)
+        )
+    )
+    if organization is not None and await is_its_only_kept_workspace(
+        session_factory, organization_directory, organization, tenant_id
+    ):
+        raise HTTPException(status_code=409, detail=ONLY_WORKSPACE)
     try:
         key_hashes = await delete_workspace(session, tenant_id, user.id, user.id)
     except WorkspaceDeletionRefused as refused:

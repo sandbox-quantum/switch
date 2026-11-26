@@ -128,6 +128,9 @@ class Organization(Base):
         Text, unique=True, nullable=True
     )
     customer_id: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
+    # What its creator answered about it when setting it up
+    # (`OrganizationSetupAnswers`); None for one made another way.
+    setup_answers: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -226,6 +229,12 @@ class Tenant(Base):
         Text,
         ForeignKey("users.id", ondelete="SET NULL", name="fk_tenants_archived_by"),
         nullable=True,
+    )
+    # The directory's id for this workspace, for the one workspace of an
+    # organization the directory keeps (its WorkOS organization records it):
+    # what a rename made here would be matched to there.
+    directory_workspace_id: Mapped[str | None] = mapped_column(
+        Text, unique=True, nullable=True
     )
 
 
@@ -509,6 +518,86 @@ class OidcIdentity(Base):
     sub: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class LicenseAcceptance(Base):
+    """Someone accepted a version of the license
+    (`SwitchConfig.gateway_license_version`), which creating an organization
+    asks for first (`gateway/licenses.py`). Global, like the person; it goes
+    with the account."""
+
+    __tablename__ = "license_acceptances"
+
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[str] = mapped_column(Text, primary_key=True)
+    accepted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class IdentitySession(Base):
+    """A person's session at the identity provider behind a gateway sign-in.
+
+    Kept for sign-ins through WorkOS AuthKit, where the provider's session is
+    shared with every other application in its environment: the gateway
+    follows it, so a session ended there (revoked, its password reset, timed
+    out) ends the Switch session that came from it, and signing out of Switch
+    ends it there too (`gateway/identity_sessions.py`). Of the provider's,
+    Switch keeps the session id, the user id it lists that session under
+    (`provider_user_id`), and the session's refresh token, encrypted
+    (`encrypted_refresh_token`). That renews the person's access for one
+    organization at a time, for what the organization's account service takes
+    only from the person themselves (`IdentitySessions.organization_token`);
+    WorkOS rotates it on every renewal, so it is replaced each time, and it is
+    emptied when the session ends.
+
+    The session cookie names a row by `id` (its `isid` claim), never by the
+    provider's `session_id`, so a session id the provider hands back after a
+    sign-out gets a new row and the cookies from before stay ended. At most
+    one live row per provider session, hence the partial unique index.
+
+    `signed_in_at` is the latest sign-in that made or reused the row, which a
+    session cookie can stand on for at most 14 days after, so retention
+    prunes on it (`IdentitySessionStore.prune`); `checked_at` is when the
+    provider last said the session was alive.
+    """
+
+    __tablename__ = "identity_sessions"
+    __table_args__ = (
+        Index("ix_identity_sessions_user_id", "user_id"),
+        Index(
+            "uq_identity_sessions_live_session",
+            "provider",
+            "session_id",
+            unique=True,
+            postgresql_where=text("ended_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    # The provider's own id for the person (a WorkOS user id), which their
+    # sessions are listed under there; `user_id` is Switch's account.
+    provider_user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    signed_in_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 
@@ -5497,6 +5586,10 @@ class BrowserHandoff(Base):
     session_version: Mapped[int] = mapped_column(Integer, nullable=False)
     console_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
     browser_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The identity session (`IdentitySession`) the minting session stands on,
+    # for a sign-in through WorkOS AuthKit, which the browser's session then
+    # stands on too, so it ends when that does.
+    identity_session: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -50,6 +50,7 @@ function authState(canAdminTenant: boolean) {
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
     logoutEverywhere: vi.fn(async () => {}),
+    finishSignOut: vi.fn(),
     switchTo: vi.fn(async () => {}),
   };
 }

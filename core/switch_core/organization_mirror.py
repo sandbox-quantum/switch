@@ -55,6 +55,7 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import directory_organizations_of_user
 from switch_core.gateway.auth import (
+    every_workspace_of,
     workspaces_in_organization,
     workspaces_reached_through_organization,
 )
@@ -84,6 +85,7 @@ async def bring_in_memberships(
     for organization_id in await directory_organizations_of_user(
         session_factory, user_id, list(roles)
     ):
+        joined = False
         async with organization_session(session_factory, organization_id) as session:
             workos_organization_id, current = await _link_and_role(
                 session, organization_id, user_id
@@ -95,6 +97,7 @@ async def bring_in_memberships(
                 await _grant(
                     session, organization_id, user_id, current, wanted, SIGN_IN
                 )
+                joined = current is None
             elif current != wanted:
                 logger.warning(
                     "User %s is %s in organization %s and %s in WorkOS "
@@ -105,6 +108,10 @@ async def bring_in_memberships(
                     wanted or "not a member",
                     workos_organization_id,
                 )
+        if joined:
+            await _join_its_only_workspace(
+                session_factory, organization_id, user_id, SIGN_IN
+            )
 
 
 @dataclass(frozen=True)
@@ -149,9 +156,16 @@ async def apply_from_directory(
             return
         if current == wanted:
             return
-        if wanted is not None and _grants(current, wanted):
+        granted = wanted is not None and _grants(current, wanted)
+        if granted:
+            assert wanted is not None
             await _grant(session, organization_id, user_id, current, wanted, source)
-            return
+    if granted:
+        if current is None:
+            await _join_its_only_workspace(
+                session_factory, organization_id, user_id, source
+            )
+        return
     assert current is not None
     details = {"source": source}
     revocation = dependencies.revocation
@@ -252,6 +266,50 @@ async def apply_from_directory(
                 "from_role": current,
                 "role": wanted,
                 **({"warning": " ".join(warnings)} if warnings else {}),
+            },
+        )
+        await session.commit()
+
+
+async def _join_its_only_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_id: str,
+    user_id: str,
+    source: str,
+) -> None:
+    """Someone who has just joined a linked organization with one workspace
+    joins that workspace too, as a member: as every product sharing the
+    directory has it, being in the organization is being in its workspace.
+    One with several, linked before organizations kept one, leaves where
+    they work to its admins, as before; so does an archived one. Taking
+    them out of the organization takes them out of it again
+    (`apply_from_directory`)."""
+    workspaces = await every_workspace_of(session_factory, organization_id)
+    if len(workspaces) != 1 or workspaces[0].archived_at is not None:
+        return
+    tenant = workspaces[0]
+    async with tenant_session(session_factory, tenant.id) as session:
+        if await session.get(TenantMember, (tenant.id, user_id)) is not None:
+            return
+        await UserStore().add_membership(
+            session,
+            tenant_id=tenant.id,
+            user_id=user_id,
+            role="member",
+            organization_role="member",
+        )
+        await record_organization_audit_event(
+            session,
+            organization_id=organization_id,
+            actor_user_id=None,
+            action=OrganizationAuditAction.MEMBER_ADDED_TO_WORKSPACE,
+            target_type="user",
+            target_id=user_id,
+            details={
+                "source": source,
+                "workspace": tenant.id,
+                "workspace_name": tenant.name,
+                "role": "member",
             },
         )
         await session.commit()

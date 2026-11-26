@@ -20,7 +20,9 @@ directory's own record that brings Switch's rows up to date.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from switch_core.db.models import Organization, User
@@ -29,10 +31,35 @@ from switch_core.db.models import Organization, User
 @dataclass(frozen=True)
 class DirectoryOrganization:
     """What a new organization is known by in the directory, kept on its
-    `organizations` row. Both None for an organization Switch keeps itself."""
+    `organizations` row: all None for an organization Switch keeps itself.
+    `name` is the directory's name for it, which can differ from the name
+    asked for when the directory answers with one the creator made before;
+    `workspace_id` is the directory's id for the organization's one
+    workspace, kept on the workspace Switch makes for it."""
 
     workos_organization_id: str | None
     customer_id: str | None
+    name: str | None
+    workspace_id: str | None
+
+
+@dataclass(frozen=True)
+class DirectoryInvitation:
+    """An invitation to an organization the directory keeps, which the
+    directory sends: `role` is the directory's own, `state` its word for
+    where the invitation stands (pending, accepted, revoked, expired)."""
+
+    id: str
+    email: str
+    state: str
+    role: str
+    created_at: datetime
+    expires_at: datetime
+
+
+NOT_IN_A_DIRECTORY = DirectoryOrganization(
+    workos_organization_id=None, customer_id=None, name=None, workspace_id=None
+)
 
 
 @dataclass(frozen=True)
@@ -65,9 +92,21 @@ class DirectoryRefusal(DirectoryError):
 
 class DirectorySignInRequired(DirectoryError):
     """The directory takes the change only from the admin as it knows them,
-    and Switch holds no token of theirs for it: they sign in there for the
-    organization (`gateway/workos_sign_in.py`) and try again. Raised before
-    anything is changed."""
+    and the admin's sign-in can't get a token of theirs for it as it stands
+    (`gateway/admin_tokens.py`): they sign in again and try again. Raised
+    before anything is changed."""
+
+
+#: Gets the access token the directory issues the person creating an
+#: organization, on no organization yet. Raises as `AdminToken` does.
+CreatorToken = Callable[[], Awaitable[str]]
+
+#: Gets the access token the directory issues the admin making a change, for
+#: the directory's organization it is given, when the change needs one.
+#: Raises `DirectorySignInRequired` when the admin has to sign in again for
+#: one, `DirectoryRefusal` when the directory won't issue them one, and
+#: `DirectoryUnavailable` when it can't be asked.
+AdminToken = Callable[[str], Awaitable[str]]
 
 
 @dataclass(frozen=True)
@@ -100,21 +139,27 @@ class OrganizationDirectory(Protocol):
         organization: Organization,
         subject: str | None,
         role: str | None,
-        access_token: str | None,
+        admin_token: AdminToken | None,
     ) -> MemberChange:
         """What giving the person the directory knows as `subject` the role
         `role` in `organization`, or removing them when `role` is None, needs
         of the directory. Asked before a route changes anything, and before
-        it takes any lock: raises `DirectorySignInRequired` when the directory
-        has to change and takes the change only with a token from the admin,
-        and `access_token` is None; `DirectoryRefusal` when it won't take it
-        at all."""
+        it takes any lock. Where the directory has to change and takes the
+        change only from the admin, `admin_token` gets their token for it,
+        and its errors are raised as they are; with no `admin_token` (an
+        operator, who is no admin there) raises `DirectorySignInRequired`.
+        Raises `DirectoryRefusal` when it won't take the change at all."""
         ...
 
     def sends_changes_for(self, organization: Organization) -> bool:
         """Whether changes made from Switch to `organization`'s members are
         made in the directory too, so that they last. False where Switch's
         tables are the record."""
+        ...
+
+    def keeps_any_organization(self) -> bool:
+        """Whether `keeps_members_of` can be true of any organization here:
+        False lets a caller skip reading organizations to ask."""
         ...
 
     def keeps_members_of(self, organization: Organization) -> bool:
@@ -133,10 +178,12 @@ class OrganizationDirectory(Protocol):
         ...
 
     async def create_organization(
-        self, creator: User, name: str
+        self, creator: User, name: str, creator_token: CreatorToken
     ) -> DirectoryOrganization:
         """Record a new organization named `name`, with `creator` its
-        `org_admin`, before its rows are written."""
+        `org_admin`, before its rows are written. Where the directory takes it
+        only from the creator, `creator_token` gets their token for it, and
+        its errors are raised as they are."""
         ...
 
     async def discard_organization(self, organization: DirectoryOrganization) -> None:
@@ -167,6 +214,40 @@ class OrganizationDirectory(Protocol):
         `prepare_change` worked out for it."""
         ...
 
+    async def invite(
+        self,
+        organization: Organization,
+        email: str,
+        role: str,
+        admin_token: AdminToken,
+    ) -> DirectoryInvitation:
+        """Have the directory invite `email` to `organization` as a `role`
+        member, with the admin's token, and send the invitation. Raises
+        `DirectoryRefusal` where `organization` is not one it invites to."""
+        ...
+
+    async def invitations(
+        self, organization: Organization, admin_token: AdminToken
+    ) -> list[DirectoryInvitation]:
+        """Every invitation the directory has to `organization`."""
+        ...
+
+    async def revoke_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None: ...
+
+    async def resend_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None: ...
+
+
+# Why a directory invitation was asked of an organization the directory does
+# not invite to.
+NOT_INVITED_HERE = (
+    "This organization's members are kept here: invite people to one of its "
+    "workspaces instead."
+)
+
 
 class LocalDirectory:
     """Switch's own tables are the record: each change is the route's write
@@ -179,11 +260,14 @@ class LocalDirectory:
         organization: Organization,
         subject: str | None,
         role: str | None,
-        access_token: str | None,
+        admin_token: AdminToken | None,
     ) -> MemberChange:
         return NO_DIRECTORY_CHANGE
 
     def sends_changes_for(self, organization: Organization) -> bool:
+        return False
+
+    def keeps_any_organization(self) -> bool:
         return False
 
     def keeps_members_of(self, organization: Organization) -> bool:
@@ -195,9 +279,9 @@ class LocalDirectory:
         return None
 
     async def create_organization(
-        self, creator: User, name: str
+        self, creator: User, name: str, creator_token: CreatorToken
     ) -> DirectoryOrganization:
-        return DirectoryOrganization(workos_organization_id=None, customer_id=None)
+        return NOT_IN_A_DIRECTORY
 
     async def discard_organization(self, organization: DirectoryOrganization) -> None:
         return None
@@ -218,3 +302,27 @@ class LocalDirectory:
         self, organization: Organization, user_id: str, change: MemberChange
     ) -> None:
         return None
+
+    async def invite(
+        self,
+        organization: Organization,
+        email: str,
+        role: str,
+        admin_token: AdminToken,
+    ) -> DirectoryInvitation:
+        raise DirectoryRefusal(NOT_INVITED_HERE)
+
+    async def invitations(
+        self, organization: Organization, admin_token: AdminToken
+    ) -> list[DirectoryInvitation]:
+        raise DirectoryRefusal(NOT_INVITED_HERE)
+
+    async def revoke_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None:
+        raise DirectoryRefusal(NOT_INVITED_HERE)
+
+    async def resend_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None:
+        raise DirectoryRefusal(NOT_INVITED_HERE)

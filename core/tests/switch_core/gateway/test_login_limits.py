@@ -167,6 +167,7 @@ async def world(session_factory, monkeypatch) -> AsyncIterator[World]:
     config = SimpleNamespace(
         gateway_password_login_enabled=True,
         gateway_oidc_enabled=False,
+        gateway_sso_enabled=False,
         gateway_tenant_choice_enabled=False,
         gateway_login_max_failures=10,
         gateway_login_max_failures_per_address=50,
@@ -431,7 +432,7 @@ class TestTheLockIsSaidPlainly:
     async def test_single_sign_on_is_named_where_the_server_offers_it(
         self, world: World
     ) -> None:
-        world.config.gateway_oidc_enabled = True
+        world.config.gateway_sso_enabled = True
         answers = []
         for email in (ADA, NOBODY):
             await _fail_until_locked(world, email)
@@ -462,7 +463,7 @@ class TestTheLockIsSaidPlainly:
     ) -> None:
         """The operator's route lifts an email's lock, not an address's."""
         world.config.gateway_login_max_failures_per_address = 2
-        world.config.gateway_oidc_enabled = True
+        world.config.gateway_sso_enabled = True
         for n in range(2):
             await world.sign_in(f"p{n}@example.com", "a guess")
         refused = await world.sign_in(ADA, PASSWORD)

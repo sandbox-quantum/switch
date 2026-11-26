@@ -426,7 +426,7 @@ export default function OrganizationUsersSettings({
             action={
               changes.toFinish && (
                 <Button color="inherit" size="small" onClick={changes.finish}>
-                  Confirm sign-in to finish
+                  Sign in again to finish
                 </Button>
               )
             }

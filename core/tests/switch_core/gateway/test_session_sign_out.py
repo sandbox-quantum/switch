@@ -30,6 +30,7 @@ from switch_core.gateway.auth import (
     session_is_current,
 )
 from switch_core.gateway.auth_routes import router
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.keys import Keyring, Purpose
 from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 
@@ -58,6 +59,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         gateway_tenant_choice_enabled=False,
         **LOGIN_LIMIT_DEFAULTS,
     )
+    app.state.identity_sessions = IdentitySessions(session_factory, None, _KEYRING)
     return app
 
 
@@ -155,7 +157,13 @@ async def test_a_signed_out_session_is_no_longer_current_for_a_socket(
 
     async def current() -> bool:
         return await session_is_current(
-            session_factory, _USER_STORE, claims["sub"], claims["sv"], claims["sid"]
+            None,  # type: ignore[arg-type]
+            session_factory,
+            _USER_STORE,
+            claims["sub"],
+            claims["sv"],
+            claims["sid"],
+            None,
         )
 
     assert await current()

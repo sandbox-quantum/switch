@@ -492,7 +492,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                 signals=signals,
                 controller_removed=controller_removal_publisher(signals),
                 admin_email=config.gateway_admin_email,
-                sign_in_issuer=config.gateway_oidc_issuer_url,
+                sign_in_issuer=config.identity_issuer,
             )
             try:
                 plan = await purge.plan(await purge.find(arguments.organization))
@@ -507,7 +507,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                     if config.workos_api_key
                     else None,
                     trust=await trust_client.session_eraser(plan.organization_id),
-                    sign_in_issuer=config.gateway_oidc_issuer_url,
+                    sign_in_issuer=config.identity_issuer,
                 )
                 if not arguments.execute:
                     await _print_dry_run_elsewhere(

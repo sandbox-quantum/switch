@@ -302,6 +302,7 @@ async def _signed_in(factory, user) -> str:
         session_version=0,
         auth_time=datetime.now(UTC),
         session_id=secrets.token_urlsafe(16),
+        identity_session=None,
     )
 
 

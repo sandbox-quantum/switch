@@ -84,6 +84,7 @@ from switch_core.gateway.auth import (
     create_jwt,
     decode_jwt,
 )
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.gateway.invite_mail import (
     InviteEmail,
     InviteEmailFailed,
@@ -106,7 +107,13 @@ class _FakeClientLifecycle:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ) -> Tenant:
         tenant = Tenant(
             id=str(uuid.uuid4()), name=name, slug=slug, organization_id=organization_id
         )
@@ -124,16 +131,28 @@ class _ProvisioningFailsLifecycle(_FakeClientLifecycle):
         super().__init__(session_factory)
         self.calls = 0
 
-    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ) -> Tenant:
         self.calls += 1
-        await super().create_tenant(name, slug, organization_id)
+        await super().create_tenant(name, slug, organization_id, directory_workspace_id)
         raise IntegrityError("INSERT INTO clients ...", None, Exception("duplicate"))
 
 
 class _FailsBeforeTheWorkspaceLifecycle(_FakeClientLifecycle):
     """Fails before writing anything, the way a dropped connection does."""
 
-    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ) -> Tenant:
         raise ConnectionResetError("connection to the database was lost")
 
 
@@ -198,6 +217,7 @@ def _app(
         client_lifecycle or _FakeClientLifecycle(session_factory)
     )
     app.state.sign_in_flows = SignInFlows(session_factory, _KEYRING)
+    app.state.identity_sessions = IdentitySessions(session_factory, None, _KEYRING)
     app.state.service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=_KEYRING,
@@ -217,6 +237,8 @@ def _app(
         gateway_cookie_secure=False,
         gateway_tenant_choice_enabled=False,
         gateway_max_workspaces_per_user=max_workspaces_per_user,
+        gateway_license_version=None,
+        organizations_created_in_directory=False,
         gateway_signup_mode=signup_mode,
         gateway_invite_emails_per_day=invite_emails_per_day,
         dashboard_base_url="https://switch.example.com/",
@@ -274,6 +296,7 @@ def _token(user_id: str, email: str, tenant_id: str | None) -> str:
         session_version=0,
         auth_time=datetime.now(UTC),
         session_id=secrets.token_urlsafe(16),
+        identity_session=None,
     )
 
 
@@ -492,6 +515,7 @@ class TestCreateTenant:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         app = _app(session_factory, signup_mode="invite_only")
@@ -518,6 +542,7 @@ class TestCreateTenant:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         lifecycle = ClientLifecycleService(
             provisioning=MagicMock(),
@@ -818,6 +843,7 @@ class TestWorkspaceCreationLimit:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(
@@ -2117,6 +2143,7 @@ class TestOrganizationAdmins:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         claims = decode_jwt(token, _KEYRING)
         claims["auth_time"] = int(signed_in.timestamp())
@@ -3646,6 +3673,7 @@ class TestRetentionRoutes:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory), operator) as client:
@@ -3682,6 +3710,7 @@ class TestRetentionRoutes:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         async with _client(_app(session_factory), admin) as client:
             set_by_admin = await client.put(
@@ -4142,6 +4171,7 @@ class TestErasureRoutes:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         person_id = await self._person(session_factory, "ana")
 

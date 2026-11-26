@@ -37,7 +37,10 @@ def _request(*, tenant_id: str | None) -> SimpleNamespace:
     # cookie (CHOO-2723).
     return SimpleNamespace(
         state=SimpleNamespace(
-            tenant_id=tenant_id, session_auth_time=_SIGNED_IN, session_id="session-1"
+            tenant_id=tenant_id,
+            session_auth_time=_SIGNED_IN,
+            session_id="session-1",
+            identity_session=None,
         )
     )
 

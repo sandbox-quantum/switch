@@ -44,6 +44,11 @@ from switch_core.db.models import Organization, User
 from switch_core.members_service import MembersService
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
+    NOT_IN_A_DIRECTORY,
+    NOT_INVITED_HERE,
+    AdminToken,
+    CreatorToken,
+    DirectoryInvitation,
     DirectoryMembership,
     DirectoryOrganization,
     DirectoryRefusal,
@@ -63,6 +68,8 @@ _PAGE = 100
 # `organizations.customer_id` when an organization is linked, never trusted
 # to link one.
 CUSTOMER_ID_KEY = "tenant_id"
+# The metadata key a customer's account records its workspaces under, as JSON.
+WORKSPACES_KEY = "workspaces"
 
 NOT_FROM_SWITCH_YET = (
     "This organization's members are managed in your organization's account "
@@ -71,9 +78,7 @@ NOT_FROM_SWITCH_YET = (
 NOT_IN_THE_ACCOUNT = (
     "They are not a member of your organization's account; add them there first."
 )
-SIGN_IN_FIRST = (
-    "Confirm your sign-in to your organization's account to change its members."
-)
+SIGN_IN_FIRST = "Sign in through your organization's account to change its members."
 # The WorkOS role of a member Switch makes a Member: the least a member of a
 # shared organization can be.
 MEMBER_ROLE_IN_WORKOS = "viewer"
@@ -82,6 +87,25 @@ MEMBER_ROLE_IN_WORKOS = "viewer"
 _KNOWN_WORKOS_ROLES = frozenset(
     {ORGANIZATION_ADMIN_ROLE, MEMBER_ROLE_IN_WORKOS, "admin", "editor"}
 )
+
+
+def workspace_id_of(organization: dict[str, Any]) -> str | None:
+    """The id of the one workspace a customer's account records on its WorkOS
+    organization (`WORKSPACES_KEY`, a JSON list of `{"id", "name"}`), or None
+    if it records none Switch can read."""
+    metadata = organization.get("metadata")
+    listed = metadata.get(WORKSPACES_KEY) if isinstance(metadata, dict) else None
+    if not isinstance(listed, str):
+        return None
+    try:
+        workspaces = json.loads(listed)
+    except ValueError:
+        return None
+    if not isinstance(workspaces, list) or not workspaces:
+        return None
+    first = workspaces[0]
+    workspace_id = first.get("id") if isinstance(first, dict) else None
+    return workspace_id if isinstance(workspace_id, str) and workspace_id else None
 
 
 def customer_id_of(organization: dict[str, Any]) -> str | None:
@@ -353,12 +377,23 @@ class WorkOSDirectory:
         existing accounts."""
         return await self._list("/user_management/users", {"email": email})
 
+    async def user(self, user_id: str) -> dict[str, Any] | None:
+        """The WorkOS user with id `user_id`, or None when this environment has
+        none (or it is not a WorkOS user id at all), for an operator copying
+        identities across issuers. Raises `DirectoryUnavailable` otherwise."""
+        try:
+            return await self._get(f"/user_management/users/{user_id}", {})
+        except WorkOSRefused as refused:
+            if refused.status_code in (400, 404, 422):
+                return None
+            raise
+
     async def prepare_change(
         self,
         organization: Organization,
         subject: str | None,
         role: str | None,
-        access_token: str | None,
+        admin_token: AdminToken | None,
     ) -> MemberChange:
         """Nothing for an organization nobody linked. Through the members
         service, WorkOS changes only where it has to: making someone Org Admin
@@ -390,9 +425,12 @@ class WorkOSDirectory:
         membership_id, workos_role = membership
         if role is not None and (workos_role == ORGANIZATION_ADMIN_ROLE) == promoting:
             return NO_DIRECTORY_CHANGE
-        if access_token is None:
+        if admin_token is None:
             raise DirectorySignInRequired(SIGN_IN_FIRST)
-        return MemberChange(access_token=access_token, membership_id=membership_id)
+        return MemberChange(
+            access_token=await admin_token(workos_organization_id),
+            membership_id=membership_id,
+        )
 
     def sends_changes_for(self, organization: Organization) -> bool:
         return (
@@ -400,18 +438,46 @@ class WorkOSDirectory:
             and self._members is not None
         )
 
+    def keeps_any_organization(self) -> bool:
+        return True
+
     def keeps_members_of(self, organization: Organization) -> bool:
         """Only an organization an operator linked follows WorkOS; any other
         is still Switch's own."""
         return organization.workos_organization_id is not None
 
     async def create_organization(
-        self, creator: User, name: str
+        self, creator: User, name: str, creator_token: CreatorToken
     ) -> DirectoryOrganization:
-        return DirectoryOrganization(workos_organization_id=None, customer_id=None)
+        """Through the members service, the customer's account in WorkOS,
+        created with the creator's own token and read back with the API key:
+        its name (that of the one they made before, if they did), its
+        customer and its one workspace. Without the service, Switch's own
+        until an operator links it."""
+        if self._members is None:
+            return NOT_IN_A_DIRECTORY
+        workos_organization_id = await self._members.create_tenant(
+            await creator_token(), name
+        )
+        organization = await self.organization(workos_organization_id)
+        listed_name = organization.get("name")
+        return DirectoryOrganization(
+            workos_organization_id=workos_organization_id,
+            customer_id=customer_id_of(organization),
+            name=listed_name if isinstance(listed_name, str) and listed_name else None,
+            workspace_id=workspace_id_of(organization),
+        )
 
     async def discard_organization(self, organization: DirectoryOrganization) -> None:
-        return None
+        """Nothing is taken back from WorkOS: the service deletes no account.
+        Creating it again finds the same one, and links it then."""
+        if organization.workos_organization_id is not None:
+            logger.warning(
+                "WorkOS organization %s was created for an organization Switch "
+                "then failed to create; it is left in WorkOS, and creating the "
+                "organization again links it",
+                organization.workos_organization_id,
+            )
 
     async def join(self, organization: Organization, user_id: str, role: str) -> None:
         if organization.workos_organization_id is None:
@@ -441,6 +507,56 @@ class WorkOSDirectory:
         if change.membership_id is None:
             return None
         await self._members_service().remove(_token_of(change), change.membership_id)
+
+    async def invite(
+        self,
+        organization: Organization,
+        email: str,
+        role: str,
+        admin_token: AdminToken,
+    ) -> DirectoryInvitation:
+        """Through the members service, as the admin: an Org Admin is invited
+        as `org_admin`, anyone else as `viewer`, the least a member of a
+        shared organization can be (`switch_role`)."""
+        workos_organization_id = self._invites_to(organization)
+        return await self._members_service().invite(
+            await admin_token(workos_organization_id),
+            email,
+            ORGANIZATION_ADMIN_ROLE
+            if role == ORGANIZATION_ADMIN_ROLE
+            else MEMBER_ROLE_IN_WORKOS,
+        )
+
+    async def invitations(
+        self, organization: Organization, admin_token: AdminToken
+    ) -> list[DirectoryInvitation]:
+        workos_organization_id = self._invites_to(organization)
+        return await self._members_service().invitations(
+            await admin_token(workos_organization_id)
+        )
+
+    async def revoke_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None:
+        workos_organization_id = self._invites_to(organization)
+        await self._members_service().revoke_invitation(
+            await admin_token(workos_organization_id), invitation_id
+        )
+
+    async def resend_invitation(
+        self, organization: Organization, invitation_id: str, admin_token: AdminToken
+    ) -> None:
+        workos_organization_id = self._invites_to(organization)
+        await self._members_service().resend_invitation(
+            await admin_token(workos_organization_id), invitation_id
+        )
+
+    def _invites_to(self, organization: Organization) -> str:
+        """The WorkOS organization invitations to `organization` go to, or a
+        refusal where it follows none, or there is no service to send them."""
+        if organization.workos_organization_id is None or self._members is None:
+            raise DirectoryRefusal(NOT_INVITED_HERE)
+        return organization.workos_organization_id
 
     def _members_service(self) -> MembersService:
         if self._members is None:

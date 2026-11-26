@@ -18,7 +18,6 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from starlette.middleware.sessions import SessionMiddleware
 
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_OWNER_MARKER_META_KEY,
@@ -53,6 +52,7 @@ from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import organizations, workspace_creation
 from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.organization_workspaces import (
     router as organization_workspaces_router,
@@ -60,9 +60,6 @@ from switch_core.gateway.organization_workspaces import (
 from switch_core.gateway.organizations import LAST_ORGANIZATION_ADMIN_REFUSAL
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
-from switch_core.gateway.workos_sign_in_routes import (
-    router as workos_sign_in_router,
-)
 from switch_core.keys import Keyring
 from switch_core.organization_admin_notices import OrganizationAdminNotices
 from switch_core.organization_directory import LocalDirectory
@@ -83,9 +80,19 @@ class _FakeClientLifecycle:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ) -> Tenant:
         tenant = Tenant(
-            id=str(uuid.uuid4()), name=name, slug=slug, organization_id=organization_id
+            id=str(uuid.uuid4()),
+            name=name,
+            slug=slug,
+            organization_id=organization_id,
+            directory_workspace_id=directory_workspace_id,
         )
         async with tenant_session(self._session_factory, tenant.id) as session:
             await TenantStore().create(session, tenant)
@@ -131,11 +138,7 @@ def _app(
         api_key_cache=SimpleNamespace(invalidate=lambda key_hash: None)
     )
     app.state.sign_in_flows = SignInFlows(session_factory, _KEYRING)
-    app.state.workos_sign_in = None
-    app.include_router(workos_sign_in_router)
-    # As the gateway has it: the sign-in cookie holds a WorkOS organization
-    # token (`workos_sign_in_routes.py`).
-    app.add_middleware(SessionMiddleware, secret_key="test-sign-in-cookie")
+    app.state.identity_sessions = IdentitySessions(session_factory, None, _KEYRING)
     app.state.service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=_KEYRING,
@@ -156,6 +159,8 @@ def _app(
         gateway_tenant_choice_enabled=False,
         gateway_signup_mode=signup_mode,
         gateway_max_workspaces_per_user=max_workspaces_per_user,
+        gateway_license_version=None,
+        organizations_created_in_directory=False,
     )
     return app
 
@@ -170,6 +175,7 @@ def _client(app: FastAPI, user_id: str, tenant_id: str | None) -> httpx.AsyncCli
         session_version=0,
         auth_time=datetime.now(UTC),
         session_id=secrets.token_urlsafe(16),
+        identity_session=None,
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
@@ -30,6 +31,8 @@ from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import tenants
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
+    AdminToken,
+    CreatorToken,
     DirectoryError,
     DirectoryOrganization,
     DirectoryRefusal,
@@ -69,7 +72,7 @@ class _Directory:
         organization: Organization,
         subject: str | None,
         role: str | None,
-        access_token: str | None,
+        admin_token: AdminToken | None,
     ) -> MemberChange:
         return NO_DIRECTORY_CHANGE
 
@@ -81,15 +84,21 @@ class _Directory:
         if self.failure is not None:
             raise self.failure
 
+    def keeps_any_organization(self) -> bool:
+        return True
+
     def keeps_members_of(self, organization: Organization) -> bool:
         return True
 
     async def create_organization(
-        self, creator: User, name: str
+        self, creator: User, name: str, creator_token: CreatorToken
     ) -> DirectoryOrganization:
         self._answer("create", creator.id, name)
         return DirectoryOrganization(
-            workos_organization_id="org_EXAMPLE", customer_id="customer-example"
+            workos_organization_id="org_EXAMPLE",
+            customer_id="customer-example",
+            name=None,
+            workspace_id=None,
         )
 
     async def discard_organization(self, organization: DirectoryOrganization) -> None:
@@ -163,7 +172,13 @@ async def _outsider(session_factory) -> str:
 
 
 class _FailingLifecycle:
-    async def create_tenant(self, name: str, slug: str, organization_id: str):
+    async def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        organization_id: str,
+        directory_workspace_id: str | None,
+    ):
         raise RuntimeError("provisioning failed")
 
 
@@ -230,6 +245,40 @@ class TestCreating:
                 await client.post("/organizations", json={"name": "Acme"})
 
         assert directory.asked == [("create", ada, "Acme"), ("discard", "org_EXAMPLE")]
+
+    async def test_nothing_is_locked_while_the_directory_is_asked(
+        self, session_factory
+    ) -> None:
+        """The directory can take a minute: the caller's row is locked only
+        once it has answered, so another request of theirs is not refused
+        meanwhile, and no connection waits idle on it."""
+        ada = await _user(session_factory, "user")
+        locked_meanwhile: list[bool] = []
+
+        class _Slow(_Directory):
+            async def create_organization(
+                self, creator: User, name: str, creator_token: CreatorToken
+            ) -> DirectoryOrganization:
+                async with session_factory() as other:
+                    try:
+                        await other.execute(
+                            select(User)
+                            .where(User.id == ada)
+                            .with_for_update(key_share=True, nowait=True)
+                        )
+                    except DBAPIError:
+                        locked_meanwhile.append(True)
+                    else:
+                        locked_meanwhile.append(False)
+                    await other.rollback()
+                return await super().create_organization(creator, name, creator_token)
+
+        async with _client(_with(session_factory, _Slow(None)), ada, None) as client:
+            response = await client.post("/organizations", json={"name": "Acme"})
+
+        assert response.status_code == 201, response.text
+        assert locked_meanwhile == [False]
+        assert await _workspaces_created(session_factory, ada) == 1
 
     async def test_an_unusable_name_is_refused_before_the_directory_is_asked(
         self, session_factory, directory: _Directory

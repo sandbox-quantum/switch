@@ -217,8 +217,78 @@ version of their own to them without also giving them a release of their own.
   threshold of its own (`DECISION_FALLBACK_CONFIDENCE_THRESHOLD`, for Haiku's
   coarser confidences); a workspace's own threshold still holds for both. A
   workspace that chose its backend gets that backend alone. Off unless set.
+- **Sign in through WorkOS AuthKit, sharing the sign-in with the WorkOS
+  environment's other applications.** `GATEWAY_SIGN_IN_PROVIDER=workos`, with
+  the AuthKit application in `WORKOS_CLIENT_ID` and its API key in
+  `WORKOS_API_KEY`, sends the dashboard's sign-in to AuthKit's own page and
+  keeps the person's AuthKit session. Someone signed in to another
+  application in the environment signs in to Switch without signing in again.
+  Signing out of Switch, or out of every device, ends that session at WorkOS
+  too. A session ended at WorkOS ends the Switch session on it within about
+  five minutes, and the browser sessions Switch Console opened from it.
+  Signing out elsewhere, a revoke, a password reset and the environment's
+  session policy all count. `switch-accounts sign-out` and `delete` end the
+  account's AuthKit sign-ins too. An impersonated sign-in is refused.
+  Signing out in a browser Switch Console opened leaves Console signed in,
+  but a dashboard signed in in the same browser Console signed in through
+  shares Console's AuthKit session, so signing out of either signs out both.
+  The routes are unchanged, so Switch Console signs in as before. In the Helm
+  chart, `switchCore.signIn.provider: workos` with `switchCore.oidc.enabled`.
+  The AuthKit application's setup, its session policy and moving from a WorkOS
+  Connect application are in `docs/old/GATEWAY_OIDC_SETUP.md`.
+- **`switch-link-workos` can move a server between sign-ins and
+  environments.** `accounts --from-issuer <issuer>` links each account that
+  signs in under the earlier sign-in to the same WorkOS user, copying the
+  identity so the old sign-in keeps working until the move is deployed.
+  `organization --replace` re-links an organization to another WorkOS
+  organization, for a move to another WorkOS environment.
 
 #### Changed
+- **Organizations kept in WorkOS sign in only through WorkOS.** Under
+  `ORGANIZATION_DIRECTORY=workos` the server needs `GATEWAY_SIGN_IN_PROVIDER=workos`
+  and refuses to start with a WorkOS Connect application or any other
+  sign-in, so every account is a WorkOS user that the other products in the
+  environment share. The password form is off there unless
+  `GATEWAY_PASSWORD_LOGIN_ENABLED=true` turns it on, which starts with a
+  warning; the Helm chart's `switchCore.oidc.passwordLoginEnabled` now
+  follows the same default when unset. `switch-accounts create` is refused
+  there: a person joins an organization by its invitation. Wherever password
+  login is off, `GATEWAY_ADMIN_PASSWORD` is no longer stored on the admin
+  account.
+- **Admins change a linked organization's members with their own sign-in.**
+  Switch keeps each AuthKit sign-in's refresh token, encrypted with the
+  record of its session, and renews from it a token for the organization
+  only when a change has to reach WorkOS, so admins no longer sign in to the
+  organization a second time. When WorkOS won't renew it (the session ended,
+  or the organization wants its own single sign-on or MFA), the dashboard
+  sends the admin through the sign-in again, to that organization, and makes
+  the change on their return. `WORKOS_REDIRECT_URL` and the
+  `/gateway/auth/workos/...` routes are gone: the Helm chart refuses
+  `switchCore.organizationDirectory.workosRedirectUrl`, and its callback can
+  come off the AuthKit application.
+- **Organizations created in Switch are created in WorkOS too, with one
+  workspace.** With `MEMBERS_SERVICE_URL` set, creating an organization goes
+  through the members service with the creator's own token, and Switch links
+  the WorkOS organization it makes at once, so the account exists in every
+  product sharing the environment. The service makes one per person: asked
+  again it answers with the first, which Switch refuses with 409 when it
+  already follows it. A linked organization has exactly one workspace,
+  `Default`, which can be renamed in Switch but not deleted; adding another
+  is refused. Organizations linked earlier keep the workspaces they have.
+- **Org Admins invite people to a linked organization through WorkOS.**
+  `/organizations/current/invitations` creates, lists, resends and revokes
+  invitations through the members service with the admin's own token, and
+  WorkOS sends them; each is in the organization's audit log. Joining a linked
+  organization with one workspace, by accepting or by signing in as a member
+  there, joins its workspace too, and leaving the organization leaves it.
+- **Onboarding sets up an organization the way Switch Trust does.** Where
+  organizations are created in WorkOS, someone in none yet is asked what the
+  organization is called, under Trust's name rules, and two optional
+  questions kept on it; someone who may not create one is told they aren't in
+  an organization yet and offered to sign in again. With several, the picker
+  chooses an organization. `GATEWAY_LICENSE_VERSION` (Helm:
+  `switchCore.signup.licenseVersion`) asks for a license first and records
+  who accepted which version and when; unset, none is asked.
 - **A message in a busy chat no longer costs every member's Console stream a
   database pass of its own at the same instant.** Chat stream passes hold at
   most a quarter of the process's database pool at once, and a pass over that
@@ -266,6 +336,44 @@ version of their own to them without also giving them a release of their own.
   organization the lower organization role is shown as Viewer, the name
   Switch Trust uses, and Org admin as Org Admin; the stored role is unchanged.
   Organizations kept in Switch are unaffected.
+- **The dashboard's sign-in and first screens share one look.** Signing in,
+  accepting an invitation, choosing a workspace, creating an organization,
+  the page Switch Console's sign-in link opens, and the screens shown while
+  the session loads or when it cannot be read now sit on one card with the
+  Switch mark. The flows themselves are unchanged.
+- **One sign-in button for each configured way of signing in.** Where
+  `GATEWAY_OIDC_LOGIN_OPTIONS` lists several (Google and Microsoft, say), the
+  dashboard's sign-in page now offers a button for each, going straight to that
+  provider and carrying its mark for Google, Microsoft and GitHub, as Switch
+  Console already does. Without any, it keeps the single button. When the page
+  cannot read how sign-in is set up, it says so above the password form instead
+  of quietly offering only that.
+- **The workspace picker lists workspaces by organization.** Someone in
+  workspaces of more than one organization sees them under each organization's
+  name, in the same order as the top bar's workspace switcher.
+- **Sign-in goes straight to the identity provider when it is the only way
+  in.** With password login off and a single sign-in button, the dashboard
+  hands off to the provider's own sign-in page without showing its own first.
+  After someone signs out on purpose it waits for them to ask instead, since the
+  provider's session outlives Switch's and would sign them straight back in;
+  and if they come back from the provider still signed out, it stops and says
+  signing in didn't finish rather than sending them round again.
+- **The dashboard's sign-in says why a sign-in failed.** A sign-in through
+  the identity provider that does not finish comes back to the sign-in page
+  saying why (cancelled, refused, expired, an unverified address, an
+  impersonated sign-in, the provider unreachable, or sign-in set up wrongly)
+  rather than to an error from the server, and the page waits to be asked
+  rather than handing off again.
+- **Signing in comes back to the page you asked for.** Opening a dashboard
+  page while signed out signs you in and lands you on that page, through the
+  identity provider or with a password, instead of on the home page.
+- **Signing out of every device signs this browser out even when some
+  sign-ins at WorkOS could not be ended.** Every Switch session has ended by
+  then, so the dashboard signs out and says how many WorkOS sign-ins are
+  left, rather than claiming the sign-out failed.
+- **`WORKOS_CLIENT_ID` on its own is valid**, for sign-in through AuthKit.
+  In the Helm chart, `switchCore.organizationDirectory.workosClientId` may be
+  left empty when `switchCore.signIn.workosClientId` names the application.
 
 #### Removed
 - **The server-side connectors' table, and the keys they left behind.**

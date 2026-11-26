@@ -159,6 +159,15 @@ After a 30-day grace period, every pass also deletes:
 - messaging install links that expired. Once expired, a replayed link is
   refused whether or not the row exists.
 
+Once a pass has been through every workspace, it also deletes the records of
+people's sessions at WorkOS AuthKit (`identity_sessions`) that ended, or were
+last signed in on, more than 44 days ago: the 14 days a sign-in can last, then
+the same 30-day grace. A sign-in that joins a session already recorded (the
+same browser signing in again while its AuthKit session lives) counts as
+the latest, so a row is never pruned under a cookie that can still stand on
+it. They hold an account id, its WorkOS user id and WorkOS's session id,
+nothing else.
+
 ### What is deliberately not touched
 
 - **A live workspace's audit log** (`audit_events`). It is append-only by
@@ -183,7 +192,7 @@ below, in the order it is likely to be needed.
 | Data | Where | Personal data |
 |---|---|---|
 | Message content and attachments | `messages`, `message_attachments`, `media_blobs` | Anything people write. Sender ids. |
-| Switch accounts | `users`, `oidc_identities`, `tenant_members` | Name, email, IdP subject |
+| Switch accounts | `users`, `oidc_identities`, `identity_sessions`, `tenant_members` | Name, email, IdP subject, IdP session id |
 | Chat-platform identities | `external_users`, `external_user_claims` | Platform user id and username |
 | Invitations | `invitations` | Invitee email |
 | Audit log | `audit_events` | Actor user id, target ids, details |

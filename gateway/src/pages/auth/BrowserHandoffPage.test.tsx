@@ -137,6 +137,9 @@ describe("the sign-in link page", () => {
         "Switch Console is signing this browser in as Ada (ada@example.com). Continue?",
       ),
     ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Opening a page from Switch Console" })).toBeTruthy();
+    // The same card as every other screen before the app, with the mark.
+    expect(screen.getByRole("img", { name: "Switch" })).toBeTruthy();
     expect(requests.map((r) => r.url)).toEqual(["/gateway/auth/handoff/peek"]);
     expect(replace).not.toHaveBeenCalled();
 

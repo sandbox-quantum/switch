@@ -30,6 +30,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     HTTPException,
+    Path,
     Query,
     Request,
     Response,
@@ -71,6 +72,10 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.room_store import RoomStore, readable_by
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.admin_tokens import (
+    signed_in_admin_token,
+    signed_in_creator_token,
+)
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     get_authenticated_caller,
@@ -105,6 +110,8 @@ from switch_core.gateway.schemas import (
     OrganizationAuditEventDetail,
     OrganizationCreateRequest,
     OrganizationCreateResponse,
+    OrganizationInvitationCreateRequest,
+    OrganizationInvitationResponse,
     OrganizationIssueDetail,
     OrganizationMemberDetail,
     OrganizationMemberListEntry,
@@ -119,15 +126,14 @@ from switch_core.gateway.schemas import (
     WorkspaceCreateRequest,
 )
 from switch_core.gateway.service_connections import service_refusal
-from switch_core.gateway.workos_sign_in_routes import (
-    directory_access_token,
-    directory_subject,
-)
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
+    ONE_WORKSPACE,
     create_organization_for,
     create_workspace,
     directory_failed,
+    directory_sign_in_required,
+    keeps_one_workspace,
     lock_workspace_allowance,
     refuse_a_workspace_name_taken,
 )
@@ -145,7 +151,10 @@ from switch_core.organization_admin_notices import (
 )
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
+    AdminToken,
+    CreatorToken,
     DirectoryError,
+    DirectoryInvitation,
     DirectorySignInRequired,
     MemberChange,
     OrganizationDirectory,
@@ -154,7 +163,6 @@ from switch_core.organization_issues import (
     organization_wide_issues,
     workspace_issues,
 )
-from switch_core.workos_sign_in import OrganizationToken
 
 router = APIRouter()
 
@@ -477,6 +485,7 @@ async def create_organization(
     ],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    creator_token: Annotated[CreatorToken, Depends(signed_in_creator_token)],
 ) -> OrganizationCreateResponse:
     """Create an organization with its first workspace. The caller becomes the
     organization's `org_admin` and the workspace's `admin`, and their session
@@ -498,8 +507,14 @@ async def create_organization(
         organization_directory,
         client_lifecycle,
         config,
+        creator_token,
         name=req.name,
         workspace_name=req.workspace_name or req.name,
+        setup_answers=(
+            None
+            if req.setup_answers is None
+            else req.setup_answers.model_dump(exclude_none=True) or None
+        ),
         signed_in=session_signed_in(request),
     )
 
@@ -692,6 +707,9 @@ async def create_organization_workspace(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> TenantMembershipResponse:
@@ -703,11 +721,17 @@ async def create_organization_workspace(
     refused where the deployment allows none, but not by `invite_only`
     sign-up, which governs who comes onto the server rather than what an
     organization adds. The platform operator is exempt, as everywhere.
+    Refused, 409, for an organization that keeps one workspace
+    (`keeps_one_workspace`).
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
     organization_id = access.organization_id
+    if keeps_one_workspace(
+        organization_directory, await _organization(session, organization_id)
+    ):
+        raise HTTPException(status_code=409, detail=ONE_WORKSPACE)
     await refuse_a_workspace_name_taken(
         session, session_factory, organization_id, req.name, renaming=None
     )
@@ -963,26 +987,22 @@ async def _ask_directory(
     try:
         await change(organization, *args, member_change)
     except DirectorySignInRequired as error:
-        raise _sign_in_required(error, outcome, access_ended) from None
+        raise _sign_in_required(error, organization, outcome, access_ended) from None
     except DirectoryError as error:
         raise directory_failed(error, outcome) from None
 
 
 def _sign_in_required(
-    error: DirectorySignInRequired, outcome: str, access_ended: bool
+    error: DirectorySignInRequired,
+    organization: Organization,
+    outcome: str,
+    access_ended: bool,
 ) -> HTTPException:
-    """403 the dashboard tells apart by its `error`: it sends the admin to
-    sign in to the organization's WorkOS account and back to make the change
-    again (`gateway/workos_sign_in_routes.py`). With `access_ended`, part of
-    the change was made already, so the dashboard says so before it sends
-    them anywhere."""
-    return HTTPException(
-        status_code=403,
-        detail={
-            "error": "directory_sign_in_required",
-            "message": f"{error.message} {outcome}",
-            "access_ended": access_ended,
-        },
+    return directory_sign_in_required(
+        error,
+        workos_organization_id=organization.workos_organization_id,
+        outcome=outcome,
+        access_ended=access_ended,
     )
 
 
@@ -995,43 +1015,59 @@ _OPERATOR_CANNOT_SIGN_IN = (
 )
 
 
+async def _directory_subject(
+    session: AsyncSession,
+    user_store: UserStore,
+    organization_directory: OrganizationDirectory,
+    user_id: str,
+) -> str | None:
+    """The directory's id for `user_id`: their subject under its
+    `identity_issuer`, or None where it has none or they have no identity
+    there. What a change to someone's membership names them by."""
+    if organization_directory.identity_issuer is None:
+        return None
+    return await user_store.oidc_subject(
+        session, user_id, organization_directory.identity_issuer
+    )
+
+
 async def _member_change(
     session: AsyncSession,
     user_store: UserStore,
     organization_directory: OrganizationDirectory,
-    token: OrganizationToken | None,
+    admin_token: AdminToken,
     access: OrganizationAccess,
     organization: Organization,
     user_id: str,
     role: str | None,
 ) -> MemberChange:
     """What giving `user_id` `role` in `organization`, or removing them when
-    `role` is None, needs of the directory, with the admin's token when it
-    was issued for the organization's WorkOS organization. Asked before
+    `role` is None, needs of the directory, with the admin's token for it
+    when it takes the change only from them (`admin_token`). Asked before
     anything is changed and before any lock is taken, so a refusal or a
-    sign-in costs nothing. An operator let in to restore an `org_admin` has
-    no token to sign in for, and is told who can make the change instead."""
-    access_token = (
-        token.access_token
-        if token is not None
-        and token.workos_organization_id == organization.workos_organization_id
-        else None
-    )
-    subject = await directory_subject(
+    sign-in costs nothing. An operator let in to restore an `org_admin` is no
+    admin in the directory, so has no token to give, and is told who can make
+    the change instead."""
+    subject = await _directory_subject(
         session, user_store, organization_directory, user_id
     )
     # Let go of the request's connection while the directory is asked.
     await session.commit()
     try:
         return await organization_directory.prepare_change(
-            organization, subject, role, access_token
+            organization,
+            subject,
+            role,
+            None if access.platform_access else admin_token,
         )
     except DirectorySignInRequired as error:
         if access.platform_access:
             raise HTTPException(
                 status_code=409, detail=_OPERATOR_CANNOT_SIGN_IN
             ) from None
-        raise _sign_in_required(error, NOTHING_CHANGED, access_ended=False) from None
+        raise _sign_in_required(
+            error, organization, NOTHING_CHANGED, access_ended=False
+        ) from None
     except DirectoryError as error:
         raise directory_failed(error, NOTHING_CHANGED) from None
 
@@ -1152,9 +1188,7 @@ async def update_organization_member_role(
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-    directory_token: Annotated[
-        OrganizationToken | None, Depends(directory_access_token)
-    ],
+    admin_token: Annotated[AdminToken, Depends(signed_in_admin_token)],
     notices: Annotated[
         OrganizationAdminNotices, Depends(get_organization_admin_notices)
     ],
@@ -1202,7 +1236,7 @@ async def update_organization_member_role(
             session,
             user_store,
             organization_directory,
-            directory_token,
+            admin_token,
             access,
             organization,
             user_id,
@@ -1328,9 +1362,7 @@ async def remove_organization_member(
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-    directory_token: Annotated[
-        OrganizationToken | None, Depends(directory_access_token)
-    ],
+    admin_token: Annotated[AdminToken, Depends(signed_in_admin_token)],
     notices: Annotated[
         OrganizationAdminNotices, Depends(get_organization_admin_notices)
     ],
@@ -1381,7 +1413,7 @@ async def remove_organization_member(
         session,
         user_store,
         organization_directory,
-        directory_token,
+        admin_token,
         access,
         organization,
         user_id,
@@ -1463,3 +1495,218 @@ async def remove_organization_member(
             request, response, session_factory, user_store, user, config
         )
     return {"ok": True, "warning": warning}
+
+
+# ── Invitations the directory sends ─────────────────────────────────────────
+
+# WorkOS's ids for invitations, the only ids these routes pass on: anything
+# else in the path is refused before the directory is asked.
+INVITATION_ID_PATTERN = r"^invitation_[A-Za-z0-9]{1,64}$"
+
+
+def _invitation_response(
+    invitation: DirectoryInvitation,
+) -> OrganizationInvitationResponse:
+    return OrganizationInvitationResponse(
+        id=invitation.id,
+        email=invitation.email,
+        role=ORGANIZATION_ADMIN_ROLE
+        if invitation.role == ORGANIZATION_ADMIN_ROLE
+        else "member",
+        state=invitation.state,
+        created_at=invitation.created_at,
+        expires_at=invitation.expires_at,
+    )
+
+
+async def _inviting_organization(
+    session: AsyncSession,
+    user_store: UserStore,
+    organization_store: OrganizationStore,
+    user: User,
+) -> Organization:
+    """The organization the bound workspace is in, for its `org_admin`: one
+    the directory keeps invites through it alone."""
+    access = await require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=False
+    )
+    organization = await _organization(session, access.organization_id)
+    # Let go of the request's connection while the directory is asked.
+    await session.commit()
+    return organization
+
+
+async def _from_directory[T](
+    call: Awaitable[T], organization: Organization, outcome: str
+) -> T:
+    """`call`'s answer, its failures said as every directory failure is: a
+    sign-in again the dashboard sends the admin through, a refusal, or the
+    directory out of reach."""
+    try:
+        return await call
+    except DirectorySignInRequired as error:
+        raise _sign_in_required(
+            error, organization, outcome, access_ended=False
+        ) from None
+    except DirectoryError as error:
+        raise directory_failed(error, outcome) from None
+
+
+@router.get("/organizations/current/invitations")
+async def list_organization_invitations(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
+    admin_token: Annotated[AdminToken, Depends(signed_in_admin_token)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> list[OrganizationInvitationResponse]:
+    """Every invitation to an organization the directory keeps, as the
+    directory has it. `org_admin` only."""
+    organization = await _inviting_organization(
+        session, user_store, organization_store, user
+    )
+    invitations = await _from_directory(
+        organization_directory.invitations(organization, admin_token),
+        organization,
+        NOTHING_CHANGED,
+    )
+    return [_invitation_response(invitation) for invitation in invitations]
+
+
+@router.post("/organizations/current/invitations", status_code=201)
+async def invite_to_organization(
+    req: OrganizationInvitationCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
+    admin_token: Annotated[AdminToken, Depends(signed_in_admin_token)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> OrganizationInvitationResponse:
+    """Invite `email` to an organization the directory keeps, as a Member or
+    an Org Admin, with the admin's own token: the directory sends the
+    invitation, and accepting it signs the person in to the organization,
+    and its one workspace. `org_admin` only; the directory keeps its own
+    rules (nobody invites above their own role, no second pending invitation
+    to one address). Recorded in the organization's audit log."""
+    organization = await _inviting_organization(
+        session, user_store, organization_store, user
+    )
+    invitation = await _from_directory(
+        organization_directory.invite(organization, req.email, req.role, admin_token),
+        organization,
+        NOTHING_CHANGED,
+    )
+    await _record_invitation(
+        session_factory,
+        organization,
+        user,
+        OrganizationAuditAction.DIRECTORY_INVITATION_SENT,
+        invitation.id,
+        {"email": invitation.email, "role": req.role},
+    )
+    return _invitation_response(invitation)
+
+
+@router.post(
+    "/organizations/current/invitations/{invitation_id}/resend", status_code=204
+)
+async def resend_organization_invitation(
+    invitation_id: Annotated[str, Path(pattern=INVITATION_ID_PATTERN)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
+    admin_token: Annotated[AdminToken, Depends(signed_in_admin_token)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    """Have the directory send a pending invitation again. `org_admin`
+    only."""
+    organization = await _inviting_organization(
+        session, user_store, organization_store, user
+    )
+    await _from_directory(
+        organization_directory.resend_invitation(
+            organization, invitation_id, admin_token
+        ),
+        organization,
+        NOTHING_CHANGED,
+    )
+    await _record_invitation(
+        session_factory,
+        organization,
+        user,
+        OrganizationAuditAction.DIRECTORY_INVITATION_RESENT,
+        invitation_id,
+        {},
+    )
+
+
+@router.delete("/organizations/current/invitations/{invitation_id}", status_code=204)
+async def revoke_organization_invitation(
+    invitation_id: Annotated[str, Path(pattern=INVITATION_ID_PATTERN)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
+    admin_token: Annotated[AdminToken, Depends(signed_in_admin_token)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    """Revoke a pending invitation in the directory. `org_admin` only."""
+    organization = await _inviting_organization(
+        session, user_store, organization_store, user
+    )
+    await _from_directory(
+        organization_directory.revoke_invitation(
+            organization, invitation_id, admin_token
+        ),
+        organization,
+        NOTHING_CHANGED,
+    )
+    await _record_invitation(
+        session_factory,
+        organization,
+        user,
+        OrganizationAuditAction.DIRECTORY_INVITATION_REVOKED,
+        invitation_id,
+        {},
+    )
+
+
+async def _record_invitation(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization: Organization,
+    user: User,
+    action: OrganizationAuditAction,
+    invitation_id: str,
+    details: dict[str, str],
+) -> None:
+    async with organization_session(session_factory, organization.id) as session:
+        await record_organization_audit_event(
+            session,
+            organization_id=organization.id,
+            actor_user_id=user.id,
+            action=action,
+            target_type="invitation",
+            target_id=invitation_id,
+            details=details,
+        )
+        await session.commit()

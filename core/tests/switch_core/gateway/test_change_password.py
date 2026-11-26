@@ -110,6 +110,7 @@ def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
         session_version=0,
         auth_time=datetime.now(UTC),
         session_id=secrets.token_urlsafe(16),
+        identity_session=None,
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

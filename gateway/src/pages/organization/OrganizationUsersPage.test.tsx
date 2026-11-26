@@ -309,35 +309,40 @@ describe("OrganizationUsersPage", () => {
       expect(menuItems("Bob").find((item) => item.label === "Make Org Admin")?.reason).toBeNull();
     });
 
-    it("sends the admin to sign in there, keeping the change", async () => {
+    it("sends the admin to sign in again to the organization, keeping the change", async () => {
       answerFetch(directoryRoutes(signInFirst));
-      structured({ error: "directory_sign_in_required", message: "Confirm your sign-in." });
+      structured({
+        error: "directory_sign_in_required",
+        message: "Your sign-in has ended.",
+        organization_id: "org_EXAMPLE",
+      });
 
       render(<OrganizationUsersPage />);
       await promoteBob();
 
       await waitFor(() =>
         expect(window.location.href).toBe(
-          "/gateway/auth/workos/organization?return_to=%2Fsettings%2Forg%2Fusers",
+          "/gateway/auth/oidc/login?next=%2Fsettings%2Forg%2Fusers&organization_id=org_EXAMPLE",
         ),
       );
       expect(
         JSON.parse(window.sessionStorage.getItem("switch.pendingOrganizationMemberChange")!),
-      ).toMatchObject({ change: { userId: "bob", role: "org_admin" }, organizationId: "org-1" });
+      ).toMatchObject({
+        change: { userId: "bob", role: "org_admin" },
+        organizationId: "org-1",
+        askedBy: "me",
+      });
     });
 
-    it("comes back only to a dashboard path", async () => {
-      window.location.pathname = "//elsewhere.example.test/settings/org/users";
+    it("signs in again with no organization when the server names none", async () => {
       answerFetch(directoryRoutes(signInFirst));
-      structured({ error: "directory_sign_in_required", message: "Confirm your sign-in." });
+      structured({ error: "directory_sign_in_required", message: "Your sign-in has ended." });
 
       render(<OrganizationUsersPage />);
       await promoteBob();
 
       await waitFor(() =>
-        expect(window.location.href).toBe(
-          "/gateway/auth/workos/organization?return_to=%2Forganization",
-        ),
+        expect(window.location.href).toBe("/gateway/auth/oidc/login?next=%2Fsettings%2Forg%2Fusers"),
       );
     });
 
@@ -347,6 +352,7 @@ describe("OrganizationUsersPage", () => {
         error: "directory_sign_in_required",
         message: "Your sign-in has ended. Access was already taken away.",
         access_ended: true,
+        organization_id: "org_EXAMPLE",
       });
 
       render(<OrganizationUsersPage />);
@@ -356,25 +362,31 @@ describe("OrganizationUsersPage", () => {
         await screen.findByText("Your sign-in has ended. Access was already taken away."),
       ).toBeTruthy();
       expect(window.location.href).toBe("");
-      fireEvent.click(screen.getByRole("button", { name: "Confirm sign-in to finish" }));
+      fireEvent.click(screen.getByRole("button", { name: "Sign in again to finish" }));
       expect(window.location.href).toBe(
-        "/gateway/auth/workos/organization?return_to=%2Fsettings%2Forg%2Fusers",
+        "/gateway/auth/oidc/login?next=%2Fsettings%2Forg%2Fusers&organization_id=org_EXAMPLE",
       );
     });
 
-    const keep = (organizationId: string, savedAt: number) =>
+    const keep = (organizationId: string, savedAt: number, askedBy = "me") =>
       window.sessionStorage.setItem(
         "switch.pendingOrganizationMemberChange",
-        JSON.stringify({ change: { userId: "bob", role: "org_admin" }, organizationId, savedAt }),
+        JSON.stringify({
+          change: { userId: "bob", role: "org_admin" },
+          organizationId,
+          askedBy,
+          savedAt,
+        }),
       );
     const patched = (calls: Call[]) => calls.some((c) => c.method === "PATCH");
 
-    it("drops a kept change from another organization, or one too old", async () => {
-      for (const [organizationId, savedAt] of [
-        ["org-2", Date.now()],
-        ["org-1", Date.now() - 11 * 60 * 1000],
+    it("drops a kept change from another organization, another person, or one too old", async () => {
+      for (const [organizationId, savedAt, askedBy] of [
+        ["org-2", Date.now(), "me"],
+        ["org-1", Date.now(), "someone-else"],
+        ["org-1", Date.now() - 11 * 60 * 1000, "me"],
       ] as const) {
-        keep(organizationId, savedAt);
+        keep(organizationId, savedAt, askedBy);
         const calls = answerFetch(directoryRoutes([200, { ...bob(), role: "org_admin", warning: null }]));
 
         const { unmount } = render(<OrganizationUsersPage />);
@@ -403,11 +415,11 @@ describe("OrganizationUsersPage", () => {
     it("shows a kept change that still asks for a sign-in as a failure", async () => {
       keep("org-1", Date.now());
       answerFetch(directoryRoutes(signInFirst));
-      structured({ error: "directory_sign_in_required", message: "Confirm your sign-in." });
+      structured({ error: "directory_sign_in_required", message: "Sign in again." });
 
       render(<OrganizationUsersPage />);
 
-      expect(await screen.findByText("Confirm your sign-in.")).toBeTruthy();
+      expect(await screen.findByText("Sign in again.")).toBeTruthy();
       expect(window.location.href).toBe("");
     });
   });

@@ -5,6 +5,8 @@
 - `create EMAIL --name NAME [--operator]` adds an account in no workspace,
   as an invitation or a domain join then places it. Its password is read
   from `--password-file` or standard input, never from the command line.
+  Refused under `ORGANIZATION_DIRECTORY=workos`, where every account is a
+  WorkOS user and joins an organization by its invitation.
 - `delete EMAIL [--execute [--yes]]` deletes an account through the account
   deletion the dashboard uses (`accounts/deletion.py`), with its refusals.
   It first shows what is connected to the account, as that deletion finds it.
@@ -13,8 +15,11 @@
   dashboard or Switch Console. Without `--execute` it only says what would
   happen; with it, the operator types the account's e-mail to confirm, unless
   `--yes` is given. Either way it looks again just before deleting, and
-  deletes nothing if the account has changed since it was shown.
-- `sign-out EMAIL` ends every session the account holds.
+  deletes nothing if the account has changed since it was shown. The
+  account's WorkOS AuthKit sign-ins are ended first, and one that cannot be
+  stops the deletion, so no device signs straight back in to a new account.
+- `sign-out EMAIL` ends every session the account holds, and every WorkOS
+  AuthKit sign-in Switch made for it.
 - `unlock EMAIL` lifts the lock failed password sign-ins put on the account's
   email at once, rather than waiting it out (`gateway/login_limits.py`). A
   lock on the address someone signs in from stays until it runs out.
@@ -79,6 +84,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import hash_password_off_loop, list_held_memberships
+from switch_core.gateway.identity_sessions import IdentitySessions, authkit_for
 from switch_core.gateway.login_limits import clear_login_failures
 from switch_core.gateway.schemas import Email, Password
 from switch_core.main import build_connector_apps, build_service_broker
@@ -211,11 +217,27 @@ def _one_line_ending_off(text: str) -> str:
 # ── sign-out ──────────────────────────────────────────────────────────────────
 
 
+@asynccontextmanager
+async def identity_sessions(
+    config: SwitchConfig, session_factory: async_sessionmaker[AsyncSession]
+) -> AsyncIterator[IdentitySessions]:
+    """The accounts' WorkOS AuthKit sessions (`gateway/identity_sessions.py`),
+    ended at WorkOS where the server signs people in through AuthKit."""
+    async with guarded_async_client(config.outbound_policy, timeout=20) as http:
+        yield IdentitySessions(
+            session_factory, authkit_for(config, http), config.keyring
+        )
+
+
 async def sign_out(
-    session_factory: async_sessionmaker[AsyncSession], email: str
+    session_factory: async_sessionmaker[AsyncSession],
+    identity_sessions: IdentitySessions,
+    email: str,
 ) -> User:
     """End every session the account holds, as "Sign out of all devices"
-    does: the session version moves on, so every cookie it had is refused."""
+    does: the session version moves on, so every cookie it had is refused,
+    and every WorkOS AuthKit sign-in Switch made for it is revoked there. One
+    WorkOS would not revoke is refused after the rest, to be run again."""
     user_store = UserStore()
     with no_tenant():
         async with session_factory() as session:
@@ -232,7 +254,13 @@ async def sign_out(
                 details=_by_command(),
             )
             await session.commit()
-            return user
+    failed = await identity_sessions.end_all(user.id, keep=None)
+    if failed:
+        raise CommandRefused(
+            f"Ended every Switch session of {email}, but {failed} of its "
+            "sign-ins at WorkOS could not be ended. Run it again to end them."
+        )
+    return user
 
 
 # ── unlock ────────────────────────────────────────────────────────────────────
@@ -592,6 +620,7 @@ async def _record_refusal(
 async def delete_account(
     deletion: AccountDeletion,
     session_factory: async_sessionmaker[AsyncSession],
+    identity_sessions: IdentitySessions,
     shown: DeletionPlan,
 ) -> None:
     """Delete the account `shown` describes, recorded in the server's audit
@@ -620,6 +649,20 @@ async def delete_account(
     user_id = plan.user.id
     reason = plan.blocked
     if reason is not None:
+        await _record_refusal(session_factory, user_id, reason)
+        raise CommandRefused(reason)
+    # Ended once the plan's refusals are checked, and before anything is
+    # deleted, so a sign-in WorkOS will not end (its listing included) stops
+    # the deletion rather than leaving a device to sign straight back in to a
+    # new account. The last-admin check `deletion.delete` makes again under
+    # its lock can still refuse after this in a race, with the sign-ins
+    # already ended: accepted, for the same reason.
+    failed = await identity_sessions.end_all(user_id, keep=None)
+    if failed:
+        reason = (
+            f"{failed} of the account's sign-ins could not be ended at WorkOS, "
+            "so it was not deleted. Run it again."
+        )
         await _record_refusal(session_factory, user_id, reason)
         raise CommandRefused(reason)
     with no_tenant():
@@ -679,6 +722,7 @@ async def delete_account(
 async def run_delete(
     deletion: AccountDeletion,
     session_factory: async_sessionmaker[AsyncSession],
+    identity_sessions: IdentitySessions,
     email: str,
     *,
     execute: bool,
@@ -705,7 +749,7 @@ async def run_delete(
         return 0
     if not yes:
         confirm(plan.user.email)
-    await delete_account(deletion, session_factory, plan)
+    await delete_account(deletion, session_factory, identity_sessions, plan)
     print(f"\nDeleted the account {plan.user.email}.")
     return 0
 
@@ -921,6 +965,11 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                     await list_accounts(session_factory, operators=arguments.operators)
                 )
             elif command == "create":
+                if config.organization_directory == "workos":
+                    raise CommandRefused(
+                        "Accounts here are WorkOS users: invite this person "
+                        "through the organization."
+                    )
                 password = read_password(arguments.password_file)
                 user = await create_account(
                     session_factory,
@@ -932,7 +981,8 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                 role = "platform operator" if arguments.operator else "account"
                 print(f"Created {role} {user.email} ({user.id}), in no workspace.")
             elif command == "sign-out":
-                user = await sign_out(session_factory, arguments.email)
+                async with identity_sessions(config, session_factory) as followed:
+                    user = await sign_out(session_factory, followed, arguments.email)
                 print(f"Ended every session of {user.email} ({user.id}).")
             elif command == "unlock":
                 user = await unlock(session_factory, arguments.email)
@@ -959,9 +1009,10 @@ async def _delete(config: SwitchConfig, email: str, *, execute: bool, yes: bool)
         async with (
             database(config, restricted=True) as session_factory,
             deletion_services(config, session_factory) as deletion,
+            identity_sessions(config, session_factory) as followed,
         ):
             return await run_delete(
-                deletion, session_factory, email, execute=execute, yes=yes
+                deletion, session_factory, followed, email, execute=execute, yes=yes
             )
     except RuntimeRoleError as error:
         # The broker finds a workspace's sign-ins through the tenant policies

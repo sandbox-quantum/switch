@@ -139,6 +139,7 @@ async def _session_flag(
         TENANT_ZERO_ID,
         session_version=0,
         session_id=secrets.token_urlsafe(16),
+        identity_session=None,
         auth_time=datetime.now(UTC),
     )
     async with _client(_session_app(session_factory, signup_mode="open"), token) as c:

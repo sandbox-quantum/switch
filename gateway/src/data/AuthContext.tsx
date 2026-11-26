@@ -5,6 +5,7 @@ import {
   type CurrentTenant,
   type Session,
   type SessionUser,
+  type SignedOut,
   fetchFeatureFlags,
   fetchSession,
   loadCurrentTenant,
@@ -17,7 +18,12 @@ import { type Capabilities, capabilitiesOf } from "./capabilities";
 import { ALL_OFF, type FeatureFlags } from "./featureFlags";
 import { onSessionSignal, setShownWorkspace } from "./gatewayFetch";
 import { landingAfterSwitch } from "./settingsLanding";
-import { clearPendingInvite } from "./sessionState";
+import {
+  clearPendingInvite,
+  clearSignInMarks,
+  keepSignOutNotice,
+  markSignedOut,
+} from "./sessionState";
 import {
   followWorkspaceLink,
   forgetLinkForSignIn,
@@ -58,6 +64,9 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   logoutEverywhere: () => Promise<void>;
+  // Finishes a sign-out the server already made, such as deleting the
+  // account: leaves for WorkOS when it says to, else shows sign-in.
+  finishSignOut: (signedOut: SignedOut) => void;
   switchTo: (tenantId: string) => Promise<void>;
 }
 
@@ -78,6 +87,7 @@ async function loadAll(): Promise<Loaded> {
 /** `loadAll` for a session already read. */
 async function loadFor(session: Session | null): Promise<Loaded> {
   if (session === null) return { session: null, tenant: null, flags: ALL_OFF };
+  clearSignInMarks();
   const [flags, tenant] = await Promise.all([
     fetchFeatureFlags(),
     session.state === "ready" ? loadCurrentTenant() : Promise.resolve(null),
@@ -300,20 +310,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // The next person to sign in on this tab must not inherit an invitation,
   // or a link, they never followed. Both are dropped only once signed out: a
   // sign-out that fails leaves the person here, with what they had.
-  const signOutWith = useCallback(async (signOut: () => Promise<void>) => {
+  //
+  // A session that stood on a WorkOS sign-in leaves for WorkOS to end that
+  // too, and comes back to sign-in, which hands straight to WorkOS's sign-in
+  // page again, as the other applications sharing that sign-in do: WorkOS no
+  // longer holds a session to sign the person straight back in with.
+  // Otherwise this tab is marked signed out on purpose, so sign-in waits to
+  // be asked rather than handing off to an identity provider whose own
+  // session would sign the person straight back in.
+  const finishSignOut = useCallback((signedOut: SignedOut) => {
     signingOut.current = true;
-    try {
-      await signOut();
-    } catch (err) {
-      signingOut.current = false;
-      throw err;
-    }
     clearPendingInvite();
     forgetLinkForSignIn();
     held.current = null;
+    if (signedOut.notice !== null) keepSignOutNotice(signedOut.notice);
+    if (signedOut.endSessionUrl !== null) {
+      window.location.assign(signedOut.endSessionUrl);
+      return;
+    }
+    markSignedOut();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
     signingOut.current = false;
   }, []);
+  const signOutWith = useCallback(
+    async (signOut: () => Promise<SignedOut>) => {
+      signingOut.current = true;
+      let signedOut: SignedOut;
+      try {
+        signedOut = await signOut();
+      } catch (err) {
+        signingOut.current = false;
+        throw err;
+      }
+      finishSignOut(signedOut);
+    },
+    [finishSignOut],
+  );
   const logout = useCallback(() => signOutWith(apiLogout), [signOutWith]);
   const logoutEverywhere = useCallback(() => signOutWith(signOutEverywhere), [signOutWith]);
 
@@ -342,6 +374,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     logout,
     logoutEverywhere,
+    finishSignOut,
     switchTo,
   };
 

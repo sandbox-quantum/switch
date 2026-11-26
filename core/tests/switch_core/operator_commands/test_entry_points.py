@@ -73,6 +73,29 @@ async def _server_actions(rls_harness: RLSHarness) -> list[str]:
         )
 
 
+class TestAccountsCreate:
+    async def test_is_refused_where_accounts_are_workos_users(
+        self, rls_harness: RLSHarness, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        config = command_config(rls_harness).model_copy(
+            update={"organization_directory": "workos"}
+        )
+
+        status = await _accounts(
+            config, "create", "new@example.invalid", "--name", "New"
+        )
+
+        assert status == 1
+        assert "invite this person through the organization" in capsys.readouterr().err
+        async with rls_harness.owner() as session:
+            assert (
+                await session.scalar(
+                    select(User.id).where(User.email == "new@example.invalid")
+                )
+                is None
+            )
+
+
 class TestAccountsDelete:
     async def test_a_dry_run_shows_it_and_changes_nothing(
         self, rls_harness: RLSHarness, capsys: pytest.CaptureFixture[str]

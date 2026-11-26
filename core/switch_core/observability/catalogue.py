@@ -1051,6 +1051,16 @@ AUTH_SIGN_IN_FAILURES = _spec(
     "Password sign-ins refused for a wrong password or an unknown email. No "
     "attributes: never the email, the account or the caller's address.",
 )
+AUTH_IDENTITY_SESSION_CHECKS = _spec(
+    "switch.auth.identity_session_checks",
+    "sum",
+    "{check}",
+    "Checks of a WorkOS AuthKit session a gateway sign-in stands on, by "
+    "`outcome`: `alive`, `ended` (the session ended there, so the Switch "
+    "session ends too) or `failed` (WorkOS could not be asked; the session is "
+    "kept and asked again later). No account or session id.",
+    "outcome",
+)
 # `limit` is `email` or `client_address`, the sign-in limit that locked
 # (`gateway/login_limits.py`). Email lock-outs coming steadily with no
 # address lock-outs beside them are someone keeping one person out on
@@ -1186,6 +1196,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_CONTROLLER_ERRORS,
         HOSTED_CONTROLLER_RESTARTS,
         AUTH_SIGN_IN_FAILURES,
+        AUTH_IDENTITY_SESSION_CHECKS,
         AUTH_SIGN_IN_LOCKOUTS,
         CONTROLLER_CREDENTIAL_REFUSALS,
         RUNTIME_UNHANDLED_EXCEPTIONS,

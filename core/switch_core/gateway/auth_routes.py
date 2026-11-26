@@ -12,6 +12,7 @@ from fastapi import (
     Request,
     Response,
 )
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,6 +24,7 @@ from switch_core.accounts.deletion import (
     AccountDeletionRefused,
     Workspace,
 )
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
@@ -34,7 +36,8 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
-from switch_core.db.models import TENANT_ZERO_ID, ExternalUser, User
+from switch_core.db.models import TENANT_ZERO_ID, ExternalUser, Organization, User
+from switch_core.db.session_scope import organization_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -48,6 +51,8 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import (
+    BROWSER_HANDOFFS,
+    SESSION_ID_CLAIM,
     SIGNUP_REFUSED_DETAIL,
     AuthenticatedCaller,
     AuthenticatedSession,
@@ -59,14 +64,17 @@ from switch_core.gateway.auth import (
     get_authenticated_user_id,
     get_current_user,
     hash_password_off_loop,
+    identity_session_of,
     initial_tenant_claim,
     list_held_memberships,
     list_tenant_memberships,
     operator_entered_workspace,
     password_matches_off_loop,
+    session_identity,
     session_signed_in,
     set_session_cookie,
     sign_out_session,
+    signed_claims,
     signed_in_now,
     signup_refused_by_edge,
     tenants_held_by,
@@ -81,7 +89,9 @@ from switch_core.gateway.dependencies import (
     get_collab_lifecycle,
     get_config,
     get_external_user_store,
+    get_identity_sessions,
     get_organization_admin_notices,
+    get_organization_directory,
     get_organization_store,
     get_protocol,
     get_resource_service,
@@ -97,6 +107,8 @@ from switch_core.gateway.hosted_machines import (
     ensure_machine,
     hosted_settings,
 )
+from switch_core.gateway.identity_sessions import IdentitySessions
+from switch_core.gateway.licenses import accept_license, license_to_accept
 from switch_core.gateway.login_limits import (
     admit_login,
     count_signup,
@@ -108,6 +120,7 @@ from switch_core.gateway.schemas import (
     AuthConfigResponse,
     ChangePasswordRequest,
     DeleteAccountRequest,
+    LicenseAcceptRequest,
     LinkedIdentity,
     LoginRequest,
     OidcLoginOptionView,
@@ -115,15 +128,19 @@ from switch_core.gateway.schemas import (
     ServerDeclaration,
     SessionStateResponse,
     SessionUserResponse,
+    SignOutResponse,
     SignupMachine,
     SignupRequest,
     SignupResponse,
+    TenantMembershipResponse,
     UpdateMeRequest,
 )
 from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
+from switch_core.gateway.workspace_creation import keeps_one_workspace
 from switch_core.observability.catalogue import AUTH_SIGN_IN_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.organization_admin_notices import OrganizationAdminNotices
+from switch_core.organization_directory import OrganizationDirectory
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
@@ -233,7 +250,7 @@ async def login(
         config.keyring,
         config.gateway_cookie_secure,
         tenant_claim,
-        signed_in_now(),
+        signed_in_now(None),
     )
     return _session_response(user)
 
@@ -364,7 +381,7 @@ async def signup(
             config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
-            signed_in_now(),
+            signed_in_now(None),
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -399,13 +416,43 @@ async def refresh(
     return _session_response(user)
 
 
+def _sign_out_return(config: SwitchConfig) -> str | None:
+    """Where WorkOS sends the browser back to after ending an AuthKit session:
+    the dashboard's sign-in page, registered as one of the AuthKit
+    application's sign-out URIs; with no dashboard address, the application's
+    default sign-out URI."""
+    base = config.dashboard_base_url
+    return None if base is None else f"{base.rstrip('/')}/login"
+
+
+def _not_all_ended(failed: int, end_session_url: str | None) -> JSONResponse:
+    """A 502 that still carries the sign-out: the cookie cleared, and where
+    the browser goes to end its own AuthKit session. A raised HTTPException
+    would drop both."""
+    answer = JSONResponse(
+        status_code=502,
+        content={
+            "detail": (
+                "You're signed out of Switch everywhere, but "
+                f"{failed} of your sign-ins at WorkOS could not be ended, so "
+                "they may still sign you in without asking for a password. "
+                "Sign in and sign out of every device again to end them."
+            ),
+            "end_session_url": end_session_url,
+        },
+    )
+    answer.delete_cookie("switch_auth", path="/")
+    return answer
+
+
 @router.post("/auth/logout")
 async def logout(
     request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> dict[str, bool]:
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+) -> SignOutResponse:
     """Sign out of this session: clear this browser's cookie, and refuse
     every copy of it from now on, wherever it was copied to. The account's
     other sessions are left alone; `/auth/sessions/revoke` ends them all.
@@ -413,19 +460,47 @@ async def logout(
     Takes no session, so a client holding an expired or broken cookie can
     always clear it, and `get_system_session` because a session belongs to no
     workspace: the revocation is one global row (`revoked_sessions`).
+
+    A session that stood on a WorkOS AuthKit session ends that too: it is
+    marked ended here, and the answer's `end_session_url` sends the browser
+    to WorkOS to end it there, as signing out of any application sharing it
+    does. Read with the cookie's signature checked and its expiry not, so an
+    expired cookie still ends what it stood on.
+
+    Not for a browser opened from Switch Console's one-time link
+    (`gateway/browser_handoff.py`): it stands on Console's AuthKit session,
+    which signing out of the browser leaves alone, as it leaves Console's
+    Switch session. Only the browser's own session ends, and the answer
+    sends it nowhere.
     """
     await sign_out_session(session, request, config)
+    end_session_url: str | None = None
+    payload = signed_claims(request, config.keyring)
+    identity_session = None if payload is None else identity_session_of(payload)
+    if payload is not None and identity_session is not None:
+        session_id = payload.get(SESSION_ID_CLAIM)
+        opened_by_console = isinstance(
+            session_id, str
+        ) and await BROWSER_HANDOFFS.opened_by_link(session, session_id)
+        await session.rollback()
+        if not opened_by_console:
+            end_session_url = await identity_sessions.end_here(
+                payload["sub"], identity_session, _sign_out_return(config)
+            )
     response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+    return SignOutResponse(ok=True, end_session_url=end_session_url)
 
 
-@router.post("/auth/sessions/revoke")
+@router.post("/auth/sessions/revoke", response_model=SignOutResponse)
 async def end_my_sessions(
+    request: Request,
     response: Response,
     user_id: Annotated[str, Depends(get_authenticated_user_id)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-) -> dict[str, bool]:
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+) -> SignOutResponse | JSONResponse:
     """Sign out of all devices, this one included.
 
     `/auth/logout` clears only this browser's cookie, so a copy of it, or a
@@ -433,6 +508,12 @@ async def end_my_sessions(
     account's session version on, which every cookie minted before it fails
     against. Needs no workspace selected, like `/tenants/{id}/switch`, so a
     person with several can always reach it.
+
+    Every WorkOS AuthKit session of this person's that Switch made is revoked
+    there too (those of other applications are left alone), and this browser
+    is sent to end its own, as `/auth/logout` does. One that could not be
+    revoked is reported with a 502; Switch's own sessions have all ended by
+    then regardless.
     """
     await user_store.end_sessions(session, user_id)
     await record_server_audit_event(
@@ -444,8 +525,46 @@ async def end_my_sessions(
         details=None,
     )
     await session.commit()
+    here = session_identity(request)
+    failed = await identity_sessions.end_all(user_id, keep=here)
+    end_session_url = (
+        None
+        if here is None
+        else await identity_sessions.end_here(user_id, here, _sign_out_return(config))
+    )
+    if failed:
+        return _not_all_ended(failed, end_session_url)
     response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+    return SignOutResponse(ok=True, end_session_url=end_session_url)
+
+
+async def _end_identity_sessions_before_deleting(
+    identity_sessions: IdentitySessions, user_id: str, keep: str | None
+) -> None:
+    """End every identity-provider session of an account about to be deleted
+    but `keep`, this browser's, after the deletion's own refusals have been
+    checked: the rows go with the account, and a device left on a live
+    AuthKit session would be signed straight back in and given a new
+    account. A session that could not be ended, its listing at WorkOS
+    included, refuses the deletion, to be tried again.
+
+    One refusal can still come after this: the deletion checks again, under
+    its lock, that the person is not an organization's last admin
+    (`AccountDeletion.delete`), and a concurrent change can make them one.
+    Their other devices are then signed out though the account stays. That
+    race is accepted rather than revoking only once the account is gone,
+    which would let a revoke that fails leave a device signed in to a new
+    account. This browser's own sign-in is left until the deletion has gone
+    through, so a person refused stays signed in here."""
+    failed = await identity_sessions.end_all(user_id, keep=keep)
+    if failed:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"{failed} of the account's sign-ins could not be ended at WorkOS, "
+                "so it was not deleted. Try again in a moment."
+            ),
+        )
 
 
 @router.get("/auth/config")
@@ -458,15 +577,40 @@ async def auth_config(
         password_login_enabled=config.gateway_password_login_enabled,
         signup_enabled=config.gateway_signup_open,
         test_account_reset_enabled=config.gateway_allow_test_account_reset,
-        oidc_enabled=config.gateway_oidc_enabled,
+        oidc_enabled=config.gateway_sso_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,
         oidc_login_options=[
             OidcLoginOptionView(id=option.id, label=option.label)
             for option in config.gateway_oidc_login_options
         ],
-        oidc_browser_handoff=config.gateway_oidc_enabled,
+        oidc_browser_handoff=config.gateway_sso_enabled,
         signup_mode=config.gateway_signup_mode,
     )
+
+
+@router.post("/auth/license", status_code=204)
+async def accept_the_license(
+    req: LicenseAcceptRequest,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> None:
+    """Accept the license creating an organization asks for first
+    (`gateway/licenses.py`): the version the server asks for now, which
+    `GET /auth/session` names. Accepting it again changes nothing."""
+    if config.gateway_license_version is None:
+        raise HTTPException(status_code=404, detail="This server asks for no license.")
+    if req.version != config.gateway_license_version:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "That isn't the license this server asks for now. Reload the "
+                "page to read the current one."
+            ),
+        )
+    await accept_license(session, caller.id, req.version, datetime.now(UTC))
+    await session.commit()
+    logger.info("User %s accepted license version %s", caller.id, req.version)
 
 
 @router.get("/auth/session")
@@ -479,6 +623,9 @@ async def session_state(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
 ) -> SessionStateResponse:
     """Who is signed in, which workspace this session is in, and — when it
     is in none — what would get it into one.
@@ -492,6 +639,7 @@ async def session_state(
     user = await user_store.get(session, auth.user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    waiting_license = await license_to_accept(session, config, user.id)
     # One connection at a time: release this one before the lookup opens its own.
     await session.commit()
     tenants = await list_tenant_memberships(session_factory, user_store, user.id)
@@ -508,7 +656,36 @@ async def session_state(
         can_manage_connector_apps=await deployment_manager(session_factory, user)
         is not None,
         connector_apps_in_dashboard=await connector_apps_in_dashboard(session_factory),
+        one_workspace_organizations=await _one_workspace_organizations(
+            session_factory, organization_directory, tenants
+        ),
+        license_to_accept=waiting_license,
     )
+
+
+async def _one_workspace_organizations(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    tenants: list[TenantMembershipResponse],
+) -> frozenset[str]:
+    """Those of the organizations of `tenants` that keep one workspace, among
+    those the caller is `org_admin` of: whom `can_add_workspace` is about.
+    Nothing is read where the directory keeps none."""
+    keeping: set[str] = set()
+    if not organization_directory.keeps_any_organization():
+        return frozenset()
+    for organization_id in {
+        t.organization_id
+        for t in tenants
+        if t.organization_id and t.organization_role == ORGANIZATION_ADMIN_ROLE
+    }:
+        async with organization_session(session_factory, organization_id) as session:
+            organization = await session.get(Organization, organization_id)
+        if organization is not None and keeps_one_workspace(
+            organization_directory, organization
+        ):
+            keeping.add(organization_id)
+    return frozenset(keeping)
 
 
 @router.get("/auth/me")
@@ -699,7 +876,8 @@ async def delete_my_account(
         OrganizationAdminNotices, Depends(get_organization_admin_notices)
     ],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> dict[str, bool]:
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+) -> SignOutResponse:
     """Delete the caller's own account, everywhere on this server.
 
     Binds no tenant because it acts on every workspace the caller is in, each
@@ -736,8 +914,23 @@ async def delete_my_account(
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
     # The checks only read. Their transaction ends here, so the connection is
-    # not held through a deletion that opens sessions of its own per workspace.
+    # not held through a deletion that opens sessions of its own per workspace,
+    # nor while WorkOS is asked to end the account's sign-ins.
     await session.commit()
+    here = session_identity(request)
+    this_browser = (
+        None
+        if here is None
+        else next(
+            (
+                row
+                for row in await identity_sessions.live_sessions(user.id)
+                if row.id == here
+            ),
+            None,
+        )
+    )
+    await _end_identity_sessions_before_deleting(identity_sessions, user.id, here)
     try:
         changes = await deletion.delete(session, user, workspaces, actor_id=user.id)
     except AccountDeletionRefused as refused:
@@ -747,7 +940,16 @@ async def delete_my_account(
         raise
     background.add_task(notices.send_all, changes)
     response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+    # Its row went with the account; its AuthKit session is ended here, and
+    # left to the browser only when WorkOS could not be asked.
+    end_session_url = (
+        None
+        if this_browser is None
+        else await identity_sessions.end_after_deletion(
+            user.id, this_browser, _sign_out_return(config)
+        )
+    )
+    return SignOutResponse(ok=True, end_session_url=end_session_url)
 
 
 @router.post("/auth/me/reset-test-account")
@@ -775,7 +977,8 @@ async def reset_test_account(
         OrganizationAdminNotices, Depends(get_organization_admin_notices)
     ],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> dict[str, bool]:
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+) -> SignOutResponse:
     """Wipe the caller's own test account, on a test or canary server that
     allows it (`gateway_allow_test_account_reset`): an organization nobody
     else is in is purged whole; elsewhere only the workspaces the caller is
@@ -812,6 +1015,14 @@ async def reset_test_account(
     workspaces = await _workspaces_to_delete(
         deletion, session_factory, user_store, user.id
     )
+    # The reset decides its refusals as it goes, and the account's identity
+    # sessions go with it, so they are read first and ended at WorkOS only
+    # once it has gone through: a refused reset signs nobody out. A test
+    # account signing straight back in afterwards is the fresh start a reset
+    # is for, so one that could not be revoked is logged, not refused.
+    user_id = user.id
+    here = session_identity(request)
+    live = await identity_sessions.live_sessions(user_id)
     # As `delete_my_account`: not held through the purges and the deletion.
     await session.commit()
     try:
@@ -822,8 +1033,19 @@ async def reset_test_account(
         await _tell_admins_of_incomplete_deletion(session, notices, incomplete)
         raise
     background.add_task(notices.send_all, changes)
+    this_browser = next((row for row in live if row.id == here), None)
+    await identity_sessions.revoke_at_provider(
+        user_id, [row for row in live if row is not this_browser]
+    )
+    end_session_url = (
+        None
+        if this_browser is None
+        else await identity_sessions.end_after_deletion(
+            user_id, this_browser, _sign_out_return(config)
+        )
+    )
     response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+    return SignOutResponse(ok=True, end_session_url=end_session_url)
 
 
 async def _tell_admins_of_incomplete_deletion(

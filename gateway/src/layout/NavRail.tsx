@@ -20,7 +20,10 @@ import { Link as RouterLink, useLocation } from "react-router";
 import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
+import { LicenseAgreement } from "../pages/onboarding/LicenseStep";
+import OrganizationSetupForm from "../pages/onboarding/OrganizationSetupForm";
 import { type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
+import SwitchLogo from "./SwitchLogo";
 import ThemeModeToggle from "./ThemeModeToggle";
 
 // The rail follows the window's height: at a laptop's it is sized so an
@@ -130,11 +133,7 @@ export default memo(function NavRail() {
       }}
     >
       <Tooltip title="Switch" placement="right">
-        {/* Two assets rather than one recoloured mark: the swap is done in CSS
-            off the colour-scheme attribute so there is no flash on first paint,
-            and a future coloured logo drops in without rework. The file names
-            describe the ink — `dark` is the black mark, for the light theme.
-            An image, so the name the tooltip gives it is allowed on it. */}
+        {/* An image, so the name the tooltip gives it is allowed on it. */}
         <Box
           role="img"
           sx={{
@@ -145,28 +144,7 @@ export default memo(function NavRail() {
             justifyContent: "center",
           }}
         >
-          <Box
-            component="img"
-            src="/switch_logo_dark.svg"
-            alt="Switch"
-            sx={{
-              width: LOGO,
-              height: LOGO,
-              '[data-mui-color-scheme="dark"] &': { display: "none" },
-            }}
-          />
-          <Box
-            component="img"
-            src="/switch_logo_light.svg"
-            alt=""
-            aria-hidden
-            sx={{
-              width: LOGO,
-              height: LOGO,
-              display: "none",
-              '[data-mui-color-scheme="dark"] &': { display: "block" },
-            }}
-          />
+          <SwitchLogo size={LOGO} />
         </Box>
       </Tooltip>
 
@@ -299,7 +277,13 @@ export default memo(function NavRail() {
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>Create an organization</DialogTitle>
         <DialogContent sx={{ pt: "8px !important" }}>
-          <CreateWorkspaceForm onCancel={() => setCreateOpen(false)} />
+          {session?.license_to_accept ? (
+            <LicenseAgreement version={session.license_to_accept} />
+          ) : session?.organizations_in_directory ? (
+            <OrganizationSetupForm />
+          ) : (
+            <CreateWorkspaceForm onCancel={() => setCreateOpen(false)} />
+          )}
         </DialogContent>
       </Dialog>
 

@@ -286,15 +286,18 @@ class UserStore:
         return users[0] if users else None
 
     async def get_by_oidc_identity(
-        self, session: AsyncSession, *, iss: str, sub: str
+        self, session: AsyncSession, *, iss: str, sub: str, match_legacy: bool
     ) -> User | None:
         """Find the user linked to this IdP identity by its immutable (iss, sub).
 
-        A row with no stored issuer predates CHOO-2624 tracking one at all; it
-        matches on ``sub`` alone and has its issuer backfilled here, same as
-        this identity did before it had its own table.
-        ``ix_oidc_identities_sub_null_iss`` guarantees at most one such row per
-        ``sub``, so this is a well-defined lookup and not a guess between rows.
+        With `match_legacy`, a row with no stored issuer, from before issuers
+        were tracked at all, matches on ``sub`` alone and has its issuer
+        backfilled here, same as this identity did before it had its own
+        table. ``ix_oidc_identities_sub_null_iss`` guarantees at most one such
+        row per ``sub``, so this is a well-defined lookup and not a guess
+        between rows. Without it such a row is left alone: a sign-in through
+        WorkOS AuthKit must not move a row the previous sign-in made, which
+        `switch-link-workos accounts` copies instead.
         """
         result = await session.execute(
             select(User)
@@ -302,7 +305,7 @@ class UserStore:
             .where(OidcIdentity.iss == iss, OidcIdentity.sub == sub)
         )
         user = result.scalar_one_or_none()
-        if user is not None:
+        if user is not None or not match_legacy:
             return user
 
         legacy = await session.execute(
@@ -341,6 +344,7 @@ class UserStore:
         join_tenant: bool,
         link_by_email: bool,
         create_allowed: bool,
+        match_legacy: bool,
     ) -> OidcUser:
         """Resolve an OIDC identity to a gateway user, provisioning on first
         login (JIT). `created` says whether this call made the account.
@@ -379,6 +383,8 @@ class UserStore:
         incoming claim — exactly as it did before this identity had its own
         table.
 
+        ``match_legacy`` is ``get_by_oidc_identity``'s.
+
         ``create_allowed`` false refuses to provision a new account, with
         ``SignupRefusedError``, and changes nothing else: a known identity is
         still returned and a verified email still linked.
@@ -390,7 +396,9 @@ class UserStore:
         won, so the raced request resolves to that row instead of a 500.
         """
         for attempt in range(1, _MAX_ATTEMPTS + 1):
-            user = await self.get_by_oidc_identity(session, iss=iss, sub=sub)
+            user = await self.get_by_oidc_identity(
+                session, iss=iss, sub=sub, match_legacy=match_legacy
+            )
             if user is not None:
                 return OidcUser(user, created=False)
 

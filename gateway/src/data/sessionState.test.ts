@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Session, TenantMembership } from "./api";
 import {
+  HAND_OFF_WINDOW_MS,
   appView,
   clearPendingInvite,
+  clearSignInMarks,
+  dashboardLocation,
+  handedOffRecently,
+  markSignedOut,
+  nextAfterSignIn,
+  noteHandOff,
+  signedOutOnPurpose,
   deliveryNotice,
   inviteTokenFrom,
   inviteUrl,
@@ -109,5 +117,58 @@ describe("deliveryNotice", () => {
     const notice = deliveryNotice("not_requested", null);
     expect(notice.severity).toBe("success");
     expect(notice.text).not.toContain("null");
+  });
+});
+
+describe("sign-in marks", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+
+  it("counts a hand-off as recent only within the window", () => {
+    expect(handedOffRecently(1_000_000)).toBe(false);
+    noteHandOff(1_000_000);
+    expect(handedOffRecently(1_000_000 + HAND_OFF_WINDOW_MS - 1)).toBe(true);
+    expect(handedOffRecently(1_000_000 + HAND_OFF_WINDOW_MS)).toBe(false);
+  });
+
+  it("keeps a sign-out across tabs until someone signs in", () => {
+    markSignedOut();
+    expect(window.localStorage.getItem("switch.signedOut")).not.toBeNull();
+    expect(signedOutOnPurpose()).toBe(true);
+    noteHandOff(1);
+    clearSignInMarks();
+    expect(signedOutOnPurpose()).toBe(false);
+    expect(handedOffRecently(1)).toBe(false);
+  });
+});
+
+describe("where signing in lands", () => {
+  it("keeps a place on this dashboard, query and all", () => {
+    expect(dashboardLocation("/rooms/r1?tab=documents")).toBe("/rooms/r1?tab=documents");
+    expect(nextAfterSignIn("/agents/a1", "?x=1")).toBe("/agents/a1?x=1");
+    expect(nextAfterSignIn("/", "")).toBeNull();
+    expect(nextAfterSignIn("/login", "?next=%2Frooms")).toBeNull();
+  });
+
+  it("drops anything a browser could read as another site", () => {
+    for (const value of [
+      "https://evil.example/",
+      "//evil.example/x",
+      "/\\evil.example",
+      "rooms",
+      // A browser drops tabs, newlines and other control characters from an
+      // address, so each of these would arrive as //evil.example.
+      "/\t/evil.example",
+      "/\n/evil.example",
+      "/\r/evil.example",
+      "/\u0000/evil.example",
+      "/\u007f/evil.example",
+      "",
+      null,
+    ]) {
+      expect(dashboardLocation(value)).toBeNull();
+    }
   });
 });

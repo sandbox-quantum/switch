@@ -169,24 +169,37 @@ def email_key(email: str) -> str:
     return digest(email.lower())
 
 
+def client_address(
+    request: Request,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """The client's own internet address, as uvicorn resolved it
+    (`request.client`), or None when there is none: no address at all, or one
+    a proxy in front stands for every client behind (`_SHARED_NETWORKS`)."""
+    host = request.client.host if request.client is not None else None
+    try:
+        address = ipaddress.ip_address(host or "")
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if any(address in n for n in _SHARED_NETWORKS):
+        return None
+    return address
+
+
 def counted_address(request: Request) -> str | None:
     """The client address to count `request` against, or None when there is
     none to count: no address at all, or one a proxy in front stands for
     every client behind."""
     global _warned_uncounted
-    host = request.client.host if request.client is not None else None
-    try:
-        address = ipaddress.ip_address(host or "")
-    except ValueError:
-        address = None
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    if address is not None and not any(address in n for n in _SHARED_NETWORKS):
+    address = client_address(request)
+    if address is not None:
         if isinstance(address, ipaddress.IPv6Address):
             return str(ipaddress.ip_network(f"{address}/64", strict=False))
         return str(address)
     if not _warned_uncounted:
         _warned_uncounted = True
+        host = request.client.host if request.client is not None else None
         logger.warning(
             "Sign-in and sign-up limits per client address are not applied to "
             "requests from %s: it is not a client's own internet address, so it "
@@ -271,7 +284,7 @@ def _sign_in_refused(
         + " is paused after too many failed attempts.",
         f"Try again in {_in_words(wait)}.",
     ]
-    if config.gateway_oidc_enabled:
+    if config.gateway_sso_enabled:
         sentences.append("Signing in with single sign-on still works.")
     if by_email:
         sentences.append(

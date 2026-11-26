@@ -14,6 +14,7 @@ import pytest
 from switch_core.members_service import MembersService
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
+    NOT_IN_A_DIRECTORY,
     DirectoryMembership,
     DirectoryOrganization,
     DirectoryRefusal,
@@ -26,6 +27,7 @@ from switch_core.workos_directory import (
     EventCursorRejected,
     WorkOSDirectory,
     customer_id_of,
+    workspace_id_of,
 )
 
 API = "https://workos.example.test"
@@ -92,6 +94,10 @@ class _WorkOS:
 
 
 ISSUER = "https://sign-in.example.test"
+
+
+async def _no_creator_token() -> str:
+    raise AssertionError("an organization Switch keeps itself asked for a token")
 
 
 def _directory(handler) -> WorkOSDirectory:
@@ -216,7 +222,7 @@ class TestChangesFromSwitch:
 
         for change in (
             directory.join(linked, "u", "member"),  # type: ignore[arg-type]
-            directory.prepare_change(linked, "user_u", "org_admin", "admin-token"),  # type: ignore[arg-type]
+            directory.prepare_change(linked, "user_u", "org_admin", _no_token),  # type: ignore[arg-type]
         ):
             with pytest.raises(DirectoryRefusal):
                 await change
@@ -229,7 +235,7 @@ class TestChangesFromSwitch:
 
         for role in ("member", None):
             assert (
-                await directory.prepare_change(linked, "user_u", role, None)  # type: ignore[arg-type]
+                await directory.prepare_change(linked, "user_u", role, _no_token)  # type: ignore[arg-type]
                 == NO_DIRECTORY_CHANGE
             )
 
@@ -254,11 +260,13 @@ class TestChangesFromSwitch:
     async def test_a_new_organization_is_switchs_own_until_linked(self) -> None:
         directory = _directory(lambda request: httpx.Response(500))
 
-        created = await directory.create_organization(SimpleNamespace(), "Example")  # type: ignore[arg-type]
-
-        assert created == DirectoryOrganization(
-            workos_organization_id=None, customer_id=None
+        created = await directory.create_organization(
+            SimpleNamespace(),  # type: ignore[arg-type]
+            "Example",
+            _no_creator_token,
         )
+
+        assert created == NOT_IN_A_DIRECTORY
         await directory.discard_organization(created)
 
 
@@ -312,11 +320,20 @@ LINKED = SimpleNamespace(workos_organization_id="org_a")
 TOKEN = "admin-token"
 
 
+async def _admin_token(workos_organization_id: str) -> str:
+    assert workos_organization_id == "org_a"
+    return TOKEN
+
+
+async def _no_token(workos_organization_id: str) -> str:
+    raise AssertionError("a change WorkOS needs nothing for asked for a token")
+
+
 async def _change(
     directory: WorkOSDirectory, subject: str | None, role: str | None
 ) -> None:
     """Prepare the change and make it, as a route does."""
-    change = await directory.prepare_change(LINKED, subject, role, TOKEN)  # type: ignore[arg-type]
+    change = await directory.prepare_change(LINKED, subject, role, _admin_token)  # type: ignore[arg-type]
     if role is None:
         await directory.remove(LINKED, "bob", change)  # type: ignore[arg-type]
     else:
@@ -333,9 +350,18 @@ class TestChangesThroughTheMembersService:
             LINKED,  # type: ignore[arg-type]
             "user_bob",
             "org_admin",
-            TOKEN,
+            _admin_token,
         ) == MemberChange(access_token=TOKEN, membership_id="om_bob")
         assert directory.sends_changes_for(LINKED)  # type: ignore[arg-type]
+
+    async def test_the_admins_sign_in_failing_is_raised_as_it_is(self) -> None:
+        directory = _with_members({"user_bob": ("om_bob", "viewer")}, [])
+
+        async def ended(workos_organization_id: str) -> str:
+            raise DirectorySignInRequired("Your sign-in has ended.")
+
+        with pytest.raises(DirectorySignInRequired, match="has ended"):
+            await directory.prepare_change(LINKED, "user_bob", "org_admin", ended)  # type: ignore[arg-type]
 
     async def test_an_organization_nobody_linked_needs_nothing(self) -> None:
         directory = _with_members({}, [])
@@ -345,7 +371,7 @@ class TestChangesThroughTheMembersService:
                 SimpleNamespace(workos_organization_id=None),  # type: ignore[arg-type]
                 "user_bob",
                 "org_admin",
-                None,
+                _no_token,
             )
             == NO_DIRECTORY_CHANGE
         )
@@ -385,7 +411,7 @@ class TestChangesThroughTheMembersService:
             directory = _with_members({"user_bob": ("om_bob", listed_as)}, [])
 
             assert (
-                await directory.prepare_change(LINKED, "user_bob", role, None)  # type: ignore[arg-type]
+                await directory.prepare_change(LINKED, "user_bob", role, _no_token)  # type: ignore[arg-type]
                 == NO_DIRECTORY_CHANGE
             )
 
@@ -405,7 +431,7 @@ class TestChangesThroughTheMembersService:
 
         for role in ("member", None):
             assert (
-                await directory.prepare_change(LINKED, "user_bob", role, None)  # type: ignore[arg-type]
+                await directory.prepare_change(LINKED, "user_bob", role, _no_token)  # type: ignore[arg-type]
                 == NO_DIRECTORY_CHANGE
             )
 
@@ -416,11 +442,11 @@ class TestChangesThroughTheMembersService:
 
         for role in ("member", None):
             assert (
-                await directory.prepare_change(LINKED, None, role, None)  # type: ignore[arg-type]
+                await directory.prepare_change(LINKED, None, role, _no_token)  # type: ignore[arg-type]
                 == NO_DIRECTORY_CHANGE
             )
         with pytest.raises(DirectoryRefusal, match="add them there first"):
-            await directory.prepare_change(LINKED, None, "org_admin", TOKEN)  # type: ignore[arg-type]
+            await directory.prepare_change(LINKED, None, "org_admin", _no_token)  # type: ignore[arg-type]
 
     async def test_someone_workos_does_not_list_cannot_be_made_org_admin(
         self,
@@ -428,7 +454,7 @@ class TestChangesThroughTheMembersService:
         directory = _with_members({}, [])
 
         with pytest.raises(DirectoryRefusal, match="add them there first"):
-            await directory.prepare_change(LINKED, "user_bob", "org_admin", TOKEN)  # type: ignore[arg-type]
+            await directory.prepare_change(LINKED, "user_bob", "org_admin", _no_token)  # type: ignore[arg-type]
 
     async def test_adding_someone_is_still_refused(self) -> None:
         directory = _with_members({}, [])
@@ -639,6 +665,29 @@ class TestWhatTheMirrorReads:
         }
 
 
+class TestReadingAUserById:
+    async def test_a_user_this_environment_has_is_read(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/user_management/users/user_A"
+            return httpx.Response(200, json={"id": "user_A", "email": "a@example.test"})
+
+        assert await _directory(handler).user("user_A") == {
+            "id": "user_A",
+            "email": "a@example.test",
+        }
+
+    @pytest.mark.parametrize("status", [400, 404, 422])
+    async def test_one_it_does_not_have_is_none(self, status: int) -> None:
+        assert (
+            await _directory(lambda request: httpx.Response(status)).user("x") is None
+        )
+
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_workos_failing_stops_the_run(self, status: int) -> None:
+        with pytest.raises(DirectoryUnavailable):
+            await _directory(lambda request: httpx.Response(status)).user("user_A")
+
+
 def _unrecognized(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     return [
         r
@@ -709,3 +758,122 @@ class TestUnrecognizedRoles:
         assert "om_A" in record.getMessage()
         assert "org_a" in record.getMessage()
         assert "'auditor'" in record.getMessage()
+
+
+class TestCreatingThroughTheMembersService:
+    """The customer's account is created with the creator's own token, then
+    read back with the API key for what Switch keeps of it."""
+
+    def _directory(self, created: list[tuple[str, object]]) -> WorkOSDirectory:
+        def workos(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/organizations/org_NEW"
+            assert request.headers["Authorization"] == f"Bearer {KEY}"
+            return httpx.Response(
+                200,
+                json={
+                    "id": "org_NEW",
+                    "name": "Acme Made Before",
+                    "metadata": {
+                        "tenant_id": "ten_EXAMPLE",
+                        "workspaces": json.dumps(
+                            [{"id": "wks_EXAMPLE", "name": "Default"}]
+                        ),
+                    },
+                },
+            )
+
+        def members_service(request: httpx.Request) -> httpx.Response:
+            created.append(
+                (request.headers["Authorization"], json.loads(request.content))
+            )
+            return httpx.Response(201, json={"org_id": "org_NEW"})
+
+        return WorkOSDirectory(
+            httpx.AsyncClient(transport=httpx.MockTransport(workos)),
+            KEY,
+            API,
+            ISSUER,
+            MembersService(
+                httpx.AsyncClient(transport=httpx.MockTransport(members_service)),
+                "https://members.example.test",
+            ),
+        )
+
+    async def test_it_keeps_the_accounts_name_customer_and_workspace(self) -> None:
+        created: list[tuple[str, object]] = []
+
+        async def creator_token() -> str:
+            return "creator-token"
+
+        recorded = await self._directory(created).create_organization(
+            SimpleNamespace(),  # type: ignore[arg-type]
+            "Acme",
+            creator_token,
+        )
+
+        assert created == [("Bearer creator-token", {"name": "Acme"})]
+        assert recorded == DirectoryOrganization(
+            workos_organization_id="org_NEW",
+            customer_id="ten_EXAMPLE",
+            name="Acme Made Before",
+            workspace_id="wks_EXAMPLE",
+        )
+
+    async def test_the_creators_sign_in_failing_is_raised_as_it_is(self) -> None:
+        created: list[tuple[str, object]] = []
+
+        async def ended() -> str:
+            raise DirectorySignInRequired("Your sign-in has ended.")
+
+        with pytest.raises(DirectorySignInRequired):
+            await self._directory(created).create_organization(
+                SimpleNamespace(),  # type: ignore[arg-type]
+                "Acme",
+                ended,
+            )
+        assert created == []
+
+    async def test_nothing_is_taken_back_from_workos(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        await self._directory([]).discard_organization(
+            DirectoryOrganization(
+                workos_organization_id="org_NEW",
+                customer_id="ten_EXAMPLE",
+                name=None,
+                workspace_id=None,
+            )
+        )
+        assert "left in WorkOS" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        None,
+        {},
+        {"workspaces": "not json"},
+        {"workspaces": "[]"},
+        {"workspaces": json.dumps([{"name": "Default"}])},
+        {"workspaces": json.dumps({"id": "wks_A"})},
+    ],
+)
+def test_a_workspace_the_metadata_does_not_name_readably_is_none(
+    metadata: object,
+) -> None:
+    assert workspace_id_of({"metadata": metadata}) is None
+
+
+def test_the_first_workspace_the_metadata_names_is_the_one() -> None:
+    assert (
+        workspace_id_of(
+            {
+                "metadata": {
+                    "workspaces": json.dumps(
+                        [{"id": "wks_A", "name": "Default"}, {"id": "wks_B"}]
+                    )
+                }
+            }
+        )
+        == "wks_A"
+    )

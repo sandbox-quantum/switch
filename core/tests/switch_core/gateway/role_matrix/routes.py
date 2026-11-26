@@ -209,6 +209,12 @@ ROUTES: dict[str, Case] = {
         f"{G}/auth/me/identities/pending", SELF
     ),
     "GET /gateway/auth/session": get(f"{G}/auth/session", SELF),
+    "POST /gateway/auth/license": post(
+        f"{G}/auth/license",
+        anyone(ok=404),
+        json={"version": "2026-11"},
+        why="Your own acceptance; this server asks for no license, and says so.",
+    ),
     "POST /gateway/auth/refresh": post(f"{G}/auth/refresh", SELF),
     "POST /gateway/auth/handoff": post(
         f"{G}/auth/handoff",
@@ -507,6 +513,27 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/organizations/current/members/{user_id}": delete(
         f"{G}/organizations/current/members/{{org_target}}", org_admin()
     ),
+    "GET /gateway/organizations/current/invitations": get(
+        f"{G}/organizations/current/invitations",
+        org_admin(ok=409),
+        why="Its admin's; an organization kept here invites to its workspaces instead, and says so.",
+    ),
+    "POST /gateway/organizations/current/invitations": post(
+        f"{G}/organizations/current/invitations",
+        org_admin(ok=409),
+        json={"email": "invitee@example.test"},
+        why="Its admin's; an organization kept here invites to its workspaces instead, and says so.",
+    ),
+    "POST /gateway/organizations/current/invitations/{invitation_id}/resend": post(
+        f"{G}/organizations/current/invitations/invitation_matrix/resend",
+        org_admin(ok=409),
+        why="Its admin's; an organization kept here has no directory invitations.",
+    ),
+    "DELETE /gateway/organizations/current/invitations/{invitation_id}": delete(
+        f"{G}/organizations/current/invitations/invitation_matrix",
+        org_admin(ok=409),
+        why="Its admin's; an organization kept here has no directory invitations.",
+    ),
     "GET /gateway/organizations/current/services": get(
         f"{G}/organizations/current/services", org_admin()
     ),
@@ -547,19 +574,6 @@ ROUTES: dict[str, Case] = {
     ),
     "DELETE /gateway/organizations/current/connector-apps/{service}": delete(
         f"{G}/organizations/current/connector-apps/github", org_admin()
-    ),
-    "GET /gateway/auth/workos/organization": get(
-        f"{G}/auth/workos/organization",
-        anyone(ok=404),
-        why="An organization admin's; this server sends nothing to WorkOS, and says so first.",
-        return_to="/organization",
-    ),
-    "GET /gateway/auth/workos/callback": get(
-        f"{G}/auth/workos/callback",
-        anyone(ok=404),
-        why="Your own sign-in coming back; this server sends nothing to WorkOS.",
-        code="matrix",
-        state="matrix",
     ),
     # ── Operator ─────────────────────────────────────────────────────────
     "POST /gateway/auth/sessions/revoke": post(
@@ -1473,7 +1487,11 @@ UNAUTHENTICATED: dict[str, str] = {
         "A browser redeeming a sign-in link for a session of its own."
     ),
     "POST /gateway/auth/login": "Signing in.",
-    "POST /gateway/auth/logout": "Signing out of the session the cookie belongs to.",
+    "POST /gateway/auth/logout": (
+        "Signing out of the session the cookie belongs to, and of the AuthKit "
+        "session it names, if any, which the cookie's own signature proves is "
+        "its holder's."
+    ),
     "POST /gateway/auth/signup": "Signing up.",
     "GET /gateway/docs": "The API's own documentation.",
     "GET /gateway/docs/oauth2-redirect": "The API's own documentation.",

@@ -15,6 +15,7 @@ import {
   fetchTeamsAppPackage,
   issueLinkCode,
   logout,
+  oidcLoginUrl,
   registerKnownAgent,
   registerOtherAgent,
   removeBridgeFromTeam,
@@ -22,6 +23,24 @@ import {
   setDefaultTeamsTeam,
   signOutEverywhere,
 } from "./api";
+
+describe("oidcLoginUrl", () => {
+  it("leaves the choice to the provider without a login option", () => {
+    expect(oidcLoginUrl(null, null)).toBe("/gateway/auth/oidc/login");
+  });
+
+  it("names the login option a button stands for", () => {
+    expect(oidcLoginUrl("google workspace", null)).toBe(
+      "/gateway/auth/oidc/login?provider=google+workspace",
+    );
+  });
+
+  it("says where on the dashboard to land", () => {
+    expect(oidcLoginUrl(null, "/rooms?tab=archived")).toBe(
+      "/gateway/auth/oidc/login?next=%2Frooms%3Ftab%3Darchived",
+    );
+  });
+});
 
 describe("errorText", () => {
   it("returns a string detail as is", () => {
@@ -237,11 +256,30 @@ describe("signOutEverywhere", () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await signOutEverywhere();
+    expect(await signOutEverywhere()).toEqual({ endSessionUrl: null, notice: null });
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("/auth/sessions/revoke");
     expect(init.method).toBe("POST");
+  });
+
+  it("answers where to end the WorkOS sign-in", async () => {
+    respond(200, { ok: true, end_session_url: "https://auth.example.test/logout" });
+    expect(await signOutEverywhere()).toEqual({
+      endSessionUrl: "https://auth.example.test/logout",
+      notice: null,
+    });
+  });
+
+  it("answers, rather than throws, when only some sign-ins elsewhere could not be ended", async () => {
+    respond(502, {
+      detail: "2 sign-ins could not be ended.",
+      end_session_url: "https://auth.example.test/logout",
+    });
+    expect(await signOutEverywhere()).toEqual({
+      endSessionUrl: "https://auth.example.test/logout",
+      notice: "2 sign-ins could not be ended.",
+    });
   });
 
   it("throws when the server refuses", async () => {
@@ -257,11 +295,16 @@ describe("logout", () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await logout();
+    expect(await logout()).toEqual({ endSessionUrl: null, notice: null });
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("/auth/logout");
     expect(init.method).toBe("POST");
+  });
+
+  it("answers where to end the WorkOS sign-in", async () => {
+    respond(200, { ok: true, end_session_url: "https://auth.example.test/logout" });
+    expect((await logout()).endSessionUrl).toBe("https://auth.example.test/logout");
   });
 
   it("throws when the session wasn't cleared", async () => {

@@ -14,26 +14,31 @@ off by default; this page says what works today and what does not yet.
   create it under the AuthKit application in `WORKOS_CLIENT_ID`: WorkOS
   exchanges an application's sign-ins only with that application's own key,
   and the same key reads organizations, memberships, users and events.
-- The gateway's OIDC sign-in (`GATEWAY_OIDC_*`, see
-  [`GATEWAY_OIDC_SETUP.md`](GATEWAY_OIDC_SETUP.md)) set up against an AuthKit
-  application of the same environment. The sign-in's subject is the person's
-  WorkOS user id. `GATEWAY_OIDC_ISSUER_URL` must be exactly the issuer the
-  tokens name, trailing slash included: Switch looks people's WorkOS
-  identities up under it, so a sign-in whose token names another issuer is
-  refused, and the log says which one it named.
+- The gateway signing people in through the same environment's AuthKit
+  (`GATEWAY_SIGN_IN_PROVIDER=workos`, see
+  [`GATEWAY_OIDC_SETUP.md`](GATEWAY_OIDC_SETUP.md)), which shares the person's
+  sign-in with the environment's other applications. The server refuses to
+  start with the directory and any other sign-in, a WorkOS Connect
+  application included. Identities are kept under the fixed name
+  `https://api.workos.com/user_management`, and the sign-in's subject is the
+  person's WorkOS user id. The password form is off by default here; see the
+  table in `GATEWAY_OIDC_SETUP.md`. Accounts are WorkOS users:
+  `switch-accounts create` is refused, and a person joins an organization by
+  its invitation.
 - `GATEWAY_SIGNUP_MODE=invite_only` or `open`; the server refuses to start
   with `default_tenant`. Under `invite_only` nobody but the operator creates
-  an organization. Under `open` someone with no workspace may create one
-  (up to `GATEWAY_MAX_WORKSPACES_PER_USER`), and it is Switch's own: nothing
-  is created in WorkOS, its members are managed in Switch, and it follows
-  WorkOS only once an operator links it (below).
+  an organization. Under `open` someone may create one (up to
+  `GATEWAY_MAX_WORKSPACES_PER_USER`). With `MEMBERS_SERVICE_URL` set it is
+  created in WorkOS too and linked at once (see Creating an organization);
+  without, it is Switch's own until an operator links it (below).
 
 With the Helm chart (`deploy/remote/helm/switch`), set
 `switchCore.organizationDirectory.mode: workos` and `secrets.workosApiKey`
 (or `WORKOS_API_KEY` in `secrets.existingSecret`), next to `switchCore.oidc`
-and `switchCore.signup.mode` (`invite_only` or `open`); the settings for changes made from
-Switch (below) are under `switchCore.organizationDirectory` too. The render
-fails on a combination the server would refuse.
+and `switchCore.signIn.provider: workos`, and `switchCore.signup.mode`
+(`invite_only` or `open`); the settings for changes made from Switch (below)
+are under `switchCore.organizationDirectory` too. The render fails on a
+combination the server would refuse.
 
 ## Linking
 
@@ -47,6 +52,23 @@ switch-link-workos organization <switch organization id> <WorkOS organization id
 switch-link-workos accounts            # report only
 switch-link-workos accounts --apply    # write the links
 ```
+
+Two flags are for moving a server:
+
+- `accounts --from-issuer <issuer>` links each account that signs in under
+  that issuer (the server's sign-in before the move, such as a WorkOS Connect
+  application's `https://<slug>.authkit.app` before AuthKit) to the same
+  WorkOS user, where this environment has it. Its identity there is copied,
+  not moved, so the old sign-in keeps working until the move is deployed.
+  Run it with the settings the server signs in with after the move. An
+  account with no identity under that issuer is linked by address as usual.
+  The issuer must be spelt exactly as the old sign-in's identities are kept
+  (a trailing slash counts): one no account signs in under is refused, with
+  the issuers that are in use.
+- `organization ... --replace` re-links an organization that already follows
+  one WorkOS organization to another, for a server moving to another WorkOS
+  environment, whose organizations have other ids there. Each switch-core
+  process follows the new one once it next starts.
 
 - **Organizations.** Only the linked WorkOS organization counts: being in, or
   `org_admin` of, any other WorkOS organization, even one beneath the same
@@ -164,17 +186,16 @@ When several products share one WorkOS environment, one service usually owns
 each customer's account there, and every product changes its members through
 it, so its rules (nobody grants above their own role, the last `org_admin`
 stays) apply once for all of them. Switch can send its changes to such a
-service. Set all three, or none:
+service, with `MEMBERS_SERVICE_URL`:
 
-- `MEMBERS_SERVICE_URL`: the service. Switch calls, with the admin's token,
-  `PATCH /v1/auth/tenants/members/{id}` with `{"role": <slug>}` and
-  `DELETE /v1/auth/tenants/members/{id}`, each acting on the organization
-  the token was issued for, and reads a refusal's `{"error": ...}`. The
-  membership `id` is WorkOS's, which Switch reads with its API key.
-- `WORKOS_CLIENT_ID`: the AuthKit application Switch signs admins in to for
-  that token.
-- `WORKOS_REDIRECT_URL`: its callback, `.../gateway/auth/workos/callback`,
-  registered on that application.
+- Switch calls it, with the admin's token, `PATCH /v1/auth/tenants/members/{id}`
+  with `{"role": <slug>}` and `DELETE /v1/auth/tenants/members/{id}`, each
+  acting on the organization the token was issued for, and reads a refusal's
+  `{"error": ...}`. The membership `id` is WorkOS's, which Switch reads with
+  its API key.
+- The token is the admin's own, from the AuthKit application people sign in
+  through (`WORKOS_CLIENT_ID`), so the service must accept that
+  application's tokens.
 
 Then, on a linked organization, making a member Org Admin makes them
 `org_admin` in WorkOS, making an Org Admin a Member makes them `viewer`
@@ -183,25 +204,104 @@ lasts. Switch first reads the person's membership from WorkOS and sends only
 what WorkOS needs: someone WorkOS already has as `org_admin` is not made one
 again, someone it holds in another product's role keeps that role when made
 a Member, and someone it no longer lists, or who has no WorkOS identity, is
-changed in Switch alone. Switch uses no credential of its own for the change
-itself: the first time an admin makes one WorkOS needs, the dashboard sends them to sign in to the organization
-through the AuthKit application (usually without a prompt, while their
-AuthKit session lasts) and makes the change on their return. Switch keeps the
-access token that sign-in gives, encrypted in the browser's short-lived
-sign-in cookie, only for as long as the token lasts, and keeps no refresh
-token. A sign-in as another WorkOS user than the one the Switch account signs
-in as, or to another organization, is refused. Switch's own checks still run
-first; the service may refuse by its own rules, and its reason is shown. If
-the token runs out after a demotion or removal has already taken away the
-person's workspace access, the dashboard says so before sending the admin to
-sign in again to finish. If the service refuses a token that has not run
-out, it is not set up to accept this AuthKit application's tokens: Switch
-answers 503, says to make the change in the account settings, and logs an
-error, rather than sending the admin to sign in again. A platform operator restoring an Org Admin can't
-sign in there: unless WorkOS already has that person as `org_admin`, they are
+changed in Switch alone.
+
+Switch uses no credential of its own for the change itself. Each sign-in
+through AuthKit keeps its refresh token, encrypted, with the record of the
+person's AuthKit session; when a change has to reach WorkOS, Switch renews
+from it an access token for that organization alone, good for minutes, and
+keeps the refresh token WorkOS rotates it to. Nothing reaches the browser,
+and the admin never signs in a second time. Ending the session (signing out,
+a revoke, `switch-accounts sign-out`) ends the refresh token with it. When
+WorkOS won't renew it, because the session has ended there or the
+organization wants its own way of signing in (single sign-on, MFA), the
+dashboard sends the admin through the sign-in again, to that organization,
+and makes the change on their return; a session that ended at WorkOS ends
+in Switch too. Switch's own checks still run first; the service may refuse
+by its own rules, and its reason is shown. If a demotion or removal has
+already taken away the person's workspace access when a sign-in is needed,
+the dashboard says so before sending the admin to sign in again to finish.
+If the service refuses a token that has not run out, it is not set up to
+accept this AuthKit application's tokens: Switch answers 503, says to make
+the change in the account settings, and logs an error, rather than sending
+the admin to sign in again. A platform operator restoring an Org Admin is no
+admin there: unless WorkOS already has that person as `org_admin`, they are
 told to have someone made one in the organization's account settings.
 
-Adding someone new to a linked organization from Switch is still refused.
+## Inviting people
+
+With `MEMBERS_SERVICE_URL` set, an Org Admin invites people to a linked
+organization through the service, with their own token as above:
+`POST /organizations/current/invitations` with an e-mail address and
+`member` or `org_admin` becomes the service's `POST
+/v1/auth/tenants/invitations`, inviting a Member as WorkOS's `viewer` and an
+Org Admin as `org_admin`. WorkOS sends the e-mail. `GET`, `POST
+…/{id}/resend` and `DELETE …/{id}` list, resend and revoke them. Each is
+recorded in the organization's audit log, and the service keeps its own rules
+(nobody invites above their own role, one pending invitation per address).
+For the link in the e-mail to open Switch rather than another product, the
+service has to send Switch's invitations with Switch's own AuthKit
+application key, and that application's User invitation URL in the WorkOS
+dashboard has to be Switch's `/gateway/auth/oidc/login`, which hands the
+invitation on to AuthKit. The e-mail's look is set once for the whole
+environment.
+
+Accepting signs the person in. Switch brings in their membership at sign-in,
+as for anyone the organization has in WorkOS. In an organization with one
+workspace, joining the organization joins its workspace too, as a member, and
+leaving the organization takes them out of it again. An organization linked
+earlier with several workspaces leaves where people work to its admins.
+
+Invitations to one of a workspace's own links, which Switch sends itself,
+still can't add someone new to a linked organization.
+
+## Creating an organization
+
+With `MEMBERS_SERVICE_URL` set, an organization someone creates in Switch
+(`POST /organizations`, the dashboard's onboarding) is created through the
+service first, with the creator's own token renewed from their sign-in as
+above, on no organization yet: `POST /v1/auth/tenants` with `{"name": ...}`
+creates the customer's account, a WorkOS organization with the creator its
+`org_admin`, and answers its id. Switch reads that organization back with its
+API key and links it at once: the customer id from its `tenant_id` metadata,
+the WorkOS organization's own name, and the id of the one workspace the
+service records in its `workspaces` metadata. The service creates one account
+per person and answers a second request with the first, whatever its name, so
+Switch uses the name WorkOS has, and refuses with 409, naming it, when it
+already follows that organization. Creating an account can take a minute
+while the service sets up the customer's resources; Switch waits up to 90
+seconds. If Switch then can't create its own rows, nothing is taken back from
+WorkOS (the service deletes no account): creating it again links the same
+one.
+
+A linked organization has exactly one workspace, as the other products
+sharing the environment have it. It is created with the organization, named
+`Default` whatever was asked, keeps the service's id for it
+(`tenants.directory_workspace_id`), and can be renamed in Switch, which the
+service does not hear of yet. Adding a workspace to a linked organization is
+refused, and so is deleting its only workspace. An organization linked
+earlier with several workspaces keeps them.
+
+### Onboarding
+
+The dashboard's onboarding follows suit (`organizations_in_directory` in
+`GET /auth/session`). Someone signed in and in no organization yet who may
+create one is asked what Switch Trust asks, "What's your organization
+called?", held to the same rules (64 characters at most, no `"` or `\`), and
+two optional questions, how many people work there and what they'll use
+Switch for, which are kept on the organization (`setup_answers`). Someone who
+may not create one is told they aren't in an organization yet, to ask an
+admin, and offered to sign in again, which picks up an invitation or a
+membership made meanwhile. With several organizations, the picker says
+"Choose an organization", since each has its one workspace.
+
+`GATEWAY_LICENSE_VERSION` (Helm: `switchCore.signup.licenseVersion`) asks for
+a license before any organization is created, wherever organizations are
+kept: onboarding shows it first, `POST /auth/license` records who accepted
+which version and when (`license_acceptances`), and creating one is refused
+until the caller has. A new version is asked of everyone who creates an
+organization after it is set; joining one someone else created asks
+nothing. The text shown is a placeholder until the final one is supplied.
 
 ## When a customer leaves
 
@@ -228,8 +328,7 @@ waiting for something outside Switch; run the same command again later.
 On a linked organization's Organization page, the Members section says that
 its members and Org Admins come from the organization's account settings
 (WorkOS). With changes sent to WorkOS (above), it offers every change but
-adding someone, and says the admin may be asked to confirm their sign-in
-there. Without, it does not offer making a member Org Admin; removing someone
+adding someone, and says the admin may be asked to sign in again. Without, it does not offer making a member Org Admin; removing someone
 or making an Org Admin a Member is still offered: it ends their access at
 once, and the page says it lasts only until WorkOS is read again (their next
 sign-in, or the daily check) unless the same change is made there. The
@@ -240,11 +339,15 @@ anyone new to it.
 
 ## Not done yet
 
-- **Adding someone to a linked organization from Switch is refused**, from
-  the dashboard or by invitation: add them in WorkOS. Without changes sent to
-  WorkOS (above), making someone Org Admin is refused too, and a removal or
-  demotion changes only Switch; whatever WorkOS still grants comes back at
-  the next sign-in or check.
-- A new organization created on the server, by an operator or by someone
-  signing up under `open`, is Switch's own until it is linked. Creating it in
-  WorkOS too is not built.
+- **Without `MEMBERS_SERVICE_URL`, adding someone to a linked organization
+  from Switch is refused**, from the dashboard or by invitation: add them in
+  WorkOS. Making someone Org Admin is refused too, and a removal or demotion
+  changes only Switch; whatever WorkOS still grants comes back at the next
+  sign-in or check.
+- The dashboard has no form for the organization invitations yet: the routes
+  are there for one.
+- Without `MEMBERS_SERVICE_URL`, a new organization created on the server,
+  by an operator or by someone signing up under `open`, is Switch's own until
+  it is linked.
+- A workspace renamed in Switch keeps its old name in the service's records,
+  which have no way to rename it yet.

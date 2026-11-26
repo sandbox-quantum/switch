@@ -37,6 +37,7 @@ def _session(user_id: str) -> str:
         session_version=0,
         auth_time=datetime.now(UTC),
         session_id=f"session-{user_id}",
+        identity_session=None,
     )
 
 

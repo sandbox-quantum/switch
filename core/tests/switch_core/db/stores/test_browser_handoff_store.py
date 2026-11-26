@@ -54,6 +54,7 @@ async def _mint(
             auth_time=_SIGNED_IN,
             session_version=3,
             console_sid=console_sid,
+            identity_session=None,
         )
         await session.commit()
     return minted.code
@@ -98,6 +99,7 @@ async def test_a_code_is_stored_only_as_its_hash_and_carries_the_session(
             auth_time=_SIGNED_IN,
             session_version=3,
             console_sid="console-sid",
+            identity_session="identity-session-row",
         )
         now = await session.scalar(select(func.now()))
         await session.commit()
@@ -116,6 +118,7 @@ async def test_a_code_is_stored_only_as_its_hash_and_carries_the_session(
         row.auth_time,
         row.session_version,
         row.console_sid,
+        row.identity_session,
         row.browser_sid,
         row.used_at,
     ) == (
@@ -125,6 +128,7 @@ async def test_a_code_is_stored_only_as_its_hash_and_carries_the_session(
         _SIGNED_IN,
         3,
         "console-sid",
+        "identity-session-row",
         None,
         None,
     )

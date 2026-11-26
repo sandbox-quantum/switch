@@ -43,9 +43,8 @@ export default function OrganizationUsersNotices({
       {fromDirectory && directoryTakesChanges && !asOperator && (
         <Alert severity="info">
           This organization's users, and who is its admin, come from your organization's
-          account settings. Changes you make here are made there too; you may be asked to
-          confirm your sign-in there first. New people can't be added from here yet: add them
-          there.
+          account settings. Changes you make here are made there too; you may be asked to sign
+          in again first. New people can't be added from here yet: add them there.
         </Alert>
       )}
       {fromDirectory && !directoryTakesChanges && !asOperator && (
