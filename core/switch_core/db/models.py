@@ -33,6 +33,7 @@ from switch_core.db.agent_event_notify_ddl import (
     CREATE_AGENT_EVENT_NOTIFY_TRIGGER,
     DROP_AGENT_EVENT_NOTIFY_TRIGGER,
 )
+from switch_core.db.audit_history_ddl import attach_audit_history_purge
 from switch_core.db.auth_rows_notify_ddl import (
     CREATE_AGENT_NOTIFY_FUNCTION,
     CREATE_AGENT_NOTIFY_TRIGGER,
@@ -700,6 +701,12 @@ class CloudMachine(Base):
     data_volume_id: Mapped[str | None] = mapped_column(Text)
     instance_id: Mapped[str | None] = mapped_column(Text)
     retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set by an organization purge with `desired_state` deleted: the hosted
+    # controller takes `retain_until` even when it is earlier than the
+    # deadline it already holds, which it otherwise never brings forward.
+    expedite_deletion: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # The machine's disk and memory, and per workspace (keyed by its
     # `MachineWorkspace` id) when its controller last reported and how many
@@ -1510,9 +1517,10 @@ class Room(TenantScoped, Base):
         nullable=True,
     )
     frozen_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # The highest live `seq` retention has deleted from this room. Numbering
-    # continues above it, so a room emptied by retention never hands out a
-    # position a cursor has already passed. See `MessageStore._next_seq`.
+    # The highest live `seq` deleted from this room (`MessageStore._delete_where`).
+    # Numbering continues above it, so a room whose newest rows were deleted
+    # never hands out a position a cursor has already passed. See
+    # `MessageStore._next_seq`.
     seq_floor: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=text("0")
     )
@@ -3058,6 +3066,12 @@ class SwitchCoreProcess(Base):
     # what it writes (`db/key_rotation.py`). Ids only, never key material.
     # NULL for a process from before the column.
     key_ids: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    # True from the claim until the process can take work promptly: the others
+    # hand it none before then (`ownership.py`). False for a process from
+    # before the column, which took work from its claim.
+    booting: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
 
 
 # ── Schema revisions ─────────────────────────────────────────────────────────
@@ -3274,7 +3288,9 @@ class Message(TenantScoped, Base):
     This table is the message bus: a send is an insert here, and `seq` is the
     position every delivery cursor reads from. It is also the room's history,
     and the only copy Switch keeps, so deleting a row (data retention, erasing
-    a person) deletes the message for every reader. `rooms.seq_floor` keeps
+    a person, its author deleting it on a bridged platform) deletes the
+    message for every reader. A row is changed in place only when its author
+    edits it on that platform (`MessageStore.replace_body`). `rooms.seq_floor` keeps
     numbering intact when the deleted rows were a room's newest.
 
     Every participant in a room is a Switch-owned client, so recording each
@@ -5905,6 +5921,10 @@ attach_row_level_security(Base.metadata)
 # `create_all` built without them is not the schema the server runs against.
 # After the tables, not before — see `db/tenant_lookup.py`.
 attach_tenant_lookups(Base.metadata)
+
+# The purge of deleted workspaces' audit history, the one other function that
+# runs as the owner. See `db/audit_history_ddl.py`.
+attach_audit_history_purge(Base.metadata)
 
 
 # The triggers that signal every process when an agent joins or leaves a room,

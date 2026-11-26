@@ -54,6 +54,7 @@ from switch_core.management.bindings import (
     reconcile_bindings,
     reconcile_controller_bindings,
 )
+from switch_core.management.placement import reattaching, went_with_its_process
 from switch_core.process_lease import ProcessLeases, read_leases
 from switch_core.tenant_context import no_tenant
 from switch_core.user_changes import MACHINE
@@ -154,6 +155,15 @@ class ControllerSignals:
         # Controllers, by (tenant id, controller id), whose connection this
         # process changed and whose owner has still to be told.
         self._owners_owed = bus.pending_work("controller owners", self._tell_owner)
+        # A machine another process held that is gone with nothing written
+        # about it, its move over or that process dead: no write tells its
+        # owner, so this does. Every process that saw it tells them, which
+        # costs their Console a read or two.
+        presence.use_gone_listener(
+            lambda tenant_id, controller_id: self._owners_owed.add(
+                (tenant_id, controller_id)
+            )
+        )
         bus.handle(ASSIGNMENT_CHANGED_SIGNAL, self._on_assignment_changed)
         bus.handle(OPERATION_PENDING_SIGNAL, self._on_operation_pending)
         bus.handle(REVOKED_SIGNAL, self._on_revoked)
@@ -371,7 +381,7 @@ class ControllerSignals:
                     continue
                 self._apply_connection(controller, leases, rooms[controller.id])
         for controller_id in elsewhere - seen:
-            self._presence.held_elsewhere(controller_id, None)
+            self._presence.held_elsewhere(controller_id, None, None)
 
     async def _rooms_if_held_elsewhere(
         self,
@@ -380,9 +390,13 @@ class ControllerSignals:
         leases: ProcessLeases,
     ) -> dict[str, set[str]]:
         """The rooms of each agent the controller runs, when another process
-        holds its socket: they are what makes those agents present in a room
-        here, and the stream that loads them runs over there."""
-        if self._held_elsewhere(controller, leases) is None:
+        holds its socket or it is moving to one: they are what makes those
+        agents present in a room here, and the stream that loads them runs
+        over there."""
+        if (
+            self._held_elsewhere(controller, leases) is None
+            and self._move_ends(controller, leases) is None
+        ):
             return {}
         # One query for all of them: every process re-reads this for every
         # controller another process holds at each re-check, so a query per
@@ -406,6 +420,18 @@ class ControllerSignals:
             return None
         return process_id
 
+    def _move_ends(
+        self, controller: AgentController | ControllerConnection, leases: ProcessLeases
+    ) -> float | None:
+        """When the controller's time to reattach to another process ends,
+        after the one holding its socket shut down, or None when it is not
+        moving (`placement.reattaching`)."""
+        if controller.connection_process_id == self.process_id or not reattaching(
+            controller, leases
+        ):
+            return None
+        return leases.move_ends(controller.connection_process_id)
+
     def _apply_connection(
         self,
         controller: AgentController | ControllerConnection,
@@ -422,9 +448,20 @@ class ControllerSignals:
                 or controller.open_process_id != self.process_id
             ):
                 self._presence.supersede(controller.id)
-        self._presence.held_elsewhere(
-            controller.id, self._held_elsewhere(controller, leases)
-        )
+        holder = self._held_elsewhere(controller, leases)
+        until = None if holder is not None else self._move_ends(controller, leases)
+        if until is not None:
+            self._presence.moving(controller.id, controller.tenant_id, until)
+        elif (
+            holder is None
+            and controller.connection_process_id != self.process_id
+            and went_with_its_process(controller)
+        ):
+            # Its process is gone, past any move, with nothing written that
+            # would have told the owner.
+            self._presence.gone_elsewhere(controller.id, controller.tenant_id)
+        else:
+            self._presence.held_elsewhere(controller.id, holder, controller.tenant_id)
         for agent_id, agent_rooms in rooms.items():
             self._presence.set_rooms(agent_id, agent_rooms)
 

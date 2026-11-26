@@ -192,6 +192,7 @@ def machine_item(machine: CloudMachine) -> dict:
         "retain_until": machine.retain_until.isoformat()
         if machine.retain_until
         else None,
+        "expedite_deletion": machine.expedite_deletion,
         "bundle_revision": machine.revision,
     }
     # `vm` or `box`: `serve` acts only on `vm`, the box side only on

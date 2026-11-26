@@ -77,7 +77,7 @@ const PLATFORM_COPY: Record<string, Copy> = {
     effect:
       "Switch stops listening there and is taken out of every team it was " +
       "in — rooms that used it become internal-only. This does not remove " +
-      "the app itself: a Microsoft admin removes \"Agent Switch\" in the " +
+      "the app itself: a Microsoft admin removes the Switch app in the " +
       "Teams admin center, and the enterprise application in the Microsoft " +
       "Entra admin center, to take it out of the organisation entirely.",
     rooms: CONNECTION_ROOMS("organisation"),

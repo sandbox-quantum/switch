@@ -259,4 +259,20 @@ describe('runAgent', () => {
     });
     expect(agent).toMatchObject({ autoMode: true, autoApprove: false });
   });
+
+  it('starts a new OpenCode agent asking, as nothing reviews its auto mode', () => {
+    const run = (autoMode: boolean | null) =>
+      runAgent({
+        slot: 'red-a',
+        name: 'red-a',
+        entry: entry({ autoMode }),
+        values: {},
+        displayName: null,
+        provider: 'opencode',
+        machine: LAPTOP,
+        directoryText: '{$agents_dir}/red-a',
+      });
+    expect(run(null)).toMatchObject({ autoMode: false, autoApprove: false });
+    expect(run(true)).toMatchObject({ autoMode: true, autoApprove: false });
+  });
 });

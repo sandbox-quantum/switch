@@ -88,7 +88,7 @@ describe("New room: why Create is disabled", () => {
     showForm([bridge({})]);
     fill("Name", "planning");
     fill("Description", "Sprint planning");
-    chooseBridge("Slack (slack)");
+    chooseBridge("Slack");
 
     expect(create().disabled).toBe(false);
     expect(screen.getByRole("combobox", { name: "Agents" }).hasAttribute("required")).toBe(false);
@@ -98,7 +98,7 @@ describe("New room: why Create is disabled", () => {
     showForm([bridge({ channel_creation_enabled: false })]);
     fill("Name", "planning");
     fill("Description", "Sprint planning");
-    chooseBridge("Slack (slack)");
+    chooseBridge("Slack");
 
     expect(screen.getByText("Paste the external channel ID.")).toBeTruthy();
     fill("External channel ID", "C123");
@@ -116,7 +116,7 @@ describe("New room: why Create is disabled", () => {
     ]);
     fill("Name", "planning");
     fill("Description", "Sprint planning");
-    chooseBridge("Contoso (teams)");
+    chooseBridge("Contoso (Microsoft Teams)");
 
     expect(screen.getByText(reason)).toBeTruthy();
     expect(
@@ -136,7 +136,7 @@ describe("New room: why Create is disabled", () => {
     ]);
     fill("Name", "planning");
     fill("Description", "Sprint planning");
-    chooseBridge("Telegram (telegram)");
+    chooseBridge("Telegram");
 
     expect(screen.getByText("Telegram can't create a channel or link an existing one from here.")).toBeTruthy();
     expect(create().disabled).toBe(true);

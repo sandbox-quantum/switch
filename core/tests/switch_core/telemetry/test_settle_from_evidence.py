@@ -296,7 +296,9 @@ async def test_booting_with_telemetry_settles_and_starts_its_clock(
         telemetry_endpoint="http://127.0.0.1:9",
     )
 
-    service, _, http = await build_telemetry(config, session_factory, "1.0.0")
+    service, _, http = await build_telemetry(
+        config, session_factory, "1.0.0", keeps_deployment_state=True
+    )
     try:
         reporting_since = service.reporting_since
         assert reporting_since is not None

@@ -109,6 +109,7 @@ import {
   revealApiKey,
   updateMyName,
   fetchMe,
+  probeGateway,
   fetchJoinableWorkspaces,
   fetchPendingInvitations,
   GatewayError,
@@ -459,6 +460,8 @@ export const switchServersController = createRPCController({
     const connection = await withReachableServerWorkspaceSession(serverId, (server) =>
       getGitHubConnection(server)
     );
+    if (connection.install_url === null)
+      throw new Error('The Switch GitHub App is not set up on this server.');
     if (
       !/^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(connection.install_url)
     )
@@ -704,8 +707,15 @@ export const switchServersController = createRPCController({
       reportSignIn('oidc', server, 'unreachable');
       throw unreachable;
     }
-    const config = await fetchAuthConfig(server);
-    const result = await oidcLogin(server, provider, config.oidcBrowserHandoff);
+    let result: Result<true, LoginError>;
+    try {
+      const config = await fetchAuthConfig(server);
+      result = await oidcLogin(server, provider, config.oidcBrowserHandoff);
+    } catch (error) {
+      // The server's sign-in settings could not be read, or the sign-in threw.
+      reportSignIn('oidc', server, 'failed');
+      throw error;
+    }
     reportSignIn('oidc', server, signInFailureReason(result));
     if (result.success) await adoptWorkspaces(server);
     return result;
@@ -830,6 +840,10 @@ export const switchServersController = createRPCController({
       return { serverId, connected: true, user };
     } catch (cause) {
       if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
+        // Without a status, the refusal is this app's own: there was no session
+        // to send, so the server was never asked. Ask it now, so a server that
+        // cannot be reached reads as that rather than as signed out.
+        if (cause.status === undefined) await probeGateway(server);
         return { serverId, connected: false, user: null };
       }
       throw cause;

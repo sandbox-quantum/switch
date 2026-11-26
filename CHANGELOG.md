@@ -52,7 +52,26 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **`switch.hosted.provider_login_problems` counts only providers an agent on
+  the machine runs.** Cloud machines have every provider installed, so a login
+  nobody had given for a provider no agent used kept the "AI provider logins
+  missing or expired on cloud machines" monitor alerting for good.
+
+### [0.32.2] - 2026-11-25
+
 #### Changed
+- **The distributed Teams app is called "Switch Rooms" unless
+  `TEAMS_APP_NAME` names it otherwise** (it was "Agent Switch"). Its package
+  is version 1.1.0, so an organisation that approved the old one is given it
+  when its admin approves again. Its publisher is now SandboxAQ, the company
+  Partner Center verifies, its website is the Switch docs rather than the
+  GitHub repository, and its description calls the app by the name this
+  deployment gave it.
+- **`TEAMS_APP_PARTNER_ID`** (chart: `switchCore.teamsApp.partnerId`) names the
+  publisher's Microsoft partner ID in the distributed Teams app's package, once
+  publisher verification is done in Partner Center. Optional; anything but up
+  to 10 digits is refused at startup, and the chart refuses an unquoted value.
 - **`ORGANIZATION_DIRECTORY=workos` now works with `GATEWAY_SIGNUP_MODE=open`.**
   Someone signing in with no workspace may then create an organization of
   their own. It is kept in Switch, not in WorkOS, and follows WorkOS only
@@ -61,6 +80,28 @@ version of their own to them without also giving them a release of their own.
   chart.
 
 #### Security
+- **Controllers move to a new release signing key with this release.** Upgrade
+  every deployment through 0.32.2 so its controllers pick up the new key; a
+  controller that skips this release has to be reinstalled. Fresh installs from
+  0.32.2's `install.sh` refuse its own package — use the next release, or an
+  older `install.sh`.
+- **Cloud machines install security updates daily and reboot within 7
+  days.** The machine image (`deploy/hosted/machine`) turns on
+  unattended-upgrades for Ubuntu's security updates, restarts updated
+  services itself except the agent controllers, agents and boot service, and
+  reboots once a reboot has been pending for 6 days, in the 07:00 UTC hour,
+  or at any hour after 7 days. The reboot ends the machine's agent sessions
+  without asking; its disks are kept and its controllers start again. Takes
+  effect for machines made from an image baked from this release.
+- **A new OpenCode agent is created with auto mode off.** OpenCode's auto mode
+  has no review of its own and runs every command without asking, so a
+  managed OpenCode agent created without saying whether it runs in auto mode,
+  through the management API, a template run (`auto_mode` left out of the
+  template or the request) or an agent's `create_agent`, now starts asking its
+  owner. Other providers keep their defaults, and asking for auto mode
+  explicitly still turns it on. Agents already created keep their stored
+  setting; `list_managed_agents` shows each one's `auto_mode`, and
+  `update_agent_detail` or the agent's settings turn it off.
 - **The pre-tool-call mediation route is removed.** `POST
   /agents/{agent_id}/mediation/pre-tool-call` answered `proceed` for any tool
   attached to the agent, judging by its name alone, and the retired Claude
@@ -135,6 +176,22 @@ version of their own to them without also giving them a release of their own.
   `decision_failed` events gain the backend labels `self_hosted` and `gemini`,
   and the `Decision routing:` record names the service's own backend that
   answered (`answered_by`), so a fallback's answer can be told apart.
+- **What someone deletes or edits in a bridged chat is deleted or edited in
+  Switch too.** When a person deletes their post in Slack, Discord,
+  Mattermost or Microsoft Teams, its room message goes at once, with its
+  files and the copies agents were sent. When they edit it, the room message
+  says the new words in place; agents are not sent it again, and the new words
+  pass Switch Trust like a new message (words it refuses delete the message).
+  Edits in Telegram are followed too, but Telegram never tells a bot about a
+  deletion. A channel deleted on its platform takes every message of its room
+  with it and leaves the room unlinked; an archived channel only unlinks the
+  room, since archiving can be undone. Posts the bridge made for messages
+  written in Switch are left alone. A Slack app must subscribe to four more
+  events (`channel_deleted`, `channel_archive`, `group_deleted`,
+  `group_archive`) and be reinstalled for channel removals to arrive. A Teams
+  bridge replaces its channel subscriptions with ones notified of deletions
+  when it next starts, and a Teams edit can no longer arrive in the room as a
+  new message.
 - **The WorkOS directory mirror reports whether it is keeping up.** With
   `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
   `switch.workos.cursor_age` (seconds since it last read WorkOS's events
@@ -173,6 +230,30 @@ version of their own to them without also giving them a release of their own.
   only a request on the default backend raced its fallback;
   `DECISION_FALLBACK_BACKEND` now means the default backend's fallback
   however it is chosen.
+- **A deleted workspace's audit history is purged without the schema owner's
+  credentials.** The two-year purge now runs on the ordinary runtime
+  connection through a database function owned by the schema owner, so the
+  serving process no longer needs `DB_OWNER_USER` and `DB_OWNER_PASSWORD` for
+  it; the runtime role still cannot delete audit rows itself. switch-core
+  refuses to start if the function is missing or the runtime role may not
+  execute it.
+- **`switch-purge-organization` also cleans up outside Switch.** A cloud
+  machine's disk is deleted straight away rather than kept for its retention
+  period, and the purge goes on only once the disk is gone. With the
+  server's `WORKOS_API_KEY` it then takes the organization out of WorkOS:
+  each person's membership goes, a WorkOS user goes only if no other
+  organization in the environment still has them, and the WorkOS
+  organization goes only once nobody else is in it. Without the key it lists
+  what to remove there and exits 4. Where the organization connected a
+  Switch Trust policy, it first asks Switch Trust, with that policy's
+  settings, to delete what it holds for each of the organization's rooms,
+  before anything in Switch is deleted; if any of those deletions fails it
+  stops there, deleting nothing, and running it again retries them. A run
+  resumed after the organization was deleted can no longer reach Switch
+  Trust, lists those rooms for a person to have deleted there, and exits 4. Every step outside Switch is recorded in the server's audit log
+  and retried by running the command again, and the command ends with a
+  receipt of what was done outside Switch and a reminder that backups keep
+  the organization for up to 37 days.
 - **Member changes that also apply in Switch Trust ask first.** On an
   organization whose members come from WorkOS and whose changes are sent
   there, making someone Org Admin, making an Org Admin a Viewer, and removing
@@ -208,6 +289,55 @@ version of their own to them without also giving them a release of their own.
   did any failed call.
 
 #### Fixed
+- **The dashboard's Add to Microsoft Teams button has the Teams logo** like
+  the other Add buttons. They now draw each platform's logo as Switch serves
+  it, not from a copy bundled for Slack, Discord and Telegram alone. The
+  People page's "Seen on", the delete-connection prompt and the new-room
+  messaging app picker name the platform as it names itself ("Microsoft
+  Teams", not "Teams" or "teams"), and WhatsApp and Rocket.Chat are
+  spelled as their makers spell them.
+- **What Switch says under an agent's name no longer counts as the agent
+  talking.** An agent's join greeting, a Switch Console chat's opening line,
+  notices of something done on its behalf and its answers to room commands
+  are marked as Switch's, and the usage snapshot and period counts leave
+  them out, as they do Switch's admin notices and the platform's own
+  messages (template kickoffs, scheduled messages). An agent added to a room
+  and never run is no longer active for a week, and `message_count` matches
+  `message_sent` again.
+- **Usage telemetry names every agent runtime Switch offers.**
+  `known_agent_type` was `other` for every runtime but Claude Code, Codex and
+  OpenCode; Antigravity, Cursor, DeepSeek Harness, Pi, Copilot, Kiro, Mistral
+  Vibe, Goose, Qwen, Droid, Cline and Junie are now reported by name.
+- **`console_member_added` counts only people added from Switch Console.**
+  People named when a room is made from the dashboard, a template or an
+  agent's tool were counted as Console adds too; they are still a
+  `room_users_added`.
+- **Taking someone out of a Switch Console chat is a `room_users_removed`**,
+  as adding them was already a `room_users_added`.
+- **A person or agent added to or taken out of a chat is reported once**, even
+  when two requests for the same change overlap: only the one that made the
+  change reports it, and `room_agents_added` counts the agents actually put
+  in.
+- **The room-moderation command no longer touches the server's reporting
+  start.** It set up telemetry as the server does at boot, so run without
+  telemetry switched on it cleared when reporting began, and the server's
+  next period counts came out partial or not at all.
+- **`invitation_accepted` is sent once the join commits**, not before a
+  directory that can still refuse it.
+- **A command typed in a Switch Console chat is no longer a message.** A
+  `!reset` or other command sent from Console was reported as `message_sent`
+  and metered as a message toward the workspace's message usage; one typed on
+  a messaging platform never was.
+- **A message Slack refuses is no longer treated as delivered.** When Slack
+  answered a message from Switch with an error (a rate limit, an archived
+  channel), the bridge logged it and moved on as if Slack had taken nothing,
+  so nothing could try it again. The refusal now reaches the bridge as an
+  error, and Slack's refusals are told apart: one that can clear (a rate
+  limit, an outage) from one that cannot (an archived or missing channel, a
+  message too long). The session activity messages use the same distinction,
+  so an agent's activity in an archived channel is no longer posted again
+  every few minutes for as long as Switch runs. A Slack card that cannot be
+  posted is reported as a failed send too.
 - **A full database pool no longer makes a pod drop everything it holds.**
   Each switch-core process renews its lease on a database connection of its
   own, outside the shared pool. Before, the renewal borrowed from the same
@@ -829,6 +959,14 @@ version of their own to them without also giving them a release of their own.
   you're left in with no workspace.**
 
 #### Changed
+- **The dashboard's Connectors page lists coming soon services in their own
+  section**, under the ones people can use, with a count for each, and
+  the catalog lists 24 more of them. Its All tab is now Discover, where the
+  page always opens, as in Switch Console. Yours ends with a card that opens
+  Discover, and a search there that matches nothing connected offers to search
+  Discover instead, keeping the search.
+  Discover ends with a link to request a connector on GitHub. A connector's category must now be
+  one of a fixed list.
 - **The dashboard has one layout: the one built behind `gateway_v2`.**
   Home, Agents, Rooms, Templates, Connectors and Resources on the rail, and
   Workspace and Organization settings as their own areas, on every server. The earlier layout's
@@ -1402,6 +1540,35 @@ version of their own to them without also giving them a release of their own.
   taking over another pod's agents during a roll, was restarted and handed its
   work over again. A startup probe now gives a booting pod up to five minutes,
   and liveness waits five seconds for an answer.
+- **A messaging app bridge is no longer handed to a switch-core pod that is
+  still booting.** The other pods counted a starting pod as soon as it
+  started, and handed it its share of the bridges and consumers while it
+  could not run any of them yet, so a bridge could sit with no connection to
+  its platform until that pod's boot was done. A starting pod now takes work
+  once it can hear the other pods, and they hand its share over then. A pod
+  starting alone takes everything at once, as before.
+- **A machine no longer reads offline while a release moves it to another
+  switch-core pod.** Each pod a rolling update stopped took its machines
+  offline until their controllers reattached to another pod, one to three
+  seconds later: Switch Console showed them offline, and a message to one of
+  their agents got the "device is offline" reply. A machine whose pod shut
+  down now reads online for up to 15 seconds while it reattaches, as long as
+  one whose pod died, and messages to its agents wait for it. One that does
+  not come back in time reads offline from when its pod stopped, and its
+  owner's Console is told, as it now is when a machine's pod dies; before,
+  Console showed such a machine online until it next refreshed on its own.
+- **Messages typed in a Slack, Discord or Mattermost channel while its bridge
+  moves between switch-core pods no longer go missing or come a minute
+  late.** Discord and Mattermost do not send again what was said while the
+  bridge had no connection, so a message typed between one pod letting go of
+  the bridge and the next taking it up never reached the room, and Slack sent
+  it again a minute later. The pod taking a bridge over now reads its channels
+  back from shortly before the last one let go, at most ten minutes back, and
+  hands on what was said there. On Discord and Mattermost, posts by bots and
+  integrations in that gap are still not read back. On Slack, the read-back
+  stops after ten seconds or at Slack's rate limit, and reads replies only in
+  threads whose root is among the posts it reads; what it leaves still comes
+  a minute late.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error
@@ -4861,12 +5028,74 @@ version of their own to them without also giving them a release of their own.
   read its decision service, the page says so and keeps the saved choice.
   "Self-hosted endpoint" is now "Your own endpoint".
 
+#### Security
+
+- **A new OpenCode agent asks before it acts.** OpenCode's auto mode has no
+  review of its own: it answers every permission request itself, so with it
+  on, anyone who can post in the agent's rooms could have commands run on its
+  owner's machine. New OpenCode agents now start with auto mode off, wherever
+  they are created (the new-agent form, a template, or attaching an agent
+  already set up in a folder), and ask before each command and edit. Auto mode
+  is still there for an owner who turns it on, and the switch now says that
+  every action, commands included, then runs without asking. Agents on other
+  providers keep their defaults. Existing agents keep their settings: check
+  an OpenCode agent's **Auto mode** switch in its settings and turn it off if
+  it should ask.
+
+#### Changed
+
+- **The usage-data identifier changes every 30 days and is deleted when you
+  stop sharing.** Usage data is tagged with a random identifier that is now
+  replaced every 30 days; turning sharing off stops sending at once, including
+  an event already being prepared, and deletes the identifier, so turning it
+  back on starts an unrelated one. The operating system version sent is cut
+  down to its major version. The app no longer calls the data anonymous: it
+  is pseudonymous, and the consent text says so.
+- **A message to switch-buddy can be counted again.** `chat_message_sent`
+  carries `to_buddy`: `yes` when the message went to the person's own
+  switch-buddy, in a direct chat with it alone, from that chat, the box on
+  Home or the first run's cards; `no` otherwise; `unknown` when the chat
+  could not be read to say. It is
+  the last step of the first run's funnel, after `agent_created` with
+  `entry_point` `switch_buddy`. 0.41.0 dropped `buddy_message_sent` saying the
+  Switch server's `message_sent` would count these, but a server event belongs
+  to a different Amplitude user than the install, so no funnel could join the
+  two, and it cannot tell a message to the buddy from any other. Filter on
+  `outcome` `success`; how many messages someone sent their buddy is
+  Amplitude's to count from these events.
+
 #### Fixed
 
+- **Connecting a messaging app through its own install is counted.**
+  `bridge_connected` gains `method` (`credentials` or `app_install`): an
+  install that started and failed is reported, and one that finished is
+  reported when its connection shows up. Before, only pasted-in tokens were
+  counted, though disconnecting either kind was.
+- **A local or remote server Switch Console starts by itself is told apart.**
+  `managed_server_action` gains `trigger`: `user` when someone asked, and
+  `automatic` for a server started at launch because it was running when the
+  app last quit, or brought up to date then. Before, those counted as starts
+  someone asked for.
+- **Failures on the way to the server are counted.** Connecting a messaging
+  app while the server's host is known to be down reports `unreachable`; an
+  account link the server refuses by throwing, a single sign-on whose
+  settings can't be read, and a chat action whose workspace session can't be
+  had report a failure instead of nothing.
+- **A Switch server started by Switch Console run from source no longer
+  shares usage data**, matching the app, which sends nothing from source.
+- **An installation updated from before the first-run pages is told about
+  usage data.** It never saw those pages, so it is shown the notice over the
+  app, with the switch to turn sharing off, until it is answered.
 - **Creating an agent no longer flashes "An agent called … already exists
   on this server".** The form checked the name against the server's agent
   list, which picks up the new agent before the dialog closes, so for a moment
   it reported its own agent as a clash.
+- **Changing an agent's definition on Windows no longer fails with "EPERM"
+  while its sessions run.** The agent's host re-read the agent's `config.json`
+  every 30 seconds to check its granted services, and on Windows a read in
+  progress refuses the rename that replaces the file. The check now uses the
+  definition the host last read, which it re-reads whenever the file is
+  replaced.
 
 ### [0.41.1] - 2026-11-18
 
@@ -5136,6 +5365,12 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Connectors page lists coming soon services in their own section**,
+  under the ones people can use, with a count for each. Yours ends with a
+  "Browse all connectors" card that opens Discover, and a search there that
+  matches nothing connected offers to search Discover instead, keeping the
+  search, rather than saying "No connector matches". Discover ends with a
+  link to request a connector on GitHub.
 - **Set up for a connector's app goes to whoever may set it up.** Console
   asks the server who may set up its connector apps, whichever layout its
   dashboard uses. Set up opens Organization settings › Connector apps in the
@@ -7522,6 +7757,16 @@ tags; see RELEASING.md.
 
 ### [Unreleased]
 
+#### Security
+- **A managed Codex agent keeps the host's own Codex sandbox.** The
+  controller used to give every Codex session a sandbox of its own,
+  `danger-full-access` under Bypass permissions and `workspace-write`
+  otherwise, which replaced the `sandbox_mode` set in the host's
+  `~/.codex/config.toml`: a host set to `read-only` ran writable sessions.
+  The host's setting now wins, then the agent's, and only a host that names
+  none gets that default. Auto mode still narrows `danger-full-access` to
+  `workspace-write`, so Codex's own review still sees requests.
+
 #### Added
 - **Says which machine, OS account and data folder it runs from.**
   Enrolling, and every status report, carry `device_id`: a SHA-256 of the
@@ -7592,6 +7837,21 @@ tags; see RELEASING.md.
   offer them, while the socket is down, and when as many calls are in flight
   as Switch takes. A call the socket closes on is answered 502, as a request
   whose connection drops.
+- **Agents running as users of their own get resource limits and a system
+  call filter.** Each agent's unit may use at most 75% of the machine's memory
+  and 4096 processes and threads, and may make only the system calls in
+  systemd's `@system-service` set; any other fails with `EPERM`. Codex agents
+  run as a second template, `switch-agent-<uid>-codex@.service`, which also
+  allows the mount and sandboxing calls Codex's own sandbox needs. Run the
+  setup again to install both; until then Codex agents run as the one
+  template there is.
+- **A provider login given to the machine leaves no copy behind.** When the
+  login is withdrawn or replaced, or the agent is removed, the controller
+  removes its files from the agent's state and its token from the agent's
+  configuration, and an agent host that starts with no login removes any
+  left. A failure is logged as an error. The copy written to check a login is
+  removed once the check is done. An OpenCode console login lives in
+  OpenCode's database, which goes with it.
 
 #### Fixed
 - **A Claude Code login that is there but does not work is reported as not

@@ -20,6 +20,7 @@ from switch_core.bridges.collaboration.own_app_setup import (
     slack_create_url,
     slack_manifest,
 )
+from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.bridges.collaboration.slack.install import BOT_SCOPES
 from switch_core.feature_flags import DECISION_ROUTING
 
@@ -54,6 +55,14 @@ class TestSlackManifest:
 
         assert app_home["messages_tab_enabled"] is True
         assert app_home["messages_tab_read_only_enabled"] is True
+
+    def test_subscribes_to_a_channel_being_deleted_or_archived(self) -> None:
+        bot_events = slack_manifest(ALL_ON)["settings"]["event_subscriptions"][
+            "bot_events"
+        ]
+
+        assert set(SlackAdapter._CHANNEL_REMOVED_EVENTS) <= set(bot_events)
+        assert {"channels:read", "groups:read"} <= set(BOT_SCOPES)
 
     def test_every_registered_command_does_something(self) -> None:
         registered = {

@@ -36,6 +36,7 @@ class ControllerConnection:
     connection_id: str | None
     connection_process_id: str | None
     disconnected_at: datetime | None
+    disconnect_reason: str | None
     open_connection_id: str | None
     open_process_id: str | None
 
@@ -46,6 +47,7 @@ _CONNECTION_COLUMNS = (
     AgentController.connection_id,
     AgentController.connection_process_id,
     AgentController.disconnected_at,
+    AgentController.disconnect_reason,
     AgentController.open_connection_id,
     AgentController.open_process_id,
 )
@@ -64,6 +66,7 @@ def _connection_hash() -> ColumnElement[int]:
         func.coalesce(AgentController.connection_id, ""),
         func.coalesce(AgentController.connection_process_id, ""),
         func.coalesce(cast(AgentController.disconnected_at, Text), ""),
+        func.coalesce(AgentController.disconnect_reason, ""),
         func.coalesce(AgentController.open_connection_id, ""),
         func.coalesce(AgentController.open_process_id, ""),
     )

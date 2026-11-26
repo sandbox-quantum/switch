@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClaimablePlatform, InstalledApp } from "../../data/api";
 import InstalledAppsSection from "./InstalledAppsSection";
@@ -15,6 +15,8 @@ const teamsInstall: InstalledApp = {
   can_disconnect: true,
 };
 
+const TEAMS_LOGO = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>';
+
 function mockFetch(
   installs: InstalledApp[] = [],
   offered: { platforms: string[]; claimable?: ClaimablePlatform[] } = { platforms: ["teams"] },
@@ -22,6 +24,20 @@ function mockFetch(
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
+      if (String(url).includes("/collaborations/types")) {
+        return new Response(
+          JSON.stringify([
+            {
+              key: "teams",
+              display_name: "Microsoft Teams",
+              icon_svg: TEAMS_LOGO,
+              config_schema: {},
+              channel_creation_supported: true,
+            },
+          ]),
+          { status: 200 },
+        );
+      }
       if (String(url).includes("/messaging-apps/installs")) {
         return new Response(JSON.stringify({ installs }), { status: 200 });
       }
@@ -56,6 +72,17 @@ describe("InstalledAppsSection", () => {
     expect(
       await screen.findByRole("button", { name: "Add to Microsoft Teams" }),
     ).toBeTruthy();
+  });
+
+  it("puts the platform's logo, as Switch serves it, on its Add button", async () => {
+    mockFetch();
+    render(<InstalledAppsSection onConnectionsChanged={() => {}} memberView={false} />);
+
+    const button = await screen.findByRole("button", { name: "Add to Microsoft Teams" });
+    await waitFor(() => expect(button.querySelector("img")).not.toBeNull());
+    expect(button.querySelector("img")?.getAttribute("src")).toBe(
+      `data:image/svg+xml;charset=utf-8,${encodeURIComponent(TEAMS_LOGO)}`,
+    );
   });
 
   it("shows the platform column's own name, not a bare title-cased key", async () => {

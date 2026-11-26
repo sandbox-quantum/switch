@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import pytest
 
+from switch_core.providers.registry import agent_providers
 from switch_core.telemetry.catalogue import (
     CATALOGUE,
     EVENT_NAME_PREFIX,
+    KNOWN_RUNTIMES,
     TelemetryCatalogueError,
     event_spec,
     validate,
@@ -235,3 +237,10 @@ class TestAgentRuntimes:
         payload["known_agent_type"] = "unknown"
         with pytest.raises(TelemetryCatalogueError, match="expected one of"):
             validate(event, payload)  # type: ignore[arg-type]
+
+    def test_every_runtime_switch_offers_is_known_by_name(self) -> None:
+        """A runtime missing here is reported as `other`, so its agents vanish
+        from every breakdown by runtime."""
+        offered = {provider.known_agent_type for provider in agent_providers()}
+
+        assert offered == set(KNOWN_RUNTIMES)

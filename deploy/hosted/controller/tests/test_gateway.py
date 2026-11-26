@@ -431,6 +431,66 @@ def test_core_desired_states_map_onto_the_row(tmp_path):
     store.close()
 
 
+def _held_deleted_until(gateway, store, retain_until: str) -> None:
+    gateway.sync_machine(CoreMachine.parse(core_machine(desired_state="stopped", revision=2)))
+    store.set_observed(store.get(MACHINE_ID), ObservedState.STOPPED, None)
+    gateway.sync_machine(
+        CoreMachine.parse(
+            core_machine(desired_state="deleted", revision=3, retain_until=retain_until)
+        )
+    )
+    assert store.get(MACHINE_ID).desired_state is DesiredState.DELETED
+
+
+def test_a_purge_brings_a_deleted_machines_retention_forward(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.sync_machine(CoreMachine.parse(core_machine()))
+    _held_deleted_until(gateway, store, "2026-01-31T00:00:00+00:00")
+
+    gateway.sync_machine(
+        CoreMachine.parse(
+            core_machine(
+                desired_state="deleted",
+                revision=4,
+                retain_until="2026-01-02T00:00:00+00:00",
+                expedite_deletion=True,
+            )
+        )
+    )
+
+    assert store.get(MACHINE_ID).retain_until == datetime(2026, 1, 2, tzinfo=UTC)
+    store.close()
+
+
+def test_without_the_flag_a_deleted_machine_keeps_its_later_retention(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    gateway = make_gateway(cfg, store)
+    gateway.sync_machine(CoreMachine.parse(core_machine()))
+    _held_deleted_until(gateway, store, "2026-01-31T00:00:00+00:00")
+
+    gateway.sync_machine(
+        CoreMachine.parse(
+            core_machine(
+                desired_state="deleted",
+                revision=4,
+                retain_until="2026-01-02T00:00:00+00:00",
+            )
+        )
+    )
+
+    assert store.get(MACHINE_ID).retain_until == datetime(2026, 1, 31, tzinfo=UTC)
+    assert CoreMachine.parse(core_machine()).expedite_deletion is False
+    store.close()
+
+
+def test_a_malformed_expedite_flag_is_refused():
+    with pytest.raises(ConfigError, match="expedite_deletion"):
+        CoreMachine.parse(core_machine(expedite_deletion="yes"))
+
+
 def test_deleting_a_running_machine_retains_it_first(tmp_path):
     cfg = config(tmp_path)
     store = open_store(cfg)

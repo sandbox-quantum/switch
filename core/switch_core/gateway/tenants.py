@@ -216,7 +216,7 @@ from switch_core.organization_access import (
 from switch_core.organization_directory import DirectoryError, OrganizationDirectory
 from switch_core.private_channel_rooms import PrivateChannelRooms, notice_poster
 from switch_core.room_service import RoomService
-from switch_core.telemetry import emit_safely
+from switch_core.telemetry import emit_after_commit, emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
 from switch_core.visibility.activity_names import member_names, names_for
@@ -2007,8 +2007,10 @@ async def _join_through(
         )
         # Only on the branch that actually joined someone. A caller who
         # was already a member has joined nothing — reporting it would count
-        # re-clicking a link, or a promotion, as onboarding.
-        emit_safely(
+        # re-clicking a link, or a promotion, as onboarding. Once it commits:
+        # the directory below can still refuse the join and roll it back.
+        emit_after_commit(
+            session,
             current_telemetry(),
             "invitation_accepted",
             {"age_hours": age_hours(invitation.created_at)},

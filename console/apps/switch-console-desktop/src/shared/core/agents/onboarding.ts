@@ -21,8 +21,8 @@ export type OnboardAgentParams = {
    * plus the absolute working directory on that host. */
   sshHost?: string;
   dir: string;
-  /** Seeds for the per-agent permission settings. Omit to take
-   * `NEW_AGENT_PERMISSIONS`. */
+  /** Seeds for the per-agent permission settings. Omit to take the
+   * provider's `newAgentPermissions`. */
   autoApprove?: boolean;
   autoMode?: boolean;
 };

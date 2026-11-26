@@ -79,6 +79,10 @@ class CoreMachine:
     revision: int
     data_volume_id: str | None
     retain_until: datetime | None
+    # Core asks for `retain_until` to be taken even when earlier than the
+    # deadline already held for a deleted machine (an organization purge).
+    # Absent from an older Core, which never asks.
+    expedite_deletion: bool
 
     @classmethod
     def parse(cls, raw: Any) -> CoreMachine:
@@ -96,6 +100,9 @@ class CoreMachine:
             not isinstance(volume_id, str) or not re.fullmatch(r"vol-[0-9a-f]+", volume_id)
         ):
             raise ConfigError("Cloud gateway returned an invalid data volume id.")
+        expedite = raw.get("expedite_deletion", False)
+        if not isinstance(expedite, bool):
+            raise ConfigError("Cloud gateway returned an invalid expedite_deletion.")
         return cls(
             machine_id=str(UUID(raw["machine_id"])),
             state=raw["state"],
@@ -103,6 +110,7 @@ class CoreMachine:
             revision=revision,
             data_volume_id=volume_id,
             retain_until=_parse_timestamp(raw.get("retain_until")),
+            expedite_deletion=expedite,
         )
 
 
@@ -290,6 +298,8 @@ class Gateway:
         if core.desired_state == "deleted":
             if machine.desired_state is DesiredState.DELETED or _at_rest(machine):
                 self.store.set_desired(machine.machine_id, DesiredState.DELETED, core.retain_until)
+                if core.expedite_deletion:
+                    self.store.expedite_deletion(machine.machine_id, core.retain_until)
             elif machine.desired_state is not DesiredState.RETAINED:
                 self.store.set_desired(machine.machine_id, DesiredState.RETAINED, core.retain_until)
             return

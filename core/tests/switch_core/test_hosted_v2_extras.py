@@ -239,6 +239,7 @@ def _machine(backend: str):
         revision=1,
         data_volume_id=None,
         retain_until=None,
+        expedite_deletion=False,
         backend=backend,
     )
 

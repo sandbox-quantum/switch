@@ -1,15 +1,24 @@
-import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
+import { compareVersions } from '@switch-console/shared';
+import {
+  type QueryClient,
+  useMutation,
+  useMutationState,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo } from 'react';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { events, rpc } from '@renderer/lib/ipc';
 import { cliActionFailure } from '@renderer/lib/providers/cli-action-failure';
 import type {
   AgentInstallationStatus,
+  AgentUpdateError,
   AgentPayload,
   DependencyStatus,
   HostDependencySelection,
   Installation,
   InstallMethod,
+  InstallOption,
   SelectedSource,
 } from '@shared/core/providers/agent-payload';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -21,8 +30,37 @@ function statusQueryKey(connectionId?: string) {
   return ['agents', 'status', connectionId ?? 'local'] as const;
 }
 
+/**
+ * Looks for every agent's CLI on this computer again, as Console's own check
+ * does, and rereads the result.
+ */
+export async function reprobeThisComputer(queryClient: QueryClient): Promise<void> {
+  await rpc.providers.probeAll();
+  await queryClient.invalidateQueries({ queryKey: statusQueryKey(undefined) });
+}
+
 function opKey(op: 'install' | 'update' | 'uninstall', connectionId?: string) {
   return ['agents', op, connectionId ?? 'local'] as const;
+}
+
+/**
+ * The version an update moved `previous` to when it crossed onto a new release
+ * line (OpenCode 1 to 2), which is an upgrade rather than an update; else null.
+ */
+function lineUpgradeTo(
+  previous: string | null | undefined,
+  installOptions: InstallOption[],
+  result: unknown
+): string | null {
+  const after = (result as { success: boolean; data?: { version?: string | null } }).data?.version;
+  if (!previous || !after) return null;
+  const crossed = installOptions.some(
+    (option) =>
+      option.lineMigration &&
+      compareVersions(previous, option.lineMigration.below) < 0 &&
+      compareVersions(after, option.lineMigration.below) >= 0
+  );
+  return crossed ? after : null;
 }
 
 type OpVars = { id: AgentProviderId; method?: InstallMethod };
@@ -114,26 +152,40 @@ export function useAgentInstallationStatuses(connectionId?: string) {
   });
 
   const updateMutation = useMutation<
-    unknown,
+    { result: unknown; upgradedTo: string | null },
     Error,
     { id: AgentProviderId; method?: InstallMethod }
   >({
     mutationKey: opKey('update', connectionId),
-    mutationFn: ({ id, method }) =>
-      rpc.providers.update(id, connectionId, method) as Promise<unknown>,
-    onSuccess: (result, vars) => {
+    mutationFn: async ({ id, method }) => {
+      const previous = queryClient
+        .getQueryData<AgentInstallationStatus[]>(key)
+        ?.find((status) => status.id === id)?.version;
+      const installOptions = agents?.find((agent) => agent.id === id)?.installOptions ?? [];
+      const result = await rpc.providers.update(id, connectionId, method);
+      return { result, upgradedTo: lineUpgradeTo(previous, installOptions, result) };
+    },
+    onSuccess: ({ result, upgradedTo }, vars) => {
       invalidate();
       const name = nameOf(vars.id);
       if ((result as { success: boolean }).success) {
         // So the controller's report, which Settings shows, sees it too.
         if (!connectionId) void recheckThisComputer(queryClient);
-        toast({ title: `${name} successfully updated` });
-      } else {
         toast({
-          title: `Failed to update ${name}`,
-          description: cliActionFailure(
-            (result as { error: Parameters<typeof cliActionFailure>[0] }).error
-          ),
+          title: upgradedTo ? `Upgraded ${name} to ${upgradedTo}` : `${name} successfully updated`,
+        });
+      } else {
+        const { error } = result as { error: AgentUpdateError };
+        toast({
+          title:
+            error.type === 'line-migration-unrestored'
+              ? `${name} isn’t installed now`
+              : error.type === 'line-migration-failed' ||
+                  error.type === 'line-migration-blocked' ||
+                  error.type === 'line-migration-unremoved'
+                ? `Couldn’t upgrade ${name}`
+                : `Failed to update ${name}`,
+          description: cliActionFailure(error),
           variant: 'destructive',
         });
       }

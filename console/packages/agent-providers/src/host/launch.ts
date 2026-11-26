@@ -14,7 +14,12 @@ import { requestStop } from './stop-request';
 import { superviseSharedHost } from './supervisor';
 
 export function sharedSessionsBase(): string {
-  return join(homedir(), '.local', 'state', 'switch', 'sdk-sessions');
+  return sessionsBaseIn(homedir());
+}
+
+/** Where the sessions of an agent host whose home is `home` keep their state. */
+export function sessionsBaseIn(home: string): string {
+  return join(home, '.local', 'state', 'switch', 'sdk-sessions');
 }
 
 export function sharedSessionRoot(sessionId: string): string {

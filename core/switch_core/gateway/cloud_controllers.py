@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import (
     AgentController,
     AgentControllerEnrollmentCode,
+    AgentDefinition,
     CloudMachine,
     MachineWorkspace,
     require_tenant_id,
@@ -349,6 +350,17 @@ def _log_new_login_problems(
         )
 
 
+async def _providers_in_use(session: AsyncSession, controller_id: str) -> set[str]:
+    """The providers the managed agents placed on the controller run, stopped
+    ones included: a login no agent there needs is no problem."""
+    rows = await session.scalars(
+        select(AgentDefinition.definition["provider"].astext).where(
+            AgentDefinition.controller_id == controller_id
+        )
+    )
+    return {provider for provider in rows if provider}
+
+
 def _restarted(before: Any, started: str | None) -> bool:
     """Whether this workspace's controller names a new start time: the same
     seat reported one before, and this one differs. The first report with a
@@ -387,7 +399,8 @@ async def record_controller_status(
 
     It also keeps the report's metrics summary beside it: counts and fixed
     words only (`observability.hosted.box_summary`), which the hosted metrics
-    sampler reads. Never the report's ids or text."""
+    sampler reads. Never the report's ids or text. Login problems count only
+    for providers an agent placed on the controller runs."""
     found = await machine_of_controller(session, controller_id)
     if found is None:
         return
@@ -397,8 +410,16 @@ async def record_controller_status(
     reports = controller_reports(machine)
     v2 = process_hosted_v2()
     before = reports.get(workspace.id)
+    in_use = await _providers_in_use(session, controller_id)
     summary = box_summary(
-        machine_reading, agents or [], providers or [], machine.backend
+        machine_reading,
+        agents or [],
+        [
+            entry
+            for entry in providers or []
+            if isinstance(entry, dict) and entry.get("provider") in in_use
+        ],
+        machine.backend,
     )
     _log_new_login_problems(machine.id, before, summary)
     started = None

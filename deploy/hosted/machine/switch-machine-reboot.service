@@ -1,0 +1,10 @@
+[Unit]
+Description=Reboot this Switch Cloud machine once a pending reboot has waited too long
+Documentation=file:///usr/local/libexec/switch-machine-reboot
+ConditionPathExists=/etc/switch-hosted/machine.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/switch-machine-reboot
+StandardOutput=journal
+StandardError=journal

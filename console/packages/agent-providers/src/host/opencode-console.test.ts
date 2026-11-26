@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { writeNodeCli } from '../testing/node-cli';
+import { removeTestRoot } from '../testing/remove-test-root';
 import { exportOpenCodeConsole, importOpenCodeConsole } from './opencode-console';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
@@ -35,7 +36,7 @@ db.close();`
   );
 });
 afterEach(async () => {
-  await rm(root, { recursive: true, force: true });
+  await removeTestRoot(root);
 });
 it('imports only the account, preserves native refresh, and accepts a replaced credential', async () => {
   const env = { XDG_DATA_HOME: root };

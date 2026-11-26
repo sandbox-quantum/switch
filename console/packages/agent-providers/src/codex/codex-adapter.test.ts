@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +9,7 @@ import {
 } from '../adapter';
 import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
 import { FakeAppServer, type FakeJsonRpcMessage } from './fake-app-server';
+import { managedCodexSandbox, prepareCodexSessionHome } from './home';
 
 const servers: FakeAppServer[] = [];
 let account: Record<string, unknown> | null = { type: 'apiKey' };
@@ -388,6 +389,52 @@ describe('CodexAdapter', () => {
       }
     } finally {
       await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('runs a managed session in the sandbox its host names, never unsandboxed in auto', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-host-'));
+    try {
+      for (const [host, mode, sent] of [
+        ['read-only', 'full-access', 'read-only'],
+        ['read-only', 'auto', 'read-only'],
+        ['read-only', 'approval-required', 'read-only'],
+        ['danger-full-access', 'auto', 'workspace-write'],
+        ['danger-full-access', 'full-access', 'danger-full-access'],
+        [null, 'full-access', 'danger-full-access'],
+        [null, 'auto', 'workspace-write'],
+        [null, 'approval-required', 'workspace-write'],
+      ] as const) {
+        const sourceHome = join(root, `${host}-${mode}`);
+        await mkdir(sourceHome);
+        if (host) await writeFile(join(sourceHome, 'config.toml'), `sandbox_mode = "${host}"\n`);
+        const { home } = await prepareCodexSessionHome({
+          root: join(root, 'sessions'),
+          sessionId: `${host}-${mode}`,
+          sourceHome,
+          config: 'model = "m"\n',
+          defaultSandbox: managedCodexSandbox(mode),
+        });
+        const adapter = createCodexAdapter();
+        await adapter.startSession({
+          sessionId: `${host}-${mode}`,
+          cwd: '/work',
+          runtimeMode: mode,
+          env: { PATH: '/usr/bin', CODEX_HOME: home },
+          mcpServers: {},
+          connectorMcpServers: [],
+          model: { id: 'm' },
+        });
+        const threadStart = servers
+          .at(-1)!
+          .received.find((message) => message.method === 'thread/start');
+        expect(threadStart?.params, `${host} in ${mode}`).toMatchObject({
+          sandbox: sent,
+        });
+        await adapter.stopAll();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

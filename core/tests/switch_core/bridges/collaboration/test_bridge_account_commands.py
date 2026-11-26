@@ -37,6 +37,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.user_store import UserStore
 
 from .dummy_platform.adapter import (
@@ -124,10 +125,12 @@ def _bridge(world: _World) -> tuple[SimpleNamespace, _Adapter]:
 
     bridge = SimpleNamespace(
         _bridge_id=world.bridge_id,
+        _bridge_type="slack",
         _bridge_tenant_id=TENANT_ZERO_ID,
         _session_factory=world.session_factory,
         _external_user_store=_STORE,
         _user_store=UserStore(),
+        _receipts=MessagingEventReceiptStore(),
         _adapter=adapter,
         _channel_to_room={},
         _create_room_for_channel=_no_room,
@@ -322,6 +325,73 @@ class TestLinkAccount:
         )
 
         assert adapter.answers[0][1] == LINK_USAGE
+
+
+class TestACommandPostRunsOnce:
+    """A command post is handed on again when its bridge reads its channel
+    back after moving between processes, or when the platform sends it again.
+    The first run used the code up, so a second would refuse it."""
+
+    @staticmethod
+    def _posted(code: str) -> InboundCommand:
+        return InboundCommand(
+            channel_id="D-self",
+            channel_type="lobby",
+            sender_id="U-ada",
+            sender_name="ada",
+            command="link-account",
+            args=code,
+            message_ref="D-self:5.0",
+        )
+
+    async def test_a_command_post_handed_on_again_runs_once(
+        self, world: _World
+    ) -> None:
+        bridge, adapter = _bridge(world)
+        posted = self._posted(await _code(world))
+
+        await CollaborationCore._handle_inbound_command(bridge, posted)
+        await CollaborationCore._handle_inbound_command(bridge, posted)
+
+        assert await _verified(world)
+        [(_, text)] = adapter.answers
+        assert "Linked this Acme Slack account (ada)" in text
+
+    async def test_a_command_post_whose_run_failed_runs_again(
+        self, world: _World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The post is claimed with the work, so a run that fails before it
+        commits does not leave the post claimed and the command never run."""
+        bridge, adapter = _bridge(world)
+        posted = self._posted(await _code(world))
+        confirm = collaboration_core.confirm_with_code
+
+        async def the_database_goes_away(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr(
+            collaboration_core, "confirm_with_code", the_database_goes_away
+        )
+        with pytest.raises(RuntimeError):
+            await CollaborationCore._handle_inbound_command(bridge, posted)
+        monkeypatch.setattr(collaboration_core, "confirm_with_code", confirm)
+        await CollaborationCore._handle_inbound_command(bridge, posted)
+
+        assert await _verified(world)
+        [(_, text)] = adapter.answers
+        assert "Linked this Acme Slack account (ada)" in text
+
+    async def test_a_command_with_no_post_runs_each_time(self, world: _World) -> None:
+        bridge, adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _command("link-account")
+        )
+        await CollaborationCore._handle_inbound_command(
+            bridge, _command("link-account")
+        )
+
+        assert [text for _, text in adapter.answers] == [LINK_USAGE, LINK_USAGE]
 
 
 class TestOnlyTheServerWithTheLinkAnswers:

@@ -32,6 +32,14 @@ controller's live socket (`held_elsewhere`), so an agent run by a controller
 connected anywhere reads as live everywhere, and a connection held here that
 another process has since taken over is closed. Management keeps that, and
 the bindings, in step across processes (`management/signals.py`).
+
+A controller whose process shut down reads as connected for a little longer
+(`moving`): a release stops every process in turn, and each of its
+controllers reattaches to another within seconds. Its agents stay live
+meanwhile, and what is sent to them waits in their event stream, but nothing
+is relayed to the process that went. A controller that stops reading as
+connected with nothing written about it, its move over or its process dead,
+is said to a listener (`use_gone_listener`), for its owner to be told.
 """
 
 from __future__ import annotations
@@ -248,6 +256,16 @@ class ControllerPresence:
         # as Management reads it from their rows. Dropped when that process's
         # lease lapses (`forget_processes`) or its row says the socket went.
         self._elsewhere: dict[str, str] = {}
+        # The tenant of each controller another process held, for a listener
+        # told that one is gone.
+        self._tenants: dict[str, str] = {}
+        # Controllers whose holding process shut down a moment ago, by the
+        # time on this process's monotonic clock until which they still read
+        # as connected, unless they reattach or are revoked first; and the
+        # timer that ends each.
+        self._moving: dict[str, float] = {}
+        self._move_timers: dict[str, asyncio.TimerHandle] = {}
+        self._on_gone: Callable[[str, str], None] | None = None
         # A count of changes to which process holds each controller's
         # connection, and the count at each controller's last one, as for the
         # bindings: so a read of the controllers' rows that started earlier
@@ -276,6 +294,11 @@ class ControllerPresence:
     def use_ledger(self, ledger: ControllerConnectionLedger) -> None:
         """Where each connection's socket attaching and going are persisted."""
         self._ledger = ledger
+
+    def use_gone_listener(self, listener: Callable[[str, str], None]) -> None:
+        """Told (tenant id, controller id) when a controller another process
+        held stops reading as connected with nothing written about it."""
+        self._on_gone = listener
 
     def begin_shutdown(self) -> None:
         """The process is shutting down: sockets that go from now are
@@ -420,6 +443,7 @@ class ControllerPresence:
         live, until their owner moves or removes them.
         """
         self._revoked.add(controller_id)
+        self._end_move(controller_id)
         if self._auth_cache is not None:
             self._auth_cache.invalidate_controller(controller_id)
         conn = self._connections.pop(controller_id, None)
@@ -484,10 +508,20 @@ class ControllerPresence:
         return conn
 
     def _connected(self, controller_id: str) -> bool:
-        """Whether the controller's socket is live here or in another process."""
-        return self._live_connection(controller_id) is not None or (
-            controller_id in self._elsewhere and controller_id not in self._revoked
-        )
+        """Whether the controller's socket is live here or in another process,
+        or is moving to one after its process shut down."""
+        if self._live_connection(controller_id) is not None:
+            return True
+        if controller_id in self._revoked:
+            return False
+        return controller_id in self._elsewhere or self._still_moving(controller_id)
+
+    def _still_moving(self, controller_id: str) -> bool:
+        until = self._moving.get(controller_id)
+        return until is not None and until > time.monotonic()
+
+    def is_connected(self, controller_id: str) -> bool:
+        return self._connected(controller_id)
 
     def is_stopped(self, agent_id: str) -> bool:
         """Bound, and set to stopped by its owner."""
@@ -547,14 +581,63 @@ class ControllerPresence:
     # Controllers held by other processes
     # ------------------------------------------------------------------
 
-    def held_elsewhere(self, controller_id: str, process_id: str | None) -> None:
+    def held_elsewhere(
+        self, controller_id: str, process_id: str | None, tenant_id: str | None
+    ) -> None:
         """Which other process holds the controller's live socket, or None
-        when no other process does."""
+        when no other process does; and the controller's tenant, when known.
+        Either way it is not moving any more: what was read about it is
+        newer than its process shutting down."""
         self._note_connection_change(controller_id)
+        if tenant_id is not None:
+            self._tenants[controller_id] = tenant_id
+        self._end_move(controller_id)
         if process_id is None:
             self._elsewhere.pop(controller_id, None)
         else:
             self._elsewhere[controller_id] = process_id
+
+    def moving(self, controller_id: str, tenant_id: str, until: float) -> None:
+        """The process that held the controller's socket shut down, and the
+        controller reads as connected until `until`, on this process's
+        monotonic clock, while it reattaches to another. Once that passes,
+        it is gone (`use_gone_listener`)."""
+        self._note_connection_change(controller_id)
+        self._end_move(controller_id)
+        self._elsewhere.pop(controller_id, None)
+        self._tenants[controller_id] = tenant_id
+        self._moving[controller_id] = until
+        self._move_timers[controller_id] = asyncio.get_running_loop().call_later(
+            max(0.0, until - time.monotonic()), self._move_over, controller_id
+        )
+
+    def _end_move(self, controller_id: str) -> None:
+        """The controller is not moving any more: it reattached, or was
+        revoked."""
+        timer = self._move_timers.pop(controller_id, None)
+        if timer is not None:
+            timer.cancel()
+        self._moving.pop(controller_id, None)
+
+    def _move_over(self, controller_id: str) -> None:
+        self._move_timers.pop(controller_id, None)
+        if self._moving.pop(controller_id, None) is not None:
+            self._note_connection_change(controller_id)
+            self._gone(controller_id)
+
+    def gone_elsewhere(self, controller_id: str, tenant_id: str) -> None:
+        """The process that held the controller's socket is gone, and nothing
+        was written of the socket going: it is not connected, and gone
+        (`use_gone_listener`) if this process counted it."""
+        self._tenants[controller_id] = tenant_id
+        if self._elsewhere.pop(controller_id, None) is not None:
+            self._note_connection_change(controller_id)
+            self._gone(controller_id)
+
+    def _gone(self, controller_id: str) -> None:
+        tenant_id = self._tenants.get(controller_id)
+        if self._on_gone is not None and tenant_id is not None:
+            self._on_gone(tenant_id, controller_id)
 
     def holder_elsewhere(self, controller_id: str) -> str | None:
         """The other process holding the controller's live socket, if any."""
@@ -580,18 +663,28 @@ class ControllerPresence:
             1 for controller_id in self._elsewhere if controller_id not in self._revoked
         )
 
-    def forget_processes(self, process_ids: set[str]) -> set[str]:
-        """These processes' leases lapsed: the controllers they held are not
-        connected. Returns those controllers."""
-        gone = {
-            controller_id
+    def forget_processes(
+        self, process_ids: set[str], *, moving_until: dict[str, float]
+    ) -> set[str]:
+        """These processes stopped holding their leases: the controllers they
+        held are not connected, except while they move from one that shut
+        down, until the time `moving_until` gives it. Returns those
+        controllers."""
+        held = {
+            controller_id: process_id
             for controller_id, process_id in self._elsewhere.items()
             if process_id in process_ids
         }
-        for controller_id in gone:
+        for controller_id, process_id in held.items():
             self._note_connection_change(controller_id)
             del self._elsewhere[controller_id]
-        return gone
+            until = moving_until.get(process_id)
+            tenant_id = self._tenants.get(controller_id)
+            if until is not None and tenant_id is not None:
+                self.moving(controller_id, tenant_id, until)
+            else:
+                self._gone(controller_id)
+        return set(held)
 
     def supersede(self, controller_id: str) -> None:
         """The controller's connection held here was taken over through
@@ -822,6 +915,7 @@ class ControllerPresence:
             self._record_connected(conn)
         self._note_connection_change(conn.controller_id)
         self._elsewhere.pop(conn.controller_id, None)
+        self._end_move(conn.controller_id)
         conn.stream_token += 1
         conn.stream_attached = True
         conn.last_beat = time.monotonic()

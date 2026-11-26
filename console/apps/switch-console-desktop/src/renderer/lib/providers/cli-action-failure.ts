@@ -35,5 +35,24 @@ export function cliActionFailure(
       return `${error.package} isn’t installed through ${error.method}, so there was nothing to remove that way.`;
     case 'unknown-dependency':
       return 'Switch Console doesn’t know this provider.';
+    case 'line-migration-blocked':
+      return error.message;
+    case 'line-migration-unremoved':
+      return `Couldn’t remove ${error.previousVersion}, so nothing changed. ${upgradeCause(error.cause)}`;
+    case 'line-migration-failed':
+      return `${error.restoredVersion} was put back. ${upgradeCause(error.cause)}`;
+    case 'line-migration-unrestored':
+      return `Putting ${error.previousVersion} back failed too. To fix it, run ${error.installCommand} in a terminal. ${upgradeCause(error.cause)}`;
   }
+}
+
+/**
+ * Why a step of an upgrade failed: the command's last words where it printed any,
+ * without the runner's "Install command failed", which is wrong for an uninstall.
+ */
+function upgradeCause(
+  cause: Extract<AgentUpdateError, { type: 'line-migration-failed' }>['cause']
+): string {
+  if (cause.type === 'process-open-failed') return cause.message;
+  return installOutputSummary(cause.output) ?? cause.message;
 }

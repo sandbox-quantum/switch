@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { pluginRegistry } from '../registry';
+import { OPENCODE_LATEST_URL, opencodeWindowsReleaseUrl } from './opencode/index';
 
 // Installers fetched by a command and run as a script. A vendor that moves its
 // installer often leaves a web page at the old address, which the shell then
@@ -13,7 +14,11 @@ function installerUrls(): Map<string, string[]> {
     )) {
       for (const opt of options ?? []) {
         if (opt.method !== 'curl' && opt.method !== 'powershell') continue;
-        for (const url of opt.command.match(/https:\/\/[^\s'"|)]+/g) ?? []) {
+        for (const found of opt.command.matchAll(/https:\/\/[^\s'"|)]+/g)) {
+          // The start of an address the command finishes at run time, such as
+          // a release download named by the version it looks up first.
+          if (/^['"]\s*\+/.test(opt.command.slice(found.index + found[0].length))) continue;
+          const url = found[0];
           const users = urls.get(url) ?? [];
           users.push(`${d.metadata.id} (${platform})`);
           urls.set(url, users);
@@ -52,5 +57,17 @@ describe('provider installer URLs', () => {
       },
       30_000
     );
+
+    it('the OpenCode Windows install finds a release zip for the latest version', async () => {
+      const latest = await fetch(OPENCODE_LATEST_URL);
+      expect(latest.status, OPENCODE_LATEST_URL).toBe(200);
+      const { version } = (await latest.json()) as { version: string };
+      const url = opencodeWindowsReleaseUrl(version);
+      // The first bytes only: a zip starts with `PK`, and the whole file is large.
+      const res = await fetch(url, { redirect: 'follow', headers: { range: 'bytes=0-3' } });
+      expect([200, 206], url).toContain(res.status);
+      const head = new Uint8Array(await res.arrayBuffer()).slice(0, 2);
+      expect(String.fromCharCode(...head), `${url} is not a zip`).toBe('PK');
+    }, 30_000);
   });
 });

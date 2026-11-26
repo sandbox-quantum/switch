@@ -609,7 +609,9 @@ machine: `vm` for a v1 machine, `box` for a hosted agents v2 box.
   `switch.event: hosted.machine_failed`, its reason and the machine id.
 - `switch.hosted.provider_login_problems` counts AI provider logins on cloud
   machines that are `missing` or `expired`, by provider (a fixed list, else
-  `other`). The first time a machine reports one, Core writes one line with
+  `other`). Only a provider that an agent placed on the machine runs is
+  counted: every provider is installed there, and one no agent uses needs no
+  login. The first time a machine reports one, Core writes one line with
   `switch.event: hosted.provider_login_problem`.
 - `switch.hosted.provision_seconds` (from request to first report, new machines
   only) and `switch.hosted.disk_used` are histograms, like memory.

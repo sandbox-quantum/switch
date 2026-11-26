@@ -1311,3 +1311,290 @@ describe('HostDependencyManager on Windows with the official Codex installer', (
     });
   });
 });
+
+describe('HostDependencyManager line migration', () => {
+  const MIGRATING: DependencyDescriptor[] = [
+    {
+      id: 'oc',
+      name: 'OC',
+      category: 'agent',
+      commands: ['oc'],
+      versionArgs: ['--version'],
+      docUrl: 'https://example.com',
+      installCommands: {
+        linux: [
+          {
+            method: 'npm',
+            command: 'npm install -g new-oc',
+            recommended: true,
+            lineMigration: {
+              below: '2.0.0',
+              removeCommand: 'npm uninstall -g old-oc',
+              restoreCommand: 'npm install -g old-oc@{version}',
+              summary: 'Settings carry over.',
+            },
+          },
+        ],
+      },
+      updates: {
+        kind: 'supported',
+        releaseSource: { kind: 'npm', package: 'new-oc' },
+        update: { kind: 'package-manager' },
+      },
+    },
+  ];
+
+  /**
+   * A host with `version` of oc installed, or none. Commands in `failing` fail without doing
+   * anything; those in `failingPartway` do their work and then fail, like an uninstall that
+   * removed the package before it hit a locked file.
+   */
+  function host(
+    initial: string,
+    failing: string[],
+    dependencies: DependencyDescriptor[],
+    failingPartway: string[]
+  ) {
+    let version: string | null = initial;
+    const runInstallCommand = vi.fn(async (command: unknown) => {
+      if (typeof command !== 'string') throw new Error('expected a shell command');
+      if (failing.includes(command))
+        return err({ type: 'command-failed' as const, message: 'failed', output: 'EACCES' });
+      if (command.startsWith('npm uninstall')) version = null;
+      else if (command === 'npm install -g new-oc') version = '2.3.0';
+      else if (command.includes('--no-bin-links')) version = null;
+      else version = command.split('@').at(-1) ?? null;
+      if (failingPartway.includes(command))
+        return err({ type: 'command-failed' as const, message: 'failed', output: 'EBUSY' });
+      return ok<void>();
+    });
+    const ctx = makeCtx(async (command, args = []) => {
+      if (version === null) throw new Error('missing');
+      if (command === 'which') return { stdout: '/home/u/.local/bin/oc\n', stderr: '' };
+      if (command === 'realpath') return { stdout: `${args[0]}\n`, stderr: '' };
+      if (args[0] === '--version') return { stdout: `${version}\n`, stderr: '' };
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(ctx, {
+      dependencies,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+      platform: 'linux',
+    });
+    return { manager, runInstallCommand };
+  }
+
+  async function probed(
+    initial: string,
+    failing: string[] = [],
+    dependencies = MIGRATING,
+    failingPartway: string[] = []
+  ) {
+    const setup = host(initial, failing, dependencies, failingPartway);
+    await setup.manager.probe('oc');
+    await new Promise((r) => setTimeout(r, 50));
+    return setup;
+  }
+
+  it('removes the earlier line before installing the new one', async () => {
+    const { manager, runInstallCommand } = await probed('1.19.5');
+    const result = await manager.update('oc');
+    expect(runInstallCommand.mock.calls.map(([command]) => command)).toEqual([
+      'npm uninstall -g old-oc',
+      'npm install -g new-oc',
+    ]);
+    expect(result.success && result.data.version).toBe('2.3.0');
+  });
+
+  it('updates in place within the new line', async () => {
+    const { manager, runInstallCommand } = await probed('2.1.0');
+    await manager.update('oc');
+    expect(runInstallCommand.mock.calls.map(([command]) => command)).toEqual([
+      'npm install -g new-oc',
+    ]);
+  });
+
+  it('puts the exact earlier version back when the new line will not install', async () => {
+    const { manager, runInstallCommand } = await probed('1.19.5', ['npm install -g new-oc']);
+    const result = await manager.update('oc');
+    expect(runInstallCommand.mock.calls.at(-1)?.[0]).toBe('npm install -g old-oc@1.19.5');
+    expect(result).toMatchObject({
+      success: false,
+      error: {
+        type: 'line-migration-failed',
+        restoredVersion: '1.19.5',
+        cause: { output: 'EACCES' },
+      },
+    });
+    expect(manager.get('oc')?.version).toBe('1.19.5');
+  });
+
+  it('puts the earlier version back when the install leaves the earlier line in place', async () => {
+    const STALE: DependencyDescriptor[] = MIGRATING.map((descriptor) => ({
+      ...descriptor,
+      installCommands: {
+        linux: descriptor.installCommands?.linux?.map((option) => ({
+          ...option,
+          command: 'npm install -g old-oc@1.19.6',
+        })),
+      },
+    }));
+    const { manager, runInstallCommand } = await probed('1.19.5', [], STALE);
+    const invalidated = vi.fn();
+    manager.onExecutableInvalidated.subscribe(invalidated);
+    const result = await manager.update('oc');
+    expect(runInstallCommand.mock.calls.at(-1)?.[0]).toBe('npm install -g old-oc@1.19.5');
+    expect(result).toMatchObject({
+      success: false,
+      error: {
+        type: 'line-migration-failed',
+        restoredVersion: '1.19.5',
+        cause: { message: 'It installed 1.19.6 instead of OC 2.' },
+      },
+    });
+    expect(manager.get('oc')?.version).toBe('1.19.5');
+    expect(invalidated).not.toHaveBeenCalled();
+  });
+
+  it('puts the earlier version back when the install leaves nothing to run', async () => {
+    const EMPTY: DependencyDescriptor[] = MIGRATING.map((descriptor) => ({
+      ...descriptor,
+      installCommands: {
+        linux: descriptor.installCommands?.linux?.map((option) => ({
+          ...option,
+          command: 'npm install -g new-oc --no-bin-links',
+        })),
+      },
+    }));
+    const { manager, runInstallCommand } = await probed('1.19.5', [], EMPTY);
+    const invalidated = vi.fn();
+    manager.onExecutableInvalidated.subscribe(invalidated);
+    const result = await manager.update('oc');
+    expect(runInstallCommand.mock.calls.map(([command]) => command)).toEqual([
+      'npm uninstall -g old-oc',
+      'npm install -g new-oc --no-bin-links',
+      'npm install -g old-oc@1.19.5',
+    ]);
+    expect(result).toMatchObject({
+      success: false,
+      error: {
+        type: 'line-migration-failed',
+        restoredVersion: '1.19.5',
+        cause: { message: 'It finished, but OC can’t be found afterwards.' },
+      },
+    });
+    expect(manager.get('oc')?.version).toBe('1.19.5');
+    expect(invalidated).not.toHaveBeenCalled();
+  });
+
+  it('says it is not installed, with the commands to run, when the restore fails too', async () => {
+    const { manager } = await probed('1.19.5', [
+      'npm install -g new-oc',
+      'npm install -g old-oc@1.19.5',
+    ]);
+    expect(await manager.update('oc')).toMatchObject({
+      success: false,
+      error: {
+        type: 'line-migration-unrestored',
+        previousVersion: '1.19.5',
+        installCommand: 'npm install -g new-oc',
+        restoreCommand: 'npm install -g old-oc@1.19.5',
+      },
+    });
+    expect(manager.get('oc')?.status).toBe('missing');
+  });
+
+  it('says it is not installed when the restore exits cleanly but puts nothing back', async () => {
+    const UNRESTORABLE: DependencyDescriptor[] = MIGRATING.map((descriptor) => ({
+      ...descriptor,
+      installCommands: {
+        linux: descriptor.installCommands?.linux?.map((option) => ({
+          ...option,
+          lineMigration: option.lineMigration && {
+            ...option.lineMigration,
+            restoreCommand: 'npm install -g --no-bin-links old-oc@{version}',
+          },
+        })),
+      },
+    }));
+    const { manager } = await probed('1.19.5', ['npm install -g new-oc'], UNRESTORABLE);
+    expect(await manager.update('oc')).toMatchObject({
+      success: false,
+      error: {
+        type: 'line-migration-unrestored',
+        previousVersion: '1.19.5',
+        restoreError: { message: 'It finished, but OC can’t be found afterwards.' },
+      },
+    });
+    expect(manager.get('oc')?.status).toBe('missing');
+  });
+
+  describe('with a precheck', () => {
+    const CHECKED: DependencyDescriptor[] = MIGRATING.map((descriptor) => ({
+      ...descriptor,
+      installCommands: {
+        linux: descriptor.installCommands?.linux?.map((option) => ({
+          ...option,
+          lineMigration: option.lineMigration && {
+            ...option.lineMigration,
+            precheck: { command: 'check-oc-stopped', blockedMessage: 'OC is running.' },
+          },
+        })),
+      },
+    }));
+
+    it('runs it before removing anything', async () => {
+      const { manager, runInstallCommand } = await probed('1.19.5', [], CHECKED);
+      expect((await manager.update('oc')).success).toBe(true);
+      expect(runInstallCommand.mock.calls.map(([command]) => command)).toEqual([
+        'check-oc-stopped',
+        'npm uninstall -g old-oc',
+        'npm install -g new-oc',
+      ]);
+    });
+
+    it('stops with its message, changing nothing, when it fails', async () => {
+      const { manager, runInstallCommand } = await probed('1.19.5', ['check-oc-stopped'], CHECKED);
+      expect(await manager.update('oc')).toMatchObject({
+        success: false,
+        error: { type: 'line-migration-blocked', id: 'oc', message: 'OC is running.' },
+      });
+      expect(runInstallCommand).toHaveBeenCalledTimes(1);
+      expect(manager.get('oc')?.version).toBe('1.19.5');
+    });
+  });
+
+  it('changes nothing when the earlier line will not uninstall', async () => {
+    const { manager, runInstallCommand } = await probed('1.19.5', ['npm uninstall -g old-oc']);
+    expect(await manager.update('oc')).toMatchObject({
+      success: false,
+      error: {
+        type: 'line-migration-unremoved',
+        previousVersion: '1.19.5',
+        cause: { output: 'EACCES' },
+      },
+    });
+    expect(runInstallCommand).toHaveBeenCalledTimes(1);
+    expect(manager.get('oc')?.version).toBe('1.19.5');
+  });
+
+  it('puts the earlier version back when the uninstall fails after removing it', async () => {
+    const { manager, runInstallCommand } = await probed('1.19.5', [], MIGRATING, [
+      'npm uninstall -g old-oc',
+    ]);
+    const result = await manager.update('oc');
+    expect(runInstallCommand.mock.calls.map(([command]) => command)).toEqual([
+      'npm uninstall -g old-oc',
+      'npm install -g old-oc@1.19.5',
+    ]);
+    expect(result).toMatchObject({
+      success: false,
+      error: {
+        type: 'line-migration-failed',
+        restoredVersion: '1.19.5',
+        cause: { output: 'EBUSY' },
+      },
+    });
+    expect(manager.get('oc')?.version).toBe('1.19.5');
+  });
+});

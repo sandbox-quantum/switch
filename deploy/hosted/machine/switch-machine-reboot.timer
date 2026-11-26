@@ -1,0 +1,10 @@
+[Unit]
+Description=Check every hour whether this Switch Cloud machine must reboot for updates
+
+[Timer]
+OnCalendar=*-*-* *:00:00
+RandomizedDelaySec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

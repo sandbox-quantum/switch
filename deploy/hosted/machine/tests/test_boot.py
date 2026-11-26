@@ -381,6 +381,7 @@ def test_a_seat_that_left_keeps_its_index_and_its_data_and_its_controller_is_sto
         "/usr/bin/systemctl",
         "stop",
         "switch-agent-2200@*.service",
+        "switch-agent-2200-codex@*.service",
     ] in commands.calls
     assert (left.data_dir / "controller.db").read_text() == "kept"
     assert setups(commands) == ["switch-controller"]

@@ -127,7 +127,6 @@ from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
-    app_connect_args,
     create_engine_from_config,
     create_lease_engine,
     create_session_factory,
@@ -241,7 +240,7 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
-from switch_core.retention.audit_history import check_purge_privilege
+from switch_core.retention.audit_history import check_purge_function
 from switch_core.retention.erasure import ErasureService, erasure_loop
 from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
@@ -761,28 +760,6 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     return True
 
 
-async def _audit_history_sessions(
-    config: SwitchConfig,
-    engine: AsyncEngine,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> tuple[AsyncEngine | None, async_sessionmaker[AsyncSession]]:
-    """The sessions the retention pass purges deleted workspaces' audit history
-    on: the schema owner's, where configured, since the runtime role may not
-    delete audit rows; the runtime ones otherwise. Says at startup, as an
-    error, when the chosen role cannot (`retention/audit_history.py`).
-
-    Returns the owner's engine, for the caller to dispose of, or None."""
-    owner_url = config.owner_database_url
-    if owner_url is None:
-        await check_purge_privilege(engine, owner=False)
-        return None, session_factory
-    owner_engine = create_async_engine(
-        owner_url, poolclass=NullPool, connect_args=app_connect_args(config)
-    )
-    await check_purge_privilege(owner_engine, owner=True)
-    return owner_engine, create_session_factory(owner_engine)
-
-
 async def run(config: SwitchConfig, process_id: str) -> bool:
     """Serve until shutdown. Returns whether the server started: False when the
     app's startup failed, which uvicorn logs and then returns from `serve()`
@@ -808,9 +785,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     instrument_queries(engine)
     pool_watermark = install_pool_watermark(engine)
     install_hold_timer(engine)
-    history_engine, history_sessions = await _audit_history_sessions(
-        config, engine, session_factory
-    )
+    await check_purge_function(engine)
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -844,7 +819,8 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # What another process reads to know this one is alive. Renewed on a
     # connection of its own, outside the pool, so requests and streams that
     # fill the pool cannot make it lapse and drop everything this process
-    # holds (`create_lease_engine`).
+    # holds (`create_lease_engine`). Booting until its ownership can take work
+    # (`ownership.py`).
     lease_engine = create_lease_engine(config)
     instrument_queries(lease_engine)
     process_lease = ProcessLease(
@@ -852,6 +828,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in config.keyring.keys],
+        booting=True,
         renewal_session_factory=create_session_factory(lease_engine),
     )
     await process_lease.renew()
@@ -957,7 +934,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # ── Product telemetry ────────────────────────────────────────────────────
     # Before the services that report through it, switched on or not.
     telemetry, installed_at, telemetry_http = await build_telemetry(
-        config, session_factory, switch_core_version()
+        config, session_factory, switch_core_version(), keeps_deployment_state=True
     )
     message_telemetry = MessageTelemetry(
         telemetry=telemetry, session_factory=session_factory
@@ -1417,7 +1394,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     room_service.on_room_agents_changed(chat_service.sync_rooms)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
-    protocol.set_member_adder(chat_service.add_member, chat_service.require_can_join)
+    protocol.set_member_adder(chat_service.admit_member, chat_service.require_can_join)
     chat_service.on_agent_room_changed(room_changes.rooms_changed)
     room_service.on_room_changed(chat_service.room_changed, chat_service.rooms_changed)
 
@@ -1638,6 +1615,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         revoke_box_controller=(
             revoke_machine_controller if management is not None else None
         ),
+        sign_in_issuer=config.gateway_oidc_issuer_url,
     )
     gateway_app.state.organization_apps = organization_apps
     if config.members_service_url:
@@ -1801,9 +1779,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 if management is not None and v2
                 else None
             )
-            data_retention_task = asyncio.create_task(
-                retention_loop(session_factory, history_sessions)
-            )
+            data_retention_task = asyncio.create_task(retention_loop(session_factory))
             erasure_task = asyncio.create_task(
                 erasure_loop(
                     session_factory,
@@ -1840,8 +1816,6 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
                 await _stop_tasks(data_retention_task, erasure_task)
-                if history_engine is not None:
-                    await history_engine.dispose()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 shared_connections_task.cancel()
@@ -1946,7 +1920,8 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         )
 
     # Start the work this process owns, before it serves: with one process,
-    # all of it. Then the quiet copies of the bridges another process holds.
+    # all of it, and beside others none until its signal bus listens. Then the
+    # quiet copies of the bridges another process holds.
     await ownership.start()
     # Running from here, so the rest of the boot is covered: a lease that
     # stops being sure stops the work it holds there and then.
@@ -2615,6 +2590,7 @@ def _distributed_teams_app(
                 messaging_public_url=config.messaging_public_url,
                 privacy_url=config.teams_app_privacy_url,
                 terms_url=config.teams_app_terms_url,
+                partner_id=config.teams_app_partner_id,
             ),
         )
     )

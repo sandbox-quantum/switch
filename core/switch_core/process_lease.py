@@ -15,7 +15,9 @@ many connections it holds.
 The work that must run once (a client's consumer, a bridge's platform
 connection) is owned through `ownership.py`, whose leases are valid only while
 their holder's process lease is held, and which stops its work when this
-process can no longer be sure its own is (`surely_held`).
+process can no longer be sure its own is (`surely_held`). A lease is claimed
+early in the boot and marked booting until the process can take work up
+promptly; the others hand it none before then (`ProcessLeases.takes_work`).
 
 The lease also records the ids of the keys the process can read, which a
 process starting with a new front key checks (`db/key_rotation.py`).
@@ -61,6 +63,11 @@ RETRY_RENEWAL_SECONDS = 1.0
 
 PRUNE_AFTER = timedelta(hours=1)
 
+# How long the machines a process held still read as connected after it shut
+# down, while their controllers reattach to the processes left: as long as a
+# process that died goes unnoticed, so a planned stop never reads worse.
+MOVE_GRACE = LEASE_TTL
+
 # Why a connection the row still shows open is not, when its process is the
 # reason: the process shut down without writing it, or stopped renewing.
 SERVER_SHUTDOWN = "server_shutdown"
@@ -70,10 +77,11 @@ SERVER_LOST = "server_lost"
 @dataclass(frozen=True)
 class ProcessLeases:
     """Every process's lease as the database held it at `read_at`, its own
-    clock."""
+    clock, read just after `read_mono` on this process's monotonic clock."""
 
     read_at: datetime
     leases: dict[str, ProcessLeaseRow]
+    read_mono: float
 
     def holds(self, process_id: str | None) -> bool:
         """Whether the process is alive and holding its sockets."""
@@ -83,6 +91,28 @@ class ProcessLeases:
             and lease.stopped_at is None
             and self.read_at - lease.beat_at < LEASE_TTL
         )
+
+    def moving(self, process_id: str | None) -> bool:
+        """Whether the process shut down less than `MOVE_GRACE` ago, so the
+        controllers whose sockets it held are reattaching to the others."""
+        return self.move_ends(process_id) is not None
+
+    def move_ends(self, process_id: str | None) -> float | None:
+        """When, on this process's monotonic clock, `MOVE_GRACE` ends for a
+        process that shut down; None for one still holding its lease, lost,
+        or stopped longer ago. Counted from before the read, so however long
+        a reader takes to act on it, it is never longer."""
+        lease = self.leases.get(process_id) if process_id is not None else None
+        if lease is None or lease.stopped_at is None:
+            return None
+        left = (MOVE_GRACE - (self.read_at - lease.stopped_at)).total_seconds()
+        return self.read_mono + left if left > 0 else None
+
+    def takes_work(self, process_id: str) -> bool:
+        """Whether the process holds its lease and has finished booting, so
+        work may be handed to it (`ownership.py`)."""
+        lease = self.leases.get(process_id)
+        return lease is not None and not lease.booting and self.holds(process_id)
 
     def ended(self, process_id: str | None) -> tuple[datetime | None, str]:
         """When and why a process not holding stopped: shut down at
@@ -101,8 +131,9 @@ async def read_leases(
 ) -> ProcessLeases:
     """Every lease, in the caller's session; the table has no tenant policy,
     so any session reads it."""
+    read_mono = time.monotonic()
     read_at, leases = await processes.read(session)
-    return ProcessLeases(read_at=read_at, leases=leases)
+    return ProcessLeases(read_at=read_at, leases=leases, read_mono=read_mono)
 
 
 class ProcessLease:
@@ -123,6 +154,7 @@ class ProcessLease:
         session_factory: async_sessionmaker[AsyncSession],
         processes: SwitchCoreProcessStore,
         key_ids: list[str],
+        booting: bool,
         renewal_session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self.process_id = process_id
@@ -133,6 +165,8 @@ class ProcessLease:
         # process starting with a new front key can check them
         # (`db/key_rotation.py`).
         self._key_ids = key_ids
+        # Recorded on the row with every renewal until `finish_booting`.
+        self._booting = booting
         # Set by `stop`. A renewal clears `stopped_at`, so once the process
         # has released its lease (as it starts draining, while it still runs)
         # no renewal may claim it back.
@@ -167,14 +201,31 @@ class ProcessLease:
             return None
         return self._renewed_at + LEASE_TTL.total_seconds() / 2
 
+    @property
+    def booting(self) -> bool:
+        return self._booting
+
+    async def finish_booting(self) -> None:
+        """The process can take work up promptly from now: renew the lease
+        saying so, and the others hand it its share. Writes until one such
+        renewal has succeeded."""
+        if self._booting:
+            await self._renew(booting=False)
+            self._booting = False
+
     async def renew(self) -> None:
         """Claim or renew the lease, and prune leases long dead. Does nothing
         once the lease is stopped: a draining process stays released."""
+        await self._renew(booting=self._booting)
+
+    async def _renew(self, *, booting: bool) -> None:
         if self._stopped:
             return
         sent_at = time.monotonic()
         async with self._renewal_session_factory() as session:
-            await self._processes.renew(session, self.process_id, self._key_ids)
+            await self._processes.renew(
+                session, self.process_id, self._key_ids, booting=booting
+            )
             pruned = await self._processes.prune(session, PRUNE_AFTER)
             await session.commit()
         if self._stopped:
