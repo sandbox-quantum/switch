@@ -2,7 +2,11 @@
   "files": [
     {
       "path": "admission/bad/add-only-a-removal-entry-removed.json",
-      "sha256": "9d19b0a099f37e34905ad515b43ca9eaec428af70436b386ca166c284653161a"
+      "sha256": "dcfaa5792a202719244d757f7ec215a062df675e22b979818c5c5101017a8fd2"
+    },
+    {
+      "path": "admission/bad/add-only-a-removal-entry-value-changed.json",
+      "sha256": "cd3b8a36ac7a97b5b141ae42811e8a5db465923442e085a668b91ea1c6bdff80"
     },
     {
       "path": "admission/bad/cordon-a-status-change.json",
@@ -206,7 +210,11 @@
     },
     {
       "path": "admission/bad/p5-box-map-entry-removed.json",
-      "sha256": "4d7d0df09515f7790049591e49903137ac9b0e279bd2449e4237022aa06a3022"
+      "sha256": "fc810dc55509bff931be661cf522991201ea9b5a4864af633b044b4b638ab1a5"
+    },
+    {
+      "path": "admission/bad/p5-box-map-entry-value-changed.json",
+      "sha256": "e87dfc11003daf772c29d7c699a902e100ef233cc5ad7bfbc47fe92d312778ee"
     },
     {
       "path": "admission/bad/p5-box-map-label-changed.json",
@@ -222,7 +230,11 @@
     },
     {
       "path": "admission/bad/p5-box-owners-entry-removed.json",
-      "sha256": "2ff6a6c1f5c65b3bcd090e777328f52527eb5b4e12423999026c38d52f3a6be0"
+      "sha256": "89eb47a67dc4bd3866aa04b65a6fa40d6e12e7c83f73753bcc2799d7c5a167f4"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-entry-value-changed.json",
+      "sha256": "c6ea364e092f6730140a33befaaa376fdb20b6c7f4f05e1a6fb7ca1100de0ccd"
     },
     {
       "path": "admission/bad/p5-box-owners-label-changed.json",
@@ -238,7 +250,11 @@
     },
     {
       "path": "admission/bad/p5-pool-map-entry-removed.json",
-      "sha256": "02a2cedaa004c9798b877966399b552702c58f252f5bfd3fd83ef208b4aaf9d8"
+      "sha256": "beb5b049f1ecbde289436ba68255e72fde807e9974105573f504c5263ef7943e"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-entry-value-changed.json",
+      "sha256": "2a770c299fcfd6c1a0c0be00206ae7c2ac2c971a70af4577ba61ff614802a753"
     },
     {
       "path": "admission/bad/p5-pool-map-label-changed.json",

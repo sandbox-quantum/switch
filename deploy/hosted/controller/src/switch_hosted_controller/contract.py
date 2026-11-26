@@ -824,9 +824,26 @@ def _secret_data(s: dict, key: str, value: str | None) -> None:
         data[key] = base64.b64encode(value.encode()).decode()
 
 
-def _drop_first_entry(s: dict) -> None:
+def _change_old_entry(value: str) -> Callable[[dict], None]:
+    """The list written back with one of the entries it already held pointing somewhere else (still a value of the
+    right shape, so only the add-only rule can refuse it)."""
+
+    def apply(s: dict) -> None:
+        path = urlsplit(s["request"]["path"]).path
+        (old,) = [o["object"] for o in s["setup"] if o["path"] == path]
+        key = sorted(old["data"])[0]
+        _body(s)["data"][key] = base64.b64encode(value.encode()).decode()
+
+    return apply
+
+
+def _drop_old_entry(s: dict) -> None:
+    """The list written back without one of the entries it already held (one in the setup's copy of it, the state
+    the write replaces), not merely without the entry this write adds."""
+    path = urlsplit(s["request"]["path"]).path
+    (old,) = [o["object"] for o in s["setup"] if o["path"] == path]
     data = _body(s)["data"]
-    data.pop(sorted(data)[0])
+    data.pop(sorted(old["data"])[0])
 
 
 def _to(s: dict, method: str, path: str, body: dict | None = None) -> None:
@@ -1086,18 +1103,22 @@ BAD: list[Bad] = [
     Bad("p4-an-extra-volume", STS, lambda s: _tmpl(s)["volumes"].append({"name": "extra", "emptyDir": {}}), (P4,), "only the template's seven volumes"),
     # P5: the add-only lists.
     Bad("p5-box-map-deleted", BOX_MAP, lambda s: _to(s, "DELETE", s["request"]["path"]), rbac=True),
-    Bad("p5-box-map-entry-removed", BOX_MAP, _drop_first_entry, (P5,), "an existing box map entry may never change or go"),
+    Bad("p5-box-map-entry-removed", BOX_MAP, _drop_old_entry, (P5,), "an existing box map entry may never change or go"),
     Bad("p5-box-map-entry-out-of-form", BOX_MAP, lambda s: _secret_data(s, "not-a-uuid", box_namespace(_keyed(8))), (P5,), "a new entry is a machine id (UUID) to a box namespace"),
     Bad("p5-box-map-label-changed", BOX_MAP, _label("example.com/extra", "x"), (P5,), "the box map's labels, annotations and mutability"),
     Bad("p5-pool-map-deleted", POOL_MAP, lambda s: _to(s, "DELETE", s["request"]["path"]), rbac=True),
-    Bad("p5-pool-map-entry-removed", POOL_MAP, _drop_first_entry, (P5P, ADD_ONLY), "an existing pool-map entry may never change or go"),
+    Bad("p5-pool-map-entry-removed", POOL_MAP, _drop_old_entry, (P5P, ADD_ONLY), "an existing pool-map entry may never change or go"),
     Bad("p5-pool-map-entry-out-of-form", POOL_MAP, lambda s: _secret_data(s, _machine(8), user_namespace(_keyed(8))), (P5P,), "a new entry is a pool box id (UUID) to its box-keyed namespace"),
     Bad("p5-pool-map-label-changed", POOL_MAP, _label("example.com/extra", "x"), (P5P,), "the pool-map's labels, annotations and mutability"),
     Bad("p5-box-owners-deleted", OWNERS, lambda s: _to(s, "DELETE", s["request"]["path"]), rbac=True),
-    Bad("p5-box-owners-entry-removed", OWNERS, _drop_first_entry, (P5O, ADD_ONLY), "an existing box-owners entry may never change or go"),
+    Bad("p5-box-owners-entry-removed", OWNERS, _drop_old_entry, (P5O, ADD_ONLY), "an existing box-owners entry may never change or go"),
     Bad("p5-box-owners-entry-out-of-form", OWNERS, lambda s: _secret_data(s, box_namespace(_keyed(8)), "not-a-keyed-id"), (P5O,), "a new entry is a box-keyed namespace to its owner's keyed id"),
     Bad("p5-box-owners-label-changed", OWNERS, _label("example.com/extra", "x"), (P5O,), "the box-owners's labels, annotations and mutability"),
-    Bad("add-only-a-removal-entry-removed", REMOVALS, _drop_first_entry, (ADD_ONLY,), "an entry in pool-map, box-owners or box-removals never changes or goes"),
+    Bad("p5-box-map-entry-value-changed", BOX_MAP, _change_old_entry(box_namespace(_keyed(10))), (P5,), "an existing box map entry may never change or go"),
+    Bad("p5-pool-map-entry-value-changed", POOL_MAP, _change_old_entry(box_namespace(_keyed(10))), (P5P, ADD_ONLY), "an existing pool-map entry may never change or go"),
+    Bad("p5-box-owners-entry-value-changed", OWNERS, _change_old_entry(_keyed(10)), (P5O, ADD_ONLY), "an existing box-owners entry may never change or go"),
+    Bad("add-only-a-removal-entry-value-changed", REMOVALS, _change_old_entry(_machine(10)), (ADD_ONLY,), "an entry in pool-map, box-owners or box-removals never changes or goes"),
+    Bad("add-only-a-removal-entry-removed", REMOVALS, _drop_old_entry, (ADD_ONLY,), "an entry in pool-map, box-owners or box-removals never changes or goes"),
     # The reaper and the remover: one namespace delete each.
     Bad("reaper-deletes-a-secret", REAP, lambda s: _to(s, "DELETE", f"/api/v1/namespaces/{HOME}/secrets/box-map"), rbac=True),
     Bad("remover-deletes-a-secret", REMOVE, lambda s: _to(s, "DELETE", f"/api/v1/namespaces/{HOME}/secrets/box-removals"), rbac=True),

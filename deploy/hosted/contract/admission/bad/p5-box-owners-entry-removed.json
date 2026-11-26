@@ -9,7 +9,7 @@
   "object": {
     "apiVersion": "v1",
     "data": {
-      "agents-box-k1-ffffffffffffffff": "azEtZGRkZGRkZGRkZGRkZGRkZA=="
+      "agents-box-k1-0000000000000021": "azEtMTExMTExMTExMTExMTExMQ=="
     },
     "kind": "Secret",
     "metadata": {
@@ -31,7 +31,7 @@
     "body": {
       "apiVersion": "v1",
       "data": {
-        "agents-box-k1-ffffffffffffffff": "azEtZGRkZGRkZGRkZGRkZGRkZA=="
+        "agents-box-k1-0000000000000021": "azEtMTExMTExMTExMTExMTExMQ=="
       },
       "kind": "Secret",
       "metadata": {
