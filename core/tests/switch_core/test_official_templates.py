@@ -526,6 +526,7 @@ def test_switch_buddy_joins_introduces_and_links_the_rooms_it_creates():
     assert "this might take a few minutes." in text
     assert "Friendly, like a buddy." in text
     assert "Much less verbose." in text
+    assert "services[].url" in text
     assert 'Never end the turn on "creating it now"' in text
 
 
