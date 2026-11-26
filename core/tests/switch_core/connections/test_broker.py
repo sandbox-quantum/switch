@@ -830,7 +830,7 @@ class TestConnectOnly:
         assert unavailable is not None and unavailable.code == "not_fully_set_up"
         assert (await standing(broker, "github")).server_setup_needed is False
         assert await connectable(broker, "github") is True
-        assert await connectable(broker, "asana") is False
+        assert await connectable(broker, "amplitude") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
             503,

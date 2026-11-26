@@ -1,7 +1,78 @@
 slug: asana
 name: Asana
 category: Project management
-description: Read and update Asana tasks and projects.
-enabled: false
+description: Read and update Asana tasks and projects, as you.
+enabled: true
+publisher: Asana
+links:
+  documentation: https://developers.asana.com/docs/using-asanas-mcp-server
+  support: https://help.asana.com/
+  privacy: https://asana.com/terms/privacy-statement
+adapter: oauth
 auth:
   type: oauth
+  # One refresh token serves every renewal. Measured: three refreshes with the
+  # same refresh token all succeeded, and no answer carried a new one.
+  refresh: reusable
+  oauth:
+    # Asana's MCP server has no dynamic registration: its authorization server
+    # (app.asana.com) advertises no registration_endpoint, and the first
+    # version of the server, which did register clients, was shut down on 17
+    # November 2026 (measured: https://mcp.asana.com/mcp now answers that it
+    # is gone and names /v2/mcp). So each server's operator registers an
+    # "MCP app" in Asana's developer console and names its settings in
+    # ASANA_CLIENT_CONFIG_PATH or saves it under Connector apps. Its
+    # distribution must include the workspaces whose members will connect.
+    registration: static
+    client_settings: ASANA
+    # Core's own callback, or Switch Console's listener on one fixed port.
+    # The operator registers both redirect URLs. Measured: Asana accepts an
+    # http://127.0.0.1 redirect URL and sends the sign-in back to it.
+    redirect: [core, loopback]
+    loopback_ports: [39231]
+    # Measured: asked for no scope, with resource set to the protected
+    # resource's own identifier (https://mcp.asana.com/v2/mcp), as Switch
+    # asks, Asana shows its consent page and issues a token. The token answer
+    # names the scope it granted, "default identity".
+    #
+    # Asana's token endpoint answers invalid_grant to a made-up code whatever
+    # is wrong: measured with a wrong secret, a wrong client id and a redirect
+    # URL that was never registered. The app check cannot tell any of them
+    # from a right client.
+    unchecked: >-
+      Switch can't check the client id, the client secret or the redirect
+      URLs: Asana refuses a made-up code the same way whatever is wrong.
+      Connect once to confirm.
+    revocation_discovered: true
+    # Measured: revoking the refresh token at the advertised endpoint answered
+    # 200, and the access token then failed with Not Authorized, so a
+    # disconnect also ends the tokens agents hold.
+    revocation_ends_tokens: true
+  # An MCP app's token works only with the MCP server, and Asana's own API
+  # answers it 401; the token answer names the account, but only the MCP
+  # server's tools can be read here. get_me is read-only and takes no
+  # arguments. Measured: it returns exactly one user, as data.gid, data.email
+  # and data.name, and data.workspaces lists only the workspace the sign-in
+  # is for.
+  identity:
+    mcp_tool: get_me
+    account_id: data.gid
+    label: data.email
+# Asana's access tokens live 3600 s, the first one and each refreshed one
+# (measured expires_in).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: asana, url: "https://mcp.asana.com/v2/mcp" }
+access:
+  # Asana's MCP apps have no scopes. Documented: the app requests every tool
+  # and the person's own permissions are the limit; measured: the protected
+  # resource metadata lists only "default" (scopes_supported) and the consent
+  # page asks to create and modify tasks, projects and comments, so every
+  # connection can write. Asana says to send no scope, or "default"; Switch
+  # sends none. Not asked for or reachable: Asana's separately licensed
+  # Command server (https://mcp.asana.com/v2/command/mcp).
+  unscoped: true
+  read: { scopes: [] }
+  write: { scopes: [] }
+tools: { mode: pass_through }

@@ -16,7 +16,6 @@ from switch_core.connections.loader import (
 )
 
 PLACEHOLDERS = {
-    "asana",
     "amplitude",
     "azure-devops",
     "bigquery",
@@ -53,6 +52,7 @@ PLACEHOLDERS = {
 
 def test_shipped_catalog_enables_its_live_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
+        "asana",
         "github",
         "airtable",
         "atlassian",
@@ -65,6 +65,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
+        "asana",
         "atlassian",
         "datadog",
         "github",
@@ -577,28 +578,28 @@ def catalog_copy(tmp_path):
 
 
 def test_rejects_unknown_keys(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "amplitude" / "connection.yaml"
     path.write_text(path.read_text() + "icon: jira.svg\n")
-    with pytest.raises(CatalogError, match="asana is invalid"):
+    with pytest.raises(CatalogError, match="amplitude is invalid"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_invalid_yaml(catalog_copy):
-    (catalog_copy / "asana" / "connection.yaml").write_text("slug: [asana\n")
-    with pytest.raises(CatalogError, match="asana is invalid"):
+    (catalog_copy / "amplitude" / "connection.yaml").write_text("slug: [amplitude\n")
+    with pytest.raises(CatalogError, match="amplitude is invalid"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_unknown_auth_type(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "amplitude" / "connection.yaml"
     path.write_text(path.read_text().replace("type: oauth", "type: password"))
-    with pytest.raises(CatalogError, match="asana is invalid"):
+    with pytest.raises(CatalogError, match="amplitude is invalid"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_a_slug_that_differs_from_its_directory(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
-    path.write_text(path.read_text().replace("slug: asana", "slug: jira"))
+    path = catalog_copy / "amplitude" / "connection.yaml"
+    path.write_text(path.read_text().replace("slug: amplitude", "slug: jira"))
     with pytest.raises(CatalogError, match="different slug"):
         load_catalog(catalog_copy)
 
@@ -617,18 +618,18 @@ def test_rejects_a_skill_whose_name_differs_from_the_slug(catalog_copy):
 
 
 def test_rejects_a_category_outside_the_list(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "amplitude" / "connection.yaml"
     path.write_text(
         path.read_text().replace(
-            "category: Project management", "category: Task tracking"
+            "category: Analytics", "category: Task tracking"
         )
     )
-    with pytest.raises(CatalogError, match="(?s)asana is invalid.*category"):
+    with pytest.raises(CatalogError, match="(?s)amplitude is invalid.*category"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_a_placeholder_that_ships_a_skill(catalog_copy):
-    shutil.copytree(catalog_copy / "github" / "skill", catalog_copy / "asana" / "skill")
+    shutil.copytree(catalog_copy / "github" / "skill", catalog_copy / "amplitude" / "skill")
     with pytest.raises(CatalogError, match="must not ship a skill"):
         load_catalog(catalog_copy)
 
@@ -649,7 +650,7 @@ def test_rejects_a_symlink_in_a_skill(catalog_copy, tmp_path):
 
 
 def test_rejects_unexpected_files_beside_the_definition(catalog_copy):
-    (catalog_copy / "asana" / "icon.svg").write_text("<svg/>")
+    (catalog_copy / "amplitude" / "icon.svg").write_text("<svg/>")
     with pytest.raises(CatalogError, match="unexpected files"):
         load_catalog(catalog_copy)
 
@@ -748,13 +749,13 @@ def test_rejects_write_without_read(catalog_copy):
 
 
 def test_a_placeholder_may_describe_its_levels(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "amplitude" / "connection.yaml"
     path.write_text(
         path.read_text()
         + "access:\n  read: { scopes: [read:jira-work] }\n"
         + "tools:\n  mode: listed\n  read: [search_issues]\n  write: []\n"
     )
-    definition = load_catalog(catalog_copy)["asana"].definition
+    definition = load_catalog(catalog_copy)["amplitude"].definition
     assert definition.level_tools("read") == ["search_issues"]
 
 
@@ -1492,7 +1493,7 @@ def test_takes_a_token_note_of_400_characters(catalog_copy):
 
 
 def test_only_an_oauth_entry_reads_consent_markers(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "amplitude" / "connection.yaml"
     path.write_text(
         path.read_text()
         + "access:\n  read: { scopes: [items_read] }\n"
@@ -2005,3 +2006,23 @@ def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
     raw = path.read_bytes().replace(b"\r\n", b"\n")
     path.write_bytes(raw.replace(b"\n", b"\r\n"))
     assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()
+
+
+def test_asana_ships_its_measured_values():
+    entry = CATALOG["asana"]
+    d = entry.definition
+    assert d.enabled and d.adapter == "oauth"
+    assert d.auth.oauth.registration == "static"
+    assert d.auth.oauth.client_settings == "ASANA"
+    assert d.auth.oauth.redirect == ["core", "loopback"]
+    assert d.auth.oauth.loopback_ports == [39231]
+    assert d.auth.oauth.unchecked
+    assert d.auth.oauth.revocation_discovered and d.auth.oauth.revocation_ends_tokens
+    assert d.auth.refresh == "reusable"
+    assert d.auth.identity.mcp_tool == "get_me"
+    assert d.auth.identity.account_id == "data.gid"
+    assert d.auth.identity.label == "data.email"
+    assert d.token.max_lifetime == 3600
+    assert [s.url for s in d.mcp.servers] == ["https://mcp.asana.com/v2/mcp"]
+    assert d.access.unscoped
+    assert entry.skill_files
