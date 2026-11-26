@@ -1,8 +1,4 @@
-import {
-  administersOrganization,
-  type Workspace,
-  workspaceUnavailability,
-} from '@shared/core/workspaces/workspaces';
+import type { Workspace } from '@shared/core/workspaces/workspaces';
 
 /** A server's workspaces in one organization, in the order they were listed. */
 export type OrganizationGroup = {
@@ -41,8 +37,7 @@ export function groupByOrganization(workspaces: Workspace[]): OrganizationGroup[
  *
  * Otherwise one unheaded section in the order listed, as before organizations.
  * Headings without names would read as several identical ones, so a server
- * whose organizations could not be named is listed as if it had none, and its
- * section offers no Add workspace, having no organization to say it is for.
+ * whose organizations could not be named is listed as if it had none.
  */
 export function switcherSections(workspaces: Workspace[]): {
   sections: OrganizationGroup[];
@@ -53,37 +48,4 @@ export function switcherSections(workspaces: Workspace[]): {
   const named = groups.every((group) => group.organizationId === null || group.name !== null);
   if (named) return { sections: groups, headed: true };
   return { sections: [{ organizationId: null, name: null, workspaces }], headed: false };
-}
-
-/** What a server answered about creating, for the workspace it was asked about. */
-export type CreationAnswer = { canAddWorkspace: boolean; workspaceId: string };
-
-/**
- * The workspace to add another to `group`'s organization through, or null when
- * the account may not.
- *
- * The workspace is any one the account can open there as its `org_admin`: the
- * gateway reads the organization from the workspace the call is scoped to.
- *
- * The server's answer was given for one workspace. Where the account is an
- * `org_admin` there, a refusal is about the account — its allowance spent, or
- * a deployment that keeps to one workspace — and holds in every organization;
- * anywhere else it says nothing about this one, and the role decides until the
- * server refuses.
- */
-export function addWorkspaceThrough(
-  group: OrganizationGroup,
-  onServer: Workspace[],
-  answer: CreationAnswer | null
-): Workspace | null {
-  if (group.organizationId === null) return null;
-  const through = group.workspaces.find(
-    (workspace) =>
-      administersOrganization(workspace) &&
-      workspaceUnavailability(workspace, onServer.length) === null
-  );
-  if (!through || answer === null) return through ?? null;
-  const asked = onServer.find((workspace) => workspace.id === answer.workspaceId);
-  if (asked && administersOrganization(asked) && !answer.canAddWorkspace) return null;
-  return through;
 }

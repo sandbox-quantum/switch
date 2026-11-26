@@ -461,11 +461,11 @@ describe('inviting people from the switcher', () => {
 });
 
 describe('new workspaces from the switcher', () => {
-  it('is not offered on a server that says you cannot create one there', async () => {
-    state.noCreate.add('srv-2');
+  it('is offered only on a server where the account is in no workspace yet', async () => {
+    state.noMembership.add('srv-2');
     await openSwitcher(
       [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
-      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-2')],
+      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-2', { tenantId: null })],
       'ws-a'
     );
     await settle();
@@ -473,26 +473,22 @@ describe('new workspaces from the switcher', () => {
     const groups = [...document.querySelectorAll<HTMLElement>('[data-slot="dropdown-menu-group"]')];
     const rows = (group: HTMLElement) =>
       [...group.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent);
-    expect(rows(groups[0]!)).toContain('New workspace');
-    expect(rows(groups[1]!)).not.toContain('New workspace');
+    expect(rows(groups[0]!)).not.toContain('New workspace');
+    expect(rows(groups[1]!)).toContain('New workspace');
   });
 
-  it('ends each server you can use with its own New workspace', async () => {
-    state.unavailable.add('srv-3');
+  it('is not offered on a server that says you cannot create one there', async () => {
+    state.noMembership.add('srv-2');
+    state.noCreate.add('srv-2');
     await openSwitcher(
-      [server('srv-1', 'Acme'), server('srv-2', 'Local dev'), server('srv-3', 'Pi')],
-      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-2'), workspace('ws-c', 'srv-3')],
+      [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
+      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-2', { tenantId: null })],
       'ws-a'
     );
+    await settle();
 
-    const groups = [...document.querySelectorAll<HTMLElement>('[data-slot="dropdown-menu-group"]')];
-    const lastRow = (group: HTMLElement) =>
-      [...group.querySelectorAll('[role="menuitem"]')].at(-1)?.textContent;
-    expect(groups.map((group) => lastRow(group))).toEqual([
-      'New workspace',
-      'New workspace',
-      undefined,
-    ]);
+    const rows = [...document.querySelectorAll('[role="menuitem"]')].map((el) => el.textContent);
+    expect(rows).not.toContain('New workspace');
   });
 });
 
@@ -541,48 +537,8 @@ describe('organizations in the switcher', () => {
     expect(menuRows().some((text) => text.startsWith('Add workspace'))).toBe(false);
   });
 
-  it('offers an org admin Add workspace in their organization only', async () => {
+  it('offers an org admin no Add workspace: each organization has one workspace', async () => {
     state.organizations.add('srv-1');
-    await openSwitcher(
-      [server('srv-1', 'Cloud')],
-      [
-        workspace('ws-a', 'srv-1', { organization: ACME, role: 'admin' }),
-        workspace('ws-b', 'srv-1', { organization: GLOBEX }),
-      ],
-      'ws-a'
-    );
-    await settle();
-
-    const adds = menuRows().filter((text) => text.startsWith('Add workspace'));
-    expect(adds).toEqual(['Add workspace']);
-    const add = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
-      (item) => item.textContent === 'Add workspace'
-    )!;
-    await act(async () => add.click());
-
-    expect(state.showModal).toHaveBeenCalledWith(
-      expect.objectContaining({
-        serverId: 'srv-1',
-        target: { kind: 'organization-workspace', through: 'ws-a', organizationName: 'Acme' },
-      })
-    );
-  });
-
-  it('names the organization on Add workspace when there is only one', async () => {
-    state.organizations.add('srv-1');
-    await openSwitcher(
-      [server('srv-1', 'Cloud')],
-      [workspace('ws-a', 'srv-1', { organization: ACME, role: 'admin' })],
-      'ws-a'
-    );
-    await settle();
-
-    expect(menuRows()).toContain('Add workspace to Acme');
-  });
-
-  it('does not offer Add workspace where the server refuses it', async () => {
-    state.organizations.add('srv-1');
-    state.noAdd.add('srv-1');
     await openSwitcher(
       [server('srv-1', 'Cloud')],
       [workspace('ws-a', 'srv-1', { organization: ACME, role: 'admin' })],
@@ -591,13 +547,19 @@ describe('organizations in the switcher', () => {
     await settle();
 
     expect(menuRows().some((text) => text.startsWith('Add workspace'))).toBe(false);
+    expect(menuRows()).not.toContain('Create organization');
   });
 
   it('says Create organization where the server has organizations', async () => {
     state.organizations.add('srv-1');
+    state.noMembership.add('srv-1');
+    state.noMembership.add('srv-2');
     await openSwitcher(
       [server('srv-1', 'Cloud'), server('srv-2', 'Old')],
-      [workspace('ws-a', 'srv-1', { organization: GLOBEX }), workspace('ws-b', 'srv-2')],
+      [
+        workspace('ws-a', 'srv-1', { organization: GLOBEX, tenantId: null }),
+        workspace('ws-b', 'srv-2', { tenantId: null }),
+      ],
       'ws-a'
     );
     await settle();
