@@ -1,5 +1,5 @@
 import { type BoxValve, isValveFrame, ValveServer } from '@switch-console/agent-providers/box';
-import type { HubValve } from './hub-socket';
+import type { HubValve } from '../hub-socket';
 
 /**
  * Box mode only: the box valve as the hub serves it (`HubSocket`'s `valve`).

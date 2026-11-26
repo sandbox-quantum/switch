@@ -11,6 +11,7 @@ import { silentLogger } from './log';
 import { LocalRelay } from './relay';
 import { UpstreamForwarder } from './relay-forward';
 import { FakeCore } from './testing/fake-core';
+import { valveChannel } from './testing/valve-channel';
 
 /**
  * On a split box (the controller as its own user): a host's hub hello must carry the
@@ -154,7 +155,7 @@ describe('an agent host on a split box', () => {
   function host(next: () => Promise<string | undefined>) {
     const hostWarnings: string[] = [];
     const controller = new AbortController();
-    const stream = openHubStream(relay.hubUrl, { ticket: next })({
+    const stream = openHubStream(relay.hubUrl, { valveChannel: valveChannel(), ticket: next })({
       creds: { agentId: 'agent-1', apiEndpoint: relay.endpoint, token: relay.mint('agent-1') },
       connectionId: 'agent-1-connection',
       scope: 'all',

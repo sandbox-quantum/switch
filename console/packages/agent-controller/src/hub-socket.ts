@@ -40,7 +40,7 @@ export type HubValveLink = { receive: (raw: string) => void; close: () => void }
 
 /**
  * The box valve on the hub: one for the box, joined by each proven host.
- * Passed only in box mode (`hub-valve.ts` builds it); without it the hub reads
+ * Passed only in box mode (`box/hub-valve.ts` builds it); without it the hub reads
  * every frame as a hub message, as before.
  */
 export type HubValve = {

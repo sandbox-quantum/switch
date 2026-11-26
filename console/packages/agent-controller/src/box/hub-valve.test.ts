@@ -4,15 +4,16 @@ import { openHubStream } from '@switch-console/agent-providers';
 import { BoxValve, HubHostValve } from '@switch-console/agent-providers/box';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { AgentHub } from './agent-hub';
-import { AccessTokens } from './api';
-import { HubSocket, type HubValve } from './hub-socket';
+import { AgentHub } from '../agent-hub';
+import { AccessTokens } from '../api';
+import { HubSocket, type HubValve } from '../hub-socket';
+import { silentLogger } from '../log';
+import { LocalRelay } from '../relay';
+import { UpstreamForwarder } from '../relay-forward';
+import type { AgentAssignment } from '../schemas';
+import { FakeCore } from '../testing/fake-core';
+import { valveChannel } from '../testing/valve-channel';
 import { boxHubValve } from './hub-valve';
-import { silentLogger } from './log';
-import { LocalRelay } from './relay';
-import { UpstreamForwarder } from './relay-forward';
-import type { AgentAssignment } from './schemas';
-import { FakeCore } from './testing/fake-core';
 
 /**
  * The box valve on the hub: an isolated host joins the controller's
@@ -121,7 +122,8 @@ function start(options: { gateOpen?: boolean } = {}) {
 
 /** An isolated agent host, as the shared daemon opens it: its hub stream and the valve riding on it. */
 function isolatedHost(agentId: string, awake = 0) {
-  const open = openHubStream(relay.hubUrl);
+  // As the shared daemon opens it on a box: the valve channel passed in.
+  const open = openHubStream(relay.hubUrl, { valveChannel: valveChannel() });
   const controller = new AbortController();
   const stream = open({
     creds: { agentId, apiEndpoint: relay.endpoint, token: relay.mint(agentId) },
