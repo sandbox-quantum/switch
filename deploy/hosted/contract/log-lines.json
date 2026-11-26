@@ -1,0 +1,54 @@
+[
+  {
+    "pages": true,
+    "service": "switch-hosted-remover",
+    "source": "remover.py",
+    "words": "Remover ALERT"
+  },
+  {
+    "only_with_any_of": [
+      "removal",
+      "retired"
+    ],
+    "pages": true,
+    "service": "switch-hosted-provisioner",
+    "source": "box_operator.py",
+    "words": "Box operator ALERT"
+  },
+  {
+    "pages": true,
+    "service": "switch-egress-lists",
+    "source": "egress_lists.py",
+    "words": "egress-held ALERT"
+  },
+  {
+    "pages": true,
+    "service": "switch-hosted-provisioner",
+    "source": "box_operator.py",
+    "words": "Box operator ALERT: a pool box being bound already has another owner"
+  },
+  {
+    "pages": true,
+    "service": "switch-hosted-provisioner",
+    "source": "box_operator.py",
+    "words": "Box operator ALERT: an existing box runs an image that isn't pinned or allowed"
+  },
+  {
+    "pages": true,
+    "service": "switch-egress-lists",
+    "source": "egress_lists.py",
+    "words": "box-owners ALERT"
+  },
+  {
+    "pages": true,
+    "service": "switch-hosted-reaper",
+    "source": "reaper.py",
+    "words": "Reaper ALERT"
+  },
+  {
+    "pages": true,
+    "service": "switch-node-gate",
+    "source": "node_gate_main.py",
+    "words": "Node gate ALERT"
+  }
+]

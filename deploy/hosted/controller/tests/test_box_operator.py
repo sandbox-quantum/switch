@@ -60,7 +60,6 @@ RAW_CONFIG = {
     },
     "ceiling": 50,
     "default_size": "standard",
-    "daily_calls": 500,
 }
 
 
@@ -756,19 +755,7 @@ def test_the_operator_builds_exactly_the_ticked_template():
         action(machine_id="7a3e8f4c-1d2b-4c5e-9f60-718293a4b5c6", user_keyed_id=USER),
         config,
     )
-    # One addition to the ticked template since: the controller's daily AI call cap, checked here
-    # and then taken out, so every other field still has to equal the reviewed render.
-    controller = next(
-        c
-        for _, o in built
-        if o["kind"] == "StatefulSet"
-        for c in o["spec"]["template"]["spec"]["containers"]
-        if c["name"] == "controller"
-    )
-    cap = {"name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS", "value": "500"}
-    assert controller["env"].count(cap) == 1
-    controller["env"].remove(cap)
-    # And template t2's three (warm pool), checked exactly and taken out the same way: the starter
+    # Template t2's three (warm pool), checked exactly and taken out the same way: the starter
     # container, the code Secret readable by the pod's group only (0440) with the starter's one-key login check, and
     # the autoscaler's safe-to-evict mark.
     from switch_hosted_controller.box_operator import _before_starter
@@ -1256,74 +1243,78 @@ def test_every_default_the_real_api_server_added_still_counts_as_ours():
     assert _again(kube, cfg()) == ("done", NS, None)
 
 
-@pytest.mark.parametrize("value", [None, 0, -1, True, 2.5, "500", 1_000_000_001])
-def test_the_daily_call_cap_is_required_and_finite(value):  # type: ignore[no-untyped-def]
-    """Every box gets a finite daily cap on AI calls through its gateway: a config without one, or
-    with anything but a whole number from 1 to the gateway's bound, is refused whole."""
-    raw = {**RAW_CONFIG, "daily_calls": value}
-    if value is None:
-        del raw["daily_calls"]
+@pytest.mark.parametrize("value", [500, "500", None])
+def test_a_config_naming_the_daily_call_cap_is_refused(value):  # type: ignore[no-untyped-def]
+    """The gateway has no daily call cap: a config that still names one is refused whole, as any unknown key is,
+    rather than read and ignored."""
     with pytest.raises(ConfigError, match="daily_calls"):
-        config_from(raw, CA, SETTINGS)
+        config_from({**RAW_CONFIG, "daily_calls": value}, CA, SETTINGS)
 
 
-def test_every_box_controller_gets_the_daily_call_cap():  # type: ignore[no-untyped-def]
-    """The cap goes to the box controller's gateway as SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS, a plain value
-    (admission policy P8 admits plain values), and to no other container."""
-    built = box_objects(action(), cfg(daily_calls=1234))
+def test_no_box_container_gets_a_daily_call_cap():  # type: ignore[no-untyped-def]
+    built = box_objects(action(), cfg())
     (box,) = [o for _, o in built if o["kind"] == "StatefulSet"]
-    envs = {c["name"]: c.get("env", []) for c in box["spec"]["template"]["spec"]["containers"]}
-    cap = {"name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS", "value": "1234"}
-    assert envs["controller"].count(cap) == 1
-    assert all(
-        e["name"] != cap["name"] for name, env in envs.items() if name != "controller" for e in env
-    )
+    for container in box["spec"]["template"]["spec"]["containers"]:
+        assert all(
+            e["name"] != "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS" for e in container.get("env", [])
+        )
 
 
-def _without_daily_calls(kube):  # type: ignore[no-untyped-def]
-    """The box as the template made it before the daily call cap: also before the starter container
-    (t2), which came later, and minus that one env entry."""
+def _with_daily_calls(kube, value, *, before_starter=False):  # type: ignore[no-untyped-def]
+    """The box as the template made it while the gateway had a daily call cap: the cap in the controller's env,
+    straight after the gateway's switch, and, made before the starter container (t1), without that too."""
     from switch_hosted_controller.box_operator import _before_starter
 
     box = kube.objects[("StatefulSet", NS, "box")]
-    box["spec"] = _before_starter(box["spec"])
-    controller = box["spec"]["template"]["spec"]["containers"][0]
-    before = len(controller["env"])
-    controller["env"] = [
-        e for e in controller["env"] if e["name"] != "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS"
-    ]
-    assert len(controller["env"]) == before - 1
+    if before_starter:
+        box["spec"] = _before_starter(box["spec"])
+    env = box["spec"]["template"]["spec"]["containers"][0]["env"]
+    at = [e["name"] for e in env].index("SWITCH_CONTROLLER_PROVIDER_GATEWAY")
+    env.insert(at + 1, {"name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS", "value": value})
+    return env
 
 
-def test_a_box_made_before_the_daily_call_cap_is_still_reused(caplog):  # type: ignore[no-untyped-def]
-    """A box made by the template before the daily call cap has no SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS. Core asking
-    for its machine's box again (a retry, a re-claim) re-uses it, as before the upgrade, rather than refusing it,
-    writes nothing, and says it re-used an older shape."""
+@pytest.mark.parametrize("value", ["500", "5000", "1", "1000000000", "0", "ten", ""])
+def test_a_box_made_with_the_daily_call_cap_is_still_reused(value, caplog):  # type: ignore[no-untyped-def]
+    """A box made while the gateway had a daily call cap carries SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS, whatever its
+    value. Core asking for its machine's box again (a retry, a re-claim) re-uses it rather than refusing it, writes
+    nothing, and says it re-used that earlier shape."""
     kube = FakeKube()
     BoxOperator(FakeCore(), kube, cfg()).provision(action())
-    _without_daily_calls(kube)
+    _with_daily_calls(kube, value)
     made = list(kube.created)
     caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
     assert _again(kube, cfg()) == ("done", NS, None)
     assert kube.created == made
     assert any(
-        "earlier template (before the daily call cap)" in r.getMessage() and NS in r.getMessage()
+        "earlier template (with the daily call cap)" in r.getMessage() and NS in r.getMessage()
         for r in caplog.records
     )
 
 
-def test_the_ceiling_changed_the_box_is_still_reused(caplog):  # type: ignore[no-untyped-def]
-    """The operator changes daily_calls (500 to 5000): a box made with 500 is still this box's own on its next
-    re-claim, keeps the cap it was made with (no writes), and the difference is logged with both values."""
+def test_a_box_made_with_the_daily_call_cap_before_the_starter_is_still_reused(caplog):  # type: ignore[no-untyped-def]
     kube = FakeKube()
-    BoxOperator(FakeCore(), kube, cfg(daily_calls=500)).provision(action())
-    made = list(kube.created)
-    caplog.set_level("INFO", logger="switch_hosted_controller.box_operator")
-    assert _again(kube, cfg(daily_calls=5000)) == ("done", NS, None)
-    assert kube.created == made
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    _with_daily_calls(kube, "500", before_starter=True)
+    caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
+    assert _again(kube, cfg()) == ("done", NS, None)
     assert any(
-        NS in r.getMessage() and "made with (500), not the configured 5000" in r.getMessage()
+        "earlier template (before the starter container, with the daily call cap)" in r.getMessage()
         for r in caplog.records
+    )
+
+
+def test_a_box_made_before_the_starter_without_the_cap_is_still_reused(caplog):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller.box_operator import _before_starter
+
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    box = kube.objects[("StatefulSet", NS, "box")]
+    box["spec"] = _before_starter(box["spec"])
+    caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
+    assert _again(kube, cfg()) == ("done", NS, None)
+    assert any(
+        "earlier template (before the starter container)" in r.getMessage() for r in caplog.records
     )
 
 
@@ -1336,29 +1327,48 @@ def test_todays_box_is_reused_without_a_warning(caplog):  # type: ignore[no-unty
 
 
 def test_an_earlier_box_shape_is_accepted_only_exactly():
-    """Only the earlier template's exact shape: a pre-cap box with anything else changed is still refused, and a
-    cap env holding anything but a valid cap (ASCII digits, no leading zero, 1 to 1e9) is refused, never taken as
-    missing."""
+    """Only the earlier template's exact shape: a box with the cap and anything else changed is still refused, and
+    so is the cap anywhere but where that template put it, or read from anywhere but a plain value."""
     kube = FakeKube()
     BoxOperator(FakeCore(), kube, cfg()).provision(action())
-    _without_daily_calls(kube)
+    _with_daily_calls(kube, "500")
     kube.objects[("StatefulSet", NS, "box")]["spec"]["template"]["spec"]["hostNetwork"] = True
     assert _again(kube, cfg()) == ("failed", NS, "object_refused")
 
-    for invalid in ("0", "-5", "ten", "1000000001", "", "007", "1e3"):
-        kube = FakeKube()
-        BoxOperator(FakeCore(), kube, cfg()).provision(action())
-        pod = kube.objects[("StatefulSet", NS, "box")]["spec"]["template"]["spec"]
-        (cap,) = [
-            e
-            for e in pod["containers"][0]["env"]
-            if e["name"] == "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS"
-        ]
-        cap["value"] = invalid
-        assert _again(kube, cfg()) == ("failed", NS, "object_refused"), invalid
+    # At the end of the controller's env, not after the gateway's switch.
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    env = _with_daily_calls(kube, "500")
+    env.append(env.pop([e["name"] for e in env].index("SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS")))
+    assert _again(kube, cfg()) == ("failed", NS, "object_refused")
+
+    # Twice.
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    _with_daily_calls(kube, "500")
+    _with_daily_calls(kube, "500")
+    assert _again(kube, cfg()) == ("failed", NS, "object_refused")
+
+    # In the agents container.
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    pod = kube.objects[("StatefulSet", NS, "box")]["spec"]["template"]["spec"]
+    pod["containers"][1].setdefault("env", []).insert(
+        0, {"name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS", "value": "500"}
+    )
+    assert _again(kube, cfg()) == ("failed", NS, "object_refused")
+
+    # Read from a Secret rather than a plain value.
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    env = _with_daily_calls(kube, "500")
+    (cap,) = [e for e in env if e["name"] == "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS"]
+    del cap["value"]
+    cap["valueFrom"] = {"secretKeyRef": {"name": "switch-enrol", "key": "code"}}
+    assert _again(kube, cfg()) == ("failed", NS, "object_refused")
 
 
-# The box template's fields as of the daily call cap (see the test below).
+# The box template's fields as of the daily call cap's removal (see the test below).
 PINNED_TEMPLATE_FIELDS = {
     "pod": [
         "affinity",
@@ -1406,7 +1416,6 @@ PINNED_TEMPLATE_FIELDS = {
             "NO_PROXY",
             "SWITCH_BOX_MEMORY_LIMIT_BYTES",
             "SWITCH_CONTROLLER_DATA_DIR",
-            "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS",
             "SWITCH_CONTROLLER_GATEWAY_PROXY",
             "SWITCH_CONTROLLER_PROVIDER_GATEWAY",
             "SWITCH_CONTROLLER_RESERVE_BYTES",

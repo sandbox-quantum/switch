@@ -989,61 +989,6 @@ spec:
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
-  name: switch-v0-p5b-box-templates
-spec:
-  failurePolicy: Fail
-  matchConditions:
-  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
-    name: is-the-provisioner
-  - expression: request.?namespace.orValue('') == 'switch-hosted'
-    name: in-switch-hosted
-  - expression: request.?name.orValue('') == 'box-templates'
-    name: is-the-template-record
-  matchConstraints:
-    matchPolicy: Equivalent
-    namespaceSelector: {}
-    objectSelector: {}
-    resourceRules:
-    - apiGroups:
-      - ''
-      apiVersions:
-      - v1
-      operations:
-      - CREATE
-      - UPDATE
-      - DELETE
-      resources:
-      - secrets
-      scope: "*"
-  validations:
-  - expression: request.operation == 'UPDATE' && object.metadata.name == 'box-templates'
-      && object.?type.orValue('') == 'Opaque'
-    message: the provisioner may only update the template record
-  - expression: request.operation == 'UPDATE' && variables.old.all(k, k in variables.new
-      && string(variables.new[k]) == string(variables.old[k]))
-    message: an existing template entry may never change or go
-  - expression: |-
-      request.operation == 'UPDATE' && variables.new.all(k, k in variables.old || (
-        k.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') &&
-        string(variables.new[k]) == variables.current))
-    message: a new entry is a machine id (UUID) to the current template hash
-  - expression: request.operation == 'UPDATE' && object.metadata.?labels.orValue({})
-      == oldObject.metadata.?labels.orValue({}) && object.metadata.?annotations.orValue({})
-      == oldObject.metadata.?annotations.orValue({}) && object.?immutable.orValue(false)
-      == oldObject.?immutable.orValue(false)
-    message: the template record's labels, annotations and mutability stay as they
-      are
-  variables:
-  - expression: oldObject.?data.orValue({})
-    name: old
-  - expression: object.?data.orValue({})
-    name: new
-  - expression: "'OTNjOTNmNzgwNzJlMjc5MjBkNGFkZDY1MzI0YmE0M2UzNjFlMWYzYzI2ODcyNTgwYjEzYTU5M2RhY2E2ZGU0MA=='"
-    name: current
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicy
-metadata:
   name: switch-v0-p6-provisioner-catch-all
 spec:
   failurePolicy: Fail
@@ -1075,10 +1020,9 @@ spec:
           (request.resource.group == 'apps' && request.resource.resource == 'statefulsets') ||
           (request.resource.group == 'rbac.authorization.k8s.io' && request.resource.resource == 'rolebindings'))) ||
         (request.operation == 'UPDATE' && request.?namespace.orValue('') == 'switch-hosted' && request.resource.group == '' &&
-          request.resource.resource == 'secrets' && request.?name.orValue('') in ['box-map', 'box-templates', 'pool-map', 'box-owners', 'box-removals']))
+          request.resource.resource == 'secrets' && request.?name.orValue('') in ['box-map', 'pool-map', 'box-owners', 'box-removals']))
     message: the provisioner may only create a box's objects (one RoleBinding among
-      them) and add to the box map, the pool map, the owners list, the removals list and
-      the template record
+      them) and add to the box map, the pool map, the owners list and the removals list
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -1369,15 +1313,6 @@ spec:
     namespace: switch-hosted
     parameterNotFoundAction: Deny
   policyName: switch-remover-deletes-listed-boxes
-  validationActions:
-  - Deny
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicyBinding
-metadata:
-  name: switch-v0-p5b-box-templates
-spec:
-  policyName: switch-v0-p5b-box-templates
   validationActions:
   - Deny
 ---
