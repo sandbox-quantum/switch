@@ -12,11 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import requests
+from mattermostdriver.exceptions import (
+    InvalidOrMissingParameters,
+    NotEnoughPermissions,
+)
 
 from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
@@ -42,11 +47,8 @@ class _Admin(_MattermostAdmin):
     def __init__(self, bots: list[dict[str, Any]]) -> None:
         super().__init__(bots, "full_name")
         self.added: list[tuple[str, str]] = []
-        self.teams = SimpleNamespace(
-            add_user_to_team=lambda team_id, body: self.added.append(
-                ("team", body["user_id"])
-            )
-        )
+        self.refuse_team = False
+        self.teams = SimpleNamespace(add_user_to_team=self._add_to_team)
         # The channels each bot is already in, by bot id.
         self.memberships: dict[str, list[dict[str, Any]]] = {}
         self.channels = SimpleNamespace(
@@ -61,17 +63,44 @@ class _Admin(_MattermostAdmin):
         # bot listed only after this many more lookups.
         self.created_elsewhere: dict[str, Any] | None = None
         self.listed_after_lookups = 0
+        # Set to fail creating a bot, or every listing of bots, with this.
+        self.create_fails: Exception | None = None
+        self.lookups_fail: Exception | None = None
+        # How long a rename's update takes to answer once Mattermost applied it.
+        self.rename_answer_seconds = 0.0
+
+    def _add_to_team(self, team_id: str, body: dict[str, Any]) -> None:
+        if self.refuse_team:
+            raise NotEnoughPermissions("You do not have the appropriate permissions.")
+        self.added.append(("team", body["user_id"]))
 
     def _respond(
         self, method: str, endpoint: str, options: dict[str, Any] | None
     ) -> Any:
+        if method == "get" and endpoint.startswith("/bots?") and self.lookups_fail:
+            raise self.lookups_fail
+        if method == "post" and endpoint == "/bots" and self.create_fails:
+            raise self.create_fails
         if method == "post" and endpoint == "/bots" and self.created_elsewhere:
-            raise requests.HTTPError("An account with that username already exists.")
+            raise InvalidOrMissingParameters(
+                "An account with that username already exists."
+            )
         if method == "get" and endpoint.startswith("/bots?") and self.created_elsewhere:
             if self.listed_after_lookups > 0:
                 self.listed_after_lookups -= 1
                 return []
             return [self.created_elsewhere]
+        if method == "get" and endpoint.startswith("/bots?"):
+            # A lookup issued while a rename is being answered sees it applied.
+            time.sleep(self.rename_answer_seconds / 4)
+        if method == "post" and endpoint.endswith("/enable"):
+            return {}
+        if method == "put" and endpoint.startswith("/bots/") and options:
+            for bot in self._bots:
+                if bot["user_id"] == endpoint.removeprefix("/bots/"):
+                    bot.update(options)
+            if "username" in options:
+                time.sleep(self.rename_answer_seconds)
         return super()._respond(method, endpoint, options)
 
 
@@ -218,11 +247,7 @@ def test_a_bot_that_never_appears_after_a_refusal_is_an_error(
 
 def test_a_failed_bot_lookup_is_raised_not_read_as_no_bot() -> None:
     adapter, admin = _adapter([], listening=True)
-
-    def refuse(method: str, endpoint: str, options: Any) -> Any:
-        raise requests.HTTPError("Mattermost is down")
-
-    admin._respond = refuse  # type: ignore[method-assign]
+    admin.lookups_fail = requests.HTTPError("Mattermost is down")
 
     async def _go() -> None:
         adapter._main_loop = asyncio.get_running_loop()
@@ -246,3 +271,176 @@ def test_a_refusal_the_caller_expects_is_a_warning(
         logging.WARNING,
         logging.ERROR,
     ]
+
+
+def _known(adapter: MattermostAdapter, name: str) -> None:
+    adapter._agent_bots[name] = {
+        "bot_id": f"bot-{name}",
+        "user_id": f"bot-{name}",
+        "username": name,
+    }
+
+
+def test_one_agent_whose_bot_cannot_be_looked_up_leaves_the_others_added(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, admin = _adapter([], listening=True)
+    _known(adapter, "b")
+    _known(adapter, "c")
+    admin.lookups_fail = requests.HTTPError("Mattermost is down")
+
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter.add_agents_to_channel("channel-1", ["a", "b", "c"])
+
+    with caplog.at_level(logging.ERROR):
+        _run(_go())
+
+    assert [entry for entry in admin.added if entry[0] == "channel-1"] == [
+        ("channel-1", "bot-b"),
+        ("channel-1", "bot-c"),
+    ]
+    assert any("Mattermost bot of agent 'a'" in r.message for r in caplog.records)
+
+
+def test_a_refused_team_add_still_tries_the_channel() -> None:
+    """The bot may be on the team already, and the bridge's account may not
+    be allowed to invite to it."""
+    adapter, admin = _adapter([], listening=True)
+    _known(adapter, "b")
+    admin.refuse_team = True
+
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter.add_agents_to_channel("channel-1", ["b"])
+
+    _run(_go())
+
+    assert admin.added == [("channel-1", "bot-b")]
+
+
+def test_a_creation_failure_other_than_a_refusal_is_raised_at_once() -> None:
+    adapter, admin = _adapter([], listening=True)
+    admin.create_fails = NotEnoughPermissions("no permission to create bots")
+
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter.create_agent_identity(_identity())
+
+    with pytest.raises(NotEnoughPermissions):
+        _run(_go())
+    lookups = [r for r in admin.requests if r[1].startswith("/bots?")]
+    assert len(lookups) == 1, "only the look before creating"
+
+
+def test_a_failed_lookup_after_a_refusal_says_both() -> None:
+    adapter, admin = _adapter([], listening=True)
+    admin.created_elsewhere = dict(_CREATED_ELSEWHERE)
+    # The look before creating finds nothing; every one after it fails.
+    admin.listed_after_lookups = 1
+    original = admin._respond
+
+    def respond(method: str, endpoint: str, options: Any) -> Any:
+        if endpoint.startswith("/bots?") and admin.listed_after_lookups == 0:
+            raise requests.HTTPError("Mattermost is down")
+        return original(method, endpoint, options)
+
+    admin._respond = respond  # type: ignore[method-assign]
+
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter.create_agent_identity(_identity())
+
+    with pytest.raises(RuntimeError, match="already exists.*Mattermost is down"):
+        _run(_go())
+
+
+def test_the_admin_bot_lookup_failing_at_start_is_said_and_not_fatal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, admin = _adapter([], listening=True)
+    admin.lookups_fail = requests.HTTPError("Mattermost is down")
+
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter._ensure_admin_bot()
+
+    with caplog.at_level(logging.ERROR):
+        _run(_go())
+
+    assert adapter._admin_bot_id is None
+    assert any("Switch Admin bot" in r.message for r in caplog.records)
+
+
+def test_a_channel_add_does_not_revive_a_deactivated_bot() -> None:
+    """An agent deleted with its bot deactivated, still named by a stale room
+    membership, stays gone. Registering it again revives the bot."""
+    deactivated = {**_CREATED_ELSEWHERE, "delete_at": 1}
+    adapter, admin = _adapter([deactivated], listening=True)
+
+    async def _channel() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter.add_agents_to_channel("channel-1", ["helper"])
+
+    _run(_channel())
+
+    assert admin.added == []
+    assert admin.bodies("post", "/bots/bot-elsewhere/enable") == []
+
+    async def _register() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter.create_agent_identity(_identity())
+
+    _run(_register())
+
+    assert len(admin.bodies("post", "/bots/bot-elsewhere/enable")) == 1
+
+
+def test_a_channel_add_during_a_rename_does_not_set_the_bot_up_twice() -> None:
+    """The rename has moved the bot to its new username on Mattermost but not
+    yet in this process; a channel add for the new name must wait for it
+    rather than adopt the bot a second time, with a second token and socket
+    delivering every event twice."""
+    adapter, admin = _adapter([dict(_CREATED_ELSEWHERE)], listening=True)
+    admin.rename_answer_seconds = 0.2
+    renamed = AgentIdentity(
+        agent_id="agent-1", name="helper2", description="helps", display_name=None
+    )
+
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter.create_agent_identity(_identity())
+        rename = asyncio.create_task(adapter.rename_agent_identity("helper", renamed))
+        await asyncio.sleep(0.05)
+        await adapter.add_agents_to_channel("channel-1", ["helper2"])
+        await rename
+
+    _run(_go())
+
+    assert len(admin.bodies("post", "/users/bot-elsewhere/tokens")) == 1
+    assert set(adapter._agent_bots) == {"helper2"}
+    assert ("channel-1", "bot-elsewhere") in admin.added
+
+
+@pytest.mark.parametrize("known", [True, False])
+def test_a_quiet_copy_follows_a_rename_without_creating_a_bot(known: bool) -> None:
+    """The holder renames the bot in place, perhaps after this copy hears of
+    the rename: the copy moves its record to the new name, and never makes a
+    second account under it."""
+    adapter, admin = _adapter([dict(_CREATED_ELSEWHERE)], listening=False)
+    renamed = AgentIdentity(
+        agent_id="agent-1", name="helper2", description="helps", display_name=None
+    )
+
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        if known:
+            await adapter.create_agent_identity(_identity())
+        await adapter.rename_agent_identity("helper", renamed)
+
+    _run(_go())
+
+    assert admin.bodies("post", "/bots") == []
+    assert adapter._agent_bots["helper2"]["user_id"] == "bot-elsewhere"
+    assert "helper" not in adapter._agent_bots
+    assert adapter._bot_id_to_username["bot-elsewhere"] == "helper2"

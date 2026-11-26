@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from sqlalchemy import select
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import Agent, ApiKey, Client, Room, Task, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.room_store import RoomStore
 
 
 async def _make_agent(session: AsyncSession, name: str, *, unique: str = "") -> Agent:
@@ -72,6 +74,40 @@ async def _make_task(
     session.add(task)
     await session.flush()
     return task
+
+
+class TestDeleteWhileAddedToARoom:
+    async def test_a_room_membership_added_while_the_agent_is_deleted_goes_too(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Another process adds the agent to a room in the moment it is being
+        deleted: the delete waits and takes the membership along, rather than
+        being refused by it."""
+        store = AgentStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "room-racing")
+            agent = await _make_agent(session, "racing")
+            await session.commit()
+            room_id, agent_id = room.id, agent.id
+
+        async with session_factory() as adding:
+            await RoomStore().add_agents(adding, room_id, [agent_id])
+            await adding.flush()
+
+            async def delete_agent() -> None:
+                async with session_factory() as deleting:
+                    await store.delete(deleting, agent_id)
+                    await deleting.commit()
+
+            deletion = asyncio.create_task(delete_agent())
+            await asyncio.sleep(0.5)
+            assert not deletion.done(), "the delete did not wait for the membership"
+            await adding.commit()
+            await asyncio.wait_for(deletion, timeout=10)
+
+        async with session_factory() as verify:
+            assert await verify.get(Agent, agent_id) is None
+            assert await RoomStore().get_agent_ids(verify, room_id) == []
 
 
 class TestDeleteAgentWithTasks:

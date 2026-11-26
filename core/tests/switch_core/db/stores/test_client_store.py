@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -67,6 +68,40 @@ class TestDeleteClearsMemberships:
             # Only the membership goes. Deleting a client is not a reason to
             # lose the room — a cascade on the wrong side would take it.
             assert await RoomStore().get(session, room_id) is not None
+
+    async def test_a_membership_added_while_the_client_is_deleted_is_cleared_too(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Another process adds the client to a room in the moment it is being
+        deleted: the delete waits for the membership and takes it along,
+        rather than being refused by it."""
+        store = ClientStore()
+        async with session_factory() as session:
+            client_id = (
+                await _make_client(session, f"@racing-{uuid.uuid4().hex[:8]}:test")
+            ).id
+            room_id = await _make_room(session)
+            await session.commit()
+
+        async with session_factory() as adding:
+            await RoomStore().add_client(adding, client_id, room_id)
+            await adding.flush()
+
+            async def delete_client() -> None:
+                async with session_factory() as deleting:
+                    await store.delete(deleting, client_id)
+                    await deleting.commit()
+
+            deletion = asyncio.create_task(delete_client())
+            # Long enough for the delete to reach the row the membership holds.
+            await asyncio.sleep(0.5)
+            assert not deletion.done(), "the delete did not wait for the membership"
+            await adding.commit()
+            await asyncio.wait_for(deletion, timeout=10)
+
+        async with session_factory() as session:
+            assert await store.get(session, client_id) is None
+            assert await RoomStore().get_client_ids(session, room_id) == []
 
     async def test_other_clients_keep_their_memberships(
         self, session_factory: async_sessionmaker[AsyncSession]

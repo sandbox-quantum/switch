@@ -334,10 +334,12 @@ status=0
   export SWITCH_E2E_OUTPUT_DIR="$OUT"
   # The follow-up window the server was started with, for the scenario that waits it out.
   [ "$NEEDS_CONTROLLER" = 0 ] && export SWITCH_E2E_FOLLOW_WINDOW_SECONDS="$FOLLOW_WINDOW_SECONDS"
+  # SWITCH_API_URL is IPv4 by address: `localhost` may resolve to ::1, which Docker reaches
+  # through its own port forwarder rather than HAProxy's listener.
   SWITCH_E2E_LANE="$LANE" \
   SWITCH_E2E_ENVIRONMENT=ephemeral \
   SWITCH_E2E_STRICT=1 \
-  SWITCH_API_URL=http://localhost:8000 \
+  SWITCH_API_URL=http://127.0.0.1:8000 \
   SWITCH_GATEWAY_ADMIN_EMAIL="$GATEWAY_ADMIN_EMAIL" \
   SWITCH_GATEWAY_ADMIN_PASSWORD="$GATEWAY_ADMIN_PASSWORD" \
   SWITCH_AGENT_REGISTRATION_TOKEN="$AGENT_REGISTRATION_TOKEN" \

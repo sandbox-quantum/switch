@@ -69,7 +69,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from sqlalchemy import and_, bindparam, delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
@@ -826,8 +826,21 @@ def _bind(
                 row.event_id,
             )
             return
-        await recipient.actor.connect()
-        await after(row)
+        try:
+            await recipient.actor.connect()
+            await after(row)
+        except IntegrityError:
+            # Taken out of the room, or deleted, after the check above and
+            # before its own write: the agent's rows are gone.
+            if await recipient.still_member():
+                raise
+            logger.info(
+                "Agent %s was taken out of room %s, or deleted, while saying "
+                "what row %s left it to say; it is not said",
+                recipient.agent.name,
+                row.room_id,
+                row.event_id,
+            )
 
     return run
 
