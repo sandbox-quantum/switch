@@ -6,16 +6,18 @@ transaction, and the bound tenant scopes every read through row-level security.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, func, or_, select
 
 from switch_core.db.models import (
+    AgentSessionActivityItem,
     ApprovalRequest,
     ApprovalRequestPost,
     SteeredMessageMark,
     TurnStatusPost,
 )
+from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -177,7 +179,8 @@ class TurnStatusPostStore:
     async def at(
         self, session: AsyncSession, bridge_id: str, channel_id: str, ref: str
     ) -> TurnStatusPost | None:
-        """The turn a message of ours is showing: its own message, or its notice."""
+        """The turn a message of ours is showing: its own message, its notice,
+        or the work message (`!work-threads`) its session is on."""
         result = await session.execute(
             select(TurnStatusPost)
             .where(
@@ -186,11 +189,69 @@ class TurnStatusPostStore:
                 or_(
                     TurnStatusPost.external_post_id == ref,
                     TurnStatusPost.attention_post_id == ref,
+                    TurnStatusPost.work_message_ref == ref,
                 ),
             )
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def latest_in_thread(
+        self, session: AsyncSession, bridge_id: str, channel_id: str, thread_ref: str
+    ) -> TurnStatusPost | None:
+        """The turn a thread is busy with, else the one drawn there last.
+
+        What Slack's own Stop on a session in a thread names: a session there
+        belongs to the thread, not to any one message of ours in it, so the
+        press names the thread's first message. A turn still running comes
+        first, because several agents can take turns in one thread and the
+        row a finished turn leaves is touched later than a running one's:
+        it is stamped when the turn ends, and a running turn's row is not
+        rewritten as it redraws.
+        """
+        running = _turn_still_going()
+        result = await session.execute(
+            select(TurnStatusPost)
+            .where(
+                TurnStatusPost.bridge_id == bridge_id,
+                TurnStatusPost.external_channel_id == channel_id,
+                TurnStatusPost.thread_ref == thread_ref,
+            )
+            .order_by(running.desc(), TurnStatusPost.updated_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def others_unfinished_in_thread(
+        self, session: AsyncSession, post: TurnStatusPost
+    ) -> bool:
+        """Whether another turn drawn inline in the same thread is still going:
+        not had its ending yet, and still queued or running. A platform
+        session belongs to the thread, so one turn ending must not mark it
+        done while another is still working there. A turn whose ending was
+        never recorded (dropped after repeated failures, or forgotten when
+        its agent left the room) but which is over does not count: it would
+        otherwise keep the thread's session working for good."""
+        if post.thread_ref is None:
+            return False
+        found = await session.scalar(
+            select(TurnStatusPost.turn_id)
+            .where(
+                TurnStatusPost.bridge_id == post.bridge_id,
+                TurnStatusPost.external_channel_id == post.external_channel_id,
+                TurnStatusPost.thread_ref == post.thread_ref,
+                TurnStatusPost.work_message_ref.is_not(None),
+                TurnStatusPost.work_finished_at.is_(None),
+                _turn_still_going(),
+                or_(
+                    TurnStatusPost.agent_id != post.agent_id,
+                    TurnStatusPost.session_id != post.session_id,
+                    TurnStatusPost.turn_id != post.turn_id,
+                ),
+            )
+            .limit(1)
+        )
+        return found is not None
 
     async def marked(
         self, session: AsyncSession, bridge_id: str
@@ -293,3 +354,20 @@ class SteeredMessageMarkStore:
             )
         )
         return list(result.scalars())
+
+
+def _turn_still_going() -> Any:
+    """Whether the turn a `TurnStatusPost` shows is still queued or running,
+    as a condition on that post."""
+    turn = AgentSessionActivityItem
+    return (
+        select(turn.turn_id)
+        .where(
+            turn.agent_id == TurnStatusPost.agent_id,
+            turn.session_id == TurnStatusPost.session_id,
+            turn.turn_id == TurnStatusPost.turn_id,
+            turn.item_id == TURN_ITEM_ID,
+            turn.status.in_(("queued", "running")),
+        )
+        .exists()
+    )

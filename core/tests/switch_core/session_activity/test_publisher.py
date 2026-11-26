@@ -3,21 +3,26 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
+    AskedQuestion,
     RequestCard,
     RichContentFailed,
     RichContentThrottled,
     TurnActivity,
+    WorkEnding,
 )
 from switch_core.db.models import (
     Agent,
@@ -28,9 +33,12 @@ from switch_core.db.models import (
     ClientRoom,
     ExternalUser,
     ExternalUserClaim,
+    Message,
+    Room,
     SteeredMessageMark,
     TurnStatusPost,
 )
+from switch_core.db.stores.room_store import WORK_THREADS_ON_KEY
 from switch_core.delivery.addressing import AddressingDecision
 from switch_core.session_activity import publisher as publisher_module
 from switch_core.session_activity.listener import AgentSessionActivityListener
@@ -48,6 +56,7 @@ from switch_core.tenant_context import current_tenant_id
 
 from .bridge_fixtures import (
     BridgedRoom,
+    Drawn,
     RecordingPlatform,
     RefusedForGood,
     RefusedForNow,
@@ -1367,3 +1376,1015 @@ async def test_a_task_that_died_is_logged_on_stopping_and_not_raised(
     died = [r for r in caplog.records if "stopped on an error" in r.getMessage()]
     assert len(died) == 1
     assert "tick" in died[0].getMessage()
+
+
+# ── Work threads (`!work-threads`) ───────────────────────────────────────────
+
+
+@dataclass
+class WorkThreadPlatform(RecordingPlatform):
+    """A platform with work threads, recording the work messages it is asked for."""
+
+    hosts: bool = True
+    # The question each work-message call was told the turn answers.
+    asked: list[AskedQuestion | None] = field(default_factory=list)
+    # Where each removal was told the turn's session is.
+    session_refs: list[str | None] = field(default_factory=list)
+    # How each ending was told to name the turn's end.
+    endings: list[WorkEnding | None] = field(default_factory=list)
+    sessions_ended: list[bool] = field(default_factory=list)
+
+    async def hosts_work_threads(self, channel_id: str) -> bool:
+        return self.hosts
+
+    async def open_work_message(
+        self,
+        channel_id: str,
+        agent_name: str,
+        text: str,
+        initiator_external_id: str | None,
+        asked: AskedQuestion | None = None,
+    ) -> str:
+        ref = f"work-{self._ref()}"
+        self.asked.append(asked)
+        self.drawn.append(Drawn("open_work_message", channel_id, ref, None, text))
+        return ref
+
+    async def settle_work_message(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        summary: str,
+        asked: AskedQuestion | None = None,
+        *,
+        ending: WorkEnding | None = None,
+    ) -> None:
+        self.asked.append(asked)
+        self.endings.append(ending)
+        self.drawn.append(
+            Drawn("settle_work_message", channel_id, message_ref, None, summary)
+        )
+
+    # A redraw that carries on in a new message, as a stream Slack closed does.
+    move_next_update: bool = False
+
+    async def remove_status_message(
+        self,
+        channel_id: str,
+        message_ref: str,
+        session_ref: str | None = None,
+        *,
+        end_session: bool = True,
+    ) -> bool:
+        self.session_refs.append(session_ref)
+        self.sessions_ended.append(end_session)
+        self.drawn.append(
+            Drawn("remove_status_message", channel_id, message_ref, None, None)
+        )
+        return True
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: Any,
+        thread_root_id: str | None,
+    ) -> str | None:
+        await super().update_rich(
+            channel_id, agent_name, message_ref, content, thread_root_id
+        )
+        if self.move_next_update:
+            self.move_next_update = False
+            return f"moved-{self._ref()}"
+        return None
+
+
+async def _work_threads_on(session_factory, bridged: BridgedRoom) -> None:
+    async with session_factory() as db, db.begin():
+        room = await db.get(Room, bridged.room_id)
+        assert room is not None
+        room.metadata_ = {**(room.metadata_ or {}), WORK_THREADS_ON_KEY: True}
+
+
+@pytest.fixture
+async def work_platform(session_factory, bridged) -> WorkThreadPlatform:
+    await _work_threads_on(session_factory, bridged)
+    return WorkThreadPlatform()
+
+
+@pytest.fixture
+async def work_publisher(
+    session_factory, bridged, listener, work_platform, online
+) -> AsyncIterator[AgentSessionActivityPublisher]:
+    publisher = _publisher(session_factory, bridged, listener, work_platform, online)
+    publisher.start()
+    try:
+        yield publisher
+    finally:
+        await publisher.stop()
+
+
+async def _tool(service, room_id, status, revision, **overrides):
+    await _step(
+        service,
+        room_id,
+        item_id="tool-1",
+        kind="tool-activity",
+        status=status,
+        revision=revision,
+        title="Ran `pytest`",
+        **overrides,
+    )
+
+
+async def _tool_drawn(platform: RecordingPlatform) -> None:
+    """Until the turn has been drawn with its first call in it."""
+    await platform.wait_until(
+        lambda: any(drawn.content.items for drawn in _turns(platform))
+    )
+
+
+async def test_a_root_asked_turn_works_in_a_thread_under_its_own_message(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    """The work message as the turn starts, the turn in its thread, and with
+    no answer, the line the turn ended on written into the work message."""
+    platform = work_platform
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    assert platform.drawn[0].call == "open_work_message", (
+        "the work message goes up as the turn starts, ahead of anything the agent posts"
+    )
+
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await _tool_drawn(platform)
+    [opened] = platform.of("open_work_message")
+    assert opened.thread_ref is None, "the work message is at the channel root"
+    first = _turns(platform)[0]
+    assert first.call == "post_rich"
+    assert first.thread_ref == opened.ref
+
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
+    last = _turns(platform)[-1]
+    assert (last.call, last.ref, last.thread_ref) == (
+        "update_rich",
+        first.ref,
+        opened.ref,
+    )
+    [settled] = platform.of("settle_work_message")
+    assert settled.ref == opened.ref
+    assert settled.content.startswith("Worked for "), "no answer: how it ended"
+    assert settled.content.endswith("1 tool call.")
+    assert len(platform.of("open_work_message")) == 1
+    post = await _turn_post(session_factory)
+    assert post.thread_ref == opened.ref
+
+
+async def test_a_turn_with_nothing_to_show_keeps_its_work_message(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    """Only Switch's own room tools: talking, not work. The work message
+    stays all the same, as the record of the turn."""
+    await _turn(service, bridged.room_id, "running", 1)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="post-1",
+        kind="tool-activity",
+        status="completed",
+        revision=1,
+        title="mcp__switch__post_message",
+    )
+    await _answer(session_factory, bridged)
+    await _turn(service, bridged.room_id, "completed", 3)
+    await work_platform.wait_until(
+        lambda: bool(work_platform.of("settle_work_message"))
+    )
+    [opened] = work_platform.of("open_work_message")
+    assert work_platform.of("settle_work_message")[0].ref == opened.ref
+    assert work_platform.of("remove_status_message") == []
+    post = await _turn_post(session_factory)
+    assert post.folded_into is None
+
+
+async def test_room_tools_are_left_out_of_the_plan_and_its_count(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    await _worked(service, bridged.room_id)
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="read-1",
+        kind="tool-activity",
+        status="completed",
+        revision=1,
+        title="mcp__switch__read_context",
+    )
+    await _turn(service, bridged.room_id, "completed", 5)
+    await work_platform.wait_until(
+        lambda: bool(work_platform.of("settle_work_message"))
+    )
+    [settled] = work_platform.of("settle_work_message")
+    assert settled.content.endswith(" 1 tool call."), settled.content
+
+
+async def test_a_root_asked_turn_that_failed_is_shown_without_steps(
+    service, work_publisher, work_platform, bridged
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await _turn(service, bridged.room_id, "error", 2)
+    await work_platform.wait_until(lambda: bool(work_platform.of("open_work_message")))
+    [opened] = work_platform.of("open_work_message")
+    await work_platform.wait_until(lambda: len(_turns(work_platform)) >= 1)
+    assert _turns(work_platform)[0].thread_ref == opened.ref
+    await work_platform.wait_until(
+        lambda: bool(work_platform.of("settle_work_message"))
+    )
+    [settled] = work_platform.of("settle_work_message")
+    assert settled.content.startswith("Turn ended with an error.")
+
+
+async def test_a_turn_asked_in_a_thread_keeps_its_work_there(
+    service, work_publisher, work_platform, bridged
+):
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id="sw_reply",
+    )
+    await _tool(service, bridged.room_id, "in-progress", 1, message_id="sw_reply")
+    await work_platform.wait_until(lambda: len(_turns(work_platform)) >= 1)
+    assert _turns(work_platform)[0].thread_ref == ASKED_POST
+    assert work_platform.of("open_work_message") == []
+
+
+async def test_a_channel_without_work_threads_keeps_turns_in_the_askers_thread(
+    service, work_publisher, work_platform, bridged
+):
+    """A DM, on Slack: the platform says it has no work threads there."""
+    work_platform.hosts = False
+    await _turn(service, bridged.room_id, "running", 1)
+    [first] = await work_platform.wait_for(1)
+    assert (first.call, first.thread_ref) == ("post_rich", ASKED_POST)
+    assert work_platform.of("open_work_message") == []
+
+
+async def test_without_the_room_setting_turns_stay_in_the_askers_thread(
+    service, session_factory, bridged, listener, online
+):
+    platform = WorkThreadPlatform()
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        [first] = await platform.wait_for(1)
+        assert (first.call, first.thread_ref) == ("post_rich", ASKED_POST)
+        assert platform.of("open_work_message") == []
+    finally:
+        await publisher.stop()
+
+
+async def test_a_root_asked_card_goes_to_the_channel_root_with_work_threads(
+    service, work_publisher, work_platform, bridged
+):
+    """A card in the work thread would mention the asker and make them follow
+    it; it goes where the question was, as the answer does."""
+    work_platform.broadcasts_thread_replies = True
+    await _turn(service, bridged.room_id, "running", 1)
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await work_platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in work_platform.drawn)
+    )
+    [card] = [d for d in work_platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref is None
+
+
+async def test_the_asker_is_handed_to_the_stream_and_the_work_session(
+    service, work_publisher, work_platform, bridged, monkeypatch
+):
+    """Who the turn answers is asked for as at the channel root: in a thread,
+    the mention rule answers nobody on Slack, which left the agent session
+    opened for the bot and the stream with nobody to address."""
+    asked = AsyncMock(return_value="UASKER")
+    monkeypatch.setattr(publisher_module, "notification_recipient", asked)
+    initiators: list[str | None] = []
+    opened = work_platform.open_work_message
+
+    async def open_work_message(channel_id, agent_name, text, initiator, asked=None):
+        initiators.append(initiator)
+        return await opened(channel_id, agent_name, text, initiator, asked)
+
+    work_platform.open_work_message = open_work_message  # type: ignore[method-assign]
+    await _turn(service, bridged.room_id, "running", 1)
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await work_platform.wait_until(lambda: len(_turns(work_platform)) >= 1)
+    assert initiators == ["UASKER"]
+    assert _turns(work_platform)[0].content.recipient_external_id == "UASKER"
+    assert all(call.kwargs["thread_id"] is None for call in asked.call_args_list)
+
+
+async def _answer(
+    session_factory,
+    bridged: BridgedRoom,
+    *,
+    body: str = "It's 15:59.",
+    mapped: bool = True,
+    content: dict | None = None,
+) -> str:
+    """The agent's message at the channel root, as the room recorded it."""
+    event_id = f"sw_answer_{uuid.uuid4().hex[:8]}"
+    async with session_factory() as db, db.begin():
+        agent = await db.get(Agent, AGENT)
+        assert agent is not None
+        seq = (
+            await db.scalar(
+                select(func.coalesce(func.max(Message.seq), 0)).where(
+                    Message.room_id == bridged.room_id
+                )
+            )
+        ) + 1
+        db.add(
+            Message(
+                seq=seq,
+                room_id=bridged.room_id,
+                transport_event_id=event_id,
+                sender_id=f"@{AGENT}:example.test",
+                sender_client_id=agent.client_id,
+                event_type="m.room.message",
+                msgtype="m.text",
+                body=body,
+                content=content or {"msgtype": "m.text", "body": body},
+            )
+        )
+        if mapped:
+            db.add(
+                BridgeMessageMap(
+                    bridge_id=bridged.bridge_id,
+                    external_channel_id=bridged.channel_id,
+                    transport_event_id=event_id,
+                    external_post_id=f"{event_id}-post",
+                )
+            )
+    return event_id
+
+
+async def _map(session_factory, bridged: BridgedRoom, event_id: str) -> None:
+    async with session_factory() as db, db.begin():
+        db.add(
+            BridgeMessageMap(
+                bridge_id=bridged.bridge_id,
+                external_channel_id=bridged.channel_id,
+                transport_event_id=event_id,
+                external_post_id=f"{event_id}-post",
+            )
+        )
+
+
+async def _worked(service, room_id) -> None:
+    await _turn(service, room_id, "running", 1)
+    await _tool(service, room_id, "in-progress", 1)
+
+
+async def test_an_answered_turn_keeps_its_work_message_and_thread(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    """The work message stays where it was and says how the turn went, its
+    thread of steps under it: nothing is folded into the answer or deleted,
+    so the session stays listed in the asker's Agents & tools."""
+    platform = work_platform
+    await _worked(service, bridged.room_id)
+    await _tool_drawn(platform)
+    [opened] = platform.of("open_work_message")
+    await _answer(session_factory, bridged)
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
+    [settled] = platform.of("settle_work_message")
+    assert settled.ref == opened.ref
+    assert settled.content.startswith("Worked for ")
+    assert platform.of("remove_status_message") == []
+    post = await _turn_post(session_factory)
+    assert post.folded_into is None
+    assert post.work_finished_at is not None
+
+
+async def test_an_interrupted_turn_keeps_the_work_message_even_with_an_answer(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    platform = work_platform
+    await _worked(service, bridged.room_id)
+    await _tool_drawn(platform)
+    await _answer(session_factory, bridged)
+    await _turn(service, bridged.room_id, "interrupted", 5)
+    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
+    assert platform.of("settle_work_message")[0].content.startswith("Turn interrupted.")
+    [ending] = platform.endings
+    assert ending is not None and ending.failed, "drawn with an error mark"
+    assert ending.lead == "Stopped:"
+
+
+async def test_a_turn_carried_on_in_a_new_stream_is_drawn_there_and_kept(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    platform = work_platform
+    await _worked(service, bridged.room_id)
+    await _tool_drawn(platform)
+    first = _turns(platform)[0]
+    platform.move_next_update = True
+    await _tool(service, bridged.room_id, "completed", 2)
+    await platform.wait_until(lambda: len(_turns(platform)) == 2)
+    post = await _turn_post(session_factory)
+    assert post.earlier_post_ids == [first.ref]
+    moved = post.external_post_id
+    assert moved.startswith("moved-")
+    await _turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
+    assert _turns(platform)[-1].ref == moved
+    assert platform.of("remove_status_message") == []
+
+
+async def test_a_restart_finishes_a_work_thread_whose_ending_had_not_run(
+    service, session_factory, bridged, listener, online, work_platform
+):
+    first = _publisher(session_factory, bridged, listener, work_platform, online)
+    first.start()
+    try:
+        await _worked(service, bridged.room_id)
+        await _turn(service, bridged.room_id, "completed", 5)
+        await work_platform.wait_until(
+            lambda: bool(work_platform.of("settle_work_message"))
+        )
+    finally:
+        await first.stop()
+    async with session_factory() as db, db.begin():
+        stored = (await db.execute(select(TurnStatusPost))).scalar_one()
+        stored.work_finished_at = None
+
+    again = WorkThreadPlatform()
+    second = _publisher(session_factory, bridged, listener, again, online)
+    second.start()
+    try:
+        await again.wait_until(lambda: bool(again.of("settle_work_message")))
+    finally:
+        await second.stop()
+    assert (await _turn_post(session_factory)).work_finished_at is not None
+
+
+# ── Inline (`!work-threads inline`) ──────────────────────────────────────────
+
+
+@dataclass
+class InlinePlatform(WorkThreadPlatform):
+    native_stop: bool | None = None
+    titles: list[str] = field(default_factory=list)
+
+    def native_stop_available(self) -> bool | None:
+        return self.native_stop
+
+    async def open_session(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        initiator_external_id: str | None,
+        asked: AskedQuestion | None = None,
+    ) -> None:
+        self.titles.append(asked.text if asked is not None else "")
+        self.drawn.append(
+            Drawn("open_session", channel_id, message_ref, None, initiator_external_id)
+        )
+
+    async def close_session(
+        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+    ) -> None:
+        self.drawn.append(
+            Drawn("close_session", channel_id, message_ref, None, summary)
+        )
+
+
+@pytest.fixture
+async def inline_platform(session_factory, bridged) -> InlinePlatform:
+    async with session_factory() as db, db.begin():
+        room = await db.get(Room, bridged.room_id)
+        assert room is not None
+        room.metadata_ = {**(room.metadata_ or {}), WORK_THREADS_ON_KEY: "inline"}
+    return InlinePlatform()
+
+
+@pytest.fixture
+async def inline_publisher(
+    session_factory, bridged, listener, inline_platform, online, monkeypatch
+) -> AsyncIterator[AgentSessionActivityPublisher]:
+    monkeypatch.setattr(
+        publisher_module, "notification_recipient", AsyncMock(return_value="UASKER")
+    )
+    publisher = _publisher(session_factory, bridged, listener, inline_platform, online)
+    publisher.start()
+    try:
+        yield publisher
+    finally:
+        await publisher.stop()
+
+
+async def test_an_inline_turn_asked_in_a_thread_keeps_its_work_there(
+    service, inline_publisher, inline_platform, bridged
+):
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id="sw_reply",
+    )
+    await inline_platform.wait_until(lambda: bool(inline_platform.of("open_session")))
+    [first] = _turns(inline_platform)[:1]
+    assert first.thread_ref == ASKED_POST, "a reply in the asker's thread"
+    assert first.content.has_session and not first.content.work_thread
+    assert first.content.asked is not None, (
+        "it names its question: the thread's turns share one session"
+    )
+    [session] = inline_platform.of("open_session")
+    assert session.ref == ASKED_POST, "the session belongs to the thread"
+
+
+async def test_slacks_stop_on_a_work_message_finds_the_turn_it_shows(
+    service, work_publisher, work_platform, bridged
+):
+    await _worked(service, bridged.room_id)
+    await _tool_drawn(work_platform)
+    [opened] = work_platform.of("open_work_message")
+    target = await work_publisher.stop_target(bridged.channel_id, opened.ref)
+    assert target is not None
+    assert (target.turn_id, target.running_turn_id) == ("turn-1", "turn-1")
+
+
+async def test_a_turn_someone_stopped_says_who_in_its_ending(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    await _worked(service, bridged.room_id)
+    await _tool_drawn(work_platform)
+    [opened] = work_platform.of("open_work_message")
+    await work_publisher.record_stopper(
+        bridged.channel_id, opened.ref, "turn-1", "Simon Flack"
+    )
+    await _turn(service, bridged.room_id, "interrupted", 5)
+    await work_platform.wait_until(
+        lambda: bool(work_platform.of("settle_work_message"))
+    )
+    [settled] = work_platform.of("settle_work_message")
+    assert settled.content.startswith("Stopped by Simon Flack. Worked for ")
+    assert _turns(work_platform)[-1].content.stopped_by == "Simon Flack"
+    assert (await _turn_post(session_factory)).stopped_by == "Simon Flack"
+
+
+async def test_a_stopper_for_another_turn_is_not_kept(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    await _worked(service, bridged.room_id)
+    await _tool_drawn(work_platform)
+    [opened] = work_platform.of("open_work_message")
+    await work_publisher.record_stopper(
+        bridged.channel_id, opened.ref, "turn-0", "Simon Flack"
+    )
+    assert (await _turn_post(session_factory)).stopped_by is None
+
+
+# ── Pointing back at the question ────────────────────────────────────────────
+
+
+async def _asking_message(
+    session_factory,
+    bridged: BridgedRoom,
+    body: str,
+    *,
+    event_id: str = ASKED,
+    sender: str = "@person:example.test",
+    sent_at: datetime | None = None,
+    mapped_to: str | None = None,
+    thread_root: str | None = None,
+    group: dict[str, object] | None = None,
+) -> None:
+    """A person's message, as Switch stored it: by default the one the turn
+    answers."""
+    async with session_factory() as db, db.begin():
+        seq = (
+            await db.scalar(
+                select(func.coalesce(func.max(Message.seq), 0)).where(
+                    Message.room_id == bridged.room_id
+                )
+            )
+        ) + 1
+        db.add(
+            Message(
+                seq=seq,
+                room_id=bridged.room_id,
+                transport_event_id=event_id,
+                sender_id=sender,
+                event_type="m.room.message",
+                msgtype="m.text",
+                body=body,
+                content={
+                    "msgtype": "m.text",
+                    "body": body,
+                    **({ATTACHMENT_GROUP_KEY: group} if group is not None else {}),
+                },
+                thread_root_event_id=thread_root,
+                **({"sent_at": sent_at} if sent_at is not None else {}),
+            )
+        )
+        if mapped_to is not None:
+            db.add(
+                BridgeMessageMap(
+                    bridge_id=bridged.bridge_id,
+                    external_channel_id=bridged.channel_id,
+                    transport_event_id=event_id,
+                    external_post_id=mapped_to,
+                )
+            )
+
+
+@pytest.mark.parametrize(
+    ("body", "snippet"),
+    [
+        ("@agent how many PRs are open?", "how many PRs are open?"),
+        ("@agent  @other   what   now", "what now"),
+        ("what now?\n@agent", "what now?"),
+        ("what now? @agent @other", "what now?"),
+        ("ask @bob about it", "ask @bob about it"),
+        ("@agent", ""),
+        ("", ""),
+        (
+            "@agent " + "word " * 30,
+            ("word " * 15).strip() + "…",
+        ),
+    ],
+)
+def test_a_question_is_named_by_its_start_without_its_mentions(body, snippet):
+    assert publisher_module.question_snippet(body) == snippet
+    assert len(publisher_module.question_snippet(body)) <= 80
+
+
+async def test_a_work_thread_is_told_the_question_it_answers(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    await _asking_message(session_factory, bridged, "@agent how many PRs are open?")
+    platform = work_platform
+    await _turn(service, bridged.room_id, "running", 1)
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await _tool_drawn(platform)
+    asked = AskedQuestion(message_ref=ASKED_POST, text="how many PRs are open?")
+    assert platform.asked == [asked], "the work message is told what it answers"
+    assert all(drawn.content.asked == asked for drawn in _turns(platform))
+
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
+    assert platform.asked == [asked, asked], "and so is its ending"
+
+
+async def test_an_inline_session_is_titled_by_its_question(
+    service, inline_publisher, inline_platform, bridged, session_factory
+):
+    await _asking_message(
+        session_factory,
+        bridged,
+        "@agent how many PRs are open?",
+        event_id="sw_reply",
+        mapped_to="1700000000.0009",
+        thread_root=ASKED,
+    )
+    platform = inline_platform
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    assert platform.titles == ["how many PRs are open?"]
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _thread_turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("close_session")))
+    assert platform.titles == ["how many PRs are open?"], "never retitled"
+
+
+async def test_a_turn_whose_message_is_not_stored_still_points_at_it(
+    service, work_publisher, work_platform, bridged
+):
+    """The link needs only where it was asked: with no text to name it by,
+    the platform names it generically."""
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [AskedQuestion(message_ref=ASKED_POST, text="")]
+
+
+async def test_a_bare_mention_points_at_the_question_its_sender_posted_before_it(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    """Asked in two messages, the question and then a nudge naming the agent:
+    the question is what the turn answers."""
+    await _asking_message(
+        session_factory,
+        bridged,
+        "how many commits are on this branch?",
+        event_id="sw_question",
+        mapped_to="1699999990.0001",
+    )
+    await _asking_message(session_factory, bridged, "@agent")
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [
+        AskedQuestion(
+            message_ref="1699999990.0001", text="how many commits are on this branch?"
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sender", "minutes_before"),
+    [("@someone-else:example.test", 1), ("@person:example.test", 10)],
+)
+async def test_a_bare_mention_does_not_borrow_another_question(
+    service,
+    work_publisher,
+    work_platform,
+    bridged,
+    session_factory,
+    sender,
+    minutes_before,
+):
+    """Not someone else's message, and not one from long before."""
+    await _asking_message(
+        session_factory,
+        bridged,
+        "an older question",
+        event_id="sw_question",
+        sender=sender,
+        sent_at=datetime.now(UTC) - timedelta(minutes=minutes_before),
+        mapped_to="1699999990.0001",
+    )
+    await _asking_message(session_factory, bridged, "@agent")
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [AskedQuestion(message_ref=ASKED_POST, text="")]
+
+
+@pytest.mark.parametrize("question_is_the_root", [False, True])
+async def test_a_bare_mention_in_a_thread_looks_only_in_that_thread(
+    service,
+    work_publisher,
+    work_platform,
+    bridged,
+    session_factory,
+    question_is_the_root,
+):
+    """Not the sender's latest message at the root, posted in between: the
+    question in the thread the mention was in, or the message that began it."""
+    await _asking_message(
+        session_factory,
+        bridged,
+        "the question",
+        event_id="sw_root",
+        mapped_to="1699999980.0001",
+    )
+    if not question_is_the_root:
+        await _asking_message(
+            session_factory,
+            bridged,
+            "the question in the thread",
+            event_id="sw_reply",
+            mapped_to="1699999985.0001",
+            thread_root="sw_root",
+        )
+    await _asking_message(
+        session_factory,
+        bridged,
+        "an unrelated message at the root",
+        event_id="sw_unrelated",
+        mapped_to="1699999990.0001",
+    )
+    await _asking_message(session_factory, bridged, "@agent", thread_root="sw_root")
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [
+        AskedQuestion("1699999980.0001", "the question")
+        if question_is_the_root
+        else AskedQuestion("1699999985.0001", "the question in the thread")
+    ]
+
+
+# ── Inline in a thread ───────────────────────────────────────────────────────
+
+
+async def _thread_turn(service, room_id, status, revision):
+    """A turn asked by a reply in the thread `ASKED` began."""
+    await _step(
+        service,
+        room_id,
+        item_id="turn",
+        kind="turn",
+        status=status,
+        revision=revision,
+        message_id="sw_reply",
+    )
+
+
+async def test_slacks_stop_on_a_thread_finds_the_turn_drawn_there(
+    service, inline_publisher, inline_platform, bridged
+):
+    """Slack's session in a thread belongs to the thread, so its Stop names
+    the thread's first message, which is no message of ours."""
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await inline_platform.wait_until(lambda: bool(inline_platform.of("open_session")))
+    target = await inline_publisher.stop_target(bridged.channel_id, ASKED_POST)
+    assert target is not None
+    assert (target.turn_id, target.running_turn_id) == ("turn-1", "turn-1")
+    assert target.thread_ref == ASKED_POST, "answers to the press go to the thread"
+    assert await inline_publisher.stop_target(bridged.channel_id, "elsewhere") is None
+
+
+async def test_an_inline_turn_in_a_thread_that_only_talked_ends_the_threads_session(
+    service, inline_publisher, inline_platform, bridged
+):
+    platform = inline_platform
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    [first] = _turns(platform)
+    await _thread_turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(lambda: bool(platform.of("remove_status_message")))
+    [removed] = platform.of("remove_status_message")
+    assert removed.ref == first.ref, "the status message goes"
+    assert platform.session_refs == [ASKED_POST], "and the thread's session ends"
+
+
+async def test_a_finished_inline_turn_in_a_thread_closes_the_threads_session(
+    service, inline_publisher, inline_platform, bridged
+):
+    platform = inline_platform
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _thread_turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("close_session")))
+    [closed] = platform.of("close_session")
+    assert closed.ref == ASKED_POST
+    assert platform.of("remove_status_message") == []
+    assert all(drawn.content.asked is not None for drawn in _turns(platform)), (
+        "every redraw keeps naming its question"
+    )
+
+
+async def test_a_question_asked_in_a_thread_is_pointed_at_with_its_thread(
+    service, inline_publisher, inline_platform, bridged, session_factory
+):
+    """A link to a reply has to name its thread to open on it."""
+    await _asking_message(
+        session_factory,
+        bridged,
+        "@agent how many PRs?",
+        event_id="sw_reply",
+        mapped_to="1700000000.0009",
+        thread_root=ASKED,
+    )
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await inline_platform.wait_until(lambda: len(_turns(inline_platform)) >= 1)
+    asked = _turns(inline_platform)[0].content.asked
+    assert asked == AskedQuestion("1700000000.0009", "how many PRs?", ASKED_POST)
+
+
+async def test_slacks_stop_on_a_thread_prefers_the_turn_still_running(
+    service, inline_publisher, inline_platform, bridged
+):
+    """Another turn that started and finished in the thread since is touched
+    later, but the one still going is what a Stop there means."""
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await inline_platform.wait_until(lambda: len(_turns(inline_platform)) >= 1)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        turn_id="turn-2",
+        message_id="sw_reply",
+    )
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="completed",
+        revision=3,
+        turn_id="turn-2",
+        message_id="sw_reply",
+    )
+    await inline_platform.wait_until(
+        lambda: any(d.content.turn.turn_id == "turn-2" for d in _turns(inline_platform))
+    )
+    await asyncio.sleep(0.3)
+    target = await inline_publisher.stop_target(bridged.channel_id, ASKED_POST)
+    assert target is not None
+    assert target.turn_id == "turn-1"
+
+
+async def test_a_thread_session_stays_working_while_another_turn_there_runs(
+    service, inline_publisher, inline_platform, bridged
+):
+    platform = inline_platform
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    for status, revision in (("running", 1), ("completed", 3)):
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="turn",
+            kind="turn",
+            status=status,
+            revision=revision,
+            turn_id="turn-2",
+            message_id="sw_reply",
+        )
+    await platform.wait_until(lambda: bool(platform.of("remove_status_message")))
+    assert platform.sessions_ended == [False], "turn-1 is still working there"
+    assert platform.of("close_session") == []
+
+    await _thread_turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: len(platform.of("remove_status_message")) == 2)
+    assert platform.sessions_ended == [False, True], "the last one ends it"
+
+
+async def test_a_turn_that_lost_its_ending_does_not_keep_the_session_working(
+    service, inline_publisher, inline_platform, bridged, session_factory
+):
+    """A turn that is over but whose ending was never recorded (dropped after
+    repeated failures, say) is not one the thread's session waits for."""
+    platform = inline_platform
+    await _thread_turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    await _thread_turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(lambda: bool(platform.of("remove_status_message")))
+    async with session_factory() as db, db.begin():
+        await db.execute(update(TurnStatusPost).values(work_finished_at=None))
+    for status, revision in (("running", 1), ("completed", 3)):
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="turn",
+            kind="turn",
+            status=status,
+            revision=revision,
+            turn_id="turn-2",
+            message_id="sw_reply",
+        )
+    await platform.wait_until(lambda: len(platform.of("remove_status_message")) == 2)
+    assert platform.sessions_ended[-1] is True, "turn-1 is over: turn-2 ends it"
+
+
+async def test_a_bare_mention_after_a_message_with_files_names_its_text(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    """A message with two files is two rows, and only the first carries its
+    text: the later one, which is the latest, says only its file's name."""
+    await _asking_message(
+        session_factory,
+        bridged,
+        "what do you make of these?",
+        event_id="sw_files0",
+        mapped_to="1699999990.0001",
+        group={"id": "g1", "index": 0, "total": 2},
+    )
+    await _asking_message(
+        session_factory,
+        bridged,
+        "file-2.png",
+        event_id="sw_files1",
+        mapped_to="1699999990.0002",
+        group={"id": "g1", "index": 1, "total": 2},
+    )
+    await _asking_message(session_factory, bridged, "@agent")
+    await _turn(service, bridged.room_id, "running", 1)
+    await work_platform.wait_until(lambda: bool(work_platform.asked))
+    assert work_platform.asked == [
+        AskedQuestion("1699999990.0001", "what do you make of these?")
+    ]
+
+
+async def test_a_root_question_in_a_room_left_on_the_retired_inline_setting_gets_a_work_thread(
+    service, inline_publisher, inline_platform, bridged
+):
+    """`!work-threads inline` is gone; a room that still has it reads as on."""
+    await _turn(service, bridged.room_id, "running", 1)
+    await inline_platform.wait_until(
+        lambda: bool(inline_platform.of("open_work_message"))
+    )
+    [first] = _turns(inline_platform)
+    assert first.thread_ref == inline_platform.of("open_work_message")[0].ref

@@ -944,6 +944,64 @@ async def _cmd_follow_ups(
     await _reply(client, room, event, _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF)
 
 
+_WORK_THREADS_ON = (
+    "Work threads are **on** in this room. On Slack, when an agent works on a "
+    "question asked at the top of the channel, its steps go in a thread under "
+    "a message of its own, so the turn ending doesn't bring your thread back "
+    "as unread. Its answer still comes where you asked. A question asked "
+    "inside a thread gets one status reply there, updated as the agent works. "
+    "DMs are unchanged. Turn it off with `!work-threads off`."
+)
+_WORK_THREADS_OFF = (
+    "Work threads are **off** in this room. An agent's steps go in a thread "
+    "under the message that asked for them. Turn them on with "
+    "`!work-threads on` (Slack only)."
+)
+
+
+async def _cmd_work_threads(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    choice = event.args.strip().lower()
+    if choice not in ("", "on", "off"):
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!work-threads on`, `!work-threads off`, or `!work-threads` "
+            "to see which it is.",
+        )
+        return
+
+    async with client.session_factory() as session:
+        if choice:
+            decision = await _room_decision(
+                cast("CommandConsumer", client),
+                session,
+                meta.room_id,
+                event,
+                "configure",
+                "work threads",
+            )
+            if await _refused(client, room, event, decision):
+                return
+            await client._room_store.set_work_threads_on(
+                session, meta.room_id, choice == "on"
+            )
+            await session.commit()
+        mode = await client._room_store.work_threads_mode(session, meta.room_id)
+
+    await _reply(client, room, event, _WORK_THREADS_ON if mode else _WORK_THREADS_OFF)
+
+
 _AUTO_ROUTE_FLAG_OFF = (
     "Automatic routing isn't switched on in Switch, so "
     "`!auto-route` has no effect here. Agents only get messages that mention "
@@ -2786,6 +2844,17 @@ COMMANDS: list[Command] = [
         "an @. Turning it on or off is for the room's owner or an admin. "
         "Usage: `!follow-ups on`, `!follow-ups off`, or `!follow-ups`.",
         _cmd_follow_ups,
+        args_spec=(CommandArg("state", "on or off", required=False),),
+        admin_owned=True,
+    ),
+    Command(
+        "work-threads",
+        "On Slack, put an agent's steps for a question asked at the top of the "
+        "channel in a thread of the agent's own, so the turn ending doesn't "
+        "mark the asker's thread unread. Changing it is for the room's owner "
+        "or an admin. Usage: `!work-threads on`, `!work-threads off`, or "
+        "`!work-threads`.",
+        _cmd_work_threads,
         args_spec=(CommandArg("state", "on or off", required=False),),
         admin_owned=True,
     ),

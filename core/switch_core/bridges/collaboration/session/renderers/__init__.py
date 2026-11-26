@@ -60,8 +60,13 @@ def turn_state(
     tool_detail: bool,
     elapsed_seconds: float | None = None,
     running_clock: Literal["minutes", "exact"] = "minutes",
+    stopped_by: str | None = None,
 ) -> str:
     """Where a turn got to, and what it left behind if it stopped.
+
+    `stopped_by` names who pressed Stop on an interrupted turn, where the
+    caller knows: "Stopped by Simon." in place of "Turn interrupted.", which
+    an interruption from anywhere else keeps.
 
     A turn that ends while a tool call is still open leaves that call marked
     in progress for good. What ended the call is whatever the host last said
@@ -97,6 +102,8 @@ def turn_state(
     through every change of the first minute, reading as a card that stopped.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "interrupted" and stopped_by:
+        state = f"Stopped by {stopped_by}."
     if turn.status == "queued" and any(
         item.kind == "user-message" and item.delivery == "queued" for item in items
     ):
@@ -121,6 +128,29 @@ def turn_state(
         noun = "message" if steered == 1 else "messages"
         state += f" {steered} {noun} steered into this turn."
     return state
+
+
+def work_ending(
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    elapsed_seconds: float | None = None,
+    stopped_by: str | None = None,
+) -> tuple[str, str]:
+    """How a work message's one line names a turn's end: what leads the
+    question ("Worked on", "Stopped:", "Failed:"), and the few words after
+    it ("56s · 3 steps", "by Simon · 40s"). Short, where `turn_state` says
+    it in sentences, because the line also names the question.
+    """
+    duration = _format_duration(elapsed_seconds) if elapsed_seconds is not None else ""
+    if turn.status == "completed":
+        calls = sum(1 for item in items if is_tool_call(item))
+        steps = f"{calls} step" + ("" if calls == 1 else "s") if calls else ""
+        return "Worked on", " · ".join(part for part in (duration, steps) if part)
+    if turn.status == "interrupted":
+        who = f"by {stopped_by}" if stopped_by else ""
+        return "Stopped:", " · ".join(part for part in (who, duration) if part)
+    return "Failed:", duration
 
 
 def is_steered(item: Item) -> bool:
@@ -297,6 +327,10 @@ def parse_answer_position(action_id: str) -> int | None:
 # press's own payload, because a platform hands an action id back unchanged and
 # the id is therefore the wrong place for something that changes per render.
 INTERRUPT_ACTION = "switch:turn-interrupt"
+# Slack's own stop button on an agent session (`agent_session_stopped`). It
+# names no turn, only the message the session is on: what it stops is the turn
+# that message shows, if that turn is still the one running.
+SESSION_STOP_ACTION = "switch:session-stop"
 
 # What it stops is the agent's current work, which on a queued turn's message is
 # not that message's turn. "Stop" alone would read as stopping this one, and

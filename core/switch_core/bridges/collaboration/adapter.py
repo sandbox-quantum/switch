@@ -148,6 +148,38 @@ class AgentRendering:
 
 
 @dataclass(frozen=True)
+class AskedQuestion:
+    """The message a turn answers, for a turn drawn away from it.
+
+    A work thread (`!work-threads`) draws a turn on a message of the agent's
+    own rather than in the asker's thread, which leaves nothing on that
+    message, or on the session the platform lists it under, saying what it
+    answers. This is what lets the adapter point back: `message_ref` is the
+    asking message as the platform knows it, and `text` the start of what it
+    said, with the mentions that addressed the agent removed. `text` is empty
+    for a message that said nothing else.
+    """
+
+    message_ref: str
+    text: str
+    # The thread the message is a reply in, if it is one: a link to a reply
+    # has to name its thread to open on it.
+    thread_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkEnding:
+    """How a work message names its turn's end (`!work-threads`): what leads
+    the line ("Worked on", "Stopped:"), the words after the question
+    ("56s · 3 steps"), and whether it ended badly, for a platform that marks
+    that."""
+
+    lead: str
+    details: str
+    failed: bool
+
+
+@dataclass(frozen=True)
 class TurnActivity:
     """A turn's items and its own status, as `post_rich` / `update_rich` draw it.
 
@@ -187,6 +219,25 @@ class TurnActivity:
     # yet redrawn still names A after B has started, so a press on it is refused
     # for naming an ended turn rather than silently stopping B.
     interrupt_turn_id: str | None = None
+    # The platform id of whoever the turn answers, for a platform that
+    # addresses a live activity message to someone (Slack's stream). The
+    # adapter's own memory of who spoke in a thread wins when it has one; this
+    # covers a thread it has no memory of, such as one it lost on a restart or
+    # a work thread under the agent's own message that nobody has spoken in.
+    recipient_external_id: str | None = None
+    # Drawn in a work thread (`!work-threads`): the agent's own message, with
+    # this turn's activity under it. The adapter keeps that message's line up
+    # to date and, where its stream closes, opens another in the same thread.
+    work_thread: bool = False
+    # The turn has an agent session on the platform (`!work-threads`), which
+    # may carry the platform's own Stop button in place of Switch's.
+    has_session: bool = False
+    # Who pressed Stop on this turn, as the platform names them, so an
+    # interrupted turn says "Stopped by <name>." rather than "Turn interrupted.".
+    stopped_by: str | None = None
+    # The message this turn answers, where the turn is drawn away from it
+    # (`!work-threads`), so the message it is drawn in can point back.
+    asked: AskedQuestion | None = None
 
 
 @dataclass(frozen=True)
@@ -1566,8 +1617,12 @@ class PlatformAdapter(ABC):
         message_ref: str,
         content: RichContent,
         thread_root_id: str | None,
-    ) -> None:
+    ) -> str | None:
         """Redraw what `post_rich` posted, in place.
+
+        Returns the message the content is drawn in from now on, for an
+        adapter whose redraw can carry on in a new one (Slack, for a work
+        thread whose stream it closed); None, as here, when it stays put.
 
         Falls back the same way `post_rich` does. Most adapters'
         `update_message` swallows its own errors by design, for the
@@ -1605,6 +1660,7 @@ class PlatformAdapter(ABC):
                 f"channel {channel_id}: {error}",
                 text=text,
             ) from error
+        return None
 
     def notice_address(self, message_ref: str, thread_root_id: str | None) -> str:
         """Where a notice *about* a publication has to be said.
@@ -1821,6 +1877,90 @@ class PlatformAdapter(ABC):
         carries the state from here on, so an adapter that cannot send one
         does nothing and says nothing.
         """
+
+    async def hosts_work_threads(self, channel_id: str) -> bool:
+        """Whether a turn asked at this channel's root may work in a thread of
+        its own (`!work-threads`): a message of the agent's, with the turn's
+        activity under it, so the asker's thread is not the one the activity
+        lives in. False on every platform that has not built one."""
+        return False
+
+    async def open_work_message(
+        self,
+        channel_id: str,
+        agent_name: str,
+        text: str,
+        initiator_external_id: str | None,
+        asked: AskedQuestion | None = None,
+    ) -> str:
+        """Post the agent's work message at the channel root and return its ref.
+
+        Only called where `hosts_work_threads` said yes. `text` is what a
+        notification or screen reader is given for it; `initiator_external_id`
+        is who the work is for, and `asked` the message the work answers.
+        Raises `RichContentFailed` when nothing was posted.
+        """
+        raise NotImplementedError
+
+    async def remove_status_message(
+        self,
+        channel_id: str,
+        message_ref: str,
+        session_ref: str | None = None,
+        *,
+        end_session: bool = True,
+    ) -> bool:
+        """Delete an inline turn's status message, for a turn that only talked.
+        True once it is gone. The turn's session, on `session_ref` where that
+        is not the message itself, is ended first, unless `end_session` is
+        false: another turn there still has it."""
+        raise NotImplementedError
+
+    async def open_session(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        initiator_external_id: str | None,
+        asked: AskedQuestion | None = None,
+    ) -> None:
+        """Mark a message of the agent's as a turn in progress, for whoever
+        asked, where the platform has such a thing, named by what was asked.
+        Nothing by default."""
+
+    def native_stop_available(self) -> bool | None:
+        """Whether the platform draws its own Stop on a turn's session, so the
+        turn's message need not carry Switch's. None until known."""
+        return None
+
+    async def close_session(
+        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+    ) -> None:
+        """End what `open_session` started, naming how the turn ended."""
+
+    async def restore_session(
+        self, channel_id: str, message_ref: str, *, working: bool
+    ) -> None:
+        """Undo the platform's own Stop on a session, pressed and not acted on.
+
+        The platform shows the session stopping until told otherwise: back to
+        working while a turn still runs there, or done when none does.
+        Nothing by default."""
+
+    async def settle_work_message(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        summary: str,
+        asked: AskedQuestion | None = None,
+        *,
+        ending: WorkEnding | None = None,
+    ) -> None:
+        """Rewrite a work message, in place, as the one line its turn ended on:
+        `summary` in sentences, `ending` in the line's own few words.
+        Best effort: a refusal is the adapter's to log."""
+        raise NotImplementedError
 
     def unnotified_notice(self) -> str:
         """Why an attention post named nobody, for a platform that says so.

@@ -57,7 +57,10 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
-from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
+from switch_core.bridges.collaboration.session.renderers import (
+    INTERRUPT_ACTION,
+    SESSION_STOP_ACTION,
+)
 from switch_core.chat_account_links import (
     ACCOUNT_COMMANDS,
     CODE_REFUSED,
@@ -3299,7 +3302,7 @@ class CollaborationCore:
         self, interaction: InboundInteraction
     ) -> None:
         """Someone operated a control on a message this bridge posted."""
-        if interaction.action_id == INTERRUPT_ACTION:
+        if interaction.action_id in (INTERRUPT_ACTION, SESSION_STOP_ACTION):
             await self._handle_stop_press(interaction)
             return
         if is_prompt_token(interaction.value):
@@ -3338,19 +3341,33 @@ class CollaborationCore:
         publisher = self._activity_publisher
         if publisher is None or interaction.message_ref is None:
             return
+        message_ref = interaction.message_ref
+        platform_stop = interaction.action_id == SESSION_STOP_ACTION
+        target = await publisher.stop_target(interaction.channel_id, message_ref)
+        # Where the answer goes: beside the control, or for the platform's own
+        # Stop, which comes from no message, in the thread the turn is drawn
+        # in, and failing that the thread the session is on.
+        reply_thread = interaction.thread_ref or (
+            (target.thread_ref if target is not None else message_ref)
+            if platform_stop
+            else None
+        )
 
-        async def tell(text: str) -> None:
+        async def tell(text: str, *, still_working: bool | None = None) -> None:
             await self._adapter.tell_actor(
                 interaction.channel_id,
                 interaction.sender_id,
                 interaction.sender_name,
-                interaction.thread_ref,
+                reply_thread,
                 text,
             )
+            if platform_stop and still_working is not None:
+                # Not acted on: the platform would go on showing it stopping.
+                await self._adapter.restore_session(
+                    interaction.channel_id, message_ref, working=still_working
+                )
 
-        target = await publisher.stop_target(
-            interaction.channel_id, interaction.message_ref
-        )
+        running = target is not None and target.running_turn_id is not None
         if target is None:
             logger.warning(
                 "Ignoring a stop press in %s on bridge %s: message %s shows no "
@@ -3361,7 +3378,8 @@ class CollaborationCore:
             )
             await tell(
                 "That message is no longer connected to a live session, so "
-                "there is nothing here to stop."
+                "there is nothing here to stop.",
+                still_working=False,
             )
             return
         actor_id = await self._identify_actor(interaction)
@@ -3376,16 +3394,22 @@ class CollaborationCore:
             await tell(
                 "Switch does not know who this account belongs to, and "
                 "stopping an agent is only ever recorded against someone it "
-                "can name."
+                "can name.",
+                still_working=running,
             )
             return
-        if (
-            target.running_turn_id is None
-            or target.running_turn_id != interaction.value
-        ):
+        # Switch's Stop names the turn it was drawn for. Slack's own Stop on a
+        # session names none: it stops the turn the session's message shows.
+        turn_id = (
+            target.turn_id
+            if interaction.action_id == SESSION_STOP_ACTION
+            else interaction.value
+        )
+        if target.running_turn_id is None or target.running_turn_id != turn_id:
             await tell(
                 "The agent was not stopped (TURN_NOT_RUNNING): the turn that "
-                "control was drawn for is no longer running."
+                "control was drawn for is no longer running.",
+                still_working=running,
             )
             return
         try:
@@ -3396,23 +3420,34 @@ class CollaborationCore:
                 doing="stop it",
             )
         except SessionError as error:
-            await tell(f"The agent was not stopped ({error.code}): {error}")
+            await tell(
+                f"The agent was not stopped ({error.code}): {error}",
+                still_working=running,
+            )
             return
         frame = stop_control_frame(
             agent_id=target.agent_id,
             session_id=target.session_id,
             room_id=target.room_id,
             actor_id=actor_id,
-            message_ref=interaction.message_ref,
-            turn_id=interaction.value,
+            message_ref=message_ref,
+            turn_id=turn_id,
             thread_id=target.thread_id,
             surface=self._bridge_type,
         )
         if not self._connections.relay_session_command(target.agent_id, frame):
             await tell(
-                "The agent was not stopped: its controller is not connected to Switch."
+                "The agent was not stopped: its controller is not connected to Switch.",
+                still_working=running,
             )
             return
+        # Remembered for the turn's ending, which then says who stopped it.
+        await publisher.record_stopper(
+            interaction.channel_id,
+            message_ref,
+            turn_id,
+            interaction.sender_display_name or interaction.sender_name,
+        )
         await tell(
             "Switch has asked the agent to stop its current work. The activity "
             "message will say when it has."

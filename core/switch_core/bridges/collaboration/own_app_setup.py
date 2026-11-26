@@ -31,7 +31,9 @@ SLACK_CREATE_APP = "https://api.slack.com/apps"
 SLACK_APP_NAME = "Agent Switch"
 
 #: The events Switch reads: messages, with their edits and deletions, in every
-#: kind of conversation the bot is in, and a channel being deleted or archived.
+#: kind of conversation the bot is in, a channel being deleted or archived, and
+#: `agent_session_stopped`: someone pressed Slack's own Stop on an agent's
+#: session. Without that one Slack shows a loading indicator nobody can press.
 SLACK_BOT_EVENTS = (
     "message.channels",
     "message.groups",
@@ -41,6 +43,7 @@ SLACK_BOT_EVENTS = (
     "channel_archive",
     "group_deleted",
     "group_archive",
+    "agent_session_stopped",
 )
 
 #: Slack refuses a slash command description longer than this.
@@ -66,6 +69,7 @@ _SLACK_DESCRIPTIONS: dict[str, str] = {
     "list-references": "List the room's references",
     "list-aliases": "List agent aliases here",
     "follow-ups": "Turn follow-ups on or off",
+    "work-threads": "Put agent steps in a thread of their own",
     "auto-route": "Let Switch pick who answers untagged messages",
     "assign-agent": "Send every message here to one agent",
     "unassign-agent": "Stop sending every message to one agent",

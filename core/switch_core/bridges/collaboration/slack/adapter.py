@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     AgentIdentity,
     AgentIdentityConflict,
+    AskedQuestion,
     PlatformAdapter,
     RefusalKind,
     RemovalFailed,
@@ -39,6 +40,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottledAfterPost,
     RichContentWedged,
     TurnActivity,
+    WorkEnding,
 )
 from switch_core.bridges.collaboration.cooldown import Cooldown
 from switch_core.bridges.collaboration.models import (
@@ -66,7 +68,10 @@ from switch_core.bridges.collaboration.models import (
     PrivateNoticeDelivery,
     RetireOutcome,
 )
-from switch_core.bridges.collaboration.session.renderers import position_action
+from switch_core.bridges.collaboration.session.renderers import (
+    SESSION_STOP_ACTION,
+    position_action,
+)
 from switch_core.bridges.collaboration.session.renderers.slack import (
     STREAM_SLOTS,
     SlackMessage,
@@ -444,8 +449,11 @@ class _StreamClosed(RichContentFailed):
     Its own type so that `update_rich` can draw the turn as an ordinary edit
     in the same call, rather than leaving the message as Slack left it until
     the turn next changes. To every other caller it is the `RichContentFailed`
-    it inherits from.
+    it inherits from. `code` is Slack's reason, which says whether the stream
+    ran out of time or someone stopped it.
     """
+
+    code: str | None = None
 
 
 class _StreamNotClosed(RichContentFailed):
@@ -686,6 +694,60 @@ _SLACK_BOT_ID = re.compile(r"^B[A-Z0-9]+$")
 _SLACK_BOT_ACCOUNT = "This is a Slack app's or bot's account, which isn't one person's."
 
 
+#: What `agents.sessions.setStatus` warns of when the app is not subscribed to
+#: `agent_session_stopped`, and Slack shows a spinner instead of its Stop button.
+_NO_STOP_SUBSCRIPTION = "missing_agent_session_stopped_event_subscription"
+
+#: What a work message (`!work-threads`) says while its turn runs. Its author
+#: is the agent, so the agent's name is already beside it.
+WORKING_NOTE = "Working…"
+
+#: Slack's limit on a plan block's title.
+_MAX_PLAN_TITLE = 150
+
+
+def _work_plan(title: str, status: str, link: tuple[str, str] | None) -> dict[str, Any]:
+    """A work message as one line: a plan block of one card.
+
+    A plan block because it is the one place Slack draws its own icon beside
+    a line: a spinner while its card is in progress, a tick once complete and
+    a mark for an error. Its title is the whole line, plain text, so the
+    question it answers is named there but cannot be a link. The card holds
+    the link, as (url, label), where there is one; its steps are in the
+    message's thread.
+    """
+    task: dict[str, Any] = {
+        "task_id": "switch-work-thread",
+        "title": "Jump to the question" if link else "The steps are in the thread",
+        "status": status,
+    }
+    if link is not None:
+        url, label = link
+        task["details"] = {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [{"type": "link", "url": url, "text": label}],
+                }
+            ],
+        }
+    return {"type": "plan", "title": title[:_MAX_PLAN_TITLE], "tasks": [task]}
+
+
+def _session_title(label: str, asked: AskedQuestion | None) -> str:
+    """An agent session's title, which is also how Agents & tools lists it.
+
+    The question the turn answers, so a list of one agent's turns reads as
+    what it was asked rather than as its name over and over; without one,
+    the agent's name. Set once, when the session opens, and never renamed:
+    Slack's spinner says the agent is working, and the session's message
+    how long it worked and on what.
+    """
+    question = asked.text if asked is not None else ""
+    return (question or label)[:200]
+
+
 class SlackAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Slack"
     # Slack apps cannot delete a channel outside Enterprise Grid's admin API.
@@ -806,6 +868,9 @@ class SlackAdapter(PlatformAdapter):
         self._bot_user_id: str = ""
         self._bot_id: str = ""
         self._team_id: str = ""
+        # The workspace's own address ("https://acme.slack.com/"), from which
+        # a link to one of its messages is made without asking Slack for it.
+        self._team_url: str = ""
         # The bot token's scopes as Slack listed them when the adapter
         # started, or None when Slack did not say.
         self._granted_scopes: frozenset[str] | None = None
@@ -819,6 +884,15 @@ class SlackAdapter(PlatformAdapter):
         self._seen_ts: OrderedDict[str, None] = OrderedDict()
         self._seen_ts_max = 1000
         self._channel_type_cache: dict[str, str] = {}
+        # Channels whose kind was looked up to answer `hosts_work_threads`, for
+        # one never seen through an inbound event.
+        self._work_thread_channels: dict[str, bool] = {}
+        self._session_refusals_logged: set[str] = set()
+        # Whether Slack shows its own Stop on a session (`native_stop_available`).
+        self._native_stop: bool | None = None
+        # Session messages someone pressed Slack's own Stop on, whose turn must
+        # not carry on in a new stream while the stop reaches the agent.
+        self._sessions_stopped: OrderedDict[str, None] = OrderedDict()
         self._last_user_message_ts: dict[str, str] = {}
         # The message a card button was pressed on, by message ref, as each
         # press in flight carried it, held while the press is handled.
@@ -922,6 +996,7 @@ class SlackAdapter(PlatformAdapter):
         # workspace id on an Enterprise Grid org. Agent group lookup uses
         # the authenticated team identity rather than the configured org.
         self._team_id = str(auth.get("team_id", ""))
+        self._team_url = str(auth.get("url") or "")
         self._granted_scopes = _granted_scopes(auth.headers)
         logger.info(
             "Slack adapter authenticated as %s (workspace %s)",
@@ -1319,6 +1394,7 @@ class SlackAdapter(PlatformAdapter):
         reader's expanded plan — alone. Everything else, and every thread a
         stream cannot be opened in, is an ordinary Block Kit post.
         """
+        content = self._own_stop_unless_native(content)
         if self._streamable(content, thread_root_id):
             assert isinstance(content, TurnActivity) and thread_root_id
             ref = await self._open_stream(
@@ -1358,8 +1434,12 @@ class SlackAdapter(PlatformAdapter):
         message_ref: str,
         content: RichContent,
         thread_root_id: str | None,
-    ) -> None:
+    ) -> str | None:
         """Redraw what `post_rich` posted, in place.
+
+        Returns the message the turn is drawn in from now on when that moved:
+        a work thread's turn carries on in a new stream once Slack closes one.
+        None otherwise.
 
         `agent_name` is not read: a Slack message carries its sender's name
         and face, so the name is never part of what was drawn.
@@ -1373,18 +1453,30 @@ class SlackAdapter(PlatformAdapter):
             raise RichContentThrottled(
                 retry_after=remaining, text="Waiting for Slack to allow updates."
             )
+        content = self._own_stop_unless_native(content)
         stream = self._streams.get(message_ref)
         if stream is not None and isinstance(content, TurnActivity):
             try:
                 await self._extend_stream(stream, message_ref, content)
-            except _StreamClosed:
+            except _StreamClosed as closed:
+                # Only a stream that ran out of time carries on: one a person
+                # stopped stays stopped.
+                reopened = (
+                    await self._reopen_work_stream(
+                        channel_id, agent_name, content, thread_root_id
+                    )
+                    if closed.code == "message_not_in_streaming_state"
+                    else None
+                )
+                if reopened is not None:
+                    return reopened
                 # Slack closes every stream ten minutes after it opens, however
                 # recently it was appended to, and marks the steps still
                 # running as failed. Edited now, those read right again
                 # straight away rather than at the turn's next change.
                 pass
             else:
-                return
+                return None
         if message_ref in self._unredrawable:
             if not self._unredrawable[message_ref]:
                 self._unredrawable[message_ref] = True
@@ -1396,7 +1488,7 @@ class SlackAdapter(PlatformAdapter):
                     "is not shown.",
                     message_ref,
                 )
-            return
+            return None
         responder_name = None
         if isinstance(content, RequestCard) and content.responder_external_id:
             user = await self._resolve_user_name(content.responder_external_id)
@@ -1417,11 +1509,51 @@ class SlackAdapter(PlatformAdapter):
                 await self._recover_stranded_stream(
                     channel_id, message_ref, content, message
                 )
-                return
+                return None
             raise RichContentFailed(
                 f"Slack could not update the message in channel {channel_id}: {error}",
                 text=message.text,
             ) from error
+        return None
+
+    async def _reopen_work_stream(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: TurnActivity,
+        thread_root_id: str | None,
+    ) -> str | None:
+        """A fresh stream for a running turn whose last one Slack closed.
+
+        Only in a work thread: nobody follows it, so a new message there marks
+        nothing unread, where the same in the asker's thread would. The turn
+        is drawn into it whole, and its ref is what the caller draws to from
+        now on. None where there is no stream to open, and the turn is edited
+        into the closed one as before.
+        """
+        if (
+            not content.work_thread
+            or content.turn.status in TURN_ENDED
+            or thread_root_id is None
+            or thread_root_id in self._sessions_stopped
+            or not self._team_id
+            or not self._stream_recipient(content, thread_root_id)
+        ):
+            return None
+        try:
+            ref = await self._open_stream(
+                channel_id, agent_name, content, thread_root_id
+            )
+        except RichContentFailedAfterPost as failed:
+            # The message is there; it fills on the next draw.
+            return failed.ref
+        if ref is not None:
+            logger.info(
+                "Slack closed the activity stream for turn %s at its time limit; "
+                "carrying on in a new one in the same work thread.",
+                content.turn.turn_id,
+            )
+        return ref
 
     async def _recover_stranded_stream(
         self,
@@ -1692,6 +1824,11 @@ class SlackAdapter(PlatformAdapter):
             return False
         if content.turn.status in TURN_ENDED:
             return False
+        if content.has_session and not content.work_thread:
+            # Inline: one message edited in place, with the session the turn
+            # opened for its asker. A stream would bring a session of Slack's
+            # own, and its Stop, beside it.
+            return False
         missing = (
             "no thread to open it in"
             if thread_root_id is None
@@ -1700,7 +1837,7 @@ class SlackAdapter(PlatformAdapter):
             else "the workspace id is unknown"
             if not self._team_id
             else "nobody in the thread to address it to"
-            if not self._requester_for(thread_root_id)
+            if not self._stream_recipient(content, thread_root_id)
             else None
         )
         if missing is None:
@@ -1734,6 +1871,25 @@ class SlackAdapter(PlatformAdapter):
         if len(self._thread_requester) > self._thread_requester_max:
             self._thread_requester.popitem(last=False)
 
+    def _stream_recipient(
+        self, content: TurnActivity, thread_root_id: str | None
+    ) -> str | None:
+        """Who a stream in this thread is addressed to: the person this process
+        last saw speak there, else whoever the turn answers.
+
+        The memory is only this process's, so a restart empties it and a work
+        thread under the agent's own message never fills it. Without the
+        second answer both would draw the turn as an ordinary post, and an
+        ordinary post makes the asker's thread unread the moment it lands.
+        """
+        requester = self._requester_for(thread_root_id)
+        if requester:
+            return requester
+        recipient = content.recipient_external_id
+        if recipient and re.fullmatch(r"[UW][A-Z0-9]+", recipient):
+            return recipient
+        return None
+
     def _requester_for(self, thread_root_id: str | None) -> str | None:
         """The person a stream in this thread would be addressed to."""
         thread_ts = self._thread_ts_of(thread_root_id)
@@ -1760,7 +1916,7 @@ class SlackAdapter(PlatformAdapter):
         client = self._web_client
         assert client is not None
         thread_ts = self._thread_ts_of(thread_root_id)
-        requester = self._requester_for(thread_root_id)
+        requester = self._stream_recipient(content, thread_root_id)
         assert thread_ts is not None and requester is not None
         try:
             opened = await client.chat_startStream(
@@ -1809,6 +1965,412 @@ class SlackAdapter(PlatformAdapter):
                 str(failed), ref=ref, text=failed.text
             ) from failed
         return ref
+
+    # ── Work threads (`!work-threads`) ───────────────────────────────────────
+
+    async def hosts_work_threads(self, channel_id: str) -> bool:
+        """Everywhere but a DM or group DM.
+
+        In a DM every new message from the bot notifies, so a work message per
+        turn would be a ping per turn, and replies there already thread under
+        the person's message. When the channel's kind cannot be learnt the
+        answer is no, which is what the room did before it was asked.
+        """
+        if self._web_client is None:
+            return False
+        cached = self._channel_type_cache.get(channel_id)
+        if cached is not None:
+            return cached not in ("im", "mpim")
+        known = self._work_thread_channels.get(channel_id)
+        if known is not None:
+            return known
+        try:
+            kind = await self.get_channel_type(channel_id)
+        except (SlackApiError, KeyError) as error:
+            logger.warning(
+                "Could not tell whether Slack channel %s is a DM (%s); keeping "
+                "turns in the asker's thread there.",
+                channel_id,
+                error,
+            )
+            return False
+        hosts = kind != "lobby"
+        self._work_thread_channels[channel_id] = hosts
+        return hosts
+
+    async def open_work_message(
+        self,
+        channel_id: str,
+        agent_name: str,
+        text: str,
+        initiator_external_id: str | None,
+        asked: AskedQuestion | None = None,
+    ) -> str:
+        """A one-line note at the channel root, and the agent session on its thread.
+
+        The channel shows "Working on it…" under the agent's name, with the
+        turn's replies under it; the steps are in that thread. `text` is what a
+        notification and a screen reader get instead, since a message with
+        blocks shows them and not its text, so it names the agent.
+
+        The session is opened here, before the stream, so it names the asker
+        as its initiator: one the stream opens takes the message's author, the
+        bot, and is listed for nobody. Doing so does not make the asker follow
+        the thread. The session is best effort; the turn is drawn either way.
+        """
+        client = self._web_client
+        if client is None:
+            raise RichContentFailed(
+                "Cannot post a work message: Slack disconnected.", text=text
+            )
+        agent = await self.agent_rendering(agent_name)
+        icon_url = slack_icon_argument(agent.icon_url, agent_name)
+        try:
+            result = await client.chat_postMessage(
+                channel=channel_id,
+                text=text,
+                blocks=self._work_blocks(asked),
+                username=agent.field_label,
+                icon_url=icon_url,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+        except SlackApiError as error:
+            throttled = self._throttled(error, text)
+            if throttled is not None:
+                raise throttled from error
+            raise RichContentFailed(
+                f"Slack would not post a work message in {channel_id}: "
+                f"{error.response.get('error')}",
+                text=text,
+            ) from error
+        ts = result.get("ts")
+        if not ts:
+            raise RichContentFailed(
+                f"Slack posted a work message in {channel_id} with no ts.", text=text
+            )
+        work_ref = f"{channel_id}:{ts}"
+        await self.open_session(
+            channel_id,
+            agent_name,
+            work_ref,
+            initiator_external_id,
+            asked,
+        )
+        return work_ref
+
+    async def settle_work_message(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        summary: str,
+        asked: AskedQuestion | None = None,
+        *,
+        ending: WorkEnding | None = None,
+    ) -> None:
+        """Edit the line into how the turn ended, and end the session.
+
+        An edit, so it notifies nobody, and the only one the line gets after
+        it is posted: it says nothing of the turn's progress while it runs,
+        which is in the thread. Its icon becomes a tick, or an error mark for
+        a turn that was stopped or failed. The session is set active
+        (`close_session`).
+        """
+        client = self._web_client
+        if client is None:
+            return
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            return
+        try:
+            await client.chat_update(
+                channel=channel_id,
+                ts=ts,
+                text=summary,
+                blocks=self._work_blocks(
+                    asked,
+                    ending or WorkEnding(lead="Ended", details=summary, failed=False),
+                ),
+            )
+        except SlackApiError as error:
+            logger.warning(
+                "Could not write %r into work message %s (%s); it still says the "
+                "agent is working.",
+                summary,
+                message_ref,
+                error.response.get("error"),
+            )
+        await self.close_session(channel_id, agent_name, message_ref, summary)
+
+    async def open_session(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        initiator_external_id: str | None,
+        asked: AskedQuestion | None = None,
+    ) -> None:
+        """An agent session on a message of the agent's, for whoever asked,
+        titled by the question (`_session_title`).
+
+        "<agent> is working" shows under the message while its thread is
+        empty, and the turn is listed in the asker's Agents & tools. Naming
+        the asker as initiator is the point: a session the app opens without
+        one, or that a stream opens, takes the bot and is listed for nobody.
+        Best effort; the turn is drawn either way.
+        """
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            return
+        agent = await self.agent_rendering(agent_name)
+        arguments: dict[str, Any] = {
+            "channel_id": channel_id,
+            "thread_ts": ts,
+            "status": "processing",
+            "title": _session_title(agent.field_label, asked),
+            "username": agent.field_label,
+        }
+        icon_url = slack_icon_argument(agent.icon_url, agent_name)
+        if icon_url:
+            arguments["icon_url"] = icon_url
+        if initiator_external_id and re.fullmatch(
+            r"[UW][A-Z0-9]+", initiator_external_id
+        ):
+            arguments["initiator_user_id"] = initiator_external_id
+        await self._set_session_status(arguments)
+
+    async def close_session(
+        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+    ) -> None:
+        """Set a turn's session active, its title left as it opened.
+
+        Not renamed to how the turn ended: the title names what was asked,
+        which stays true, and the message under it already says how the turn
+        went. `active` rather than `closed`: the work is over for now, and
+        `closed` says the agent will not answer there again.
+        """
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            return
+        await self._set_session_status(
+            {"channel_id": channel_id, "thread_ts": ts, "status": "active"}
+        )
+
+    async def restore_session(
+        self, channel_id: str, message_ref: str, *, working: bool
+    ) -> None:
+        """Take a session off "Stopping…" after a Stop that was not acted on.
+
+        Slack shows that until the app moves the session on, and only a turn
+        ending would; a refused press ends nothing.
+        """
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            return
+        await self._set_session_status(
+            {
+                "channel_id": channel_id,
+                "thread_ts": ts,
+                "status": "processing" if working else "active",
+            }
+        )
+
+    async def remove_status_message(
+        self,
+        channel_id: str,
+        message_ref: str,
+        session_ref: str | None = None,
+        *,
+        end_session: bool = True,
+    ) -> bool:
+        """Delete an inline status message whose turn only talked.
+
+        The session goes `active` first, unless another turn still has it:
+        deleting its message takes it out of the asker's Agents & tools. A
+        message already gone counts as deleted. False, with a warning, when
+        Slack refuses; the caller keeps the message then.
+        """
+        client = self._web_client
+        channel, ts = self._parse_message_ref(message_ref)
+        if client is None or not ts:
+            return False
+        if end_session:
+            _, session_ts = self._parse_message_ref(session_ref or message_ref)
+            await self._set_session_status(
+                {"channel_id": channel, "thread_ts": session_ts, "status": "active"}
+            )
+        try:
+            await client.chat_delete(channel=channel_id, ts=ts)
+        except SlackApiError as error:
+            code = error.response.get("error")
+            if code != "message_not_found":
+                logger.warning(
+                    "Slack would not delete the status message %s (%s); keeping it.",
+                    message_ref,
+                    code,
+                )
+                return False
+        return True
+
+    def _permalink(self, message_ref: str, thread_ref: str | None = None) -> str | None:
+        """A link to a message of this workspace, made rather than asked for.
+
+        Slack's own links have this shape, `chat.getPermalink` would cost a
+        call per turn, and the workspace's address is already known from
+        `auth.test`. A reply's link names its thread as Slack's do, without
+        which it opens the channel rather than the reply. None without the
+        address.
+        """
+        channel_id, ts = self._parse_message_ref(message_ref)
+        if not self._team_url or not channel_id or not ts:
+            return None
+        link = (
+            f"{self._team_url.rstrip('/')}/archives/{channel_id}/p{ts.replace('.', '')}"
+        )
+        _, thread_ts = self._parse_message_ref(thread_ref) if thread_ref else ("", "")
+        if thread_ts and thread_ts != ts:
+            link += f"?thread_ts={thread_ts}&cid={channel_id}"
+        return link
+
+    def _asked_block(self, asked: AskedQuestion | None) -> dict[str, Any] | None:
+        """A line of small text pointing back at the message a turn answers.
+
+        A link, not a mention, so it notifies nobody, and the question's text
+        is escaped so it can neither forge one nor end the link early. None
+        when there is nothing to point at.
+        """
+        if asked is None:
+            return None
+        url = self._permalink(asked.message_ref, asked.thread_ref)
+        if asked.text:
+            label = escape_mrkdwn(f"“{asked.text}”").replace("|", "¦")
+        elif url:
+            label = "the message this answers"
+        else:
+            return None
+        text = f"↩ <{url}|{label}>" if url else f"↩ {label}"
+        return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
+
+    def _work_blocks(
+        self, asked: AskedQuestion | None, ending: WorkEnding | None = None
+    ) -> list[dict[str, Any]]:
+        """A work message's one line, with the question's link in the plan's
+        card: "Working on "the question"" while its turn runs (`ending`
+        None), then "Worked on "the question" · 56s · 3 steps" or
+        "Stopped: "the question" · by Simon". A question that said nothing
+        but a mention is not named in the line, and is still linked."""
+        url = (
+            self._permalink(asked.message_ref, asked.thread_ref)
+            if asked is not None
+            else None
+        )
+        question = asked.text if asked is not None else ""
+        status = (
+            "in_progress"
+            if ending is None
+            else "error"
+            if ending.failed
+            else "complete"
+        )
+        tail = f" · {ending.details}" if ending is not None and ending.details else ""
+        if not question:
+            # With no question to name: "Worked · 56s", "Stopped · by Simon".
+            lead = (
+                WORKING_NOTE
+                if ending is None
+                else ending.lead.removesuffix(" on").rstrip(":")
+            )
+            link = (url, "The message this answers") if url else None
+            return [_work_plan(f"{lead}{tail}", status, link)]
+        lead = "Working on" if ending is None else ending.lead
+        room = _MAX_PLAN_TITLE - len(lead) - len(tail) - len(" “”")
+        if len(question) > room:
+            question = question[: max(room - 1, 0)].rstrip() + "…"
+        label = f"“{question}”"
+        return [
+            _work_plan(f"{lead} {label}{tail}", status, (url, label) if url else None)
+        ]
+
+    async def _set_session_status(self, arguments: dict[str, Any]) -> None:
+        """`agents.sessions.setStatus`, learning from opening a session whether
+        Slack shows its own Stop button on it (`native_stop_available`)."""
+        answer = await self._session_call("agents.sessions.setStatus", arguments)
+        if arguments.get("status") != "processing":
+            return
+        if answer is None:
+            # Refused: no session, so no button of Slack's either.
+            self._native_stop = False
+            return
+        warnings = {
+            str(answer.get("warning") or ""),
+            *(
+                str(warning)
+                for warning in (answer.get("response_metadata") or {}).get(
+                    "warnings", []
+                )
+            ),
+        }
+        if any(_NO_STOP_SUBSCRIPTION in warning for warning in warnings):
+            if self._native_stop is not False:
+                logger.info(
+                    "This Slack app is not subscribed to agent_session_stopped, "
+                    "so agents' sessions show Switch's own Stop button rather "
+                    "than Slack's. Add the event to the app to use Slack's."
+                )
+            self._native_stop = False
+        else:
+            self._native_stop = True
+
+    def native_stop_available(self) -> bool | None:
+        """Whether Slack shows its own Stop button on an agent's session here:
+        the app is subscribed to `agent_session_stopped`. None until a session
+        has been opened to find out."""
+        return self._native_stop
+
+    def _own_stop_unless_native(self, content: RichContent) -> RichContent:
+        """A turn with an agent session leaves its own Stop button out where
+        Slack draws one on the session, so there are not two. Anywhere Slack
+        does not, or before it is known, the turn keeps Switch's."""
+        if (
+            isinstance(content, TurnActivity)
+            and content.has_session
+            and self._native_stop is True
+            and content.interrupt_turn_id is not None
+        ):
+            return replace(content, interrupt_turn_id=None)
+        return content
+
+    async def _session_call(
+        self, method: str, arguments: dict[str, Any]
+    ) -> Mapping[str, Any] | None:
+        """An agent-session call, which nothing waits on: its answer, or None
+        if Slack refused it.
+
+        A workspace without agent sessions, or an app without their scopes,
+        refuses it; the work message and its stream are unaffected, so that is
+        logged once per method and reason rather than on every turn.
+        """
+        client = self._web_client
+        if client is None:
+            return None
+        try:
+            answer = await client.api_call(method, json=arguments)
+            # The SDK's response holds the body in `.data`; a plain mapping is
+            # the body itself.
+            data = getattr(answer, "data", answer)
+            return data if isinstance(data, Mapping) else {}
+        except SlackApiError as error:
+            code = f"{method}:{error.response.get('error')}"
+            if code not in self._session_refusals_logged:
+                self._session_refusals_logged.add(code)
+                logger.warning(
+                    "Slack refused %s (%s); work threads still work, but the "
+                    "agent session may not show what the turn is doing.",
+                    method,
+                    error.response.get("error"),
+                )
+            return None
 
     def _register_stream(self, message_ref: str, stream: _ActivityStream) -> None:
         """Hold an open stream, forgetting the oldest if there is no room.
@@ -1897,6 +2459,7 @@ class SlackAdapter(PlatformAdapter):
             content.turn,
             elapsed_seconds=content.elapsed_seconds,
             interrupt_turn_id=content.interrupt_turn_id,
+            stopped_by=content.stopped_by,
         )
         blocks = drawn.blocks
         spent = drawn.spent_control
@@ -2002,9 +2565,11 @@ class SlackAdapter(PlatformAdapter):
                 message_ref,
                 code,
             )
-            raise _StreamClosed(
+            closed = _StreamClosed(
                 f"Slack closed the activity stream {message_ref}: {code}", text=text
-            ) from error
+            )
+            closed.code = str(code)
+            raise closed from error
         throttled = self._throttled(error, text)
         if throttled is not None:
             raise throttled from error
@@ -2025,6 +2590,9 @@ class SlackAdapter(PlatformAdapter):
                     content.turn,
                     elapsed_seconds=content.elapsed_seconds,
                     interrupt_turn_id=content.interrupt_turn_id,
+                    stopped_by=content.stopped_by,
+                    # Inline: a status message, kept to two short lines.
+                    compact=content.has_session and not content.work_thread,
                 )
                 if not content.status_only
                 else render_activity(
@@ -2041,6 +2609,12 @@ class SlackAdapter(PlatformAdapter):
                 message.blocks[0]["block_id"] = (
                     f"switch-request:{content.publication_token}"
                 )
+            if content.has_session and not content.work_thread:
+                # Inline (a question asked in a thread): this message is the
+                # turn's status, so it is what points back at the question.
+                pointer = self._asked_block(content.asked)
+                if pointer is not None and len(message.blocks) < 50:
+                    message.blocks.insert(0, pointer)
             return message
         assert isinstance(content, RequestCard)
         if content.turn is not None:
@@ -4185,6 +4759,58 @@ class SlackAdapter(PlatformAdapter):
             await self._handle_member_left_channel(event)
         elif event_type == "subteam_updated":
             await self._handle_subteam_updated(event.get("subteam") or {})
+        elif event_type == "agent_session_stopped":
+            await self._handle_session_stopped(event)
+
+    async def _handle_session_stopped(self, event: dict[str, Any]) -> None:
+        """Someone pressed Slack's own Stop on an agent session.
+
+        The session is on a message of the agent's (`open_session`), named by
+        `thread_ts`. It goes on as a press of Switch's own Stop on that
+        message would, so the same check of who may stop the agent applies,
+        and the same answer reaches whoever pressed it. Slack leaves the
+        session `processing` until the app moves it; the turn's ending does
+        that once the agent has stopped.
+        """
+        if self._on_interaction is None:
+            return
+        user_id = str(event.get("user", ""))
+        channel_id = str(event.get("channel", ""))
+        thread_ts = str(event.get("thread_ts", ""))
+        if not user_id or not channel_id or not thread_ts:
+            logger.warning(
+                "Slack agent_session_stopped without a user, channel or thread; "
+                "skipping."
+            )
+            return
+        message_ref = f"{channel_id}:{thread_ts}"
+        self._sessions_stopped[message_ref] = None
+        if len(self._sessions_stopped) > _MAX_OPEN_STREAMS:
+            self._sessions_stopped.popitem(last=False)
+        user = await self._resolve_user_name(user_id)
+        try:
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=channel_id,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    sender_display_name=user.display_name,
+                    action_id=SESSION_STOP_ACTION,
+                    value="",
+                    message_ref=message_ref,
+                    thread_ref=None,
+                )
+            )
+        except Exception as error:
+            logger.error(
+                "Could not act on Slack's Stop pressed by %s in %s: %s",
+                user_id,
+                channel_id,
+                _failure_without_message(error),
+            )
+            await self.tell_actor(
+                channel_id, user_id, user.name, None, COULD_NOT_PROCESS
+            )
 
     async def _handle_interactive(self, payload: dict[str, Any]) -> None:
         """Someone operated a Block Kit control on one of our messages.
