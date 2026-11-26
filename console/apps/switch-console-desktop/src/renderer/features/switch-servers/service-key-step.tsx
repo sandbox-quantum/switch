@@ -1,8 +1,3 @@
-import { CircleCheck, ExternalLink } from 'lucide-react';
-import { useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
-import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
@@ -18,6 +13,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
+import { CircleCheck, ExternalLink } from 'lucide-react';
+import { useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import type {
   ConnectionCatalogEntry,
   ServiceKeyField,

@@ -1,12 +1,12 @@
 import { BuddyStartCard } from '@switch-console/chat-ui/components/buddy-start-card';
 import { MeetBuddyIntro } from '@switch-console/chat-ui/components/meet-buddy-intro';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { TermInfo } from '@switch-console/chat-ui/primitives/term-info';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
-import { TermInfo } from '@switch-console/chat-ui/primitives/term-info';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
 import { offeredAgentProviders } from '@shared/core/providers/agent-provider-registry';
 import { BuddyAvatar } from './buddy-avatar';

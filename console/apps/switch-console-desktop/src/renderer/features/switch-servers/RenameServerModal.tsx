@@ -1,8 +1,4 @@
-import { observer } from 'mobx-react-lite';
-import { useCallback, useState } from 'react';
-import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@switch-console/chat-ui/primitives/button';
-import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
   DialogFooter,
@@ -11,6 +7,10 @@ import {
 } from '@switch-console/chat-ui/primitives/dialog';
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
+import { observer } from 'mobx-react-lite';
+import { useCallback, useState } from 'react';
+import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import { switchServersStore } from './switch-servers-store';
 
 type RenameServerModalArgs = {

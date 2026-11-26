@@ -1,6 +1,3 @@
-import { useCallback, useEffect, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
 import { Badge } from '@switch-console/chat-ui/primitives/badge';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
@@ -9,8 +6,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@switch-console/chat-ui/primitives/dialog';
-import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { useCallback, useEffect, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import { SearchInput } from '@renderer/lib/ui/search-input';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { ConnectionIcon } from './connection-icon';
 import { filterConnections } from './connections-filter';

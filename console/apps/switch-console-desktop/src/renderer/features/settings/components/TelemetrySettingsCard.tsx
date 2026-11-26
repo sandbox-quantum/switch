@@ -1,3 +1,4 @@
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import React, { useCallback } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import {
@@ -7,7 +8,6 @@ import {
   TELEMETRY_SUMMARY,
 } from '@renderer/features/telemetry/telemetry-copy';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { SettingRow } from './SettingRow';
 
 const TelemetrySettingsCard: React.FC = () => {

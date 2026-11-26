@@ -116,7 +116,9 @@ export function missingFieldsMessage(
 }
 
 /** What an untouched form posts for each field: the schema's default. */
-export function fieldDefaults(fields: readonly BridgeConfigField[]): Record<string, string | boolean> {
+export function fieldDefaults(
+  fields: readonly BridgeConfigField[]
+): Record<string, string | boolean> {
   const defaults: Record<string, string | boolean> = {};
   for (const field of fields) {
     if (field.default !== null) defaults[field.key] = field.default;

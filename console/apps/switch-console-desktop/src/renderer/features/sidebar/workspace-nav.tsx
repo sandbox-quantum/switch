@@ -1,3 +1,4 @@
+import { SidebarMenu, SidebarMenuButton } from '@switch-console/chat-ui/primitives/sidebar';
 import {
   Bot,
   DoorOpen,
@@ -18,7 +19,6 @@ import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { cn } from '@renderer/utils/utils';
 import { connectionNeedsAttention } from '@shared/core/switch-rooms/connection-health';
-import { SidebarMenu, SidebarMenuButton } from '@switch-console/chat-ui/primitives/sidebar';
 import { type WorkspaceNavView, workspaceNavViews } from './workspace-nav-views';
 
 /**

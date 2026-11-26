@@ -1,3 +1,5 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { format } from 'date-fns';
 import { Check, Copy, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -6,8 +8,6 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { log } from '@renderer/utils/logger';
 import type { LinkCode, LinkedIdentity } from '@shared/core/switch-servers/switch-servers';
 import { accountHandle, commandToPost, linkRequestFailureText } from './link-accounts-prose';

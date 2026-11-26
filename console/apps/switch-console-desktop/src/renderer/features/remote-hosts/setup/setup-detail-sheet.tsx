@@ -1,3 +1,6 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Field } from '@switch-console/chat-ui/primitives/field';
+import { Label } from '@switch-console/chat-ui/primitives/label';
 import { Check, ChevronRight, Loader2, X } from 'lucide-react';
 import { useState } from 'react';
 /**
@@ -13,9 +16,6 @@ import { useState } from 'react';
  */
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Field } from '@switch-console/chat-ui/primitives/field';
-import { Label } from '@switch-console/chat-ui/primitives/label';
 import { Sheet, SheetContent, SheetHeader } from '@renderer/lib/ui/sheet';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import { cn } from '@renderer/utils/utils';

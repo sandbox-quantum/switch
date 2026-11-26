@@ -50,9 +50,9 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { serverById },
 }));
 
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import { InvitePeopleModal } from '@renderer/features/workspaces/invite-people-modal';
 import { modalStore } from '@renderer/lib/modal/modal-store';
-import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 
 const onClose = vi.fn();

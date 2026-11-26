@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { pickAccent } from '@switch-console/chat-ui/model/agent-accent';
+import { describe, expect, it } from 'vitest';
 
 const pixels = (...rgba: number[][]) => new Uint8ClampedArray(rgba.flat());
 const many = (count: number, rgba: number[]) => Array.from({ length: count }, () => rgba);

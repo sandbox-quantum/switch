@@ -3,7 +3,9 @@
  * workspaces open to its domain: rows, or `unsupported` for a server older
  * than the route, which cannot say whether there are any.
  */
-type Listed<Key extends string, Row> = ({ kind: 'listed' } & Record<Key, Row[]>) | { kind: 'unsupported' };
+type Listed<Key extends string, Row> =
+  | ({ kind: 'listed' } & Record<Key, Row[]>)
+  | { kind: 'unsupported' };
 
 const NONE: never[] = [];
 

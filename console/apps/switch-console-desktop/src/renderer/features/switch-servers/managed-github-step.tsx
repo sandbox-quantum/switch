@@ -1,3 +1,11 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { CircleCheck, ExternalLink, GitBranch, GitPullRequest, ShieldCheck } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -12,14 +20,6 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@switch-console/chat-ui/primitives/dialog';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
 

@@ -1,3 +1,5 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Loader2, Power, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
@@ -7,8 +9,6 @@ import {
   roomHealthKey,
 } from '@renderer/features/switch-rooms/connection-health';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
 import {
   connectionLabels,
   connectionNeedsAttention,

@@ -153,6 +153,7 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { ConnectorAppSetupDialog } from '@renderer/features/admin/connector-app-dialogs';
 import {
   ConnectorAppsSettingsPage,
@@ -160,7 +161,6 @@ import {
   DecisionRoutingSettingsPage,
   GuardrailsSettingsPage,
 } from '@renderer/features/settings/pages/admin-pages';
-import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 
 function service(overrides: Partial<WorkspaceService>): WorkspaceService {
   return {

@@ -1,4 +1,9 @@
 import { type ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import {
+  agentParticipant,
+  type Participant,
+  personParticipant,
+} from '@switch-console/chat-ui/model/participant-search';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -12,11 +17,6 @@ import { administersWorkspaceById } from '@renderer/features/switch-servers/work
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { ParticipantPicker } from '@renderer/lib/components/participant-picker';
-import {
-  agentParticipant,
-  type Participant,
-  personParticipant,
-} from '@switch-console/chat-ui/model/participant-search';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';

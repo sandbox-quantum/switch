@@ -1,9 +1,9 @@
+import { Field } from '@switch-console/chat-ui/primitives/field';
+import { Label } from '@switch-console/chat-ui/primitives/label';
 import { observer } from 'mobx-react-lite';
 import { useAgentSettings } from '@renderer/lib/stores/use-agent-settings';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
-import { Field } from '@switch-console/chat-ui/primitives/field';
-import { Label } from '@switch-console/chat-ui/primitives/label';
 import { Sheet, SheetContent, SheetHeader } from '@renderer/lib/ui/sheet';
 import { asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AgentSheetHeaderSection } from './AgentSheetHeaderSection';

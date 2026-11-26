@@ -1,6 +1,6 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import type { Attachment, SessionChatClient } from '@switch-console/shared/session-v1';
 import { useRef, useState } from 'react';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 
 type Entry = {
   id: string;

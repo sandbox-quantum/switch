@@ -1,7 +1,7 @@
 import { ProviderActionPanel } from '@switch-console/chat-ui/components/provider-choice';
+import { TermInfo } from '@switch-console/chat-ui/primitives/term-info';
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { TermInfo } from '@switch-console/chat-ui/primitives/term-info';
 import { ComputerNote, ProviderCard, SelectedPanel } from './provider-cards';
 import { useProviderSetup } from './use-provider-setup';
 import type { ThisComputer } from './use-this-computer';

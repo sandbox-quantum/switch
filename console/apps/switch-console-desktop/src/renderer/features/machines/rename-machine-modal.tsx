@@ -1,11 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
-import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@switch-console/chat-ui/primitives/button';
-import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
   DialogFooter,
@@ -15,6 +8,13 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
 import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
+import { useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   MAX_MACHINE_DESCRIPTION,
   MAX_MACHINE_NAME,

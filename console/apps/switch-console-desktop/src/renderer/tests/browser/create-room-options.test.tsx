@@ -1,3 +1,11 @@
+import {
+  CreateRoomOptions,
+  RoomChannelField,
+} from '@switch-console/chat-ui/components/create-room-options';
+import {
+  DEFAULT_ROOM_OPTIONS,
+  type RoomCreateOptions,
+} from '@switch-console/chat-ui/model/room-creation';
 /**
  * The New room dialog for a room on a messaging app: the channel choice, always
  * shown as cards, and More options for what is easy to change later — shut at
@@ -8,15 +16,6 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
-
-import {
-  CreateRoomOptions,
-  RoomChannelField,
-} from '@switch-console/chat-ui/components/create-room-options';
-import {
-  DEFAULT_ROOM_OPTIONS,
-  type RoomCreateOptions,
-} from '@switch-console/chat-ui/model/room-creation';
 
 const GROUPS = {
   data: [{ id: 'g1', name: 'Design' }],

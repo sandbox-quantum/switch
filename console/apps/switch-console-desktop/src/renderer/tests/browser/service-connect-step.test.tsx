@@ -30,9 +30,9 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { serverServiceCalls } from '@renderer/features/switch-servers/service-calls';
 import { ServiceConnectStep } from '@renderer/features/switch-servers/service-connect-step';
-import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 
 const EXAMPLE: ConnectionCatalogEntry = {
   slug: 'example',

@@ -1,11 +1,3 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { MoreVertical, Pencil, Shapes, Trash2 } from 'lucide-react';
-import { useEffect, useId, useRef, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
 import { Badge } from '@switch-console/chat-ui/primitives/badge';
 import { Button } from '@switch-console/chat-ui/primitives/button';
@@ -23,9 +15,17 @@ import {
 } from '@switch-console/chat-ui/primitives/dropdown-menu';
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
-import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { MoreVertical, Pencil, Shapes, Trash2 } from 'lucide-react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 import type {
   ManagedReferenceType,
   ReferenceTypeChanges,

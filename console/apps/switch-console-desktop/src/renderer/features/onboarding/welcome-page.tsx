@@ -1,9 +1,9 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { MessagesSquare, ShieldCheck, Users } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 import type { ReactNode } from 'react';
 import { UsageDataNotice } from '@renderer/features/telemetry/usage-data-line';
 import { SwitchConsoleAppIcon } from '@renderer/lib/switch-console-app-icon';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
 
 /**

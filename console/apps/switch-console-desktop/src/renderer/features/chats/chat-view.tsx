@@ -1,8 +1,8 @@
-import { ChatPanel, useAgentActivities } from '@switch-console/chat-ui/components/chat-panel';
 import {
   ChatHeaderControls,
   ChatHeaderTitle,
 } from '@switch-console/chat-ui/components/chat-header';
+import { ChatPanel, useAgentActivities } from '@switch-console/chat-ui/components/chat-panel';
 import {
   UNSAVED_CHAT_NAME,
   UNSAVED_CHAT_PREFIX,
@@ -51,7 +51,12 @@ const ChatTitlebar = observer(function ChatTitlebar() {
       }
       rightSlot={
         chat && (
-          <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities} context={context} />
+          <ChatHeaderControls
+            serverId={params.serverId}
+            chat={chat}
+            activities={activities}
+            context={context}
+          />
         )
       }
     />

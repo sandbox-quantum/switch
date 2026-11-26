@@ -44,12 +44,12 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { create, addToOrganization, setActive: setActiveWorkspace },
 }));
 
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import {
   type CreateTarget,
   CreateWorkspaceModal,
 } from '@renderer/features/workspaces/create-workspace-modal';
 import { modalStore } from '@renderer/lib/modal/modal-store';
-import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 let container: HTMLDivElement | null = null;

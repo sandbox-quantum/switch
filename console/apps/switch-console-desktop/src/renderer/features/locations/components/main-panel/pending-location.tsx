@@ -1,9 +1,9 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { AlertCircle, Check, Loader2, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type UnregisteredLocation } from '@renderer/features/locations/stores/location';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { navigateHome } from '@renderer/features/switch-servers/home-target';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 
 type Stage = 'creating-repo' | 'cloning' | 'registering';
 

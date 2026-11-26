@@ -1,35 +1,4 @@
-import {
-  CircleAlert,
-  ClipboardPaste,
-  DoorClosed,
-  FileText,
-  FileUp,
-  Trash2,
-  Upload,
-} from 'lucide-react';
-import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
-import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerPage } from '@switch-console/chat-ui/components/server-page';
-import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { LIST_PAGE_WIDTH } from '@renderer/lib/components/list-toolbar';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
-import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
-import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
-import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { DropdownMenuItem } from '@switch-console/chat-ui/primitives/dropdown-menu';
-import { SearchInput } from '@renderer/lib/ui/search-input';
-import { PROVIDER_NOT_INSTALLED } from '@shared/core/managed-agents/managed-agents';
-import { useRecentTemplateIds } from './recent-templates';
 import { TemplateCard } from '@switch-console/chat-ui/components/template-card';
 import {
   CreateTemplateMenu,
@@ -44,6 +13,37 @@ import {
   type TemplateScope,
   toggleKind,
 } from '@switch-console/chat-ui/model/template-filters';
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { DropdownMenuItem } from '@switch-console/chat-ui/primitives/dropdown-menu';
+import {
+  CircleAlert,
+  ClipboardPaste,
+  DoorClosed,
+  FileText,
+  FileUp,
+  Trash2,
+  Upload,
+} from 'lucide-react';
+import { observer } from 'mobx-react-lite';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
+import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
+import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { LIST_PAGE_WIDTH } from '@renderer/lib/components/list-toolbar';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
+import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
+import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
+import { SearchInput } from '@renderer/lib/ui/search-input';
+import { PROVIDER_NOT_INSTALLED } from '@shared/core/managed-agents/managed-agents';
+import { useRecentTemplateIds } from './recent-templates';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;

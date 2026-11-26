@@ -1,3 +1,10 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { Minus, Plus, RotateCcw, X } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import {
@@ -5,9 +12,6 @@ import {
   TransformWrapper,
   type ReactZoomPanPinchContentRef,
 } from 'react-zoom-pan-pinch';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 
 interface ZoomableContentDialogProps {
   open: boolean;

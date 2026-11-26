@@ -1,9 +1,6 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { rpc } from '@renderer/lib/ipc';
-import type {
-  JoinableWorkspaces,
-  PendingInvitations,
-} from '@shared/core/workspaces/invitations';
+import type { JoinableWorkspaces, PendingInvitations } from '@shared/core/workspaces/invitations';
 
 export function pendingInvitationsKey(serverId: string): readonly unknown[] {
   return ['pending-invitations', serverId];

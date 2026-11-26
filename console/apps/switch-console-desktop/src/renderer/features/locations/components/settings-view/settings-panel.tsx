@@ -1,7 +1,8 @@
+import { SectionLabel } from '@switch-console/chat-ui/components/agent-page-section';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { AgentInstructionsSection } from '@renderer/features/locations/components/main-panel/agent-instructions-section';
-import { SectionLabel } from '@switch-console/chat-ui/components/agent-page-section';
 import { AddressingPolicySettingsSection } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
 import { AgentAdvancedSettingsSection } from '@renderer/features/locations/components/settings-view/sections/agent-advanced-settings-section';
 import { CanManageAgentsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
@@ -17,7 +18,6 @@ import {
 } from '@renderer/features/locations/stores/location-selectors';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 
 export const SettingsPanel = observer(function SettingsPanel() {
   const {

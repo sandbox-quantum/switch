@@ -1,11 +1,11 @@
 import { BuddyIntroLines } from '@switch-console/chat-ui/components/buddy-intro-lines';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { observer } from 'mobx-react-lite';
 import { useRef } from 'react';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { useCurrentViewId, useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { ONBOARDING_BACKDROP } from '@renderer/lib/ui/wizard-frame';
 import { BuddyAvatar } from './buddy-avatar';
 import { firstNameOf } from './buddy-identity';

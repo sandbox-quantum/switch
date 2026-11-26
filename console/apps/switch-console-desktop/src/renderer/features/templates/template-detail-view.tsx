@@ -1,3 +1,16 @@
+import {
+  FactRow,
+  TemplateCreates,
+  TemplateDetailError,
+  TemplateDetailFrame,
+  TemplateDetailHeader,
+  TemplateDetailLoading,
+  TemplateDocument,
+  TemplateProblem,
+} from '@switch-console/chat-ui/components/template-detail';
+import { accessLine, accessOf } from '@switch-console/chat-ui/model/template-visibility';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
 import { Check, Copy, Download, FileText, Pencil, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
@@ -11,22 +24,9 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
-import {
-  FactRow,
-  TemplateCreates,
-  TemplateDetailError,
-  TemplateDetailFrame,
-  TemplateDetailHeader,
-  TemplateDetailLoading,
-  TemplateDocument,
-  TemplateProblem,
-} from '@switch-console/chat-ui/components/template-detail';
 import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
 import { recordTemplateOpened } from './recent-templates';
-import { accessLine, accessOf } from '@switch-console/chat-ui/model/template-visibility';
 import { isRequired, paramLabel, typeLabel } from './use/use-template-model';
 
 function useViewParams() {

@@ -1,11 +1,3 @@
-import { useQuery } from '@tanstack/react-query';
-import { observer } from 'mobx-react-lite';
-import { useEffect, useReducer, useState } from 'react';
-import { CopyButton } from '@renderer/features/admin/copy-button';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
@@ -17,6 +9,14 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
 import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { useQuery } from '@tanstack/react-query';
+import { observer } from 'mobx-react-lite';
+import { useEffect, useReducer, useState } from 'react';
+import { CopyButton } from '@renderer/features/admin/copy-button';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import {
   enrollCommand,
   enrollmentRefusal,

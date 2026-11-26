@@ -2,13 +2,13 @@ import {
   OnboardingSurface,
   type WizardExit,
 } from '@switch-console/chat-ui/components/onboarding-surface';
-import { createContext, useContext, type ReactNode } from 'react';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@switch-console/chat-ui/primitives/dialog';
+import { createContext, useContext, type ReactNode } from 'react';
 import { StepPager } from './step-pager';
 
 export {

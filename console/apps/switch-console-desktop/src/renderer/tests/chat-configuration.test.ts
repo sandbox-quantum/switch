@@ -140,7 +140,6 @@ describe("a group chat's configuration", () => {
     // Leaving needs no manager rights.
     expect(html).toContain('Leave room…');
   });
-
 });
 
 describe('chatMembersQueryKey', () => {

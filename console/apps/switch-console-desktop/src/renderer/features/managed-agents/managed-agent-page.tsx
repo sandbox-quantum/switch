@@ -1,3 +1,13 @@
+import { summariseValues } from '@switch-console/chat-ui/components/advanced-config-disclosure';
+import { AgentSettingsPage } from '@switch-console/chat-ui/components/agent-settings-page';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -29,11 +39,6 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { workspaceAgentsQueryKey } from '@renderer/lib/stores/use-workspace-agents';
-import { summariseValues } from '@switch-console/chat-ui/components/advanced-config-disclosure';
-import { AgentSettingsPage } from '@switch-console/chat-ui/components/agent-settings-page';
-import { Badge } from '@switch-console/chat-ui/primitives/badge';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import {
   type AdvancedConfigField,
   isCloudMachine,

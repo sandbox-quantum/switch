@@ -28,10 +28,10 @@ vi.mock('@renderer/lib/ipc', () => ({
 }));
 vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import { RequireLinkConfirmationModal } from '@renderer/features/switch-servers/RequireLinkConfirmationModal';
 import { unconfirmedLinksQueryKey } from '@renderer/features/switch-servers/unconfirmed-links';
 import { myIdentitiesQueryKey } from '@renderer/features/switch-servers/use-my-identities';
-import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 
 const LINKS = [
   { id: 'eu-1', externalUserId: 'U1', externalUsername: 'ada', userId: 'u1', userName: 'Ada' },

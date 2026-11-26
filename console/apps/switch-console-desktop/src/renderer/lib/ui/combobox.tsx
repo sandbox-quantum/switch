@@ -1,7 +1,7 @@
 import { Combobox as ComboboxPrimitive } from '@base-ui/react';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { CheckIcon, XIcon } from 'lucide-react';
 import * as React from 'react';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   InputGroup,
   InputGroupAddon,

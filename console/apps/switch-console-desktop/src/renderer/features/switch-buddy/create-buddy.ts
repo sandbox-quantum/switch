@@ -1,8 +1,11 @@
-import { createBuddy as createBuddyShared, type TemplateRunResult } from '@switch-console/chat-ui/model/create-buddy';
-import { BUDDY_TEMPLATE_ID } from './buddy-identity';
-import { rpc } from '@renderer/lib/ipc';
-import { reportBuddyStep } from './buddy-telemetry';
+import {
+  createBuddy as createBuddyShared,
+  type TemplateRunResult,
+} from '@switch-console/chat-ui/model/create-buddy';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { rpc } from '@renderer/lib/ipc';
+import { BUDDY_TEMPLATE_ID } from './buddy-identity';
+import { reportBuddyStep } from './buddy-telemetry';
 
 /**
  * Creates the person's buddy on this computer with `provider`, from the
@@ -32,7 +35,13 @@ export async function createBuddy(input: {
         });
         return { content: template.definition, name: template.name };
       },
-      runTemplate: async ({ content, name, agentName, provider, machine }): Promise<TemplateRunResult> => {
+      runTemplate: async ({
+        content,
+        name,
+        agentName,
+        provider,
+        machine,
+      }): Promise<TemplateRunResult> => {
         const result = await rpc.workspaces.runTemplateDocument(input.workspaceId, {
           template: content,
           inputs: { agent_name: agentName, provider, machine },
@@ -43,7 +52,8 @@ export async function createBuddy(input: {
         });
         if (result.kind === 'created') {
           const created = result.createdAgents[0];
-          if (!created) return { kind: 'failed', message: 'The server created no agent for switch-buddy.' };
+          if (!created)
+            return { kind: 'failed', message: 'The server created no agent for switch-buddy.' };
           return { kind: 'created', agentId: created.agentId, name: created.name };
         }
         if (result.problems.some((problem) => problem.code === 'name_taken'))

@@ -15,7 +15,9 @@ export function AgentProfileActions({ agent }: { agent: ManagedAgentView }) {
     <SharedAgentProfileActions
       desiredState={agent.desiredState}
       busy={busy}
-      onToggleState={() => void setDesiredState(agent.desiredState === 'running' ? 'stopped' : 'running')}
+      onToggleState={() =>
+        void setDesiredState(agent.desiredState === 'running' ? 'stopped' : 'running')
+      }
       onMove={() => showMoveModal({ agent })}
     />
   );

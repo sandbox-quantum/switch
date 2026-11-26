@@ -1,5 +1,3 @@
-import { TriangleAlert } from 'lucide-react';
-import { useState } from 'react';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Dialog,
@@ -11,6 +9,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@switch-console/chat-ui/primitives/dialog';
+import { TriangleAlert } from 'lucide-react';
+import { useState } from 'react';
 
 /**
  * Throwing away a managed stack, at the very bottom of its server's page.

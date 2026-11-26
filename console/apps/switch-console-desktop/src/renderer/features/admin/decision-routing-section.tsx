@@ -1,13 +1,18 @@
-import { useEffect, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
 import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
-import { Field, FieldDescription, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
-import { RadioGroup, RadioGroupItem } from '@renderer/lib/ui/radio-group';
 import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { useEffect, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import { RadioGroup, RadioGroupItem } from '@renderer/lib/ui/radio-group';
 import type {
   ClearDecisionSettingsResult,
   DecisionSettings,

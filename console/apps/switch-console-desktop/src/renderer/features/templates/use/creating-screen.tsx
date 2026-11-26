@@ -1,5 +1,5 @@
-import { Check, Circle, Loader2, TriangleAlert } from 'lucide-react';
 import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Check, Circle, Loader2, TriangleAlert } from 'lucide-react';
 import { cn } from '@renderer/utils/utils';
 import type { CreateStep, CreateStepStatus } from './use-template-model';
 

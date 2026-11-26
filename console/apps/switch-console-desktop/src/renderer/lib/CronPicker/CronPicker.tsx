@@ -1,4 +1,3 @@
-import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Input } from '@switch-console/chat-ui/primitives/input';
 import {
   Select,
@@ -7,6 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '@renderer/utils/utils';
 import {
   changePeriod,

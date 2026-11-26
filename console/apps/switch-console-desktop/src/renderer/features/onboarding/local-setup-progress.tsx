@@ -1,9 +1,9 @@
 import { SetupChecklist } from '@switch-console/chat-ui/components/setup-checklist';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { LocalSetupStep } from '@renderer/features/switch-servers/AddServerModal';
 import { localServerStore } from '@renderer/features/switch-servers/local-server-store';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
 import { SETUP_STAGES, setupStage } from './setup-stages';
 

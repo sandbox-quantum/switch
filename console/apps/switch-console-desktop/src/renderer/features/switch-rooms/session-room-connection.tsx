@@ -1,3 +1,4 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Loader2, Unplug } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -5,7 +6,6 @@ import { useEffect, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { connectionLabels } from '@shared/core/switch-rooms/connection-health';
 import { useAgentConnection, roomHealthKey } from './connection-health';
 import { switchRoomsStore } from './switch-rooms-store';

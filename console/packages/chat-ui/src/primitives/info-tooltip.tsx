@@ -1,6 +1,10 @@
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@switch-console/chat-ui/primitives/popover';
 import { Info } from 'lucide-react';
 import React from 'react';
-import { Popover, PopoverContent, PopoverTrigger } from '@switch-console/chat-ui/primitives/popover';
 
 /**
  * An "i" button that shows its explanation when clicked, and on hover. A

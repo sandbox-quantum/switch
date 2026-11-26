@@ -1,4 +1,9 @@
 import { byLatestDirectChat } from '@switch-console/chat-ui/model/agent-conversations';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { Cloud, CloudOff, Server, ServerOff } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
@@ -7,7 +12,6 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { getProvider, isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { type AgentPresence, SidebarAgentRow } from '../sidebar/agent-row';

@@ -116,7 +116,8 @@ export function AgentSettingsPage({
               </div>
               {title !== identity.name && (
                 <p className="text-sm text-foreground-muted">
-                  {machineWord === 'machine' ? 'Machine name' : 'Name'}: <span className="font-mono">{identity.name}</span>
+                  {machineWord === 'machine' ? 'Machine name' : 'Name'}:{' '}
+                  <span className="font-mono">{identity.name}</span>
                 </p>
               )}
               {(identity.onDescriptionChange || identity.description) && (

@@ -1,10 +1,3 @@
-import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
-import { toast } from 'sonner';
-import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
-import { describeFailure } from '@renderer/lib/errors/describe-failure';
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
@@ -15,6 +8,13 @@ import {
 import { Input } from '@switch-console/chat-ui/primitives/input';
 import { Label } from '@switch-console/chat-ui/primitives/label';
 import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { observer } from 'mobx-react-lite';
+import { useState } from 'react';
+import { toast } from 'sonner';
+import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { appState } from '@renderer/lib/stores/app-state';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchServersStore } from './switch-servers-store';

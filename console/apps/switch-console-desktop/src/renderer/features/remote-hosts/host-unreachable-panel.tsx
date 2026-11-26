@@ -1,6 +1,6 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { PlugZap, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import type { HostReachability } from '@shared/core/remote-hosts/reachability';
 import { hostReachabilityStore } from './host-reachability-store';
 

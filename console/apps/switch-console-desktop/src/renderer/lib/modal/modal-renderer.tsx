@@ -1,4 +1,5 @@
 import { Dialog as DialogPrimitive } from '@base-ui/react/dialog';
+import { Dialog, DialogOverlay, DialogPortal } from '@switch-console/chat-ui/primitives/dialog';
 import { reaction } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef } from 'react';
@@ -8,7 +9,6 @@ import {
   type ModalRegistryEntry,
   type ModalSize,
 } from '@renderer/app/modal-registry';
-import { Dialog, DialogOverlay, DialogPortal } from '@switch-console/chat-ui/primitives/dialog';
 import { cn } from '@renderer/utils/utils';
 import { shouldCloseModalOnDismiss } from './dismissal';
 import { modalStore } from './modal-store';

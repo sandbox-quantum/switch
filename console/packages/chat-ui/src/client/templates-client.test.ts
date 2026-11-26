@@ -2,9 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createTemplatesClient, type TemplateRunAgent } from './templates-client';
 
 describe('createTemplatesClient', () => {
-  const mockCall = vi.fn<
-    (path: string, request: { method?: string; body?: unknown }) => Promise<Response>
-  >();
+  const mockCall =
+    vi.fn<(path: string, request: { method?: string; body?: unknown }) => Promise<Response>>();
 
   const client = createTemplatesClient({ call: mockCall });
 

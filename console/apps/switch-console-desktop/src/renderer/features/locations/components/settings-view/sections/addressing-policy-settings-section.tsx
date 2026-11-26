@@ -1,3 +1,4 @@
+import { InfoTooltip } from '@switch-console/chat-ui/primitives/info-tooltip';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { AddressingPolicyControl } from '@renderer/features/switch-servers/addressing-policy-control';
@@ -6,7 +7,6 @@ import {
   policyHasDeadRule,
 } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
-import { InfoTooltip } from '@switch-console/chat-ui/primitives/info-tooltip';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';

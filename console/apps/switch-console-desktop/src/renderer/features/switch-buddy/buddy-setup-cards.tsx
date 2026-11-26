@@ -3,6 +3,9 @@ import {
   BuddySetupCards as SharedBuddySetupCards,
 } from '@switch-console/chat-ui/components/buddy-setup-cards';
 import { consoleLink } from '@switch-console/chat-ui/model/console-links';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { SwitchConsoleMark } from '@switch-console/chat-ui/primitives/switch-console-mark';
+import { TermInfo } from '@switch-console/chat-ui/primitives/term-info';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
@@ -10,15 +13,12 @@ import { followConsoleLink } from '@renderer/features/deeplinks/console-link-han
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { BridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { CopyCommand } from '@renderer/lib/components/copy-command';
-import { TermInfo } from '@switch-console/chat-ui/primitives/term-info';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { reportOpenAttempt } from '@renderer/lib/open-external';
 import { appState } from '@renderer/lib/stores/app-state';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
-import { SwitchConsoleMark } from '@switch-console/chat-ui/primitives/switch-console-mark';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { typedCommand } from '@shared/core/switch-servers/typed-command';
 import { buddyHandoffRefusal } from './buddy-setup-step';

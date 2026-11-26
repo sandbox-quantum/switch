@@ -88,7 +88,10 @@ const REPORT_PATIENCE_MS = 60_000;
  * a report made a minute after it connected is one it does not run. False
  * while either time is unknown.
  */
-export function providerReportSettled(connectedAt: string | null, observedAt: string | null): boolean {
+export function providerReportSettled(
+  connectedAt: string | null,
+  observedAt: string | null
+): boolean {
   if (!connectedAt || !observedAt) return false;
   return Date.parse(observedAt) - Date.parse(connectedAt) >= REPORT_PATIENCE_MS;
 }

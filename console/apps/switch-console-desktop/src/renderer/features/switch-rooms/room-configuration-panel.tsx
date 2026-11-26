@@ -1,10 +1,16 @@
+import {
+  confirmLeaveChat,
+  type ChatRemovalContext,
+} from '@switch-console/chat-ui/components/chat-actions';
 import { type ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { useChatHost } from '@switch-console/chat-ui/host';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import { useQueryClient } from '@tanstack/react-query';
 import { Archive, FileText, Loader2, Lock, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
-import { confirmLeaveChat, type ChatRemovalContext } from '@switch-console/chat-ui/components/chat-actions';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
@@ -20,9 +26,6 @@ import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Input } from '@switch-console/chat-ui/primitives/input';
-import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import { cn } from '@renderer/utils/utils';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { RoomAutoRouteSection } from './room-auto-route-section';

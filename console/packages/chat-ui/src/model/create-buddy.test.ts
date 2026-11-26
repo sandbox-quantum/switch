@@ -22,14 +22,14 @@ describe('createBuddy', () => {
   it('returns existing buddy if found', async () => {
     const existing = {
       agentId: 'agent-1',
-      name: "switch-buddy-alice",
+      name: 'switch-buddy-alice',
       template: { id: 'official:switch-buddy', key: 'buddy' },
     };
     vi.mocked(deps.listAgents).mockResolvedValue([existing]);
 
     const result = await createBuddy(person, provider, machine, deps);
 
-    expect(result).toEqual({ agentId: 'agent-1', name: "switch-buddy-alice" });
+    expect(result).toEqual({ agentId: 'agent-1', name: 'switch-buddy-alice' });
     expect(deps.runTemplate).not.toHaveBeenCalled();
   });
 
@@ -38,16 +38,16 @@ describe('createBuddy', () => {
     vi.mocked(deps.runTemplate).mockResolvedValue({
       kind: 'created',
       agentId: 'agent-2',
-      name: "switch-buddy-alice",
+      name: 'switch-buddy-alice',
     });
 
     const result = await createBuddy(person, provider, machine, deps);
 
-    expect(result).toEqual({ agentId: 'agent-2', name: "switch-buddy-alice" });
+    expect(result).toEqual({ agentId: 'agent-2', name: 'switch-buddy-alice' });
     expect(deps.runTemplate).toHaveBeenCalledWith({
       content: template.content,
       name: template.name,
-      agentName: "switch-buddy-alice",
+      agentName: 'switch-buddy-alice',
       provider,
       machine,
     });
@@ -67,9 +67,7 @@ describe('createBuddy', () => {
   });
 
   it('retries with next name when name is taken', async () => {
-    vi.mocked(deps.listAgents).mockResolvedValue([
-      { agentId: 'agent-other', name: 'Other agent' },
-    ]);
+    vi.mocked(deps.listAgents).mockResolvedValue([{ agentId: 'agent-other', name: 'Other agent' }]);
     vi.mocked(deps.runTemplate)
       .mockResolvedValueOnce({ kind: 'name_taken' } as TemplateRunResult)
       .mockResolvedValueOnce({
@@ -146,9 +144,7 @@ describe('createBuddy', () => {
   });
 
   it('accumulates taken names across retries', async () => {
-    vi.mocked(deps.listAgents).mockResolvedValue([
-      { agentId: 'agent-1', name: 'First taken' },
-    ]);
+    vi.mocked(deps.listAgents).mockResolvedValue([{ agentId: 'agent-1', name: 'First taken' }]);
     vi.mocked(deps.runTemplate)
       .mockResolvedValueOnce({ kind: 'name_taken' } as TemplateRunResult)
       .mockResolvedValueOnce({ kind: 'name_taken' } as TemplateRunResult)

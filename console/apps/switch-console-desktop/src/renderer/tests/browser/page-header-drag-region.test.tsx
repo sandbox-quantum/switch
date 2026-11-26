@@ -1,8 +1,8 @@
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
+import { PageSidebarMenu } from '@switch-console/chat-ui/primitives/page-layout';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it } from 'vitest';
-import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
-import { PageSidebarMenu } from '@switch-console/chat-ui/primitives/page-layout';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;

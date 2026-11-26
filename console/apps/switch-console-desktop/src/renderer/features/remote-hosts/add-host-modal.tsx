@@ -7,12 +7,6 @@
  * looks like one.
  */
 
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Plus } from 'lucide-react';
-import { useMemo, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
-import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
@@ -30,6 +24,12 @@ import {
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
 import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Plus } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { log } from '@renderer/utils/logger';
 
 export type AddHostModalProps = BaseModalProps<void> & {

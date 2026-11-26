@@ -1,3 +1,4 @@
+import { AdvancedConfigDisclosure as Disclosure } from '@switch-console/chat-ui/components/advanced-config-disclosure';
 import type { RepoAgentField } from '@switch-console/core/agents/plugins';
 import {
   DefinitionFieldInput,
@@ -9,7 +10,6 @@ import {
   fieldWithCatalogue,
   type ModelCatalogueResult,
 } from '@renderer/features/locations/components/agent-model-catalogue';
-import { AdvancedConfigDisclosure as Disclosure } from '@switch-console/chat-ui/components/advanced-config-disclosure';
 
 /**
  * An agent page's "Advanced configuration", each field drawn with Console's

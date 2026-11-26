@@ -8,7 +8,11 @@ import {
   ACCESS_ORDER,
   roomAccessForChannel,
 } from '../model/room-access';
-import { channelChoiceCards, channelChoiceOf, channelIdProblem } from '../model/room-channel-choices';
+import {
+  channelChoiceCards,
+  channelChoiceOf,
+  channelIdProblem,
+} from '../model/room-channel-choices';
 import type { RoomCreateOptions } from '../model/room-creation';
 import { DisclosureRow } from '../primitives/disclosure-row';
 import { Field, FieldLabel } from '../primitives/field';

@@ -1,3 +1,10 @@
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
@@ -9,13 +16,6 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@switch-console/chat-ui/primitives/dialog';
-import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { log } from '@renderer/utils/logger';
 
 export type AssignServerModalProps = BaseModalProps & {

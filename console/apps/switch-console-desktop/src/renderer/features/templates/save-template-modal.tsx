@@ -1,9 +1,8 @@
-import { useId, useState } from 'react';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import {
+  TEMPLATE_ACCESS_OPTIONS,
+  type TemplateAccess,
+  visibilityOf,
+} from '@switch-console/chat-ui/model/template-visibility';
 import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
 import { Badge } from '@switch-console/chat-ui/primitives/badge';
 import { Button } from '@switch-console/chat-ui/primitives/button';
@@ -15,9 +14,14 @@ import {
 } from '@switch-console/chat-ui/primitives/dialog';
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
-import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
-import { TEMPLATE_ACCESS_OPTIONS, type TemplateAccess, visibilityOf } from '@switch-console/chat-ui/model/template-visibility';
+import { useId, useState } from 'react';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 
 export type SaveTemplateArgs = {
   serverId: string;

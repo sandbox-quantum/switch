@@ -1,10 +1,14 @@
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { observer } from 'mobx-react-lite';
 import { AgentStatusIndicator } from '@renderer/features/sessions/components/agent-status-indicator';
 import { sessionAgentStatus } from '@renderer/features/sessions/stores/session-selectors';
 import { type SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { useDelayedBoolean } from '@renderer/lib/hooks/use-delay-boolean';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 
 /**
  * Sidebar trailing slot: a spinner while the session is being created, the

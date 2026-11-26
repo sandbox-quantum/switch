@@ -1,10 +1,14 @@
+import { SidebarItemMiniButton } from '@switch-console/chat-ui/primitives/sidebar';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { TriangleAlert } from 'lucide-react';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
-import { SidebarItemMiniButton } from '@switch-console/chat-ui/primitives/sidebar';
 
 /** Every agent's discovery failure, polled once and shared by all the rows that ask. */
 export function useDiscoveryFailures() {

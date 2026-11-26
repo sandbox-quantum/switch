@@ -1,3 +1,5 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useQuery } from '@tanstack/react-query';
 import {
   Check,
@@ -15,9 +17,7 @@ import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon'
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import type {
   LinkCode,

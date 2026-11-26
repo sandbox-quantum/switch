@@ -1,12 +1,12 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
+import { RelativeTime } from '@switch-console/chat-ui/primitives/relative-time';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { CircleCheck, Monitor, RefreshCw, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { RelativeTime } from '@switch-console/chat-ui/primitives/relative-time';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { cn } from '@renderer/utils/utils';
 import type { MigrationMachine } from '@shared/core/agent-migration/agent-migration';

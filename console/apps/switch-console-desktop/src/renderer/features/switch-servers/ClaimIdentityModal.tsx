@@ -1,10 +1,3 @@
-import { useQuery } from '@tanstack/react-query';
-import { Info } from 'lucide-react';
-import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
-import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
-import { rpc } from '@renderer/lib/ipc';
-import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
@@ -12,6 +5,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@switch-console/chat-ui/primitives/dialog';
+import { useQuery } from '@tanstack/react-query';
+import { Info } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
+import { useState } from 'react';
+import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { rpc } from '@renderer/lib/ipc';
+import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import {
   DEFAULT_DIRECTORY_SEARCH_HINT,
   type LinkCode,

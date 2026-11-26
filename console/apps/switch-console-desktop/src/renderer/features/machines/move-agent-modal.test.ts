@@ -1,10 +1,10 @@
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ManagedAgentView, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
-import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { MoveAgentModal } from './move-agent-modal';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

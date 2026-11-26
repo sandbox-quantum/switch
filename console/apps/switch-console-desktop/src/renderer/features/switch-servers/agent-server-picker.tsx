@@ -1,9 +1,3 @@
-import { useQuery } from '@tanstack/react-query';
-import { CheckCircle2, CircleAlert, Loader2 } from 'lucide-react';
-import { observer } from 'mobx-react-lite';
-import { useEffect } from 'react';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { rpc } from '@renderer/lib/ipc';
 import {
   Select,
   SelectContent,
@@ -11,6 +5,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
+import { useQuery } from '@tanstack/react-query';
+import { CheckCircle2, CircleAlert, Loader2 } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
+import { useEffect } from 'react';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { rpc } from '@renderer/lib/ipc';
 import { cn } from '@renderer/utils/utils';
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
 import { switchServersStore } from './switch-servers-store';

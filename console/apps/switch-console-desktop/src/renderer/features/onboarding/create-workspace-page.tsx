@@ -1,11 +1,11 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import { useState } from 'react';
 import { createWorkspaceFailureText } from '@renderer/features/workspaces/describe-create-failure';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
-import { Input } from '@switch-console/chat-ui/primitives/input';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { Workspace } from '@shared/core/workspaces/workspaces';

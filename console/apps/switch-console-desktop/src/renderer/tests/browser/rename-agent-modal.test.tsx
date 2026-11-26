@@ -23,11 +23,11 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({ rpc: rpcMock, events: { on: () => () => {} } }));
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import {
   RenameAgentModal,
   type RenameAgentResult,
 } from '@renderer/features/agent-identity/rename-agent-modal';
-import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;

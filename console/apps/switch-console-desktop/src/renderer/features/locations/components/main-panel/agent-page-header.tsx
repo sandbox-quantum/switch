@@ -1,3 +1,5 @@
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { AgentIdentityActions } from '@renderer/features/agent-identity/agent-identity-actions';
@@ -18,8 +20,6 @@ import {
   workspaceAgentsQueryKey,
   useWorkspaceAgents,
 } from '@renderer/lib/stores/use-workspace-agents';
-import { Badge } from '@switch-console/chat-ui/primitives/badge';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 
 /**

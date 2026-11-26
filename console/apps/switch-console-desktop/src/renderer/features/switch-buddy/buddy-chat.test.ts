@@ -1,8 +1,8 @@
+import type { ChatAgent, ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { chatSummarySchema } from '@switch-console/chat-ui/contracts/chats';
 import { QueryClient } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents-key';
-import type { ChatAgent, ChatSummary } from '@switch-console/chat-ui/contracts/chats';
-import { chatSummarySchema } from '@switch-console/chat-ui/contracts/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import {
   cachedOwnAgents,

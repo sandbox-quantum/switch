@@ -1,10 +1,10 @@
+import { UnsavedChangesBar } from '@switch-console/chat-ui/components/agent-settings-page';
 import { useHotkey } from '@tanstack/react-hotkeys';
 import { useRef } from 'react';
 import {
   getEffectiveHotkey,
   getHotkeyRegistration,
 } from '@renderer/lib/hooks/useKeyboardShortcuts';
-import { UnsavedChangesBar } from '@switch-console/chat-ui/components/agent-settings-page';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { useAgentEdits } from './agent-edits';
 

@@ -1,5 +1,9 @@
 import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
 

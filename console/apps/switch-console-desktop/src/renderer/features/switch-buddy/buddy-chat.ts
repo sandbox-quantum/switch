@@ -1,7 +1,7 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import type { QueryClient } from '@tanstack/react-query';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents-key';
 import { log } from '@renderer/utils/logger';
-import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { isBuddy } from './buddy-identity';
 

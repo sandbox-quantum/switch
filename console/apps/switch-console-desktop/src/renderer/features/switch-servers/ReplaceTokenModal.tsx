@@ -1,12 +1,5 @@
-import { KeyRound } from 'lucide-react';
-import { useCallback, useState } from 'react';
-import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
-import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { isMissingRequired } from '@switch-console/chat-ui/model/connect-messaging-app';
 import { Button } from '@switch-console/chat-ui/primitives/button';
-import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
   DialogFooter,
@@ -15,11 +8,18 @@ import {
 } from '@switch-console/chat-ui/primitives/dialog';
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
+import { KeyRound } from 'lucide-react';
+import { useCallback, useState } from 'react';
+import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
+import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import type {
   BridgeConfigField,
   UpdateBridgeResult,
 } from '@shared/core/switch-servers/switch-servers';
-import { isMissingRequired } from '@switch-console/chat-ui/model/connect-messaging-app';
 
 type ReplaceTokenModalArgs = {
   workspaceId: string;

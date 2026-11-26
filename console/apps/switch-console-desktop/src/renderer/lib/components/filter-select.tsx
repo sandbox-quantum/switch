@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react';
 import {
   Select,
   SelectContent,
@@ -6,6 +5,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
+import type { ReactNode } from 'react';
 
 const ANY = '__any__';
 

@@ -1,7 +1,3 @@
-import { FolderOpen, Play } from 'lucide-react';
-import React from 'react';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
-import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Select,
@@ -11,7 +7,16 @@ import {
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
 import { Switch } from '@switch-console/chat-ui/primitives/switch';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
+import { FolderOpen, Play } from 'lucide-react';
+import React from 'react';
+import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { rpc } from '@renderer/lib/ipc';
 import { configureSoundPlayer, soundPlayer } from '@renderer/utils/soundPlayer';
 import { cn } from '@renderer/utils/utils';
 import type { NotificationSettings } from '@shared/core/app-settings';

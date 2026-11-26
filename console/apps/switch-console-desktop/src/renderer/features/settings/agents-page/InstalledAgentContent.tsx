@@ -1,14 +1,19 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Field } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Label } from '@switch-console/chat-ui/primitives/label';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { useForm } from '@tanstack/react-form';
 import { ChevronRight, Info, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React, { useCallback, useEffect, useState } from 'react';
 import { parseEnvAssignmentPaste, replaceEnvEntryWithPaste } from '@renderer/lib/env-paste';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/lib/ui/collapsible';
-import { Field } from '@switch-console/chat-ui/primitives/field';
-import { Input } from '@switch-console/chat-ui/primitives/input';
-import { Label } from '@switch-console/chat-ui/primitives/label';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import { log } from '@renderer/utils/logger';
 import { cn } from '@renderer/utils/utils';
 import type { ProviderCustomConfig } from '@shared/core/app-settings';

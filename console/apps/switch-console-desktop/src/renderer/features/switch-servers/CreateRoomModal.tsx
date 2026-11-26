@@ -124,7 +124,8 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     const offered = bridged
       ? invitableAgents(agentsQuery.data ?? [], invitableQuery.data).filter(
           (remote) =>
-            workspaceId !== null && (managedProviders.has(remote.id) || localAgentIds.has(remote.id))
+            workspaceId !== null &&
+            (managedProviders.has(remote.id) || localAgentIds.has(remote.id))
         )
       : addableAgents(agentsQuery.data ?? [], allowedQuery.data ?? []);
     const failed = agentsQuery.isError || (!bridged && allowedQuery.isError);

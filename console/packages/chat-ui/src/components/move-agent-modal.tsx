@@ -53,7 +53,15 @@ const TONE_PILL_COLORS = {
   warning: 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-400',
 } as const;
 
-function TonePill({ tone, label, dot = true }: { tone: keyof typeof TONE_PILL_COLORS; label: string; dot?: boolean }) {
+function TonePill({
+  tone,
+  label,
+  dot = true,
+}: {
+  tone: keyof typeof TONE_PILL_COLORS;
+  label: string;
+  dot?: boolean;
+}) {
   return (
     <span
       className={cn(
@@ -119,11 +127,7 @@ function TargetRow({
             {machine.thisComputer ? 'This computer' : machine.name}
           </span>
           {!machine.thisComputer && machine.kind !== 'unknown' && machine.kindLabel && (
-            <TonePill
-              tone="idle"
-              dot={false}
-              label={machine.kindLabel}
-            />
+            <TonePill tone="idle" dot={false} label={machine.kindLabel} />
           )}
           {!machine.thisComputer && machine.kind !== 'unknown' && !machine.kindLabel && (
             <TonePill
@@ -164,8 +168,7 @@ export function MoveAgentModal({
   confirmButtonRef,
 }: MoveAgentModalProps) {
   const [picked, setPicked] = useState<string | null>(null);
-  const chosen =
-    machines?.find((m) => m.id === picked && m.selectable)?.id ?? null;
+  const chosen = machines?.find((m) => m.id === picked && m.selectable)?.id ?? null;
 
   const handleMove = async () => {
     if (!chosen) return;
@@ -231,7 +234,11 @@ export function MoveAgentModal({
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <Button ref={confirmButtonRef} onClick={() => void handleMove()} disabled={!chosen || moving}>
+        <Button
+          ref={confirmButtonRef}
+          onClick={() => void handleMove()}
+          disabled={!chosen || moving}
+        >
           {moving ? 'Moving…' : confirmLabel}
         </Button>
       </DialogFooter>

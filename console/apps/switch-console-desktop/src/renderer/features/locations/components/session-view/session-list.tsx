@@ -1,7 +1,8 @@
+import { SectionLabel } from '@switch-console/chat-ui/components/agent-page-section';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useHotkey } from '@tanstack/react-hotkeys';
 import { Archive, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { SectionLabel } from '@switch-console/chat-ui/components/agent-page-section';
 import {
   asMounted,
   getLocationStore,
@@ -15,7 +16,6 @@ import {
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { modalStore } from '@renderer/lib/modal/modal-store';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { SessionRow, type ReadySession } from './session-row';
 

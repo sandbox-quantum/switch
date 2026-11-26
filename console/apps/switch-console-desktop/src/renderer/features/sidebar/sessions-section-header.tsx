@@ -1,4 +1,23 @@
 import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { SectionLabel } from '@switch-console/chat-ui/primitives/label';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
+import {
   ChevronsDownUp,
   DoorOpen,
   Laptop,
@@ -16,21 +35,6 @@ import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon'
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@switch-console/chat-ui/primitives/dropdown-menu';
-import { SectionLabel } from '@switch-console/chat-ui/primitives/label';
-import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import { getProvider } from '@shared/core/providers/agent-provider-registry';

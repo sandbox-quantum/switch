@@ -1,4 +1,3 @@
-import { DoorOpen, FileText, Link2, MoreVertical, Package, Trash2 } from 'lucide-react';
 import { Badge } from '@switch-console/chat-ui/primitives/badge';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
@@ -7,7 +6,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@switch-console/chat-ui/primitives/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
+import { DoorOpen, FileText, Link2, MoreVertical, Package, Trash2 } from 'lucide-react';
 import type { LibraryItem } from '@shared/core/switch-servers/library';
 import {
   ACCESS_SHORT,

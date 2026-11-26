@@ -1,7 +1,5 @@
-import { useId, useState } from 'react';
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
-import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import {
   Select,
@@ -11,6 +9,8 @@ import {
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
 import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
+import { useId, useState } from 'react';
+import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type { LibraryKind, ReferenceTypeOption } from '@shared/core/switch-servers/library';
 import type { LibraryForm } from './library-form';
 import { LIBRARY_ACCESS_OPTIONS } from './library-model';

@@ -113,10 +113,10 @@ vi.mock('@renderer/lib/hooks/useTheme', () => ({
   useTheme: () => ({ effectiveTheme: 'emlight' }),
 }));
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { LocalSetupProgress } from '@renderer/features/onboarding/local-setup-progress';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { ExternalServerStep } from '@renderer/features/switch-servers/AddServerModal';
-import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;

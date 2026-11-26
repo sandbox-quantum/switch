@@ -6,7 +6,13 @@ import type {
   DecisionTestOutcome,
 } from '../contracts/decision-routing';
 
-export type { DecisionBackend, DecisionSettings, DecisionSettingsInput, DecisionTestInput, DecisionTestOutcome };
+export type {
+  DecisionBackend,
+  DecisionSettings,
+  DecisionSettingsInput,
+  DecisionTestInput,
+  DecisionTestOutcome,
+};
 
 export type DecisionChoice = 'server_default' | DecisionBackend;
 

@@ -12,13 +12,13 @@
  * contradict how `unknown` reachability already behaves everywhere else.
  */
 
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { log } from '@renderer/utils/logger';
 import { deriveAgentTypeStatus } from '@shared/core/remote-hosts/host-status';
 import { queueHostProbe } from './host-probe-queue';

@@ -1,7 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
 import { Check, Copy, ExternalLink, Loader2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { type ComponentType, type ReactNode, useCallback, useEffect, useId, useMemo, useState } from 'react';
+import {
+  type ComponentType,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from 'react';
 import type {
   BridgeConfigField,
   ChatClaim,
@@ -28,7 +36,13 @@ import { DialogContentArea, DialogFooter, DialogHeader, DialogTitle } from '../p
 import { DisclosureRow } from '../primitives/disclosure-row';
 import { Field, FieldLabel } from '../primitives/field';
 import { Input } from '../primitives/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../primitives/select';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../primitives/select';
 import type { CreateRoomQuery } from './create-room-options';
 import type { BridgeIcons } from './messaging-app-selector';
 
@@ -57,7 +71,12 @@ export type NewMessagingApp = {
 export type MessagingAppCreated =
   | {
       kind: 'created';
-      bridge: { id: string; displayName: string; receivesWebhooks: boolean; webhookUrl: string | null };
+      bridge: {
+        id: string;
+        displayName: string;
+        receivesWebhooks: boolean;
+        webhookUrl: string | null;
+      };
     }
   | { kind: 'refused'; message: string };
 
@@ -164,8 +183,7 @@ export const ConnectMessagingAppDialog = observer(function ConnectMessagingAppDi
   onConnected: (app: ConnectedMessagingApp) => void;
   onClose: () => void;
 }) {
-  const { isAdmin, hasWorkspace, platformLabel, setCloseGuard, ConfirmButton, icons, words } =
-    host;
+  const { isAdmin, hasWorkspace, platformLabel, setCloseGuard, ConfirmButton, icons, words } = host;
   // Ties each label to its input, so a screen reader names the field.
   const idPrefix = useId();
   const inputId = (key: string) => `${idPrefix}-${key}`;

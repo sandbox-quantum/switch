@@ -1,12 +1,12 @@
 import { ProviderChoiceCard } from '@switch-console/chat-ui/components/provider-choice';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { CircleAlert, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import { LogTail } from '@renderer/features/switch-servers/log-tail';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Input } from '@switch-console/chat-ui/primitives/input';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { requireProvider } from '@shared/core/providers/agent-provider-registry';
 import { asksForCode, linksIn } from '@shared/core/providers/provider-login';
 import type { BuddyProvider } from './buddy-providers';

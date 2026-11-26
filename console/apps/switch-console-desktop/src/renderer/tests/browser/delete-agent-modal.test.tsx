@@ -10,11 +10,11 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import {
   DeleteAgentModal,
   type DeleteAgentModalResult,
 } from '@renderer/features/locations/components/delete-agent-modal';
-import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;

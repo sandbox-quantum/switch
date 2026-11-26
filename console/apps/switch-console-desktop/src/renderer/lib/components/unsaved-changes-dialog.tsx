@@ -1,4 +1,3 @@
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
@@ -6,6 +5,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@switch-console/chat-ui/primitives/dialog';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 
 export type UnsavedChangesDialogResult = 'save' | 'discard';
 

@@ -4,6 +4,14 @@ import {
   RoomRoster,
 } from '@switch-console/chat-ui/components/room-roster';
 import { chatAgentLabel } from '@switch-console/chat-ui/contracts/chats';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogContentArea,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileText } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -24,14 +32,6 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogContentArea,
-  DialogHeader,
-  DialogTitle,
-} from '@switch-console/chat-ui/primitives/dialog';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import {
   AddAgentPanel,

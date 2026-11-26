@@ -1,3 +1,6 @@
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileText, Loader2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -48,9 +51,6 @@ import {
   useWorkspaceAgents,
   workspaceAgentsQueryKey,
 } from '@renderer/lib/stores/use-workspace-agents';
-import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import { newAgentPermissions } from '@shared/core/agents/agents';

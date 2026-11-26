@@ -1,5 +1,5 @@
-import { InfoTooltip } from '../primitives/info-tooltip';
 import { Field, FieldDescription, FieldTitle } from '../primitives/field';
+import { InfoTooltip } from '../primitives/info-tooltip';
 
 /**
  * One row of an agent page's General settings: what it is, an info tooltip,

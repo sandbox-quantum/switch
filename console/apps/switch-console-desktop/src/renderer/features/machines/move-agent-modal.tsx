@@ -1,5 +1,10 @@
-import { Cloud, Laptop, Monitor, Server } from 'lucide-react';
+import {
+  MoveAgentModal as SharedMoveAgentModal,
+  type MoveAgentMachine,
+} from '@switch-console/chat-ui/components/move-agent-modal';
+import { useHotkey } from '@tanstack/react-hotkeys';
 import { useQueryClient } from '@tanstack/react-query';
+import { Cloud, Laptop, Monitor, Server } from 'lucide-react';
 import { createElement, useRef, useState } from 'react';
 import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
 import {
@@ -7,19 +12,14 @@ import {
   useOwnedMachines,
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import {
-  MoveAgentModal as SharedMoveAgentModal,
-  type MoveAgentMachine,
-} from '@switch-console/chat-ui/components/move-agent-modal';
-import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { machineKindLabel, moveTarget, namesakeLabel } from './machine-state';
-import { useHotkey } from '@tanstack/react-hotkeys';
 import {
   getEffectiveHotkey,
   getHotkeyRegistration,
 } from '@renderer/lib/hooks/useKeyboardShortcuts';
+import { rpc } from '@renderer/lib/ipc';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { machineKindLabel, moveTarget, namesakeLabel } from './machine-state';
 
 type Props = BaseModalProps<void> & { agent: ManagedAgentView };
 
@@ -102,7 +102,11 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
       currentMachineName={agent.machine?.name ?? null}
       workingDirectory={folder}
       machines={adaptedMachines}
-      machinesError={machinesQuery.error ? failureText(machinesQuery.error, 'Could not read your machines.') : null}
+      machinesError={
+        machinesQuery.error
+          ? failureText(machinesQuery.error, 'Could not read your machines.')
+          : null
+      }
       moving={moving}
       moveError={error}
       onMove={handleMove}

@@ -1,3 +1,4 @@
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowUpCircle, Power, Settings } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -8,7 +9,6 @@ import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import {
   CHECKOUT_IMAGE_TAG,
   type LocalActivityEntry,

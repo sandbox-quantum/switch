@@ -1,6 +1,6 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { cn } from '@renderer/utils/utils';
 
 interface LocalDirectorySelectorProps {

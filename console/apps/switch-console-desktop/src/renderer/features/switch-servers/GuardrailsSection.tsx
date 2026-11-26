@@ -1,13 +1,13 @@
-import { observer } from 'mobx-react-lite';
-import { useEffect, useState } from 'react';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
 import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
+import { observer } from 'mobx-react-lite';
+import { useEffect, useState } from 'react';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
 import { cn } from '@renderer/utils/utils';
 import {
   type ClearTrustSettingsResult,

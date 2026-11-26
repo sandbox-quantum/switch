@@ -1,3 +1,4 @@
+import type { Participant } from '@switch-console/chat-ui/model/participant-search';
 /**
  * With the participant suggestions open, a real click on a button below them
  * does what it says the first time: the list closing must not move the button
@@ -9,7 +10,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { userEvent } from 'vitest/browser';
 import { ParticipantPicker } from '@renderer/lib/components/participant-picker';
-import type { Participant } from '@switch-console/chat-ui/model/participant-search';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;

@@ -1,3 +1,4 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { reaction } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
@@ -5,7 +6,6 @@ import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { SwitchConsoleAppIcon } from '@renderer/lib/switch-console-app-icon';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { homeServerId } from './home-target';
 import { HomeFooter } from './home/home-footer';
 import { switchServersStore } from './switch-servers-store';

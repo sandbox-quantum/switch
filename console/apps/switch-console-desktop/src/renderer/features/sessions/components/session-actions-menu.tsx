@@ -1,5 +1,3 @@
-import { MoreVertical } from 'lucide-react';
-import React from 'react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -7,6 +5,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { MoreVertical } from 'lucide-react';
+import React from 'react';
 import { cn } from '@renderer/utils/utils';
 import { sessionActions, type SessionActionsProps } from './session-actions';
 

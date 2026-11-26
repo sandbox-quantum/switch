@@ -1,3 +1,4 @@
+import { TooltipProvider } from '@switch-console/chat-ui/primitives/tooltip';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { AgentCrudEvents } from './app/agent-crud-events';
@@ -15,7 +16,6 @@ import { ModalRenderer } from './lib/modal/modal-renderer';
 import { ThemeProvider } from './lib/providers/theme-provider';
 import { queryClient } from './lib/query-client';
 import { RightSidebarProvider } from './lib/ui/right-sidebar';
-import { TooltipProvider } from '@switch-console/chat-ui/primitives/tooltip';
 
 function AppContent() {
   return (

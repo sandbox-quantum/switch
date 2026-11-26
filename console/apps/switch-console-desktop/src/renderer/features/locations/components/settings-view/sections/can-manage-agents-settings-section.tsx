@@ -1,8 +1,8 @@
+import { CanManageAgentsSetting } from '@switch-console/chat-ui/components/agent-permissions';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { log } from '@renderer/utils/logger';
-import { CanManageAgentsSetting } from '@switch-console/chat-ui/components/agent-permissions';
 
 /**
  * Per-Switch-agent "can manage agents" capability: with it on, the agent may

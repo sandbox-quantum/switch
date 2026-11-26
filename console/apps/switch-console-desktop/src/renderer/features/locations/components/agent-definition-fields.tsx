@@ -1,9 +1,3 @@
-import type {
-  LaunchProfileModel,
-  RepoAgentAttributes,
-  RepoAgentAttributeValue,
-  RepoAgentField,
-} from '@switch-console/core/agents/plugins';
 import { Input } from '@switch-console/chat-ui/primitives/input';
 import {
   Select,
@@ -14,6 +8,12 @@ import {
 } from '@switch-console/chat-ui/primitives/select';
 import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
+import type {
+  LaunchProfileModel,
+  RepoAgentAttributes,
+  RepoAgentAttributeValue,
+  RepoAgentField,
+} from '@switch-console/core/agents/plugins';
 import { ModelCombobox } from './model-combobox';
 
 /** Sentinel for a select's "unset" choice (an empty string is not a valid item). */

@@ -1,6 +1,11 @@
-import { RefreshCw, TriangleAlert } from 'lucide-react';
-import { Alert, AlertAction, AlertDescription, AlertTitle } from '@switch-console/chat-ui/primitives/alert';
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from '@switch-console/chat-ui/primitives/alert';
 import { Button } from '@switch-console/chat-ui/primitives/button';
+import { RefreshCw, TriangleAlert } from 'lucide-react';
 import type { ManagedTelemetryNotice } from './managed-telemetry-notice';
 
 /**

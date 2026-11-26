@@ -1,3 +1,12 @@
+import {
+  invitationSummary,
+  joinableSummary,
+  listedInvitations,
+  listedJoinable,
+  pickSubtitle,
+} from '@switch-console/chat-ui/model/workspace-offers';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useQuery } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -11,15 +20,6 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { report } from '@renderer/lib/telemetry/report';
-import {
-  invitationSummary,
-  joinableSummary,
-  listedInvitations,
-  listedJoinable,
-  pickSubtitle,
-} from '@switch-console/chat-ui/model/workspace-offers';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';

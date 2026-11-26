@@ -1,7 +1,7 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import React from 'react';
 import { report } from '@renderer/lib/telemetry/report';
 import { log } from '@renderer/utils/logger';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { rpc } from '../ipc';
 
 type ErrorBoundaryState = {

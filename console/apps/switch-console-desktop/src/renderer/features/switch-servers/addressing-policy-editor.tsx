@@ -1,5 +1,3 @@
-import { Trash2, X } from 'lucide-react';
-import { useState } from 'react';
 import { Badge } from '@switch-console/chat-ui/primitives/badge';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import { Input } from '@switch-console/chat-ui/primitives/input';
@@ -10,6 +8,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
+import { Trash2, X } from 'lucide-react';
+import { useState } from 'react';
 import type {
   AddressingDimension,
   AddressingPolicy,

@@ -1,3 +1,4 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { ExternalLink, Loader2, MessagesSquare, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useLayoutEffect, useRef, useState } from 'react';
@@ -6,7 +7,6 @@ import { consoleChatNotice } from '@renderer/features/switch-servers/room-filter
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { appState } from '@renderer/lib/stores/app-state';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { cn } from '@renderer/utils/utils';
 import { resolveRoomEmbed } from '@shared/core/switch-rooms/room-embed';
 import { roomEmbedSlotStore } from './room-embed-slot';

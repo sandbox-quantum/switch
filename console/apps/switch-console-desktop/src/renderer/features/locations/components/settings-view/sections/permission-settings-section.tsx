@@ -1,6 +1,11 @@
+import {
+  AutoApproveRow,
+  AutoModeRow,
+  PERMISSION_COPY,
+} from '@switch-console/chat-ui/components/agent-permissions';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { rpc } from '@renderer/lib/ipc';
-import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { log } from '@renderer/utils/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import {
@@ -8,11 +13,6 @@ import {
   providerDisplayName,
   providerSupportsAutoMode,
 } from '@shared/core/providers/agent-provider-registry';
-import {
-  AutoApproveRow,
-  AutoModeRow,
-  PERMISSION_COPY,
-} from '@switch-console/chat-ui/components/agent-permissions';
 
 type PermissionSetting = 'autoApprove' | 'autoMode';
 

@@ -1,9 +1,10 @@
 import type { SealedLogin } from '@switch-console/agent-providers';
-import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import {
   type BridgeConfigSchema,
   bridgeConfigFields,
 } from '@switch-console/chat-ui/model/connect-messaging-app';
+import { roomAccessForChannel } from '@switch-console/chat-ui/model/room-access';
+import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
@@ -141,7 +142,6 @@ import {
   type RoomAccess,
   DEFAULT_DIRECTORY_SEARCH_HINT,
 } from '@shared/core/switch-servers/switch-servers';
-import { roomAccessForChannel } from '@switch-console/chat-ui/model/room-access';
 import type {
   Invitation,
   InvitationEmailDelivery,

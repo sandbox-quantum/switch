@@ -1,3 +1,8 @@
+import { ServerPage } from '@switch-console/chat-ui/components/server-page';
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, ChevronRight, X } from 'lucide-react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
@@ -12,14 +17,9 @@ import {
   OnOffGrant,
 } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { ConnectionIcon } from '@renderer/features/switch-servers/connection-icon';
-import { ServerPage } from '@switch-console/chat-ui/components/server-page';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
-import { Badge } from '@switch-console/chat-ui/primitives/badge';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { cn } from '@renderer/utils/utils';
 import {
   type AgentConnectionCard,

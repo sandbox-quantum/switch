@@ -1,11 +1,4 @@
 import { ChatClaimDetails } from '@switch-console/chat-ui/components/connect-messaging-app';
-import { useQuery } from '@tanstack/react-query';
-import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { useOnUnmount } from '@renderer/lib/hooks/use-on-unmount';
-import { rpc } from '@renderer/lib/ipc';
-import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
@@ -14,6 +7,13 @@ import {
   DialogTitle,
 } from '@switch-console/chat-ui/primitives/dialog';
 import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { useQuery } from '@tanstack/react-query';
+import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useOnUnmount } from '@renderer/lib/hooks/use-on-unmount';
+import { rpc } from '@renderer/lib/ipc';
+import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 
 type ConnectChatModalArgs = {
   workspaceId: string;

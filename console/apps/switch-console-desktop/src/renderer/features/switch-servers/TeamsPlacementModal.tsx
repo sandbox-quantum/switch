@@ -1,11 +1,3 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { CircleAlert } from 'lucide-react';
-import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { useToast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
-import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Badge } from '@switch-console/chat-ui/primitives/badge';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
@@ -15,7 +7,19 @@ import {
   DialogTitle,
 } from '@switch-console/chat-ui/primitives/dialog';
 import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { CircleAlert } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
+import { useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useToast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
+import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import type {
   AddTeamsTeamResult,
   RemoveTeamsTeamResult,

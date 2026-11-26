@@ -289,7 +289,9 @@ export function SlackOwnAppGuide({
             <ManifestFallback manifestJson={setup.data.manifestJson} openExternal={openExternal} />
           )}
           {setup.isError && (
-            <Status ok={false}>{describeError(setup.error, 'Could not prepare the Slack app.')}</Status>
+            <Status ok={false}>
+              {describeError(setup.error, 'Could not prepare the Slack app.')}
+            </Status>
           )}
         </Step>
         <Step n={2} title="Install the app and copy the bot token" done={works}>

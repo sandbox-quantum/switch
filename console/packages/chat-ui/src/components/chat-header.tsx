@@ -1,10 +1,9 @@
-import { type ChatSummary, chatAgentLabel } from '../contracts/chats';
-import type { AgentActivity } from '../stores/chat-activity-store';
 import { MoreVertical, RotateCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { ReactNode } from 'react';
-import { failureText } from '../model/failures';
+import { type ChatSummary, chatAgentLabel } from '../contracts/chats';
 import { AgentAvatar, useChatHost } from '../host';
+import { failureText } from '../model/failures';
 import { Button } from '../primitives/button';
 import {
   DropdownMenu,
@@ -13,6 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../primitives/dropdown-menu';
+import type { AgentActivity } from '../stores/chat-activity-store';
 import { ChatActionItems, chatActions, type ChatRemovalContext } from './chat-actions';
 
 const STREAM_LABEL = {

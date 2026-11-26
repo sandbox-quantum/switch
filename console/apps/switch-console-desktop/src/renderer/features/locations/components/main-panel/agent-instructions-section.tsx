@@ -1,3 +1,6 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
@@ -7,9 +10,6 @@ import {
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
-import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import { log } from '@renderer/utils/logger';
 import { useAgentEdit } from './agent-edits';
 

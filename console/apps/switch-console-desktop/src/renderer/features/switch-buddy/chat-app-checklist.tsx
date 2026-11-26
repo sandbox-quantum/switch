@@ -1,3 +1,5 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Circle } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
@@ -9,8 +11,6 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { reportOpenAttempt } from '@renderer/lib/open-external';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { cn } from '@renderer/utils/utils';
 import type {
   BridgePerson,

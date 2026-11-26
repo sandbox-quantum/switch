@@ -1,7 +1,3 @@
-import type { VariantProps } from 'class-variance-authority';
-import { ChevronDown } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
-import { cn } from '@renderer/utils/utils';
 import { Button, type buttonVariants } from '@switch-console/chat-ui/primitives/button';
 import {
   DropdownMenu,
@@ -10,6 +6,10 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@switch-console/chat-ui/primitives/dropdown-menu';
+import type { VariantProps } from 'class-variance-authority';
+import { ChevronDown } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { cn } from '@renderer/utils/utils';
 
 export interface SplitButtonAction {
   value: string;

@@ -1,8 +1,8 @@
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import type { ServerFeatureFlags } from '@shared/core/feature-flags/feature-flags';
 
 /**

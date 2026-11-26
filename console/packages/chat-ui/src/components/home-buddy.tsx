@@ -1,6 +1,6 @@
-import { motion, useReducedMotion } from "motion/react";
-import { type CSSProperties, useState } from "react";
-import { BuddyFace, useBuddyExpression } from "./buddy-face";
+import { motion, useReducedMotion } from 'motion/react';
+import { type CSSProperties, useState } from 'react';
+import { BuddyFace, useBuddyExpression } from './buddy-face';
 
 const TILE = 78;
 const FACE = TILE * 0.8;
@@ -23,7 +23,7 @@ export function HomeBuddy({ className }: { className?: string }) {
   return (
     <span
       data-home-buddy
-      className={`inline-flex shrink-0 items-center justify-center rounded-[22%] bg-background-tertiary emdark:bg-background-3 ${className ?? ""}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-[22%] bg-background-tertiary emdark:bg-background-3 ${className ?? ''}`}
       style={TILE_STYLE}
     >
       <motion.span

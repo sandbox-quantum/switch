@@ -1,7 +1,12 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { RotateCcw } from 'lucide-react';
 import React from 'react';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 
 interface ResetToDefaultButtonProps {
   /** Optional label shown in the tooltip: "Reset to default: <label>" */

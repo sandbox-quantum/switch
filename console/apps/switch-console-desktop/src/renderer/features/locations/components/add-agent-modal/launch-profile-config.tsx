@@ -1,9 +1,9 @@
+import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
+import { Field, FieldDescription, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import type { RepoAgentField } from '@switch-console/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
-import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
-import { Field, FieldDescription, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import {
   type AgentProviderConfig,
   providerConfigFromAttributes,

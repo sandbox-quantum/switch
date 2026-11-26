@@ -1,3 +1,19 @@
+import {
+  invitationSummary,
+  joinableSummary,
+  listedInvitations,
+  listedJoinable,
+} from '@switch-console/chat-ui/model/workspace-offers';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronsUpDown, ExternalLink, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -28,22 +44,6 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@switch-console/chat-ui/primitives/dropdown-menu';
-import {
-  invitationSummary,
-  joinableSummary,
-  listedInvitations,
-  listedJoinable,
-} from '@switch-console/chat-ui/model/workspace-offers';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { cn } from '@renderer/utils/utils';
 import { runsOnThisComputer, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';

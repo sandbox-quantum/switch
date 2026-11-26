@@ -1,7 +1,7 @@
-import React from 'react';
-import { useSessionSettings } from '@renderer/features/sessions/hooks/useSessionSettings';
 import { InfoTooltip } from '@switch-console/chat-ui/primitives/info-tooltip';
 import { Switch } from '@switch-console/chat-ui/primitives/switch';
+import React from 'react';
+import { useSessionSettings } from '@renderer/features/sessions/hooks/useSessionSettings';
 import { ResetToDefaultButton } from './ResetToDefaultButton';
 import { SettingRow } from './SettingRow';
 

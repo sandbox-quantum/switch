@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { ChatHost } from '../host';
 import { chatActions } from '../components/chat-actions';
+import type { ChatHost } from '../host';
 
 describe('chat rename', () => {
   it('includes rename action for chats the user can manage', () => {

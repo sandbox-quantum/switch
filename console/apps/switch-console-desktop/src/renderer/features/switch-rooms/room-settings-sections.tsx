@@ -1,13 +1,8 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArchiveRestore, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
-import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
-import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
-import type { RoomPermissions } from '@renderer/features/switch-servers/room-permissions';
-import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
-import { AbsoluteTime } from '@renderer/lib/ui/absolute-time';
+import {
+  ACCESS_HELPERS,
+  ACCESS_LABELS,
+  ACCESS_ORDER,
+} from '@switch-console/chat-ui/model/room-access';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
 import { Input } from '@switch-console/chat-ui/primitives/input';
@@ -19,7 +14,16 @@ import {
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
 import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
-import { ACCESS_HELPERS, ACCESS_LABELS, ACCESS_ORDER } from '@switch-console/chat-ui/model/room-access';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Archive, ArchiveRestore, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
+import { useState } from 'react';
+import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import type { RoomPermissions } from '@renderer/features/switch-servers/room-permissions';
+import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import { AbsoluteTime } from '@renderer/lib/ui/absolute-time';
 import {
   type RemoteRoomDetail,
   type RemoteRoomRole,

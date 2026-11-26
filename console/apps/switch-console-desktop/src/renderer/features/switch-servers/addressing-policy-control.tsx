@@ -1,5 +1,3 @@
-import { CircleAlert } from 'lucide-react';
-import { useState } from 'react';
 import {
   Select,
   SelectContent,
@@ -7,6 +5,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
+import { CircleAlert } from 'lucide-react';
+import { useState } from 'react';
 import { cn } from '@renderer/utils/utils';
 import {
   type AddressingMode,

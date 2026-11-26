@@ -1,10 +1,3 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2 } from 'lucide-react';
-import { useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
@@ -13,6 +6,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@switch-console/chat-ui/primitives/dialog';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 import type { LibraryItem, LibraryKind } from '@shared/core/switch-servers/library';
 import { emptyForm, formProblem, inputOf, type LibraryForm } from './library-form';

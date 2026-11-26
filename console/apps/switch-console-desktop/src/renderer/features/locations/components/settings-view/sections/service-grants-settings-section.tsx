@@ -1,3 +1,8 @@
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import {
@@ -14,11 +19,6 @@ import {
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
-import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
-import { Badge } from '@switch-console/chat-ui/primitives/badge';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
-import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import {
   type ConnectionCatalogEntry,
   githubThroughApp,

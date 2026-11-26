@@ -7,7 +7,11 @@ import type { ChatSummary } from '../contracts/chats';
 
 export type AddAgentToRoomApi = {
   chat: (roomId: string) => ChatSummary | undefined;
-  addChatAgent: (input: { serverId: string; roomId: string; agentId: string }) => Promise<ChatSummary>;
+  addChatAgent: (input: {
+    serverId: string;
+    roomId: string;
+    agentId: string;
+  }) => Promise<ChatSummary>;
   addRoomAgents: (input: {
     workspaceId: string;
     roomId: string;

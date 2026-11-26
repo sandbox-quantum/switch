@@ -1,3 +1,17 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { Bot, ExternalLink, MoreVertical, RotateCcw, Server, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
@@ -24,16 +38,6 @@ import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@switch-console/chat-ui/primitives/dropdown-menu';
-import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import type { Agent } from '@shared/core/agents/agents';
 
 /**

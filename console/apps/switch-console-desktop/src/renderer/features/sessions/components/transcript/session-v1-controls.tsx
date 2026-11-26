@@ -1,7 +1,20 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTitle,
+  PopoverTrigger,
+} from '@switch-console/chat-ui/primitives/popover';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { Brain, ChevronDown, Cpu, Minimize2, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Combobox,
   ComboboxContent,
@@ -11,14 +24,6 @@ import {
   ComboboxList,
   ComboboxTrigger,
 } from '@renderer/lib/ui/combobox';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from '@switch-console/chat-ui/primitives/dropdown-menu';
-import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@switch-console/chat-ui/primitives/popover';
 
 const controlClass = 'h-7 gap-1.5 rounded-md px-2 text-xs font-normal text-foreground-muted';
 const optionLabel = (value: string) =>

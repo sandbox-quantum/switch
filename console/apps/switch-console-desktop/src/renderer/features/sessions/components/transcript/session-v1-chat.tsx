@@ -1,10 +1,10 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
 import { Check, Loader2, Paperclip, RotateCw, Square, Wrench } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { SessionHeaderContent } from '@renderer/features/sessions/session-header-slots';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
-import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
 import { sessionStatePill } from './session-state';

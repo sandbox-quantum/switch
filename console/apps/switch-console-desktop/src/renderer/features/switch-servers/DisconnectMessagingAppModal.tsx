@@ -1,11 +1,4 @@
-import { TriangleAlert } from 'lucide-react';
-import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
-import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@switch-console/chat-ui/primitives/button';
-import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
   DialogFooter,
@@ -14,6 +7,13 @@ import {
 } from '@switch-console/chat-ui/primitives/dialog';
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
+import { TriangleAlert } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
+import { useCallback, useEffect, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import type {
   BridgeInstallState,
   DeleteBridgeResult,

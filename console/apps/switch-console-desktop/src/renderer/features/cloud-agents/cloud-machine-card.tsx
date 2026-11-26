@@ -1,8 +1,8 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { Progress } from '@renderer/lib/ui/progress';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import { type MachineAction, machinePresentation } from './cloud-machine-state';

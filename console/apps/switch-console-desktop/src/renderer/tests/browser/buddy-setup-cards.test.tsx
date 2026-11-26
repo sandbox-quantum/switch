@@ -95,10 +95,10 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   administersWorkspaceInScope,
 }));
 
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import { BuddySetupCards } from '@renderer/features/switch-buddy/buddy-setup-cards';
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
 import { appState } from '@renderer/lib/stores/app-state';
-import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import '@renderer/index.css';
 
 /** Relative to this file; it must stay inside the workspace for Vite to write it. */

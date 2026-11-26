@@ -1,5 +1,3 @@
-import { X } from 'lucide-react';
-import { useState } from 'react';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import {
@@ -9,6 +7,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@switch-console/chat-ui/primitives/select';
+import { X } from 'lucide-react';
+import { useState } from 'react';
 import {
   type ConnectedGitHub,
   type GitHubGrantChoice,

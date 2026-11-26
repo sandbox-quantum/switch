@@ -1,3 +1,6 @@
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import { parameterize, type ParamSubstitution } from '@switch-console/shared';
 import { CheckSquare, FileText, Loader2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -14,9 +17,6 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
-import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
-import { Button } from '@switch-console/chat-ui/primitives/button';
-import { Input } from '@switch-console/chat-ui/primitives/input';
 
 type CaptureStep = 'loading' | 'preview' | 'error';
 

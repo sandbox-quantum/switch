@@ -12,22 +12,20 @@ import { appState } from '@renderer/lib/stores/app-state';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const leave = vi.hoisted(() => vi.fn(async () => {}));
-const chat = vi.hoisted(
-  (): ChatSummary => ({
-    roomId: 'planning',
-    name: 'Planning',
-    channelType: 'channel_private',
-    bridgeType: null,
-    channelName: null,
-    agents: [],
-    canManage: false,
-    ownsAgent: false,
-    memberUserIds: ['u1', 'u2'],
-    memberCount: 2,
-    unreadCount: 0,
-    lastMessage: null,
-  })
-);
+const chat = vi.hoisted((): ChatSummary => ({
+  roomId: 'planning',
+  name: 'Planning',
+  channelType: 'channel_private',
+  bridgeType: null,
+  channelName: null,
+  agents: [],
+  canManage: false,
+  ownsAgent: false,
+  memberUserIds: ['u1', 'u2'],
+  memberCount: 2,
+  unreadCount: 0,
+  lastMessage: null,
+}));
 
 vi.mock('@renderer/lib/ipc', () => ({ events: { on: () => () => {} }, rpc: {} }));
 vi.mock('@renderer/features/chats/stores/chats', () => ({
@@ -58,7 +56,11 @@ it('leaving a group room opened on an agent page clears it there and stays on th
       createElement(
         QueryClientProvider,
         { client: new QueryClient() },
-        createElement(ConsoleChatHost, null, createElement(RoomConfigurationPanel, { roomId: 'planning' }))
+        createElement(
+          ConsoleChatHost,
+          null,
+          createElement(RoomConfigurationPanel, { roomId: 'planning' })
+        )
       )
     )
   );

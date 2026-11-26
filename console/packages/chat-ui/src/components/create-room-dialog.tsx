@@ -355,23 +355,23 @@ export const CreateRoomDialog = observer(function CreateRoomDialog({
       const bridgeId = selectedBridge?.id ?? null;
       const request = roomCreateRequest(
         {
-        serverId,
-        workspaceId: workspaceId as string,
-        bridgeId,
-        bridgeType: selectedBridge?.type ?? null,
-        name,
-        description,
-        instructions,
-        agentIds,
-        memberUserIds,
-        userNames,
-        requestId: requestIds.for({
+          serverId,
+          workspaceId: workspaceId as string,
           bridgeId,
+          bridgeType: selectedBridge?.type ?? null,
           name,
+          description,
+          instructions,
           agentIds,
-          memberUserIds: [...memberUserIds, ...userNames],
-          settings: [description.trim(), instructions.trim(), roomOptions],
-        }),
+          memberUserIds,
+          userNames,
+          requestId: requestIds.for({
+            bridgeId,
+            name,
+            agentIds,
+            memberUserIds: [...memberUserIds, ...userNames],
+            settings: [description.trim(), instructions.trim(), roomOptions],
+          }),
           options: roomOptions,
         },
         normalizedChannelId

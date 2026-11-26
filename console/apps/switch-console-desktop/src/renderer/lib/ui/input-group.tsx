@@ -1,10 +1,10 @@
 'use client';
 
-import { cva, type VariantProps } from 'class-variance-authority';
-import * as React from 'react';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import { Input } from '@switch-console/chat-ui/primitives/input';
 import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
+import { cva, type VariantProps } from 'class-variance-authority';
+import * as React from 'react';
 import { cn } from '@renderer/utils/utils';
 
 function InputGroup({ className, ...props }: React.ComponentProps<'div'>) {

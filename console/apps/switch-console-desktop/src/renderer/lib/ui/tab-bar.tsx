@@ -1,9 +1,9 @@
+import { Separator } from '@switch-console/chat-ui/primitives/separator';
 import { X } from 'lucide-react';
 import { observer, Observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { ReorderList } from '@renderer/lib/components/reorder-list';
 import { cn } from '@renderer/utils/utils';
-import { Separator } from '@switch-console/chat-ui/primitives/separator';
 
 function InlineEditInput({
   initialValue,

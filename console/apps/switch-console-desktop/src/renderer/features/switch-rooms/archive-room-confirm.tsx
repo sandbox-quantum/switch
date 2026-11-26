@@ -1,4 +1,3 @@
-import { type ReactNode, useState } from 'react';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Dialog,
@@ -10,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@switch-console/chat-ui/primitives/dialog';
+import { type ReactNode, useState } from 'react';
 
 /**
  * Ask before archiving a room: it leaves everyone's room lists, not just

@@ -1,8 +1,15 @@
+import {
+  SidebarContainer,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarMenu,
+} from '@switch-console/chat-ui/primitives/sidebar';
+import { SwitchConsoleMark } from '@switch-console/chat-ui/primitives/switch-console-mark';
 import { FolderInput } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React from 'react';
 import { navigateHome } from '@renderer/features/switch-servers/home-target';
-import { SwitchConsoleMark } from '@switch-console/chat-ui/primitives/switch-console-mark';
 import { cn } from '@renderer/utils/utils';
 import { FROZEN, isFrozenServer } from '../switch-servers/managed-server-state';
 import { switchServersStore } from '../switch-servers/switch-servers-store';
@@ -11,13 +18,6 @@ import { SidebarPinnedSessionList } from './pinned-session-list';
 import { SessionDiscoveryStatus } from './session-discovery-status';
 import { SessionsSectionHeader } from './sessions-section-header';
 import { SidebarGroupedList, useAgentManagementMode } from './sidebar-grouped-list';
-import {
-  SidebarContainer,
-  SidebarContent,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarMenu,
-} from '@switch-console/chat-ui/primitives/sidebar';
 import { SidebarSpace } from './sidebar-space';
 import { UpdateSection } from './update-section';
 import { useSidebarDrop } from './use-sidebar-drop';

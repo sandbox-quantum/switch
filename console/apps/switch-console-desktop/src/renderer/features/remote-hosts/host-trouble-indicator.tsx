@@ -15,10 +15,14 @@
  * as broken because Codex is absent.
  */
 
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { ServerOff, Wrench } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import { deriveAgentTypeStatus } from '@shared/core/remote-hosts/host-status';
 import {
   outstandingRequiredHostSteps,

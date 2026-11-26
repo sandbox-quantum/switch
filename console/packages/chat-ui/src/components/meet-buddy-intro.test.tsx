@@ -1,5 +1,5 @@
-import { StrictMode, useEffect, useRef, useState } from 'react';
 import { act, cleanup, render, screen } from '@testing-library/react';
+import { StrictMode, useEffect, useRef, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MeetBuddyIntro } from './meet-buddy-intro';
 

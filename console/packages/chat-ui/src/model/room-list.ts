@@ -107,11 +107,7 @@ export function roomCard(
   };
 }
 
-function peopleCount(
-  room: RoomSummary,
-  bridged: boolean,
-  isConsoleChat: boolean
-): number | null {
+function peopleCount(room: RoomSummary, bridged: boolean, isConsoleChat: boolean): number | null {
   const count = room.connectedUserCount ?? null;
   if (bridged) return count;
   if (room.peopleAreMembers === true) return count;
