@@ -363,3 +363,41 @@ describe('planReconcile', () => {
     expect(actions).toEqual([expect.objectContaining({ kind: 'start', restart: true })]);
   });
 });
+
+describe('syncDefinitionSkills', () => {
+  it('writes skills to <cwd>/.switch/skills/<name>/SKILL.md with .gitignore and prunes removed skills', async () => {
+    const { mkdtemp, readFile, readdir, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { syncDefinitionSkills } = await import('./reconcile');
+
+    const dir = await mkdtemp(join(tmpdir(), 'switch-skills-'));
+    try {
+      // Empty skills on a fresh workspace leaves no .switch folder behind.
+      await syncDefinitionSkills(dir, []);
+      expect(await readdir(dir)).toEqual([]);
+
+      // Writing two skills creates .switch/.gitignore and both SKILL.md files.
+      await syncDefinitionSkills(dir, [
+        { name: 'switch-buddy', content: '# Router\n' },
+        { name: 'switch-buddy-onboarding', content: '# Onboarding\n' },
+      ]);
+      expect(await readFile(join(dir, '.switch', '.gitignore'), 'utf8')).toBe('*\n');
+      expect(await readFile(join(dir, '.switch', 'skills', 'switch-buddy', 'SKILL.md'), 'utf8')).toBe('# Router\n');
+      expect(
+        await readFile(join(dir, '.switch', 'skills', 'switch-buddy-onboarding', 'SKILL.md'), 'utf8')
+      ).toBe('# Onboarding\n');
+
+      // Dropping one skill prunes its directory while keeping the other.
+      await syncDefinitionSkills(dir, [{ name: 'switch-buddy', content: '# Router v2\n' }]);
+      expect(await readdir(join(dir, '.switch', 'skills'))).toEqual(['switch-buddy']);
+      expect(await readFile(join(dir, '.switch', 'skills', 'switch-buddy', 'SKILL.md'), 'utf8')).toBe('# Router v2\n');
+
+      // Dropping the last skill prunes it cleanly too.
+      await syncDefinitionSkills(dir, []);
+      expect(await readdir(join(dir, '.switch', 'skills'))).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

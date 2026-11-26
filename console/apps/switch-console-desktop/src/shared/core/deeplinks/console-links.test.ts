@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CONSOLE_PAGES, type ConsolePage, consoleLink, parseConsoleLink } from './console-links';
@@ -87,18 +87,16 @@ describe('parseConsoleLink', () => {
 });
 
 describe("switch-buddy's instructions", () => {
-  // AGENT.md, plus the playbook it points at for the rarer pages.
-  const instructions = ['AGENT.md', 'PLAYBOOK.md']
-    .map((name) =>
-      readFileSync(
-        join(
-          __dirname,
-          '../../../../../../../core/switch_core/official_templates/switch-buddy',
-          name
-        ),
-        'utf8'
-      )
-    )
+  // AGENT.md, plus every bundled skill file under skills/<name>/SKILL.md.
+  const buddyDir = join(
+    __dirname,
+    '../../../../../../../core/switch_core/official_templates/switch-buddy'
+  );
+  const skillFiles = readdirSync(join(buddyDir, 'skills'), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(buddyDir, 'skills', entry.name, 'SKILL.md'));
+  const instructions = [join(buddyDir, 'AGENT.md'), ...skillFiles]
+    .map((path) => readFileSync(path, 'utf8'))
     .join('\n');
   const links = [...instructions.matchAll(/switchdash:\/\/open\/[^\s`)|]+/g)].map((match) =>
     match[0].replace(/<[a-z-]+>/g, 'sample-id')

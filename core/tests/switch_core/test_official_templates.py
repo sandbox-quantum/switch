@@ -29,7 +29,16 @@ _REPO = Path(__file__).resolve().parents[3]
 _PACKAGED = _REPO / "core" / "switch_core" / "official_templates"
 
 
-_PLAYBOOK = _PACKAGED / "switch-buddy" / "PLAYBOOK.md"
+_BUDDY_DIR = _PACKAGED / "switch-buddy"
+_BUDDY_SKILLS_DIR = _BUDDY_DIR / "skills"
+
+
+def _buddy_skill_files() -> list[Path]:
+    return sorted(_BUDDY_SKILLS_DIR.glob("*/SKILL.md"))
+
+
+def _buddy_skills_text() -> str:
+    return "\n\n".join(p.read_text(encoding="utf-8") for p in _buddy_skill_files())
 
 
 def _agent_templates(switch_buddy: bool) -> list[OfficialTemplate]:
@@ -73,7 +82,7 @@ def test_switch_buddy_reads_the_published_docs_not_a_clone():
     """switch-buddy fetches the published docs rather than cloning the
     repository: a new user's machine may have no git, and the first reply
     must not wait on a clone."""
-    instructions = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
+    instructions = _buddy_and_playbook_words()
     assert "https://docs.switchagents.ai/llms.txt" in instructions
     assert "https://docs.switchagents.ai/llms-full.txt" in instructions
     assert "git clone" not in instructions
@@ -141,10 +150,8 @@ def test_only_switch_buddy_tells_a_person_not_to_run_it():
 def test_switch_buddy_puts_itself_in_the_rooms_it_creates():
     """create_room does not add its caller, and an agent can only change a
     room it is in, so buddy is told to list itself and why."""
-    instructions = " ".join(
-        (_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split()
-    )
-    assert "put your own name in its `agent_names`" in instructions
+    instructions = _buddy_and_playbook_words()
+    assert "put your own name in `agent_names`" in instructions
     assert "`create_room` does not add you" in instructions
     assert "you can only change a room you are in" in instructions
 
@@ -156,22 +163,17 @@ def test_switch_buddy_describes_the_default_addressing():
 
 
 def _buddy_words() -> str:
-    return " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    return " ".join((_BUDDY_DIR / "AGENT.md").read_text().split())
 
 
 def _buddy_and_playbook_words() -> str:
-    return " ".join(
-        [
-            _buddy_words(),
-            " ".join(_PLAYBOOK.read_text().split()),
-        ]
-    )
+    return " ".join([_buddy_words(), " ".join(_buddy_skills_text().split())])
 
 
 def _playbook_table(heading: str) -> dict[str, list[str]]:
-    """A playbook table's rows, by their first cell, as the comma-separated
+    """A skill table's rows, by their first cell, as the comma-separated
     names in the second."""
-    section = _PLAYBOOK.read_text().split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
+    section = _buddy_skills_text().split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
     rows = [
         [cell.strip() for cell in row.split("|")[1:3]]
         for row in section.splitlines()
@@ -183,7 +185,7 @@ def _playbook_table(heading: str) -> dict[str, list[str]]:
 
 
 def test_switch_buddy_asks_the_work_question_openly_with_skip():
-    instructions = _buddy_words()
+    instructions = _buddy_and_playbook_words()
     assert (
         "one open, inviting message asking what they mostly work on and what bogs "
         "down their day-to-day"
@@ -199,7 +201,7 @@ def test_switch_buddy_asks_the_work_question_openly_with_skip():
 
 
 def test_switch_buddy_offers_skip_on_every_onboarding_step():
-    instructions = _buddy_words()
+    instructions = _buddy_and_playbook_words()
     assert 'Every onboarding step has "Skip for now".' in instructions
     assert '"No problem, you can come back to this any time."' in instructions
     assert "Skip for now: the skip line, then stop suggesting" in instructions
@@ -398,9 +400,9 @@ def test_switch_buddy_makes_every_private_room_private_in_switch():
     """create_room defaults read and write visibility to public whatever the
     channel type, so a private onboarding room must name both as private or
     workspace nonmembers can find it and change its instructions."""
-    text = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
+    text = (_BUDDY_DIR / "AGENT.md").read_text()
     items = re.split(r"\n\s*(?:- |\d+\. )", text)
-    items += _PLAYBOOK.read_text().split("\n## ")
+    items += _buddy_skills_text().split("\n## ")
     private_rooms = [i for i in items if "channel_private" in i or "include_owner" in i]
     assert len(private_rooms) >= 3
     for item in private_rooms:
@@ -411,7 +413,7 @@ def test_switch_buddy_makes_every_private_room_private_in_switch():
 def test_switch_buddy_has_itself_invited_to_a_chat_the_person_makes():
     """A chat the person makes holds only the agents they invite, and buddy
     must be in it to hand off there."""
-    text = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
+    text = _buddy_and_playbook_words()
     assert "`/invite_agent @<your-name>`" in text
     assert "`!invite-agent @<your-name>`" in text
 
@@ -419,7 +421,7 @@ def test_switch_buddy_has_itself_invited_to_a_chat_the_person_makes():
 def test_switch_buddy_tells_telegram_users_to_reply_to_the_bot():
     """Telegram privacy mode means the bot sees only commands and replies to
     its messages, so buddy must tell people to reply when mentioning agents."""
-    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    text = _buddy_and_playbook_words()
     assert (
         "reply to the bot's message" in text
         or "reply to the Switch bot's message" in text
@@ -430,7 +432,7 @@ def test_switch_buddy_offers_choices_in_its_question_form():
     """Switch draws a host's question form as a card with buttons on Slack and
     Discord, but only for one single-choice question, and hosts without forms
     need the choices as numbered text."""
-    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    text = _buddy_and_playbook_words()
     assert "use your host's question form" in text
     assert "`AskUserQuestion`" in text
     assert "one single-choice question per form" in text
@@ -441,24 +443,32 @@ def test_switch_buddy_offers_choices_in_its_question_form():
 
 
 def test_every_playbook_section_switch_buddy_is_pointed_at_exists():
-    """switch-buddy reads its playbook from its installed skill file
-    (`.switch/skills/switch-buddy-playbook/SKILL.md`, delivered via
-    `definition.skills` from the running server — never GitHub `main`), and
-    every section named in `AGENT.md` must exist as written."""
-    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
-    assert "raw.githubusercontent.com" not in text
-    assert ".switch/skills/switch-buddy-playbook/SKILL.md" in text
-    assert "Never turn bypass (`auto_approve`) on for an existing agent" in text
-    assert "Never ask them to paste a token into this chat" in text
-    assert "never ask for an account-link code or post it yourself" in text
+    """switch-buddy keeps AGENT.md focused on soul, voice, and always-on
+    guardrails, and routes to version-matched skill files under
+    `.switch/skills/<name>/SKILL.md` delivered via `definition.skills`."""
+    agent_text = _buddy_words()
+    all_text = _buddy_and_playbook_words()
+    assert "raw.githubusercontent.com" not in all_text
+    assert len((_BUDDY_DIR / "AGENT.md").read_bytes()) <= 8_000
+    assert ".switch/skills/switch-buddy/SKILL.md" in agent_text
+    # Core safety guardrails stay always-loaded in AGENT.md.
+    assert "Never turn bypass (`auto_approve`) on" in agent_text
+    assert "Never ask them to paste a token into this chat" in agent_text
+    assert "never ask for an account-link code or post it yourself" in agent_text
     assert (
-        "A request made earlier in the chat is not a yes for granting a service" in text
+        "A request made earlier in the chat is not a yes for granting a service"
+        in agent_text
     )
-    headings = set(re.findall(r"^## (.+)$", _PLAYBOOK.read_text(), re.MULTILINE))
-    named = set(re.findall(r'§ "([^"]+)"', text))
-    assert len(named) >= 10
-    assert named - headings == set()
-    # The compiled switch-buddy template ships PLAYBOOK.md as a template skill.
+    assert (
+        "Never assume someone on Slack or another messaging app has Switch Console access."
+        in agent_text
+    )
+    # Every `.switch/skills/<name>/SKILL.md` reference resolves to a real skill.
+    shipped = {p.parent.name for p in _buddy_skill_files()}
+    assert len(shipped) == 7
+    referenced = set(re.findall(r"\.switch/skills/([a-z0-9_-]+)/SKILL\.md", all_text))
+    assert referenced == shipped, (referenced - shipped, shipped - referenced)
+    # The compiled switch-buddy template ships all 7 skills on the agent resource.
     buddy_doc = yaml.safe_load(
         next(
             t for t in _agent_templates(True) if t.id == "official:switch-buddy"
@@ -467,30 +477,24 @@ def test_every_playbook_section_switch_buddy_is_pointed_at_exists():
     buddy_agent = next(
         r for r in buddy_doc["resources"].values() if r["type"] == "agent"
     )
-    assert buddy_agent["skills"] == [
-        {
-            "name": "switch-buddy-playbook",
-            "content": _PLAYBOOK.read_text(encoding="utf-8"),
-        }
-    ]
+    assert [s["name"] for s in buddy_agent["skills"]] == sorted(shipped)
 
 
 def test_switch_buddy_checks_the_services_an_agent_needs_before_proposing():
     """An agent created without the services its job needs guesses its way
     in, so buddy checks them first and offers the grant in the proposal."""
-    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    text = _buddy_and_playbook_words()
     assert "Before proposing, check the services its job needs" in text
     assert "`get_my_context`" in text and "`set_agent_service`" in text
     assert "for a missing one, say so and link where to connect it" in text
-    playbook = " ".join(_PLAYBOOK.read_text().split())
-    assert "Only your owner's own agents, and only after a yes" in playbook
-    assert "[Connectors](switchdash://open/connections)" in playbook
+    assert "Only your owner's own agents, and only after a yes" in text
+    assert "[Connectors](switchdash://open/connections)" in text
 
 
 def test_switch_buddy_carries_on_without_its_playbook():
     """The playbook may be unreachable or lack a section: that must pause only
     what needs the detail, never basic onboarding."""
-    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    text = _buddy_and_playbook_words()
     assert "read it only if you need more" in text
     assert "pause only the action that needs the missing detail" in text
     assert "Never ask the person for the file" in text
@@ -499,7 +503,7 @@ def test_switch_buddy_carries_on_without_its_playbook():
 def test_switch_buddy_always_tells_telegram_users_to_reply_to_the_bot():
     """In a Telegram group the bot sees only commands and replies to its own
     messages, so every Telegram walkthrough must say to reply, playbook or not."""
-    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    text = _buddy_and_playbook_words()
     assert "Every Telegram walkthrough, with or without the playbook" in text
     assert (
         "reply to a Switch bot message with the agent's exact name and their request"
@@ -511,8 +515,8 @@ def test_switch_buddy_links_pages_that_still_have_what_it_sends_people_for():
     """Account linking and guardrails left the server's home for Settings and
     Admin; a link to home leaves the person with nothing to click."""
     texts = [
-        (_PACKAGED / "switch-buddy" / "AGENT.md").read_text(),
-        _PLAYBOOK.read_text(),
+        (_BUDDY_DIR / "AGENT.md").read_text(),
+        *(p.read_text() for p in _buddy_skill_files()),
     ]
     for text in texts:
         for line in text.splitlines():
@@ -527,15 +531,15 @@ def test_switch_buddy_names_only_choices_the_connect_dialog_offers():
     """The connect dialog shows "Use your own app instead" only beside an
     official app to install; where people bring their own app, the form opens
     straight away, so buddy must not send them looking for it."""
-    playbook = " ".join(_PLAYBOOK.read_text().split())
-    assert "Use your own app instead" not in playbook
-    assert "pick Slack under Messaging app" in playbook
+    skills = " ".join(_buddy_skills_text().split())
+    assert "Use your own app instead" not in skills
+    assert "pick Slack under Messaging app" in skills
 
 
 def test_switch_buddy_joins_introduces_and_links_the_rooms_it_creates():
     """Buddy stays in the first rooms it creates (including template rooms with
     a kickoff), introduces each room in the room, and hands the person a link."""
-    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    text = _buddy_and_playbook_words()
     assert "don't join it" not in text
     assert "add yourself with `invite_agent_to_room`" in text
     assert "even when the template has a `kickoff`" in text
@@ -564,7 +568,7 @@ def test_switch_buddy_runs_adaptive_interview_and_starts_with_one_agent():
     """Onboarding asks a few quick questions with a check-in to go deeper or
     move on, drives connectors from those answers, and starts with one focused
     agent in one room before hinting at multi-agent workflows."""
-    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    text = _buddy_and_playbook_words()
     assert "A few quick questions about their work" in text
     assert "Every question is skippable" in text
     assert "name the one-line agent idea you have in mind" in text
@@ -588,7 +592,7 @@ def test_switch_buddy_runs_adaptive_interview_and_starts_with_one_agent():
 
 
 def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
-    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    text = _buddy_and_playbook_words()
     # Room suggestions and the agent fallback alike.
     assert (
         "Every list of suggestions, rooms or agents, ends with **Something else**"
@@ -602,7 +606,7 @@ def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
 
 
 def test_switch_buddy_keeps_question_forms_within_four_options():
-    instructions = _buddy_words()
+    instructions = _buddy_and_playbook_words()
     assert "A form takes at most four options per question" in instructions
     assert "at most 25 options" not in instructions
     assert (

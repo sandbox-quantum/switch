@@ -169,7 +169,8 @@ def document_in(folder: Path, agent_management: bool) -> str:
     """The document a template's folder serves: its ``template.yaml`` (or,
     without agent management, its ``template.console.yaml`` where it has
     one), with ``AGENT.md`` written in as its agents' instructions and any
-    companion ``PLAYBOOK.md`` attached as a template skill."""
+    skills under ``skills/<name>/SKILL.md`` (or legacy ``PLAYBOOK.md``)
+    attached as template skills."""
     console = folder / "template.console.yaml"
     path = (
         folder / "template.yaml"
@@ -181,14 +182,24 @@ def document_in(folder: Path, agent_management: bool) -> str:
     if not instructions.exists():
         return text
     skills: list[dict[str, str]] = []
-    playbook = folder / "PLAYBOOK.md"
-    if playbook.exists():
-        skills.append(
-            {
-                "name": f"{folder.name}-playbook",
-                "content": playbook.read_text(encoding="utf-8"),
-            }
-        )
+    skills_dir = folder / "skills"
+    if skills_dir.is_dir():
+        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+            skills.append(
+                {
+                    "name": skill_md.parent.name,
+                    "content": skill_md.read_text(encoding="utf-8"),
+                }
+            )
+    else:
+        playbook = folder / "PLAYBOOK.md"
+        if playbook.exists():
+            skills.append(
+                {
+                    "name": f"{folder.name}-playbook",
+                    "content": playbook.read_text(encoding="utf-8"),
+                }
+            )
     return _with_instructions(
         text,
         _strip_front_matter(instructions.read_text(encoding="utf-8")),
