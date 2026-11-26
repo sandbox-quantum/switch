@@ -70,7 +70,10 @@ description = "Test fixture in split-runtime.test.ts"
 # environment; never issued by anything.
 condition = "AND"
 targetRules = ["generic-api-key"]
-paths = ['''^console/packages/agent-controller-box/src/split-runtime\.test\.ts$''']
+paths = [
+  '''^console/packages/agent-controller-box/src/split-runtime\.test\.ts$''',
+  '''^console/packages/agent-controller/src/box/split-runtime\.test\.ts$''',
+]
 regexTarget = "line"
 regexes = [
   '''^\s*ANTHROPIC_AUTH_TOKEN: 'swpg_probe_0123456789abcdef',\s*$''',
