@@ -15,7 +15,8 @@ No hostname leaves this process, not even hashed: a host is named in the report 
 digits) this process gives it the first time it sees it and keeps only in memory (`HostIds`), so the same host keeps
 its id while this process runs and gets a new one after a restart. Another squid replica's reporter has its own ids.
 
-squid's line (`switch_box`): `<epoch> <login> <squid status> <host> <port> <bytes up> <bytes down>`. A box's agents
+squid's line (`switch_box`): `<epoch> <login> <squid status>/<http status> <host> <port> <bytes up> <bytes down>`.
+A refusal is squid's `TCP_DENIED` other than a 407: a 407 asks the client for its proxy login, which it then sends. A box's agents
 log in as `box-<id>` and its controller as `box-<id>-ctl` (`egress_lists.BoxEgress`); both count for the box. A line
 without a box login (refused before any box's rule) is counted as unattributed.
 
@@ -123,7 +124,8 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
     if not HOST_RE.fullmatch(host) or not port.isdigit():
         return None
     matched = LOGIN_RE.fullmatch(login)
-    denied = status.startswith("TCP_DENIED") or status.startswith("NONE_NONE")
+    code, _, http = status.partition("/")
+    denied = (code == "TCP_DENIED" and http != "407") or code == "NONE_NONE"
     return (
         matched.group(1) if matched else None,
         f"{host}:{port}",

@@ -349,7 +349,7 @@ data:
     # Each request's box, host, outcome and bytes, for the network reporter beside squid, which follows this file, sums
     # it per box every minute, sends Core one report, and keeps the file short (network_report.py). Flushed per line.
     buffered_logs off
-    logformat switch_box %ts %un %Ss %>rd %>rP %>st %<st
+    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st
     access_log stdio:/var/log/squid/box.log logformat=switch_box
     cache_log /var/log/squid/cache.log
     pinger_enable off   # the ICMP pinger needs NET_RAW, which this pod rightly lacks

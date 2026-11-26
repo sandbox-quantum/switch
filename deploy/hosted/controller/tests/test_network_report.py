@@ -22,7 +22,9 @@ BOX = "box-k1-0123456789abcdef"
 OLD = "k1-fedcba9876543210"
 
 
-def line(login: str, host: str, status: str = "TCP_TUNNEL", up: int = 100, down: int = 1000) -> str:
+def line(
+    login: str, host: str, status: str = "TCP_TUNNEL/200", up: int = 100, down: int = 1000
+) -> str:
     return f"1795680000.123 {login} {status} {host} 443 {up} {down}"
 
 
@@ -30,7 +32,7 @@ def test_a_line_names_its_box_by_either_login_and_counts_a_refusal() -> None:
     assert parse(line(f"box-{BOX}", "github.com"))[:2] == (BOX, "github.com:443")
     assert parse(line(f"box-{BOX}-ctl", "aiplatform.googleapis.com"))[0] == BOX
     assert parse(line(f"box-{OLD}", "registry.npmjs.org"))[0] == OLD
-    box, _, one = parse(line("-", "example.com", status="TCP_DENIED"))
+    box, _, one = parse(line("-", "example.com", status="TCP_DENIED/403"))
     assert box is None and one.denied == 1
     assert parse("not a squid line") is None
     assert parse(line(f"box-{BOX}", "bad host!")) is None
@@ -43,7 +45,7 @@ def test_a_window_sums_per_box_and_names_only_the_busiest_hosts() -> None:
         agg.add_line(line(f"box-{BOX}", f"h{i:02d}.example", down=i))
     agg.add_line(line(f"box-{BOX}", "h00.example", up=0, down=0))
     agg.add_line(line(f"box-{BOX}-ctl", "big.example", down=10_000_000))
-    agg.add_line(line("-", "example.com", status="TCP_DENIED"))
+    agg.add_line(line("-", "example.com", status="TCP_DENIED/403"))
     body = report_body(agg.take(), 60, 0, ids)
     [box] = body["boxes"]
     assert box["box"] == BOX
@@ -137,3 +139,10 @@ def test_a_host_keeps_its_random_id_and_ids_never_repeat() -> None:
     first = ids.of("github.com:443")
     assert first == "h-0000aaaa" and ids.of("github.com:443") == first
     assert ids.of("example.com:443") == "h-0000bbbb"  # the colliding draw was redrawn
+
+
+def test_a_proxy_login_challenge_is_not_a_refusal() -> None:
+    _, _, challenge = parse(line(f"box-{BOX}", "github.com", status="TCP_DENIED/407"))
+    _, _, refused = parse(line(f"box-{BOX}", "github.com", status="TCP_DENIED/403"))
+    _, _, older = parse(line(f"box-{BOX}", "github.com", status="TCP_DENIED"))
+    assert (challenge.denied, refused.denied, older.denied) == (0, 1, 1)
