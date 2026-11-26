@@ -16,8 +16,8 @@ import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { events, rpc } from '@renderer/lib/ipc';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { modalStore } from '@renderer/lib/modal/modal-store';
-import { appState } from '@renderer/lib/stores/app-state';
 import { confirmOpenExternalLink } from '@renderer/lib/open-external-link';
+import { appState } from '@renderer/lib/stores/app-state';
 import { chatRemovedChannel, chatResetChannel } from '@shared/core/chats/chatEvents';
 import { useChatPeople } from './chat-people';
 import { directChats } from './start-direct-chat';
@@ -64,11 +64,9 @@ export const consoleChatHost: ChatHost = {
         onClose: () => resolve(false),
       });
     }),
-  rename: ({ roomId, currentName }) =>
+  rename: ({ currentName }) =>
     new Promise<string | null>((resolve) => {
       showModal('renameChatModal', {
-        serverId: switchServersStore.activeServerId ?? '',
-        roomId,
         currentName,
         onSuccess: (newName) => resolve(newName),
         onClose: () => resolve(null),

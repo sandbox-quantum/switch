@@ -3,28 +3,32 @@ import {
   ConversationSection as Section,
 } from '@switch-console/chat-ui/components/agent-page';
 import { ArchivedFold } from '@switch-console/chat-ui/components/archived-fold';
+import {
+  ChatActionItems,
+  chatActions,
+  type ChatRemovalContext,
+} from '@switch-console/chat-ui/components/chat-actions';
 import { ChatPanel } from '@switch-console/chat-ui/components/chat-panel';
 import { ChatRow, RoomRow, UnsavedChatRow } from '@switch-console/chat-ui/components/chat-row';
 import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { useChatHost } from '@switch-console/chat-ui/host';
 import { agentConversations } from '@switch-console/chat-ui/model/agent-conversations';
+import { isConsoleDirectChatSummary } from '@switch-console/chat-ui/model/agent-conversations';
+import { buddySetupCardsEnabled } from '@switch-console/chat-ui/model/buddy-setup-step';
 import { roomActivityAt } from '@switch-console/chat-ui/model/room-order';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
-import { ChatActionItems, chatActions, type ChatRemovalContext } from '@switch-console/chat-ui/components/chat-actions';
 import { useOpenGroupAsRoom } from '@renderer/features/chats/console-chat-redirect';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { BuddySetupCards } from '@renderer/features/switch-buddy/buddy-setup-cards';
-import { buddySetupCardsEnabled } from '@switch-console/chat-ui/model/buddy-setup-step';
 import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
-import { isConsoleDirectChatSummary } from '@switch-console/chat-ui/model/agent-conversations';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import { EmptyState } from '@renderer/lib/ui/empty-state';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
@@ -61,7 +65,7 @@ export function useAgentSection(
 }
 
 /** A chat row's menu: Console's actions on the chat, or none. */
-function RowActions({ serverId, chat, agentId }: { serverId: string; chat: ChatSummary; agentId: string }) {
+function RowActions({ serverId, chat }: { serverId: string; chat: ChatSummary }) {
   const host = useChatHost();
   const context: ChatRemovalContext = {
     currentViewId: 'managedAgent',
@@ -227,7 +231,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               chat={chat}
               isActive={!section && chat.roomId === roomId}
               onOpen={() => open(chat.roomId)}
-              actions={<RowActions serverId={serverId} chat={chat} agentId={agentId} />}
+              actions={<RowActions serverId={serverId} chat={chat} />}
             />
           ))}
           {direct.length === 0 && !unsavedId && !chatsStore.listError && (
@@ -241,7 +245,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
                 chat={chat}
                 isActive={!section && chat.roomId === roomId}
                 onOpen={() => open(chat.roomId)}
-                actions={<RowActions serverId={serverId} chat={chat} agentId={agentId} />}
+                actions={<RowActions serverId={serverId} chat={chat} />}
               />
             ))}
           </ArchivedFold>

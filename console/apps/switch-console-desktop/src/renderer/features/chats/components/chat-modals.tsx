@@ -1,7 +1,4 @@
-import { useState } from 'react';
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@switch-console/chat-ui/primitives/button';
-import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
   DialogFooter,
@@ -10,15 +7,16 @@ import {
 } from '@switch-console/chat-ui/primitives/dialog';
 import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { Input } from '@switch-console/chat-ui/primitives/input';
+import { useState } from 'react';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 
 /** Rename a chat: its room's name, for everyone in it. */
 export function RenameChatModal({
-  serverId,
-  roomId,
   currentName,
   onSuccess,
   onClose,
-}: BaseModalProps<string> & { serverId: string; roomId: string; currentName: string }) {
+}: BaseModalProps<string> & { currentName: string }) {
   const [name, setName] = useState(currentName);
   const trimmed = name.trim();
   const valid = trimmed.length > 0 && trimmed !== currentName;
