@@ -1118,7 +1118,9 @@ async def create_room(
             session, result.room.id
         )
     channel_url_fn = getattr(protocol, "channel_web_url", None)
-    channel_url = await channel_url_fn(result.room) if channel_url_fn is not None else None
+    channel_url = (
+        await channel_url_fn(result.room) if channel_url_fn is not None else None
+    )
     return {
         "id": result.room.id,
         "name": result.room.name,
