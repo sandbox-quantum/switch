@@ -30,6 +30,10 @@ beforeEach(() => {
     return true;
   });
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  // `run` unrefs its IPC channel so a parent's channel never keeps a controller
+  // alive. Here that channel is the test worker's own link to vitest: unrefed,
+  // the worker can exit mid-file whenever nothing else holds its event loop.
+  if (process.channel) vi.spyOn(process.channel, 'unref').mockImplementation(() => {});
 });
 
 afterEach(() => {
