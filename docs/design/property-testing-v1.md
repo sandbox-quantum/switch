@@ -614,6 +614,45 @@ In this order, each checker shown to fail on a planted bug:
       - `controller.takeover-fenced` at the system level, and the case the
         eventual-ownership model found: a replica paused for less than its
         lease, a replica added meanwhile, and the key moved once it resumes.
+
+      Built so far: the hook (`src/clients/replicas.ts`, with
+      `scripts/replica.sh` starting a replica and HAProxy's runtime API on
+      `127.0.0.1:9999`), and three scenarios on the Mattermost bridge
+      (`src/fast/replica-faults.ts`), which hold `replica.single-owner` and
+      `replica.ownership-eventual` for it: its holder crashed (`SIGKILL`),
+      stopped as a deploy stops it (`SIGTERM`), and paused past its lease.
+      Each reads `ownership_leases` (`properties/history/ownership.py`, which
+      also reports the product's timers, so every wait is derived from them),
+      checks that the survivor holds the bridge within the lease's lifetime
+      and one balance (a balance after a `SIGTERM`), that an agent's message
+      sent while nothing held the bridge is posted once, as the agent, and
+      that both directions work once each after the hand-over and again once
+      the faulted replica is back. The paused scenario also checks that the
+      resumed replica logs that it stopped its work, that a message the agent
+      sent during the pause is posted once, and that a person's post its
+      sockets buffered is not relayed when it runs again. A scenario that
+      causes an error log on purpose names it (`expectedServerErrors`); any
+      other error still fails it. Each fault is undone after the scenario,
+      which then waits for the bridge to settle on a live holder, so the next
+      scenario does not start in a hand-over.
+
+      They found three bugs. A process that took a bridge over after a crash
+      relayed a waiting message before it had set up the agent's bot, so the
+      message was posted under the admin account. A process paused past its
+      lease, once resumed, wrote the posts its sockets had buffered into the
+      rooms before its balance stopped the bridge: a write after its lease had
+      lapsed, more than a minute late. Both are fixed: a send adopts the bot
+      it lacks, and an adapter drops what its platform connection delivers
+      once its process is no longer sure it holds the bridge
+      (`OwnedKind.surely_holds`). The third is open (Known issues): a person's
+      post made before the new holder's sockets are open is lost. The
+      scenarios measure that gap rather than fail on it.
+
+      Still to come in this stage: presence and controller takeover, which
+      need the harness to hold an agent's connection and a controller's
+      socket (it has neither yet), the paused-for-less-than-the-lease case,
+      and a scenario for taking a replica out of rotation, which the hook
+      already does.
    3. **Bus faults.** The listening connection is cut on its own with
       `pg_terminate_backend` on the backends whose query is `LISTEN`, which
       loses every notification sent until it reconnects; no proxy is needed.
@@ -656,6 +695,18 @@ to track them.
   `POST /collaborations/setup/slack/check`, `POST /templates`, `PUT
   /chats/{room_id}/read`), all on the type of `detail`. They look like one
   error-shape fix, and are outside `api.no-5xx`, which only says 5xx.
+- **A Mattermost post made while a bridge changes hands is lost.** The
+  adapter reads each bot's socket from the moment it connects and never
+  fetches what was posted before, so a person's post between the old holder
+  letting go (or dying, or being paused) and the new holder's sockets
+  opening reaches no agent. On a deploy that is a second or two; after a
+  crash, the lease's lifetime. Closing it needs a stored position per
+  channel, the last post relayed, and a fetch of what came after it when a
+  socket opens, which a holder paused past its lease must not do. The
+  replica fault scenarios log how many posts each hand-over lost; make them
+  fail on any once this is fixed. Other adapters that listen on a socket
+  (Slack in socket mode, Discord, Telegram) likely have the same gap, and
+  do not yet drop what reaches them after their hold is unsure.
 - **An agent's runtime state is announced only on the replica that has it.**
   `com.switch.agent.runtime_state`, Switch Console's working and idle, goes
   over an in-process bus (`transport/ephemeral.py`). Nothing reads it today:

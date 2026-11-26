@@ -10,9 +10,13 @@ properties:
     levels: [system]
     owner: platform
     status: proposed
-    gaps:
-      system: waits on the two-replica lane with killed processes
     notes: >
+      Checked at the system level by `src/fast/replica-faults.ts` in the
+      end-to-end harness, on the two-replica lane, for the Mattermost bridge
+      with its holder killed, stopped and paused: after each fault,
+      `ownership_leases` names one live holder, and every message relayed
+      across the hand-over is posted once. Not yet for client consumers, and
+      there is no assertion where owned work starts.
       The end-to-end statement of `lease.no-overlap`, which holds it at the model
       and code levels for one key: this one is about the work itself, in real
       processes that are killed and partitioned (`ownership.py`, `surely_held`).
@@ -26,9 +30,11 @@ properties:
     levels: [model, system]
     owner: platform
     status: proposed
-    gaps:
-      system: waits on the two-replica lane with killed processes
     notes: >
+      At the system level, `src/fast/replica-faults.ts` checks that the
+      survivor holds a crashed or paused holder's Mattermost bridge within the
+      lease's lifetime and one balance, read from the product's timers, and a
+      stopped one's within a balance. Not yet for client consumers.
       Supersedes `lease.eventual-owner`. Checked at the model level by
       `properties/specs/ownership_eventual.qnt`, an untimed abstraction of the
       lease: a bounded clock cannot carry a liveness property. A process

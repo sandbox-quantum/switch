@@ -76,7 +76,7 @@ for tool in docker uv openssl curl jq lsof; do
   command -v "$tool" >/dev/null || { echo "$tool is required but not on PATH." >&2; exit 1; }
 done
 PORTS=(4173 5432 8000 8065 8081)
-[ "$REPLICAS" = 2 ] && PORTS+=(8001 8002 8091 8092)
+[ "$REPLICAS" = 2 ] && PORTS+=(8001 8002 8091 8092 9999)
 for port in "${PORTS[@]}"; do
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Port $port is in use. Stop your local stack first ('just down', and any 'just run')." >&2
@@ -101,8 +101,33 @@ COMPOSE=(docker compose -p switch-e2e-ephemeral -f deploy/local/docker-compose.y
 SERVER_PIDS=()
 SERVER_LOGS=()
 PROXY="switch-e2e-ephemeral-haproxy"
+# With two replicas: each one's current pid, rewritten when the harness starts
+# one again after a fault (scripts/replica.sh).
+REPLICAS_DIR=""
 CONTROLLER_PID=""
 UI_PID=""
+# The replicas' current pids. They are not this shell's children once the
+# harness has started one again, so they are waited for by polling.
+replica_pids() {
+  [ -n "$REPLICAS_DIR" ] || return 0
+  cat "$REPLICAS_DIR"/*.pid 2>/dev/null | tr '\n' ' '
+}
+stop_replicas() {
+  local pid pids
+  pids="$(replica_pids)"
+  [ -n "$pids" ] || return 0
+  for pid in $pids; do
+    # A paused replica takes no SIGTERM until it runs again.
+    kill -CONT "$pid" 2>/dev/null
+    kill "$pid" 2>/dev/null
+  done
+  for _ in $(seq 30); do
+    for pid in $pids; do kill -0 "$pid" 2>/dev/null && break; pid=""; done
+    [ -z "$pid" ] && return 0
+    sleep 1
+  done
+  for pid in $pids; do kill -KILL "$pid" 2>/dev/null; done
+}
 cleanup() {
   local status=$?
   # Every step runs whatever the one before it did: a process that exits
@@ -115,6 +140,7 @@ cleanup() {
     for pid in ${SERVER_PIDS[@]+"${SERVER_PIDS[@]}"}; do
       kill "$pid" 2>/dev/null && wait "$pid" 2>/dev/null
     done
+    stop_replicas
     if [ "$REPLICAS" = 2 ]; then
       docker logs "$PROXY" >"$OUT/haproxy.log" 2>&1
       docker rm -f "$PROXY" >/dev/null 2>&1
@@ -125,7 +151,7 @@ cleanup() {
     [ "$REPLICAS" = 2 ] && { proxy="docker rm -f $PROXY; "; behind=", behind HAProxy"; }
     echo "Left running: switch-core :8000 (pid ${SERVER_PIDS[*]-}$behind), Mattermost :8065${CONTROLLER_PID:+, agent controller (pid $CONTROLLER_PID)}${UI_PID:+, gateway UI :4173 (pid $UI_PID)}."
     echo "Secrets and state for this stack: $WORK. Tear down with:"
-    echo "  kill ${SERVER_PIDS[*]-} $CONTROLLER_PID $UI_PID; $proxy${COMPOSE[*]} down -v; rm -rf $WORK"
+    echo "  kill ${SERVER_PIDS[*]-} $(replica_pids) $CONTROLLER_PID $UI_PID; $proxy${COMPOSE[*]} down -v; rm -rf $WORK"
   fi
   if "$HARNESS/scripts/scan-artifacts.sh" "$OUT" <"$SECRETS"; then
     : >"$OUT/.secret-scan-passed"
@@ -214,14 +240,20 @@ else
   # One after the other: the first runs the start-up work (the bootstrap
   # admin, the default workspace) alone, as a rolling deploy would.
   echo "Starting two switch-core replicas from this checkout…"
-  start_server 8001 8091 "$OUT/switch-core-1.log"
-  start_server 8002 8092 "$OUT/switch-core-2.log"
+  REPLICAS_DIR="$WORK/replicas"
+  mkdir -p "$REPLICAS_DIR"
+  export SWITCH_E2E_REPLICAS_DIR="$REPLICAS_DIR" SWITCH_E2E_REPLICA_LOGS="$OUT"
+  for n in 1 2; do
+    "$HARNESS/scripts/replica.sh" "$n" || exit 1
+    SERVER_LOGS+=("$OUT/switch-core-$n.log")
+  done
   echo "Starting HAProxy in front of them…"
   docker rm -f "$PROXY" >/dev/null 2>&1 || true
   # Docker Desktop and OrbStack define host.docker.internal; Linux Docker
-  # needs it mapped to the host gateway.
+  # needs it mapped to the host gateway. :9999 is HAProxy's runtime API, for
+  # the harness to take a replica out of rotation; on loopback only.
   docker run -d --name "$PROXY" --add-host host.docker.internal:host-gateway \
-    -p 8000:8000 -p 8081:8081 \
+    -p 8000:8000 -p 8081:8081 -p 127.0.0.1:9999:9999 \
     -v "$HARNESS/scripts/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
     haproxy:3.0-alpine >"$OUT/haproxy-start.log" 2>&1 \
     || { echo "HAProxy did not start; see $OUT/haproxy-start.log" >&2; exit 1; }
@@ -328,6 +360,13 @@ status=0
   # Every replica's, separated by commas.
   SWITCH_E2E_SERVER_LOG="$(IFS=,; echo "${SERVER_LOGS[*]}")"
   export SWITCH_E2E_SERVER_LOG
+  # What the replica fault scenarios act on (src/clients/replicas.ts); with
+  # one server, that they have nothing to act on.
+  if [ "$REPLICAS" = 2 ]; then
+    export SWITCH_E2E_HAPROXY_ADMIN=127.0.0.1:9999
+  else
+    export SWITCH_E2E_NO_REPLICAS=1
+  fi
   # The delivery history check, which reads the stack's database (DB_* above).
   [ "$LANE" = fast ] && export SWITCH_E2E_HISTORY_CHECK="$REPO/properties/history/check.sh"
   # Screenshots of failed pages, and agentic transcripts and verdicts.

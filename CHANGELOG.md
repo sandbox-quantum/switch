@@ -237,6 +237,17 @@ version of their own to them without also giving them a release of their own.
   instead of being read as "no bot". An agent deleted while another process
   was still adding it to a room, or posting its greeting there, is no longer
   an error.
+- **An agent's first message after a server process takes over a
+  Mattermost bridge is posted as the agent, not as the Switch admin
+  account.** When the process holding the bridge stopped and another took it
+  over, a message waiting to be relayed could be posted before the new holder
+  had set up the agent's bot, under the admin account and with an error
+  logged. The bot is now set up first.
+- **A server process paused for longer than its lease no longer relays
+  Mattermost messages it received before the pause once it runs again.**
+  Another process holds the bridge by then; the paused one now drops what its
+  connections buffered, with a warning, instead of writing it into rooms
+  more than a minute late.
 - **A cached controller token or room membership no longer outlives its TTL
   after a slow read.** The TTL counted from when the read was stored, so a
   change missed while the read was in flight could be served for the TTL plus

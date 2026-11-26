@@ -444,3 +444,35 @@ def test_a_quiet_copy_follows_a_rename_without_creating_a_bot(known: bool) -> No
     assert adapter._agent_bots["helper2"]["user_id"] == "bot-elsewhere"
     assert "helper" not in adapter._agent_bots
     assert adapter._bot_id_to_username["bot-elsewhere"] == "helper2"
+
+
+def test_a_message_relayed_before_the_bot_is_set_up_here_posts_as_the_bot(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A process that takes the bridge over sets its agents' bots up in the
+    background while its workspace consumer already relays, so the first
+    message it relays can be for an agent whose bot it has not set up yet.
+    The bot is set up then, and the message posted as the agent rather than
+    as the admin account."""
+    adapter, admin = _adapter([dict(_CREATED_ELSEWHERE)], listening=True)
+    posted_with: list[Any] = []
+
+    async def create_posts(
+        driver: Any, channel_id: str, content: str, thread_root_id: str | None
+    ) -> str:
+        posted_with.append(driver)
+        return "post-1"
+
+    adapter._create_posts = create_posts  # type: ignore[method-assign]
+
+    async def _go() -> str | None:
+        adapter._main_loop = asyncio.get_running_loop()
+        return await adapter.send_message("channel-1", "helper", "hello")
+
+    with caplog.at_level(logging.ERROR):
+        assert _run(_go()) == "post-1"
+
+    assert posted_with == [adapter._bot_drivers["helper"]]
+    assert posted_with[0] is not admin
+    assert adapter._agent_bots["helper"]["user_id"] == "bot-elsewhere"
+    assert "No Mattermost driver" not in caplog.text

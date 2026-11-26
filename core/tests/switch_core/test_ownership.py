@@ -427,6 +427,25 @@ class TestHandingOver:
         assert a.runs() == a_had
         assert everywhere.overlaps == []
 
+    async def test_work_is_not_surely_held_once_the_lease_is_unsure(
+        self, two: tuple[_Process, _Process]
+    ) -> None:
+        """A process paused past its lease runs again with its work still
+        started until its next balance. What reaches that work from outside
+        meanwhile asks `surely_holds`, which says no from the moment the lease
+        is unsure, before the balance has stopped anything."""
+        a, b = two
+        await a.ownership.balance()
+        await b.ownership.balance()
+        key = sorted(a.runs())[0]
+        assert a.kind.surely_holds(key)
+        assert not b.kind.surely_holds(key)
+
+        a.lease._renewed_at = time.monotonic() - LEASE_TTL.total_seconds()
+
+        assert a.runs() != set(), "nothing has stopped it yet"
+        assert not a.kind.surely_holds(key)
+
     async def test_a_process_back_from_suspending_lets_go_of_what_moved(
         self,
         session_factory: async_sessionmaker[AsyncSession],

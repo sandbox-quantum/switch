@@ -1130,7 +1130,7 @@ class MattermostAdapter(PlatformAdapter):
         *,
         room_wide_mention: bool = False,
     ) -> str | None:
-        bot_driver = self._bot_drivers.get(sender_name)
+        bot_driver = await self._sender_driver(sender_name)
         if not bot_driver:
             logger.error("No Mattermost driver found for sender '%s'", sender_name)
             if not self._admin_driver:
@@ -1161,7 +1161,7 @@ class MattermostAdapter(PlatformAdapter):
                 f"The card is {size} characters of post props, over Mattermost's "
                 f"{_MAX_PROPS}."
             )
-        driver = self._bot_drivers.get(sender_name) or self._admin_driver
+        driver = await self._sender_driver(sender_name) or self._admin_driver
         if driver is None:
             raise RuntimeError("Mattermost is not connected.")
         try:
@@ -1403,7 +1403,7 @@ class MattermostAdapter(PlatformAdapter):
         if loop is None:
             logger.error("Cannot send attachment: event loop not initialized")
             return None
-        driver = self._bot_drivers.get(sender_name)
+        driver = await self._sender_driver(sender_name)
         if not driver:
             logger.error("No Mattermost driver found for sender '%s'", sender_name)
             if not self._admin_driver:
@@ -1483,7 +1483,7 @@ class MattermostAdapter(PlatformAdapter):
         if loop is None:
             logger.error("Cannot send attachments: event loop not initialized")
             return None
-        driver = self._bot_drivers.get(sender_name)
+        driver = await self._sender_driver(sender_name)
         if not driver:
             logger.error("No Mattermost driver found for sender '%s'", sender_name)
             if not self._admin_driver:
@@ -2114,7 +2114,7 @@ class MattermostAdapter(PlatformAdapter):
         transport's own error and keeps the reservation.
         """
         rendered = await self._render_rich(channel_id, content)
-        driver = self._bot_drivers.get(agent_name)
+        driver = await self._sender_driver(agent_name)
         if driver is None:
             raise RichContentFailed(
                 f"No Mattermost bot for agent {agent_name!r}, so its activity "
@@ -2192,7 +2192,7 @@ class MattermostAdapter(PlatformAdapter):
         rendered = await self._render_rich(
             channel_id, replace(content, notify_external_id=None)
         )
-        driver = self._bot_drivers.get(agent_name) or self._admin_driver
+        driver = await self._sender_driver(agent_name) or self._admin_driver
         loop = self._main_loop
         if driver is None or loop is None:
             raise RichContentFailed(
@@ -3155,6 +3155,19 @@ class MattermostAdapter(PlatformAdapter):
         if self._listening and agent_name in self._agent_bots:
             await self._bridge_channels_already_joined(agent_name, bot_id)
 
+    async def _sender_driver(self, agent_name: str) -> Driver | None:
+        """The driver that posts as the agent's bot, adopting the bot first
+        where this process holds the bridge and has not set it up yet.
+
+        A process that takes the bridge over sets up its agents' bots in the
+        background while its workspace consumer already relays, so the first
+        message it relays for an agent can come before that agent's bot."""
+        driver = self._bot_drivers.get(agent_name)
+        if driver is None and self._listening:
+            await self._adopt_agent_identity(agent_name)
+            driver = self._bot_drivers.get(agent_name)
+        return driver
+
     async def _agent_label(self, agent_name: str) -> str:
         # The username is the routing handle — the mention, the member-list key
         # and the key this adapter adopts a bot back by — so it stays the
@@ -3679,6 +3692,15 @@ class MattermostAdapter(PlatformAdapter):
             return
 
         event_type = event.get("event")
+        if event_type in ("posted", "user_added") and not self.still_holds():
+            logger.warning(
+                "Dropped a Mattermost %s event that reached bot %s's socket "
+                "after this process stopped being sure it holds the bridge: "
+                "the process that holds it now handles what it sees",
+                event_type,
+                agent_name,
+            )
+            return
 
         if event_type == "user_added":
             await self._handle_user_added(event)

@@ -1300,6 +1300,7 @@ class CollaborationBridgeLifecycleService:
             )
             adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
             adapter.set_listening(active)
+            adapter.set_hold_check(lambda: self._owned.surely_holds(bridge_id))
             adapter.set_tenant_id(tenant_id)
             adapter.set_bridge_id(bridge_id)
             adapter.set_session_factory(self._session_factory)

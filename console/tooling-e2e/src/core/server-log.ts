@@ -310,6 +310,28 @@ export class ScenarioObserver {
   }
 }
 
+/**
+ * The errors not matched by any of `expected`, the ones a scenario causes on
+ * purpose (a fault it injects). Those matched are logged as expected, so the
+ * run still shows them.
+ */
+export function setAsideExpected(
+  errors: ServerLogError[] | null,
+  expected: readonly RegExp[],
+  log: (message: string) => void
+): ServerLogError[] | null {
+  if (errors === null || expected.length === 0) return errors;
+  const unexpected: ServerLogError[] = [];
+  for (const error of errors) {
+    if (expected.some((pattern) => pattern.test(error.message))) {
+      log(`expected server error: ${error.timestamp} [${error.logger}] ${error.message}`);
+    } else {
+      unexpected.push(error);
+    }
+  }
+  return unexpected;
+}
+
 /** Fail when the server logged errors; `null` (the check is off) passes. */
 export function expectNoServerErrors(
   errors: ServerLogError[] | null,

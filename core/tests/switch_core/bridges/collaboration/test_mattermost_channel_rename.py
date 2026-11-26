@@ -33,6 +33,7 @@ async def _adapter() -> tuple[MattermostAdapter, list[tuple[str, str, str]], lis
         relayed.append(msg)
 
     adapter.set_channel_rename_handler(named)
+    adapter.set_hold_check(lambda: True)
     adapter._on_message = message
     adapter._main_loop = asyncio.get_running_loop()
     return adapter, renamed, relayed

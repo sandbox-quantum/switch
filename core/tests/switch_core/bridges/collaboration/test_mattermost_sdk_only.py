@@ -174,16 +174,27 @@ class _FakeChannels:
 
 
 class _FakeClient:
-    """The raw HTTP surface, which is how the typing nudge is sent."""
+    """The raw HTTP surface, which is how the typing nudge is sent and how a
+    bot is looked up. This Mattermost has no bots beyond the ones a test sets
+    up by hand."""
 
     def __init__(self) -> None:
-        self.requests: list[tuple[str, str, dict[str, str]]] = []
+        self.requests: list[tuple[str, str, dict[str, str] | None]] = []
 
     def make_request(
-        self, method: str, endpoint: str, body: dict[str, str]
-    ) -> dict[str, str]:
-        self.requests.append((method, endpoint, body))
+        self, method: str, endpoint: str, options: dict[str, str] | None
+    ) -> Any:
+        self.requests.append((method, endpoint, options))
+        if method == "get" and endpoint.startswith("/bots?"):
+            return _NoBots()
         return {"status": "OK"}
+
+
+class _NoBots:
+    """Mattermost's answer to a bot lookup, listing none."""
+
+    def json(self) -> list[dict[str, str]]:
+        return []
 
 
 class _DriverPosts:

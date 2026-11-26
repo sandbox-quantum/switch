@@ -40,13 +40,15 @@ export interface ScenarioHeader {
  * `gateway-ui`: the address of a gateway UI served against this Switch server.
  * `agentic-models`: the driver and judge models, and the spending limit.
  * `controller`: an agent controller that runs the agents Switch manages.
+ * `replicas`: two switch-core replicas the harness may fault (`Replicas`).
  */
 export type Prerequisite =
   | 'mattermost'
   | 'agent-dir'
   | 'gateway-ui'
   | 'agentic-models'
-  | 'controller';
+  | 'controller'
+  | 'replicas';
 
 const OPERATION = /^[a-z][a-z0-9_]*$/;
 const ROUTE = /^(GET|POST|PUT|PATCH|DELETE|WS) \/\S*$/;
@@ -117,7 +119,7 @@ export function admit(header: ScenarioHeader, env: HarnessEnv): Admission {
       run: false,
       reason:
         `needs ${missing.map(describePrerequisite).join(' and ')}` +
-        (byDesign ? `, which '${env.environment}' does not deploy (SWITCH_E2E_NO_MATTERMOST)` : ''),
+        (byDesign ? `, which '${env.environment}' ${describeAbsence(missing)}` : ''),
       failure: env.strict && !byDesign,
     };
   }
@@ -125,7 +127,10 @@ export function admit(header: ScenarioHeader, env: HarnessEnv): Admission {
 }
 
 function absentByDesign(prerequisite: Prerequisite, env: HarnessEnv): boolean {
-  return prerequisite === 'mattermost' && env.noMattermost;
+  return (
+    (prerequisite === 'mattermost' && env.noMattermost) ||
+    (prerequisite === 'replicas' && env.noReplicas)
+  );
 }
 
 function satisfied(prerequisite: Prerequisite, env: HarnessEnv): boolean {
@@ -144,6 +149,8 @@ function satisfied(prerequisite: Prerequisite, env: HarnessEnv): boolean {
       );
     case 'controller':
       return env.provider.controllerId !== null;
+    case 'replicas':
+      return env.replicas !== null;
   }
 }
 
@@ -159,5 +166,17 @@ function describePrerequisite(prerequisite: Prerequisite): string {
       return 'the driver and judge models and a spending limit (SWITCH_E2E_DRIVER_MODEL, SWITCH_E2E_JUDGE_MODEL, SWITCH_E2E_AGENTIC_BUDGET_USD)';
     case 'controller':
       return 'an agent controller (SWITCH_E2E_CONTROLLER_ID)';
+    case 'replicas':
+      return 'two switch-core replicas the harness may fault (SWITCH_E2E_HAPROXY_ADMIN)';
   }
+}
+
+function describeAbsence(missing: readonly Prerequisite[]): string {
+  return missing
+    .map((prerequisite) =>
+      prerequisite === 'replicas'
+        ? 'runs as one server (SWITCH_E2E_NO_REPLICAS)'
+        : 'does not deploy (SWITCH_E2E_NO_MATTERMOST)'
+    )
+    .join(' and ');
 }

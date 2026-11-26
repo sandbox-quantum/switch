@@ -178,6 +178,13 @@ class OwnedKind:
     def fence(self, key: str) -> Fence | None:
         return self._held.get(key)
 
+    def surely_holds(self, key: str) -> bool:
+        """Whether `key` runs here and no other process can have taken it over
+        yet. For work that acts on what reaches it from outside, such as a
+        platform socket's events: a process paused past its lease finds them
+        waiting when it runs again, before its next balance has stopped it."""
+        return key in self._held and self._ownership.surely_held()
+
     async def drop(self, key: str) -> None:
         """This process will not run `key` any more: stop it here now if it
         runs, and let go of its lease. For work being deleted, which must be
@@ -300,6 +307,11 @@ class Ownership:
     @property
     def stopping(self) -> bool:
         return self._stopped
+
+    def surely_held(self) -> bool:
+        """Whether no other process can yet have taken this one's work over
+        (`ProcessLease.surely_held`)."""
+        return self._lease.surely_held()
 
     def kind(self, name: str, *, start: StartWork, stop: StopWork) -> OwnedKind:
         """Register a kind of work. `start(key, fence)` runs the work here and
