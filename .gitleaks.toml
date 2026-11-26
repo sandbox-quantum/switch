@@ -65,17 +65,6 @@ paths = [
 # other value in the same file, is still scanned.
 
 [[allowlists]]
-description = "Git blob ids in the box runtime's upstream-sync list"
-# 40-character hashes recording which upstream file each box copy is from.
-# upstream-packages.test.ts checks every value against the real upstream
-# file's blob id, so a value here that is not a real blob id fails that test.
-condition = "AND"
-targetRules = ["generic-api-key"]
-paths = ['''^console/packages/switch-agent-runtime-box/upstream-packages\.json$''']
-regexTarget = "line"
-regexes = ['''^\s*"[^"]+\.(ts|tsx|json|mjs)": "[0-9a-f]{40}",?$''']
-
-[[allowlists]]
 description = "Test fixture in split-runtime.test.ts"
 # A made-up "swpg_" proxy token in the split-runtime test's fake agent
 # environment; never issued by anything.
