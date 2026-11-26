@@ -149,7 +149,7 @@ async def _router(
     async with engine.begin() as connection:
         event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
     telemetry, _, telemetry_http = await build_telemetry(
-        config, factory, switch_core_version()
+        config, factory, switch_core_version(), keeps_deployment_state=False
     )
     message_store = MessageStore()
     room_store = RoomStore()

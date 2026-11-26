@@ -26,6 +26,7 @@ import {
   type ServiceGrant,
   removeServiceGrant,
   setServiceGrant,
+  githubThroughApp,
 } from "../../data/api";
 import { GitHubGrantForm, REMOVED_NOTE, repositoryNames } from "../agents/ServiceAccessSection";
 import { grantLabel, openAgentNote } from "./connectorProfile";
@@ -110,7 +111,7 @@ function AgentCard({
   onManage: (() => void) | null;
   onRemove: (() => void) | null;
 }) {
-  const repositories = connection.slug === "github" ? repositoryNamesIfKnown(github, entry.grant) : null;
+  const repositories = githubThroughApp(connection) ? repositoryNamesIfKnown(github, entry.grant) : null;
   const count = repositoryCount(entry.grant);
   const detail = [
     agentType,
@@ -223,7 +224,7 @@ export default function ConnectorAgents({
   const [adding, setAdding] = useState(false);
   const [chosen, setChosen] = useState<ServiceAgent | null>(null);
   const [managing, setManaging] = useState<Entry | null>(null);
-  const isGitHub = connection.slug === "github";
+  const isGitHub = githubThroughApp(connection);
   const entries = entriesOf(own, workspace, meId);
   const addable = own.filter((agent) => !agent.granted && agent.grantable);
   const usable =

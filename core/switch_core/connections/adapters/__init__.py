@@ -13,9 +13,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
-from switch_core.connections.loader import AccessLevel
+from switch_core.connections.loader import AccessLevel, PasteExpiry, PasteMethod
 
 
 class ServiceAdapterError(Exception):
@@ -78,6 +78,10 @@ class IssueRequest:
     # The catalog's entry for the level: {"permissions": {...}} or {"scopes": [...]}.
     reach: dict[str, Any]
     resources: dict[str, Any]
+    # Whether the owner's connection holds a credential they pasted (a token,
+    # or keys) rather than a sign-in: it reaches what the vendor let it, and
+    # is handed out as it is.
+    pasted: bool
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,66 @@ class IssuedToken:
     # Whether the vendor can revoke this one token. Only then is it kept,
     # encrypted, until it expires.
     revocable: bool
+
+
+@dataclass(frozen=True)
+class Identity:
+    """The connected account: its stable id, and a label people recognise."""
+
+    account_id: str
+    label: str
+
+
+@dataclass(frozen=True)
+class Pasted:
+    """A credential a connection was made with in place of a sign-in: how it
+    was pasted, its fields, and the choices it was pasted for (a site)."""
+
+    method: PasteMethod
+    values: dict[str, str] = field(repr=False)
+    choices: dict[str, str]
+
+
+@runtime_checkable
+class PastingAdapter(Protocol):
+    """An adapter whose service also takes a credential pasted in place of
+    its sign-in (`auth.paste`): the OAuth adapter, and GitHub's."""
+
+    def paste_method(self, name: str) -> PasteMethod:
+        """The entry's method `name`; ServiceAdapterError where it has none."""
+        ...
+
+    def checked_paste(
+        self, method: PasteMethod, submitted: Mapping[str, str]
+    ) -> dict[str, str]:
+        """The pasted fields, each as the method allows, and nothing else."""
+        ...
+
+    def pasted_secret(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> ConnectionSecret:
+        """What a connection made with a pasted credential stores."""
+        ...
+
+    def pasted(self, secret: ConnectionSecret) -> Pasted | None:
+        """The pasted credential a connection's secret holds; None for a
+        sign-in. `ReauthorizationRequiredError` for one this server no longer
+        takes as it was pasted."""
+        ...
+
+    async def check_pasted(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> PasteExpiry:
+        """Whether the vendor still takes the credential, and who ends it:
+        `vendor` for one that ends on a date, `never` for one that works until
+        it is revoked. A refusal for good is `ReauthorizationRequiredError`."""
+        ...
+
+    async def identify_pasted(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> Identity:
+        """The account the credential acts as."""
+        ...
 
 
 class ServiceAdapter(Protocol):

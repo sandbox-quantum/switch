@@ -172,10 +172,32 @@ AGENT_TYPE = one_of(
     "always_on", "session_addressable", "session_passive", "auto_session"
 )
 
+# The runtimes Switch offers, each as the `known_agent_type` its agents
+# declare (`providers/registry.py`, which a test holds this to). Spelled out
+# rather than read from the registry, so this file stays the whole list of what
+# may be sent.
+KNOWN_RUNTIMES = (
+    "claude-code",
+    "codex",
+    "opencode",
+    "antigravity",
+    "cursor",
+    "deepseek-harness",
+    "pi",
+    "copilot",
+    "kiro",
+    "mistral-vibe",
+    "goose",
+    "qwen",
+    "droid",
+    "cline",
+    "junie",
+)
+
 # The runtime behind an agent, from `known_agent_type` in its metadata.
-# `other` covers a runtime Switch has no special knowledge of; `none` covers an
-# agent registered without declaring one at all.
-KNOWN_AGENT_TYPE = one_of("claude-code", "codex", "opencode", "other", "none")
+# `other` covers a runtime Switch has no knowledge of; `none` covers an agent
+# registered without declaring one at all.
+KNOWN_AGENT_TYPE = one_of(*KNOWN_RUNTIMES, "other", "none")
 
 # The runtime as `message_sent` reports it for an agent's message. That event
 # looks the sending agent up after the fact, so it has a third answer:

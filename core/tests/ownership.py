@@ -45,6 +45,7 @@ def process_lease_on(
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in TEST_KEYRING.keys],
+        booting=False,
     )
 
 
@@ -76,7 +77,13 @@ class Holder:
             await session.commit()
         if key not in claimed:
             raise AssertionError(f"{kind} {key} is held by another process")
-        return Fence(kind=kind, key=key, process_id=self.process_id, token=claimed[key])
+        return Fence(
+            kind=kind,
+            key=key,
+            process_id=self.process_id,
+            token=claimed[key].token,
+            unheld_since=claimed[key].unheld_since,
+        )
 
     async def cursors(
         self,
@@ -240,7 +247,11 @@ class _SoleKind:
 
     def fence(self, key: str) -> Fence | None:
         return Fence(
-            kind=self.name, key=key, process_id=self._owner.process_id, token=1
+            kind=self.name,
+            key=key,
+            process_id=self._owner.process_id,
+            token=1,
+            unheld_since=None,
         )
 
     async def drop(self, key: str) -> None:

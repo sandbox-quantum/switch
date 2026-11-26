@@ -480,6 +480,12 @@ session details; use the Switch messaging tools for explicit room replies.
   rather than in the channel, so the people waiting on you may never see it.
   `connect_to_room` names the platform a room is bridged to. Everywhere else,
   thread as described above.
+- **A message can be deleted or edited after you received it.** When someone
+  deletes their post on a bridged platform, Switch deletes it too: it is gone
+  from `read_context`, and replying with its id as `thread_id` fails with
+  "thread_id not found". Post at the root instead, or in the thread through
+  one of its replies. When they edit it, `read_context` shows the new words;
+  you are not sent it again. Do not repeat what a deleted message said.
 
 ## Sending and receiving attachments
 
@@ -1083,26 +1089,30 @@ does not manage agents, so say so rather than looking for another way.
   `mistral-vibe`, `goose`, `qwen`, `droid`, `cline` and `junie`; a server that
   does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
-  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
-  default where the provider supports automatic review: safe actions run,
-  risky ones ask), `auto_approve` (bypass: skips every permission check and
-  overrides `auto_mode`). New Cursor agents default to bypass on and auto mode
-  off because Cursor's ACP interface has no automatic review; disclose that in
-  the proposal. Respect an explicit request for approvals by setting both
-  false. Other providers default to bypass off; enable it only when the person
-  asks. Optional fields also include `display_name`, `icon_url`, and
-  `start=false` to create it stopped. Leave `directory` null and Switch fills
-  in the machine's own workspace for the agent, which the machine makes; any
-  other directory must be an absolute path with no `..` in it and already
-  exist there. Change it later with `update_agent_detail`. An agent with
-  bypass on (`auto_approve`, Cursor's default included, or `permissionMode:
-  "bypassPermissions"`), or a directory of its own, is not created by the
-  call: after every check passes, Switch posts it in your connected room and
-  it waits for your owner to send `!agent-change <name> confirm` there within
-  two minutes, as for `update_agent_detail` above. The result then has
-  `status: "awaiting_confirmation"` and nothing exists yet. A template you run
-  with `run_template` gives a Cursor agent that it does not explicitly give
-  bypass approvals instead.
+  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (the
+  provider's automatic review runs safe actions and asks before risky ones; on
+  by default where the provider supports automatic review, except for
+  `opencode`, whose auto mode has no review and runs every command without
+  asking, so it defaults off and the agent asks before each action; turn it on
+  for OpenCode only when the person asks for that), `auto_approve` (bypass:
+  skips every permission check and overrides `auto_mode`). New Cursor agents
+  default to bypass on and auto mode off because Cursor's ACP interface has no
+  automatic review; disclose that in the proposal. Respect an explicit request
+  for approvals by setting both false. Other providers default to bypass off;
+  enable it only when the person asks. Optional fields also include
+  `display_name`, `icon_url`, and `start=false` to create it stopped. Leave
+  `directory` null and Switch fills in the machine's own workspace for the
+  agent, which the machine makes; any other directory must be an absolute path
+  with no `..` in it and already exist there. Change it later with
+  `update_agent_detail`. An agent with bypass on (`auto_approve`, Cursor's
+  default included, or `permissionMode: "bypassPermissions"`), or a directory
+  of its own, is not created by the call: after every check passes, Switch
+  posts it in your connected room and it waits for your owner to send
+  `!agent-change <name> confirm` there within two minutes, as for
+  `update_agent_detail` above. The result then has `status:
+  "awaiting_confirmation"` and nothing exists yet. A template you run with
+  `run_template` gives a Cursor agent that it does not explicitly give bypass
+  approvals instead.
   A machine applies bypass (`auto_approve`, or a `permissionMode` of
   `bypassPermissions` or `dontAsk`), or a directory outside its workspace
   folder, only once the person using that machine has allowed it for the

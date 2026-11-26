@@ -36,7 +36,7 @@ fail() {
 # line: a copy of src/release-keys.ts, which release-keys.test.ts keeps equal.
 # BEGIN TRUSTED RELEASE KEYS
 TRUSTED_RELEASE_KEYS='
-release-2026-10 MCowBQYDK2VwAyEAaRFfp1Yd/b91KkZs8Vj/OQSdsZS2ifd+rZu24pKTMpU=
+release-2026-11 MCowBQYDK2VwAyEAPbCSqO0QPPDj/XdW1ByZhyLTykNQsaDW25+uI0QCCdY=
 '
 # END TRUSTED RELEASE KEYS
 

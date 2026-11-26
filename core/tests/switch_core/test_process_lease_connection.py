@@ -72,6 +72,7 @@ def _lease(shared: AsyncEngine, renewals: AsyncEngine | None = None) -> ProcessL
         session_factory=create_session_factory(shared),
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in TEST_KEYRING.keys],
+        booting=False,
         renewal_session_factory=(
             create_session_factory(renewals) if renewals is not None else None
         ),

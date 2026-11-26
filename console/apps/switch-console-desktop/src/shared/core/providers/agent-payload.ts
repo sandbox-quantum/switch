@@ -23,6 +23,14 @@ export type InstallOption = {
   recommended?: boolean;
   updateCommand?: string;
   uninstallCommand?: string;
+  /** See `lineMigration` on InstallOption in @switch-console/core: an update that replaces an earlier release line. */
+  lineMigration?: {
+    below: string;
+    removeCommand: string;
+    restoreCommand: string;
+    summary: string;
+    precheck?: { command: string; blockedMessage: string };
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -135,7 +143,29 @@ export type AgentUpdateError =
   | { type: 'unknown-dependency'; id: string }
   | { type: 'no-update-strategy'; id: string }
   | InstallCommandError
-  | { type: 'not-detected-after-update'; id: string };
+  | { type: 'not-detected-after-update'; id: string }
+  | { type: 'line-migration-blocked'; id: string; message: string }
+  | {
+      type: 'line-migration-unremoved';
+      id: string;
+      previousVersion: string;
+      cause: InstallCommandError;
+    }
+  | {
+      type: 'line-migration-failed';
+      id: string;
+      restoredVersion: string;
+      cause: InstallCommandError;
+    }
+  | {
+      type: 'line-migration-unrestored';
+      id: string;
+      previousVersion: string;
+      cause: InstallCommandError;
+      restoreError: InstallCommandError;
+      installCommand: string;
+      restoreCommand: string;
+    };
 
 export type AgentUninstallError =
   | { type: 'unknown-dependency'; id: string }

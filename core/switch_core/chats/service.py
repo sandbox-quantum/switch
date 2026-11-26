@@ -63,7 +63,7 @@ from switch_core.chats.views import (
     SHOWN_EVENT_TYPES,
     ChatMention,
 )
-from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.clients.mentions import mention_regex, mentionable_text
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
@@ -179,6 +179,14 @@ def _hash(payload: dict[str, object]) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _sent_kind(command: tuple[str, str] | None, content: dict[str, object]) -> str:
+    """What a post was, as `MESSAGES_SENT` labels it. A command is an event,
+    as the transport labels one a platform's bridge writes."""
+    if command is not None:
+        return "event"
+    return "media" if "url" in content else "message"
 
 
 def _upload_key(upload_id: str) -> str:
@@ -1130,17 +1138,48 @@ class ChatService:
     async def add_member(
         self, tenant_id: str, actor: User, room_id: str, target_user_id: str
     ) -> Room:
+        """Switch Console's Add: `admit_member`, reported as a Console add."""
+        room, newly = await self._admit(tenant_id, actor, room_id, target_user_id)
+        if newly:
+            emit_safely(
+                self._telemetry,
+                "console_member_added",
+                self._member_properties(room, "person"),
+            )
+        return room
+
+    async def admit_member(
+        self, tenant_id: str, actor: User, room_id: str, target_user_id: str
+    ) -> Room:
+        """Put a tenant member in a room for a manager, with the checks
+        Console's Add makes, but not reported as one: a template or an agent's
+        tool putting the person a room was made for in it."""
+        room, _ = await self._admit(tenant_id, actor, room_id, target_user_id)
+        return room
+
+    async def _admit(
+        self, tenant_id: str, actor: User, room_id: str, target_user_id: str
+    ) -> tuple[Room, bool]:
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
             await self._require_manager(session, tenant_id, actor, room)
             target = await self._require_tenant_member(
                 session, tenant_id, target_user_id
             )
-        return await self.join_member(tenant_id, room.id, target)
+        return await self._join_person(tenant_id, room.id, target)
 
     async def join_member(self, tenant_id: str, room_id: str, target: User) -> Room:
         """Put a tenant member's member client in the room, with no check on
         who asks: the caller has already authorised the join."""
+        room, _ = await self._join_person(tenant_id, room_id, target)
+        return room
+
+    async def _join_person(
+        self, tenant_id: str, room_id: str, target: User
+    ) -> tuple[Room, bool]:
+        """`join_member`, and whether the person was not in the room before.
+        Only an add from Console is a `console_member_added`; people named when
+        a room is made elsewhere are only a `room_users_added`."""
         target_user_id = target.id
         client = await self.member_actor(tenant_id, target)
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -1158,16 +1197,11 @@ class ChatService:
         joined()
         if not already_in:
             emit_safely(self._telemetry, "room_users_added", {"user_count": 1})
-            emit_safely(
-                self._telemetry,
-                "console_member_added",
-                self._member_properties(room, "person"),
-            )
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             member_ids = [member.id for member, _ in await self.members(session, room)]
         self._memberships_changed(tenant_id, member_ids, [room.id])
-        return room
+        return room, not already_in
 
     async def join_people(
         self,
@@ -1245,17 +1279,25 @@ class ChatService:
                     ),
                 )
         with tenant_scope(tenant_id):
-            await self._provisioning.kick_user(
+            removed = await self._provisioning.kick_user(
                 room.transport_room_id, client.transport_user_id
             )
-        emit_safely(
-            self._telemetry,
-            "console_member_removed",
-            {
-                **self._member_properties(room, "person"),
-                "left": actor.id == target_user_id,
-            },
-        )
+        # Two overlapping requests both pass the membership check above; only
+        # the one whose kick took the person out reports it.
+        if removed is not False:
+            emit_safely(
+                self._telemetry,
+                "console_member_removed",
+                {
+                    **self._member_properties(room, "person"),
+                    "left": actor.id == target_user_id,
+                },
+            )
+            emit_safely(
+                self._telemetry,
+                "room_users_removed",
+                {"user_count": 1, "removed_by_kind": "user"},
+            )
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             member_ids = [member.id for member, _ in await self.members(session, room)]
@@ -1279,18 +1321,20 @@ class ChatService:
             )
             if agent_id in await self._room_store.get_agent_ids(session, room.id):
                 return room
-        await self._room_service.add_agents_to_room(
+        added = await self._room_service.add_agents_to_room(
             room.id,
             agent_ids=[agent_id],
             with_agents=lambda session: self._group_if_several_agents(session, room),
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
-        emit_safely(
-            self._telemetry,
-            "console_member_added",
-            self._member_properties(room, "agent"),
-        )
+        # Of two overlapping adds of the agent, only the one that put it in.
+        if added:
+            emit_safely(
+                self._telemetry,
+                "console_member_added",
+                self._member_properties(room, "agent"),
+            )
         return room
 
     async def _locked_room(self, session: AsyncSession, room_id: str) -> Room:
@@ -1324,12 +1368,14 @@ class ChatService:
             await self._require_manager(session, tenant_id, actor, room)
             if agent_id not in await self._room_store.get_agent_ids(session, room.id):
                 return
-        await self._room_service.remove_agents_from_room(room.id, [agent_id])
-        emit_safely(
-            self._telemetry,
-            "console_member_removed",
-            {**self._member_properties(room, "agent"), "left": False},
-        )
+        removed = await self._room_service.remove_agents_from_room(room.id, [agent_id])
+        # Of two overlapping removals, only the one that took it out.
+        if removed:
+            emit_safely(
+                self._telemetry,
+                "console_member_removed",
+                {**self._member_properties(room, "agent"), "left": False},
+            )
 
     async def archive(self, tenant_id: str, user: User, room_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -2218,14 +2264,17 @@ class ChatService:
                     raise ChatError(422, "MESSAGE_TOO_LONG", str(error)) from error
                 routed.append(stored)
                 posted.append(message)
-            await self._usage_store.record(
-                session,
-                tenant_id=tenant_id,
-                metric=UsageMetric.MESSAGES,
-                client_id=client.id,
-                model="",
-                amount=len(posted),
-            )
+            # A command is not something said, so it is neither metered nor
+            # reported as a message, as one typed on a platform is not.
+            if command is None:
+                await self._usage_store.record(
+                    session,
+                    tenant_id=tenant_id,
+                    metric=UsageMetric.MESSAGES,
+                    client_id=client.id,
+                    model="",
+                    amount=len(posted),
+                )
             await session.execute(
                 update(ChatOperation)
                 .where(
@@ -2240,11 +2289,12 @@ class ChatService:
             self._room_service.room_changed(tenant_id, room.id)
         for each in routed:
             each.committed()
-        self._observe(tenant_id, room.id, client.id, uploads, root)
+        if command is None:
+            self._observe(tenant_id, room.id, client.id, uploads, root)
         for content in contents:
             metrics().increment(
                 MESSAGES_SENT,
-                {"kind": "media" if "url" in content else "message", "actor": "human"},
+                {"kind": _sent_kind(command, content), "actor": "human"},
             )
         return room, posted
 
@@ -2351,7 +2401,7 @@ class ChatService:
             args = f"@{agent.name}" + (
                 f" {message_id}" if message_id is not None else ""
             )
-            self._admit(user.id, args, command)
+            self._admit_message(user.id, args, command)
 
             if not await self._claim(
                 session,
@@ -2522,7 +2572,7 @@ class ChatService:
             room, _ = await self.require_member(session, tenant_id, user, room_id)
             if await self._operation(session, user.id, request_id) is not None:
                 return body
-            self._admit(user.id, body, command)
+            self._admit_message(user.id, body, command)
             if not active:
                 return body
             files: list[tuple[bytes, str, str]] = []
@@ -2623,7 +2673,7 @@ class ChatService:
             body = f"{body}\n\n{notes_text}" if body.strip() else notes_text
         return body
 
-    def _admit(self, user_id: str, body: str, command: str | None) -> None:
+    def _admit_message(self, user_id: str, body: str, command: str | None) -> None:
         """Refuse a message too long or sent too fast, as a ChatError. A
         typed room command is held to the same allowance, except one that
         stops an agent (`SendLimits.admit_command`)."""
@@ -2732,7 +2782,7 @@ class ChatService:
         if any(agent_id not in in_room for agent_id in agent_ids):
             raise ChatError(422, "AGENT_NOT_IN_CHAT", "That agent is not in this chat.")
         aliases = await self._room_store.list_aliases(session, room.id)
-        text = strip_emphasis(body)
+        text = mentionable_text(body)
         missing: list[str] = []
         for agent_id in agent_ids:
             agent = await self._agent_store.get(session, agent_id)

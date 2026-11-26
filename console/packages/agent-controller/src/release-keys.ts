@@ -20,7 +20,7 @@ export type TrustedReleaseKey = { id: string; publicKey: string };
 
 export const TRUSTED_RELEASE_KEYS: readonly TrustedReleaseKey[] = [
   {
-    id: 'release-2026-10',
-    publicKey: 'MCowBQYDK2VwAyEAaRFfp1Yd/b91KkZs8Vj/OQSdsZS2ifd+rZu24pKTMpU=',
+    id: 'release-2026-11',
+    publicKey: 'MCowBQYDK2VwAyEAPbCSqO0QPPDj/XdW1ByZhyLTykNQsaDW25+uI0QCCdY=',
   },
 ];

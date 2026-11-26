@@ -53,6 +53,15 @@ from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
 
 APP_ID = "aaaaaaaa-1111-1111-1111-111111111111"
 ORG = "bbbbbbbb-2222-2222-2222-222222222222"
+#: The version the template's package carries, which raising it changes.
+PACKAGE_VERSION = build_distributed_app_package(
+    app_id=APP_ID,
+    app_name="Switch Rooms",
+    messaging_public_url="https://switch.example",
+    privacy_url="https://switch.example/privacy",
+    terms_url="https://switch.example/terms",
+    partner_id=None,
+).version
 GLOBAL_ADMIN = "62e90394-69f5-4237-9190-012177145e10"
 _IDENTITY_METADATA = (
     "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration"
@@ -165,10 +174,11 @@ def _installer(microsoft: _Microsoft) -> TeamsAppInstaller:
     )
     package = build_distributed_app_package(
         app_id=APP_ID,
-        app_name="Agent Switch",
+        app_name="Switch Rooms",
         messaging_public_url="https://switch.example",
         privacy_url="https://switch.example/privacy",
         terms_url="https://switch.example/terms",
+        partner_id=None,
     )
     return TeamsAppInstaller(app=app, package=package)
 
@@ -215,7 +225,7 @@ async def test_an_approved_organisation_is_installed_and_given_the_app() -> None
     assert grant.scopes.split() == sorted(REQUIRED_GRAPH_ROLES)
     assert grant.platform_data == {
         "catalog_app_id": "catalog-app-1",
-        "manifest_version": "1.0.0",
+        "manifest_version": PACKAGE_VERSION,
         "publish_problem": None,
     }
     [published] = microsoft.posted("/appCatalogs/teamsApps")
@@ -360,7 +370,9 @@ async def test_microsoft_unreachable_is_explained_not_a_server_error() -> None:
 
 async def test_an_organisation_that_has_the_app_already_is_not_given_it_twice() -> None:
     microsoft = _Microsoft()
-    microsoft.catalog = [{"id": "existing", "appDefinitions": [{"version": "1.0.0"}]}]
+    microsoft.catalog = [
+        {"id": "existing", "appDefinitions": [{"version": PACKAGE_VERSION}]}
+    ]
 
     grant = await _redeem(microsoft)
 
@@ -379,7 +391,7 @@ async def test_a_hand_uploaded_package_under_switchs_id_is_not_adopted() -> None
             "id": "hand-uploaded",
             "appDefinitions": [
                 {
-                    "version": "1.0.0",
+                    "version": PACKAGE_VERSION,
                     "authorization": {
                         "requiredPermissionSet": {
                             "resourceSpecificPermissions": [

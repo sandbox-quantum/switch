@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { CodexKeyringLogin, HttpMcpServerSpec, ProviderSessionStartInput } from '../adapter';
-import { codexSourceHome, prepareCodexSessionHome } from '../codex/home';
+import { codexSourceHome, managedCodexSandbox, prepareCodexSessionHome } from '../codex/home';
 import { codexKeyringReaderEnvironment } from './agent-env';
 import { agentHasOwnUser } from './host-permissions';
 import { type HostedCredential, hostedCredentialSchema } from './provider-login';
@@ -56,6 +56,14 @@ export const sharedConfigSchema = z.strictObject({
       /** Written by Consoles that registered an npx runtime; read by nothing. */
       mcpRuntime: z.string().min(1).optional(),
       codexConfig: z.string(),
+      /**
+       * A Codex session with no `sandbox_mode` from the host's configuration
+       * or the agent's runs in the sandbox its runtime mode picks
+       * (`managedCodexSandbox`) rather than Codex's read-only default. Set by
+       * the agent controller, whose hosts may have no Codex configuration at
+       * all; absent from Console's own sessions.
+       */
+      defaultCodexSandbox: z.boolean().optional(),
       skill: z.string(),
       context: z.string(),
       /**
@@ -172,6 +180,9 @@ export async function prepareSharedConfig(
         sessionId: config.session.sessionId,
         sourceHome,
         config: execution.codexConfig,
+        defaultSandbox: execution.defaultCodexSandbox
+          ? managedCodexSandbox(input.runtimeMode)
+          : null,
       });
       if (prepared.keyringLogin)
         codexKeyringLogin = {

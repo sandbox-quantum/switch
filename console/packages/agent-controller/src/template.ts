@@ -9,7 +9,6 @@ import {
   type ProviderCapabilities,
   type SharedHostConfig,
   sharedConfigSchema,
-  withManagedCodexSandbox,
 } from '@switch-console/agent-providers';
 import { advancedConfigProblem, sessionLaunchConfig } from '@switch-console/plugins/agents';
 import type { AgentDefinition, Provider } from './schemas';
@@ -158,10 +157,8 @@ export function buildWatcherTemplate(input: {
       credentialsPath: input.credentialsPath,
       inheritEnv: [...EXECUTION_INHERIT_ENV],
       ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
-      codexConfig:
-        provider === 'codex'
-          ? withManagedCodexSandbox(launch.codexConfig, runtimeMode)
-          : launch.codexConfig,
+      codexConfig: launch.codexConfig,
+      ...(provider === 'codex' ? { defaultCodexSandbox: true } : {}),
       skill: launch.skill,
       context: launch.context,
       instructions: launch.instructions,

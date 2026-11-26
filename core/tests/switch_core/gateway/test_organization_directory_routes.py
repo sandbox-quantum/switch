@@ -27,6 +27,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.gateway import dependencies as gw_deps
+from switch_core.gateway import tenants
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
     DirectoryError,
@@ -46,6 +47,7 @@ from tests.switch_core.gateway.test_organization_routes import (
     _workspace,
     _workspaces_created,
 )
+from tests.telemetry_records import recording_telemetry
 
 UNREACHABLE = "The organization directory could not be reached."
 NOT_ALLOWED = "The organization's plan allows no more members."
@@ -271,6 +273,31 @@ class TestJoining:
         organization_id = await _organization_of(session_factory, tenant_id)
         assert directory.asked == [("join", organization_id, bob, "member")]
         assert await _role(session_factory, tenant_id, bob) == "member"
+
+    async def test_a_join_is_reported_only_once_it_commits(
+        self,
+        session_factory,
+        refusing: _Directory,
+        directory: _Directory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        service, sink = recording_telemetry()
+        monkeypatch.setattr(tenants, "current_telemetry", lambda: service)
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
+        token = await _invitation(session_factory, tenant_id, ada)
+        bob = await _outsider(session_factory)
+
+        async with _client(_with(session_factory, refusing), bob, None) as client:
+            refused = await client.post("/invitations/accept", json={"token": token})
+        # The directory refused, so the join rolled back: nothing to report.
+        assert refused.status_code == 409, refused.text
+        assert sink.events("invitation_accepted") == []
+
+        async with _client(_with(session_factory, directory), bob, None) as client:
+            joined = await client.post("/invitations/accept", json={"token": token})
+        assert joined.status_code == 200, joined.text
+        assert len(sink.events("invitation_accepted")) == 1
 
     async def test_a_failed_join_leaves_the_invitation_unspent(
         self, session_factory, unavailable: _Directory, directory: _Directory

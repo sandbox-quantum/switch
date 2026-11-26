@@ -713,6 +713,29 @@ def test_can_manage_agents_must_be_true_or_false():
     assert _codes(template) == {"invalid_can_manage_agents"}
 
 
+@pytest.mark.parametrize(
+    ("provider", "written", "expected"),
+    [
+        ("claude", None, True),
+        ("claude", "false", False),
+        # OpenCode's auto mode reviews nothing before a command runs, so a new
+        # OpenCode agent asks unless the template turns auto mode on.
+        ("opencode", None, False),
+        ("opencode", "true", True),
+    ],
+)
+def test_auto_mode_left_out_is_the_providers_default_for_a_new_agent(
+    provider, written, expected
+):
+    line = f"  auto_mode: {written}\n" if written else ""
+    template = (
+        f"agent:\n  name: a\n  instructions: Hi.\n  provider: {provider}\n"
+        "  machine: laptop\n  directory: /srv/a\n" + line
+    )
+    (agent,) = _plan(template).new_agents
+    assert agent.auto_mode is expected
+
+
 def test_auto_mode_must_be_true_or_false():
     template = (
         "agent:\n  name: a\n  instructions: Hi.\n  provider: claude\n"

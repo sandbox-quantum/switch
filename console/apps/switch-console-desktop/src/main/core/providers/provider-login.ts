@@ -29,10 +29,11 @@ class ProviderLoginRunner {
     requireProvider(providerId);
     // The command for the CLI found here: an older runtime of a provider can
     // sign in with a command of its own.
-    const loginCommand = loginCommandOf(
-      providerRuntime(providerId),
-      localDependencyManager.get(providerId)?.path ?? ''
-    );
+    const dependency = localDependencyManager.get(providerId);
+    const loginCommand = loginCommandOf(providerRuntime(providerId), dependency?.path ?? '');
+    // Only OpenCode 1 is given a database of its own; OpenCode 2 reads the shared one.
+    const opencode1 =
+      providerId === 'opencode' && !(Number.parseInt(dependency?.version ?? '', 10) >= 2);
     this.cancel();
     const attemptId = randomUUID();
     const windows = process.platform === 'win32';
@@ -41,10 +42,7 @@ class ProviderLoginRunner {
       : (process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash'));
     const child = spawn(shell, windows ? ['/c', loginCommand] : ['-lc', loginCommand], {
       cwd: homedir(),
-      env:
-        providerId === 'opencode'
-          ? { ...process.env, ...opencodeV1DatabaseEnv(process.env) }
-          : process.env,
+      env: opencode1 ? { ...process.env, ...opencodeV1DatabaseEnv(process.env) } : process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: !windows,
       windowsHide: true,

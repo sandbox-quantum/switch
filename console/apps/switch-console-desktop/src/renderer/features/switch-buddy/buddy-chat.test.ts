@@ -190,6 +190,28 @@ describe('lookUpChat', () => {
     expect(reads.list).toHaveBeenCalledTimes(2);
   });
 
+  it('has two sends into one chat wait on the same read, so they go out in order', async () => {
+    let finish: (chats: ChatSummary[]) => void = () => {};
+    const reads = {
+      list: vi.fn(
+        () =>
+          new Promise<ChatSummary[]>((settle) => {
+            finish = settle;
+          })
+      ),
+      listArchived: vi.fn(async () => []),
+    };
+    const order: string[] = [];
+
+    const first = lookUpChat(reads, 's', 'look-shared', 1000).then(() => order.push('first'));
+    const second = lookUpChat(reads, 's', 'look-shared', 1000).then(() => order.push('second'));
+    finish([summary('look-shared')]);
+    await Promise.all([first, second]);
+
+    expect(reads.list).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['first', 'second']);
+  });
+
   it('looks among archived chats when the live list does not have it', async () => {
     const reads = {
       list: vi.fn(async () => []),

@@ -15,12 +15,13 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.organization_trust_settings_store import (
     OrganizationTrustSettingsStore,
 )
@@ -90,6 +91,19 @@ class GuardrailsRefusedError(GuardrailsCheckError):
 
 class GuardrailsTimeoutError(GuardrailsCheckError):
     """Switch Trust did not answer within the timeout."""
+
+
+class TrustDeletionError(RuntimeError):
+    """Switch Trust did not confirm it deleted what it holds for a session:
+    network error, timeout, or an answer other than success or 404."""
+
+
+class TrustSessionEraser(Protocol):
+    async def delete_session(self, session_id: str) -> None:
+        """Have Switch Trust delete everything it holds for `session_id`
+        (the `x-agent-session-id` its checks were sent with: a room id).
+        Raises `TrustDeletionError` unless it is gone."""
+        ...
 
 
 class GuardrailBlockedError(Exception):
@@ -333,6 +347,32 @@ class DynamicTrustClient:
             self._kept[organization_id] = _Kept(checker, read_at)
         return checker
 
+    async def session_eraser(self, organization_id: str) -> HttpTrustClient | None:
+        """The client `organization_id`'s own settings make, to delete what
+        Switch Trust holds for its rooms, or None when it connected no policy
+        and so nothing of it was sent there. Read now, not kept: an eraser
+        outlives the settings when the organization it was made for is
+        purged. Raises `GuardrailsCheckError` when the settings can't be
+        read."""
+        try:
+            async with organization_session(
+                self._session_factory, organization_id
+            ) as session:
+                settings = await self._store.get(session, organization_id)
+            if settings is None:
+                return None
+            return HttpTrustClient(
+                base_url=settings.endpoint,
+                api_key=self._keyring.decrypt(settings.api_key_encrypted),
+                policy_id=settings.policy_id,
+                timeout_seconds=self._timeout_seconds,
+                client=self._client,
+            )
+        except Exception as error:
+            raise GuardrailsCheckError(
+                f"Could not read Switch Trust settings: {error}"
+            ) from error
+
 
 class HttpTrustClient:
     """Posts to `{base_url}/guardrails/check`. One client, reused.
@@ -352,7 +392,8 @@ class HttpTrustClient:
         timeout_seconds: float,
         client: httpx.AsyncClient,
     ) -> None:
-        self._url = base_url.rstrip("/") + "/guardrails/check"
+        self._base_url = base_url.rstrip("/")
+        self._url = self._base_url + "/guardrails/check"
         self._headers = {
             "Content-Type": "application/json",
             "x-guardrails-policy-id": policy_id,
@@ -361,6 +402,31 @@ class HttpTrustClient:
         }
         self._timeout_seconds = timeout_seconds
         self._client = client
+
+    async def delete_session(self, session_id: str) -> None:
+        """`DELETE {base_url}/guardrails/sessions/{session_id}`, with the
+        same credentials as a check. 404 means Switch Trust holds nothing for
+        the session, which is as good as deleted.
+
+        The endpoint is provisional: Switch Trust has not yet published a
+        deletion API, and this shape stands in for it until it does. Only
+        this method should need to change."""
+        url = f"{self._base_url}/guardrails/sessions/{quote(session_id, safe='')}"
+        try:
+            response = await self._client.delete(
+                url,
+                headers={**self._headers, "x-agent-session-id": session_id},
+                timeout=self._timeout_seconds,
+            )
+        except httpx.HTTPError as error:
+            raise TrustDeletionError(
+                f"DELETE {url} failed: {type(error).__name__}: {error}"
+            ) from error
+        if response.status_code == 404 or 200 <= response.status_code < 300:
+            return
+        raise TrustDeletionError(
+            f"DELETE {url} answered {response.status_code}: {response.text[:200]}"
+        )
 
     async def check(
         self, *, role: Role, content: str, room_id: str

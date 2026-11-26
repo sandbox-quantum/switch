@@ -1532,6 +1532,7 @@ it('takes the model, approval mode, instructions and advanced configuration from
   };
   edited.execution!.context = 'Answer in one word.';
   edited.execution!.codexConfig = 'model_verbosity = "low"\n';
+  edited.execution!.defaultCodexSandbox = true;
   const saved = watchable(root);
   saved.session = { ...saved.session, agentId: edited.session.agentId, sessionId: 'room-session' };
   saved.start.input.sessionId = 'room-session';
@@ -1557,12 +1558,15 @@ it('takes the model, approval mode, instructions and advanced configuration from
   expect(refreshed.execution).toMatchObject({
     context: 'Answer in one word.',
     codexConfig: 'model_verbosity = "low"\n',
+    defaultCodexSandbox: true,
   });
   expect(refreshed.session.sessionId).toBe('room-session');
   delete edited.start.input.model;
   delete edited.start.input.agentName;
   delete edited.start.input.agentDefinition;
+  delete edited.execution!.defaultCodexSandbox;
   const cleared = withDefinitionOf(refreshed, edited);
+  expect(cleared.execution).not.toHaveProperty('defaultCodexSandbox');
   expect(cleared.start.input.model).toBeUndefined();
   expect(cleared.start.input).not.toHaveProperty('agentName');
   expect(cleared.start.input).not.toHaveProperty('agentDefinition');

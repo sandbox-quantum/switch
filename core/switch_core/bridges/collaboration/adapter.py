@@ -39,9 +39,12 @@ from switch_core.bridges.collaboration.models import (
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
+    InboundChannelRemoved,
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageDeleted,
+    InboundMessageEdited,
     InboundUserJoin,
     InboundUserLeave,
     KnownUserLabel,
@@ -494,6 +497,30 @@ class SupportsSharedConnection(Protocol):
         ...
 
 
+@runtime_checkable
+class SupportsReadBack(Protocol):
+    """An adapter whose platform does not send again what was said while
+    nothing listened, or sends it only late, and that can read it back.
+
+    A bridge moves between switch-core processes, and the one taking it over
+    reads back each of its channels from shortly before the last one let go
+    (`CollaborationCore.read_back_from`). What it hands on was maybe handled
+    already: a post or a command read twice is written once
+    (`collaboration_core._post_source`)."""
+
+    def listening(self) -> bool:
+        """Whether the platform's live events reach the adapter now: what is
+        said from here on arrives without being read back."""
+        ...
+
+    async def read_back(self, since: datetime, channel_ids: Collection[str]) -> int:
+        """Hand on, oldest first and as if each had just arrived, what was
+        said in `channel_ids` after `since`. Returns how many were handed on.
+        Where a bridge just started here cannot yet tell its own posts from
+        other bots' and integrations', those are left out."""
+        ...
+
+
 class PlatformAdapter(ABC):
     #: The platform as a person names it — "Microsoft Teams", not "teams".
     #:
@@ -728,6 +755,20 @@ class PlatformAdapter(ABC):
     # listens wherever it runs, so its platform delivers to every process.
     keeps_quiet_unless_listening: ClassVar[bool] = False
 
+    # Whether the platform delivers events to the agents' own identities, as
+    # Mattermost does to each agent's bot over a socket of its own: the
+    # bridge listens once those are provisioned.
+    listens_through_agent_identities: ClassVar[bool] = False
+
+    # Whether the platform sends again, a while later, an event the bridge did
+    # not acknowledge: what a read-back misses then arrives late, not never.
+    sends_missed_events_again: ClassVar[bool] = False
+
+    # How long after `SupportsReadBack.listening` turns true the platform may
+    # still not deliver to the new connection: a bridge taken over reads back
+    # once more after that, for what was said in between.
+    listening_settles_seconds: ClassVar[float] = 0.0
+
     #: What `retire_channel` does to a deleted room's channel when it works.
     #:
     #: Console reads it, through room detail, to tell the person deleting a
@@ -780,6 +821,17 @@ class PlatformAdapter(ABC):
         # includes every message once the session or the bridge is gone.
         self._resolve_activity: (
             Callable[[str, str], Awaitable[ActivitySnapshot | None]] | None
+        ) = None
+        # Set by set_takeback_handlers. Called when a post is deleted or edited
+        # on the platform, or a channel deleted or archived there.
+        self._on_message_deleted: (
+            Callable[[InboundMessageDeleted], Awaitable[None]] | None
+        ) = None
+        self._on_message_edited: (
+            Callable[[InboundMessageEdited], Awaitable[None]] | None
+        ) = None
+        self._on_channel_removed: (
+            Callable[[InboundChannelRemoved], Awaitable[None]] | None
         ) = None
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
@@ -1870,6 +1922,14 @@ class PlatformAdapter(ABC):
         server + team + channel name."""
         return None
 
+    async def channel_web_url(self, external_channel_id: str) -> str | None:
+        """Web-safe ``https://`` link to this channel, suitable for chat
+        messages (unlike a desktop scheme such as ``slack://`` or
+        ``mattermost://``). Defaults to :meth:`channel_deeplink` when that is
+        already an ``https://`` URL, and None otherwise."""
+        url = await self.channel_deeplink(external_channel_id)
+        return url if url is not None and url.startswith("https://") else None
+
     async def home_deeplink(self) -> str | None:
         """Link that opens this bridge's *workspace* — the Slack workspace, the
         Discord guild, the Mattermost team — rather than one channel within it.
@@ -2343,6 +2403,74 @@ class PlatformAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_takeback_handlers(
+        self,
+        *,
+        on_message_deleted: Callable[[InboundMessageDeleted], Awaitable[None]],
+        on_message_edited: Callable[[InboundMessageEdited], Awaitable[None]],
+        on_channel_removed: Callable[[InboundChannelRemoved], Awaitable[None]],
+    ) -> None:
+        """Install the callbacks for what is taken back on the platform: a post
+        deleted or edited, a channel deleted or archived. The room's copy
+        follows (`retention/platform_deletes.py`).
+
+        An adapter reports these through `report_message_deleted`,
+        `report_message_edited` and `report_channel_removed`, for whichever its
+        platform delivers to a bot. One that delivers none (Telegram never
+        tells a bot a message was deleted) reports nothing, and says so in its
+        docstring."""
+        self._on_message_deleted = on_message_deleted
+        self._on_message_edited = on_message_edited
+        self._on_channel_removed = on_channel_removed
+
+    async def report_message_deleted(self, channel_id: str, message_ref: str) -> None:
+        """Tell the bridge a post was deleted on the platform. `message_ref` in
+        the form `InboundMessage.message_ref` carried when it came in."""
+        if self._on_message_deleted is None:
+            logger.debug(
+                "%s: no handler for the deletion of %s in %s",
+                type(self).__name__,
+                message_ref,
+                channel_id,
+            )
+            return
+        await self._on_message_deleted(
+            InboundMessageDeleted(channel_id=channel_id, message_ref=message_ref)
+        )
+
+    async def report_message_edited(
+        self, channel_id: str, message_ref: str, content: str
+    ) -> None:
+        """Tell the bridge a post now says `content`. Only for a change to its
+        words: a platform that reports a link preview or a reaction as an
+        edit is filtered by its adapter, not here."""
+        if self._on_message_edited is None:
+            logger.debug(
+                "%s: no handler for the edit of %s in %s",
+                type(self).__name__,
+                message_ref,
+                channel_id,
+            )
+            return
+        await self._on_message_edited(
+            InboundMessageEdited(
+                channel_id=channel_id, message_ref=message_ref, content=content
+            )
+        )
+
+    async def report_channel_removed(self, channel_id: str, *, deleted: bool) -> None:
+        """Tell the bridge a channel was deleted (`deleted`) or archived."""
+        if self._on_channel_removed is None:
+            logger.debug(
+                "%s: no handler for the removal of channel %s",
+                type(self).__name__,
+                channel_id,
+            )
+            return
+        await self._on_channel_removed(
+            InboundChannelRemoved(channel_id=channel_id, deleted=deleted)
+        )
 
     def set_channel_rename_handler(
         self, handler: Callable[[str, str, str], Awaitable[None]]

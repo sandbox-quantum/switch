@@ -23,10 +23,15 @@ export const SDK_SESSIONS_DIR_ENV = 'SWITCH_SDK_SESSIONS_DIR';
 
 export function sharedSessionsBase(): string {
   const named = process.env[SDK_SESSIONS_DIR_ENV];
-  if (!named) return join(homedir(), '.local', 'state', 'switch', 'sdk-sessions');
+  if (!named) return sessionsBaseIn(homedir());
   if (!isAbsolute(named))
     throw new Error(`${SDK_SESSIONS_DIR_ENV} must be an absolute path, not '${named}'.`);
   return named;
+}
+
+/** Where the sessions of an agent host whose home is `home` keep their state. */
+export function sessionsBaseIn(home: string): string {
+  return join(home, '.local', 'state', 'switch', 'sdk-sessions');
 }
 
 export function sharedSessionRoot(sessionId: string): string {

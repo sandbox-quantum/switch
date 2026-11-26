@@ -139,7 +139,7 @@ function template(cwd = '/work/scout', provider: 'claude' | 'codex' = 'claude') 
       auto_mode: false,
     },
     cwd,
-    credentialsPath: runtime.credentialsPath('agent-1'),
+    credentialsPath: runtime.credentialsPath('agent-1', 'claude'),
     binaryPath: null,
   });
 }
@@ -159,7 +159,7 @@ async function fakeWatcher(root: string): Promise<ChildProcess> {
 describe('InProcessRuntime', () => {
   it('writes credentials the shared host reads, owner-only, outside the working directory', async () => {
     await runtime.writeCredentials('agent-1', RELAY);
-    const path = runtime.credentialsPath('agent-1');
+    const path = runtime.credentialsPath('agent-1', 'claude');
     expect(path).toBe(join(dir, 'data', 'agents', 'agent-1', 'credentials.json'));
     if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
     if (process.platform !== 'win32')
@@ -313,6 +313,53 @@ describe('InProcessRuntime', () => {
     });
     if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(SERVICE_ACCOUNT_KEY_FIXTURE);
+  });
+
+  it('removes the copy of a given login it checked, once checked', async () => {
+    const seen = join(dir, 'seen-login.cjs');
+    writeFileSync(
+      seen,
+      `const { existsSync } = require('node:fs');
+       const auth = require('node:path').join(process.env.CODEX_HOME, 'auth.json');
+       console.log(JSON.stringify({ status: 'authenticated', message: String(existsSync(auth)), models: [] }));`
+    );
+    const checking = new InProcessRuntime({
+      layout: dataLayout(join(dir, 'data')),
+      workspaces: join(dir, 'data', 'workspaces'),
+      bundlePath: seen,
+      openStream,
+      log: silentLogger,
+      crashBackoffMs: 5,
+    });
+    const readiness = await checking.probe('codex', '/usr/bin/codex', '/tmp', {
+      status: 'connected',
+      provider: 'codex',
+      revision: '1',
+      kind: 'auth-json',
+      credential: '{"tokens":{"access_token":"fixture-token"}}',
+    });
+    // Written for the check, and gone after it.
+    expect(readiness.message).toBe('true');
+    expect(existsSync(join(dir, 'data', 'login-check', 'codex'))).toBe(false);
+  });
+
+  it('removes a given login’s files and token from the agent’s directory when it goes', async () => {
+    await runtime.writeCredentials('agent-1', RELAY);
+    await runtime.launch('agent-1', template(), LAUNCH);
+    await runtime.stop('agent-1', { wait: true });
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    const auth = join(root, 'provider-home', 'auth.json');
+    mkdirSync(join(root, 'provider-home'), { recursive: true });
+    writeFileSync(auth, 'login-placeholder');
+    writeFileSync(`${auth}.switch-credential`, 'fingerprint');
+    const saved = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
+    saved.start.input.env = { ...saved.start.input.env, ANTHROPIC_API_KEY: 'sk-given' };
+    writeFileSync(join(root, 'config.json'), JSON.stringify(saved));
+    await runtime.deleteCredentials('agent-1');
+    expect(existsSync(auth)).toBe(false);
+    expect(existsSync(`${auth}.switch-credential`)).toBe(false);
+    const env = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8')).start.input.env;
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
   it('resolves working directories', async () => {

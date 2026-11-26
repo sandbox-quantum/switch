@@ -15,7 +15,7 @@
     "kwargs": {
       "channel": "C0GENERAL",
       "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
-      "text": "Defused: @​channel, @​here, &lt;!here&gt;, &lt;!channel|all&gt;. In code: `<@U0JANE>` and\n```\n<!subteam^S0REVIEWER> @channel\n```",
+      "text": "Defused: @​channel, @​here, &lt;!here&gt;, &lt;!channel|all&gt;. In code: `@doe.jane` and\n```\n<!subteam^S0REVIEWER> @channel\n```",
       "thread_ts": null,
       "unfurl_links": false,
       "unfurl_media": false,

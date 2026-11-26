@@ -9,6 +9,7 @@ const disconnectBridgeOnServer = vi.hoisted(() => vi.fn());
 const bridgeInstallState = vi.hoisted(() => vi.fn());
 const deleteRoom = vi.hoisted(() => vi.fn());
 const fetchBridges = vi.hoisted(() => vi.fn());
+const beginMessagingAppInstall = vi.hoisted(() => vi.fn());
 const fetchBridgeTeams = vi.hoisted(() => vi.fn());
 const addBridgeTeam = vi.hoisted(() => vi.fn());
 const removeBridgeTeam = vi.hoisted(() => vi.fn());
@@ -109,6 +110,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   addBridgeTeam,
   addRoomAgents,
   agentExistsOnServer: vi.fn(),
+  beginMessagingAppInstall,
   connectServiceWithKey,
   disconnectGitHub,
   disconnectService,
@@ -163,6 +165,7 @@ vi.mock('./workspaces-store', () => ({
 }));
 
 const { workspacesController } = await import('./controller');
+const { createBridgeOnServer } = await import('@main/core/switch-servers/create-bridge');
 const { GatewayError } = await import('@main/core/switch-servers/gateway-client');
 const { log } = await import('@main/lib/logger');
 
@@ -224,6 +227,140 @@ describe('disconnecting a bridge', () => {
   });
 });
 
+describe('connecting a messaging app', () => {
+  const createParams = {
+    workspaceId: 'ws',
+    bridgeType: 'slack',
+    displayName: 'Slack',
+    connectionConfig: {},
+    setAsDefault: false,
+    channelCreationEnabled: true,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+    fetchBridges.mockResolvedValue([{ id: 'b-new', type: 'slack' }]);
+  });
+
+  it('reports tokens pasted in, by how it was connected', async () => {
+    vi.mocked(createBridgeOnServer).mockResolvedValue({ kind: 'created' } as never);
+
+    await workspacesController.createBridge(createParams as never);
+
+    expect(trackEvent).toHaveBeenCalledWith('bridge_connected', {
+      bridge_platform: 'slack',
+      method: 'credentials',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
+  });
+
+  it('reports a connect its host was known to be down for', async () => {
+    getServer.mockResolvedValue(server({ managed: true, managementKind: 'remote', sshHost: 'h' }));
+    managedServerHostBlocked.mockReturnValue({
+      sshHost: 'h',
+      status: 'unreachable',
+      lastError: 'no route to host',
+      lastCheckedAt: null,
+    });
+
+    await expect(workspacesController.createBridge(createParams as never)).rejects.toBeInstanceOf(
+      HostUnreachableError
+    );
+
+    expect(createBridgeOnServer).not.toHaveBeenCalled();
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledWith('bridge_connected', {
+      bridge_platform: 'slack',
+      method: 'credentials',
+      outcome: 'failure',
+      failure_reason: 'unreachable',
+    });
+  });
+
+  it('reports a connect the server failed once, not twice', async () => {
+    vi.mocked(createBridgeOnServer).mockRejectedValue(new Error('boom'));
+
+    await expect(workspacesController.createBridge(createParams as never)).rejects.toThrow('boom');
+
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledWith(
+      'bridge_connected',
+      expect.objectContaining({ outcome: 'failure', failure_reason: 'error' })
+    );
+  });
+
+  it('reports an app install that could not start', async () => {
+    beginMessagingAppInstall.mockRejectedValue(new Error('refused'));
+
+    await expect(
+      workspacesController.beginMessagingAppInstall({ workspaceId: 'ws', platform: 'slack' })
+    ).rejects.toThrow('refused');
+
+    expect(trackEvent).toHaveBeenCalledWith('bridge_connected', {
+      bridge_platform: 'slack',
+      method: 'app_install',
+      outcome: 'failure',
+      failure_reason: 'error',
+    });
+  });
+
+  it('reports nothing for an install that has only started', async () => {
+    beginMessagingAppInstall.mockResolvedValue('https://slack.example/oauth');
+
+    await workspacesController.beginMessagingAppInstall({ workspaceId: 'ws', platform: 'slack' });
+
+    expect(trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('reports an install once its connection shows up, once', async () => {
+    await workspacesController.messagingAppInstalled({ workspaceId: 'ws', bridgeId: 'b-new' });
+    await workspacesController.messagingAppInstalled({ workspaceId: 'ws', bridgeId: 'b-new' });
+
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledWith('bridge_connected', {
+      bridge_platform: 'slack',
+      method: 'app_install',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
+  });
+
+  it('reports an install once when two calls for it overlap', async () => {
+    let answer: (bridges: unknown[]) => void = () => {};
+    fetchBridges.mockImplementationOnce(
+      () =>
+        new Promise((settle) => {
+          answer = settle;
+        })
+    );
+
+    const first = workspacesController.messagingAppInstalled({
+      workspaceId: 'ws',
+      bridgeId: 'b-overlap',
+    });
+    const second = workspacesController.messagingAppInstalled({
+      workspaceId: 'ws',
+      bridgeId: 'b-overlap',
+    });
+    await vi.waitFor(() => expect(fetchBridges).toHaveBeenCalled());
+    answer([{ id: 'b-overlap', type: 'slack' }]);
+    await Promise.all([first, second]);
+
+    expect(fetchBridges).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports no install for a connection the server does not list', async () => {
+    await workspacesController.messagingAppInstalled({ workspaceId: 'ws', bridgeId: 'b-made-up' });
+
+    expect(trackEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe('linking a messaging account', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -259,6 +396,19 @@ describe('linking a messaging account', () => {
       expect(trackEvent).toHaveBeenCalledWith('bridge_identity_claimed', {
         bridge_platform: 'slack',
         outcome: 'success',
+      })
+    );
+  });
+
+  it('reports a claim the server refused by throwing as a failure', async () => {
+    claimIdentityOnServer.mockRejectedValue(new Error('403 forbidden'));
+
+    await expect(workspacesController.claimBridgeIdentity(PARAMS)).rejects.toThrow('403');
+
+    await vi.waitFor(() =>
+      expect(trackEvent).toHaveBeenCalledWith('bridge_identity_claimed', {
+        bridge_platform: 'slack',
+        outcome: 'failure',
       })
     );
   });

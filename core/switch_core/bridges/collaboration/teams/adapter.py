@@ -99,7 +99,11 @@ from switch_core.bridges.collaboration.teams.crypto import (
     load_certificate_der_b64,
     load_private_key,
 )
-from switch_core.bridges.collaboration.teams.graph import GraphClient, GraphError
+from switch_core.bridges.collaboration.teams.graph import (
+    SUBSCRIPTION_CHANGE_TYPES,
+    GraphClient,
+    GraphError,
+)
 from switch_core.bridges.collaboration.teams.identity import (
     NotificationKey,
     NotificationKeyring,
@@ -110,6 +114,7 @@ from switch_core.bridges.collaboration.teams.withdrawal import (
     delete_own_subscriptions,
     leave_every_team,
 )
+from switch_core.clients.mentions import sub_outside_inline_code
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -130,6 +135,9 @@ logger = logging.getLogger(__name__)
 _MENTION_TAG = re.compile(r"<at\b[^>]*>(.*?)</at>", re.IGNORECASE | re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
 _BR_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+# One `channels('…')` or `channels/…` step of a Graph notification's resource
+# path, which names the channel and message it is about.
+_RESOURCE_STEP = re.compile(r"(channels|messages|replies)(?:\('([^']*)'\)|/([^/(]+))")
 # The whole of a name, if every character of it can be part of an `@mention`.
 _HANDLE_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 # What may follow a name for it to have ended there, rather than the name
@@ -1068,6 +1076,10 @@ class TeamsAdapter(PlatformAdapter):
         # both deliver the same channel message, keyed on the Teams message id.
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._seen_max = 2000
+        # Teams message id -> the words last reported as its edit, so an edit
+        # heard on both paths, or a reaction to an edited message, is reported
+        # once.
+        self._edits_reported: OrderedDict[str, str] = OrderedDict()
 
         # channel id -> Graph subscription id, for channels we capture.
         self._subscriptions: dict[str, str] = {}
@@ -1325,11 +1337,17 @@ class TeamsAdapter(PlatformAdapter):
             if not channel_id:
                 continue
             if sub.get("notificationUrl") == notification_url:
-                self._subscriptions[channel_id] = str(sub.get("id", ""))
                 team_id = self._team_from_resource(resource)
                 if team_id:
                     self._subscription_team[channel_id] = team_id
                 self._capture_wanted.add(channel_id)
+                current = await self._with_current_change_types(
+                    sub, resource, channel_id
+                )
+                if current is None:
+                    continue
+                sub = current
+                self._subscriptions[channel_id] = str(sub.get("id", ""))
                 expiry = _parse_graph_time(sub.get("expirationDateTime"))
                 if expiry is not None:
                     self._subscription_expiry[channel_id] = expiry
@@ -1353,6 +1371,86 @@ class TeamsAdapter(PlatformAdapter):
                 "Re-attached to %d existing Teams subscriptions",
                 len(self._subscriptions),
             )
+
+    async def _with_current_change_types(
+        self, sub: dict[str, Any], resource: str, channel_id: str
+    ) -> dict[str, Any] | None:
+        """The subscription to keep for a channel: `sub`, or a new one made in
+        its place when `sub` is not notified of everything this bridge follows;
+        None when the old one is gone and no new one could be made.
+
+        Graph cannot change a subscription's change types, and one that is
+        renewed never runs out, so a subscription made before deleted posts
+        were followed would never report one. Graph allows one channel-message
+        subscription per app and channel, so the old one is deleted before the
+        new one is made. Nothing catches up on what the channel says between
+        the two: the Teams bridge has no backfill of channel messages, so a
+        post written, edited or deleted in that moment (a round trip to Graph)
+        reaches the room only if it mentions the bot, which Bot Framework
+        delivers on its own.
+
+        When the new one can't be made, the channel is left wanted and
+        without a subscription, logged as a capture failure: the repair loop
+        makes one as it does for any channel without capture. When the old
+        one can't be deleted, it is kept, notified of new and edited posts but
+        not deleted ones, and the next start tries again.
+
+        A quiet copy keeps what it finds: the subscriptions are the holder's.
+        """
+        wanted = set(SUBSCRIPTION_CHANGE_TYPES.split(","))
+        if not self._listening or wanted <= set(
+            str(sub.get("changeType", "")).split(",")
+        ):
+            return sub
+        old_id = str(sub.get("id", ""))
+        keyring = self._me.keyring
+        if self._graph is None or keyring is None:
+            logger.warning(
+                "Teams subscription %s for channel %s is not notified of deleted "
+                "posts and cannot be replaced without the encryption certificate; "
+                "posts deleted there stay in the room",
+                old_id,
+                channel_id,
+            )
+            return sub
+        try:
+            await self._graph.delete_subscription(subscription_id=old_id)
+        except Exception as error:
+            logger.warning(
+                "Could not delete Teams subscription %s for channel %s to replace "
+                "it with one notified of deleted posts (%s); it is kept, and posts "
+                "deleted there stay in the room until the bridge next starts and "
+                "tries again",
+                old_id,
+                channel_id,
+                error,
+            )
+            return sub
+        try:
+            replacement = await self._graph.create_subscription(
+                resource=resource,
+                notification_url=self._me.notification_url,
+                lifecycle_notification_url=self._me.notification_url,
+                client_state=self._me.client_state,
+                expiration_iso=self._expiration_iso(),
+                encryption_certificate=keyring.certificate_der_b64,
+                encryption_certificate_id=keyring.certificate_id,
+            )
+        except Exception as error:
+            self._note_capture_failure(
+                channel_id,
+                f"deleted subscription {old_id} to replace it, then could not "
+                f"make the new one: {type(error).__name__}: {error}",
+            )
+            return None
+        logger.info(
+            "Replaced Teams subscription %s for channel %s with %s, which is "
+            "notified of deleted posts",
+            old_id,
+            channel_id,
+            replacement.get("id"),
+        )
+        return replacement
 
     async def ensure_channel_subscriptions(
         self, channels: list[tuple[str, str]]
@@ -3206,7 +3304,7 @@ class TeamsAdapter(PlatformAdapter):
                 return match.group(0)
             return f"<at>{html.escape(name)}</at>"
 
-        return pattern.sub(_replace, content)
+        return sub_outside_inline_code(pattern, _replace, content)
 
     def _mention_entities(self, text: str) -> list[dict[str, Any]]:
         """Bot Framework mention entities for the ``<at>`` markup in ``text``.
@@ -3477,6 +3575,10 @@ class TeamsAdapter(PlatformAdapter):
         if activity_type == "message":
             channel_type = await self._inbound_channel_type(channel_id, chat_type)
             await self._dispatch_message(activity, channel_id, channel_type)
+        elif activity_type == "messageDelete":
+            await self._dispatch_message_delete(activity, channel_id)
+        elif activity_type == "messageUpdate":
+            await self._dispatch_message_update(activity, channel_id)
         elif activity_type == "conversationUpdate":
             await self._dispatch_conversation_update(activity, channel_id, chat_type)
         elif activity_type == "installationUpdate":
@@ -3696,6 +3798,14 @@ class TeamsAdapter(PlatformAdapter):
                 await self._switch_joined_team(team_id)
             elif previous and not current:
                 await self._switch_left_team(team_id, release_default=False)
+
+    async def _release_capture(self, channel_id: str) -> None:
+        """Stop capturing a channel that no longer exists, so the repair loop
+        does not keep trying to subscribe to it."""
+        if not self._listening:
+            self._hand_to_holder({"action": "release", "channel_id": channel_id})
+            return
+        await self._stop_capture(channel_id)
 
     async def _stop_capture(self, channel_id: str) -> None:
         self._capture_wanted.discard(channel_id)
@@ -3938,10 +4048,7 @@ class TeamsAdapter(PlatformAdapter):
         )
 
         raw_text = str(activity.get("text", ""))
-        text = self._clean_text(raw_text)
-        text += self._disclosed_attachment_note(
-            self._activity_attachment_descriptors(activity)
-        )
+        text = self._activity_text(activity)
         self_mention_token = self._self_mention_token(activity)
         command_text = (
             self._clean_text(_strip_leading_mention(raw_text))
@@ -3973,6 +4080,68 @@ class TeamsAdapter(PlatformAdapter):
             addressed=bool((activity.get("recipient") or {}).get("isTargeted"))
             or _opens_with_mention(raw_text, self_mention_token),
         )
+
+    def _activity_text(self, activity: dict[str, Any]) -> str:
+        """An activity's words as a message is bridged: mentions as `@name`,
+        with a note naming any attachment that was not relayed."""
+        text = self._clean_text(str(activity.get("text", "")))
+        return text + self._disclosed_attachment_note(
+            self._activity_attachment_descriptors(activity)
+        )
+
+    async def _dispatch_message_delete(
+        self, activity: dict[str, Any], channel_id: str
+    ) -> None:
+        """A message deleted in a conversation the bot hears, which in a chat
+        is the only word of it: chats have no Graph subscription. The
+        activity's id is the deleted message's, the id it came in under."""
+        message_id = str(activity.get("id", ""))
+        if not message_id or not channel_id:
+            logger.warning(
+                "Teams reported a deleted message without saying which "
+                "(id %r, conversation %r); not followed",
+                message_id,
+                channel_id,
+            )
+            return
+        await self.report_message_deleted(channel_id, message_id)
+
+    async def _dispatch_message_update(
+        self, activity: dict[str, Any], channel_id: str
+    ) -> None:
+        """A message edited in a conversation the bot hears; the activity's id
+        is the edited message's and its text the whole new text. A message
+        brought back after being deleted is not followed: its room message is
+        already gone."""
+        event_type = (activity.get("channelData") or {}).get("eventType")
+        message_id = str(activity.get("id", ""))
+        if event_type != "editMessage":
+            logger.info(
+                "Not following Teams %s of message %s in %s",
+                event_type or "messageUpdate",
+                message_id,
+                channel_id,
+            )
+            return
+        if not message_id or not channel_id:
+            logger.warning(
+                "Teams reported an edited message without saying which "
+                "(id %r, conversation %r); not followed",
+                message_id,
+                channel_id,
+            )
+            return
+        await self._report_edit(channel_id, message_id, self._activity_text(activity))
+
+    async def _report_edit(self, channel_id: str, message_id: str, text: str) -> None:
+        """Report an edit unless these words were the last reported for it."""
+        if self._edits_reported.get(message_id) == text:
+            return
+        self._edits_reported[message_id] = text
+        self._edits_reported.move_to_end(message_id)
+        if len(self._edits_reported) > self._seen_max:
+            self._edits_reported.popitem(last=False)
+        await self.report_message_edited(channel_id, message_id, text)
 
     async def _dispatch_card_action(
         self, activity: dict[str, Any], channel_id: str
@@ -4251,6 +4420,15 @@ class TeamsAdapter(PlatformAdapter):
         self, activity: dict[str, Any], channel_id: str, chat_type: ChannelType | None
     ) -> None:
         await self._report_rename(activity, channel_id, chat_type)
+        channel_data = activity.get("channelData") or {}
+        if channel_data.get("eventType") == "channelDeleted":
+            deleted_id = str((channel_data.get("channel") or {}).get("id") or "")
+            if not deleted_id:
+                logger.warning("Teams channelDeleted without a channel id, skipping")
+                return
+            await self._release_capture(deleted_id)
+            await self.report_channel_removed(deleted_id, deleted=True)
+            return
         members_removed = activity.get("membersRemoved") or []
         if members_removed:
             await self._dispatch_members_removed(activity, channel_id, members_removed)
@@ -4829,6 +5007,18 @@ class TeamsAdapter(PlatformAdapter):
             await self._handle_lifecycle_event(item)
             return
 
+        change_type = item.get("changeType")
+        if change_type == "deleted":
+            await self._deliver_graph_deletion(item)
+            return
+        if change_type not in ("created", "updated"):
+            logger.warning(
+                "Ignoring a Graph notification of change type %r for %s",
+                change_type,
+                item.get("resource"),
+            )
+            return
+
         encrypted = item.get("encryptedContent")
         if not encrypted:
             return
@@ -4840,7 +5030,10 @@ class TeamsAdapter(PlatformAdapter):
             return
 
         chat_message = identity.keyring.decrypt(encrypted)
-        await self._deliver_graph_message(chat_message)
+        if change_type == "created":
+            await self._deliver_graph_message(chat_message)
+        else:
+            await self._deliver_graph_update(chat_message)
 
     def _owns_subscription(self, subscription_id: str) -> bool:
         return bool(subscription_id) and subscription_id in self._subscriptions.values()
@@ -4913,6 +5106,8 @@ class TeamsAdapter(PlatformAdapter):
             if team_id:
                 await self._learn_channel_team(channel_id, team_id)
             await self._ensure_channel_subscription(channel_id)
+        elif action == "release":
+            await self._release_capture(request["channel_id"])
         elif action == "team_joined":
             await self._switch_joined_team(request["team_id"])
         elif action == "team_left":
@@ -4984,10 +5179,7 @@ class TeamsAdapter(PlatformAdapter):
         body = chat_message.get("body") or {}
         raw_content = str(body.get("content", ""))
         is_html = str(body.get("contentType", "")).lower() == "html"
-        content = self._graph_text(raw_content) if is_html else raw_content
-        content += self._disclosed_attachment_note(
-            self._graph_attachment_descriptors(chat_message)
-        )
+        content = self._graph_content(chat_message)
 
         self_mention_token = self._graph_self_mention_token(chat_message)
         if self_mention_token is not None:
@@ -5011,6 +5203,82 @@ class TeamsAdapter(PlatformAdapter):
             self_mention_token=self_mention_token,
             command_text=command_text,
             addressed=_opens_with_mention(raw_content, self_mention_token),
+        )
+
+    async def _deliver_graph_update(self, chat_message: dict[str, Any]) -> None:
+        """A message Graph reports changed. Never a new room message: only a
+        `created` notification is one, however long ago the message was seen.
+
+        A soft delete is a change that sets `deletedDateTime`. An edit to its
+        words sets `lastEditedDateTime`; a change without it (a reaction, a
+        reply under it) is not followed."""
+        if chat_message.get("messageType", "message") != "message":
+            return
+        if self._from_this_app(chat_message):
+            return
+        message_id = str(chat_message.get("id", ""))
+        channel_id = str(
+            (chat_message.get("channelIdentity") or {}).get("channelId", "")
+        )
+        if not message_id or not channel_id:
+            logger.warning(
+                "Graph reported a changed Teams message without saying which "
+                "(id %r, channel %r); not followed",
+                message_id,
+                channel_id,
+            )
+            return
+        if chat_message.get("deletedDateTime"):
+            await self.report_message_deleted(channel_id, message_id)
+            return
+        if not chat_message.get("lastEditedDateTime"):
+            return
+        await self._report_edit(
+            channel_id, message_id, self._graph_content(chat_message)
+        )
+
+    async def _deliver_graph_deletion(self, item: dict[str, Any]) -> None:
+        """A message Graph reports deleted. The notification carries no message,
+        only its resource path, which names the channel and the message (a
+        reply's own id, not its post's)."""
+        resource = str(item.get("resource", ""))
+        channel_id, message_id = self._message_from_resource(resource)
+        if not message_id:
+            message_id = str((item.get("resourceData") or {}).get("id") or "")
+        if not channel_id or not message_id:
+            logger.warning(
+                "Graph reported a deleted Teams message without saying which "
+                "(resource %r); not followed",
+                resource,
+            )
+            return
+        await self.report_message_deleted(channel_id, message_id)
+
+    @staticmethod
+    def _message_from_resource(resource: str) -> tuple[str, str]:
+        """The channel and message ids a notification's resource path names,
+        e.g. `teams('…')/channels('19:…')/messages('…')/replies('…')`; empty
+        where it names none."""
+        steps: dict[str, str] = {}
+        for match in _RESOURCE_STEP.finditer(resource):
+            steps[match.group(1)] = unquote(match.group(2) or match.group(3) or "")
+        return steps.get("channels", ""), steps.get("replies") or steps.get(
+            "messages", ""
+        )
+
+    def _from_this_app(self, chat_message: dict[str, Any]) -> bool:
+        application = (chat_message.get("from") or {}).get("application") or {}
+        return str(application.get("id", "")) == self._me.app_id
+
+    def _graph_content(self, chat_message: dict[str, Any]) -> str:
+        """A Graph message's words as a message is bridged, with a note naming
+        any attachment that was not relayed."""
+        body = chat_message.get("body") or {}
+        raw_content = str(body.get("content", ""))
+        is_html = str(body.get("contentType", "")).lower() == "html"
+        content = self._graph_text(raw_content) if is_html else raw_content
+        return content + self._disclosed_attachment_note(
+            self._graph_attachment_descriptors(chat_message)
         )
 
     def _graph_self_mention_token(self, chat_message: dict[str, Any]) -> str | None:

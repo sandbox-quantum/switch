@@ -63,8 +63,10 @@ from switch_core.connections.adapters import (
     AccessToken,
     ConnectionNotRevocable,
     ConnectionSecret,
+    Identity,
     IssuedToken,
     IssueRequest,
+    Pasted,
     ReauthorizationRequiredError,
     ServiceAdapterError,
     ServiceUnavailableError,
@@ -78,6 +80,7 @@ from switch_core.connections.loader import (
     AccessLevel,
     ChoicesError,
     ConnectionDefinition,
+    PasteExpiry,
     PasteMethod,
     choice_key,
     render,
@@ -224,14 +227,6 @@ class StaticClient:
 
 
 @dataclass(frozen=True)
-class Identity:
-    """The connected account: its stable id, and a label people recognise."""
-
-    account_id: str
-    label: str
-
-
-@dataclass(frozen=True)
 class SignIn:
     """What an authorization code was exchanged for, and through which client."""
 
@@ -244,16 +239,6 @@ class SignIn:
 class TokenAnswer:
     body: dict[str, Any]
     client_id: str
-
-
-@dataclass(frozen=True)
-class Pasted:
-    """A credential a connection was made with in place of a sign-in: how it
-    was pasted, its fields, and the choices it was pasted for (a site)."""
-
-    method: PasteMethod
-    values: dict[str, str] = field(repr=False)
-    choices: dict[str, str]
 
 
 def credential_words(method: str) -> tuple[str, str]:
@@ -1235,12 +1220,12 @@ class OAuthAdapter:
 
     async def check_pasted(
         self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
-    ) -> None:
+    ) -> PasteExpiry:
         """Whether the vendor's MCP server takes the credential: an MCP
         `initialize` at the entry's first server, at the choices' site, with
         the method's headers. A 401 refuses it for good
         (`ReauthorizationRequiredError`); any other answer but 200 is a
-        `ServiceAdapterError`."""
+        `ServiceAdapterError`. Who ends it is as the method says."""
         if self._mcp_url is None:
             raise ServiceAdapterError(
                 f"{self._name} has no MCP server to check a pasted credential at."
@@ -1252,7 +1237,7 @@ class OAuthAdapter:
             )
         )
         if status == 200:
-            return
+            return method.expires
         words, _ = credential_words(method.name)
         if status == 401:
             raise ReauthorizationRequiredError(

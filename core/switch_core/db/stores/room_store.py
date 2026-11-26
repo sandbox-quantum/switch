@@ -735,31 +735,37 @@ class RoomStore:
         agent_ids: list[str],
         *,
         join_event_listeners: set[str] | None = None,
-    ) -> None:
-        """Add agents to a room.
+    ) -> list[str]:
+        """Add agents to a room, returning the ones this call put in.
 
         `join_event_listeners` is the subset of `agent_ids` that should receive
         `room_join` and `room_leave` events in this room. Any agent not in that set keeps the
         column default (off) — agents are opted in to join events explicitly.
         An agent already in the room is left as it is, so two concurrent adds
-        of the same agent both succeed.
+        of the same agent both succeed, and only one of them returns it.
         """
         if not agent_ids:
-            return
+            return []
         await self.prune_admins(session, room_id)
         listeners = join_event_listeners or set()
-        await session.execute(
-            pg_insert(room_agents).on_conflict_do_nothing(),
-            [
-                {
-                    "room_id": room_id,
-                    "agent_id": aid,
-                    "receives_join_events": aid in listeners,
-                }
-                for aid in agent_ids
-            ],
+        added = await session.scalars(
+            pg_insert(room_agents)
+            .values(
+                [
+                    {
+                        "room_id": room_id,
+                        "agent_id": aid,
+                        "receives_join_events": aid in listeners,
+                    }
+                    for aid in agent_ids
+                ]
+            )
+            .on_conflict_do_nothing()
+            .returning(room_agents.c.agent_id)
         )
+        inserted = list(added)
         await session.flush()
+        return inserted
 
     async def set_receives_join_events(
         self, session: AsyncSession, room_id: str, agent_id: str, value: bool

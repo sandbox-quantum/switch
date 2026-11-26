@@ -358,6 +358,9 @@ export function withDefinitionOf(
     else next.execution.instructions = template.execution.instructions;
     next.execution.skill = template.execution.skill;
     next.execution.codexConfig = template.execution.codexConfig;
+    if (template.execution.defaultCodexSandbox === undefined)
+      delete next.execution.defaultCodexSandbox;
+    else next.execution.defaultCodexSandbox = template.execution.defaultCodexSandbox;
   }
   return next;
 }

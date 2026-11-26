@@ -91,6 +91,7 @@ from switch_core.chats.service import ChatError
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
+    SAID_FOR_AGENT_FLAG,
     AdminMessageType,
     platform_on_behalf_of,
     platform_replies_in_channel,
@@ -1788,7 +1789,12 @@ class AgentCore:
         bridges — the resource manager isn't a bridge participant, so its own
         notices wouldn't reach Slack/Mattermost."""
         try:
-            await client.send_message(transport_room_id, body, metered=False)
+            await client.send_message(
+                transport_room_id,
+                body,
+                metered=False,
+                extra_content={SAID_FOR_AGENT_FLAG: True},
+            )
         except Exception:
             logger.exception(
                 "Failed to post agent activity notice to %s", transport_room_id
@@ -4976,20 +4982,25 @@ class AgentCore:
                 connections=self.connections,
             )
 
-    async def _channel_web_url(self, room: Room) -> str | None:
+    async def channel_web_url(self, room: Room) -> str | None:
         """An https link to the room's channel on its app, or None.
 
-        Only a web address: a native scheme (`slack://`) is not something a
-        chat message can be trusted to open, so a room whose app gives only
-        that is linked through Switch Console instead.
+        Only a web address: a native scheme (`slack://`, `mattermost://`) is
+        not something a chat message can be trusted to open, so adapters that
+        use a native scheme for `channel_deeplink` expose their web address via
+        `channel_web_url`.
         """
         if not room.bridge_id or not room.external_channel_id:
             return None
         adapter = self.collab_lifecycle.get_adapter(room.bridge_id)
         if adapter is None:
             return None
+        web_url_fn = getattr(adapter, "channel_web_url", None)
         try:
-            url = await adapter.channel_deeplink(room.external_channel_id)
+            if web_url_fn is not None:
+                url = await web_url_fn(room.external_channel_id)
+            else:
+                url = await adapter.channel_deeplink(room.external_channel_id)
         except Exception:
             logger.warning(
                 "Could not build a channel link for room %s", room.id, exc_info=True
@@ -5068,7 +5079,7 @@ class AgentCore:
             id=room.id,
             name=room.name,
             description=room.description,
-            channel_url=await self._channel_web_url(room),
+            channel_url=await self.channel_web_url(room),
             channel_type=room.channel_type,
             admin_mode=room.admin_mode,
             instructions=room.instructions,

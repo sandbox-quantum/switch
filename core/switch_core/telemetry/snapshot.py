@@ -39,7 +39,13 @@ from sqlalchemy.orm import aliased
 
 from switch_core import messaging_platforms
 from switch_core.chats import CHAT_OPERATION_ID_KEY, MEMBER_CLIENT_TYPE
-from switch_core.clients.admin_messages import AUTO_REPLY_FLAG, SENDER_IS_APP_MARKER
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    AUTO_REPLY_FLAG,
+    PLATFORM_MARKER,
+    SAID_FOR_AGENT_FLAG,
+    SENDER_IS_APP_MARKER,
+)
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -61,7 +67,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
-from switch_core.telemetry.catalogue import connector_count_property
+from switch_core.telemetry.catalogue import KNOWN_RUNTIMES, connector_count_property
 from switch_core.telemetry.deployment import CONNECTOR_ADDED_PREFIX, claims_named
 from switch_core.telemetry.internal import internal_email_condition
 
@@ -87,6 +93,18 @@ PERSON_CLIENT_TYPES = (HUMAN_CLIENT_TYPE, MEMBER_CLIENT_TYPE)
 # the same table: arrivals, tool and LLM call reports, task transitions. A
 # command typed on a platform is something a person said.
 SPOKEN_EVENT_TYPES = ("m.room.message", "com.switch.command")
+
+# What Switch writes itself, whoever it is posted as: the auto-reply and
+# everything else it says under an agent's name (`SAID_FOR_AGENT_FLAG`), its
+# admin notices, and the platform's own messages (a template's kickoff, a
+# scheduled message, a run notice). None is anything a participant said, and
+# `message_sent` counts none of them.
+SWITCH_WRITTEN_MARKERS = (
+    AUTO_REPLY_FLAG,
+    SAID_FOR_AGENT_FLAG,
+    ADMIN_MARKER,
+    PLATFORM_MARKER,
+)
 
 _DAY = timedelta(days=1)
 # How far back the turn pairing looks for a message's predecessor. See
@@ -372,13 +390,14 @@ def _spoken() -> tuple[Any, ...]:
 
     Every durable event is a row in `messages`, so without this an agent
     joining a room or reporting a tool call reads as an agent message, and a
-    person being added to a room reads as that person being active. The
-    notice Switch posts under an agent's name when the agent cannot take a
-    request is excluded too: the agent did not say it.
+    person being added to a room reads as that person being active. What
+    Switch writes itself is excluded too (`SWITCH_WRITTEN_MARKERS`), even
+    under an agent's name: an agent that greeted a room it was added to and
+    was never run has said nothing.
     """
     return (
         Message.event_type.in_(SPOKEN_EVENT_TYPES),
-        ~Message.content.has_key(AUTO_REPLY_FLAG),
+        *(~Message.content.has_key(marker) for marker in SWITCH_WRITTEN_MARKERS),
     )
 
 
@@ -1638,7 +1657,7 @@ def normalise_known_agent_type(metadata: dict | None) -> str:
     declared = metadata.get("known_agent_type")
     if declared is None:
         return "none"
-    if declared in ("claude-code", "codex", "opencode"):
+    if declared in KNOWN_RUNTIMES:
         return str(declared)
     return "other"
 

@@ -58,6 +58,7 @@ from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
     AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
+    SAID_FOR_AGENT_FLAG,
     SENDER_IS_APP_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
@@ -69,7 +70,7 @@ from switch_core.clients.mentions import (
     mention_regex as _mention_regex,
 )
 from switch_core.clients.mentions import (
-    strip_emphasis as _strip_emphasis,
+    mentionable_text as _mentionable_text,
 )
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, CloudMachine, TenantMember
@@ -1191,7 +1192,7 @@ class AgentRecipient:
             )
             return
         opening = opening_message_for(meta, self.agent.id)
-        extra_content: dict[str, object] | None = None
+        extra_content: dict[str, object] = {SAID_FOR_AGENT_FLAG: True}
         if opening is not None:
             greeting = opening
         elif meta.console_chat:
@@ -1200,7 +1201,7 @@ class AgentRecipient:
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
-            extra_content = {AGENT_GREETING_KEY: True}
+            extra_content[AGENT_GREETING_KEY] = True
         await self.actor.send_message(
             self._room.room_id,
             greeting,
@@ -1399,6 +1400,7 @@ class AgentRecipient:
             format=format,
             thread_root_id=thread_root_id,
             metered=False,
+            extra_content={SAID_FOR_AGENT_FLAG: True},
         )
 
     async def _resolve_room_meta(self, transport_room_id: str) -> RoomMeta | None:
@@ -1909,7 +1911,9 @@ class AgentRecipient:
     def _args_tag_my_name(self, text: str) -> bool:
         """True when `text` contains our own `@name` at a full-token boundary
         (so a name that is a prefix of a longer one is not falsely matched)."""
-        return _mention_regex(self.agent.name).search(_strip_emphasis(text)) is not None
+        return (
+            _mention_regex(self.agent.name).search(_mentionable_text(text)) is not None
+        )
 
     async def _text_tags_my_alias(
         self, session: AsyncSession, text: str, room_id: str

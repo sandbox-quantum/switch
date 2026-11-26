@@ -316,8 +316,8 @@
   {
     "name": "[Switch REPLACE-WITH-ENV] agent connections are dropping en masse",
     "type": "query alert",
-    "query": "avg(last_10m):sum:switch.agents.connected{service:REPLACE-WITH-SERVICE} / week_before(sum:switch.agents.connected{service:REPLACE-WITH-SERVICE}) < 0.5",
-    "message": "{{#is_alert}}Fewer than half as many agents are connected as at this time a week ago. Agents that lost their connection stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere. If last week was the odd one out (an outage, or a load test that connected extra agents), this clears on its own.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "avg(last_10m):sum(max:switch.agents.connected{service:REPLACE-WITH-SERVICE} by {service,pod_name,transport,client}, {service}) / week_before(sum(max:switch.agents.connected{service:REPLACE-WITH-SERVICE} by {service,pod_name,transport,client}, {service})) < 0.33",
+    "message": "{{#is_alert}}Fewer than a third as many agents are connected as at this time a week ago. Agents that lost their connection stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere. If last week was the odd one out (an outage, or a load test that connected extra agents), this clears on its own.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -332,7 +332,7 @@
       "require_full_window": false,
       "include_tags": true,
       "thresholds": {
-        "critical": 0.5
+        "critical": 0.33
       }
     },
     "priority": 2
@@ -921,30 +921,6 @@
       "include_tags": true,
       "thresholds": {
         "critical": 10
-      }
-    },
-    "priority": 4
-  },
-  {
-    "name": "[Switch REPLACE-WITH-ENV] AI provider logins missing or expired on cloud machines",
-    "type": "query alert",
-    "query": "min(last_30m):max:switch.hosted.provider_login_problems{service:REPLACE-WITH-SERVICE} > 0",
-    "message": "{{#is_alert}}For 30 minutes, {{value}} AI provider login(s) on cloud machines have been missing or expired, so agents using them can't run.\n\n**Check:** which providers on the dashboard; the person who owns the machine needs to give the login again in Switch Console.{{/is_alert}}{{#is_recovery}}Recovered: no missing or expired AI provider logins on cloud machines.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": [
-      "service:REPLACE-WITH-SERVICE",
-      "env:REPLACE-WITH-ENV",
-      "team:switch",
-      "tier:now",
-      "category:ops"
-    ],
-    "options": {
-      "notify_no_data": false,
-      "renotify_interval": 60,
-      "notify_audit": false,
-      "require_full_window": false,
-      "include_tags": true,
-      "thresholds": {
-        "critical": 0
       }
     },
     "priority": 4

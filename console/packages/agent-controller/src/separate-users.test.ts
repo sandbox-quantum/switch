@@ -21,6 +21,7 @@ import {
   planReleases,
   parsePasswd,
   polkitRule,
+  sandboxFor,
   type SeparateUsersConfig,
   separateUserNames,
   separateUsersConfigSchema,
@@ -41,6 +42,13 @@ const config: SeparateUsersConfig = {
   releasesDir: null,
 };
 
+const TOOLS = {
+  sh: '/bin/sh',
+  find: '/usr/bin/find',
+  chown: '/usr/bin/chown',
+  path: '/usr/local/bin:/usr/bin:/bin',
+};
+
 function lines(text: string): string[] {
   return text.split('\n');
 }
@@ -50,11 +58,15 @@ describe.skipIf(process.platform === 'win32')('separate users', () => {
   it('names everything after the controller user’s uid', () => {
     const names = separateUserNames(1001);
     expect(names.group).toBe('switch-agents-1001');
-    expect(names.agentUnit(3)).toBe('switch-agent-1001@03.service');
+    expect(names.agentUnit(3, 'standard')).toBe('switch-agent-1001@03.service');
+    expect(names.agentUnit(3, 'codex')).toBe('switch-agent-1001-codex@03.service');
     expect(names.agentUser(3)).toBe('sa1001-03');
     expect(names.controllerUnit).toBe('switch-agent-controller-1001.service');
-    expect(unitCredentialsPath(config, 3)).toBe(
+    expect(unitCredentialsPath(config, 3, 'standard')).toBe(
       '/run/credentials/switch-agent-1001@03.service/relay'
+    );
+    expect(unitCredentialsPath(config, 3, 'codex')).toBe(
+      '/run/credentials/switch-agent-1001-codex@03.service/relay'
     );
     expect(() => slotName(0)).toThrow();
     expect(() => slotName(100)).toThrow();
@@ -63,14 +75,7 @@ describe.skipIf(process.platform === 'win32')('separate users', () => {
   });
 
   it('writes an agent unit that runs as the agent’s user and sees only its own directory', () => {
-    const unit = lines(
-      agentUnitTemplate(config, {
-        sh: '/bin/sh',
-        find: '/usr/bin/find',
-        chown: '/usr/bin/chown',
-        path: '/usr/local/bin:/usr/bin:/bin',
-      })
-    );
+    const unit = lines(agentUnitTemplate(config, TOOLS, 'standard'));
     expect(unit).toContain('User=sa1001-%i');
     expect(unit).toContain('Group=switch-agents-1001');
     expect(unit).toContain(
@@ -96,10 +101,34 @@ describe.skipIf(process.platform === 'win32')('separate users', () => {
     );
   });
 
+  it('limits what one agent may take of the machine, and which system calls it may make', () => {
+    const unit = lines(agentUnitTemplate(config, TOOLS, 'standard'));
+    expect(unit).toContain('MemoryMax=75%');
+    expect(unit).toContain('TasksMax=4096');
+    expect(unit).toContain('SystemCallFilter=@system-service');
+    expect(unit).toContain('SystemCallErrorNumber=EPERM');
+    expect(unit).toContain('SystemCallArchitectures=native');
+    // Neither mounts nor a filter of its own for an agent other than Codex.
+    expect(unit.join('\n')).not.toMatch(/@mount|@sandbox/);
+  });
+
+  it('lets Codex’s agents make the namespaces and mounts its sandbox needs, and nothing else differs', () => {
+    const standard = lines(agentUnitTemplate(config, TOOLS, 'standard'));
+    const codex = lines(agentUnitTemplate(config, TOOLS, 'codex'));
+    expect(codex).toContain('SystemCallFilter=@system-service @mount @sandbox');
+    expect(codex).toContain('MemoryMax=75%');
+    expect(codex).toContain('TasksMax=4096');
+    const differing = codex.filter((line) => !standard.includes(line));
+    expect(differing).toEqual(['SystemCallFilter=@system-service @mount @sandbox']);
+    expect(sandboxFor('codex')).toBe('codex');
+    expect(sandboxFor('claude')).toBe('standard');
+    expect(sandboxFor('opencode')).toBe('standard');
+  });
+
   it('lets the controller’s user manage its agents’ units and nothing else', () => {
     const rule = polkitRule(config);
     expect(rule).toContain('subject.user !== "builder"');
-    expect(rule).toContain('/^switch-agent-1001@[0-9]{2}\\.service$/');
+    expect(rule).toContain('/^switch-agent-1001(-codex)?@[0-9]{2}\\.service$/');
     expect(rule).toContain('["start", "stop", "restart", "reset-failed"]');
   });
 
@@ -140,12 +169,16 @@ describe.skipIf(process.platform === 'win32')('separate users', () => {
     expect(service).toContain('ProtectClock=yes');
     // The same deny the agents' units carry, so neither side can reach the metadata.
     const agentDeny = lines(
-      agentUnitTemplate(config, {
-        sh: '/bin/sh',
-        find: '/usr/bin/find',
-        chown: '/usr/bin/chown',
-        path: '/usr/local/bin:/usr/bin:/bin',
-      })
+      agentUnitTemplate(
+        config,
+        {
+          sh: '/bin/sh',
+          find: '/usr/bin/find',
+          chown: '/usr/bin/chown',
+          path: '/usr/local/bin:/usr/bin:/bin',
+        },
+        'standard'
+      )
     ).find((line) => line.startsWith('IPAddressDeny='));
     expect(service).toContain(agentDeny);
     // A person's own account can run the controller: their home, their other
@@ -175,7 +208,10 @@ describe.skipIf(process.platform === 'win32')('separate users', () => {
     });
     expect(separateUsersConfigSchema.safeParse(config).success).toBe(true);
     expect(
-      separateUsersConfigSchema.safeParse({ ...config, agentsDir: '/var/lib/with space' }).success
+      separateUsersConfigSchema.safeParse({
+        ...config,
+        agentsDir: '/var/lib/with space',
+      }).success
     ).toBe(false);
     expect(separateUsersConfigSchema.safeParse({ ...config, agentUsers: 100 }).success).toBe(false);
   });
@@ -192,7 +228,10 @@ describe.skipIf(process.platform === 'win32')('releases directory', () => {
   };
 
   it('runs the controller and its agents through current', () => {
-    const plan = planReleases({ ...baked, releasesDir: '/data/controller-releases' });
+    const plan = planReleases({
+      ...baked,
+      releasesDir: '/data/controller-releases',
+    });
     expect(plan).toEqual({
       dir: '/data/controller-releases',
       prefix: '/opt/switch/controller',
@@ -213,18 +252,26 @@ describe.skipIf(process.platform === 'win32')('releases directory', () => {
       releasesDir: plan!.dir,
     };
     const agentUnit = lines(
-      agentUnitTemplate(unitConfig, {
-        sh: '/bin/sh',
-        find: '/usr/bin/find',
-        chown: '/usr/bin/chown',
-        path: '/usr/bin:/bin',
-      })
+      agentUnitTemplate(
+        unitConfig,
+        {
+          sh: '/bin/sh',
+          find: '/usr/bin/find',
+          chown: '/usr/bin/chown',
+          path: '/usr/bin:/bin',
+        },
+        'standard'
+      )
     );
     expect(agentUnit).toContain(
       'ExecStart=/usr/bin/node /data/controller-releases/current/lib/node_modules/switch-agent-controller/shared-host.mjs /data/agents/agent/watcher /data/agents/agent/watcher/config.json --watch-worker'
     );
     const controllerUnit = lines(
-      controllerSystemUnit(unitConfig, { cli: plan!.cli, envFile: null, path: '/usr/bin:/bin' })
+      controllerSystemUnit(unitConfig, {
+        cli: plan!.cli,
+        envFile: null,
+        path: '/usr/bin:/bin',
+      })
     );
     const exec = controllerUnit.find((line) => line.startsWith('ExecStart='))!;
     expect(exec).toContain(
@@ -241,7 +288,11 @@ describe.skipIf(process.platform === 'win32')('releases directory', () => {
 
   it('keeps a bundle named outside the controller’s install where it is', () => {
     expect(
-      planReleases({ ...baked, bundle: '/opt/shared-host.mjs', releasesDir: null })?.bundle
+      planReleases({
+        ...baked,
+        bundle: '/opt/shared-host.mjs',
+        releasesDir: null,
+      })?.bundle
     ).toBe('/opt/shared-host.mjs');
   });
 

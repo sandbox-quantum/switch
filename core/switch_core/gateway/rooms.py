@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core import room_admins, room_policy
@@ -102,7 +102,10 @@ from switch_core.gateway.schemas import (
 )
 from switch_core.gateway.templates import readable_template
 from switch_core.private_channel_rooms import notice_poster
-from switch_core.providers.registry import offered_provider_ids
+from switch_core.providers.registry import (
+    offered_provider_ids,
+    with_new_agent_auto_mode,
+)
 from switch_core.room_invites import (
     InviteRefused,
     invitable_agent_ids,
@@ -782,14 +785,21 @@ class TemplateAgentBody(BaseModel):
     model: str | None
     advanced_config: dict[str, Any]
     isolation: Literal["shared", "isolated"]
-    # Older Consoles do not send it; a new agent runs in auto mode.
-    auto_mode: bool = True
+    # Older Consoles do not send it; the agent then gets its provider's
+    # default for a new agent (`_auto_mode_from_provider`). The False here
+    # only stands in for an unknown provider, which the run refuses.
+    auto_mode: bool = False
     auto_approve: bool
     directory: str | None
     addressing: Literal["owner", "owner-agents", "anyone"]
     # Older Consoles do not send it.
     can_manage_agents: bool = False
     connections: list[TemplateConnectionBody]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _auto_mode_from_provider(cls, data: Any) -> Any:
+        return with_new_agent_auto_mode(data)
 
     def plan(self) -> NewAgentPlan:
         return NewAgentPlan(

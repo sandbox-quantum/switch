@@ -3,6 +3,7 @@ import type {
   TemplateConnection,
 } from '@main/core/agent-templates/template-document';
 import type { TemplateRunAgent } from '@main/core/switch-servers/gateway-client';
+import { newAgentPermissions } from '@shared/core/agents/agents';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { consoleAddressing, consoleAutoApprove } from './agent-permissions';
@@ -150,7 +151,7 @@ export function runAgent(params: {
   const autoMode =
     typeof entry.autoMode === 'string'
       ? values[entry.autoMode.replace(/^\{|\}$/g, '')] === true
-      : entry.autoMode !== false;
+      : (entry.autoMode ?? newAgentPermissions(params.provider).autoMode);
   const repo = entry.repoUrl ? interpolate(entry.repoUrl, values) : null;
   const instructions = repo
     ? `${filled(entry.instructions)}\n\nYou work on the repository ${repo}. If your working directory is not a clone of it yet, clone ${repo} into it first.`

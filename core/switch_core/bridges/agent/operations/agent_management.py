@@ -39,7 +39,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.db.models import User, require_tenant_id
-from switch_core.providers.registry import agent_provider
+from switch_core.providers.registry import agent_provider, new_agent_auto_mode
 
 AGENT_MANAGEMENT_OPERATIONS = "agent_management"
 
@@ -250,18 +250,23 @@ async def create_agent(
             machine makes the directory if it is missing. Any other directory
             must be an absolute path with no `..` in it, must already exist
             there, and waits for your owner to confirm it.
-        auto_mode: The provider's automatic review, on by default where
-            supported: safe actions run without asking, risky ones still ask a
-            person. Cursor's ACP interface does not support it, so Cursor
-            defaults to false. False with `auto_approve` also false asks for
-            every action.
+        auto_mode: Auto mode: the provider's own automatic review lets safe
+            actions run without asking and still asks a person before risky
+            ones. Null for the provider's default: on for every provider but
+            two. OpenCode's auto mode has no review and runs every command
+            without asking, so a new OpenCode agent asks its owner before
+            each action; pass true for OpenCode only when the person asks for
+            that after being told commands will then run unreviewed. Cursor's
+            ACP interface has no auto mode, so Cursor defaults to false.
+            False with `auto_approve` also false asks for every action.
         auto_approve: Bypass permissions: the agent runs every tool without
             any permission check, and this overrides `auto_mode`. Defaults to
             true for Cursor, which has no automatic review over ACP, and false
             for other providers; an explicit false, or an explicit
-            `auto_mode=false`, keeps it off. Either way, bypass waits for your
-            owner to confirm it, so say so in a Cursor agent's proposal, and
-            pass false if the person wants it to ask instead.
+            `auto_mode=false`, keeps it off. Unsafe elsewhere; set it only when
+            the person explicitly asks for bypass. Either way, bypass waits for
+            your owner to confirm it, so say so in a Cursor agent's proposal,
+            and pass false if the person wants it to ask instead.
         display_name: A human label shown next to `name`, or null for none.
         icon_url: An https link to the agent's icon, or null for the icon
             its name generates, the same one Switch Console offers first. A
@@ -294,7 +299,7 @@ async def create_agent(
         advanced_config={} if advanced_config is None else advanced_config,
         instructions=instructions,
         directory=directory,
-        auto_mode=supports_auto_mode if auto_mode is None else auto_mode,
+        auto_mode=new_agent_auto_mode(provider) if auto_mode is None else auto_mode,
         auto_approve=(
             (not supports_auto_mode and auto_mode is None)
             if auto_approve is None

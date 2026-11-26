@@ -391,6 +391,7 @@ class TestTelemetryNeverPreventsBoot:
             _config(telemetry_enabled=True),  # type: ignore[arg-type]
             session_factory,
             "1.0.0",
+            keeps_deployment_state=True,
         )
 
         assert service.enabled is False
@@ -415,9 +416,51 @@ class TestTelemetryNeverPreventsBoot:
             _config(telemetry_enabled=True),  # type: ignore[arg-type]
             session_factory,
             "1.0.0",
+            keeps_deployment_state=True,
         )
         service.emit("deployment_started", tenant_count=1)
         await service.aclose()
+
+
+class TestACommandLeavesTheServersBookkeeping:
+    """A command built beside the server (the room-moderation CLI) reports
+    what it does but must not rewrite when the server's reporting began."""
+
+    async def test_a_command_without_telemetry_keeps_the_reporting_start(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from sqlalchemy import delete, select
+
+        from switch_core.db.models import DeploymentIdentity
+        from switch_core.telemetry.setup import build_telemetry
+
+        since = datetime(2026, 11, 1, tzinfo=UTC)
+        async with session_factory() as session:
+            await session.execute(delete(DeploymentIdentity))
+            session.add(
+                DeploymentIdentity(
+                    id=1,
+                    client_id=str(uuid.uuid4()),
+                    telemetry_enabled_since=since,
+                )
+            )
+            await session.commit()
+
+        service, _, _ = await build_telemetry(
+            _config(telemetry_enabled=False),  # type: ignore[arg-type]
+            session_factory,
+            "1.0.0",
+            keeps_deployment_state=False,
+        )
+        await service.aclose()
+
+        async with session_factory() as session:
+            stored = await session.scalar(
+                select(DeploymentIdentity.telemetry_enabled_since)
+            )
+        assert stored == since
 
 
 async def _settle() -> None:

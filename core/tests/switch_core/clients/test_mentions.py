@@ -8,6 +8,7 @@ from switch_core.clients.mention_warnings import unmatched_mentions
 from switch_core.clients.mentions import (
     mention_regex,
     mention_tokens,
+    sub_outside_inline_code,
     unique_mention_tokens,
 )
 from switch_core.delivery.conversation import mentioned_names, mentions_anyone
@@ -111,6 +112,31 @@ class TestMentionTokens:
 
     def test_an_address_is_not_unmatched(self) -> None:
         assert unmatched_mentions("ssh root@staging", []) == []
+
+
+class TestInlineCodeMentions:
+    def test_inline_code_span_is_ignored(self) -> None:
+        assert mention_tokens("Try `@pr-tracker what's waiting on me?`") == []
+        assert not mentions_anyone("Try `@pr-tracker what's waiting on me?`")
+        assert unmatched_mentions("Try `@pr-tracker`", []) == []
+
+    def test_mention_outside_inline_code_still_matches(self) -> None:
+        assert mention_tokens("`@pr-tracker` example, ping @helper") == ["helper"]
+        assert mention_tokens("`a` @helper `b`") == ["helper"]
+
+    def test_fenced_code_block_is_not_stripped(self) -> None:
+        assert mention_tokens("```\n@helper\n```") == ["helper"]
+
+    def test_unclosed_backtick_does_not_hide_mention(self) -> None:
+        assert mention_tokens("unclosed `backtick and @helper") == ["helper"]
+
+    def test_sub_outside_inline_code_preserves_inline_spans(self) -> None:
+        out = sub_outside_inline_code(
+            r"@([a-z0-9-]+)",
+            lambda m: f"<@{m.group(1)}>",
+            "Hi @alice, try `@pr-tracker what's next?` or `@bob`",
+        )
+        assert out == "Hi <@alice>, try `@pr-tracker what's next?` or `@bob`"
 
 
 class TestConversationMentions:

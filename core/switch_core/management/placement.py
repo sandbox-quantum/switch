@@ -7,10 +7,14 @@ nothing:
 
 - `revoked`: its credential is gone.
 - `online`: its socket is attached, and the process holding it is alive
-  (its lease renewed within `LEASE_TTL`, and not stopped).
+  (its lease renewed within `LEASE_TTL`, and not stopped). Also while it
+  reattaches after that process shut down, for up to `MOVE_GRACE` after the
+  stop (`reattaching`): a release moves every machine to another process,
+  and a machine moving is not a machine gone.
 - `offline`: it has connected before, and its socket went (closed, its
-  heartbeat lapsed, taken over and not replaced, the server shut down), or
-  the process holding it stopped or died without saying so.
+  heartbeat lapsed, taken over and not replaced, the server shut down and it
+  did not reattach in time), or the process holding it died without saying
+  so.
 - `unknown`: no connection has ever been recorded for it: enrolled but never
   run, or connected only to a server that did not record connections.
 
@@ -30,12 +34,15 @@ has no probe.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from switch_core.db.models import AgentController
 from switch_core.management import reason_codes
 from switch_core.management.errors import ManagementError
-from switch_core.process_lease import ProcessLeases
+from switch_core.process_lease import SERVER_SHUTDOWN, ProcessLeases
+
+if TYPE_CHECKING:
+    from switch_core.db.stores.agent_controller_store import ControllerConnection
 
 ControllerState = Literal["online", "offline", "unknown", "revoked"]
 
@@ -55,11 +62,34 @@ def controller_state(
         return "revoked"
     if controller.connected_at is None:
         return "unknown"
+    if reattaching(controller, leases):
+        return "online"
     if controller.disconnected_at is not None:
         return "offline"
     if not leases.holds(controller.connection_process_id):
         return "offline"
     return "online"
+
+
+def reattaching(
+    controller: AgentController | ControllerConnection, leases: ProcessLeases
+) -> bool:
+    """Whether the controller's socket went only because the process holding
+    it shut down less than `MOVE_GRACE` ago: its controller is reattaching to
+    another process. A socket that went for its own reason before that is
+    gone."""
+    return leases.moving(controller.connection_process_id) and went_with_its_process(
+        controller
+    )
+
+
+def went_with_its_process(controller: AgentController | ControllerConnection) -> bool:
+    """Whether nothing was written of the socket going but its process
+    shutting down: the row still shows it open, or closed by the server."""
+    return (
+        controller.disconnected_at is None
+        or controller.disconnect_reason == SERVER_SHUTDOWN
+    )
 
 
 def status_is_fresh(

@@ -707,12 +707,16 @@ switchCore:
     # Shown to the admin approving the app, and required in its package.
     privacyUrl: ""
     termsUrl: ""
-    # The app's name in Teams, up to 30 characters; empty means "Agent
-    # Switch". Name each non-production environment's app (for example
-    # "Agent Switch (dev)"), so an organisation that approves more than one
+    # The app's name in Teams, up to 30 characters; empty means "Switch
+    # Rooms". Name each non-production environment's app (for example
+    # "Switch Rooms (dev)"), so an organisation that approves more than one
     # can tell them apart. Set it before the first approval: Teams takes a
     # new name only with a newer app package.
     name: ""
+    # The publisher's Microsoft partner ID from Partner Center, up to 10
+    # digits, once publisher verification is done; empty leaves it out of
+    # the app package. Quote it (or use --set-string), so it stays a string.
+    partnerId: ""
 
   # The distributed Telegram app: one bot we register whose groups a customer
   # claims with a link from Switch, never seeing a token — as opposed to a

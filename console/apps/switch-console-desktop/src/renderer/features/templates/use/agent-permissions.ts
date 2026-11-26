@@ -1,6 +1,6 @@
 import type { AgentTemplateAddressing } from '@main/core/agent-templates/agent-template-format';
 import type { ParsedAgentEntry } from '@main/core/agent-templates/template-document';
-import { NEW_AGENT_PERMISSIONS, newAgentPermissions } from '@shared/core/agents/agents';
+import { newAgentPermissions } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { holds, type Values } from './use-template-model';
 
@@ -150,5 +150,5 @@ export function consoleRunPermissions(provider: AgentProviderId | null): {
   autoApprove: boolean;
   autoMode: boolean;
 } {
-  return provider === null ? NEW_AGENT_PERMISSIONS : newAgentPermissions(provider);
+  return provider === null ? { autoApprove: false, autoMode: true } : newAgentPermissions(provider);
 }

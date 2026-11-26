@@ -68,18 +68,49 @@ export const separateUsersConfigSchema = z.strictObject({
 });
 export type SeparateUsersConfig = z.infer<typeof separateUsersConfigSchema>;
 
+/**
+ * Which of the two agent templates an agent runs as. Codex runs the commands
+ * it is asked to in a sandbox of its own, a bubblewrap that makes namespaces
+ * and mounts, so its agents run as a template whose system call filter lets
+ * it (`SANDBOX_SYSTEM_CALLS`); every other agent as one that does not.
+ */
+export type AgentSandbox = 'standard' | 'codex';
+
+export const AGENT_SANDBOXES: readonly AgentSandbox[] = ['standard', 'codex'];
+
+export function sandboxFor(provider: string): AgentSandbox {
+  return provider === 'codex' ? 'codex' : 'standard';
+}
+
 /** The names one controller's agents run under, all derived from its user's uid. */
 export function separateUserNames(uid: number) {
+  const prefix = (sandbox: AgentSandbox) =>
+    sandbox === 'codex' ? `switch-agent-${uid}-codex` : `switch-agent-${uid}`;
   return {
     group: `switch-agents-${uid}`,
     controllerUnit: `switch-agent-controller-${uid}.service`,
-    agentTemplate: `switch-agent-${uid}@.service`,
-    agentUnitPattern: `switch-agent-${uid}@*.service`,
+    agentTemplate: (sandbox: AgentSandbox) => `${prefix(sandbox)}@.service`,
+    agentUnitPattern: (sandbox: AgentSandbox) => `${prefix(sandbox)}@*.service`,
     polkitRule: join(POLKIT_RULES_DIR, `50-switch-agent-controller-${uid}.rules`),
     config: separateUsersConfigPath(uid),
-    agentUnit: (slot: number) => `switch-agent-${uid}@${slotName(slot)}.service`,
+    agentUnit: (slot: number, sandbox: AgentSandbox) =>
+      `${prefix(sandbox)}@${slotName(slot)}.service`,
     agentUser: (slot: number) => `sa${uid}-${slotName(slot)}`,
   };
+}
+
+/**
+ * Whether the setup installed the template Codex's agents run as. A setup made
+ * by an older release has only the one, with no system call filter, and Codex
+ * agents run as that.
+ */
+export async function codexTemplateInstalled(uid: number): Promise<boolean> {
+  try {
+    await access(join(SYSTEMD_SYSTEM_DIR, separateUserNames(uid).agentTemplate('codex')));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function separateUsersConfigPath(uid: number): string {
@@ -124,8 +155,12 @@ export function unitFilesDir(config: SeparateUsersConfig, slot: number): string 
 }
 
 /** The path a unit's process reads its relay credentials from, as systemd hands them over. */
-export function unitCredentialsPath(config: SeparateUsersConfig, slot: number): string {
-  return join('/run/credentials', separateUserNames(config.uid).agentUnit(slot), 'relay');
+export function unitCredentialsPath(
+  config: SeparateUsersConfig,
+  slot: number,
+  sandbox: AgentSandbox
+): string {
+  return join('/run/credentials', separateUserNames(config.uid).agentUnit(slot, sandbox), 'relay');
 }
 
 /** The home directory `path` is under, where agents cannot reach; null when it is under none. */
@@ -146,6 +181,32 @@ function isWithin(root: string, path: string): boolean {
 }
 
 /**
+ * How much of the machine one agent may take, whatever runs in it: its
+ * provider's sessions, their tools and builds. Relative to the machine for
+ * memory, as cloud machines come in more than one size (c7i/m7i, 16 GiB and
+ * up); a runaway agent is killed by the kernel inside its own unit, not the
+ * controller or the other agents. Tasks are processes and threads: a Node
+ * agent host and a few provider sessions use some hundreds, a parallel build
+ * a few thousand.
+ */
+export const AGENT_MEMORY_MAX = '75%';
+export const AGENT_TASKS_MAX = 4096;
+
+/**
+ * What Codex's sandbox needs beyond `@system-service`, which already allows
+ * `unshare`, `setns` and `clone` with namespace flags (`@process`): its
+ * bubblewrap mounting its view of the filesystem (`mount`, `umount2`,
+ * `pivot_root` and the new mount API: `@mount`), and Codex restricting what
+ * the sandboxed command may do itself (`seccomp` and Landlock: `@sandbox`).
+ */
+export const SANDBOX_SYSTEM_CALLS = ['@mount', '@sandbox'];
+
+/** The system call filter of an agent's unit: `@system-service`, and for Codex what its sandbox needs. */
+export function systemCallFilter(sandbox: AgentSandbox): string {
+  return ['@system-service', ...(sandbox === 'codex' ? SANDBOX_SYSTEM_CALLS : [])].join(' ');
+}
+
+/**
  * The template unit an agent runs as: one of the pool's users, in the
  * controller's agents' group, with only its own directory to see and write
  * (at `unitAgentRoot`),
@@ -162,7 +223,8 @@ function isWithin(root: string, path: string): boolean {
  */
 export function agentUnitTemplate(
   config: SeparateUsersConfig,
-  tools: { sh: string; find: string; chown: string; path: string }
+  tools: { sh: string; find: string; chown: string; path: string },
+  sandbox: AgentSandbox
 ): string {
   const names = separateUserNames(config.uid);
   const onMachine = `${config.agentsDir}/%i`;
@@ -219,6 +281,13 @@ export function agentUnitTemplate(
     'RemoveIPC=yes',
     'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK',
     'IPAddressDeny=169.254.169.254/32 fd00:ec2::254/128',
+    `MemoryMax=${AGENT_MEMORY_MAX}`,
+    `TasksMax=${AGENT_TASKS_MAX}`,
+    `SystemCallFilter=${systemCallFilter(sandbox)}`,
+    // A call outside the filter fails rather than killing the agent, so a
+    // tool that can do without it carries on.
+    'SystemCallErrorNumber=EPERM',
+    'SystemCallArchitectures=native',
     '',
   ].join('\n');
 }
@@ -231,7 +300,7 @@ export function polkitRule(config: SeparateUsersConfig): string {
 polkit.addRule(function (action, subject) {
   if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== ${JSON.stringify(config.user)}) return;
   var unit = action.lookup("unit"), verb = action.lookup("verb");
-  if (/^switch-agent-${config.uid}@[0-9]{2}\\.service$/.test(unit) &&
+  if (/^switch-agent-${config.uid}(-codex)?@[0-9]{2}\\.service$/.test(unit) &&
       ["start", "stop", "restart", "reset-failed"].indexOf(verb) >= 0) return polkit.Result.YES;
 });
 `;
@@ -498,9 +567,12 @@ export async function installSeparateUsers(
   };
   await mkdir(SEPARATE_USERS_CONFIG_DIR, { recursive: true, mode: 0o755 });
   await writeFile(names.config, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o644 });
-  await writeFile(join(SYSTEMD_SYSTEM_DIR, names.agentTemplate), agentUnitTemplate(config, tools), {
-    mode: 0o644,
-  });
+  for (const sandbox of AGENT_SANDBOXES)
+    await writeFile(
+      join(SYSTEMD_SYSTEM_DIR, names.agentTemplate(sandbox)),
+      agentUnitTemplate(config, tools, sandbox),
+      { mode: 0o644 }
+    );
   await writeFile(names.polkitRule, polkitRule(config), { mode: 0o644 });
   await writeFile(
     join(SYSTEMD_SYSTEM_DIR, names.controllerUnit),
@@ -524,7 +596,7 @@ export async function installSeparateUsers(
     notes: [
       `${config.agentUsers} agent users (${names.agentUser(1)}…), in the group ${names.group}.`,
       `Agents' directories: ${config.agentsDir}`,
-      `Each agent runs as ${names.agentUnitPattern}; its log: journalctl -u ${names.agentUnit(1)}`,
+      `Each agent runs as ${names.agentUnitPattern('standard')}, a Codex agent as ${names.agentUnitPattern('codex')}; its log: journalctl -u ${names.agentUnit(1, 'standard')}`,
       `The controller runs as ${names.controllerUnit}; its log: journalctl -u ${names.controllerUnit} -f`,
       releasesNote,
       'Agents see only their own directory: a definition naming a directory elsewhere is refused.',
@@ -663,10 +735,14 @@ export async function uninstallSeparateUsers(
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
   await run('systemctl', ['disable', '--now', names.controllerUnit], null).catch(ignoreFailure);
-  await run('systemctl', ['stop', names.agentUnitPattern], null).catch(ignoreFailure);
-  await run('systemctl', ['reset-failed', names.agentUnitPattern], null).catch(ignoreFailure);
+  for (const sandbox of AGENT_SANDBOXES) {
+    const pattern = names.agentUnitPattern(sandbox);
+    await run('systemctl', ['stop', pattern], null).catch(ignoreFailure);
+    await run('systemctl', ['reset-failed', pattern], null).catch(ignoreFailure);
+  }
   await rm(join(SYSTEMD_SYSTEM_DIR, names.controllerUnit), { force: true });
-  await rm(join(SYSTEMD_SYSTEM_DIR, names.agentTemplate), { force: true });
+  for (const sandbox of AGENT_SANDBOXES)
+    await rm(join(SYSTEMD_SYSTEM_DIR, names.agentTemplate(sandbox)), { force: true });
   await rm(names.polkitRule, { force: true });
   await rm(names.config, { force: true });
   await run('systemctl', ['daemon-reload'], null);

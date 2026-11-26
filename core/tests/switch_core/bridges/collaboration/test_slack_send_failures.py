@@ -141,9 +141,9 @@ async def test_a_rate_limit_that_does_not_lift_is_a_refusal(
 ) -> None:
     client = _StubWebClient([_rate_limited("2")] * 3)
 
-    ref = await _adapter(client).send_message("C1", "scout", "the answer")
+    with pytest.raises(SlackApiError):
+        await _adapter(client).send_message("C1", "scout", "the answer")
 
-    assert ref is None
     assert len(client.attempts) == 3
     assert slept == [2.0, 2.0]
 
@@ -153,9 +153,9 @@ async def test_an_archived_channel_takes_nothing_and_is_not_retried(
 ) -> None:
     client = _StubWebClient(["is_archived"])
 
-    ref = await _adapter(client).send_message("C1", "scout", "the answer")
+    with pytest.raises(SlackApiError):
+        await _adapter(client).send_message("C1", "scout", "the answer")
 
-    assert ref is None
     assert len(client.attempts) == 1
     assert slept == []
     assert "is_archived" in caplog.text

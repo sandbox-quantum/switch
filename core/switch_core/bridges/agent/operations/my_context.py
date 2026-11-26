@@ -16,6 +16,7 @@ connections, agents and machines.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlencode
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,10 +64,12 @@ async def get_my_context() -> dict[str, Any]:
         people: an admin of the workspace, or the server's own
         administrator, which `runs_server` marks.
         `workspace`: {id, name, members}.
-        `server`: {kind, version, features}. `kind` is "switch_cloud",
-        "managed_by_console" (Switch Console runs it, on this computer or a
-        host it set up) or "self_hosted". `features` lists the feature flags
-        this server turned on.
+        `server`: {kind, version, features, dashboard_url, connectors_url}.
+        `kind` is "switch_cloud", "managed_by_console" (Switch Console runs it,
+        on this computer or a host it set up) or "self_hosted". `features` lists
+        the feature flags this server turned on. `dashboard_url` is the web
+        dashboard origin when this server has one (else null), and
+        `connectors_url` is its workspace-scoped Connectors page.
 
         `messaging_apps`: {connected, how_to_add}.
         `connected` lists the workspace's messaging apps, each {id, platform,
@@ -94,8 +97,10 @@ async def get_my_context() -> dict[str, Any]:
         platform and paste its tokens. `who` is "admins" or "anyone".
 
         `services`: what agents can be given access to (GitHub and the like),
-        each {slug, name, available, unavailable_reason, unavailable_code,
-        workspace_enabled, connection, agents_using}. `available` is whether
+        each {slug, name, url, available, unavailable_reason, unavailable_code,
+        workspace_enabled, connection, agents_using}. `url` is the direct
+        workspace-scoped web dashboard link to that connector (`/connectors/<slug>`)
+        when this server has a web dashboard, else null. `available` is whether
         your owner can use it here: this server has it set up and the
         workspace has it on. `unavailable_code` says why this server can't,
         one of "switched_off" (its operator turned it off), "needs_https" (it
@@ -190,8 +195,16 @@ async def get_my_context() -> dict[str, Any]:
             else await protocol.service_broker.workspace_disabled(session)
         )
         bridges = await protocol.bridge_store.get_listed(session)
+        dashboard_base = getattr(protocol.config, "dashboard_base_url", None)
         services = await _services(
-            session, protocol, connections, agents, grants, switched_off
+            session,
+            protocol,
+            connections,
+            agents,
+            grants,
+            switched_off,
+            dashboard_base=dashboard_base,
+            tenant_id=tenant_id,
         )
 
     admin = role == "admin" or owner.role == "admin"
@@ -228,6 +241,8 @@ async def get_my_context() -> dict[str, Any]:
             "features": sorted(
                 key for key, enabled in protocol.config.feature_flags.items() if enabled
             ),
+            "dashboard_url": dashboard_base,
+            "connectors_url": _dashboard_url(dashboard_base, tenant_id, "/connectors"),
         },
         "messaging_apps": {
             "connected": [
@@ -296,6 +311,12 @@ def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
     return entries
 
 
+def _dashboard_url(base_url: str | None, tenant_id: str, path: str) -> str | None:
+    if not base_url:
+        return None
+    return f"{base_url.rstrip('/')}{path}?{urlencode({'workspace': tenant_id})}"
+
+
 async def _services(
     session: AsyncSession,
     protocol: Any,
@@ -303,6 +324,9 @@ async def _services(
     agents: list[Agent],
     grants: dict[str, list[str]],
     switched_off: set[str],
+    *,
+    dashboard_base: str | None = None,
+    tenant_id: str = "",
 ) -> list[dict[str, Any]]:
     broker = protocol.service_broker
     if broker is None:
@@ -320,6 +344,9 @@ async def _services(
             {
                 "slug": definition.slug,
                 "name": definition.name,
+                "url": _dashboard_url(
+                    dashboard_base, tenant_id, f"/connectors/{definition.slug}"
+                ),
                 "available": unavailable is None
                 and standing.connectable
                 and workspace_enabled,

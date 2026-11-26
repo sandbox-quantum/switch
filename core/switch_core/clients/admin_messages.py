@@ -14,6 +14,13 @@ from typing import NamedTuple
 # keeps the reply rendering normally for humans.
 AUTO_REPLY_FLAG = "com.switch.auto_reply"
 
+# Content flag on a message Switch posts under an agent's own name that the
+# agent did not write: its join greeting (a Switch Console chat's opening line
+# included), a notice of something done on its behalf, its answer to a room
+# command. It renders as the agent's message everywhere; the usage snapshot
+# reads it to tell what an agent said from what Switch said for it.
+SAID_FOR_AGENT_FLAG = "com.switch.said_for_agent"
+
 # Marker stamped on the content of an admin/system `m.room.message`. Two jobs,
 # mirroring AUTO_REPLY_FLAG:
 #   1. It tells the collaboration bridge to render the message through the

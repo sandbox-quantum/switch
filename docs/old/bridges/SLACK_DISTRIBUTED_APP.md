@@ -182,7 +182,11 @@ auto-route is turned on there.
                 "message.groups",
                 "message.im",
                 "message.mpim",
-                "subteam_updated"
+                "subteam_updated",
+                "channel_deleted",
+                "channel_archive",
+                "group_deleted",
+                "group_archive"
             ]
         },
         "interactivity": {

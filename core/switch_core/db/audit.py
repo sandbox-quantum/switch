@@ -22,6 +22,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.db.audit_history_ddl import WORKSPACE_DELETED_ACTION
 from switch_core.db.models import (
     AuditEvent,
     OrganizationAuditEvent,
@@ -236,7 +237,7 @@ class ServerAuditAction(StrEnum):
     # The operator lifted the lock failed password sign-ins put on an account's
     # email address, so its owner could try again at once.
     USER_SIGN_IN_LOCK_CLEARED = "user.sign_in_lock_cleared"
-    WORKSPACE_DELETED = "workspace.deleted"
+    WORKSPACE_DELETED = WORKSPACE_DELETED_ACTION
     # A run of the operator's purge of an organization at its owner's request
     # (`accounts/organization_purge.py`) began deleting, naming the accounts
     # it is to delete: the record a run that stops part-way is resumed from.
@@ -244,6 +245,10 @@ class ServerAuditAction(StrEnum):
     # The purge deleted the organization's own rows, after its workspaces.
     # Each account it deleted, or failed to, is recorded on its own.
     ORGANIZATION_PURGED = "organization.purged"
+    # What a run of the purge did at WorkOS, or that it could not (no API
+    # key), and what it had Switch Trust delete (`accounts/purge_elsewhere.py`).
+    ORGANIZATION_PURGE_WORKOS = "organization.purge_workos"
+    ORGANIZATION_PURGE_TRUST = "organization.purge_trust"
     # WorkOS refused where the directory mirror had got to in its events, and
     # the mirror started again from now, with a full check of every linked
     # organization.

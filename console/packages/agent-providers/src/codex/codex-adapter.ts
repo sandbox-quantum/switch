@@ -274,7 +274,9 @@ async function defaultModelFor(
 }
 
 /**
- * The sandbox a thread runs in. Auto mode never runs unsandboxed: in
+ * The sandbox a thread runs in: the configured one (the host's own, else the
+ * agent's or a managed default, `prepareCodexSessionHome`), only ever
+ * tightened. Auto mode never runs unsandboxed: in
  * `danger-full-access` nothing asks for approval, so Codex's automatic review
  * would never see a request and auto would quietly be full access.
  */

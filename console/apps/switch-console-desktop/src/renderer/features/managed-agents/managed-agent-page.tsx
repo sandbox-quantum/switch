@@ -325,6 +325,7 @@ function ManagedAgentPageContent({
               <SectionLabel>General</SectionLabel>
               {providerSupportsAutoMode(agent.definition.provider) && (
                 <AutoModeRow
+                  providerIds={[agent.definition.provider]}
                   overridden={draft.autoApprove}
                   control={
                     <Switch
