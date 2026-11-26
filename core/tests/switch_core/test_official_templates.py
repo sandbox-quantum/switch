@@ -521,7 +521,8 @@ def test_switch_buddy_joins_introduces_and_links_the_rooms_it_creates():
     assert "<#<external_channel_id>>" in text
     assert "**[Open <room name> →](<channel_url>)**" in text
     assert "switchdash://open/room/<room-id>" in text
-    assert "come back to this Buddy chat any time for questions about Switch" in text
+    assert "Come back to this chat any time to tweak it or ask about Switch." in text
+    assert "confirm their time zone rather than assuming UTC" in text
     assert "Never assume someone on Slack or another messaging app has Switch Console access." in text
     assert "this might take a few minutes." in text
     assert "Friendly, like a buddy." in text

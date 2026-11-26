@@ -4963,7 +4963,7 @@ class AgentCore:
                 connections=self.connections,
             )
 
-    async def _channel_web_url(self, room: Room) -> str | None:
+    async def channel_web_url(self, room: Room) -> str | None:
         """An https link to the room's channel on its app, or None.
 
         Only a web address: a native scheme (`slack://`, `mattermost://`) is
@@ -5060,7 +5060,7 @@ class AgentCore:
             id=room.id,
             name=room.name,
             description=room.description,
-            channel_url=await self._channel_web_url(room),
+            channel_url=await self.channel_web_url(room),
             channel_type=room.channel_type,
             admin_mode=room.admin_mode,
             instructions=room.instructions,

@@ -694,7 +694,7 @@ class TestGivingAgentsServices:
         assert without_ui["server"]["connectors_url"] is None
         assert _service(without_ui, "github")["url"] is None
 
-        harness.protocol.config.frontend_base_url = "https://app.switch.test/"
+        harness.protocol.config.dashboard_base_url = "https://app.switch.test/"
         with_ui = await _context(client, buddy_id, key)
         tenant_id = with_ui["workspace"]["id"]
         assert with_ui["server"]["dashboard_url"] == "https://app.switch.test/"

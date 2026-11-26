@@ -195,9 +195,7 @@ async def get_my_context() -> dict[str, Any]:
             else await protocol.service_broker.workspace_disabled(session)
         )
         bridges = await protocol.bridge_store.get_listed(session)
-        dashboard_base = getattr(protocol.config, "dashboard_base_url", None) or getattr(
-            protocol.config, "frontend_base_url", None
-        )
+        dashboard_base = getattr(protocol.config, "dashboard_base_url", None)
         services = await _services(
             session,
             protocol,
