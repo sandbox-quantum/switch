@@ -6,7 +6,7 @@ the panel reading it land in the same review.
 
 Nothing here contains an account, an API key, a team handle or a URL. The
 monitors carry `@REPLACE-WITH-NOTIFICATION-HANDLE` where a destination belongs;
-`apply.sh` fills it in from `NOTIFY`, `NOTIFY_SECURITY` and
+`apply.sh` fills it in from `NOTIFY`, `NOTIFY_PAGE`, `NOTIFY_SECURITY` and
 `NOTIFY_SECURITY_PAGE` when importing (see [Routing](#routing)). They also carry
 `REPLACE-WITH-SERVICE` in their scope and `REPLACE-WITH-ENV` in their name and
 tags, which `apply.sh` fills in from `SERVICE` and `ENV`: every monitor
@@ -118,13 +118,14 @@ Every monitor has a `category:` tag, and the tag decides who hears about it:
 
 | Monitor | Notifies |
 | --- | --- |
-| `category:ops`, any priority | `NOTIFY` (the ops channel) |
+| `category:ops`, P2 to P5 | `NOTIFY` (the ops channel) |
+| `category:ops`, P1 | `NOTIFY` and `NOTIFY_PAGE` (the ops pager) |
 | `category:security`, P3 to P5 | `NOTIFY_SECURITY` (the security channel) |
 | `category:security`, P1 or P2 | `NOTIFY_SECURITY` and `NOTIFY_SECURITY_PAGE` (the security pager) |
 
 Each variable holds one or more Datadog handles separated by spaces, each
 starting with `@` (`@slack-<workspace>-<channel>`, `@pagerduty-<service>`,
-`@opsgenie-<team>`, …). All three are required on every run, even while no
+`@opsgenie-<team>`, …). All four are required on every run, even while no
 security monitor is at P1 or P2, so the pager is in place before the first one
 arrives. Setting `NOTIFY_SECURITY` to the same value as `NOTIFY` works, with a
 warning, for a deployment that has no separate security channel.
@@ -135,6 +136,13 @@ sign-in failures (see [Hosted agents](#hosted-agents)), and the
 `switch.event: security.*` log lines. The bearer-route credential refusals
 alert and "an agent is reading many rooms" are P2 and page; the rest are P3
 or P4 and reach the security channel only.
+
+Only P1 pages for `category:ops`: Switch is down or messages are being lost
+(see the priorities under [Alerts](#alerts)). That is the no-data canary, the
+database being unreachable, and room messages not being delivered or failing
+to send. Everything below P1 can wait for someone to read the channel. A
+deployment with no pager yet sets `NOTIFY_PAGE` to its channel, and the
+duplicate is sent once.
 
 **Name the security on-call owner.** Whoever `NOTIFY_SECURITY_PAGE` reaches
 is the security on-call: `<security on-call owner: to be named>`. Until a
@@ -247,6 +255,7 @@ for any other deployment leaves it alone.
 ```bash
 DD_API_KEY=... DD_APP_KEY=... \
   NOTIFY=@slack-<workspace>-<ops-channel> \
+  NOTIFY_PAGE=@pagerduty-<ops-service> \
   NOTIFY_SECURITY=@slack-<workspace>-<security-channel> \
   NOTIFY_SECURITY_PAGE=@pagerduty-<security-service> \
   SERVICE=<service> ENV=<env> ./apply.sh
@@ -263,7 +272,7 @@ object per line on stdout, and a `route:` line per monitor on stderr saying
 where it goes:
 
 ```text
-route: [Switch prod] the database is unreachable [ops P1] -> @slack-example-ops
+route: [Switch prod] the database is unreachable [ops P1] -> @slack-example-ops @pagerduty-example-ops
 route: [Switch prod] Controller credential refusals rising [security P2] -> @slack-example-security @pagerduty-example-security
 ```
 

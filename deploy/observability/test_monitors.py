@@ -21,6 +21,7 @@ MONITORS = json.loads((HERE / "monitors.json").read_text())
 
 HANDLES = {
     "NOTIFY": "@slack-example-ops",
+    "NOTIFY_PAGE": "@pagerduty-example-ops",
     "NOTIFY_SECURITY": "@slack-example-security",
     "NOTIFY_SECURITY_PAGE": "@pagerduty-example-security",
 }
@@ -51,6 +52,7 @@ def monitor(
 
 ROUTED = [
     monitor("ops p1", "ops", 1),
+    monitor("ops p2", "ops", 2),
     monitor("ops p4", "ops", 4),
     monitor("security p1", "security", 1),
     monitor("security p2", "security", 2),
@@ -305,7 +307,8 @@ def test_monitors_are_routed_by_category_and_priority(workdir):
     result = run_apply(workdir)
     assert result.returncode == 0, result.stderr
     assert handles_by_name(result.stdout) == {
-        "ops p1": ["@slack-example-ops"],
+        "ops p1": ["@slack-example-ops", "@pagerduty-example-ops"],
+        "ops p2": ["@slack-example-ops"],
         "ops p4": ["@slack-example-ops"],
         "security p1": ["@slack-example-security", "@pagerduty-example-security"],
         "security p2": ["@slack-example-security", "@pagerduty-example-security"],
@@ -334,7 +337,11 @@ def test_a_variable_may_hold_several_handles(workdir):
 def test_a_deployment_that_pages_its_channel_names_it_once(workdir):
     channel = "@slack-example-ops"
     result = run_apply(
-        workdir, NOTIFY=channel, NOTIFY_SECURITY=channel, NOTIFY_SECURITY_PAGE=channel
+        workdir,
+        NOTIFY=channel,
+        NOTIFY_PAGE=channel,
+        NOTIFY_SECURITY=channel,
+        NOTIFY_SECURITY_PAGE=channel,
     )
     assert result.returncode == 0, result.stderr
     assert set(map(tuple, handles_by_name(result.stdout).values())) == {(channel,)}
@@ -370,7 +377,9 @@ def test_the_detection_rules_reach_the_security_channel_and_only_p2_pages():
         assert routed[name] == expected, name
 
 
-@pytest.mark.parametrize("var", ["NOTIFY", "NOTIFY_SECURITY", "NOTIFY_SECURITY_PAGE"])
+@pytest.mark.parametrize(
+    "var", ["NOTIFY", "NOTIFY_PAGE", "NOTIFY_SECURITY", "NOTIFY_SECURITY_PAGE"]
+)
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_a_missing_handle_is_refused(workdir, var, value):
     result = run_apply(workdir, **{var: value})
@@ -415,3 +424,17 @@ def test_keys_are_required_outside_a_dry_run(workdir):
     result = run_apply(workdir, DRY_RUN=None)
     assert result.returncode != 0
     assert "DD_API_KEY" in result.stderr
+
+
+def test_only_the_p1_ops_monitors_page():
+    result = run_apply(HERE)
+    assert result.returncode == 0, result.stderr
+    routed = handles_by_name(result.stdout)
+    for m in MONITORS:
+        if "category:ops" not in m["tags"] or "requires:workos-directory" in m["tags"]:
+            continue
+        name = m["name"].split("] ", 1)[1]
+        expected = ["@slack-example-ops"]
+        if m["priority"] == 1:
+            expected.append("@pagerduty-example-ops")
+        assert routed[name] == expected, name

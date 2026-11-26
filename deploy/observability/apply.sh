@@ -3,6 +3,7 @@
 #
 #   DD_API_KEY=... DD_APP_KEY=... \
 #     NOTIFY=@slack-<workspace>-<ops-channel> \
+#     NOTIFY_PAGE=@pagerduty-<ops-service> \
 #     NOTIFY_SECURITY=@slack-<workspace>-<security-channel> \
 #     NOTIFY_SECURITY_PAGE=@pagerduty-<security-service> \
 #     SERVICE=<service> ENV=<env> ./apply.sh
@@ -23,10 +24,10 @@
 # updates them in place instead of making copies.
 #
 # Routing: every monitor carries one `@REPLACE-WITH-NOTIFICATION-HANDLE`, and
-# its `category:` tag says who it goes to. `category:ops` goes to NOTIFY.
-# `category:security` goes to NOTIFY_SECURITY, and at priority 1 or 2 also to
-# NOTIFY_SECURITY_PAGE. Each variable holds one or more handles separated by
-# spaces. All three are required: Datadog does not validate handles, so a
+# its `category:` tag says who it goes to. `category:ops` goes to NOTIFY, and
+# at priority 1 also to NOTIFY_PAGE. `category:security` goes to
+# NOTIFY_SECURITY, and at priority 1 or 2 also to NOTIFY_SECURITY_PAGE. Each
+# variable holds one or more handles separated by spaces. All four are required: Datadog does not validate handles, so a
 # monitor left with a placeholder or an empty handle imports cleanly and
 # notifies nobody. For the same reason the script checks monitors.json first
 # (check_monitors.py) and refuses to send anything that still carries a
@@ -52,9 +53,10 @@ if [[ -z "${DRY_RUN:-}" ]]; then
   : "${DD_APP_KEY:?set DD_APP_KEY}"
 fi
 : "${NOTIFY:?set NOTIFY to the ops notification handle, e.g. @slack-workspace-channel}"
+: "${NOTIFY_PAGE:?set NOTIFY_PAGE to the ops paging handle, e.g. @pagerduty-service}"
 : "${NOTIFY_SECURITY:?set NOTIFY_SECURITY to the security notification handle, e.g. @slack-workspace-security-channel}"
 : "${NOTIFY_SECURITY_PAGE:?set NOTIFY_SECURITY_PAGE to the security paging handle, e.g. @pagerduty-service}"
-for var in NOTIFY NOTIFY_SECURITY NOTIFY_SECURITY_PAGE; do
+for var in NOTIFY NOTIFY_PAGE NOTIFY_SECURITY NOTIFY_SECURITY_PAGE; do
   value=${!var}
   count=0
   for handle in $value; do
@@ -85,13 +87,14 @@ python3 check_monitors.py monitors.json || die "monitors.json failed its checks;
 # Fill in every placeholder in jq rather than with shell substitution, so a
 # handle is inserted as written whatever characters it holds.
 rendered=$(jq -c \
-  --arg ops "$NOTIFY" --arg security "$NOTIFY_SECURITY" --arg page "$NOTIFY_SECURITY_PAGE" \
+  --arg ops "$NOTIFY" --arg ops_page "$NOTIFY_PAGE" --arg security "$NOTIFY_SECURITY" --arg page "$NOTIFY_SECURITY_PAGE" \
   --arg service "$SERVICE" --arg env "$ENV" --arg workos "${WORKOS_DIRECTORY:-}" '
   .[]
   | select($workos != "" or ((.tags | index("requires:workos-directory")) | not))
   # The same handle named twice (a deployment that pages its channel) is sent once.
   | ((if (.tags | index("category:security")) then
         (if .priority <= 2 then "\($security) \($page)" else $security end)
+      elif .priority <= 1 then "\($ops) \($ops_page)"
       else $ops end)
      | split(" ") | map(select(. != ""))
      | reduce .[] as $h ([]; if index([$h]) then . else . + [$h] end)
