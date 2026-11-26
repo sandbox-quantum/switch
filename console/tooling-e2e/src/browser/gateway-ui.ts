@@ -222,11 +222,50 @@ export class GatewayUi {
     await this.goto('/');
     await expect.poll(() => this.path(), { timeout: 15_000 }).toBe('/login');
     await this.page.getByLabel('Email').fill(account.email);
+    await this.page.getByRole('button', { name: 'Continue with email', exact: true }).click();
     await this.page.getByLabel('Password').fill(account.password);
-    await this.page.getByRole('button', { name: 'Sign in' }).click();
+    await this.page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await this.finishFirstRunSteps();
     await expect.poll(() => this.path(), { timeout: 15_000 }).toBe(this.landing);
     await this.recordSessionCookie();
     this.signedIn = true;
+  }
+
+  /**
+   * Where the dashboard onboards people (gateway_onboarding), a first sign-in
+   * asks about the person's team and for the license to be accepted before
+   * the app opens: answer the first choice of each question, and accept.
+   */
+  private async finishFirstRunSteps(): Promise<void> {
+    const survey = this.page.getByRole('heading', { name: 'Tell us about your team' });
+    const accept = this.page.getByRole('button', {
+      name: 'I have reviewed and accept the license',
+    });
+    const step = async (): Promise<'survey' | 'license' | 'app' | null> =>
+      (await survey.isVisible())
+        ? 'survey'
+        : (await accept.isVisible())
+          ? 'license'
+          : this.path() === this.landing
+            ? 'app'
+            : null;
+    await expect.poll(step, { timeout: 15_000 }).not.toBeNull();
+    if ((await step()) === 'survey') {
+      for (const question of ['Company size', 'Your role', 'Number of AI agents']) {
+        await this.page.getByRole('radiogroup', { name: question }).getByRole('radio').first().click();
+      }
+      await this.page
+        .getByRole('group', { name: 'Primary use cases' })
+        .getByRole('checkbox')
+        .first()
+        .check();
+      await this.page.getByRole('button', { name: 'Continue', exact: true }).click();
+      await expect.poll(step, { timeout: 15_000 }).toMatch(/^(license|app)$/);
+    }
+    if ((await step()) === 'license') {
+      await expect.poll(() => accept.isEnabled(), { timeout: 15_000 }).toBe(true);
+      await accept.click();
+    }
   }
 
   async signOut(): Promise<void> {
