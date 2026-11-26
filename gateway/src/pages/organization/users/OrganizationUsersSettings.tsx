@@ -37,7 +37,9 @@ import { useLoad } from "../../workspace/useLoad";
 import UserAvatar from "../../workspace/UserAvatar";
 import { useMemberChanges } from "../memberChanges";
 import OrganizationUsersNotices from "../OrganizationUsersNotices";
+import InviteToOrganizationDialog from "./InviteToOrganizationDialog";
 import InviteWorkspacePicker from "./InviteWorkspacePicker";
+import OrganizationInvitations from "./OrganizationInvitations";
 import RemoveFromWorkspaceDialog from "./RemoveFromWorkspaceDialog";
 import WorkspaceRoleDialog from "./WorkspaceRoleDialog";
 
@@ -176,6 +178,13 @@ export default function OrganizationUsersSettings({
   });
   const [pending, setPending] = useState<Pending | null>(null);
   const [inviting, setInviting] = useState<"pick" | OrganizationWorkspace | null>(null);
+  // Where the members come from the organization's account settings and
+  // changes are sent there, new people are invited there, by e-mail, rather
+  // than with a link to one workspace.
+  const invitesThroughDirectory =
+    organization.administers && organization.members_from_directory && organization.directory_takes_changes;
+  const [invitingToOrganization, setInvitingToOrganization] = useState(false);
+  const [invitationsRead, setInvitationsRead] = useState(0);
   // What a removal from a workspace did, and what it couldn't revoke, stay on
   // the page; a plain change is said in the snackbar.
   const [notice, setNotice] = useState<string | null>(null);
@@ -387,20 +396,26 @@ export default function OrganizationUsersSettings({
           </Stack>
         }
         actions={
-          organization.administers && (
-            <Tooltip title={noOpenWorkspace ?? ""}>
-              {/* A disabled button fires no events, so the tooltip listens on this. */}
-              <Box component="span">
-                <Button
-                  variant="contained"
-                  startIcon={<Add />}
-                  onClick={() => setInviting("pick")}
-                  disabled={noOpenWorkspace !== null}
-                >
-                  Invite users
-                </Button>
-              </Box>
-            </Tooltip>
+          invitesThroughDirectory ? (
+            <Button variant="contained" startIcon={<Add />} onClick={() => setInvitingToOrganization(true)}>
+              Invite users
+            </Button>
+          ) : (
+            organization.administers && (
+              <Tooltip title={noOpenWorkspace ?? ""}>
+                {/* A disabled button fires no events, so the tooltip listens on this. */}
+                <Box component="span">
+                  <Button
+                    variant="contained"
+                    startIcon={<Add />}
+                    onClick={() => setInviting("pick")}
+                    disabled={noOpenWorkspace !== null}
+                  >
+                    Invite users
+                  </Button>
+                </Box>
+              </Tooltip>
+            )
           )
         }
       />
@@ -536,6 +551,22 @@ export default function OrganizationUsersSettings({
           selfId={selfId}
           onRemoved={removedFromWorkspace}
           onClose={close}
+        />
+      )}
+      {invitesThroughDirectory && (
+        <Box sx={{ mt: 4 }}>
+          <OrganizationInvitations version={invitationsRead} />
+        </Box>
+      )}
+      {invitingToOrganization && (
+        <InviteToOrganizationDialog
+          organizationName={organization.name}
+          onInvited={(invitation) => {
+            setInvitingToOrganization(false);
+            setDone(`Invitation sent to ${invitation.email}.`);
+            setInvitationsRead((n) => n + 1);
+          }}
+          onClose={() => setInvitingToOrganization(false)}
         />
       )}
       {inviting === "pick" && (

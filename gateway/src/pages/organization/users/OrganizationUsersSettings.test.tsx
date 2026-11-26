@@ -473,4 +473,110 @@ describe("OrganizationUsersSettings", () => {
       expect(within(dialog).queryByText(/Switch Trust/)).toBeNull();
     });
   });
+
+  describe("inviting where the members come from the organization's account settings", () => {
+    const LINKED = { ...ORGANIZATION, members_from_directory: true, directory_takes_changes: true };
+    const PENDING = {
+      id: "invitation_1",
+      email: "pat@example.com",
+      role: "member" as const,
+      state: "pending",
+      created_at: "2026-11-01T00:00:00Z",
+      expires_at: "2026-11-08T00:00:00Z",
+    };
+    const ACCEPTED = { ...PENDING, id: "invitation_2", email: "old@example.com", state: "accepted" };
+
+    it("invites by e-mail with a role, warning that Org Admin brings billing", async () => {
+      const calls = answerFetch({
+        "GET /organizations/current/members": [200, [ME]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+        "GET /organizations/current/invitations": [[200, []], [200, [PENDING]]],
+        "POST /organizations/current/invitations": [201, PENDING],
+      });
+      renderPage(LINKED);
+      await screen.findByTestId("row-me");
+
+      fireEvent.click(screen.getByRole("button", { name: "Invite users" }));
+      const dialog = await screen.findByRole("dialog", { name: "Invite to Acme" });
+      fireEvent.change(within(dialog).getByLabelText(/Email/), { target: { value: "pat@example.com" } });
+      choose("Role", "Org Admin");
+      expect(within(dialog).getByText(/also becomes Org Admin in Switch Trust, with billing/)).toBeTruthy();
+      choose("Role", "Viewer");
+      expect(within(dialog).queryByText(/billing/)).toBeNull();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+
+      expect(await screen.findByText("Invitation sent to pat@example.com.")).toBeTruthy();
+      expect(calls.find((c) => c.method === "POST")).toEqual({
+        method: "POST",
+        path: "/organizations/current/invitations",
+        body: { email: "pat@example.com", role: "member" },
+      });
+      expect(await screen.findByTestId("invitation-invitation_1")).toBeTruthy();
+      expect(screen.queryByRole("combobox", { name: "Workspace" })).toBeNull();
+    });
+
+    it("shows what the account settings refuse in their words", async () => {
+      answerFetch({
+        "GET /organizations/current/members": [200, [ME]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+        "GET /organizations/current/invitations": [200, []],
+        "POST /organizations/current/invitations": [
+          409,
+          { detail: "Your organization's account settings refused: a pending invitation exists." },
+        ],
+      });
+      renderPage(LINKED);
+      await screen.findByTestId("row-me");
+
+      fireEvent.click(screen.getByRole("button", { name: "Invite users" }));
+      const dialog = await screen.findByRole("dialog", { name: "Invite to Acme" });
+      fireEvent.change(within(dialog).getByLabelText(/Email/), { target: { value: "pat@example.com" } });
+      choose("Role", "Viewer");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+
+      expect(
+        await within(dialog).findByText(
+          "Your organization's account settings refused: a pending invitation exists.",
+        ),
+      ).toBeTruthy();
+    });
+
+    it("lists the pending invitations to send again or revoke", async () => {
+      const calls = answerFetch({
+        "GET /organizations/current/members": [200, [ME]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+        "GET /organizations/current/invitations": [[200, [PENDING, ACCEPTED]], [200, [ACCEPTED]]],
+        "POST /organizations/current/invitations/invitation_1/resend": [204, null],
+        "DELETE /organizations/current/invitations/invitation_1": [204, null],
+      });
+      renderPage(LINKED);
+
+      const row = await screen.findByTestId("invitation-invitation_1");
+      expect(screen.queryByText("old@example.com")).toBeNull();
+      fireEvent.click(within(row).getByRole("button", { name: "Resend" }));
+      expect(await screen.findByText("Invitation sent to pat@example.com again.")).toBeTruthy();
+
+      fireEvent.click(within(row).getByRole("button", { name: "Revoke" }));
+      const confirm = await screen.findByRole("dialog");
+      fireEvent.click(within(confirm).getByRole("button", { name: "Revoke" }));
+
+      await waitFor(() => expect(screen.queryByTestId("invitation-invitation_1")).toBeNull());
+      expect(calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`)).toEqual([
+        "POST /organizations/current/invitations/invitation_1/resend",
+        "DELETE /organizations/current/invitations/invitation_1",
+      ]);
+    });
+
+    it("keeps workspace invite links where the members are Switch's own", async () => {
+      const calls = answerFetch({
+        "GET /organizations/current/members": [200, [ME]],
+        "GET /organizations/current/workspaces": [200, WORKSPACES],
+      });
+      renderPage();
+      await screen.findByTestId("row-me");
+
+      expect(screen.queryByText("Pending invitations")).toBeNull();
+      expect(calls.some((c) => c.path === "/organizations/current/invitations")).toBe(false);
+    });
+  });
 });

@@ -456,10 +456,15 @@ class TestChangesThroughTheMembersService:
         with pytest.raises(DirectoryRefusal, match="add them there first"):
             await directory.prepare_change(LINKED, "user_bob", "org_admin", _no_token)  # type: ignore[arg-type]
 
-    async def test_adding_someone_is_still_refused(self) -> None:
+    async def test_joining_without_the_organizations_invitation_is_refused(
+        self,
+    ) -> None:
         directory = _with_members({}, [])
 
-        with pytest.raises(DirectoryRefusal):
+        with pytest.raises(
+            DirectoryRefusal,
+            match="Accept the email invitation to this organization first.",
+        ):
             await directory.join(LINKED, "bob", "member")  # type: ignore[arg-type]
 
 

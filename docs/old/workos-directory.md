@@ -253,7 +253,18 @@ leaving the organization takes them out of it again. An organization linked
 earlier with several workspaces leaves where people work to its admins.
 
 Invitations to one of a workspace's own links, which Switch sends itself,
-still can't add someone new to a linked organization.
+still can't add someone new to a linked organization: accepting one is
+refused with "Accept the email invitation to this organization first."
+
+In the dashboard, Organization settings › Users invites through the
+organization's account settings wherever they take changes: Invite users
+asks for the e-mail address and a role (Viewer or Org Admin; Org Admin warns
+that the person also becomes Org Admin in Switch Trust, with billing
+permissions), and the pending invitations are listed below the users, each
+to resend or revoke. What the service refuses is shown in its words, and an
+admin whose sign-in to the organization has to be done again is offered it.
+An organization whose members are Switch's own keeps its workspace invite
+links.
 
 ## Creating an organization
 
@@ -327,8 +338,8 @@ waiting for something outside Switch; run the same command again later.
 
 On a linked organization's Organization page, the Members section says that
 its members and Org Admins come from the organization's account settings
-(WorkOS). With changes sent to WorkOS (above), it offers every change but
-adding someone, and says the admin may be asked to sign in again. Without, it does not offer making a member Org Admin; removing someone
+(WorkOS). With changes sent to WorkOS (above), it offers every change,
+inviting someone new included ("Inviting people"), and says the admin may be asked to sign in again. Without, it does not offer making a member Org Admin; removing someone
 or making an Org Admin a Member is still offered: it ends their access at
 once, and the page says it lasts only until WorkOS is read again (their next
 sign-in, or the daily check) unless the same change is made there. The
@@ -344,8 +355,6 @@ anyone new to it.
   WorkOS. Making someone Org Admin is refused too, and a removal or demotion
   changes only Switch; whatever WorkOS still grants comes back at the next
   sign-in or check.
-- The dashboard has no form for the organization invitations yet: the routes
-  are there for one.
 - Without `MEMBERS_SERVICE_URL`, a new organization created on the server,
   by an operator or by someone signing up under `open`, is Switch's own until
   it is linked.

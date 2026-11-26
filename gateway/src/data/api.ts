@@ -2332,6 +2332,44 @@ export async function removeOrganizationMember(
   );
 }
 
+/** An invitation to an organization whose members come from its account
+ * settings (WorkOS), as they have it: the email is sent there, and accepting
+ * it signs the person in to the organization. `state` is theirs: pending,
+ * accepted, revoked or expired. */
+export interface OrganizationInvitation {
+  id: string;
+  email: string;
+  role: OrganizationRole;
+  state: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export async function fetchOrganizationInvitations(): Promise<OrganizationInvitation[]> {
+  return jsonRequest<OrganizationInvitation[]>("/organizations/current/invitations", "GET");
+}
+
+export async function inviteToOrganization(
+  email: string,
+  role: OrganizationRole,
+): Promise<OrganizationInvitation> {
+  return jsonRequest<OrganizationInvitation>("/organizations/current/invitations", "POST", {
+    email,
+    role,
+  });
+}
+
+export async function resendOrganizationInvitation(id: string): Promise<void> {
+  await noContentRequest(
+    `/organizations/current/invitations/${encodeURIComponent(id)}/resend`,
+    "POST",
+  );
+}
+
+export async function revokeOrganizationInvitation(id: string): Promise<void> {
+  await noContentRequest(`/organizations/current/invitations/${encodeURIComponent(id)}`, "DELETE");
+}
+
 // Mirrors `OrganizationIssueKind` in core/switch_core/db/audit.py, by hand.
 export type OrganizationIssueKind =
   | "no_org_admin"

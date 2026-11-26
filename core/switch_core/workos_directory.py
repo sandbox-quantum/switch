@@ -75,6 +75,12 @@ NOT_FROM_SWITCH_YET = (
     "This organization's members are managed in your organization's account "
     "settings, not here yet."
 )
+# Joining a linked organization through Switch, by a workspace invitation or
+# its domain, for someone it does not have: the organization's own
+# invitation, sent by e-mail, is how they join it.
+ACCEPT_THE_ORGANIZATION_INVITATION = (
+    "Accept the email invitation to this organization first."
+)
 NOT_IN_THE_ACCOUNT = (
     "They are not a member of your organization's account; add them there first."
 )
@@ -482,7 +488,7 @@ class WorkOSDirectory:
     async def join(self, organization: Organization, user_id: str, role: str) -> None:
         if organization.workos_organization_id is None:
             return None
-        raise DirectoryRefusal(NOT_FROM_SWITCH_YET)
+        raise DirectoryRefusal(ACCEPT_THE_ORGANIZATION_INVITATION)
 
     async def set_role(
         self,

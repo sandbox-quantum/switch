@@ -52,6 +52,15 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **The dashboard invites people to an organization kept in WorkOS.** On
+  Organization settings › Users, Invite users asks for an e-mail address and
+  a role, Viewer or Org Admin, warning that an Org Admin also becomes Org
+  Admin in Switch Trust with billing permissions, and the pending
+  invitations are listed to resend or revoke. Accepting a workspace's own
+  invitation into such an organization, without its e-mail invitation, now
+  says to accept that first.
+
 #### Fixed
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login
