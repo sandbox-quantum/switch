@@ -32,7 +32,6 @@ PLACEHOLDERS = {
     "intercom",
     "launchdarkly",
     "marketo",
-    "microsoft-365",
     "miro",
     "monday",
     "new-relic",
@@ -54,6 +53,7 @@ PLACEHOLDERS = {
 def test_shipped_catalog_enables_its_live_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
+        "microsoft-365",
         "airtable",
         "atlassian",
         "datadog",
@@ -92,6 +92,52 @@ def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages
         if definition.enabled:
             assert definition.publisher, slug
             assert definition.links is not None, slug
+
+
+# The endpoint, scope and client values are measured against Microsoft's
+# live metadata (the entry's comments say what was measured when), and
+# docs/design/microsoft-365-investigation.md is their source.
+def test_the_microsoft_365_draft_stays_disabled_and_names_entras_endpoints():
+    entry = CATALOG["microsoft-365"]
+    definition = entry.definition
+    oauth = definition.auth.oauth
+    assert oauth is not None and definition.access is not None
+    assert not definition.enabled and not entry.skill_files
+    # No identity: no mode Switch has can name a Work IQ account.
+    assert definition.auth.identity is None
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "MICROSOFT_365",
+    )
+    assert oauth.redirect == ["core"]
+    # Entra's metadata does not advertise S256, so the endpoints are named.
+    entra = "https://login.microsoftonline.com/organizations/oauth2/v2.0"
+    assert (oauth.authorization_url, oauth.token_url) == (
+        f"{entra}/authorize",
+        f"{entra}/token",
+    )
+    assert oauth.prompt == "select_account"
+    assert oauth.unchecked is not None and oauth.remove_access is not None
+    assert definition.auth.refresh == "reusable"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        5400,
+    )
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("work-iq", "https://workiq.svc.cloud.microsoft/mcp")
+    ]
+    assert definition.access.write is None
+    assert definition.access.read is not None
+    assert definition.access.read.scopes == [
+        "openid",
+        "profile",
+        "offline_access",
+        "api://workiq.svc.cloud.microsoft/WorkIQ.Read",
+    ]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
