@@ -131,6 +131,30 @@ async def test_an_answer_is_pushed_down_the_open_stream(
         assert outcome["answers"] is None
         assert outcome["answered_by"] == people.owner
         assert outcome["answered_at"]
+        assert outcome["reason"] is None
+    finally:
+        await stream.aclose()
+
+
+async def test_the_reason_for_declining_rides_with_the_pushed_outcome(
+    service, approvals, people, db_buffer
+):
+    await _open(service, tool={"name": "Bash", "input": {"command": "make"}})
+    stream = _open_stream(approvals, db_buffer)
+    try:
+        await anext(stream)  # connection_state
+        waiting = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0.05)
+        await service.answer_approval(
+            AGENT,
+            SESSION,
+            "req-1",
+            answer=pick("deny"),
+            answerer=PlatformPerson(people.owner),
+            reason="Not on a Friday.",
+        )
+        outcome = _outcome(await asyncio.wait_for(waiting, 5))
+        assert (outcome["answer"], outcome["reason"]) == ("deny", "Not on a Friday.")
     finally:
         await stream.aclose()
 

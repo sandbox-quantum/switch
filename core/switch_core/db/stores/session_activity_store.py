@@ -305,7 +305,7 @@ class AgentSessionActivityStore:
             and not (column.key == "tenant_id" and item.tenant_id is None)
         }
         statement = insert(AgentSessionActivityItem).values(**values)
-        moved = {
+        moved: dict[str, ColumnElement[Any]] = {
             key: statement.excluded[key]
             for key in (
                 "kind",
@@ -322,6 +322,11 @@ class AgentSessionActivityStore:
                 "occurred_at",
             )
         }
+        # A revision that says nothing of the tool's detail keeps what an
+        # earlier one said.
+        moved["detail"] = func.coalesce(
+            statement.excluded.detail, AgentSessionActivityItem.detail
+        )
         result = await session.execute(
             statement.on_conflict_do_update(
                 index_elements=[

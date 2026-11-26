@@ -279,6 +279,7 @@ class ApprovalAnswers:
                 post.request_id,
                 answer=answer,
                 answerer=PlatformPerson(mxid),
+                reason=None,
             )
         except SessionError as error:
             logger.warning(

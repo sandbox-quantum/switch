@@ -103,6 +103,9 @@ class ActivityReport(BaseModel):
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
     )
+    # A tool step's call and result (`session_activity.detail.ToolDetail`),
+    # checked and capped by the service. Hosts that predate it do not send it.
+    detail: dict[str, Any] | None = None
 
 
 class OptionIn(BaseModel):
@@ -141,6 +144,10 @@ class ApprovalOpen(BaseModel):
     room_id: _Id | None
     thread_id: _Id | None
     expires_at: datetime | None
+    # An approval's tool call, `{"name", "input"}`, and a plan-mode
+    # approval's plan. Hosts that predate them send neither.
+    tool: dict[str, Any] | None = None
+    plan: str | None = None
 
 
 class _Response(BaseModel):
@@ -166,6 +173,8 @@ class ApprovalView(_Response):
     answered_at: datetime | None
     expires_at: datetime | None
     delivered_at: datetime | None
+    # The person's words on declining, for the agent.
+    reason: str | None
 
     @classmethod
     def of(cls, row: ApprovalRequest) -> "ApprovalView":
@@ -180,6 +189,7 @@ class ApprovalView(_Response):
             answered_at=row.answered_at,
             expires_at=row.expires_at,
             delivered_at=row.delivered_at,
+            reason=row.reason,
         )
 
 
@@ -215,6 +225,7 @@ async def report_activity(
         kind=body.kind,
         subagent=body.subagent,
         delivery=body.delivery,
+        detail=body.detail,
         revision=body.revision,
         status=body.status,
         title=body.title,
@@ -267,6 +278,8 @@ async def open_approval(
         room_id=body.room_id,
         thread_id=body.thread_id,
         expires_at=body.expires_at,
+        tool=body.tool,
+        plan=body.plan,
     )
     return ApprovalView.of(row)
 

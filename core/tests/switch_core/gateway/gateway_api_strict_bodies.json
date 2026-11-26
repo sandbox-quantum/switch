@@ -1,9 +1,10 @@
 {
-  "revision": 7,
+  "revision": 8,
   "bodies": {
     "switch_core.gateway.agent_sessions.AnswerBody": [
       "answer",
-      "answers"
+      "answers",
+      "reason"
     ],
     "switch_core.gateway.agent_sessions.AnswerIn": [
       "custom_text",
@@ -25,13 +26,16 @@
       "expires_at",
       "kind",
       "options",
+      "plan",
       "questions",
+      "reason",
       "request_id",
       "room_id",
       "session_id",
       "state",
       "thread_id",
       "title",
+      "tool",
       "turn_id"
     ],
     "switch_core.gateway.agent_sessions.OptionView": [
@@ -51,6 +55,10 @@
       "options",
       "prompt",
       "title"
+    ],
+    "switch_core.gateway.agent_sessions.ToolCallView": [
+      "input",
+      "name"
     ],
     "switch_core.gateway.browser_handoff.HandoffCodeBody": [
       "code"

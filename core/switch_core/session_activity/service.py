@@ -45,6 +45,11 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.process_lease import LEASE_TTL
+from switch_core.session_activity.detail import (
+    MAX_PLAN_CHARS,
+    stored_tool_call,
+    stored_tool_detail,
+)
 from switch_core.sessions.contract import (
     ORPHANED_SUBAGENT_TEXT,
     TURN_ENDED,
@@ -61,6 +66,7 @@ MAX_OPTIONS = 10
 MAX_QUESTIONS = 50
 MAX_QUESTION_OPTIONS = 50
 MAX_CUSTOM_ANSWER_CHARS = 4000
+MAX_REASON_CHARS = 4000
 MAX_MODEL_CHARS = 200
 MAX_MODELS_PER_TURN = 50
 # A host counts in JavaScript numbers, exact only up to 2**53 - 1.
@@ -97,6 +103,8 @@ ITEM_STATUSES: dict[str, frozenset[str]] = {
 
 Decision = Literal["accept", "acceptForSession", "decline", "cancel"]
 DECISIONS: tuple[Decision, ...] = ("accept", "acceptForSession", "decline", "cancel")
+# The decisions a person may give their reasons for, which reach the agent.
+REFUSALS: frozenset[str] = frozenset({"decline", "cancel"})
 RequestKind = Literal["approval", "questions"]
 
 
@@ -203,12 +211,20 @@ class AgentSessionActivityService:
         usage: list[TokenSpend],
         subagent: bool = False,
         delivery: str | None = None,
+        detail: dict[str, Any] | None = None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
         `usage` is what the turn spent, and only a turn's own row, reported as
-        ended, carries it.
+        ended, carries it. `detail` is a tool step's call and result
+        (`detail.ToolDetail`); a revision without one keeps the stored one.
         """
+        if detail is not None:
+            if kind != "tool-activity":
+                raise SessionError(
+                    "INVALID_EVENT", "Only tool activity carries a tool's detail."
+                )
+            detail = stored_tool_detail(detail)
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
         if subagent and kind != "tool-activity":
@@ -283,6 +299,7 @@ class AgentSessionActivityService:
                         thread_id=thread_id,
                         message_id=message_id,
                         occurred_at=occurred_at,
+                        detail=detail,
                     ),
                 )
             except IntegrityError:
@@ -393,8 +410,15 @@ class AgentSessionActivityService:
         room_id: str | None,
         thread_id: str | None,
         expires_at: datetime | None,
+        tool: dict[str, Any] | None = None,
+        plan: str | None = None,
     ) -> ApprovalRequest:
-        """Open a request, or return it unchanged when the host retries the same open."""
+        """Open a request, or return it unchanged when the host retries the same open.
+
+        `tool` is the call an approval asks to run, `{"name", "input"}`, and
+        `plan` the plan a plan-mode approval asks a person to accept; hosts
+        that predate them send neither.
+        """
         if kind not in APPROVAL_REQUEST_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown request kind: {kind}")
         if not title.strip():
@@ -413,6 +437,16 @@ class AgentSessionActivityService:
             _check_approval_options(options, questions)
         else:
             _check_questions(options, questions)
+        if (tool is not None or plan is not None) and kind != "approval":
+            raise SessionError(
+                "INVALID_EVENT", "Only an approval names a tool call or a plan."
+            )
+        if tool is not None:
+            tool = stored_tool_call(tool)
+        if plan is not None and len(plan) > MAX_PLAN_CHARS:
+            raise SessionError(
+                "INVALID_EVENT", f"A plan is at most {MAX_PLAN_CHARS} characters."
+            )
         now = datetime.now(UTC)
         if expires_at is not None:
             if expires_at <= now:
@@ -451,6 +485,8 @@ class AgentSessionActivityService:
                     questions=asked,
                     state="open",
                     expires_at=expires_at,
+                    tool=tool,
+                    plan=plan,
                 ),
             )
             row = await self._approvals.get(
@@ -467,6 +503,8 @@ class AgentSessionActivityService:
                 row.room_id,
                 row.thread_id,
                 row.expires_at,
+                row.tool,
+                row.plan,
             ) != (
                 kind,
                 turn_id,
@@ -477,6 +515,8 @@ class AgentSessionActivityService:
                 room_id,
                 thread_id,
                 expires_at,
+                tool,
+                plan,
             ):
                 raise SessionError(
                     "REQUEST_CONFLICT",
@@ -493,13 +533,18 @@ class AgentSessionActivityService:
         *,
         answer: RequestResult,
         answerer: Answerer,
+        reason: str | None = None,
     ) -> ApprovalRequest:
         """Record a person's answer. A repeat of the same answer by the same person is a no-op.
 
         The answerer must be someone who may address the agent: answering is
-        talking to the agent, so it takes the same permission.
+        talking to the agent, so it takes the same permission. `reason` is
+        their words on declining an approval, passed to the agent with the
+        outcome; only a decline or cancel takes one.
         """
         answered_by = answerer.recorded_as
+        if reason is not None:
+            reason = reason.strip() or None
         tenant_id = require_tenant_id()
         closed_as: str | None = None
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
@@ -507,13 +552,14 @@ class AgentSessionActivityService:
             unfit: SessionError | None = None
             try:
                 chosen, given = _answer_fields(row, answer)
+                _check_reason(row, chosen, reason)
             except SessionError as error:
                 unfit = error
             if (
                 unfit is None
                 and row.state == "answered"
-                and (row.answer, row.answers, row.answered_by)
-                == (chosen, given, answered_by)
+                and (row.answer, row.answers, row.answered_by, row.reason)
+                == (chosen, given, answered_by, reason)
             ):
                 return row
             await self._require_may_address(
@@ -532,6 +578,7 @@ class AgentSessionActivityService:
                 row.answers = given
                 row.answered_by = answered_by
                 row.answered_at = datetime.now(UTC)
+                row.reason = reason
         if closed_as is not None:
             raise SessionError(
                 "REQUEST_CLOSED", f"Request {request_id} is {closed_as}."
@@ -829,6 +876,24 @@ def _answer_fields(
             }
         )
     return None, stored
+
+
+def _check_reason(row: ApprovalRequest, chosen: str | None, reason: str | None) -> None:
+    if reason is None:
+        return
+    decision = next(
+        (option["decision"] for option in row.options if option["id"] == chosen), None
+    )
+    if row.kind != "approval" or decision not in REFUSALS:
+        raise SessionError(
+            "INVALID_ANSWER",
+            "Only declining an approval takes a reason.",
+        )
+    if len(reason) > MAX_REASON_CHARS:
+        raise SessionError(
+            "INVALID_ANSWER",
+            f"A reason is at most {MAX_REASON_CHARS} characters.",
+        )
 
 
 def _past(moment: datetime | None) -> bool:

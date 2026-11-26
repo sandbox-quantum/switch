@@ -4261,6 +4261,14 @@ class ApprovalRequest(TenantScoped, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Approval: the tool call it asks to run, `{"name", "input"}`, when the
+    # host knows it.
+    tool: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    # Approval: the plan a plan-mode approval asks a person to accept.
+    plan: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Approval: the person's words on declining it, passed to the agent with
+    # the outcome.
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -4329,6 +4337,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     # On a user message sent while another turn ran: "steered" into that turn,
     # or "queued" behind it. Null on every other row.
     delivery: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Tool activity: the call and, once it finished, its result, as the host
+    # reported them (`session_activity.service.ToolDetail`).
+    detail: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

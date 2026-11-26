@@ -35,6 +35,7 @@ _OUTCOME_FIELDS = (
     "answer",
     "answers",
     "answered_by",
+    "reason",
 )
 
 

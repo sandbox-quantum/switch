@@ -20,6 +20,7 @@ from sqlalchemy import select
 from switch_core.db.models import (
     Agent,
     AgentSessionActivityItem,
+    ApprovalRequest,
     Message,
     User,
 )
@@ -316,3 +317,52 @@ async def test_a_message_shows_the_card_it_carries(chats: _Harness) -> None:
     by_id = {m["messageId"]: m for m in page.json()["messages"]}
     assert by_id[sent_ids[0]]["ui"] is None
     assert by_id[sent_ids[1]]["ui"] == CARD
+
+
+async def test_room_activity_shows_a_tool_steps_detail_and_an_approvals_tool(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    detail = {
+        "tool": {"name": "Bash", "input": {"command": "make"}},
+        "result": {"isError": False, "stdout": "ok"},
+        "truncated": False,
+    }
+    async with chats.factory() as session:
+        step = await _step(agent, room_id, "t1")
+        step.item_id, step.kind, step.status, step.detail = (
+            "tool-1",
+            "tool-activity",
+            "completed",
+            detail,
+        )
+        session.add(step)
+        session.add(
+            ApprovalRequest(
+                tenant_id=TENANT,
+                agent_id=agent.id,
+                session_id="s1",
+                request_id="req-1",
+                turn_id="t1",
+                kind="approval",
+                room_id=room_id,
+                title="Accept this plan?",
+                options=[{"id": "no", "label": "No", "decision": "decline"}],
+                questions=[],
+                state="open",
+                tool={"name": "ExitPlanMode", "input": {"plan": "1. Build"}},
+                plan="1. Build",
+            )
+        )
+        await session.commit()
+
+    activity = await chats.client.get(
+        f"/chats/{room_id}/activity", headers=chats.as_user(chats.alice)
+    )
+    assert activity.status_code == 200, activity.text
+    [item] = activity.json()["items"]
+    assert item["detail"] == detail
+    [approval] = activity.json()["approvals"]
+    assert approval["tool"] == {"name": "ExitPlanMode", "input": {"plan": "1. Build"}}
+    assert (approval["plan"], approval["reason"]) == ("1. Build", None)

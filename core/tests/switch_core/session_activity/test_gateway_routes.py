@@ -140,3 +140,100 @@ async def test_the_owner_answers_a_questions_request(session_factory, service, o
         assert answered.json()["answers"] == [
             {"questionId": "q-env", "selectedOptionIds": [], "customText": "canary"}
         ]
+
+
+async def test_declining_says_why_and_the_view_shows_tool_and_plan(
+    session_factory, service, owned
+):
+    await service.open_approval(
+        "console-agent",
+        SESSION,
+        request_id="req-plan",
+        turn_id="turn-1",
+        kind="approval",
+        title="Accept this plan?",
+        detail=None,
+        questions=[],
+        options=[
+            ApprovalOption("go", "Go", "accept"),
+            ApprovalOption("stop", "Keep planning", "decline"),
+        ],
+        room_id=None,
+        thread_id=None,
+        expires_at=None,
+        tool={"name": "ExitPlanMode", "input": {"plan": "1. Build"}},
+        plan="1. Build",
+    )
+    url = "/agent-sessions/console-agent/session-demo/approvals/req-plan/answer"
+    async with _client(session_factory, owned) as client:
+        listed = (await client.get("/agent-sessions/approvals")).json()
+        [asked] = [r for r in listed if r["requestId"] == "req-plan"]
+        assert asked["tool"] == {"name": "ExitPlanMode", "input": {"plan": "1. Build"}}
+        assert (asked["plan"], asked["reason"]) == ("1. Build", None)
+        [plain] = [r for r in listed if r["requestId"] == "req-1"]
+        assert (plain["tool"], plain["plan"]) == (None, None)
+
+        # Only a refusal takes a reason.
+        accepted_with_reason = await client.post(
+            url, json={"answer": "go", "reason": "looks fine"}
+        )
+        assert accepted_with_reason.status_code == 422
+        assert accepted_with_reason.json()["code"] == "INVALID_ANSWER"
+        too_long = await client.post(url, json={"answer": "stop", "reason": "x" * 4001})
+        assert too_long.status_code == 422
+
+        declined = await client.post(
+            url, json={"answer": "stop", "reason": "Test first."}
+        )
+        assert declined.status_code == 200, declined.text
+        assert (declined.json()["answer"], declined.json()["reason"]) == (
+            "stop",
+            "Test first.",
+        )
+        repeated = await client.post(
+            url, json={"answer": "stop", "reason": "Test first."}
+        )
+        assert repeated.status_code == 200
+        changed = await client.post(url, json={"answer": "stop", "reason": "Other"})
+        assert changed.status_code == 409
+        assert changed.json()["code"] == "REQUEST_CLOSED"
+
+
+async def test_a_reason_on_a_questions_answer_is_refused(
+    session_factory, service, owned
+):
+    await service.open_approval(
+        "console-agent",
+        SESSION,
+        request_id="req-q",
+        turn_id="turn-1",
+        kind="questions",
+        title="Which?",
+        detail=None,
+        options=[],
+        questions=[
+            Question(
+                id="q",
+                title="Q",
+                prompt="?",
+                options=[QuestionOption("a", "A", None)],
+                multi_select=False,
+                allow_custom_answer=False,
+            )
+        ],
+        room_id=None,
+        thread_id=None,
+        expires_at=None,
+    )
+    async with _client(session_factory, owned) as client:
+        refused = await client.post(
+            "/agent-sessions/console-agent/session-demo/approvals/req-q/answer",
+            json={
+                "answers": [
+                    {"questionId": "q", "selectedOptionIds": ["a"], "customText": None}
+                ],
+                "reason": "because",
+            },
+        )
+        assert refused.status_code == 422
+        assert refused.json()["code"] == "INVALID_ANSWER"

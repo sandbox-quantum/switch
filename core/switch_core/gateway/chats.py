@@ -245,6 +245,9 @@ class ActivityItemView(CamelModel):
     message_id: str | None
     # On a user message sent while another turn ran: "steered" or "queued".
     delivery: str | None
+    # On tool activity: the call and, once it finished, its result
+    # (`session_activity.detail.ToolDetail`), when the host reported them.
+    detail: dict[str, Any] | None
     occurred_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -267,6 +270,7 @@ class ActivityItemView(CamelModel):
             thread_id=row.thread_id,
             message_id=row.message_id,
             delivery=row.delivery,
+            detail=row.detail,
             occurred_at=row.occurred_at,
             created_at=row.created_at,
             updated_at=row.updated_at,

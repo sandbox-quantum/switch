@@ -316,3 +316,132 @@ async def test_a_host_only_sees_its_own_agents_requests(
             select(ApprovalRequest.state).where(ApprovalRequest.request_id == "theirs")
         )
     assert state == "open"
+
+
+_DETAIL = {
+    "tool": {"name": "Edit", "input": {"file_path": "a.py", "old_string": "x"}},
+    "truncated": False,
+}
+
+
+async def test_a_tool_step_keeps_its_detail_until_a_revision_says_more(client, service):
+    url = f"/agent-sessions/{SESSION}/activity"
+    started = await client.post(url, json=_activity(detail=_DETAIL))
+    assert started.json() == {"recorded": True}
+    [row] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert row.detail == _DETAIL
+
+    # A revision that says nothing of the detail keeps what the first said.
+    await client.post(url, json=_activity(revision=2))
+    [row] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert row.detail == _DETAIL
+
+    finished = {
+        **_DETAIL,
+        "result": {"isError": True, "text": "no match", "files": ["a.py"]},
+    }
+    await client.post(url, json=_activity(revision=3, status="failed", detail=finished))
+    [row] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert row.detail == finished
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        # Only tool activity carries a tool's detail.
+        {"kind": "assistant-message", "status": "completed", "detail": _DETAIL},
+        {"detail": {"tool": {"name": "Edit"}}},
+        {"detail": {**_DETAIL, "unexpected": 1}},
+        {"detail": {**_DETAIL, "result": {"is_error": False}}},
+        {"detail": {**_DETAIL, "result": {"isError": "no"}}},
+        {
+            "detail": {
+                "tool": {"name": "Write", "input": {"content": "x" * 70_000}},
+                "truncated": False,
+            }
+        },
+    ],
+)
+async def test_a_malformed_or_oversized_detail_is_a_422(client, service, overrides):
+    response = await client.post(
+        f"/agent-sessions/{SESSION}/activity", json=_activity(**overrides)
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_EVENT"
+    assert await service.turn_items(AGENT, SESSION, "turn-1") == []
+
+
+async def test_an_approval_carries_its_tool_call_and_plan(client, session_factory):
+    tool = {"name": "Bash", "input": {"command": "rm -rf build"}}
+    opened = await client.post(
+        f"/agent-sessions/{SESSION}/approvals",
+        json=_approval(tool=tool, plan="1. Clean\n2. Build"),
+    )
+    assert opened.status_code == 200, opened.text
+    async with session_factory() as db:
+        row = await db.scalar(
+            select(ApprovalRequest).where(ApprovalRequest.request_id == "req-1")
+        )
+    assert (row.tool, row.plan) == (tool, "1. Clean\n2. Build")
+
+    retried = await client.post(
+        f"/agent-sessions/{SESSION}/approvals", json=_approval(tool=tool)
+    )
+    assert retried.status_code == 409
+    assert retried.json()["code"] == "REQUEST_CONFLICT"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"tool": {"name": "", "input": {}}},
+        {"tool": {"name": "Bash"}},
+        {"tool": {"name": "Bash", "input": {"command": "x" * 70_000}}},
+        {"plan": "x" * 64_001},
+    ],
+)
+async def test_a_malformed_tool_call_or_plan_is_a_422(client, overrides):
+    response = await client.post(
+        f"/agent-sessions/{SESSION}/approvals", json=_approval(**overrides)
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_EVENT"
+
+
+async def test_a_questions_request_names_no_tool_call(client):
+    response = await client.post(
+        f"/agent-sessions/{SESSION}/approvals",
+        json=_approval(
+            kind="questions",
+            options=[],
+            questions=[
+                {
+                    "id": "q",
+                    "title": "Q",
+                    "prompt": "?",
+                    "options": [],
+                    "multi_select": False,
+                    "allow_custom_answer": True,
+                }
+            ],
+            plan="a plan",
+        ),
+    )
+    assert response.status_code == 422
+
+
+async def test_the_reason_for_declining_is_owed_to_the_agent(client, service, people):
+    await client.post(f"/agent-sessions/{SESSION}/approvals", json=_approval())
+    await service.answer_approval(
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("deny"),
+        answerer=PlatformPerson(people.owner),
+        reason="  Use the staging bucket instead.  ",
+    )
+    [owed] = (await client.get("/agent-sessions/approvals/outcomes")).json()
+    assert (owed["answer"], owed["reason"]) == (
+        "deny",
+        "Use the staging bucket instead.",
+    )

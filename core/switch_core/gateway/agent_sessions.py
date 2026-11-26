@@ -10,7 +10,7 @@ here: the agent's room watcher owns both and Console asks it directly.
 """
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -60,6 +60,11 @@ class QuestionView(_Model):
     allow_custom_answer: bool
 
 
+class ToolCallView(_Model):
+    name: str
+    input: dict[str, Any]
+
+
 class AnswerView(_Model):
     question_id: str
     selected_option_ids: list[str]
@@ -84,6 +89,12 @@ class ApprovalRequestView(_Model):
     answers: list[AnswerView] | None
     answered_by: str | None
     answered_at: datetime | None
+    # The tool call an approval asks to run, when its host said.
+    tool: ToolCallView | None
+    # The plan a plan-mode approval asks a person to accept.
+    plan: str | None
+    # The answerer's words on declining, passed to the agent.
+    reason: str | None
 
     @classmethod
     def of(cls, row: ApprovalRequest) -> "ApprovalRequestView":
@@ -119,6 +130,9 @@ class ApprovalRequestView(_Model):
             else [AnswerView(**answer) for answer in row.answers],
             answered_by=row.answered_by,
             answered_at=row.answered_at,
+            tool=None if row.tool is None else ToolCallView(**row.tool),
+            plan=row.plan,
+            reason=row.reason,
         )
 
 
@@ -129,10 +143,13 @@ class AnswerIn(_Model):
 
 
 class AnswerBody(_Model):
-    """An approval's chosen option (`answer`), or an answer per question (`answers`)."""
+    """An approval's chosen option (`answer`), or an answer per question
+    (`answers`). `reason` goes with declining an approval: the person's words,
+    passed to the agent with the outcome."""
 
     answer: str | None = Field(default=None, min_length=1, max_length=200)
     answers: list[AnswerIn] | None = None
+    reason: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "AnswerBody":
@@ -184,5 +201,6 @@ async def answer_approval(
         request_id,
         answer=body.result(),
         answerer=SwitchUser(user.id),
+        reason=body.reason,
     )
     return ApprovalRequestView.of(row)
