@@ -1,17 +1,19 @@
-import "@switch-console/chat-ui/theme.css";
 import { Alert } from "@switch-console/chat-ui/primitives/alert";
 import { Button } from "@switch-console/chat-ui/primitives/button";
-import { type ReactNode, useState } from "react";
+import { type ComponentProps, type ReactNode, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
 import LinkNoticeBanner from "../../layout/LinkNoticeBanner";
+import AuthLayout from "../auth/AuthLayout";
 
 export default function CenteredCard({
   title,
   subtitle,
+  width,
   children,
 }: {
   title: string;
   subtitle: ReactNode;
+  width?: ComponentProps<typeof AuthLayout>["width"];
   children: ReactNode;
 }) {
   const { user, logout } = useAuth();
@@ -25,28 +27,26 @@ export default function CenteredCard({
     }
   };
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background py-4">
-      <div className="w-full max-w-md space-y-6 rounded-lg border border-border bg-background p-8 shadow-lg">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground">{title}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
-        </div>
-        <LinkNoticeBanner />
-        {children}
-        <div className="flex items-center justify-between pt-3 text-sm">
-          <span className="truncate text-muted-foreground">
-            {user ? `Signed in as ${user.email}` : ""}
-          </span>
-          <Button variant="ghost" size="sm" onClick={() => void signOut()}>
+    <AuthLayout
+      heading={title}
+      subheading={subtitle}
+      width={width}
+      footer={
+        <div className="flex flex-col items-center gap-1">
+          <span>{user ? `Signed in as ${user.email}` : ""}</span>
+          <Button variant="ghost" size="sm" className="text-inherit" onClick={() => void signOut()}>
             Sign out
           </Button>
+          {signOutError && (
+            <Alert variant="destructive" className="break-words">
+              {signOutError}
+            </Alert>
+          )}
         </div>
-        {signOutError && (
-          <Alert variant="destructive" className="mt-2 break-words">
-            {signOutError}
-          </Alert>
-        )}
-      </div>
-    </div>
+      }
+    >
+      <LinkNoticeBanner />
+      {children}
+    </AuthLayout>
   );
 }

@@ -1728,6 +1728,16 @@ export async function fetchMe(): Promise<Me> {
   return jsonRequest<Me>("/auth/me", "GET");
 }
 
+/** The license Switch is offered under; `version` changes with its text. */
+export interface LicenseText {
+  version: string;
+  text: string;
+}
+
+export async function fetchLicense(): Promise<LicenseText> {
+  return fetchJson<LicenseText>("/license");
+}
+
 export async function changeMyName(name: string): Promise<Me> {
   return jsonRequest<Me>("/auth/me", "PATCH", { name });
 }

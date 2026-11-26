@@ -182,7 +182,7 @@ describe("AppRoutes", () => {
   it("sends a signed-out visitor to sign in", async () => {
     mockFetch({ "/auth/session": [401, { detail: "Not authenticated" }], "/auth/config": [200, authConfig] });
     renderAt("/agents");
-    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
     expect(
       await screen.findByText(
         "New to Switch? Signing in creates your account, and you can create a workspace or join one.",
@@ -241,7 +241,7 @@ describe("AppRoutes", () => {
     });
     renderAt("/");
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
-    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBeNull();
   });
 
@@ -255,7 +255,7 @@ describe("AppRoutes", () => {
     renderAt("/");
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
     expect(await screen.findByText("Couldn't sign out: Bad Gateway")).toBeTruthy();
-    expect(screen.queryByText("Switch Gateway")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
     // Still signed in, so still on the way to the invitation.
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBe("abc");
   });
@@ -266,7 +266,7 @@ describe("AppRoutes", () => {
     expect(
       await screen.findByText(/Could not load your session: database unavailable/),
     ).toBeTruthy();
-    expect(screen.queryByText("Switch Gateway")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
   });
 
   it("says so when the deployment's flags cannot be read, rather than hiding pages", async () => {
@@ -376,16 +376,21 @@ describe("signing up", () => {
     );
   }
 
+  async function signUpWithWorkspace() {
+    fireEvent.click(await screen.findByRole("button", { name: "Sign up" }));
+    fireEvent.change(screen.getByLabelText("First name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.change(await screen.findByLabelText("Password"), { target: { value: "a long password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.change(await screen.findByLabelText(/Workspace name/), { target: { value: "Ada's Lab" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+  }
+
   it("opens Chats in the new workspace, without a reload", async () => {
     openSignUp();
     renderAt("/");
-    fireEvent.click(await screen.findByRole("button", { name: "New to Switch? Create an account" }));
-    fireEvent.change(screen.getByLabelText("Your name"), { target: { value: "Ada" } });
-    fireEvent.change(screen.getByLabelText(/Email/), { target: { value: "ada@example.com" } });
-    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: "a long password" } });
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    fireEvent.change(await screen.findByLabelText(/Workspace name/), { target: { value: "Ada's Lab" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    await signUpWithWorkspace();
 
     await landsOn("/overview");
     const rail = await screen.findByRole("navigation", { name: "Main" });
@@ -1525,13 +1530,14 @@ describe("a link naming a workspace", () => {
       "/auth/login": [200, { id: "u1", name: "Ada", email: "ada@example.com" }],
     });
     renderAt("/rooms/r1?tab=documents&workspace=t2");
-    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
     expect(switchedTo("t2")).toBe(false);
 
     fireEvent.change(await screen.findByLabelText(/^Email/), {
       target: { value: "ada@example.com" },
     });
-    fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue with email" }));
+    fireEvent.change(await screen.findByLabelText(/^Password/), { target: { value: "pw" } });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     await waitFor(() =>
       expect(replace).toHaveBeenCalledWith(`${origin}/rooms/r1?tab=documents&workspace=t2`),

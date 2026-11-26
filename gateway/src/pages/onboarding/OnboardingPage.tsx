@@ -4,13 +4,13 @@ import { Button } from "@switch-console/chat-ui/primitives/button";
 import { Field } from "@switch-console/chat-ui/primitives/field";
 import { Input } from "@switch-console/chat-ui/primitives/input";
 import { Label } from "@switch-console/chat-ui/primitives/label";
-import { Separator } from "@switch-console/chat-ui/primitives/separator";
 import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
 import { pickSubtitle } from "@switch-console/chat-ui/model/workspace-offers";
 import { useState } from "react";
 import { useAuth } from "../../data/AuthContext";
 import OrganizationsWithoutWorkspace from "../account/OrganizationsWithoutWorkspace";
 import { inviteTokenFrom, storePendingInvite } from "../../data/sessionState";
+import { OrDivider } from "../auth/AuthLayout";
 import CenteredCard from "./CenteredCard";
 import { AGENT_MANAGEMENT, GATEWAY_ONBOARDING } from "../../data/featureFlags";
 import { GET_STARTED } from "../get-started/paths";
@@ -57,14 +57,7 @@ export default function OnboardingPage() {
           <OrganizationsWithoutWorkspace />
           <WorkspaceOfferRows offers={offers} landing={landing} disabled={false} onBusy={setJoining} />
           {canCreate && !joining && <CreateWorkspaceForm landing={landing} />}
-          {canCreate && (
-            <div className="relative">
-              <Separator />
-              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-background px-2 text-xs text-muted-foreground">
-                or
-              </span>
-            </div>
-          )}
+          {canCreate && <OrDivider />}
           <form onSubmit={joinWithInvite} className="space-y-4">
             <h3 className="text-sm font-medium">Have an invite link?</h3>
             {inviteError && <Alert variant="destructive">{inviteError}</Alert>}
