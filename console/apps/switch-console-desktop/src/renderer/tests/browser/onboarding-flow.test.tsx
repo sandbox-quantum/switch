@@ -58,8 +58,10 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
       oidcProviderLabel: null,
       oidcLoginOptions: [],
       oidcBrowserHandoff: false,
+      testAccountResetEnabled: false,
     }),
     authConfigCheckFailed: () => false,
+    authConfigFailure: () => null,
     authConfigChecking: () => false,
     passwordLogin: () => Promise.resolve(true),
     oidcLogin: () => Promise.resolve(true),
@@ -81,13 +83,15 @@ const localServer = vi.hoisted(() => ({
   isRunning: false,
   isTransitioning: false,
   phase: 'stopped',
+  runtime: 'native' as 'native' | 'docker' | null,
   message: null as string | null,
   error: null as string | null,
   errorDetail: null as string | null,
   logs: [] as string[],
   init: vi.fn(() => Promise.resolve()),
   checkDocker: vi.fn(() => Promise.resolve()),
-  start: vi.fn(),
+  start: vi.fn(() => Promise.resolve()),
+  reset: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('@renderer/features/switch-servers/local-server-store', () => ({
@@ -109,6 +113,7 @@ vi.mock('@renderer/lib/hooks/useTheme', () => ({
   useTheme: () => ({ effectiveTheme: 'emlight' }),
 }));
 
+import { LocalSetupProgress } from '@renderer/features/onboarding/local-setup-progress';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { ExternalServerStep } from '@renderer/features/switch-servers/AddServerModal';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
@@ -137,6 +142,7 @@ beforeEach(() => {
     isRunning: false,
     isTransitioning: false,
     phase: 'stopped',
+    runtime: 'native',
     message: null,
     error: null,
     errorDetail: null,
@@ -242,23 +248,28 @@ describe('the first-run flow', () => {
 
     await act(async () => button(el, 'Get started').click());
 
-    expect(el.textContent).toContain('How do you want to run Switch?');
+    expect(el.textContent).toContain('How do you want to run Switch Rooms?');
     expect(el.textContent).toContain('On this computer');
     expect(el.textContent).toContain('Join an existing server');
     expect(el.textContent).not.toContain('remote host');
     expect(listHosts).not.toHaveBeenCalled();
   });
 
-  it('shows Switch Cloud as coming soon, and not choosable, when the build names none', async () => {
+  it('lists Switch Cloud last, as coming soon, and not choosable', async () => {
     const el = await renderFlow();
     await act(async () => button(el, 'Get started').click());
 
-    expect(el.textContent).toContain('Switch Cloud');
-    expect(el.textContent).toContain('Coming soon');
-    const card = [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
-      b.textContent?.includes('Switch Cloud')
-    );
-    expect(card?.disabled).toBe(true);
+    const options = [...el.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    expect(options.map((o) => o.textContent)).toEqual([
+      expect.stringContaining('On this computer'),
+      expect.stringContaining('Join an existing server'),
+      expect.stringContaining('Switch Cloud'),
+    ]);
+    const card = options.at(-1)!;
+    expect(card.textContent).toContain('Coming soon');
+    expect(card.disabled).toBe(true);
+    expect(card.getAttribute('aria-disabled')).toBe('true');
+    expect(card.getAttribute('aria-checked')).toBe('false');
   });
 
   it('goes back from the question to the welcome', async () => {
@@ -270,13 +281,101 @@ describe('the first-run flow', () => {
     expect(onboardingStore.page).toBe('welcome');
   });
 
-  it('starts the stack on this computer by default when there is no Cloud', async () => {
+  it('picks the stack on this computer by default when there is no Cloud', async () => {
     const el = await renderFlow();
     await act(async () => button(el, 'Get started').click());
 
     await act(async () => button(el, 'Continue').click());
 
     expect(onboardingStore.page).toBe('local');
+  });
+
+  it('sets the server up on this computer without a page asking to start it', async () => {
+    localServer.start.mockClear();
+    localServer.start.mockImplementationOnce(() => {
+      localServer.isTransitioning = true;
+      return Promise.resolve();
+    });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    expect(localServer.start).toHaveBeenCalledTimes(1);
+    expect(el.textContent).toContain('Setting things up…');
+    expect(el.textContent).not.toContain('Set up a server on this computer');
+  });
+
+  it('tells the setup as plain stages, not the steps it reports', async () => {
+    Object.assign(localServer, { isTransitioning: true, message: 'Starting PostgreSQL…' });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    const states = [...el.querySelectorAll('li[data-state]')].map(
+      (li) => `${li.textContent} ${li.getAttribute('data-state')}`
+    );
+    expect(states).toEqual([
+      'Getting what’s needed done',
+      'Preparing the database current',
+      'Starting Switch next',
+      'Signing you in next',
+    ]);
+    expect(el.textContent).not.toContain('PostgreSQL');
+  });
+
+  it('moves on by itself, with the server, once the server on this computer is up', async () => {
+    Object.assign(localServer, {
+      status: { serverId: 'local-1', version: '1.0.0' },
+      isRunning: true,
+      phase: 'running',
+    });
+    const onDone = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () =>
+      root!.render(<LocalSetupProgress onBack={() => {}} onDone={onDone} onRegistered={() => {}} />)
+    );
+
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onDone).toHaveBeenCalledWith('local-1');
+  });
+
+  it('waits for the start to finish, not just for the server to report running', async () => {
+    Object.assign(localServer, {
+      status: { serverId: 'local-1', version: '1.0.0' },
+      isRunning: true,
+      isTransitioning: true,
+      phase: 'running',
+    });
+    const onDone = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () =>
+      root!.render(<LocalSetupProgress onBack={() => {}} onDone={onDone} onRegistered={() => {}} />)
+    );
+
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it('opens the full setup page, with the error and Retry, when the server could not start', async () => {
+    localServer.start.mockImplementationOnce(() => {
+      Object.assign(localServer, { phase: 'error', error: 'PostgreSQL did not start.' });
+      return Promise.resolve();
+    });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    expect(el.textContent).toContain('Set up a server on this computer');
+    expect(el.textContent).toContain('PostgreSQL did not start.');
+    expect(labels(el).some((l) => l?.startsWith('Retry'))).toBe(true);
   });
 
   it('asks for the one address, and not for a name, on the connect page', async () => {
@@ -332,17 +431,10 @@ describe('the first-run flow', () => {
 });
 
 describe('the first-run flow with Switch Cloud named', () => {
-  const CLOUD = {
-    id: 'cloud-1',
-    name: 'Switch Cloud',
-    url: 'https://cloud.example.com',
-    dashboardUrl: null,
-  };
-
+  // Switch Cloud is not open to first runs yet: a build that has been told
+  // where it is must still show it as coming soon and never start its path.
   beforeEach(() => {
     switchCloud.mockResolvedValue({ url: 'https://cloud.example.com' });
-    servers.push(CLOUD);
-    connectToSwitchCloud.mockResolvedValue(CLOUD);
   });
 
   async function atHowToRun(): Promise<HTMLDivElement> {
@@ -351,34 +443,75 @@ describe('the first-run flow with Switch Cloud named', () => {
     return el;
   }
 
-  it('recommends the Cloud and goes straight to signing in to it', async () => {
+  function cloudCard(el: HTMLElement): HTMLButtonElement {
+    const card = [...el.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) =>
+      b.textContent?.includes('Switch Cloud')
+    );
+    expect(card, 'no Switch Cloud card').toBeDefined();
+    return card!;
+  }
+
+  it('still lists the Cloud last, as coming soon and disabled, never recommended', async () => {
     const el = await atHowToRun();
-    expect(el.textContent).toContain('Recommended');
+    // Give a Cloud configuration the chance to arrive, as it used to.
+    await act(async () => {});
 
-    await act(async () => button(el, 'Continue').click());
-
-    expect(connectToSwitchCloud).toHaveBeenCalled();
-    expect(onboardingStore.page).toBe('signIn');
-    expect(onboardingStore.server?.id).toBe('cloud-1');
+    const options = [...el.querySelectorAll('[role="radio"]')];
+    expect(options.at(-1)).toBe(cloudCard(el));
+    expect(cloudCard(el).disabled).toBe(true);
+    expect(el.textContent).toContain('Coming soon');
+    expect(el.textContent).not.toContain('Recommended');
   });
 
-  it('goes back from signing in to the question, not to a connect page it never showed', async () => {
+  it('preselects the stack on this computer, not the Cloud', async () => {
     const el = await atHowToRun();
+    await act(async () => {});
+
+    const checked = el.querySelectorAll('[role="radio"][aria-checked="true"]');
+    expect(checked).toHaveLength(1);
+    expect(checked[0].textContent).toContain('On this computer');
+
     await act(async () => button(el, 'Continue').click());
 
-    await act(async () => button(el, 'Back').click());
-
-    expect(onboardingStore.page).toBe('howToRun');
+    expect(onboardingStore.page).toBe('local');
+    expect(connectToSwitchCloud).not.toHaveBeenCalled();
   });
 
-  it('stays on the question and says why when the Cloud cannot be registered', async () => {
-    connectToSwitchCloud.mockRejectedValue(new Error('disk full'));
+  it('ignores a click on the Cloud card and keeps the choice made', async () => {
     const el = await atHowToRun();
+    await choose(el, 'Join an existing server');
 
+    await act(async () => cloudCard(el).click());
+    cloudCard(el).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(cloudCard(el).getAttribute('aria-checked')).toBe('false');
     await act(async () => button(el, 'Continue').click());
+    expect(onboardingStore.page).toBe('connect');
+    expect(connectToSwitchCloud).not.toHaveBeenCalled();
+  });
 
+  it('cannot be reached from the keyboard', async () => {
+    const el = await atHowToRun();
+    const card = cloudCard(el);
+
+    card.focus();
+
+    expect(document.activeElement).not.toBe(card);
+  });
+
+  it('still offers no Cloud after walking back to the question and forward again', async () => {
+    const el = await atHowToRun();
+    await act(async () => button(el, 'Continue').click());
+    expect(onboardingStore.page).toBe('local');
+
+    // Back as the local page's own Back goes, whichever of its two faces is up.
+    await act(async () => onboardingStore.back());
     expect(onboardingStore.page).toBe('howToRun');
-    expect(el.querySelector('[role="alert"]')?.textContent).toContain('disk full');
+    expect(cloudCard(el).disabled).toBe(true);
+    expect(el.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain(
+      'On this computer'
+    );
+    expect(connectToSwitchCloud).not.toHaveBeenCalled();
   });
 });
 

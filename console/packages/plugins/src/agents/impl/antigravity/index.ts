@@ -10,13 +10,18 @@ export const AGY_INSTALL_UNIX = 'curl -fsSL https://antigravity.google/cli/insta
  */
 export const AGY_INSTALL_WINDOWS =
   'powershell -ExecutionPolicy ByPass -c "irm https://antigravity.google/cli/install.ps1 | iex"';
+/**
+ * Through `cmd /c`, because the install runner's shell may be Windows
+ * PowerShell 5.1, where `&&` does not parse and `curl` is another command.
+ */
 export const AGY_INSTALL_WINDOWS_CMD =
-  'curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd';
+  'cmd /c "curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd"';
 
 export const plugin = definePlugin(
   {
     id: 'antigravity',
-    name: 'Antigravity',
+    name: 'Google Antigravity',
+    shortName: 'Antigravity',
     description:
       'Google Antigravity CLI over ACP, with its own sign-in, approvals and persistent conversations.',
     websiteUrl: 'https://antigravity.google/docs/ide/extensions/acp/',

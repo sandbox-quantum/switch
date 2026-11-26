@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -450,7 +451,7 @@ export const templateCaptureView = {
   canActivate: (params: unknown): GuardResult => {
     const p = params as { serverId?: unknown; roomId?: unknown } | null;
     if (!p || typeof p.serverId !== 'string' || typeof p.roomId !== 'string') {
-      return { ok: false, redirect: 'home' };
+      return homeRedirect();
     }
     return { ok: true };
   },

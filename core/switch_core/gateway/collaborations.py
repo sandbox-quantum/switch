@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, Literal
 
 import httpx
@@ -16,10 +18,16 @@ from switch_core.authz import Principal
 from switch_core.bridges.collaboration.adapter import (
     ConfigEditRefused,
     DirectorySearchBusy,
+    PlatformAdapter,
 )
 from switch_core.bridges.collaboration.lifecycle_service import (
     BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
+)
+from switch_core.bridges.collaboration.link_prompts import (
+    PendingPrompt,
+    deliver_prompt,
+    prepare_prompt,
 )
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
@@ -28,6 +36,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     BridgeStartRefused,
     DirectoryUser,
+    KnownUserLabel,
 )
 from switch_core.bridges.collaboration.own_app_setup import (
     SetupCheckError,
@@ -35,6 +44,7 @@ from switch_core.bridges.collaboration.own_app_setup import (
     slack_create_url,
     slack_manifest,
 )
+from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     CollaborationBridge,
@@ -58,6 +68,7 @@ from switch_core.gateway.auth import (
 from switch_core.gateway.dependencies import (
     get_bridge_store,
     get_collab_lifecycle,
+    get_config,
     get_external_user_store,
     get_install_store,
     get_room_service,
@@ -75,7 +86,9 @@ from switch_core.gateway.schemas import (
     DirectoryUserSummary,
     ExternalUserSummary,
     IdentityClaimant,
+    IssueLinkCodeRequest,
     LinkCode,
+    LinkPromptSummary,
     LinkRequestSummary,
     RequireConfirmationRequest,
     RequireConfirmationResult,
@@ -262,6 +275,9 @@ async def _detail(
             bridge.type
         ),
         channel_creation_enabled=bridge.channel_creation_enabled,
+        channel_creation_blocker=collab_lifecycle.channel_creation_blocker(
+            bridge.type, bridge.connection_config or {}
+        ),
         private_channels_supported=collab_lifecycle.supports_private_channels(
             bridge.type
         ),
@@ -270,14 +286,23 @@ async def _detail(
         private_channel_needs_linked_account=(
             collab_lifecycle.supports_private_channels(bridge.type)
         ),
+        public_channel_adds_creator=collab_lifecycle.adds_creator_to_public_channel(
+            bridge.type
+        ),
         channel_ids_refused=_channel_ids_refused(bridge.id, collab_lifecycle),
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type
+        ),
+        directory_search_hint=collab_lifecycle.directory_search_hint(
+            bridge.id, bridge.type
         ),
         attention=await _attention(bridge.id, collab_lifecycle),
         team_placement_supported=_places_app_in_teams(bridge.id, collab_lifecycle),
         receives_webhooks=collab_lifecycle.receives_webhooks(bridge.type),
         webhook_url=collab_lifecycle.webhook_url(bridge.id, bridge.type),
+        commands=collab_lifecycle.typed_commands(
+            bridge.type, bridge.connection_config or {}
+        ),
         can_manage=administers,
         can_delete=administers,
     )
@@ -314,10 +339,11 @@ async def list_bridge_types(
 @router.get("/setup/slack")
 async def slack_own_app_setup(
     _user: Annotated[User, Depends(require_tenant_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> SlackOwnAppSetup:
     """The Slack app this server needs, and Slack's create-app page filled in
     with it, for someone connecting a Slack app of their own."""
-    manifest = slack_manifest()
+    manifest = slack_manifest(config.feature_flags)
     return SlackOwnAppSetup(manifest=manifest, create_url=slack_create_url(manifest))
 
 
@@ -456,7 +482,7 @@ async def list_bridges(
     _user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[BridgeDetail]:
-    bridges = await bridge_store.get_all(session)
+    bridges = await bridge_store.get_listed(session)
 
     details = []
     for bridge in bridges:
@@ -628,6 +654,9 @@ async def list_bridge_users(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
 ) -> list[ExternalUserSummary]:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
@@ -636,18 +665,36 @@ async def list_bridge_users(
     users = await external_user_store.get_by_bridge(session, bridge_id)
     claims = await external_user_store.claims_for(session, [u.id for u in users])
     names = await _user_names(session, user_store, claims)
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    labels = {
+        u.id: (
+            adapter.known_user_label(u.external_user_id, u.external_username)
+            if adapter is not None
+            else KnownUserLabel(display_name=u.external_username, has_handle=True)
+        )
+        for u in users
+    }
     return [
         ExternalUserSummary(
             id=u.id,
             bridge_id=u.bridge_id,
             external_user_id=u.external_user_id,
             external_username=u.external_username,
+            first_seen_at=_first_seen(u),
+            display_name=labels[u.id].display_name,
+            has_handle=labels[u.id].has_handle,
             claimed_by=_claimants(
                 claims.get(u.id, []), names, Principal(user.id, is_admin)
             ),
         )
         for u in users
     ]
+
+
+def _first_seen(external_user: ExternalUser) -> str:
+    # Typed as text on the model, but the column is a timestamp.
+    seen: object = external_user.created_at
+    return seen.isoformat() if isinstance(seen, datetime) else str(seen)
 
 
 async def _user_names(
@@ -738,7 +785,7 @@ async def search_bridge_directory(
     except NotImplementedError as e:
         source = "known"
         note = str(e)
-        found = _known_as_directory_users(known.values(), query)
+        found = _known_as_directory_users(known.values(), query, adapter)
     except DirectorySearchBusy as e:
         raise _search_busy(e) from e
     except RuntimeError as e:
@@ -757,6 +804,7 @@ async def search_bridge_directory(
                 username=person.username,
                 display_name=person.display_name,
                 email=person.email,
+                has_handle=person.has_handle,
                 known_external_user_id=(
                     known[person.external_user_id].id
                     if person.external_user_id in known
@@ -778,31 +826,43 @@ async def search_bridge_directory(
 
 
 def _known_as_directory_users(
-    known: Iterable[ExternalUser], query: str
+    known: Iterable[ExternalUser], query: str, adapter: PlatformAdapter
 ) -> list[DirectoryUser]:
     """The accounts Switch has already seen, shaped like a directory answer.
 
     Substring rather than prefix matching, because this list is what someone
     falls back to when the platform cannot be searched, and being unable to
-    find yourself there is the end of the road. No email: an account is
-    recorded from a message, which carries no address.
+    find yourself there is the end of the road. Spaces are ignored on both
+    sides, so "M M" finds a person stored as "MM_123". Each is named as the
+    adapter names them, so a handle Switch made up is not shown as theirs. No
+    email: an account is recorded from a message, which carries no address.
     """
-    needle = query.strip().casefold()
+    needle = _spaceless(query)
     if not needle:
         return []
-    return sorted(
-        (
+    found: list[DirectoryUser] = []
+    for u in known:
+        label = adapter.known_user_label(u.external_user_id, u.external_username)
+        if not any(
+            needle in _spaceless(name)
+            for name in (u.external_username, label.display_name)
+        ):
+            continue
+        found.append(
             DirectoryUser(
                 external_user_id=u.external_user_id,
                 username=u.external_username,
-                display_name=u.external_username,
+                display_name=label.display_name,
                 email=None,
+                has_handle=label.has_handle,
             )
-            for u in known
-            if needle in u.external_username.casefold()
-        ),
-        key=lambda u: u.display_name.casefold(),
-    )
+        )
+    return sorted(found, key=lambda u: u.display_name.casefold())
+
+
+def _spaceless(text: str) -> str:
+    """`text` for matching a name: case folded, with every space dropped."""
+    return "".join(text.casefold().split())
 
 
 def _search_busy(e: DirectorySearchBusy) -> HTTPException:
@@ -899,6 +959,13 @@ async def claim_bridge_identity(
     # session holds, the caller included, and an expired row cannot be
     # reloaded from synchronous attribute access.
     caller_id = user.id
+    # A prompt only for a client that can show its number: one from before
+    # confirmation is answered with the code in a 409 and nothing else.
+    requester = (
+        _Requester(user.name, user.email)
+        if payload.wants_prompt and payload.expects_confirmation
+        else None
+    )
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
@@ -923,6 +990,7 @@ async def claim_bridge_identity(
         raise HTTPException(status_code=404, detail="Switch user not found")
 
     bridge_type, connection_config = bridge.type, bridge.connection_config or {}
+    platform = bridge.display_name
     # Not held across asking the platform.
     await session.commit()
     await _refuse_unlinkable(collab_lifecycle, bridge_id, payload.external_user_id)
@@ -1013,14 +1081,17 @@ async def claim_bridge_identity(
             None,
             Principal(caller_id, is_admin),
         )
-    code = (
+    issued = (
         await _issue_code(
             session,
             external_user_store,
             collab_lifecycle,
             request,
+            account=external_user,
             bridge_type=bridge_type,
+            platform=platform,
             connection_config=connection_config,
+            requester=requester,
         )
         if target_user_id == caller_id
         else None
@@ -1035,6 +1106,13 @@ async def claim_bridge_identity(
         details={"bridge_id": bridge_id, "user_id": target_user_id},
     )
     await session.commit()
+    code = (
+        None
+        if issued is None
+        else await _send_prompt(
+            issued, collab_lifecycle, bridge_id, payload.external_user_id
+        )
+    )
     if code is not None and not payload.expects_confirmation:
         raise HTTPException(status_code=409, detail=_code_as_refusal_text(code))
 
@@ -1078,23 +1156,86 @@ def _code_as_refusal_text(code: LinkCode) -> str:
     )
 
 
+@dataclass(frozen=True)
+class _Requester:
+    """Who is asking for a prompt, read before anything can expire the row."""
+
+    name: str
+    email: str
+
+
+@dataclass(frozen=True)
+class _IssuedCode:
+    """A code issued in the caller's transaction, and the prompt to send with
+    it once that transaction has committed."""
+
+    code: LinkCode
+    prompt: PendingPrompt | None
+
+
 async def _issue_code(
     session: AsyncSession,
     external_user_store: ExternalUserStore,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     request: ExternalUserLinkRequest,
     *,
+    account: ExternalUser,
     bridge_type: str,
+    platform: str,
     connection_config: dict[str, object],
-) -> LinkCode:
+    requester: _Requester | None,
+) -> _IssuedCode:
+    """A fresh code for `request`, and a prompt recorded beside it when
+    `requester` asked for one (CHOO-4121)."""
     code, expires_at = await external_user_store.issue_link_code(session, request)
-    return LinkCode(
+    link_code = LinkCode(
         code=code,
         expires_at=expires_at,
         expires_in_seconds=int(LINK_CODE_TTL.total_seconds()),
         instructions=collab_lifecycle.link_code_instructions(
             bridge_type, connection_config, code
         ),
+    )
+    if requester is None:
+        return _IssuedCode(code=link_code, prompt=None)
+    prompt = await prepare_prompt(
+        session,
+        external_user_store=external_user_store,
+        request=request,
+        account=account,
+        requester_name=requester.name,
+        requester_email=requester.email,
+        platform=platform,
+        adapter=collab_lifecycle.get_adapter(account.bridge_id),
+    )
+    return _IssuedCode(code=link_code, prompt=prompt)
+
+
+async def _send_prompt(
+    issued: _IssuedCode,
+    collab_lifecycle: CollaborationBridgeLifecycleService,
+    bridge_id: str,
+    external_account_id: str,
+) -> LinkCode:
+    """Send the prompt issued with a code, now its transaction has committed,
+    and say on the code how that went. Holds no connection: it waits on the
+    platform."""
+    if issued.prompt is None:
+        return issued.code
+    outcome = await deliver_prompt(
+        issued.prompt,
+        adapter=collab_lifecycle.get_adapter(bridge_id),
+        account_external_id=external_account_id,
+    )
+    return issued.code.model_copy(
+        update={
+            "prompt": LinkPromptSummary(
+                number=outcome.number,
+                sent=outcome.sent,
+                unavailable_reason=outcome.unavailable_reason,
+                link=outcome.link,
+            )
+        }
     )
 
 
@@ -1113,6 +1254,7 @@ async def _identity_summary(
         bridge_id=external_user.bridge_id,
         external_user_id=external_user.external_user_id,
         external_username=external_user.external_username,
+        first_seen_at=_first_seen(external_user),
         claimed_by=_claimants(claims.get(external_user.id, []), names, viewer),
         link_request=link_request,
     )
@@ -1195,15 +1337,22 @@ async def issue_identity_link_code(
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
     user: Annotated[User, Depends(get_current_user)],
+    payload: IssueLinkCodeRequest | None = None,
 ) -> LinkCode:
     """A fresh code that confirms the caller's link to this account
-    (CHOO-3881), replacing any code issued before.
+    (CHOO-3881), replacing any code issued before, with a prompt sent beside
+    it when the caller asks for one (CHOO-4121).
 
     For a link the caller started, one an admin started for them, or one made
     before links needed confirming, which keeps working meanwhile. Only ever
     for the caller: the code is the Switch half of the proof.
     """
     caller_id = user.id
+    requester = (
+        _Requester(user.name, user.email)
+        if payload is not None and payload.wants_prompt
+        else None
+    )
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
@@ -1211,6 +1360,7 @@ async def issue_identity_link_code(
         session, external_user_store, bridge_id, external_user_row_id
     )
     bridge_type, connection_config = bridge.type, bridge.connection_config or {}
+    platform = bridge.display_name
     external_account_id = external_user.external_user_id
     # Not held across asking the platform.
     await session.commit()
@@ -1258,16 +1408,19 @@ async def issue_identity_link_code(
             target_id=external_user.id,
             details={"bridge_id": bridge_id, "user_id": caller_id},
         )
-    code = await _issue_code(
+    issued = await _issue_code(
         session,
         external_user_store,
         collab_lifecycle,
         request,
+        account=external_user,
         bridge_type=bridge_type,
+        platform=platform,
         connection_config=connection_config,
+        requester=requester,
     )
     await session.commit()
-    return code
+    return await _send_prompt(issued, collab_lifecycle, bridge_id, external_account_id)
 
 
 async def _drop_older_link(

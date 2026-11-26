@@ -474,6 +474,39 @@ class TestCreateAgent:
         definition = (await _assigned(client, controller))[new_id]["definition"]
         assert (definition["auto_mode"], definition["auto_approve"]) == (False, False)
 
+    @pytest.mark.parametrize(("written", "expected"), [(None, False), (True, True)])
+    async def test_an_opencode_agent_asks_unless_auto_mode_is_asked_for(
+        self,
+        harness: Harness,
+        client: httpx.AsyncClient,
+        written: bool | None,
+        expected: bool,
+    ) -> None:
+        # OpenCode's auto mode reviews nothing before a command runs.
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller, providers=[provider("opencode")])
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        given = {} if written is None else {"auto_mode": written}
+
+        response = await _call(
+            client,
+            agent_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", provider="opencode", **given),
+        )
+
+        assert response.status_code == 200, response.text
+        new_id = response.json()["result"]["agent_id"]
+        definition = (await _assigned(client, controller))[new_id]["definition"]
+        assert (definition["auto_mode"], definition["auto_approve"]) == (
+            expected,
+            False,
+        )
+
     async def test_by_id_and_stopped(
         self, harness: Harness, client: httpx.AsyncClient
     ) -> None:
@@ -1240,6 +1273,7 @@ async def _template(harness: Harness, owner: User, content: str) -> str:
     harness.protocol.config.feature_flags = {
         "agent_management": True,
         "switch_buddy": False,
+        "additional_agent_providers": True,
     }  # type: ignore[attr-defined]
     harness.protocol.room_yaml_service = _NoRooms  # type: ignore[assignment,method-assign]
     async with harness.session_factory() as session:
@@ -1450,6 +1484,29 @@ class TestTheConsoleRunsATemplateWithAgents:
         assert assigned[solo.id]["definition"]["auto_mode"] is True
         assert assigned[pair.id]["definition"]["auto_mode"] is False
 
+    async def test_an_opencode_agent_sent_without_auto_mode_asks(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller, providers=[provider("opencode")])
+
+        response = await client.post(
+            "/gateway/rooms/from-template",
+            json={
+                "agents": [_gateway_agent("laptop", provider="opencode")],
+                "yaml": None,
+                "template_name": "solo",
+            },
+            cookies=cookies_for(owner),
+        )
+
+        assert response.status_code == 201, response.text
+        solo = await _agent_row(harness, "solo")
+        assert solo is not None
+        assigned = await _assigned(client, controller)
+        assert assigned[solo.id]["definition"]["auto_mode"] is False
+
     async def test_refuses_with_every_problem_and_creates_nothing(
         self, harness: Harness, client: httpx.AsyncClient
     ) -> None:
@@ -1571,7 +1628,7 @@ async def _installs(harness: Harness, template_id: str) -> list[Any]:
 
 
 def _buddy_document() -> str:
-    buddy = official_template("official:switch-buddy", True, switch_buddy=True)
+    buddy = official_template("official:switch-buddy", switch_buddy=True)
     assert buddy is not None
     return buddy.content
 

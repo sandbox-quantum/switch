@@ -9,7 +9,11 @@ Two shapes, matching the two kinds of route:
   controller row is then read under that tenant, and a revoked controller is
   refused even while its token is unexpired. A controller that authenticated
   is remembered for a few seconds (`ControllerAuthCache`), and forgotten the
-  moment it is revoked.
+  moment it is revoked. A controller whose owner is suspended
+  (`accounts/suspension.py`) is refused with 403 `account_suspended` on every
+  route but its assignment, which it may still read: with all its owner's
+  agents suspended, that says to stop every one. Its credential is kept, so
+  it is let back in once the suspension is lifted.
 - **Secret in the body**, on enrollment (an `swce_…` code) and token exchange
   (an `swcc_…` credential). Both are `api_keys` rows, so their tenant comes
   from the same `SECURITY DEFINER` hash lookup a bearer API key uses
@@ -21,11 +25,18 @@ from __future__ import annotations
 
 import re
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.suspension import owner_is_suspended
+from switch_core.archived_workspace import is_archived
 from switch_core.bridges.agent.auth import ControllerAuthError, ControllerPrincipal
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
-from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.protocol.controller_presence import (
+    Binding,
+    ControllerPresence,
+)
+from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.tenant_lookup import tenant_of_api_key
@@ -35,6 +46,20 @@ MANAGEMENT_PREFIX = "/v1/management"
 CONTROLLERS_PREFIX = "/v1/controllers"
 ENROLL_PATH = "/v1/management/controllers/enroll"
 _TOKEN_PATH = re.compile(r"/v1/management/controllers/[^/]+/token")
+_ASSIGNMENT_PATH = re.compile(r"/v1/management/controllers/[^/]+/assignment")
+
+
+class ControllerOwnerSuspendedError(ControllerAuthError):
+    """The controller's owner is suspended: refused while that lasts, never
+    told its credential is no good."""
+
+    status_code = 403
+
+    def __init__(self) -> None:
+        super().__init__(
+            reason_codes.ACCOUNT_SUSPENDED,
+            "The account this controller belongs to is suspended.",
+        )
 
 
 def _under(path: str, prefix: str) -> bool:
@@ -74,7 +99,7 @@ class ManagementAuthenticator:
     def is_public(self, path: str) -> bool:
         return path == ENROLL_PATH or _TOKEN_PATH.fullmatch(path) is not None
 
-    async def authenticate(self, token: str) -> ControllerPrincipal:
+    async def authenticate(self, token: str, path: str) -> ControllerPrincipal:
         try:
             claims = self._verified.verify(token)
         except tokens.AccessTokenExpired as exc:
@@ -87,24 +112,45 @@ class ManagementAuthenticator:
                 reason_codes.INVALID_CREDENTIAL,
                 "The access token is not a valid controller token.",
             ) from exc
-        return await self.current(
-            ControllerPrincipal(
-                controller_id=claims.controller_id,
-                owner_id=claims.owner_id,
-                tenant_id=claims.tenant_id,
-            )
+        principal = ControllerPrincipal(
+            controller_id=claims.controller_id,
+            owner_id=claims.owner_id,
+            tenant_id=claims.tenant_id,
+            key_id=claims.key_id,
         )
+        if _ASSIGNMENT_PATH.fullmatch(path):
+            current, _ = await self._standing(principal)
+            return current
+        return await self.current(principal)
 
     async def current(self, principal: ControllerPrincipal) -> ControllerPrincipal:
         """The controller `principal` names, while it keeps the authority its
-        token gave it: not revoked, and owned by the same person. Every request
-        made with a controller access token is checked here, and every call on
-        a controller's socket, which authenticated once when it opened."""
+        token gave it: not revoked, owned by the same person, that person not
+        suspended, and, for a token naming the credential it was exchanged
+        for, still holding that credential. Every request made with a
+        controller access token is checked here, and every call on a
+        controller's socket, which authenticated once when it opened.
+
+        A token for a credential the controller no longer has (rotated away,
+        or replaced when another controller on the same device took it over)
+        is refused as expired: its holder exchanges its credential again,
+        which only the controller's current process can do."""
+        current, owner_suspended = await self._standing(principal)
+        if owner_suspended:
+            raise ControllerOwnerSuspendedError()
+        return current
+
+    async def _standing(
+        self, principal: ControllerPrincipal
+    ) -> tuple[ControllerPrincipal, bool]:
+        """The controller, not revoked, owned by the same person and holding
+        the credential the token names, and whether that person is suspended.
+        Only a controller whose owner is not suspended is cached."""
         cached = self._auth_cache.controller(
             principal.tenant_id, principal.controller_id
         )
         if cached is not None and cached.owner_id == principal.owner_id:
-            return cached
+            return _holding(principal, cached.key_id), False
 
         ticket = self._auth_cache.ticket()
         async with tenant_session(
@@ -113,6 +159,7 @@ class ManagementAuthenticator:
             controller = await self._controllers.get(
                 session, principal.tenant_id, principal.controller_id
             )
+            owner_suspended = await owner_is_suspended(session, principal.owner_id)
         if controller is None or controller.owner_id != principal.owner_id:
             raise ControllerAuthError(
                 reason_codes.INVALID_CREDENTIAL,
@@ -126,9 +173,43 @@ class ManagementAuthenticator:
             controller_id=controller.id,
             owner_id=controller.owner_id,
             tenant_id=principal.tenant_id,
+            key_id=controller.api_key_id,
         )
-        self._auth_cache.put_controller(current, ticket)
-        return current
+        if not owner_suspended:
+            self._auth_cache.put_controller(current, ticket)
+        return _holding(principal, controller.api_key_id), owner_suspended
+
+    async def stopped_by_archive(self, binding: Binding) -> bool:
+        """Whether `binding` is stopped because its workspace is archived: its
+        controller may then not act for the agent, on an agent route or its
+        socket, as the agent's own key may not (`bridges/agent/auth.py`).
+        Read only for a binding not running, so acting for a running agent
+        costs nothing more."""
+        if binding.running:
+            return False
+        async with tenant_session(self._session_factory, binding.tenant_id) as session:
+            return await is_archived(session, binding.tenant_id)
+
+    async def agent_suspended(self, tenant_id: str, agent_id: str) -> bool:
+        """Whether the agent a controller acts for is suspended
+        (`accounts/suspension.py`), when its controller may not act for it,
+        as its own key may not. From the controller-token cache when it holds
+        the agent's row, which a change to the row drops."""
+        agent = self._auth_cache.agent(tenant_id, agent_id)
+        if agent is None:
+            ticket = self._auth_cache.ticket()
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                agent = await session.scalar(
+                    select(Agent).where(
+                        Agent.tenant_id == tenant_id, Agent.id == agent_id
+                    )
+                )
+                if agent is not None:
+                    session.expunge(agent)
+            if agent is None:
+                return False
+            self._auth_cache.put_agents(tenant_id, [agent], ticket)
+        return agent.suspended_at is not None
 
     async def tenant_of_secret(self, secret: str) -> str | None:
         """The tenant an enrollment code or controller credential belongs to,
@@ -136,3 +217,14 @@ class ManagementAuthenticator:
         return await tenant_of_api_key(
             self._session_factory, tokens.hash_secret(secret)
         )
+
+
+def _holding(principal: ControllerPrincipal, key_id: str | None) -> ControllerPrincipal:
+    """`principal`, while the controller holds the credential its token names."""
+    if principal.key_id is not None and principal.key_id != key_id:
+        raise ControllerAuthError(
+            reason_codes.TOKEN_EXPIRED,
+            "The access token was issued for a credential this controller no "
+            "longer has; exchange the credential again.",
+        )
+    return principal

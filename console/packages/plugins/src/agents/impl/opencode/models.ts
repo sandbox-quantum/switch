@@ -16,6 +16,97 @@ import type {
 export const OPENCODE_MODELS_ARGS = ['models', '--verbose'];
 
 /**
+ * The models this host offers, with each one's reasoning variants, asked the
+ * way the installed OpenCode answers.
+ *
+ * Throws when the output yields nothing usable. That is the honest reading: the
+ * command not being there, failing, or printing something this cannot parse are
+ * all "we could not ask", and none of them mean the host has no models — which
+ * is what an empty list would say, and would flag every valid model as wrong.
+ */
+export async function opencodeLaunchProfileModels(
+  exec: LaunchProfileHostExec
+): Promise<LaunchProfileModel[]> {
+  const { stdout: version } = await exec('opencode', ['--version']);
+  const major = Number.parseInt(version.match(/(?<![\d.])(\d+)\.\d+\.\d+/)?.[1] ?? '', 10);
+  if (Number.isNaN(major))
+    throw new Error(`\`opencode --version\` printed no version: ${JSON.stringify(version.trim())}`);
+  if (major < 2) {
+    const { stdout } = await exec('opencode', OPENCODE_MODELS_ARGS);
+    return someModels(parseOpencodeModels(stdout), OPENCODE_MODELS_ARGS);
+  }
+  const { stdout: listed } = await exec('opencode', OPENCODE2_MODEL_IDS_ARGS);
+  const { stdout: detailed } = await exec('opencode', OPENCODE2_MODELS_ARGS);
+  const variants = new Map(
+    parseOpencode2Models(detailed).map((model) => [model.id, model.variants])
+  );
+  return someModels(
+    parseOpencode2ModelIds(listed).map((id) => ({ id, variants: variants.get(id) ?? null })),
+    OPENCODE2_MODEL_IDS_ARGS
+  );
+}
+
+function someModels(models: LaunchProfileModel[], args: string[]): LaunchProfileModel[] {
+  if (models.length === 0)
+    throw new Error(`\`opencode ${args.join(' ')}\` returned no models this app could read.`);
+  return models;
+}
+
+/**
+ * The models OpenCode 2 offers, one `provider/model` a line. It waits for the
+ * providers to load, which its API does not: from 2.4 the API answers before
+ * any has, and lists none. `--standalone` answers from a private server, so
+ * asking neither starts nor reaches the person's background service.
+ */
+export const OPENCODE2_MODEL_IDS_ARGS = ['models', '--standalone'];
+
+/**
+ * OpenCode 2 dropped `models --verbose`; its API lists the catalogue as JSON,
+ * variants included, but only for the providers loaded when it answers, which
+ * from 2.4 is none. A model it leaves out has variants this cannot know.
+ */
+export const OPENCODE2_MODELS_ARGS = ['api', '--standalone', 'model.list'];
+
+/** Parse `opencode models`: one `provider/model` a line. */
+export function parseOpencode2ModelIds(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[^\s/]+\/\S+$/.test(line));
+}
+
+/**
+ * Parse `opencode api model.list`. Unlike the 1.x output this is one JSON
+ * document, so output that is not one is an error rather than a model to skip.
+ * A model OpenCode reports as disabled is not offered.
+ */
+export function parseOpencode2Models(stdout: string): LaunchProfileModel[] {
+  const { data } = JSON.parse(stdout) as { data?: unknown };
+  if (!Array.isArray(data)) throw new Error('`opencode api model.list` returned no model list.');
+  return data.flatMap((entry): LaunchProfileModel[] => {
+    const { providerID, id, variants, enabled } = entry as {
+      providerID?: unknown;
+      id?: unknown;
+      variants?: unknown;
+      enabled?: unknown;
+    };
+    if (typeof providerID !== 'string' || typeof id !== 'string' || !providerID || !id) return [];
+    if (enabled === false) return [];
+    return [
+      {
+        id: `${providerID}/${id}`,
+        variants: Array.isArray(variants)
+          ? variants.flatMap((variant) => {
+              const name = (variant as { id?: unknown } | null)?.id;
+              return typeof name === 'string' ? [name] : [];
+            })
+          : [],
+      },
+    ];
+  });
+}
+
+/**
  * Parse `opencode models --verbose`.
  *
  * The output is a `provider/model` line followed by a pretty-printed JSON object
@@ -33,25 +124,6 @@ export const OPENCODE_MODELS_ARGS = ['models', '--verbose'];
  * A caller that gets nothing back should treat the catalogue as unavailable and
  * say so, rather than concluding the host has no models.
  */
-/**
- * The models this host offers, with each one's reasoning variants.
- *
- * Throws when the output yields nothing usable. That is the honest reading: the
- * command not being there, failing, or printing something this cannot parse are
- * all "we could not ask", and none of them mean the host has no models — which
- * is what an empty list would say, and would flag every valid model as wrong.
- */
-export async function opencodeLaunchProfileModels(
-  exec: LaunchProfileHostExec
-): Promise<LaunchProfileModel[]> {
-  const { stdout } = await exec('opencode', OPENCODE_MODELS_ARGS);
-  const models = parseOpencodeModels(stdout);
-  if (models.length === 0) {
-    throw new Error('`opencode models --verbose` returned no models this app could read.');
-  }
-  return models;
-}
-
 export function parseOpencodeModels(stdout: string): LaunchProfileModel[] {
   const models: LaunchProfileModel[] = [];
   let block: string[] | null = null;

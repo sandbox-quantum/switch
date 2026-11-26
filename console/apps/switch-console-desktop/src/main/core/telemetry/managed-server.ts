@@ -37,11 +37,13 @@ function startFailureReason(result: StartLocalServerResult): TelemetryManagedSer
  */
 export function reportManagedServerStart(
   target: 'local' | 'remote',
+  trigger: 'user' | 'automatic',
   result: StartLocalServerResult
 ): void {
   trackEvent('managed_server_action', {
     action: 'start',
     target,
+    trigger,
     outcome: result.kind === 'started' ? 'success' : 'failure',
     failure_reason: startFailureReason(result),
     // Safe to read the probe off the result: every one of these comes back from
@@ -61,10 +63,14 @@ export function reportManagedServerStart(
  * would answer `available` for a start that never looked, which is exactly the
  * guess this dimension exists to avoid.
  */
-export function reportManagedServerStartThrew(target: 'local' | 'remote'): void {
+export function reportManagedServerStartThrew(
+  target: 'local' | 'remote',
+  trigger: 'user' | 'automatic'
+): void {
   trackEvent('managed_server_action', {
     action: 'start',
     target,
+    trigger,
     outcome: 'failure',
     failure_reason: 'error',
     docker_available: 'unknown',
@@ -89,6 +95,8 @@ export function reportManagedServerOutcome(
   trackEvent('managed_server_action', {
     action,
     target,
+    // Only ever asked for: quitting stops the local server without reporting it.
+    trigger: 'user',
     outcome,
     failure_reason: outcome === 'success' ? 'none' : 'error',
     docker_available: 'unknown',

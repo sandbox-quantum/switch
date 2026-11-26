@@ -437,7 +437,7 @@ def test_every_stored_known_agent_type_resolves_as_before(
         assert spec.build_profile(options) == IntegrationProfile(
             connection_model="auto_session" if auto_session else "session_addressable",
             message_exchange=True,
-            pre_invocation_mediation=reported,
+            pre_invocation_mediation=[],
             post_invocation_mediation=[],
             event_reporting=reported,
             command_capabilities=_SESSION_DEPENDENT,

@@ -52,7 +52,7 @@ jobs:
           remote-repository-name: switch
           path-to-document: https://github.com/sandbox-quantum/switch/blob/main/CLA.md
           branch: main
-          allowlist: dependabot[bot],renovate[bot],socket-fix[bot]
+          allowlist: dependabot[bot],renovate[bot],socket-fix[bot],github-actions[bot]
           custom-notsigned-prcomment: >-
             Thank you for your contribution! Before we can merge it, please read
             our [Contributor License Agreement](https://github.com/sandbox-quantum/switch/blob/main/CLA.md)

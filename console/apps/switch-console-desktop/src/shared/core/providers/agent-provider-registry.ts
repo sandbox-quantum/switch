@@ -1,3 +1,5 @@
+import type { FeatureFlagKey, FeatureFlags } from '@shared/core/feature-flags/feature-flags';
+
 /**
  * A provider id: the id of a plugin in `packages/plugins/src/agents/impl/<id>/`.
  * Open rather than a union so that adding a provider changes no desktop code;
@@ -19,10 +21,20 @@ export type AgentProviderDefinition = {
   docUrl: string;
   /** What to tell someone to install, where the product name alone would be ambiguous. */
   cliLabel: string;
+  /** The bare product name, without the vendor `name` may carry: "Codex". */
+  shortName: string;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /** The Switch gateway's known-agent type, sent when an agent registers. */
   knownAgentType: string;
+  /** Whether the provider runtime can review tool calls automatically. */
+  supportsAutoMode: boolean;
+  /**
+   * Whether a new agent on this provider starts in auto mode: false where
+   * nothing reviews an action before it runs in auto mode. Read it through
+   * `newAgentPermissions`.
+   */
+  newAgentAutoMode: boolean;
 };
 
 type Catalogue = {
@@ -69,8 +81,46 @@ export function providerNamesSentence(): string {
   return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names.join('');
 }
 
+/**
+ * The providers a Switch server offers only with a feature flag on, each with
+ * its flag; every other provider is always offered. The same as each entry's
+ * `flag` in switch-core's `providers/registry.py`, which a core test holds
+ * this to.
+ */
+export const PROVIDER_FLAGS: Readonly<Partial<Record<AgentProviderId, FeatureFlagKey>>> = {
+  'deepseek-harness': 'additional_agent_providers',
+  pi: 'additional_agent_providers',
+  copilot: 'additional_agent_providers',
+  kiro: 'additional_agent_providers',
+  'mistral-vibe': 'additional_agent_providers',
+  goose: 'additional_agent_providers',
+  qwen: 'additional_agent_providers',
+  droid: 'additional_agent_providers',
+  cline: 'additional_agent_providers',
+  junie: 'additional_agent_providers',
+};
+
+/**
+ * Whether a server with `flags` offers `id` for a new agent. An agent
+ * already on a provider its server does not offer still runs; this decides
+ * only what Console offers.
+ */
+export function providerOffered(id: AgentProviderId, flags: FeatureFlags): boolean {
+  const flag = PROVIDER_FLAGS[id];
+  return flag === undefined || flags[flag];
+}
+
+/** The providers a server with `flags` offers, in the order the interface lists them. */
+export function offeredAgentProviders(flags: FeatureFlags): readonly AgentProviderDefinition[] {
+  return agentProviders().filter((provider) => providerOffered(provider.id, flags));
+}
+
 export function getProvider(id: string): AgentProviderDefinition | undefined {
   return loaded().byId.get(id);
+}
+
+export function providerSupportsAutoMode(id: string): boolean {
+  return getProvider(id)?.supportsAutoMode === true;
 }
 
 /** A registered provider's definition; throws for an id the catalogue does not have. */
@@ -94,6 +144,17 @@ export function isValidProviderId(value: unknown): value is AgentProviderId {
 export function asAgentProviderId(value: string): AgentProviderId {
   if (isValidProviderId(value)) return value;
   throw new Error(`unknown agent provider '${value}'`);
+}
+
+/**
+ * Whether turning auto mode on for `id` lets every action run without anyone
+ * reviewing it first, commands included: the providers a new agent does not
+ * start in auto mode on. False for an id this build does not know, which an
+ * agent row from a newer install can hold; the settings that show this still
+ * render for it.
+ */
+export function autoModeIsUnreviewed(id: AgentProviderId): boolean {
+  return getProvider(id)?.newAgentAutoMode === false;
 }
 
 /**

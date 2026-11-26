@@ -3,6 +3,11 @@ name: Dropbox
 category: File storage
 description: Search and read your Dropbox files, and add or change them, as you.
 enabled: true
+publisher: Dropbox
+links:
+  documentation: https://developers.dropbox.com/
+  support: https://help.dropbox.com/
+  privacy: https://www.dropbox.com/privacy
 adapter: oauth
 auth:
   type: oauth
@@ -34,15 +39,10 @@ auth:
     unchecked: >-
       Switch can't check the redirect URI or the scopes ticked on the app's
       Permissions tab. Connect once to confirm.
-    # Dropbox's metadata advertises /2/auth/token/revoke as its revocation
-    # endpoint, but it is not RFC 7009: it disables the bearer token the call
-    # is made with, and answers a token sent in the form, as Switch revokes,
-    # with HTTP 400 "Invalid authorization value" (measured with a made-up
-    # token). So a sign-in Switch drops lives on until the person removes it.
-    remove_access: >-
-      Remove it in Dropbox under Settings, Connected apps, where it is listed
-      under the name your server's operator gave the app. Until then, the
-      sign-in keeps working.
+    # Dropbox revokes the access token in the Authorization header.
+    # The scope of revocation across separate sign-ins needs a live check.
+    revocation_url: https://api.dropboxapi.com/2/auth/token/revoke
+    revocation_by_bearer: true
   identity:
     # Dropbox's API takes every call as a POST; this one takes no body and
     # needs account_info.read. Not yet tried with a token issued for the MCP

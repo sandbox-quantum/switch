@@ -1,5 +1,8 @@
 import { INSTALL_METHODS } from '@switch-console/core/deps';
 import {
+  type SessionProvisionTrigger,
+  type SessionStartSource,
+  type UpdateTrigger,
   AGENT_REMOVE_TRIGGERS,
   ROOM_AGENTS_DIRECTIONS,
   SESSION_PROVISION_TRIGGERS,
@@ -13,9 +16,6 @@ import type {
   TelemetryIdentityLinkKind,
   TelemetryInstallMethod,
   TelemetryRoomAgentsDirection,
-  TelemetrySessionProvisionTrigger,
-  TelemetrySessionStartSource,
-  TelemetryUpdateTrigger,
 } from './events';
 
 /**
@@ -50,7 +50,7 @@ export function entryPointOf(value: unknown): TelemetryEntryPoint {
  * a claim, and `user` would report the presence of one — asserting a person was
  * behind a session on the strength of a caller that said nothing.
  */
-export function startSourceOf(value: unknown): TelemetrySessionStartSource {
+export function startSourceOf(value: unknown): SessionStartSource {
   return oneOf(SESSION_START_SOURCES, value, 'unknown');
 }
 
@@ -58,20 +58,26 @@ export function startSourceOf(value: unknown): TelemetrySessionStartSource {
  * `initial` is the honest fallback: an unrecognised trigger is not evidence
  * anybody retried anything, and `initial` is the value that reports nothing.
  */
-export function provisionTriggerOf(value: unknown): TelemetrySessionProvisionTrigger | 'initial' {
+export function provisionTriggerOf(value: unknown): SessionProvisionTrigger {
   return oneOf(SESSION_PROVISION_TRIGGERS, value, 'initial');
 }
 
-export function agentRemoveTriggerOf(value: unknown): TelemetryAgentRemoveTrigger {
-  return oneOf(AGENT_REMOVE_TRIGGERS, value, 'user');
+/** `unknown` rather than a cause nobody stated: see `updateTriggerOf`. */
+export function agentRemoveTriggerOf(value: unknown): TelemetryAgentRemoveTrigger | 'unknown' {
+  return oneOf<TelemetryAgentRemoveTrigger | 'unknown'>(AGENT_REMOVE_TRIGGERS, value, 'unknown');
 }
 
-export function roomAgentsDirectionOf(value: unknown): TelemetryRoomAgentsDirection {
-  return oneOf(ROOM_AGENTS_DIRECTIONS, value, 'agents_to_room');
+export function roomAgentsDirectionOf(value: unknown): TelemetryRoomAgentsDirection | 'unknown' {
+  return oneOf<TelemetryRoomAgentsDirection | 'unknown'>(ROOM_AGENTS_DIRECTIONS, value, 'unknown');
 }
 
-export function updateTriggerOf(value: unknown): TelemetryUpdateTrigger {
-  return oneOf(UPDATE_TRIGGERS, value, 'user');
+/**
+ * `unknown` rather than a guess: a check is reported as a person's or as the
+ * app's own, and a caller that said nothing is evidence of neither, so its
+ * check is not reported.
+ */
+export function updateTriggerOf(value: unknown): UpdateTrigger | 'unknown' {
+  return oneOf<UpdateTrigger | 'unknown'>(UPDATE_TRIGGERS, value, 'unknown');
 }
 
 export function installMethodOf(value: unknown): TelemetryInstallMethod {

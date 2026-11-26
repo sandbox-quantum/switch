@@ -17,8 +17,8 @@ resource in the deployment, not just their own.
 That guarantee only holds if the account at :data:`BOOTSTRAP_OWNER_EMAIL` is
 the one this module itself provisioned. Nothing in this codebase reserves
 that address, and an admin role is not the only way to end up controlling
-it: a gateway admin can `POST /users` with that email and an admin role, but
-an OIDC identity provider can also claim it outright by asserting it as a
+it: an operator can create that address with `switch-accounts create
+--operator`, but an OIDC identity provider can also claim it outright by asserting it as a
 login email — JIT provisioning always creates a `role="user"` account, so an
 account's mere existence there proves nothing about who put it there. Both
 entry points here refuse to adopt an existing account at that address unless
@@ -96,6 +96,15 @@ LEGACY_BOOTSTRAP_KEY_LABEL = "Default (from AGENT_REGISTRATION_TOKEN)"
 # silently reinstate a value the operator deliberately killed.
 BOOTSTRAP_LAST_SEEDED_HASH_META_KEY = "agent_bootstrap_key_last_hash"
 BOOTSTRAP_REVOKED_HASHES_META_KEY = "agent_bootstrap_revoked_hashes"
+
+
+SERVICE_ACCOUNT_ADMIN_REFUSAL = (
+    "Agents added with the shared registration token act with this account's "
+    "role, so it can't be made an admin."
+)
+"""Why the bootstrap owner is never made a workspace or organization admin:
+the agents it owns act with its role (`AgentCore._resolve_acting_identity`),
+so an admin's would hand every one of them what an admin may do."""
 
 
 def is_bootstrap_owner(owner: User) -> bool:

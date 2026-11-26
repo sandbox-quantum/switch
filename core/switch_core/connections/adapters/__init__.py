@@ -10,11 +10,12 @@ service with none cannot be issued.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
-from switch_core.connections.loader import AccessLevel
+from switch_core.connections.loader import AccessLevel, PasteExpiry, PasteMethod
 
 
 class ServiceAdapterError(Exception):
@@ -60,10 +61,12 @@ class ConnectionSecret:
 
 @dataclass(frozen=True)
 class AccessToken:
-    """The owner's access token for a connection, fresh, and when it expires."""
+    """The owner's access token for a connection, fresh, and when it expires:
+    None for a credential the owner pasted, which its vendor ends on a date
+    Switch is not told."""
 
     token: str = field(repr=False)
-    expires_at: datetime
+    expires_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -75,16 +78,81 @@ class IssueRequest:
     # The catalog's entry for the level: {"permissions": {...}} or {"scopes": [...]}.
     reach: dict[str, Any]
     resources: dict[str, Any]
+    # Whether the owner's connection holds a credential they pasted (a token,
+    # or keys) rather than a sign-in: it reaches what the vendor let it, and
+    # is handed out as it is.
+    pasted: bool
 
 
 @dataclass(frozen=True)
 class IssuedToken:
     token: str = field(repr=False)
-    expires_at: datetime
+    # None for a credential the owner pasted, handed out as it is.
+    expires_at: datetime | None
     resources: dict[str, Any]
     # Whether the vendor can revoke this one token. Only then is it kept,
     # encrypted, until it expires.
     revocable: bool
+
+
+@dataclass(frozen=True)
+class Identity:
+    """The connected account: its stable id, and a label people recognise."""
+
+    account_id: str
+    label: str
+
+
+@dataclass(frozen=True)
+class Pasted:
+    """A credential a connection was made with in place of a sign-in: how it
+    was pasted, its fields, and the choices it was pasted for (a site)."""
+
+    method: PasteMethod
+    values: dict[str, str] = field(repr=False)
+    choices: dict[str, str]
+
+
+@runtime_checkable
+class PastingAdapter(Protocol):
+    """An adapter whose service also takes a credential pasted in place of
+    its sign-in (`auth.paste`): the OAuth adapter, and GitHub's."""
+
+    def paste_method(self, name: str) -> PasteMethod:
+        """The entry's method `name`; ServiceAdapterError where it has none."""
+        ...
+
+    def checked_paste(
+        self, method: PasteMethod, submitted: Mapping[str, str]
+    ) -> dict[str, str]:
+        """The pasted fields, each as the method allows, and nothing else."""
+        ...
+
+    def pasted_secret(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> ConnectionSecret:
+        """What a connection made with a pasted credential stores."""
+        ...
+
+    def pasted(self, secret: ConnectionSecret) -> Pasted | None:
+        """The pasted credential a connection's secret holds; None for a
+        sign-in. `ReauthorizationRequiredError` for one this server no longer
+        takes as it was pasted."""
+        ...
+
+    async def check_pasted(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> PasteExpiry:
+        """Whether the vendor still takes the credential, and who ends it:
+        `vendor` for one that ends on a date, `never` for one that works until
+        it is revoked. A refusal for good is `ReauthorizationRequiredError`."""
+        ...
+
+    async def identify_pasted(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> Identity:
+        """The account the credential acts as."""
+        ...
 
 
 class ServiceAdapter(Protocol):
@@ -92,11 +160,16 @@ class ServiceAdapter(Protocol):
     # issue for it (GitHub without its App's signing key): people can connect,
     # nothing can be granted.
     can_issue: bool
+    # True where this server's app lets agents read only (a GitHub App short
+    # of the permissions the write level asks for): the broker refuses a
+    # write grant, and a token for one made before.
+    read_only: bool
 
-    def current_client_id(self) -> str | None:
-        """The vendor client this adapter signs in through, where it knows it
-        without asking anyone; None for a service with no client, or one not
-        yet known. A connection signed in through another must reconnect."""
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
+        """The vendor client this adapter signs in through for a connection
+        made with `choices` (a vendor's site), where it knows it without
+        asking anyone; None for a service with no client, or one not yet
+        known. A connection signed in through another must reconnect."""
         ...
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
@@ -119,7 +192,14 @@ class ServiceAdapter(Protocol):
 
     async def revoke_issued(self, token: str) -> None: ...
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None: ...
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> bool:
+        """Revoke the connection's credential at the vendor, where it can be.
+        `method` is how the connection was made (`oauth`, `token` or `keys`),
+        as its row says: what the secret holds follows from it. True where
+        the vendor ended a credential it knew; False where there was none to
+        end, or the vendor no longer knew it.
+        `ConnectionNotRevocable` says what the person must do instead."""
+        ...
 
     def summary(
         self, agent_name: str, access: AccessLevel, resources: dict[str, Any]

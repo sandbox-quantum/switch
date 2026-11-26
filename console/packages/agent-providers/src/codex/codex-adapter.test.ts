@@ -1,10 +1,15 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ProviderConversationUnavailableError, type RuntimeMode } from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  type RuntimeMode,
+  SteerNotSentError,
+} from '../adapter';
 import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
 import { FakeAppServer, type FakeJsonRpcMessage } from './fake-app-server';
+import { managedCodexSandbox, prepareCodexSessionHome } from './home';
 
 const servers: FakeAppServer[] = [];
 let account: Record<string, unknown> | null = { type: 'apiKey' };
@@ -387,6 +392,52 @@ describe('CodexAdapter', () => {
     }
   });
 
+  it('runs a managed session in the sandbox its host names, never unsandboxed in auto', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-host-'));
+    try {
+      for (const [host, mode, sent] of [
+        ['read-only', 'full-access', 'read-only'],
+        ['read-only', 'auto', 'read-only'],
+        ['read-only', 'approval-required', 'read-only'],
+        ['danger-full-access', 'auto', 'workspace-write'],
+        ['danger-full-access', 'full-access', 'danger-full-access'],
+        [null, 'full-access', 'danger-full-access'],
+        [null, 'auto', 'workspace-write'],
+        [null, 'approval-required', 'workspace-write'],
+      ] as const) {
+        const sourceHome = join(root, `${host}-${mode}`);
+        await mkdir(sourceHome);
+        if (host) await writeFile(join(sourceHome, 'config.toml'), `sandbox_mode = "${host}"\n`);
+        const { home } = await prepareCodexSessionHome({
+          root: join(root, 'sessions'),
+          sessionId: `${host}-${mode}`,
+          sourceHome,
+          config: 'model = "m"\n',
+          defaultSandbox: managedCodexSandbox(mode),
+        });
+        const adapter = createCodexAdapter();
+        await adapter.startSession({
+          sessionId: `${host}-${mode}`,
+          cwd: '/work',
+          runtimeMode: mode,
+          env: { PATH: '/usr/bin', CODEX_HOME: home },
+          mcpServers: {},
+          connectorMcpServers: [],
+          model: { id: 'm' },
+        });
+        const threadStart = servers
+          .at(-1)!
+          .received.find((message) => message.method === 'thread/start');
+        expect(threadStart?.params, `${host} in ${mode}`).toMatchObject({
+          sandbox: sent,
+        });
+        await adapter.stopAll();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('carries systemContext as developer instructions', async () => {
     const adapter = createCodexAdapter();
     await adapter.startSession({
@@ -584,9 +635,18 @@ describe('CodexAdapter', () => {
     await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'count' });
     server.notify('turn/started', turnNotification('native-a', 'inProgress'));
 
+    await expect(
+      adapter.sendTurn({
+        sessionId: 'session-1',
+        turnId: 'stale',
+        expectedTurnId: 'other',
+        text: 'wrong',
+      })
+    ).rejects.toThrow('authorized turn');
     const steered = await adapter.sendTurn({
       sessionId: 'session-1',
       turnId: 'caller-2',
+      expectedTurnId: 'caller-1',
       text: 'stop',
     });
     expect(steered).toEqual({ turnId: 'caller-2', steeredInto: 'caller-1' });
@@ -703,6 +763,27 @@ describe('CodexAdapter', () => {
         .map((message) => message.params)
     ).toEqual([{ threadId: THREAD, processId: 'stop' }]);
     await adapter.stopAll();
+  });
+
+  it('refuses an authorized steer Codex declines instead of starting a turn of its own', async () => {
+    const { adapter, server } = await start();
+    server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
+    server.on('message', (message: FakeJsonRpcMessage) => {
+      if (message.method !== 'turn/steer' || message.id === undefined) return;
+      server.send({ id: message.id, error: { code: -32600, message: 'turn is not steerable' } });
+    });
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'count' });
+    server.notify('turn/started', turnNotification('native-a', 'inProgress'));
+
+    await expect(
+      adapter.sendTurn({
+        sessionId: 'session-1',
+        turnId: 'caller-2',
+        expectedTurnId: 'caller-1',
+        text: 'stop',
+      })
+    ).rejects.toBeInstanceOf(SteerNotSentError);
+    expect(server.received.filter((message) => message.method === 'turn/start')).toHaveLength(1);
   });
 
   it('interrupts the active turn, not a turn that was queued behind it', async () => {

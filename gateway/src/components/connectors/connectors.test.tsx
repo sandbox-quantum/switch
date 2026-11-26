@@ -20,6 +20,18 @@ const consoleLogos = import.meta.glob<string>(
 );
 
 const catalogSlugs = Object.keys(catalog).map((path) => path.split("/").at(-2)!);
+// Coming soon entries whose owners publish no logo file a product UI may use
+// yet, or none in SVG. Their tiles show initials until one is added.
+const awaitingLogo = new Set([
+  "amplitude",
+  "azure-devops",
+  "launchdarkly",
+  "marketo",
+  "monday",
+  "pendo",
+  "servicenow",
+]);
+const logoSlugs = catalogSlugs.filter((slug) => !awaitingLogo.has(slug));
 const byFile = (files: Record<string, string>) =>
   Object.fromEntries(Object.entries(files).map(([path, svg]) => [path.split("/").pop()!, svg]));
 
@@ -28,8 +40,13 @@ describe("brand logos", () => {
     expect(catalogSlugs).toContain("github");
   });
 
-  it.each(catalogSlugs)("%s has a logo", (slug: string) => {
+  it.each(logoSlugs)("%s has a logo", (slug: string) => {
     expect(brandSvg(slug)).toBeTruthy();
+  });
+
+  it.each([...awaitingLogo])("%s is in the catalog and still has no logo", (slug: string) => {
+    expect(catalogSlugs).toContain(slug);
+    expect(brandSvg(slug)).toBeUndefined();
   });
 
   it("are the same files Console ships", () => {
@@ -38,7 +55,7 @@ describe("brand logos", () => {
   });
 
   it("are sized to their tile whatever their root tag looks like", () => {
-    for (const slug of catalogSlugs) {
+    for (const slug of logoSlugs) {
       expect(brandSvg(slug), slug).toMatch(/^<svg width="100%" height="100%"[\s>]/);
     }
   });
@@ -90,6 +107,7 @@ const notion: CatalogueConnector = {
   name: "Notion",
   category: "Knowledge base",
   description: "Read and write Notion pages and databases.",
+  publisher: "Example Labs",
 };
 
 describe("ConnectorCard", () => {
@@ -149,7 +167,7 @@ describe("CatalogueGrid", () => {
     errors.mockRestore();
   });
 
-  it("searches names, categories and descriptions, and says when nothing matches", () => {
+  it("searches names, categories, descriptions and makers, and says when nothing matches", () => {
     render(<Harness />);
     const search = screen.getByLabelText("Search connectors");
 
@@ -158,6 +176,10 @@ describe("CatalogueGrid", () => {
     expect(screen.getByText("Notion")).toBeTruthy();
 
     expect(screen.getByRole("status").textContent).toBe("1 of 2 connectors");
+
+    fireEvent.change(search, { target: { value: "example labs" } });
+    expect(screen.queryByText("GitHub")).toBeNull();
+    expect(screen.getByText("Notion")).toBeTruthy();
 
     fireEvent.change(search, { target: { value: "spreadsheets" } });
     expect(screen.getByRole("status").textContent).toBe("No connectors match that search.");
@@ -170,7 +192,7 @@ describe("ConnectorAvailability", () => {
   it("gives someone who may change it the state and a switch named for what it controls", () => {
     const onChange = vi.fn();
     render(
-      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" turnedOffBy={null} onChange={onChange} />,
+      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" blocked={null} onChange={onChange} />,
     );
     fireEvent.click(screen.getByRole("switch", { name: "GitHub available in Acme" }));
 
@@ -180,7 +202,7 @@ describe("ConnectorAvailability", () => {
 
   it("gives anyone else the state in words, with no switch at all", () => {
     render(
-      <ConnectorAvailability available={false} connectorName="GitHub" scopeName="Acme" turnedOffBy={null} onChange={null} />,
+      <ConnectorAvailability available={false} connectorName="GitHub" scopeName="Acme" blocked={null} onChange={null} />,
     );
 
     expect(screen.queryByRole("switch")).toBeNull();
@@ -188,9 +210,9 @@ describe("ConnectorAvailability", () => {
     expect(screen.getByText("GitHub is disabled in Acme.")).toBeTruthy();
   });
 
-  it("says when the level above has it off, with no switch to fight it", () => {
+  it("says what stops it being switched here, with no switch to fight it", () => {
     render(
-      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" turnedOffBy="SandboxAQ" onChange={() => {}} />,
+      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" blocked="Off for SandboxAQ" onChange={() => {}} />,
     );
 
     expect(screen.getByText("Off for SandboxAQ")).toBeTruthy();

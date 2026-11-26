@@ -2,13 +2,18 @@
 together. The two call sites (inbound bridge, agent send_media) are tested
 separately; this covers the decisions they share."""
 
+import ast
 import io
+import json
 import logging
+import subprocess
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 from pypdf import PdfReader, PdfWriter
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core import file_text as file_text_module
 from switch_core.file_text import read_file_text
@@ -29,10 +34,12 @@ class _ContentTrustClient:
     def __init__(self) -> None:
         self.checked: list[tuple[str, str]] = []
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return True
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.checked.append((role, content))
         finding = (TrustFinding(category="test", detector_name="t", severity="high"),)
         if "FORBIDDEN" in content:
@@ -116,10 +123,14 @@ async def test_text_named_as_a_document_is_checked_through_the_worker() -> None:
     assert file_text.text == secret.decode()
 
 
-async def test_an_image_alone_carries_no_note_and_is_not_checked() -> None:
+async def test_an_image_alone_carries_no_note_and_is_not_checked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
@@ -129,11 +140,14 @@ async def test_an_image_alone_carries_no_note_and_is_not_checked() -> None:
 
 
 async def test_an_image_still_blocks_when_unchecked_files_are_not_relayed(
+    session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(attachments, "RELAY_UNCHECKED_FILES", False)
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
@@ -151,10 +165,14 @@ def test_long_text_is_cut_to_the_limit() -> None:
     assert file_text.checked_part == "the first 20,000 characters"
 
 
-async def test_a_blocked_file_blocks_and_names_the_file() -> None:
+async def test_a_blocked_file_blocks_and_names_the_file(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[(b"fine", "a.txt", "text/plain"), (b"FORBIDDEN", "b.txt", "text/plain")],
         room_id="room-1",
@@ -164,9 +182,13 @@ async def test_a_blocked_file_blocks_and_names_the_file() -> None:
     assert sorted(content for _, content in client.checked) == ["FORBIDDEN", "fine"]
 
 
-async def test_a_redacted_file_blocks_because_a_file_cannot_be_redacted() -> None:
+async def test_a_redacted_file_blocks_because_a_file_cannot_be_redacted(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[(b"my SECRET", "notes.md", "text/markdown")],
         room_id="room-1",
@@ -176,10 +198,14 @@ async def test_a_redacted_file_blocks_because_a_file_cannot_be_redacted() -> Non
     assert "cannot be redacted" in verdict.block_reasons[0]
 
 
-async def test_unreadable_flagged_and_long_files_each_carry_a_note() -> None:
+async def test_unreadable_flagged_and_long_files_each_carry_a_note(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="assistant",
         files=[
             (b"\x89PNG", "cat.png", "image/png"),
@@ -205,12 +231,14 @@ async def test_unreadable_flagged_and_long_files_each_carry_a_note() -> None:
     assert len(client.checked) == 2
 
 
-async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checked() -> (
-    None
-):
+async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[(b" " * TRUST_FILE_TEXT_LIMIT + b"FORBIDDEN", "pad.txt", "text/plain")],
         room_id="room-1",
@@ -224,11 +252,14 @@ async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checke
 
 
 async def test_unchecked_files_block_when_the_policy_says_so(
+    session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(attachments, "RELAY_UNCHECKED_FILES", False)
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
@@ -448,11 +479,15 @@ def test_a_header_not_stored_or_deflated_is_named_as_not_checked() -> None:
     )
 
 
-async def test_a_renamed_header_is_found_through_the_relationships() -> None:
+async def test_a_renamed_header_is_found_through_the_relationships(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # Word finds a header by the body's relationships, not by its file name.
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[
             (
@@ -481,7 +516,9 @@ def test_a_body_the_package_names_elsewhere_is_the_one_read() -> None:
     assert "a decoy" not in file_text.text
 
 
-async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note() -> None:
+async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     data = _docx(
         "the body",
         links=(
@@ -498,6 +535,8 @@ async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note() -> No
     )
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[(data, "memo.docx", _DOCX_TYPE)],
         room_id="room-1",
@@ -580,13 +619,17 @@ def test_a_pdf_page_inherits_its_fonts_from_the_page_tree() -> None:
 
 
 async def test_a_document_that_takes_too_long_to_read_is_not_checked(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(file_text_module, "_WORKER_TIMEOUT_SECONDS", 0)
     client = _ContentTrustClient()
     with caplog.at_level(logging.WARNING):
         verdict = await check_attachments(
             client,  # type: ignore[arg-type]
+            session_factory,
+            tenant_id="tenant-1",
             role="user",
             files=[(_pdf("FORBIDDEN"), "slow.pdf", "application/pdf")],
             room_id="room-1",
@@ -620,10 +663,14 @@ async def test_a_document_that_needs_too_much_memory_is_not_checked(
     assert file_text.unreadable_reason == "it could not be read within Switch's limits"
 
 
-async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks() -> None:
+async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[
             (_docx("FORBIDDEN plan"), "plan.docx", _DOCX_TYPE),
@@ -637,9 +684,13 @@ async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks() -> None:
     assert "report.pdf was blocked" in reasons
 
 
-async def test_a_scanned_pdf_is_relayed_with_a_not_checked_note() -> None:
+async def test_a_scanned_pdf_is_relayed_with_a_not_checked_note(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        session_factory,
+        tenant_id="tenant-1",
         role="user",
         files=[(_pdf(None), "scan.pdf", "application/pdf")],
         room_id="room-1",
@@ -680,3 +731,49 @@ def test_a_dtd_in_utf16_is_still_refused() -> None:
     ).encode("utf-16")
     file_text = extract_file_text(_docx_with(document), _DOCX_TYPE, "evil.docx")
     assert file_text.text is None
+
+
+# Windows has no `resource` (nor the other Unix-only modules below); a
+# module-level import of one stops switch-core from starting there (CHOO-4461).
+_UNIX_ONLY_MODULES = {"resource", "fcntl", "pwd", "grp", "termios", "tty", "pty"}
+
+_WITHOUT_RESOURCE = """
+import json, runpy, sys
+sys.modules["resource"] = None  # as on Windows: importing it fails
+import switch_core.file_text
+sys.argv = ["file_text", "docx", str(256 * 1024 * 1024)]
+runpy.run_module("switch_core.file_text", run_name="__main__")
+"""
+
+
+def test_the_reader_imports_and_its_worker_runs_without_resource() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", _WITHOUT_RESOURCE],
+        input=_docx("the body"),
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr.decode()
+    assert "the body" in json.loads(completed.stdout)["text"]
+
+
+def test_switch_core_imports_no_unix_only_module_at_load_time() -> None:
+    """Only module-level imports count: one inside a function, guarded for
+    the platform, does not stop switch-core from loading."""
+    import switch_core
+
+    offenders = []
+    for path in Path(switch_core.__file__).parent.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                if name.split(".")[0] in _UNIX_ONLY_MODULES:
+                    offenders.append(f"{path.name}:{node.lineno} {name}")
+    assert offenders == []

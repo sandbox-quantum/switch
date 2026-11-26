@@ -1,4 +1,4 @@
-"""The boot of a Switch cloud machine that runs one agent controller per workspace."""
+"""The boot of a Switch Cloud machine that runs one agent controller per workspace."""
 
 from __future__ import annotations
 
@@ -381,6 +381,7 @@ def test_a_seat_that_left_keeps_its_index_and_its_data_and_its_controller_is_sto
         "/usr/bin/systemctl",
         "stop",
         "switch-agent-2200@*.service",
+        "switch-agent-2200-codex@*.service",
     ] in commands.calls
     assert (left.data_dir / "controller.db").read_text() == "kept"
     assert setups(commands) == ["switch-controller"]
@@ -622,7 +623,7 @@ def test_a_fresh_machine_enrolls_then_runs_its_agents_as_users_of_their_own(mach
         "/opt/switch/controller/bin/switch-agent-controller",
     ]
     assert enroll[enroll.index("--code") + 1] == CODE
-    assert enroll[enroll.index("--name") + 1] == "Switch cloud"
+    assert enroll[enroll.index("--name") + 1] == "Switch Cloud"
     assert enroll[enroll.index("--data-dir") + 1] == str(machine / ".switch-controller")
     [setup] = commands.ran("install-service")
     assert setup[:2] == [

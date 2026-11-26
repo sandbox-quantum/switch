@@ -5,6 +5,7 @@ The period arithmetic and the spend sum are SQL, so none of this is mocked.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -25,6 +26,8 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores import budget_store
 from switch_core.db.stores.budget_store import BudgetNotFound, BudgetStore
+from switch_core.logging_context import structured_fields
+from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 
 
 async def _agent(session: AsyncSession, name: str) -> Agent:
@@ -324,7 +327,7 @@ class TestGuard:
             await session.flush()
 
             await BudgetGuard(BudgetStore()).require_within(
-                session, tenant_id=TENANT_ZERO_ID, agent_id=agent.id
+                session, tenant_id=TENANT_ZERO_ID, agent_id=agent.id, room_id="room-1"
             )
 
     async def test_the_budget_that_stops_the_agent_longest_is_reported(
@@ -350,10 +353,44 @@ class TestGuard:
 
             with pytest.raises(BudgetExceeded) as stopped:
                 await BudgetGuard(BudgetStore()).require_within(
-                    session, tenant_id=TENANT_ZERO_ID, agent_id=agent.id
+                    session,
+                    tenant_id=TENANT_ZERO_ID,
+                    agent_id=agent.id,
+                    room_id="room-1",
                 )
 
         assert stopped.value.standing.metric == "messages"
         assert str(stopped.value).startswith(
             "This workspace has reached its budget of 2 messages per 24h."
         )
+
+    async def test_a_stopped_agent_is_a_security_event_once_per_period(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+        guard = BudgetGuard(BudgetStore())
+        async with session_factory() as session:
+            agent = await _agent(session, "stopped-twice")
+            budget = await _budget(session, agent_id=agent.id)
+            session.add(_spent(agent.client_id, 10))
+            await session.flush()
+
+            for _ in range(3):
+                with pytest.raises(BudgetExceeded):
+                    await guard.require_within(
+                        session,
+                        tenant_id=TENANT_ZERO_ID,
+                        agent_id=agent.id,
+                        room_id="room-1",
+                    )
+
+        [record] = [r for r in caplog.records if r.name == SECURITY_LOGGER_NAME]
+        fields = structured_fields(record)
+        assert fields["switch"]["event"] == "security.budget.exceeded"
+        assert fields["switch"]["scope"] == "log"
+        assert fields["switch"]["agent_id"] == agent.id
+        assert fields["switch"]["room_id"] == "room-1"
+        assert fields["switch"]["target_id"] == budget.id
+        assert fields["security_details"]["spent"] == 10

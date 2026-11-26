@@ -17,14 +17,14 @@ import {
 
 /**
  * The modes to try for each runtime mode, best first. `agy acp` offers
- * `default`, `accept-edits` and `plan`; the retired `antigravity-acp` offered
- * `auto_edit` and `yolo`. Full access needs no mode of its own: the adapter
- * approves every request a full-access session receives.
+ * `default`, `accept-edits`, `auto` and `plan`; the retired `antigravity-acp`
+ * offered `auto_edit` and `yolo`. Full access needs no mode of its own: the
+ * adapter approves every request a full-access session receives.
  */
 const MODE_PREFERENCES: Record<RuntimeMode, readonly string[]> = {
   'full-access': ['yolo', 'default'],
   'auto-accept-edits': ['auto_edit', 'accept-edits', 'default'],
-  auto: ['auto_edit', 'accept-edits', 'default'],
+  auto: ['auto', 'auto_edit', 'accept-edits', 'default'],
   'approval-required': ['default'],
 };
 
@@ -77,6 +77,9 @@ export const antigravityAcp: AcpProviderHooks = {
   launch: antigravityLaunch,
   loginCommand: AGY_LOGIN,
   loginCommandFor: antigravityLoginCommand,
+  // agy 1.5 connects to HTTP MCP servers, headers included, without declaring
+  // `mcpCapabilities.http`.
+  mcpCapabilities: { http: true },
   // A check must never sign in, nor change how the CLI signs in: `authenticate`
   // with Google's methods opens a browser, and agy keeps the method it is
   // sent, so an API key chosen once would replace the user's Google sign-in.
@@ -123,21 +126,27 @@ export const antigravityAcp: AcpProviderHooks = {
   alreadySignedIn: async ({ binaryPath, request }) =>
     !isLegacyAntigravityRuntime(binaryPath) && (await agySignedIn(request)),
   promptCapabilities: { image: true, audio: true, embeddedContext: true },
-  // Antigravity has no reviewer of its own, so auto mode is its auto-edit
-  // mode: edits run, commands and connector calls still ask.
+  // agy's own Auto mode is used where offered, falling back to auto-edit on
+  // older runtimes.
   sessionMode: antigravitySessionMode,
   nativeSessionIdPrefix: {
     prefix: 'acp:',
     legacyMessage:
       'This conversation belongs to the previous Antigravity CLI runtime. Start a fresh ACP conversation; the existing transcript is preserved.',
   },
-  mcpServerOf: (toolCall) => {
+  mcpServerOf: (toolCall, servers) => {
     const meta = toolCall._meta as
       | { is_mcp_tool_call?: boolean; mcp?: { server?: unknown } }
       | undefined;
-    return meta?.is_mcp_tool_call === true && typeof meta.mcp?.server === 'string'
-      ? meta.mcp.server
-      : undefined;
+    if (meta?.is_mcp_tool_call === true && typeof meta.mcp?.server === 'string')
+      return meta.mcp.server;
+    // agy 1.5 sends no `_meta`, only the tool as `mcp_<server>_<tool>`; the
+    // longest registered server wins, since server names may hold `_`.
+    const name = (toolCall as { name?: unknown }).name;
+    if (typeof name !== 'string') return undefined;
+    return [...servers]
+      .filter((server) => name.startsWith(`mcp_${server}_`))
+      .sort((a, b) => b.length - a.length)[0];
   },
   // `agy acp` asks its questions as form elicitations when the client says
   // it can answer them; otherwise it ends the turn on an unanswered question.

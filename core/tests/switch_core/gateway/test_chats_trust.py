@@ -4,7 +4,10 @@ attach are checked before anything is posted, as on every other platform."""
 from __future__ import annotations
 
 import httpx
+from sqlalchemy import select
 
+from switch_core.db.audit import AuditAction
+from switch_core.db.models import AuditEvent
 from switch_core.trust.client import TrustCheckResult, TrustFinding
 from tests.switch_core.gateway.conftest import _Harness
 
@@ -17,10 +20,12 @@ class _ContentTrustClient:
     def __init__(self) -> None:
         self.checked: list[tuple[str, str]] = []
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return True
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.checked.append((role, content))
         if "FORBIDDEN" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)
@@ -93,6 +98,22 @@ async def test_a_blocked_message_without_files_posts_nothing(chats: _Harness) ->
     assert sent.status_code == 422
     assert sent.json()["detail"]["code"] == "TRUST_BLOCKED"
     assert await chats.message_rows(room_id) == []
+    async with chats.factory() as session:
+        [row] = (
+            (
+                await session.execute(
+                    select(AuditEvent).where(
+                        AuditEvent.action == AuditAction.TRUST_MESSAGE_BLOCKED
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert (row.target_type, row.target_id) == ("room", room_id)
+    assert row.details is not None
+    assert row.details["role"] == "user"
+    assert "FORBIDDEN" not in str(row.details)
 
 
 async def test_an_unchecked_file_is_posted_with_a_note_and_a_redacted_caption(

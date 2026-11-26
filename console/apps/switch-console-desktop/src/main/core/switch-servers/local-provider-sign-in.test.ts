@@ -47,7 +47,7 @@ describe('local Codex subscription detection', () => {
   });
   it('keeps partial contents out of errors and detects the completed write', async () => {
     await writeFile(localProviderAuthPath('codex'), '{"placeholder-private-content":');
-    await expect(localSignIn('codex')).rejects.toThrow('Waiting for Codex');
+    await expect(localSignIn('codex')).rejects.toThrow('Waiting for OpenAI Codex');
     await writeFile(localProviderAuthPath('codex'), JSON.stringify(subscription));
     expect(await localSignIn('codex')).toBe(JSON.stringify(subscription));
   });

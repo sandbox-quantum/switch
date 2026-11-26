@@ -10,7 +10,8 @@ import {
 } from "../data/visibility";
 
 /** A compact chip summarising an entity's read/write visibility as one of the
- * three access levels (Private / Read-only / Public). */
+ * three access levels (Private / Read-only / Public). What everyone can see
+ * is filled; private is outlined, the lighter weight. */
 export function AccessChip({
   pair,
   size = "small",
@@ -18,13 +19,21 @@ export function AccessChip({
   pair: VisibilityPair;
   size?: "small" | "medium";
 }) {
-  const meta = ACCESS_META[toAccessLevel(pair)];
-  return <Chip label={meta.label} size={size} color={meta.color} />;
+  const level = toAccessLevel(pair);
+  const meta = ACCESS_META[level];
+  return (
+    <Chip label={meta.label} size={size} color={meta.color} variant={level === "private" ? "outlined" : "filled"} />
+  );
 }
 
 interface AccessSelectProps {
-  value: AccessLevel;
+  /** Empty when nothing is chosen yet; `emptyHelper` then says what happens. */
+  value: AccessLevel | "";
   onChange: (level: AccessLevel) => void;
+  /** The levels offered, where not all three apply (a room is public or
+   * private). */
+  levels?: AccessLevel[];
+  emptyHelper?: string;
   disabled?: boolean;
   label?: string;
   /** Helper text per level, where the shared wording does not fit the
@@ -36,13 +45,15 @@ interface AccessSelectProps {
   sx?: SxProps<Theme>;
 }
 
-/** A single 3-option select for the access level, with per-level helper text.
- * Replaces the old public/private visibility dropdown. */
+/** A single select for the access level (all three, or the `levels` given),
+ * with per-level helper text. */
 export function AccessSelect({
   value,
   onChange,
   disabled,
   label = "Access",
+  levels = ACCESS_LEVELS,
+  emptyHelper,
   helpers,
   optionLabels,
   sx,
@@ -54,10 +65,10 @@ export function AccessSelect({
       value={value}
       onChange={(e) => onChange(e.target.value as AccessLevel)}
       disabled={disabled}
-      helperText={helpers?.[value] ?? ACCESS_META[value].helper}
+      helperText={value === "" ? emptyHelper : (helpers?.[value] ?? ACCESS_META[value].helper)}
       sx={sx}
     >
-      {ACCESS_LEVELS.map((lvl) => (
+      {levels.map((lvl) => (
         <MenuItem key={lvl} value={lvl}>
           {optionLabels?.[lvl] ?? ACCESS_META[lvl].optionLabel}
         </MenuItem>

@@ -16,9 +16,10 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import TENANT_ZERO_ID, Tenant
+from switch_core.db.models import TENANT_ZERO_ID, DecisionSettings, Tenant
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.decision.client import (
+    MAX_MODEL_LABELS,
     ContextMessage,
     Decided,
     DecisionAgent,
@@ -32,7 +33,12 @@ from switch_core.decision.client import (
     confidence_bucket,
     decide_url,
 )
-from switch_core.decision.settings import DecisionAvailability, ServerDefault
+from switch_core.decision.settings import (
+    NO_BACKEND_REASON,
+    UNKNOWN_CHOICE_REASON,
+    DecisionAvailability,
+    ServerDefault,
+)
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import (
     DECISION_BACKEND_ERRORS,
@@ -307,7 +313,7 @@ class TestTheServerDefault:
 
         assert isinstance(outcome, Unavailable)
         assert outcome.reason is not None
-        assert "Decision routing" in outcome.reason
+        assert "Message routing" in outcome.reason
 
     async def test_the_flag_off_is_unavailable(
         self,
@@ -520,22 +526,79 @@ class TestEachWorkspacesBackend:
         assert headers["x-decision-anthropic-key"] == "fake-key-AwcA"
         assert headers["authorization"] == "Bearer server-key"
 
-    async def test_bedrock_is_asked_for_only_where_the_server_allows_it(
+    @pytest.mark.parametrize(
+        ("backend", "header"),
+        [
+            ("haiku_bedrock", "bedrock"),
+            ("self_hosted", "systemone"),
+            ("gemini", "gemini_decision"),
+        ],
+    )
+    async def test_a_service_run_choice_names_its_backend_and_sends_no_key(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         stub: _Stub,
         http: httpx.AsyncClient,
+        backend: str,
+        header: str,
     ) -> None:
-        await _save(session_factory, TENANT_ZERO_ID, backend="haiku_bedrock")
+        # Whether the service runs it is the service's say (its /health, read
+        # by the settings page), not DECISION_BEDROCK_ENABLED's: the decision
+        # is asked for either way.
+        await _save(session_factory, TENANT_ZERO_ID, backend=backend)
 
-        refused = await _decide(_client(session_factory, http, stub.url))
-        allowed = await _decide(_client(session_factory, http, stub.url, bedrock=True))
+        outcome = await _decide(
+            _client(session_factory, http, stub.url, api_key="server-key")
+        )
 
-        assert isinstance(refused, Unavailable)
-        assert isinstance(allowed, Decided) and allowed.backend == "haiku_bedrock"
+        assert isinstance(outcome, Decided) and outcome.backend == backend
         [(headers, _)] = stub.received
-        assert headers["x-decision-backend"] == "bedrock"
+        assert headers["x-decision-backend"] == header
+        assert headers["authorization"] == "Bearer server-key"
         assert "x-decision-anthropic-key" not in headers
+
+    @pytest.mark.parametrize("backend", ["haiku_bedrock", "self_hosted", "gemini"])
+    async def test_a_service_run_choice_without_a_server_service_is_unavailable(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+        backend: str,
+    ) -> None:
+        await _save(session_factory, TENANT_ZERO_ID, backend=backend)
+
+        outcome = await _decide(_client(session_factory, http, None))
+
+        assert isinstance(outcome, Unavailable)
+        assert outcome.reason == NO_BACKEND_REASON
+        assert stub.received == []
+
+    async def test_a_choice_this_release_does_not_know_is_off_not_a_crash(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A newer release wrote it (a rolling deploy, or a rollback): nothing
+        # is sent anywhere the workspace didn't choose, and it is logged. The
+        # CHECK keeps such a value out of this schema, so the store hands it
+        # over as the newer schema would.
+        client = _client(session_factory, http, stub.url)
+
+        async def newer_row(session: AsyncSession, tenant_id: str) -> DecisionSettings:
+            return DecisionSettings(tenant_id=tenant_id, backend="from_the_future")
+
+        monkeypatch.setattr(client.availability.store, "get", newer_row)
+
+        with caplog.at_level(logging.WARNING):
+            outcome = await _decide(client)
+
+        assert isinstance(outcome, Unavailable)
+        assert outcome.reason == UNKNOWN_CHOICE_REASON
+        assert stub.received == []
+        assert "'from_the_future'" in caplog.text
 
     async def test_a_cached_setting_is_dropped_on_forget(
         self,
@@ -740,13 +803,13 @@ class TestTheTestButton:
         no_key = await _client(session_factory, http, stub.url).test(
             backend="haiku_anthropic", endpoint=None, api_key=None, threshold=None
         )
-        bedrock = await _client(session_factory, http, stub.url).test(
-            backend="haiku_bedrock", endpoint=None, api_key=None, threshold=None
+        self_hosted = await _client(session_factory, http, None).test(
+            backend="self_hosted", endpoint=None, api_key=None, threshold=None
         )
 
         assert no_service.error_code == "not_configured"
         assert no_key.error_code == "not_configured"
-        assert bedrock.error_code == "backend_unavailable"
+        assert self_hosted.error_code == "not_configured"
         assert stub.received == []
 
     async def test_the_server_default_with_the_servers_own_key(
@@ -867,7 +930,7 @@ class TestTheOutboundPolicy:
 
 class TestMetrics:
     """What an operator's collector receives for each decision: counts by
-    backend and outcome, failures by reason, and timings, with no room,
+    backend, model and outcome, failures by reason, and timings, with no room,
     agent or message in any attribute."""
 
     async def test_an_answer_with_an_agent(
@@ -880,16 +943,141 @@ class TestMetrics:
             await _decide(_client(session_factory, http, stub.url))
             readings = Readings(registry)
 
-        backend = "server_default"
+        series = {"backend": "server_default", "model": "clef-flash"}
+        assert readings.total(DECISION_REQUESTS.name, **series, outcome="agent") == 1
+        assert readings.count(DECISION_DURATION.name, **series) == 1
+        assert readings.count(DECISION_CONFIDENCE.name, **series) == 1
+        assert readings.count(DECISION_MODEL_TIME.name, **series) == 1
+        assert readings.total(DECISION_FAILURES.name) == 0
+        assert readings.attribute_values() <= {"server_default", "clef-flash", "agent"}
+
+    async def test_two_models_behind_the_server_default_are_told_apart(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        client = _client(session_factory, http, stub.url)
+
+        with recording_metrics() as registry:
+            stub.body = json.dumps({**_GOOD, "model": "strands-decider-E4B"}).encode()
+            await _decide(client)
+            stub.body = json.dumps(
+                {**_GOOD, "agent": None, "model": "gemini-decision-1"}
+            ).encode()
+            await _decide(client)
+            readings = Readings(registry)
+
+        def requests(model: str, outcome: str) -> float:
+            return readings.total(
+                DECISION_REQUESTS.name,
+                backend="server_default",
+                model=model,
+                outcome=outcome,
+            )
+
+        assert requests("strands-decider-E4B", "agent") == 1
+        assert requests("gemini-decision-1", "none") == 1
+        assert readings.total(DECISION_REQUESTS.name, backend="server_default") == 2
+        for model in ("strands-decider-E4B", "gemini-decision-1"):
+            assert readings.count(DECISION_CONFIDENCE.name, model=model) == 1
+
+    async def test_haiku_is_named_by_the_model_it_answered_with(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        await _save(
+            session_factory,
+            TENANT_ZERO_ID,
+            backend="haiku_anthropic",
+            api_key="fake-key-AwcA",
+        )
+        stub.body = json.dumps({**_GOOD, "model": "claude-haiku-5-5"}).encode()
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
         assert (
-            readings.total(DECISION_REQUESTS.name, backend=backend, outcome="agent")
+            readings.total(
+                DECISION_REQUESTS.name,
+                backend="haiku_anthropic",
+                model="claude-haiku-5-5",
+                outcome="agent",
+            )
             == 1
         )
-        assert readings.count(DECISION_DURATION.name, backend=backend) == 1
-        assert readings.count(DECISION_CONFIDENCE.name, backend=backend) == 1
-        assert readings.count(DECISION_MODEL_TIME.name, backend=backend) == 1
-        assert readings.total(DECISION_FAILURES.name) == 0
-        assert readings.attribute_values() <= {backend, "agent"}
+
+    async def test_a_workspace_endpoints_model_name_is_not_kept(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        other: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        await _save(
+            session_factory, TENANT_ZERO_ID, backend="endpoint", endpoint=other.url
+        )
+        other.body = json.dumps({**_GOOD, "model": "acme-corp-private-1"}).encode()
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        assert (
+            readings.total(
+                DECISION_REQUESTS.name,
+                backend="endpoint",
+                model="workspace_endpoint",
+                outcome="agent",
+            )
+            == 1
+        )
+        assert "acme-corp-private-1" not in readings.attribute_values()
+
+    @pytest.mark.parametrize(
+        "name", ["", "has spaces in it", "x" * 81, "-leading-dash", "naïve"]
+    )
+    async def test_a_model_name_that_is_not_plain_is_other(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+        name: str,
+    ) -> None:
+        stub.body = json.dumps({**_GOOD, "model": name}).encode()
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        assert readings.total(DECISION_REQUESTS.name, model="other") == 1
+        if name:
+            assert name not in readings.attribute_values()
+
+    async def test_only_a_few_model_names_are_kept(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        client = _client(session_factory, http, stub.url)
+        names = [f"model-{n}" for n in range(MAX_MODEL_LABELS + 2)]
+
+        with recording_metrics() as registry:
+            for name in [*names, names[0]]:
+                stub.body = json.dumps({**_GOOD, "model": name}).encode()
+                await _decide(client)
+            readings = Readings(registry)
+
+        kept = names[:MAX_MODEL_LABELS]
+        for name in kept:
+            assert readings.total(DECISION_REQUESTS.name, model=name) == (
+                2 if name == names[0] else 1
+            )
+        assert readings.total(DECISION_REQUESTS.name, model="other") == 2
 
     async def test_an_answer_of_nobody(
         self,
@@ -936,9 +1124,15 @@ class TestMetrics:
             await _decide(_client(session_factory, http, stub.url))
             readings = Readings(registry)
 
-        assert readings.total(DECISION_REQUESTS.name, outcome="failed") == 1
-        assert readings.total(DECISION_FAILURES.name, reason="timeout") == 1
-        assert readings.count(DECISION_DURATION.name) == 1
+        assert (
+            readings.total(DECISION_REQUESTS.name, model="unknown", outcome="failed")
+            == 1
+        )
+        assert (
+            readings.total(DECISION_FAILURES.name, model="unknown", reason="timeout")
+            == 1
+        )
+        assert readings.count(DECISION_DURATION.name, model="unknown") == 1
         assert readings.total(DECISION_BACKEND_ERRORS.name) == 0
 
     async def test_a_name_that_was_not_a_candidate(
@@ -953,8 +1147,16 @@ class TestMetrics:
             await _decide(_client(session_factory, http, stub.url))
             readings = Readings(registry)
 
-        assert readings.total(DECISION_FAILURES.name, reason="bad_answer") == 1
-        assert readings.total(DECISION_REQUESTS.name, outcome="failed") == 1
+        assert (
+            readings.total(
+                DECISION_FAILURES.name, model="clef-flash", reason="bad_answer"
+            )
+            == 1
+        )
+        assert (
+            readings.total(DECISION_REQUESTS.name, model="clef-flash", outcome="failed")
+            == 1
+        )
         assert readings.count(DECISION_CONFIDENCE.name) == 0
 
     async def test_a_key_the_server_cannot_decrypt_is_not_timed(
@@ -979,7 +1181,10 @@ class TestMetrics:
 
         assert (
             readings.total(
-                DECISION_FAILURES.name, backend="endpoint", reason="key_unreadable"
+                DECISION_FAILURES.name,
+                backend="endpoint",
+                model="workspace_endpoint",
+                reason="key_unreadable",
             )
             == 1
         )
@@ -1028,7 +1233,10 @@ class TestBackendErrorKind:
         assert isinstance(outcome, Failed) and outcome.reason == "error_status"
         assert (
             readings.total(
-                DECISION_BACKEND_ERRORS.name, backend="server_default", kind=kind
+                DECISION_BACKEND_ERRORS.name,
+                backend="server_default",
+                model="unknown",
+                kind=kind,
             )
             == 1
         )

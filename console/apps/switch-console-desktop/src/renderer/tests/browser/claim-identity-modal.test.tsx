@@ -7,6 +7,10 @@
  * it shows the code, how to post it, when it runs out, and waits — offering a
  * new code and a way to cancel — until the link turns up confirmed. A server
  * that predates this links at once, and the dialog behaves as it always did.
+ *
+ * A current server also messages the account with a number to tap (CHOO-4121).
+ * When it went out the number leads and the code is the fallback; when it could
+ * not, the server's reason is shown and the code leads as before.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -30,6 +34,7 @@ const issueIdentityLinkCode = vi.hoisted(() => vi.fn());
 const releaseBridgeIdentity = vi.hoisted(() => vi.fn());
 const cancelIdentityLinkRequest = vi.hoisted(() => vi.fn());
 const reportIdentityConfirmed = vi.hoisted(() => vi.fn());
+const openExternal = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
@@ -44,6 +49,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       cancelIdentityLinkRequest,
       reportIdentityConfirmed,
     },
+    app: { openExternal },
   },
   events: { on: () => () => {}, emit: () => {} },
 }));
@@ -72,13 +78,16 @@ const SLACK: RemoteBridge = {
   channelCreationSupported: true,
   canCreateChannels: true,
   directorySearchSupported: true,
+  directorySearchHint: 'Your name or handle',
   attention: null,
   teamPlacementSupported: false,
   channelIdsRefused: null,
   privateChannels: null,
   privateChannelNeedsLinkedAccount: false,
+  publicChannelAddsCreator: false,
   receivesWebhooks: false,
   webhookUrl: null,
+  commands: {},
 };
 
 const PERSON = {
@@ -86,6 +95,7 @@ const PERSON = {
   username: 'ada',
   displayName: 'Ada Lovelace',
   email: null,
+  hasHandle: true,
   knownExternalUserId: 'eu-1',
   claimedBy: [],
 };
@@ -99,7 +109,17 @@ const CODE: LinkCode = {
   expiresAt: inMinutes(30),
   expiresInSeconds: 1800,
   instructions: 'Run `/link-account 7KQ2-M9XD` from that account in any channel Switch is in.',
+  prompt: null,
 };
+
+const SENT: LinkCode = {
+  ...CODE,
+  prompt: { number: 42, sent: true, unavailableReason: null, link: null },
+};
+
+const DM_LINK = 'https://slack.com/app_redirect?channel=D42&team=T1';
+
+const NOT_SENT_REASON = 'Slack does not let Switch message this person directly.';
 
 const LINKED: LinkedIdentity = {
   id: 'eu-1',
@@ -524,6 +544,239 @@ describe('opening straight on a link that needs its code', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(cancelIdentityLinkRequest).not.toHaveBeenCalled();
     expect(releaseBridgeIdentity).not.toHaveBeenCalled();
+  });
+});
+
+describe('a server that messages the account a number to tap', () => {
+  it('leads with the number, and keeps the code as the fallback', async () => {
+    claimReturns({ ...PENDING_RESULT, code: SENT });
+    const el = await render();
+
+    await claimAda(el);
+
+    expect(el.textContent).toContain(
+      'We sent @ada a message in Acme Slack. Tap 42 there to finish linking.'
+    );
+    const number = el.querySelector('[data-testid="link-prompt-number"]');
+    const code = el.querySelector('[data-testid="link-code"]');
+    expect(number?.textContent).toBe('42');
+    expect(code?.textContent).toBe('7KQ2-M9XD');
+    expect(number!.compareDocumentPosition(code!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(el.textContent).toContain(
+      'Didn’t get it, or tapping does nothing? Post this code from that account instead:'
+    );
+    expect(el.textContent).toMatch(/Waiting for confirmation\. The code expires at \d\d:\d\d/);
+    expect(button(el, 'Copy')).toBeDefined();
+    expect(el.querySelector('[data-testid="link-prompt-unavailable"]')).toBeNull();
+    // No link from the server, so nothing to open.
+    expect(button(el, 'Open in Acme Slack')).toBeUndefined();
+  });
+
+  it('opens the message in the chat app, so nobody has to look for it', async () => {
+    openExternal.mockResolvedValue({ success: true });
+    claimReturns({
+      ...PENDING_RESULT,
+      code: { ...SENT, prompt: { ...SENT.prompt!, link: DM_LINK } },
+    });
+    const el = await render();
+    await claimAda(el);
+
+    await click(button(el, 'Open in Acme Slack'));
+
+    expect(openExternal).toHaveBeenCalledWith(DM_LINK);
+    // Still waiting for the tap: opening the message confirms nothing.
+    expect(el.textContent).toContain('Tap 42 there to finish linking.');
+  });
+
+  it('sends again, showing the new number and code', async () => {
+    claimReturns({ ...PENDING_RESULT, code: SENT });
+    issueIdentityLinkCode.mockResolvedValue({
+      kind: 'issued',
+      code: { ...SENT, code: 'ZZ99-AB12', prompt: { ...SENT.prompt!, number: 17 } },
+    });
+    const el = await render();
+    await claimAda(el);
+    expect(button(el, 'Get a new code')).toBeUndefined();
+
+    await click(button(el, 'Send again'));
+
+    expect(issueIdentityLinkCode).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      bridgeId: 'b-slack',
+      identityId: 'eu-1',
+    });
+    expect(el.querySelector('[data-testid="link-prompt-number"]')?.textContent).toBe('17');
+    expect(el.querySelector('[data-testid="link-code"]')?.textContent).toBe('ZZ99-AB12');
+  });
+
+  it('offers to send again once the code runs out', async () => {
+    claimReturns({ ...PENDING_RESULT, code: { ...SENT, expiresInSeconds: 0 } });
+    const el = await render();
+    await claimAda(el);
+
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain('This code has expired. Send again to finish linking.')
+    );
+    expect(button(el, 'Send again')?.disabled).toBe(false);
+  });
+
+  it('says why no message went out, and leads with the code as before', async () => {
+    claimReturns({
+      ...PENDING_RESULT,
+      code: {
+        ...CODE,
+        prompt: { number: 42, sent: false, unavailableReason: NOT_SENT_REASON, link: null },
+      },
+    });
+    const el = await render();
+
+    await claimAda(el);
+
+    expect(el.querySelector('[data-testid="link-prompt-unavailable"]')?.textContent).toBe(
+      `Couldn’t message @ada directly: ${NOT_SENT_REASON}`
+    );
+    expect(el.querySelector('[data-testid="link-prompt-number"]')).toBeNull();
+    expect(el.textContent).not.toContain('We sent');
+    expect(el.textContent).toContain('To finish linking @ada, post this code');
+    expect(el.querySelector('[data-testid="link-code"]')?.textContent).toBe('7KQ2-M9XD');
+    expect(button(el, 'Get a new code')).toBeDefined();
+    expect(button(el, 'Send again')).toBeUndefined();
+  });
+
+  it('shows only the code from a server that sends no message', async () => {
+    claimReturns(PENDING_RESULT);
+    const el = await render();
+
+    await claimAda(el);
+
+    expect(el.querySelector('[data-testid="link-prompt-number"]')).toBeNull();
+    expect(el.querySelector('[data-testid="link-prompt-unavailable"]')).toBeNull();
+    expect(el.textContent).not.toContain('We sent');
+    expect(el.textContent).not.toContain('Didn’t get it');
+    expect(el.textContent).toContain('Waiting for the code. It expires at');
+    expect(button(el, 'Get a new code')).toBeDefined();
+    expect(button(el, 'Send again')).toBeUndefined();
+  });
+
+  it('allows that a link which vanishes may have been declined in the chat app', async () => {
+    claimReturns({ ...PENDING_RESULT, code: SENT });
+    const el = await render();
+    await claimAda(el);
+    await settle();
+
+    // "Not me", or a wrong number, in the message cancels the link.
+    pendingOnServer = [];
+    await act(async () => client.invalidateQueries({ queryKey: myIdentitiesQueryKey('ws-1') }));
+
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain(
+        'The link to @ada was cancelled — it may have been declined in Acme Slack — so its code no longer works.'
+      )
+    );
+    expect(button(el, 'Start again')).toBeDefined();
+  });
+
+  it('asks to tap the number to confirm a link made before confirming', async () => {
+    listMyIdentities.mockResolvedValue([{ ...LINKED, verified: false }]);
+    issueIdentityLinkCode.mockResolvedValue({ kind: 'issued', code: SENT });
+    const el = await render({ identityId: 'eu-1', externalUsername: 'ada', kind: 'unverified' });
+
+    await vi.waitFor(() =>
+      expect(el.querySelector('[data-testid="link-prompt-number"]')?.textContent).toBe('42')
+    );
+    expect(el.textContent).toContain(
+      'Tap 42 there to confirm the link. The link keeps working meanwhile.'
+    );
+    expect(button(el, 'Cancel confirmation')).toBeDefined();
+  });
+
+  it('notices "Not me" removing a link made before confirming', async () => {
+    listMyIdentities.mockResolvedValue([{ ...LINKED, verified: false }]);
+    issueIdentityLinkCode.mockResolvedValue({ kind: 'issued', code: SENT });
+    const el = await render({ identityId: 'eu-1', externalUsername: 'ada', kind: 'unverified' });
+    await vi.waitFor(() =>
+      expect(el.querySelector('[data-testid="link-prompt-number"]')).not.toBeNull()
+    );
+    await settle();
+
+    // "Not me" in the message drops the older link along with the request.
+    listMyIdentities.mockResolvedValue([]);
+    await act(async () => client.invalidateQueries({ queryKey: myIdentitiesQueryKey('ws-1') }));
+
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain(
+        'The link to @ada was removed — it may have been declined in Acme Slack — so it no longer works.'
+      )
+    );
+    expect(button(el, 'Start again')).toBeDefined();
+  });
+});
+
+describe('the search says only what it can find', () => {
+  async function typeInto(el: HTMLElement, text: string): Promise<void> {
+    const input = el.querySelector('input') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        text
+      );
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  it('takes its placeholder from the connection, so email is offered only where it matches', async () => {
+    listBridges.mockResolvedValue([{ ...SLACK, directorySearchHint: 'Your name or handle' }]);
+    const el = await render();
+
+    expect((el.querySelector('input') as HTMLInputElement).placeholder).toBe('Your name or handle');
+  });
+
+  it('names a Telegram user without a username by their name, with no made-up @handle', async () => {
+    listBridges.mockResolvedValue([
+      { ...SLACK, type: 'telegram', displayName: 'Our Telegram', directorySearchSupported: false },
+    ]);
+    searchBridgeDirectory.mockResolvedValue({
+      kind: 'results',
+      note: 'Telegram has no searchable user directory.',
+      users: [
+        {
+          ...PERSON,
+          externalUserId: '42',
+          username: 'MM_42',
+          displayName: 'M M',
+          hasHandle: false,
+          knownExternalUserId: 'eu-42',
+        },
+      ],
+    });
+    const el = await render();
+
+    await typeInto(el, 'M M');
+
+    await vi.waitFor(() => expect(button(el, 'This is me')).toBeDefined());
+    expect(el.textContent).toContain('M M');
+    expect(el.textContent).not.toContain('@MM_42');
+
+    // The confirmation names them the same way, including when Telegram
+    // would not let the bot message them.
+    claimReturns({
+      ...PENDING_RESULT,
+      pending: { ...PENDING_RESULT.pending, id: 'eu-42', externalUsername: 'MM_42' },
+      code: {
+        ...CODE,
+        prompt: {
+          number: 7,
+          sent: false,
+          unavailableReason:
+            'Telegram only lets the bot message people who have started a chat with it.',
+          link: null,
+        },
+      },
+    });
+    await click(button(el, 'This is me'));
+    expect(el.textContent).toContain('Couldn’t message M M directly');
+    expect(el.textContent).toContain('To finish linking M M, post this code');
+    expect(el.textContent).not.toContain('@MM_42');
   });
 });
 

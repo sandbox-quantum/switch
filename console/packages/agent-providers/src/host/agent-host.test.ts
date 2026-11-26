@@ -1,12 +1,14 @@
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import type * as fsPromises from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
+import { removeTestRoot } from '../testing/remove-test-root';
 import {
   MAX_HOST_RESTARTS,
   type OpenAgentStream,
@@ -21,6 +23,7 @@ import {
 import type { AgentStreamDeps } from './agent-host';
 import type { Handoff } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
+import { replaceFile } from './replace-file';
 import { type SessionRequest, SessionLinks } from './session-channel';
 import type * as sessionServices from './session-services';
 import { sharedConfigSchema } from './shared-config';
@@ -30,8 +33,24 @@ import { SESSION_STARTING_MESSAGE, WatcherControl } from './watcher-tools';
 const paths = vi.hoisted(() => ({ root: '' }));
 const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
 // Longer than `eventually` waits, so a slow machine fails on what it waited for, not the clock.
-vi.setConfig({ testTimeout: 20_000 });
+// Windows gets more of both (as ownership-lock.test.ts already does): its
+// watchers and its file system deliver changes later under a loaded runner
+// than a loaded Linux or macOS one does, and a test here can wait on several
+// of them in a row.
+vi.setConfig({ testTimeout: process.platform === 'win32' ? 60_000 : 20_000 });
 
+/** Every path this file's module graph read with `readFile`, so a test can say what was read. */
+const reads = vi.hoisted(() => [] as string[]);
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof fsPromises>();
+  return {
+    ...actual,
+    readFile: ((path: Parameters<typeof actual.readFile>[0], ...rest: unknown[]) => {
+      reads.push(String(path));
+      return (actual.readFile as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as typeof actual.readFile,
+  };
+});
 vi.mock('./launch', () => ({
   sharedSessionRoot: (id: string) => join(paths.root, id),
   sharedSessionsBase: () => paths.root,
@@ -89,7 +108,7 @@ afterEach(async () => {
   supervisors.clear();
   vi.mocked(ensureSharedProcess).mockReset();
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await removeTestRoot(root);
 });
 
 type HostChild = EventEmitter & {
@@ -484,7 +503,7 @@ it('resumes at the server head after its numbering restarts', async () => {
 async function writeFlags(root: string, flags: { enabled: boolean; spawn: boolean }) {
   const temporary = join(root, 'watch.json.tmp');
   await writeFile(temporary, JSON.stringify(flags));
-  await rename(temporary, join(root, 'watch.json'));
+  await replaceFile(temporary, join(root, 'watch.json'));
 }
 
 async function spawning(root: string) {
@@ -1487,6 +1506,7 @@ it('takes the model, approval mode, instructions and advanced configuration from
   };
   edited.execution!.context = 'Answer in one word.';
   edited.execution!.codexConfig = 'model_verbosity = "low"\n';
+  edited.execution!.defaultCodexSandbox = true;
   const saved = watchable(root);
   saved.session = { ...saved.session, agentId: edited.session.agentId, sessionId: 'room-session' };
   saved.start.input.sessionId = 'room-session';
@@ -1512,12 +1532,15 @@ it('takes the model, approval mode, instructions and advanced configuration from
   expect(refreshed.execution).toMatchObject({
     context: 'Answer in one word.',
     codexConfig: 'model_verbosity = "low"\n',
+    defaultCodexSandbox: true,
   });
   expect(refreshed.session.sessionId).toBe('room-session');
   delete edited.start.input.model;
   delete edited.start.input.agentName;
   delete edited.start.input.agentDefinition;
+  delete edited.execution!.defaultCodexSandbox;
   const cleared = withDefinitionOf(refreshed, edited);
+  expect(cleared.execution).not.toHaveProperty('defaultCodexSandbox');
   expect(cleared.start.input.model).toBeUndefined();
   expect(cleared.start.input).not.toHaveProperty('agentName');
   expect(cleared.start.input).not.toHaveProperty('agentDefinition');
@@ -1707,7 +1730,7 @@ it('brings live sessions in step with a rewritten definition, each once its turn
     edited.start.input.model = { id: 'claude-sonnet-4-6' };
     edited.execution!.context = 'New instructions.';
     await writeFile(join(root, 'config.json.next'), JSON.stringify(edited));
-    await rename(join(root, 'config.json.next'), join(root, 'config.json'));
+    await replaceFile(join(root, 'config.json.next'), join(root, 'config.json'));
     await eventually(() => restarted.length === 1);
     // The session in the middle of a turn is left to finish it.
     expect(restarted).toEqual([
@@ -1838,6 +1861,45 @@ it('restarts live sessions once a service is granted to their agent, each once i
     grantsNow.shape = null;
   }
   expect(restarted).toHaveLength(2);
+});
+
+it('checks granted services without reading the agent’s config.json again until it is replaced', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-grants-no-read-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const session = await existing(root, config);
+  await assignTo(root, config, 1, 'room', session.sessionId);
+  await startedWith(session.sessionRoot, '[]');
+  grantsNow.shape = '[]';
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  await hosts.start(session.sessionRoot);
+  hosts.busy(session.sessionRoot, false);
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  const ownConfig = join(root, 'config.json');
+  try {
+    await eventually(() => streams.length === 1);
+    // Let the first pass, which does read it, settle.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    reads.length = 0;
+    // Several grants checks (every 20 ms here) with nothing replaced.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(reads.filter((path) => path === ownConfig)).toEqual([]);
+  } finally {
+    abort.abort();
+    await run;
+    grantsNow.shape = null;
+  }
 });
 
 it('restarts a session for its agent’s granted services once, even if it comes back without them', async () => {

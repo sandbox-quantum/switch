@@ -1,10 +1,11 @@
 import { useMutation } from '@tanstack/react-query';
-import { CircleCheck, LogOut, Pencil, Trash2 } from 'lucide-react';
+import { CircleCheck, LogOut, Pencil, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
+import { showDevTools } from '@renderer/lib/dev-tools';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -19,11 +20,7 @@ import { OnSignedInServer } from './settings-server';
 export function AccountSettingsPage() {
   return (
     <div className="space-y-8 pb-10">
-      <PageHeader
-        sticky
-        title="Your account"
-        description="Your profile in Switch, and how to leave it."
-      />
+      <PageHeader sticky title="Your account" description="Manage your account and settings" />
       <OnSignedInServer>
         {/* Keyed on the server so a half-typed name never carries over to another one. */}
         {({ server, user }) => <Account key={server.id} server={server} user={user} />}
@@ -40,6 +37,8 @@ const Account = observer(function Account({
   user: SwitchUser;
 }) {
   const showDeleteAccount = useShowModal('deleteAccountModal');
+  const resetEnabled =
+    showDevTools() && switchServersStore.authConfigFor(server.id)?.testAccountResetEnabled === true;
   // Only a server that signs people in with a password, and only an account
   // that has one: one made through single sign-on has no password to change.
   const passwords =
@@ -88,13 +87,44 @@ const Account = observer(function Account({
           variant="destructive"
           size="sm"
           onClick={() =>
-            showDeleteAccount({ serverId: server.id, serverName: server.name, email: user.email })
+            showDeleteAccount({
+              serverId: server.id,
+              serverName: server.name,
+              email: user.email,
+              mode: 'delete',
+            })
           }
         >
           <Trash2 className="size-4" />
           Delete my account
         </Button>
       </div>
+
+      {resetEnabled && (
+        <div className="space-y-3 rounded-lg border border-destructive/40 p-4">
+          <div className="space-y-0.5">
+            <p className="text-sm text-destructive">Reset test account</p>
+            <p className="text-sm text-foreground-muted">
+              Development only: wipes this account and everything it owns on this server.
+            </p>
+          </div>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() =>
+              showDeleteAccount({
+                serverId: server.id,
+                serverName: server.name,
+                email: user.email,
+                mode: 'reset',
+              })
+            }
+          >
+            <RotateCcw className="size-4" />
+            Reset test account
+          </Button>
+        </div>
+      )}
     </div>
   );
 });

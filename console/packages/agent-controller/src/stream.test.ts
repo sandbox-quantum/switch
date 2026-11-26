@@ -132,6 +132,8 @@ function run(
     idleTimeoutMs: 200,
     initialBackoffMs: 5,
     maxBackoffMs: 20,
+    suspendedRetryMs: 40,
+    onSuspended: (message) => void states.push(`suspended: ${message}`),
     random: () => 0,
     ...overrides,
   });
@@ -413,6 +415,51 @@ describe('runControllerStream', () => {
     expect(opens).toBe(1);
   });
 
+  it('keeps asking, slowly, while its owner is suspended, and carries on once let in', async () => {
+    const scripted = new ScriptedClient();
+    const tries: number[] = [];
+    scripted.open = async () => {
+      tries.push(Date.now());
+      if (tries.length < 3)
+        throw new ControllerApiError(403, 'account_suspended', 'suspended', false, null);
+      return opened;
+    };
+    scripted.sockets = () => scriptedSocket([state], 'open');
+    const stop = new AbortController();
+    const { states, ending } = run(scripted, stop.signal);
+    await waitFor(() => states.includes('connected'), 'a connection');
+    stop.abort();
+    expect(await ending).toBe('stopped');
+    expect(states.filter((entry) => entry.startsWith('suspended'))).toHaveLength(2);
+    // Half the suspended wait at least (random() is 0 here), not the 5 ms backoff.
+    expect(tries[1] - tries[0]).toBeGreaterThanOrEqual(19);
+    expect(tries[2] - tries[1]).toBeGreaterThanOrEqual(19);
+  });
+
+  it('opens a new connection, slowly, when Switch ends it because its owner is suspended', async () => {
+    const scripted = new ScriptedClient();
+    scripted.sockets = () =>
+      scripted.attaches.length === 1
+        ? scriptedSocket(
+            [
+              state,
+              { event: 'assignment.changed', data: { revision: 5 } },
+              { event: 'evicted', data: { code: 'account_suspended', reason: 'suspended' } },
+            ],
+            1000
+          )
+        : scriptedSocket([refused(403, 'account_suspended')], 4403);
+    const stop = new AbortController();
+    const { frames, states, ending } = run(scripted, stop.signal);
+    await waitFor(() => scripted.opens.length >= 3, 'a third open');
+    stop.abort();
+    expect(await ending).toBe('stopped');
+    // The nudge before the eviction is handed on, so the stopped assignment is pulled.
+    expect(frames.map((frame) => frame.type)).toEqual(['assignment.changed', 'evicted']);
+    expect(states).toContain('suspended: suspended');
+    expect(scripted.staleTokens).toBe(0);
+  });
+
   it('drops a token the socket refused as stale, and attaches again', async () => {
     const scripted = new ScriptedClient();
     scripted.sockets = () =>
@@ -592,6 +639,8 @@ describe('runControllerStream against the controller routes', () => {
       idleTimeoutMs: 30_000,
       initialBackoffMs: 5,
       maxBackoffMs: 20,
+      suspendedRetryMs: 40,
+      onSuspended: () => {},
       random: () => 0,
     });
     await waitFor(() => core.streamCount === 1, 'the socket');

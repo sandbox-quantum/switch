@@ -23,6 +23,17 @@ resource "aws_vpc_security_group_egress_rule" "worker" {
   to_port           = tonumber(each.value)
   ip_protocol       = "tcp"
 }
+# An operator moves a machine's instance onto this group to cut it off. The
+# controller leaves an instance with any other group than `worker` alone, and
+# has no permission to change an instance's groups.
+resource "aws_security_group" "isolation" {
+  name_prefix = "${local.prefix}-isolation-"
+  description = "Isolated hosted worker: no inbound or outbound traffic"
+  vpc_id      = aws_vpc.worker.id
+  ingress     = []
+  egress      = []
+  tags        = local.tags
+}
 resource "aws_iam_role" "machine" {
   name = "${local.prefix}-machine"
   assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{

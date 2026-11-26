@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 import pytest
 import pytest_asyncio
+import requests
+from docker.errors import DockerException
 from sqlalchemy import insert, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
@@ -26,6 +28,9 @@ from testcontainers.postgres import PostgresContainer
 # create_all provisions the full schema (rooms, room_groups, FKs, …).
 import switch_core.db.models  # noqa: F401
 from switch_core import messaging_platforms
+from switch_core.bridges.agent.operations.agent_management import (
+    disable_agent_management,
+)
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.collaboration.platforms import PLATFORMS
 from switch_core.db import encrypted_json
@@ -33,6 +38,7 @@ from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Organization, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
+from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 from switch_core.keys import Keyring
 from switch_core.messages.notify import MessageListener
 from switch_core.tenant_context import tenant_scope
@@ -62,6 +68,24 @@ def _restore_messaging_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         messaging_platforms, "_REGISTERED", dict(messaging_platforms._REGISTERED)
     )
+
+
+@pytest.fixture(autouse=True)
+def _agent_management_off_afterwards() -> Iterator[None]:
+    """Installing agent management (`Management.install`, which the
+    management harness calls) switches its agent operations and cloud
+    enrollment on process-wide, as in production. Switch them off after every
+    test, wherever it lives, so a later test in the same worker does not
+    reach a management port whose database has gone."""
+    yield
+    disable_agent_management()
+    set_cloud_enrollment(None)
+
+
+@pytest.fixture(autouse=True)
+def _controller_token_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every deployment sets it, so every `SwitchConfig` a test builds has one."""
+    monkeypatch.setenv("CONTROLLER_TOKEN_SECRET", "test-controller-token-secret" * 2)
 
 
 async def _seed_tenant_zero(conn: AsyncConnection) -> None:
@@ -189,12 +213,37 @@ def postgres_url() -> Iterator[str]:
     container = PostgresContainer("postgres:16-alpine").with_command(
         "postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
     )
-    with container as pg:
-        host = pg.get_container_host_ip()
-        port = pg.get_exposed_port(5432)
+    # start() inside the try: a readiness wait that times out on a busy runner
+    # leaves a created container behind, and Ryuk may be off (Podman).
+    try:
+        container.start()
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(5432)
         yield (
-            f"postgresql+asyncpg://{pg.username}:{pg.password}"
-            f"@{host}:{port}/{pg.dbname}"
+            f"postgresql+asyncpg://{container.username}:{container.password}"
+            f"@{host}:{port}/{container.dbname}"
+        )
+    finally:
+        _remove(container)
+
+
+def _remove(container: PostgresContainer) -> None:
+    """Delete the session's container, without failing a run over it.
+
+    Every test has run by now. After a whole shard the container's data is
+    large, and a busy CI runner's Docker has taken longer than its client's
+    60 s to delete it: the shard then failed though every test passed. The
+    reaper testcontainers starts with the session (Ryuk) removes the container
+    once the session ends anyway, so a removal that doesn't answer in time is
+    only a warning.
+    """
+    try:
+        container.stop()
+    except (DockerException, requests.exceptions.RequestException) as exc:
+        warnings.warn(
+            f"the test database's container was not removed ({exc!r}); "
+            "the testcontainers reaper removes it when the session ends",
+            stacklevel=2,
         )
 
 

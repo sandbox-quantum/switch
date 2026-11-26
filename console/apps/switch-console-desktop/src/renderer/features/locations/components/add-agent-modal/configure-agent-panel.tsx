@@ -3,15 +3,16 @@ import { CircleAlert, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import {
+  autoModeDescription,
   PERMISSION_COPY,
   UnsafeBadge,
 } from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
-import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { AddressingPolicyControl } from '@renderer/features/switch-servers/addressing-policy-control';
 import type { OptionItem } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
+import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { rpc } from '@renderer/lib/ipc';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
@@ -153,16 +154,17 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
         />
         {settingsOpen && (
           <FieldGroup className="pt-3">
-            <PermissionToggle
-              setting="autoMode"
-              description={
-                form.autoApprove
-                  ? `${PERMISSION_COPY.autoMode.description} ${PERMISSION_COPY.autoMode.overridden}`
-                  : PERMISSION_COPY.autoMode.description
-              }
-              checked={form.autoMode}
-              onCheckedChange={form.setAutoMode}
-            />
+            {form.supportsAutoMode && (
+              <PermissionToggle
+                setting="autoMode"
+                description={autoModeDescription(
+                  form.providerId === null ? [] : [form.providerId],
+                  form.autoApprove
+                )}
+                checked={form.autoMode}
+                onCheckedChange={form.setAutoMode}
+              />
+            )}
             <PermissionToggle
               setting="autoApprove"
               description={PERMISSION_COPY.autoApprove.description}
@@ -233,6 +235,7 @@ export function AgentIdentityFields({
           recognised by. */}
       <div className="flex flex-col items-center gap-1.5 pb-1">
         <AgentIconPicker
+          forNewAgent
           serverId={serverId}
           name={form.agentName}
           iconUrl={form.iconUrl}

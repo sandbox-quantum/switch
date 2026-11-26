@@ -16,6 +16,9 @@ vi.hoisted(() => {
 const state = vi.hoisted(() => ({
   status: null as unknown,
   unreachable: false,
+  kind: 'no-answer' as 'no-answer' | 'not-switch',
+  reason:
+    "Can't reach localhost:41001: nothing is answering at that address and port (ECONNREFUSED).",
   localStart: vi.fn(),
   navigate: vi.fn(),
 }));
@@ -38,6 +41,8 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
     statusFor: () => ({ connected: true }),
     refreshing: new Set(),
     isUnreachable: () => state.unreachable,
+    unreachableReason: () => (state.unreachable ? state.reason : null),
+    unreachableKind: () => (state.unreachable ? state.kind : null),
     isHostBlocked: () => false,
     refreshStatus: () => Promise.resolve(),
     ensureAuthConfig: () => Promise.resolve(),
@@ -84,8 +89,15 @@ vi.mock('@renderer/features/switch-servers/MessagingAppsCard', () => ({
 vi.mock('@renderer/features/switch-servers/GuardrailsSection', () => ({
   GuardrailsSection: () => null,
 }));
-vi.mock('@renderer/features/switch-servers/server-stat-tiles', () => ({
-  ServerStatTiles: () => null,
+vi.mock('@renderer/features/switch-servers/home/use-ai-connected', () => ({
+  useAiConnected: () => ({ connected: null, buddy: null }),
+}));
+// Stubbed whole: loading the real panels would pull in modules these tests mock only in part.
+vi.mock('@renderer/features/switch-servers/home/home-panels', () => ({
+  SignedOutPanel: () => null,
+  ConnectAiPanel: () => null,
+  AskBuddyPanel: () => null,
+  useHomeChips: () => null,
 }));
 vi.mock('@renderer/features/switch-servers/server-sign-in', () => ({
   ServerSignInFields: () => null,
@@ -152,18 +164,57 @@ it('does not blame the connection when the local server is not answering', async
   await render();
 
   expect(document.body.textContent).toContain("Local server isn't answering");
-  expect(document.body.textContent).not.toContain('Check your connection');
+  expect(document.body.textContent).not.toContain('Check the address and your connection');
   expect(button(/^Server status$/)).toBeDefined();
 });
 
-it('still calls an unmanaged server unreachable a connection problem', async () => {
+it('names the address an unmanaged server cannot be reached at, and why', async () => {
   state.unreachable = true;
   LOCAL.managed = false;
   try {
     await render();
-    expect(document.body.textContent).toContain('Check your connection');
+    expect(document.body.textContent).toContain("Can't reach localhost:41001");
+    expect(document.body.textContent).toContain(
+      'Nothing is answering at that address and port (ECONNREFUSED).'
+    );
     expect(button(/^Server status$/)).toBeUndefined();
   } finally {
     LOCAL.managed = true;
   }
+});
+
+async function renderNotSwitch(reason: string) {
+  state.unreachable = true;
+  state.kind = 'not-switch';
+  state.reason = reason;
+  LOCAL.managed = false;
+  try {
+    await render();
+    return document.body.textContent ?? '';
+  } finally {
+    LOCAL.managed = true;
+    state.kind = 'no-answer';
+    state.reason =
+      "Can't reach localhost:41001: nothing is answering at that address and port (ECONNREFUSED).";
+  }
+}
+
+it('heads a redirect as not a Switch server, naming the address once', async () => {
+  const text = await renderNotSwitch(
+    "localhost:41001 doesn't answer as a Switch server: it redirects to elsewhere.example.org. Check the address."
+  );
+  expect(text).toContain("localhost:41001 isn't answering as a Switch server");
+  expect(text).toContain('It redirects to elsewhere.example.org. Check the address.');
+  expect(text).not.toContain("Doesn't answer as a Switch server");
+  expect(text).not.toContain("Can't reach");
+  expect(text.split('localhost:41001').length - 1).toBe(1);
+});
+
+it('heads a web page in place of the API as not a Switch server', async () => {
+  const text = await renderNotSwitch(
+    'Server does not answer at http://localhost:41001/gateway: a web page came back (HTTP 200).'
+  );
+  expect(text).toContain("localhost:41001 isn't answering as a Switch server");
+  expect(text).toContain('a web page came back (HTTP 200)');
+  expect(text).not.toContain("Can't reach");
 });

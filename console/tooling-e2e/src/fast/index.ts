@@ -1,5 +1,6 @@
 import { accountLifecycle } from "./account-lifecycle.ts";
 import { agentIdentity } from "./agent-identity.ts";
+import { agentRooms } from "./agent-rooms.ts";
 import { attachmentNames } from "./attachments.ts";
 import { clientMistakes } from "./client-mistakes.ts";
 import { endSessions, memberErasure, retentionWindow } from "./data-protection.ts";
@@ -11,6 +12,7 @@ import { operationsFrontDoor } from "./operations.ts";
 import { organizationMembers } from "./organization-members.ts";
 import { organizations } from "./organizations.ts";
 import { roomCapture } from "./room-capture.ts";
+import { privateChannelRooms } from "./room-visibility.ts";
 import { roomGroupPaths } from "./room-groups.ts";
 import { roomSchedules } from "./room-schedules.ts";
 import { roomScheduleTools } from "./room-schedule-tools.ts";
@@ -24,6 +26,7 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   mattermostRoundtrip,
   agentIdentity,
   roomGroupPaths,
+  agentRooms,
   attachmentNames,
   clientMistakes,
   roomCapture,
@@ -37,4 +40,5 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   decisionSettings,
   roomSchedules,
   roomScheduleTools,
+  privateChannelRooms,
 ];

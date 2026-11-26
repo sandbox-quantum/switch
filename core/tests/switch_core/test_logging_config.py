@@ -4,9 +4,10 @@ import logging
 
 import pytest
 
+from switch_core import logging_config
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, TenantNotBoundError, require_tenant_id
-from switch_core.logging_config import build_handler
+from switch_core.logging_config import build_handler, configure_logging
 from switch_core.logging_context import (
     CONTEXT_FIELDS,
     MCP_IDENTITY_DIAGNOSTICS,
@@ -17,6 +18,7 @@ from switch_core.logging_context import (
     log_context,
     unbind_log_context,
 )
+from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 
 BASE_ENV = {
@@ -438,3 +440,24 @@ def test_a_line_without_a_structured_group_is_unchanged(json_lines) -> None:
     logger.info("plain")
 
     assert "decision" not in _one(lines)
+
+
+def test_turning_switch_core_down_does_not_silence_the_security_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(monkeypatch, switch_log_level="WARNING")
+    monkeypatch.setattr(logging_config, "_configured", False)
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    try:
+        configure_logging(config, None, "p")
+        assert logging.getLogger(SECURITY_LOGGER_NAME).isEnabledFor(logging.INFO)
+        assert not logging.getLogger("switch_core.other").isEnabledFor(logging.INFO)
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+        for handler in handlers:
+            root.addHandler(handler)
+        root.setLevel(level)
+        logging.getLogger("switch_core").setLevel(logging.NOTSET)
+        logging.getLogger(SECURITY_LOGGER_NAME).setLevel(logging.NOTSET)

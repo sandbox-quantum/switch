@@ -113,6 +113,7 @@ const LAPTOP: OwnedMachine = {
   cloud: false,
   workspacesDir: '/home/me/workspaces',
   os: null,
+  lastSeenAt: null,
 };
 
 let container: HTMLDivElement;
@@ -294,11 +295,11 @@ it('shows where the machine will make the agent’s directory when nothing names
   );
 });
 
-it('gives an agent on the Switch cloud machine the cloud agent’s service access', async () => {
+it('gives an agent on the Switch Cloud machine the cloud agent’s service access', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   const machine: ManagedMachine = {
     id: 'controller-2',
-    name: 'Switch cloud',
+    name: 'Switch Cloud',
     kind: 'ec2',
     state: 'online',
   };

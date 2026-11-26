@@ -13,6 +13,7 @@ import copy
 from collections.abc import AsyncIterator, Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -23,6 +24,7 @@ from switch_core.clients.mentions import mention_tokens
 from switch_core.delivery.addressing import named_agents
 from switch_core.sessions.errors import SessionError
 from switch_core.transport.derived_ids import derived_writes
+from switch_core.trust import client as trust_client_module
 from switch_core.trust.client import NullTrustClient, TrustCheckResult
 from switch_core.ui_spec import (
     UI_CONTENT_KEY,
@@ -232,6 +234,7 @@ def _bridge(
         _channel_to_room={channel: ("room-uuid", TRANSPORT_ROOM)},
         _channel_locks={},
         _trust_client=NullTrustClient(),
+        _room_tenant=AsyncMock(return_value="tenant-1"),
         _activity_publisher=None,
         _approval_answers=None,
         _ensure_human_in_room=ensure_human,
@@ -241,7 +244,7 @@ def _bridge(
         _event_for_external_post=event_for,
         _external_post_for_event=post_for,
         _repair_placeholder_username=noop,
-        _post_trust_notice=noop,
+        _post_sender_notice=noop,
         _handle_text_answer=noop,
         _record_message_map=noop,
         _session_factory=_session,
@@ -514,7 +517,9 @@ def test_a_press_that_failed_before_its_send_leaves_the_card_unanswered() -> Non
 
 
 class _RedactingTrust:
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         return TrustCheckResult(
             outcome="redacted",
             policy_id="p",
@@ -522,19 +527,29 @@ class _RedactingTrust:
             redacted_content=content.replace("v-1", "[REDACTED]"),
         )
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return True
 
 
-def test_a_press_switch_trust_redacted_carries_no_raw_value() -> None:
+def test_a_press_switch_trust_redacted_carries_no_raw_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
     bridge._trust_client = _RedactingTrust()
+    # The audit row itself is tested against Postgres (`trust/test_client.py`).
+    recorded: list[str] = []
+
+    async def record_verdict(_sessions: Any, result: Any, **_kw: Any) -> None:
+        recorded.append(result.outcome)
+
+    monkeypatch.setattr(trust_client_module, "record_verdict", record_verdict)
 
     _press(bridge)
 
     [(_, body, _)] = bridge.actor.sent
     assert "v-1" not in body
     assert bridge.actor.extra == [None]
+    assert recorded == ["redacted"]
 
 
 def test_a_presser_who_may_not_address_the_author_is_refused() -> None:

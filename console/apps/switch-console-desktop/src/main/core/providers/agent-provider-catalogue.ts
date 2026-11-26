@@ -4,7 +4,8 @@ import type { AgentProviderDefinition } from '@shared/core/providers/agent-provi
 
 /**
  * The provider catalogue: one entry per provider, in plugin registration order,
- * made from its plugin metadata and its runtime's login command.
+ * made from its plugin metadata and its runtime's login command and new-agent
+ * auto mode.
  *
  * A provider registers in two places — a plugin in `packages/plugins` and a
  * runtime in `packages/agent-providers`. One with only one half is a build that
@@ -12,7 +13,7 @@ import type { AgentProviderDefinition } from '@shared/core/providers/agent-provi
  */
 export function buildAgentProviderCatalogue(
   plugins: readonly { metadata: CLIAgentPluginMetadata }[],
-  runtimes: readonly Pick<ProviderRuntime, 'id' | 'loginCommand'>[]
+  runtimes: readonly Pick<ProviderRuntime, 'id' | 'loginCommand' | 'newAgentAutoMode'>[]
 ): AgentProviderDefinition[] {
   const pluginIds = plugins.map((plugin) => plugin.metadata.id);
   const runtimeById = new Map(runtimes.map((runtime) => [runtime.id, runtime]));
@@ -34,7 +35,10 @@ export function buildAgentProviderCatalogue(
     description: metadata.description,
     docUrl: metadata.websiteUrl,
     cliLabel: metadata.cliLabel ?? metadata.name,
+    shortName: metadata.shortName ?? metadata.name,
     loginCommand: runtimeById.get(metadata.id)!.loginCommand,
     knownAgentType: metadata.knownAgentType ?? metadata.id,
+    supportsAutoMode: metadata.supportsAutoMode !== false,
+    newAgentAutoMode: runtimeById.get(metadata.id)!.newAgentAutoMode,
   }));
 }

@@ -141,7 +141,7 @@ export const catalogData: Record<string, CatalogEntryDef> = {
   atlassian: {
     config: {
       type: 'http',
-      url: 'https://mcp.atlassian.com/v1/mcp/authv2',
+      url: 'https://mcp.atlassian.com/v2/mcp',
     },
     name: 'Atlassian',
     description: 'Access Jira & Confluence from Claude',

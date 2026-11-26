@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -28,7 +29,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent import dependencies as bridge_deps
@@ -44,29 +45,33 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerConnectionError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import IDLE
-from switch_core.config import ControllerRelease
+from switch_core.config import ControllerRelease, DeploymentKind
 from switch_core.connections.broker import ServiceBroker
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
     Room,
+    Tenant,
     TenantMember,
     User,
     room_agents,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.feature_flags import ADDITIONAL_AGENT_PROVIDERS
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.providers import router as providers_router
 from switch_core.keys import Keyring
-from switch_core.management import controller_routes
+from switch_core.management import controller_routes, tokens
 from switch_core.management.dependencies import get_authenticator, get_management
 from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
@@ -219,8 +224,10 @@ def build_harness(
     controller_auth_ttl_seconds: float = 5,
     server_url: str | None = SERVER_URL,
     third_party_avatars: bool = True,
+    additional_agent_providers: bool = True,
     controller_release: ControllerRelease | None = None,
     signal_engine: Callable[[], Any] = _no_listening_engine,
+    deployment_kind: DeploymentKind = "self_hosted",
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
     so every management test runs through it."""
@@ -238,6 +245,7 @@ def build_harness(
         status_interval_seconds=STATUS_INTERVAL,
         server_url=server_url,
         third_party_avatars=third_party_avatars,
+        feature_flags={ADDITIONAL_AGENT_PROVIDERS: additional_agent_providers},
         controller_release=controller_release,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
@@ -251,6 +259,7 @@ def build_harness(
             session_factory=session_factory,
             processes=SwitchCoreProcessStore(),
             key_ids=[key.id for key in TEST_KEYRING.keys],
+            booting=False,
         ),
         user_changes=SignalUserChanges(local=user_changes, bus=signal_bus),
     )
@@ -291,6 +300,9 @@ def build_harness(
         session_factory
     )
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    gateway_app.dependency_overrides[gw_deps.get_organization_store] = lambda: (
+        OrganizationStore()
+    )
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
     gateway_app.dependency_overrides[gw_deps.get_template_store] = lambda: (
         TemplateStore()
@@ -299,7 +311,12 @@ def build_harness(
         keyring=TEST_KEYRING,
         gateway_tenant_choice_enabled=False,
         third_party_avatars_enabled=third_party_avatars,
-        feature_flags={"agent_management": True, "switch_buddy": True},
+        deployment_kind=deployment_kind,
+        feature_flags={
+            "agent_management": True,
+            "switch_buddy": True,
+            ADDITIONAL_AGENT_PROVIDERS: additional_agent_providers,
+        },
     )
     agent_app.mount("/gateway", gateway_app)
     agent_app.add_middleware(
@@ -340,6 +357,25 @@ async def add_member(
         return user
 
 
+async def set_archived(harness: Harness, *, archived: bool) -> None:
+    """Archive or restore tenant zero, as the route's commit does."""
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Tenant)
+            .where(Tenant.id == TENANT_ZERO_ID)
+            .values(archived_at=harness.clock.now if archived else None)
+        )
+        await session.commit()
+
+
+async def archive_changed(harness: Harness) -> None:
+    """What `WorkspaceArchive` tells management once the change commits."""
+    async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+        await harness.management.service.workspace_archive_changed(
+            session, TENANT_ZERO_ID
+        )
+
+
 def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
     return {
         "switch_auth": create_jwt(
@@ -350,6 +386,7 @@ def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
             tenant_id,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
     }
 
@@ -410,10 +447,24 @@ class EnrolledController:
         return bearer(self.access_token)
 
 
+async def credential_key_id(harness: Harness, credential: str) -> str:
+    """The `api_keys` row behind a controller's credential."""
+    async with harness.session_factory() as session:
+        key = await ApiKeyStore().get_by_hash(session, tokens.hash_secret(credential))
+    assert key is not None
+    return key.id
+
+
 async def enroll_console(
-    harness: Harness, client: httpx.AsyncClient, owner: User, name: str = "laptop"
+    harness: Harness,
+    client: httpx.AsyncClient,
+    owner: User,
+    name: str = "laptop",
+    tenant_id: str = TENANT_ZERO_ID,
+    device_id: str | None = None,
 ) -> EnrolledController:
-    """Enroll a console controller for `owner` and exchange its credential."""
+    """Enroll a console controller for `owner` in `tenant_id`, on the device
+    `device_id` names when given, and exchange its credential."""
     response = await client.post(
         "/gateway/management/controllers",
         json={
@@ -421,8 +472,9 @@ async def enroll_console(
             "kind": "console",
             "platform": platform(),
             "version": "0.1.0",
+            **({} if device_id is None else {"device_id": device_id}),
         },
-        cookies=cookies_for(owner),
+        cookies=cookies_for(owner, tenant_id),
     )
     assert response.status_code == 201, response.text
     body = response.json()
@@ -620,6 +672,7 @@ def _principal(controller: EnrolledController) -> ControllerPrincipal:
         controller_id=controller.controller_id,
         owner_id=controller.owner.id,
         tenant_id=TENANT_ZERO_ID,
+        key_id=None,
     )
 
 

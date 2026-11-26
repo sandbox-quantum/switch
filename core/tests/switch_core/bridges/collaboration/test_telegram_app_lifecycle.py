@@ -135,6 +135,7 @@ async def _installer(bot: _Bot | None = None) -> tuple[TelegramAppInstaller, _Bo
         webhook_url="https://switch.example/messaging/telegram/events",
         webhook_secret=_SECRET,
         on_connected=_nothing,
+        feature_flags={},
     )
     await client.start()
     return TelegramAppInstaller(client=client, webhook_secret=_SECRET), bot
@@ -151,6 +152,7 @@ class TestBeingUp:
             webhook_url="https://switch.example/messaging/telegram/events",
             webhook_secret=_SECRET,
             on_connected=_nothing,
+            feature_flags={},
         )
 
         assert not client.is_live
@@ -166,6 +168,7 @@ class TestBeingUp:
             webhook_url="https://switch.example/messaging/telegram/events",
             webhook_secret=_SECRET,
             on_connected=on_connected,
+            feature_flags={},
         )
         await client.start_with_retry()
 

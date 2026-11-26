@@ -12,6 +12,7 @@ from switch_decision.prompt import NONE
 from tests.helpers import (
     ANTHROPIC_KEY,
     BODY,
+    GEMINI_KEY,
     ROOM_RULES,
     SECRET_TEXT,
 )
@@ -179,13 +180,88 @@ def test_bedrock_enabled_override_uses_bedrock_model(make_client, monkeypatch):
     assert r.status_code == 200
     assert (
         r.json()["backend"] == "bedrock"
-        and r.json()["model"] == "us.anthropic.claude-haiku-5-5-v1:0"
+        and r.json()["model"] == "us.anthropic.claude-haiku-5-5"
     )
-    assert calls[0]["modelId"] == "us.anthropic.claude-haiku-5-5-v1:0"
+    assert calls[0]["modelId"] == "us.anthropic.claude-haiku-5-5"
     assert "temperature" not in calls[0]["inferenceConfig"]
     assert make_client(_settings(bedrock_enabled=True)).get("/health").json()[
         "backends_available"
     ] == ["default", "anthropic", "bedrock"]
+
+
+# ── per-request override to gemini_decision ───────────────────────────────
+
+
+def _gemini_recorder(seen: list[httpx.Request]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "answers": {
+                    "speaker": {
+                        "type": "choice",
+                        "choice": "billing-bot",
+                        "confidence": 0.8,
+                        "probabilities": {
+                            "billing-bot": 0.8,
+                            "nobody": 0.15,
+                            "deploy-bot": 0.05,
+                        },
+                    }
+                }
+            },
+        )
+
+    return handler
+
+
+def test_override_to_gemini_without_any_key_is_backend_unavailable(make_client):
+    r = make_client(handler=lambda r: pytest.fail("Google must not be called")).post(
+        "/decide", json=BODY, headers={"X-Decision-Backend": "gemini_decision"}
+    )
+    assert r.status_code == 400 and r.json()["code"] == "backend_unavailable"
+    assert "GEMINI_DECISION_API_KEY" in r.json()["detail"]
+
+
+def test_override_to_gemini_uses_the_service_key(make_client):
+    seen: list[httpx.Request] = []
+    tc = make_client(
+        _settings(gemini_decision_api_key=GEMINI_KEY), handler=_gemini_recorder(seen)
+    )
+    r = tc.post("/decide", json=BODY, headers={"X-Decision-Backend": "gemini_decision"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["agent"], body["backend"], body["model"]) == (
+        "billing-bot",
+        "gemini_decision",
+        "gemini-decision-1",
+    )
+    assert abs(body["lead"] - 0.65) < 1e-9
+    assert seen[0].headers["x-goog-api-key"] == GEMINI_KEY
+    assert tc.get("/health").json()["backends_available"] == [
+        "default",
+        "anthropic",
+        "gemini_decision",
+    ]
+
+
+def test_override_to_gemini_prefers_the_request_key_and_model(make_client, caplog):
+    seen: list[httpx.Request] = []
+    tc = make_client(handler=_gemini_recorder(seen))
+    with caplog.at_level(logging.DEBUG):
+        r = tc.post(
+            "/decide",
+            json=BODY,
+            headers={
+                "X-Decision-Backend": "gemini_decision",
+                "X-Decision-Gemini-Key": GEMINI_KEY,
+                "X-Decision-Model": "gemini-decision-2",
+            },
+        )
+    assert r.status_code == 200 and r.json()["model"] == "gemini-decision-2"
+    assert seen[0].headers["x-goog-api-key"] == GEMINI_KEY
+    assert GEMINI_KEY not in caplog.text
 
 
 def test_unknown_backend_is_backend_unavailable(make_client):
@@ -329,6 +405,39 @@ def test_logs_keep_no_message_text_room_rules_or_key(
     assert (
         "candidates=2" in text and "choice=deploy-bot" in text and "latency_ms=" in text
     )
+
+
+def test_log_says_whether_the_conversation_context_was_used(make_client, caplog):
+    tc = make_client()
+    mid_exchange = dict(
+        BODY,
+        message={"sender": "sara", "text": SECRET_TEXT, "thread_id": "t1"},
+        thread=[
+            {
+                "sender": "sara",
+                "sender_kind": "person",
+                "text": f"first: {SECRET_TEXT}",
+                "addressed": ["deploy-bot"],
+            },
+            {
+                "sender": "deploy-bot",
+                "sender_kind": "agent",
+                "text": "on it",
+                "addressed": [],
+            },
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="switch_decision"):
+        assert tc.post("/decide", json=BODY).status_code == 200
+        assert tc.post("/decide", json=mid_exchange).status_code == 200
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.getMessage().startswith("decide ")
+    ]
+    assert lines[0].endswith("context=none") and lines[1].endswith("context=exchange")
+    text = _assert_clean(caplog)
+    assert "back-and-forth" not in text and "sara" not in text
 
 
 def test_failure_logs_keep_no_backend_error_body(make_client, caplog):

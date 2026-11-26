@@ -38,8 +38,8 @@ from switch_core.db.models import (
     MachineWorkspace,
     MessagingInstall,
     OrganizationAppCredential,
+    OrganizationTrustSettings,
     ProviderConnection,
-    ServerConnector,
     ServiceAppCredential,
     ServiceConnection,
     ServiceOAuthClient,
@@ -57,9 +57,6 @@ logger = logging.getLogger(__name__)
 
 _ENCRYPTED_JSON_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (CollaborationBridge, "connection_config"),
-    # Unread since server-side connectors went, but still stored until the
-    # table is dropped, so still kept under the current key.
-    (ServerConnector, "connection_config"),
 )
 _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (ApiKey, "encrypted_key"),
@@ -76,6 +73,7 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
 # bound to it alone.
 _ORGANIZATION_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (OrganizationAppCredential, "encrypted_secrets"),
+    (OrganizationTrustSettings, "api_key_encrypted"),
 )
 # In tables no tenant holds (`db/rls_ddl.py`, GLOBAL_TABLES), one row set for
 # the whole deployment (`trust_settings`, `service_oauth_clients`,

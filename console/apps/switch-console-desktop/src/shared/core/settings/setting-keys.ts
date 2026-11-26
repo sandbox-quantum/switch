@@ -21,7 +21,6 @@ export const APP_SETTINGS_KEYS = [
   'browserPreview',
   'browser',
   'changesViewMode',
-  'onboarding',
   'telemetry',
 ] as const;
 

@@ -33,7 +33,7 @@ from switch_core.db.stores.switch_core_process_store import (
     SwitchCoreProcessStore,
 )
 from switch_core.management.connection_ledger import ControllerConnectionLedger
-from switch_core.process_lease import LEASE_TTL, ProcessLeases
+from switch_core.process_lease import LEASE_TTL, MOVE_GRACE, ProcessLeases
 from tests.switch_core.management.harness import (
     EnrolledController,
     Harness,
@@ -97,6 +97,20 @@ async def _age_lease(harness: Harness, seconds: float) -> None:
         await session.commit()
 
 
+async def _age_stop(harness: Harness, seconds: float) -> None:
+    """Set this harness's process's stop `seconds` in the past."""
+    async with harness.session_factory() as session:
+        await session.execute(
+            text(
+                "UPDATE switch_core_processes "
+                "SET stopped_at = now() - make_interval(secs => :seconds) "
+                "WHERE id = :id"
+            ),
+            {"seconds": seconds, "id": harness.management.lease.process_id},
+        )
+        await session.commit()
+
+
 def _current(harness: Harness, controller: EnrolledController) -> ControllerConnection:
     conn = harness.protocol.connections.controllers.current_connection(
         controller.controller_id
@@ -135,18 +149,22 @@ class TestLeases:
     now = datetime(2026, 1, 1, tzinfo=UTC)
 
     def _leases(self, **rows: ProcessLeaseRow) -> ProcessLeases:
-        return ProcessLeases(read_at=self.now, leases=rows)
+        return ProcessLeases(read_at=self.now, leases=rows, read_mono=0.0)
 
     def test_a_fresh_lease_holds(self) -> None:
         leases = self._leases(
-            p=ProcessLeaseRow(beat_at=self.now, stopped_at=None, key_ids=None)
+            p=ProcessLeaseRow(
+                beat_at=self.now, stopped_at=None, key_ids=None, booting=False
+            )
         )
         assert leases.holds("p")
 
     def test_a_lease_older_than_the_ttl_does_not(self) -> None:
         beat_at = self.now - LEASE_TTL
         leases = self._leases(
-            p=ProcessLeaseRow(beat_at=beat_at, stopped_at=None, key_ids=None)
+            p=ProcessLeaseRow(
+                beat_at=beat_at, stopped_at=None, key_ids=None, booting=False
+            )
         )
         assert not leases.holds("p")
         assert leases.ended("p") == (beat_at, "server_lost")
@@ -154,7 +172,9 @@ class TestLeases:
     def test_a_stopped_lease_does_not(self) -> None:
         stopped_at = self.now - timedelta(seconds=1)
         leases = self._leases(
-            p=ProcessLeaseRow(beat_at=self.now, stopped_at=stopped_at, key_ids=None)
+            p=ProcessLeaseRow(
+                beat_at=self.now, stopped_at=stopped_at, key_ids=None, booting=False
+            )
         )
         assert not leases.holds("p")
         assert leases.ended("p") == (stopped_at, "server_shutdown")
@@ -164,6 +184,37 @@ class TestLeases:
         assert not leases.holds("p")
         assert not leases.holds(None)
         assert leases.ended("p") == (None, "server_lost")
+
+    def test_a_lease_stopped_moments_ago_is_moving(self) -> None:
+        stopped_at = self.now - MOVE_GRACE + timedelta(seconds=1)
+        leases = self._leases(
+            p=ProcessLeaseRow(
+                beat_at=stopped_at, stopped_at=stopped_at, key_ids=None, booting=False
+            )
+        )
+        assert leases.moving("p")
+        assert leases.move_ends("p") == pytest.approx(1.0)
+
+    def test_only_a_lease_stopped_moments_ago_is_moving(self) -> None:
+        long_ago = self.now - MOVE_GRACE
+        leases = self._leases(
+            stopped=ProcessLeaseRow(
+                beat_at=long_ago, stopped_at=long_ago, key_ids=None, booting=False
+            ),
+            lost=ProcessLeaseRow(
+                beat_at=self.now - LEASE_TTL,
+                stopped_at=None,
+                key_ids=None,
+                booting=False,
+            ),
+            live=ProcessLeaseRow(
+                beat_at=self.now, stopped_at=None, key_ids=None, booting=False
+            ),
+        )
+        assert not any(
+            leases.moving(process) for process in ("stopped", "lost", "live", "gone")
+        )
+        assert not leases.moving(None)
 
 
 class TestTheMachineState:
@@ -446,9 +497,12 @@ class TestTheProcessLease:
         }
         assert row.disconnected_at is None
 
-    async def test_a_process_that_stops_takes_its_machines_offline(
+    async def test_a_process_that_stops_leaves_its_machines_online_while_they_move(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """A release stops every process in turn, and each of its machines
+        reattaches to another within seconds. A machine not back once the
+        grace is over reads offline from when its server shut down."""
         holder = build_harness(session_factory)
         other = build_harness(session_factory)
         owner = await add_member(session_factory, "ada")
@@ -457,10 +511,39 @@ class TestTheProcessLease:
             await connect(client, controller)
             await holder.management.flush()
             await holder.management.lease.stop()
+            moving = await _listed(elsewhere, controller)
+            presence = holder.protocol.connections.controllers
+            presence.begin_shutdown()
+            conn = _current(holder, controller)
+            presence.detach_stream(conn, conn.stream_token)
+            await _flush(holder)
+            closed = await _listed(elsewhere, controller)
+            await _age_stop(holder, MOVE_GRACE.total_seconds() + 1)
+            gone = await _listed(elsewhere, controller)
+        assert moving["state"] == "online"
+        assert closed["state"] == "online"
+        assert gone["state"] == "offline"
+        assert gone["connection"]["disconnect_reason"] == "server_shutdown"
+        assert gone["connection"]["disconnected_at"] is not None
+
+    async def test_a_machine_that_went_before_its_process_stopped_is_not_moving(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        holder = build_harness(session_factory)
+        other = build_harness(session_factory)
+        owner = await add_member(session_factory, "ada")
+        async with holder.client() as client, other.client() as elsewhere:
+            controller = await enroll_console(holder, client, owner)
+            await connect(client, controller)
+            conn = _current(holder, controller)
+            holder.protocol.connections.controllers.detach_stream(
+                conn, conn.stream_token
+            )
+            await holder.management.flush()
+            await holder.management.lease.stop()
             listed = await _listed(elsewhere, controller)
         assert listed["state"] == "offline"
-        assert listed["connection"]["disconnect_reason"] == "server_shutdown"
-        assert listed["connection"]["disconnected_at"] is not None
+        assert listed["connection"]["disconnect_reason"] == "socket_closed"
 
     async def test_long_dead_leases_are_pruned(self, harness: Harness) -> None:
         dead = str(uuid.uuid4())

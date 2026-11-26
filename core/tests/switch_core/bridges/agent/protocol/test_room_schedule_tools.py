@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import owner_and_owner_agents_policy
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import Agent, ApiKey, Client, Room, RoomSchedule, User
 from switch_core.db.stores.agent_store import AgentStore
@@ -78,6 +79,9 @@ async def _agent(session: AsyncSession, owner: User, name: str) -> Agent:
         client_id=client.id,
         api_key_id=api_key.id,
         owner_id=owner.id,
+        # Takes requests from its owner and their agents, so it acts with its
+        # owner's rights on the room (`room_policy`).
+        addressing_policy=owner_and_owner_agents_policy().model_dump(),
     )
     session.add(agent)
     await session.flush()
@@ -126,6 +130,24 @@ async def test_an_agent_whose_owner_may_not_manage_the_room_is_refused(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     room, _, caller, _ = await _room_with(session_factory, caller_owns_room=False)
+
+    with pytest.raises(PermissionError, match="manage the room"):
+        await _core(session_factory).create_room_schedule(
+            caller.id, room.id, agents=[caller.name], text="Hello.", **WEEKDAYS
+        )
+
+
+async def test_an_agent_others_may_address_is_refused_in_its_owners_room(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A schedule carries its owner's authority, so an agent anyone may ask
+    can't set one up with the room owner's rights (`room_policy`)."""
+    room, _, caller, _ = await _room_with(session_factory, caller_owns_room=True)
+    async with session_factory() as session:
+        agent = await session.get(Agent, caller.id)
+        assert agent is not None
+        agent.addressing_policy = None
+        await session.commit()
 
     with pytest.raises(PermissionError, match="manage the room"):
         await _core(session_factory).create_room_schedule(

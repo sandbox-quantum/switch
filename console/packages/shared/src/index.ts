@@ -20,4 +20,5 @@ export {
 export { Emitter } from './emitter';
 export { isDeepEqual } from './deep-equal';
 export type { IDisposable, IInitializable, ILifecycle, Lease, Unsubscribe } from './lifecycle';
+export { compareVersions } from './version';
 export { parameterize, type ParamSubstitution } from './parameterize';

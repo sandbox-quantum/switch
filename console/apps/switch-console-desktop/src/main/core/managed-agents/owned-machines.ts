@@ -6,6 +6,7 @@ import {
   type MachineLocal,
   type MachineProvider,
   type OwnedMachine,
+  PROVIDER_NOT_INSTALLED,
   type ThisComputerReport,
 } from '@shared/core/managed-agents/managed-agents';
 
@@ -18,7 +19,7 @@ export type LocalControllers = {
 /** A provider report as the New agent form offers it: ready, or why not. */
 export function machineProvider(report: ControllerProviderReport): MachineProvider {
   const problem = !report.installed
-    ? 'not installed'
+    ? PROVIDER_NOT_INSTALLED
     : report.auth === 'ok'
       ? null
       : report.auth === 'missing'
@@ -44,16 +45,19 @@ function machineLocal(controller: ManagementController, local: LocalControllers)
 }
 
 function ownedMachine(controller: ManagementController, local: LocalControllers): OwnedMachine {
+  const cloud = isCloudMachine(controller);
   return {
     id: controller.id,
-    name: controller.name,
+    // Older servers named the cloud machine "Switch cloud"; it is shown by the product's name.
+    name: cloud ? 'Switch Cloud' : controller.name,
     kind: controller.kind,
     state: controller.state,
     providers: controller.providers.map(machineProvider),
     acceptsLogins: controller.sealingKey !== null,
-    cloud: isCloudMachine(controller),
+    cloud,
     workspacesDir: controller.workspacesDir,
     os: controller.os,
+    lastSeenAt: controller.lastSeenAt,
     local: machineLocal(controller, local),
   };
 }

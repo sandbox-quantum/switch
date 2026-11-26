@@ -42,7 +42,17 @@ export type InstallCommandSpec = string | { command: string; args: string[] };
 
 export type InstallCommandError =
   | { type: 'permission-denied'; message: string; output: string; exitCode?: number }
-  | { type: 'command-failed'; message: string; output: string; exitCode?: number }
+  | {
+      type: 'command-failed';
+      message: string;
+      output: string;
+      exitCode?: number;
+      /**
+       * The program the install command needed and the shell could not find
+       * (`npm`, `winget`), when that is why it failed.
+       */
+      missingCommand?: string;
+    }
   | { type: 'process-open-failed'; message: string };
 
 export type DependencyInstallError =
@@ -57,7 +67,36 @@ export type DependencyUpdateError =
   | { type: 'unknown-dependency'; id: string }
   | { type: 'no-update-strategy'; id: string }
   | InstallCommandError
-  | { type: 'not-detected-after-update'; id: string };
+  | { type: 'not-detected-after-update'; id: string }
+  /** Moving to a new release line was refused by its precheck; nothing was changed. */
+  | { type: 'line-migration-blocked'; id: string; message: string }
+  /** Removing the earlier release line failed, and it is still installed and unchanged. */
+  | {
+      type: 'line-migration-unremoved';
+      id: string;
+      previousVersion: string;
+      cause: InstallCommandError;
+    }
+  /** Moving to a new release line failed partway; the earlier version is back. */
+  | {
+      type: 'line-migration-failed';
+      id: string;
+      restoredVersion: string;
+      cause: InstallCommandError;
+    }
+  /**
+   * Moving to a new release line failed, and so did putting the earlier version back:
+   * the dependency is not installed. The commands are what the person can run.
+   */
+  | {
+      type: 'line-migration-unrestored';
+      id: string;
+      previousVersion: string;
+      cause: InstallCommandError;
+      restoreError: InstallCommandError;
+      installCommand: string;
+      restoreCommand: string;
+    };
 
 export type DependencyUpdateResult = Result<DependencyState, DependencyUpdateError>;
 

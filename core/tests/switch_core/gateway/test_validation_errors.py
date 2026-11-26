@@ -99,22 +99,6 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
             "new_password",
             id="change-password-missing-new-password",
         ),
-        pytest.param(
-            "POST",
-            "/users",
-            {"name": "Ada", "email": "ada@example.invalid", "password": SHORT_SECRET},
-            [SHORT_SECRET],
-            "password",
-            id="create-user-short-password",
-        ),
-        pytest.param(
-            "POST",
-            "/users",
-            {"email": "ada@example.invalid", "password": SECRET},
-            [SECRET],
-            "name",
-            id="create-user-missing-name",
-        ),
     ],
 )
 async def test_a_refused_request_does_not_echo_its_password(

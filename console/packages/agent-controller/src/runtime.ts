@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
   bundleIdentity,
+  clearHostedProvider,
   clearTakenOver,
   commandLineNames,
   ensureSharedProcess,
@@ -122,7 +123,8 @@ export interface AgentRunner {
  * fake.
  */
 export interface AgentRuntime extends AgentRunner, WarmsRooms {
-  credentialsPath(agentId: string): string;
+  /** Where the agent host of an agent of `provider` reads its credentials file. */
+  credentialsPath(agentId: string, provider: Provider): string;
   /** The credentials file as written, or null when there is none or it cannot be read. */
   readCredentials(agentId: string): Promise<RelayCredentials | null>;
   writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void>;
@@ -145,6 +147,12 @@ export interface AgentRuntime extends AgentRunner, WarmsRooms {
   ): Promise<ProviderReadiness>;
   /** The agent host's state root as the agent host sees it: where a given login's files go. */
   agentStateRoot(agentId: string): string;
+  /**
+   * Removes what a login Switch gave the machine left in the agent's state
+   * root: the files its agent host wrote, and the token its configuration
+   * carries. Throws naming whatever could not be removed.
+   */
+  forgetProviderLogin(agentId: string): Promise<void>;
 }
 
 /** An agent host this controller runs, asked to start a room's session early. */
@@ -167,6 +175,76 @@ export async function loginProbeEnvironment(
   const env: Record<string, string> = {};
   await materializeHostedProvider(dir, env, login, binaryPath);
   return env;
+}
+
+/**
+ * Probes with `login` written under `dir` (`loginProbeEnvironment`), and then
+ * removes it: a decrypted copy of the login is never left behind. A copy that
+ * cannot be removed is logged as an error; the probe's answer stands.
+ */
+export async function probeWithLogin<T>(
+  dir: string,
+  log: Logger,
+  provider: Provider,
+  probe: () => Promise<T>
+): Promise<T> {
+  try {
+    return await probe();
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
+      log.error('Could not remove the copy of a provider login made to check it', {
+        provider,
+        directory: dir,
+        error: errorMessage(error),
+      });
+    });
+  }
+}
+
+/**
+ * The variables `providerLoginEnvironment` hands a login's token in. Removed
+ * from an agent's saved configuration when the login is withdrawn or the
+ * agent removed; a launch writes them again from the login in use then.
+ */
+const LOGIN_TOKEN_VARIABLES = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CURSOR_API_KEY'];
+
+/** `config.json` without a login's token, or null when it holds none. */
+export function configWithoutLoginToken(text: string): string | null {
+  const config = JSON.parse(text) as { start?: { input?: { env?: Record<string, unknown> } } };
+  const env = config.start?.input?.env;
+  if (!env || !LOGIN_TOKEN_VARIABLES.some((name) => name in env)) return null;
+  for (const name of LOGIN_TOKEN_VARIABLES) delete env[name];
+  return JSON.stringify(config);
+}
+
+/**
+ * Removes a withdrawn login's files from the agent host root `root`, and
+ * the copies in its sessions under `sessionsBase` when that folder is the
+ * agent's alone (`clearHostedProvider`), and its token from the configuration there,
+ * written back with `write`; the configuration is cleaned even when a file
+ * could not be removed, and the error thrown after.
+ */
+export async function forgetLoginIn(
+  root: string,
+  sessionsBase: string | null,
+  write: (path: string, body: string) => Promise<void>
+): Promise<string[]> {
+  let failure: unknown = null;
+  const removed = await clearHostedProvider(root, sessionsBase).catch(
+    (error: unknown): string[] => {
+      failure = error;
+      return [];
+    }
+  );
+  const path = join(root, 'config.json');
+  const text = await readOptional(path);
+  const stripped = text === null ? null : configWithoutLoginToken(text);
+  if (stripped !== null) {
+    await write(path, stripped);
+    removed.push(`${path} (the login's token)`);
+  }
+  if (failure) throw failure;
+  return removed;
 }
 
 /** How long an agent host asked to stop is given; each session host is allowed 20 s of it. */
@@ -394,22 +472,42 @@ export class InProcessRuntime implements AgentRuntime {
     }
   ) {}
 
-  credentialsPath(agentId: string): string {
+  credentialsPath(agentId: string, _provider: Provider): string {
     return this.deps.layout.agentCredentials(agentId);
   }
 
   async readCredentials(agentId: string): Promise<RelayCredentials | null> {
-    const text = await readOptional(this.credentialsPath(agentId));
+    const text = await readOptional(this.deps.layout.agentCredentials(agentId));
     return text === null ? null : parseRelayCredentials(text, agentId);
   }
 
   async writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void> {
     await mkdir(this.deps.layout.agentDir(agentId), { recursive: true, mode: 0o700 });
-    await writeAtomic(this.credentialsPath(agentId), relayCredentialsBody(agentId, credentials));
+    await writeAtomic(
+      this.deps.layout.agentCredentials(agentId),
+      relayCredentialsBody(agentId, credentials)
+    );
   }
 
   async deleteCredentials(agentId: string): Promise<void> {
-    await removeOptional(this.credentialsPath(agentId));
+    await removeOptional(this.deps.layout.agentCredentials(agentId));
+    await this.forgetProviderLogin(agentId).catch((error: unknown) => {
+      this.deps.log.error('Could not remove the provider login of an agent no longer here', {
+        agentId,
+        error: errorMessage(error),
+      });
+    });
+  }
+
+  async forgetProviderLogin(agentId: string): Promise<void> {
+    // Sessions here keep their state in the folder of the controller user's
+    // home, shared with every other agent's, so their copies are left.
+    const removed = await forgetLoginIn(this.agentStateRoot(agentId), null, writeAtomic);
+    if (removed.length)
+      this.deps.log.info('Removed a provider login from an agent’s directory', {
+        agentId,
+        removed,
+      });
   }
 
   async workingDirectory(
@@ -642,17 +740,14 @@ export class InProcessRuntime implements AgentRuntime {
     cwd: string,
     login: GivenLogin | null
   ): Promise<ProviderReadiness> {
-    const given = login
-      ? await loginProbeEnvironment(
-          join(this.deps.layout.root, 'login-check', provider),
-          login,
-          binaryPath
-        )
-      : {};
-    return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd, {
-      ...process.env,
-      ...given,
-    });
+    if (!login) return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd, process.env);
+    const dir = join(this.deps.layout.root, 'login-check', provider);
+    return probeWithLogin(dir, this.deps.log, provider, async () =>
+      probeProvider(this.deps.bundlePath, provider, binaryPath, cwd, {
+        ...process.env,
+        ...(await loginProbeEnvironment(dir, login, binaryPath)),
+      })
+    );
   }
 
   agentStateRoot(agentId: string): string {

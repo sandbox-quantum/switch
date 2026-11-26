@@ -20,7 +20,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from switch_core.bridges.agent.protocol import controller_presence
+from switch_core import process_lease
+from switch_core.bridges.agent.protocol import connection_rows, controller_presence
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.presence import agents_present_in
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
@@ -85,6 +86,23 @@ async def _ask(harness: Harness, agent_id: str, room_id: str, body: str) -> int:
         room_seq=row.seq,
         message_key=row.transport_event_id,
     )
+
+
+def _owners_told(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[str, str]]:
+    """What this process tells owners itself, apart from the notices the
+    holder of a socket sends with each write it makes."""
+    told: list[tuple[str, str]] = []
+    publisher = harness.management.service.user_changes
+    publish = publisher.publish
+
+    def recording(tenant_id: str, user_id: str, kind: str, id: str) -> None:
+        told.append((kind, id))
+        publish(tenant_id, user_id, kind, id)
+
+    monkeypatch.setattr(publisher, "publish", recording)
+    return told
 
 
 async def _until(stream: Any, event: str) -> dict[str, Any]:
@@ -235,6 +253,26 @@ class TestPresence:
 
         await _eventually(lambda: not presence.is_live(agent_id))
 
+    async def test_a_take_over_ends_the_old_holders_stream_on_the_other_process(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with there.client() as client:
+            controller = await enroll_console(there, client, owner)
+            await connect(client, controller)
+        held = there.protocol.connections.controllers
+        conn = held.current_connection(controller.controller_id)
+        assert conn is not None
+
+        # Taken over through this process, where the old holder's socket is not.
+        here.management.service.signals.credential_replaced(controller.controller_id)
+
+        await _eventually(
+            lambda: held.current_connection(controller.controller_id) is None
+        )
+        assert conn.closure is not None and conn.closure.code == "taken_over"
+
     async def test_a_dead_holder_stops_counting_on_the_next_pass(
         self, processes: tuple[Harness, Harness], session_factory: SessionFactory
     ) -> None:
@@ -259,6 +297,104 @@ class TestPresence:
         await there.management.service.signals.read_connections()
 
         assert not presence.is_live(agent_id)
+
+    async def test_a_machine_moving_from_a_process_that_shut_down_stays_live(
+        self, processes: tuple[Harness, Harness], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A release stops each process in turn, and its machines reattach to
+        another within seconds. Until they do, or their time to is up, their
+        agents read live elsewhere, so nobody is told the machine is offline;
+        once it is up, a machine that did not come back is offline and its
+        owner is told, as nothing else would tell them."""
+        monkeypatch.setattr(process_lease, "MOVE_GRACE", timedelta(seconds=5))
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        told = _owners_told(there, monkeypatch)
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+            await connect(client, controller)
+        presence = there.protocol.connections.controllers
+        await _eventually(lambda: presence.is_live(agent_id))
+
+        # As `main` shuts the holder down: its lease, then its sockets.
+        await here.management.flush()
+        await here.management.lease.stop()
+        held = here.protocol.connections.controllers
+        held.begin_shutdown()
+        conn = held.current_connection(controller.controller_id)
+        assert conn is not None
+        held.detach_stream(conn, conn.stream_token)
+        await here.management.ledger.flush_all()
+        await _eventually(
+            lambda: presence.holder_elsewhere(controller.controller_id) is None
+        )
+
+        assert presence.is_live(agent_id)
+        assert presence.process_holding(agent_id) is None
+        assert told == []
+        await _eventually(lambda: not presence.is_live(agent_id))
+        await _eventually(lambda: told == [(MACHINE, controller.controller_id)])
+
+    async def test_a_machine_that_went_with_nothing_written_still_moves(
+        self, processes: tuple[Harness, Harness], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The holder marked its lease stopped and died before writing that
+        the socket went. The other process learns of it from the lease
+        alone, and the machine moves and is told gone the same way."""
+        monkeypatch.setattr(process_lease, "MOVE_GRACE", timedelta(seconds=5))
+        monkeypatch.setattr(connection_rows, "WATCH_SECONDS", 0.2)
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        told = _owners_told(there, monkeypatch)
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+            await connect(client, controller)
+        presence = there.protocol.connections.controllers
+        await _eventually(lambda: presence.is_live(agent_id))
+
+        await here.management.flush()
+        await here.management.lease.stop()
+        await _eventually(
+            lambda: presence.holder_elsewhere(controller.controller_id) is None
+        )
+
+        assert presence.is_live(agent_id)
+        assert told == []
+        await _eventually(lambda: not presence.is_live(agent_id))
+        await _eventually(lambda: told == [(MACHINE, controller.controller_id)])
+
+    async def test_a_machine_whose_process_died_is_told_gone(
+        self,
+        processes: tuple[Harness, Harness],
+        session_factory: SessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No process writes anything for a machine whose process died, so
+        the processes that saw it tell its owner once its lease lapses."""
+        monkeypatch.setattr(connection_rows, "WATCH_SECONDS", 0.2)
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        told = _owners_told(there, monkeypatch)
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+            await connect(client, controller)
+        presence = there.protocol.connections.controllers
+        await _eventually(lambda: presence.is_live(agent_id))
+        async with session_factory() as session:
+            await session.execute(
+                update(SwitchCoreProcess)
+                .where(SwitchCoreProcess.id == here.management.lease.process_id)
+                .values(
+                    beat_at=SwitchCoreProcess.beat_at - LEASE_TTL - timedelta(seconds=1)
+                )
+            )
+            await session.commit()
+
+        await _eventually(lambda: not presence.is_live(agent_id))
+        await _eventually(lambda: told == [(MACHINE, controller.controller_id)])
 
     async def test_a_session_command_reaches_the_controller_on_the_other_process(
         self, processes: tuple[Harness, Harness]

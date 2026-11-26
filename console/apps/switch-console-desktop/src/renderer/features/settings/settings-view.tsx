@@ -19,11 +19,13 @@ export function SettingsViewWrapper({
 }: {
   children: ReactNode;
   tab?: SettingsPageTab;
+  /** The connector app whose profile is open on the Connector apps tab. */
+  app?: string;
 }) {
   const { setParams } = useParams('settings');
   const handleTabChange = useCallback(
     (tab: SettingsPageTab) => {
-      setParams({ tab });
+      setParams({ tab, app: undefined });
     },
     [setParams]
   );

@@ -18,6 +18,8 @@ STALE_GENERATION = "stale_generation"
 UNKNOWN_CONNECTION = "unknown_connection"
 NO_STREAM = "no_stream"
 MANAGED_BY_CONTROLLER = "managed_by_controller"
+# Switch names and removes a cloud device, not its owner or an admin.
+CLOUD_MANAGED = "cloud_managed"
 ALREADY_CLAIMED = "already_claimed"
 CANCELLED = "cancelled"
 LEASE_EXPIRED = "lease_expired"
@@ -44,6 +46,12 @@ ENROLLMENT_CODE_INVALID = "enrollment_code_invalid"
 OPERATION_UNSUPPORTED = "operation_unsupported"
 NOT_FOUND = "not_found"
 VALIDATION_ERROR = "validation_error"
+# The workspace is archived: nothing new is set up in it until it is restored.
+WORKSPACE_ARCHIVED = "workspace_archived"
+# The agent, or the account, is suspended (`accounts/suspension.py`); Core's
+# bearer middleware names the same strings.
+AGENT_SUSPENDED = "agent_suspended"
+ACCOUNT_SUSPENDED = "account_suspended"
 
 ALL_REASON_CODES = frozenset(
     {
@@ -56,6 +64,7 @@ ALL_REASON_CODES = frozenset(
         UNKNOWN_CONNECTION,
         NO_STREAM,
         MANAGED_BY_CONTROLLER,
+        CLOUD_MANAGED,
         ALREADY_CLAIMED,
         CANCELLED,
         LEASE_EXPIRED,
@@ -81,5 +90,8 @@ ALL_REASON_CODES = frozenset(
         OPERATION_UNSUPPORTED,
         NOT_FOUND,
         VALIDATION_ERROR,
+        WORKSPACE_ARCHIVED,
+        AGENT_SUSPENDED,
+        ACCOUNT_SUSPENDED,
     }
 )
