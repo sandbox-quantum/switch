@@ -463,6 +463,7 @@ export async function runController(
   const offered = providersFor(deps.box);
   const providers = new ProviderStatuses({
     providers: offered,
+    box: deps.box,
     locator: deps.locator,
     runtime,
     sealed,
@@ -479,6 +480,7 @@ export async function runController(
     providers,
     tools: deps.tools,
     attached: (agentId) => hub.attached(agentId),
+    box: deps.box,
     dataDir: deps.dataDir,
     workspacesDir: workspaces,
     deviceId: deps.deviceId,

@@ -10,7 +10,10 @@ import {
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { silentLogger } from './log';
+import { ControllerApiError } from './api';
+import type { LoginCheck, LoginVerdict } from './box/login-check';
+import type { RestState } from './box/rest';
+import { type LogFields, type Logger, silentLogger } from './log';
 import { BOX_PROVIDERS, providersFor } from './providers';
 import { type AgentObservation, emptyObservation } from './runtime';
 import {
@@ -20,8 +23,9 @@ import {
   type SealedLoginResponse,
   statusReportSchema,
 } from './schemas';
-import { SealedLogins } from './sealed-logins';
+import { type GivenLogin, SealedLogins } from './sealed-logins';
 import {
+  awakeSessions,
   mapAgentProcess,
   noSessionMidTurn,
   PathProviderLocator,
@@ -29,8 +33,13 @@ import {
   providerStatusFrom,
   ProviderStatuses,
   StatusCollector,
+  reportFingerprint,
+  sessionChangeEntries,
+  sessionsSent,
   statusFingerprint,
   toolStatuses,
+  sessionStateOf,
+  unusableLoginMessage,
 } from './status';
 import { type AgentRow, ControllerStore } from './store';
 import { FakeLocator, FakeRuntime } from './testing/fake-runtime';
@@ -305,6 +314,7 @@ describe('ProviderStatuses', () => {
     const runtime = new FakeRuntime();
     const statuses = new ProviderStatuses({
       providers: providersFor(true),
+      box: true,
       locator: new FakeLocator(),
       runtime,
       sealed: null,
@@ -344,6 +354,7 @@ describe('ProviderStatuses', () => {
     locator.missing.add('cursor');
     const statuses = new ProviderStatuses({
       providers: REGISTERED_PROVIDERS,
+      box: false,
       locator,
       runtime,
       sealed: null,
@@ -375,6 +386,7 @@ describe('ProviderStatuses', () => {
     locator.missing.add('cursor');
     const statuses = new ProviderStatuses({
       providers: REGISTERED_PROVIDERS,
+      box: false,
       locator,
       runtime: new FakeRuntime(),
       sealed: null,
@@ -396,6 +408,7 @@ describe('ProviderStatuses trying a login with a test prompt', () => {
     const tried: string[] = [];
     const providers = new ProviderStatuses({
       providers: REGISTERED_PROVIDERS,
+      box: false,
       locator: new FakeLocator(),
       runtime,
       sealed: null,
@@ -452,6 +465,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     let changes = 0;
     const providers = new ProviderStatuses({
       providers: REGISTERED_PROVIDERS,
+      box: false,
       locator: new FakeLocator(),
       runtime,
       sealed: null,
@@ -519,11 +533,12 @@ describe('ProviderStatuses with logins given to the machine', () => {
   const keys = generateSealingKeyPair();
   let answer: SealedLoginResponse | null;
   let reachable: boolean;
+  let refusal: Error | null = null;
 
   function sealedAnswer(
     credential: string,
     revision = 1,
-    kind: 'setup-token' | 'vertex' = 'setup-token',
+    kind: 'setup-token' | 'vertex' | 'auth-json' | 'api-key' = 'setup-token',
     provider: 'claude' | 'codex' = 'claude'
   ): SealedLoginResponse {
     return {
@@ -538,15 +553,25 @@ describe('ProviderStatuses with logins given to the machine', () => {
     };
   }
 
-  function build(runtime: FakeRuntime) {
+  function statusesFor(
+    box: boolean,
+    runtime: FakeRuntime,
+    checkLogin?: LoginCheck,
+    usable?: (login: GivenLogin) => boolean,
+    log: Logger = silentLogger
+  ) {
     return new ProviderStatuses({
       providers: REGISTERED_PROVIDERS,
+      box,
       locator: new FakeLocator(),
       runtime,
+      checkLogin,
+      ...(usable ? { usable } : {}),
       sealed: new SealedLogins({
         client: {
           sealedLogin: async () => {
             if (!reachable) throw new Error('Switch is unreachable');
+            if (refusal) throw refusal;
             return answer;
           },
         },
@@ -555,14 +580,124 @@ describe('ProviderStatuses with logins given to the machine', () => {
       }),
       probeCwd: '/tmp',
       now: () => NOW,
-      log: silentLogger,
+      log,
       onChange: () => {},
     });
+  }
+
+  /** As on a desktop or v1 machine: box mode off. */
+  const build = (...args: Parameters<typeof buildBox>) => statusesFor(false, ...args);
+  /** As in a box: box mode on. */
+  function buildBox(
+    runtime: FakeRuntime,
+    checkLogin?: LoginCheck,
+    usable?: (login: GivenLogin) => boolean,
+    log: Logger = silentLogger
+  ) {
+    return statusesFor(true, runtime, checkLogin, usable, log);
   }
 
   beforeEach(() => {
     answer = null;
     reachable = true;
+    refusal = null;
+  });
+
+  describe('a login this machine cannot use (the provider gateway cannot front it)', () => {
+    // As the box controller wires it with the gateway on: only gateway-backed logins.
+    const gatewayOnly = (login: GivenLogin) =>
+      !(login.provider === 'codex' && login.kind === 'auth-json');
+    const codexSignIn = JSON.stringify({ tokens: { access_token: 'given-codex-sign-in' } });
+
+    it("refuses Codex's 'This computer's sign-in' at once, saying why and what to give instead", async () => {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer(codexSignIn, 2, 'auth-json', 'codex');
+      const statuses = buildBox(runtime, undefined, gatewayOnly);
+      const message =
+        "This cloud machine can't use Codex's 'This computer's sign-in'. Give it an OpenAI API key instead.";
+      expect(await statuses.check('codex', { verify: true })).toMatchObject({
+        auth: 'missing',
+        auth_source: 'sealed',
+        reason: 'provider_login_missing',
+        auth_problem: message,
+      });
+      // What the provider.login operation fails with, so main's Console shows it as is.
+      expect(statuses.loginProblem('codex')).toEqual({ code: 'provider_login_missing', message });
+      expect(await statuses.givenLogin('codex')).toBeNull();
+      // Never handed to the CLI, not even for a sign-in check.
+      expect(runtime.loginProbes).toEqual([]);
+    });
+
+    it('with box mode off, asks no one whether it can use a login, and checks it as before', async () => {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer(codexSignIn, 2, 'auth-json', 'codex');
+      let asked = 0;
+      const statuses = build(runtime, undefined, (login) => {
+        asked++;
+        return gatewayOnly(login);
+      });
+      await statuses.check('codex', { verify: true });
+      expect(asked).toBe(0);
+      expect(statuses.loginProblem('codex')?.code).not.toBe('provider_login_missing');
+      expect(runtime.loginProbes.map((login) => login.kind)).toEqual(['auth-json']);
+    });
+
+    it('names only the kind of login, never any part of it, in the problem, the status or the logs', async () => {
+      const marker = 'MARKER-7f3a-never-shown';
+      const lines: string[] = [];
+      const capture = (level: string) => (message: string, fields?: LogFields) =>
+        lines.push(`${level} ${message} ${JSON.stringify(fields ?? {})}`);
+      const log: Logger = {
+        debug: capture('debug'),
+        info: capture('info'),
+        warn: capture('warn'),
+        error: capture('error'),
+      };
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer(
+        JSON.stringify({ tokens: { access_token: marker } }),
+        3,
+        'auth-json',
+        'codex'
+      );
+      const statuses = buildBox(runtime, undefined, gatewayOnly, log);
+      const status = await statuses.check('codex', { verify: true });
+      const problem = statuses.loginProblem('codex');
+      expect(problem?.message).toContain("Codex's 'This computer's sign-in'");
+      expect(JSON.stringify(status)).not.toContain(marker);
+      expect(JSON.stringify(problem)).not.toContain(marker);
+      expect(lines.join('\n')).not.toContain(marker);
+    });
+
+    it('still uses a login it can use', async () => {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer('sk-given-openai', 1, 'api-key', 'codex');
+      const statuses = buildBox(runtime, undefined, gatewayOnly);
+      expect(await statuses.check('codex')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+      expect(statuses.loginProblem('codex')).toBeNull();
+    });
+
+    it('checks every login as before where nothing says which it can use (gateway off)', async () => {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer(codexSignIn, 2, 'auth-json', 'codex');
+      const statuses = build(runtime);
+      await statuses.check('codex');
+      expect(runtime.loginProbes.map((login) => login.kind)).toEqual(['auth-json']);
+    });
+
+    it('says what to give instead for each kind it can refuse, with nothing of the login', () => {
+      expect(unusableLoginMessage({ provider: 'claude', kind: 'vertex' })).toMatch(
+        /can't use Vertex AI in this login's region/
+      );
+      expect(unusableLoginMessage({ provider: 'codex', kind: 'auth-json' })).toMatch(
+        /OpenAI API key instead/
+      );
+    });
   });
 
   it('uses the machine’s own login first, and never asks Switch then', async () => {
@@ -604,6 +739,101 @@ describe('ProviderStatuses with logins given to the machine', () => {
       credential: vertexCredentialFixture(),
     });
     expect(runtime.loginProbes.map((login) => login.kind)).toEqual(['vertex']);
+  });
+
+  describe('a given Vertex AI login is checked with Google', () => {
+    function vertexBox(verdicts: LoginVerdict[]) {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer(vertexCredentialFixture(), 5, 'vertex');
+      const asked: GivenLogin[] = [];
+      const statuses = buildBox(runtime, async (login) => {
+        asked.push(login);
+        return verdicts.shift() ?? 'ok';
+      });
+      return { statuses, asked };
+    }
+
+    it('is ok only once Google gives a token', async () => {
+      const { statuses, asked } = vertexBox(['ok']);
+      expect(await statuses.check('claude', { verify: true })).toMatchObject({
+        auth: 'ok',
+        auth_source: 'sealed',
+      });
+      expect(asked.map((login) => login.revision)).toEqual(['5']);
+      expect(await statuses.givenLogin('claude')).toMatchObject({ kind: 'vertex' });
+    });
+
+    it('reports a key Google refuses as rejected, in fixed words only', async () => {
+      const { statuses } = vertexBox(['rejected']);
+      const status = await statuses.check('claude', { verify: true });
+      expect(status).toMatchObject({
+        auth: 'expired',
+        auth_source: 'sealed',
+        reason: 'provider_login_expired',
+        auth_problem: "Google didn't accept this key.",
+      });
+      expect(statuses.loginProblem('claude')).toEqual({
+        code: 'login_rejected',
+        message: "Google didn't accept this key.",
+      });
+      expect(await statuses.givenLogin('claude')).toBeNull();
+      // Nothing of the key in what is reported.
+      const reported = JSON.stringify(status) + JSON.stringify(statuses.loginProblem('claude'));
+      expect(reported).not.toContain('PRIVATE KEY');
+      expect(reported).not.toContain('acme-ai');
+    });
+
+    it('says "not checked", never ok, when Google cannot be reached, and tries again', async () => {
+      const { statuses, asked } = vertexBox(['unreachable', 'ok']);
+      expect(await statuses.check('claude', { verify: true })).toMatchObject({
+        auth: 'unknown',
+        auth_source: 'sealed',
+        auth_problem: "Couldn't reach Google to check this key. It will be checked again.",
+      });
+      expect(statuses.loginProblem('claude')?.code).toBe('login_not_checked');
+      expect(statuses.hasUnchecked()).toBe(true);
+      // Not kept: the next use asks Google again, and only then uses the login.
+      expect(await statuses.givenLogin('claude')).toMatchObject({ kind: 'vertex' });
+      expect(asked).toHaveLength(2);
+    });
+
+    it('keeps an answer for its revision until a forced check asks again', async () => {
+      const { statuses, asked } = vertexBox(['ok', 'rejected']);
+      await statuses.check('claude', { verify: true });
+      expect((await statuses.check('claude')).auth).toBe('ok');
+      expect(asked).toHaveLength(1);
+      expect((await statuses.check('claude', { verify: true })).auth).toBe('expired');
+      expect(asked).toHaveLength(2);
+      // A rejected key stays rejected on an ordinary check, too.
+      expect((await statuses.check('claude')).auth).toBe('expired');
+      expect(asked).toHaveLength(2);
+    });
+
+    it('asks again for a new revision of the login', async () => {
+      const { statuses, asked } = vertexBox(['rejected', 'ok']);
+      await statuses.check('claude', { verify: true });
+      answer = sealedAnswer(vertexCredentialFixture(), 6, 'vertex');
+      expect((await statuses.check('claude')).auth).toBe('ok');
+      expect(asked.map((login) => login.revision)).toEqual(['5', '6']);
+    });
+
+    it("with box mode off, never asks Google: the CLI's own check is the whole check", async () => {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      runtime.loginReadiness = { status: 'authenticated', message: 'Signed in.', models: [] };
+      answer = sealedAnswer(vertexCredentialFixture(), 5, 'vertex');
+      let asked = 0;
+      const statuses = build(runtime, async () => {
+        asked++;
+        return 'rejected';
+      });
+      expect(await statuses.check('claude', { verify: true })).toMatchObject({
+        auth: 'ok',
+        auth_source: 'sealed',
+      });
+      expect(asked).toBe(0);
+    });
   });
 
   it('refuses a Vertex AI login given for another provider than Claude', async () => {
@@ -683,6 +913,121 @@ describe('ProviderStatuses with logins given to the machine', () => {
     };
     expect(await statuses.check('claude')).toMatchObject({ auth: 'missing' });
     expect(statuses.loginProblem('claude')?.code).toBe('internal');
+  });
+
+  it('doesn’t mark a given login expired when its sign-in check didn’t run, and checks again on the next use', async () => {
+    // Just after a box wakes, the agents container's launcher isn't linked yet,
+    // so the check can't run. That is no verdict on the login (1 Nov defect).
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    runtime.loginReadiness = {
+      status: 'unknown',
+      message: 'The sign-in check did not run (not_connected).',
+      models: [],
+    };
+    answer = sealedAnswer(vertexCredentialFixture(), 2, 'vertex');
+    const statuses = buildBox(runtime);
+    const first = await statuses.check('claude');
+    expect(first).toMatchObject({ auth: 'unknown', auth_source: 'sealed' });
+    expect(first.reason).toBeUndefined();
+    expect(first.auth_problem).toContain('did not run');
+    expect(statuses.loginProblem('claude')).toBeNull();
+    expect(statuses.hasUnchecked()).toBe(true);
+    expect(await statuses.givenLogin('claude')).toBeNull();
+
+    // The launcher links: the next use checks again at once, not ten minutes later.
+    runtime.loginReadiness = { status: 'authenticated', message: 'Signed in.', models: [] };
+    expect((await statuses.givenLogin('claude'))?.kind).toBe('vertex');
+    expect(runtime.loginProbes).toHaveLength(3);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(statuses.hasUnchecked()).toBe(false);
+  });
+
+  it('with box mode off, reads a sign-in check that did not run as before: expired', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    runtime.loginReadiness = {
+      status: 'unknown',
+      message: 'The sign-in check did not run (not_connected).',
+      models: [],
+    };
+    answer = sealedAnswer(vertexCredentialFixture(), 2, 'vertex');
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({
+      auth: 'expired',
+      auth_source: 'sealed',
+      reason: 'provider_login_expired',
+    });
+    expect(statuses.loginProblem('claude')?.code).toBe('provider_login_expired');
+    expect(statuses.hasUnchecked()).toBe(false);
+  });
+
+  it('keeps a given login that signed in while a later check can’t run', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer('sk-ant-oat-given', 5);
+    const statuses = buildBox(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    runtime.loginReadiness = { status: 'unknown', message: 'not linked', models: [] };
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect((await statuses.givenLogin('claude'))?.credential).toBe('sk-ant-oat-given');
+    // A new revision that can't be checked isn't used on trust.
+    answer = sealedAnswer('sk-ant-oat-newer', 6);
+    expect(await statuses.check('claude')).toMatchObject({
+      auth: 'unknown',
+      auth_source: 'sealed',
+    });
+    expect(await statuses.givenLogin('claude')).toBeNull();
+  });
+
+  it('keeps a given login when Switch refuses the read with 403 hosted_v2_off, and never treats it as withdrawn', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer('sk-ant-oat-given', 8);
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    // Hosted agents switched off on the server while the box is still up.
+    refusal = new ControllerApiError(
+      403,
+      'hosted_v2_off',
+      'This server does not support cloud agents.',
+      false,
+      null
+    );
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect((await statuses.givenLogin('claude'))?.credential).toBe('sk-ant-oat-given');
+  });
+
+  it('never keeps a withdrawn login because a sign-in check can’t run', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer('sk-ant-oat-given', 7);
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    // Withdrawn in Switch while the box's check can't run: nothing is used.
+    answer = null;
+    runtime.loginReadiness = { status: 'unknown', message: 'not linked', models: [] };
+    expect(await statuses.check('claude')).toMatchObject({
+      auth: 'missing',
+      reason: 'provider_login_missing',
+    });
+    expect(await statuses.givenLogin('claude')).toBeNull();
+    expect(statuses.hasUnchecked()).toBe(false);
+  });
+
+  it('still marks a given login expired when its sign-in check runs and fails', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    runtime.loginReadiness = { status: 'unauthenticated', message: 'Token expired.', models: [] };
+    answer = sealedAnswer('sk-ant-oat-expired');
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({
+      auth: 'expired',
+      reason: 'provider_login_expired',
+    });
+    // Cached as before: no second probe within the TTL.
+    expect(await statuses.givenLogin('claude')).toBeNull();
+    expect(runtime.loginProbes).toHaveLength(1);
   });
 
   it('keeps the login it holds while Switch cannot be asked', async () => {
@@ -860,11 +1205,117 @@ describe('StatusCollector', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("reports the agents' disk on a split box, and 0 of 0 (no figure) when it's unknown, never the data folder's", async () => {
+    const runtime = new FakeRuntime();
+    const providers = new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
+      box: true,
+      locator: new FakeLocator(),
+      runtime,
+      sealed: null,
+      probeCwd: dir,
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    const collectorWith = (disk?: () => Promise<{ free: number; total: number } | null>) =>
+      new StatusCollector({
+        box: true,
+        store,
+        runtime,
+        providers,
+        tools: async () => [],
+        attached: () => true,
+        dataDir: dir,
+        ...(disk ? { disk } : {}),
+        workspacesDir: join(dir, 'workspaces'),
+        deviceId: null,
+        version: '0.1.0',
+        updatedBy: 'self',
+        now: () => NOW,
+        meminfo: async () => null,
+      });
+    const assignment = { revision: 1, agents: [] };
+    const agents = await collectorWith(async () => ({
+      free: 12_000_000_000,
+      total: 15_000_000_000,
+    })).collect(assignment);
+    expect(agents.machine).toMatchObject({
+      disk_free_bytes: 12_000_000_000,
+      disk_total_bytes: 15_000_000_000,
+    });
+    // Marked as the agents' volume, so Switch shows it.
+    expect(agents.machine.disk_scope).toBe('workspace');
+    expect(statusReportSchema.safeParse({ ...agents, seq: 1 }).success).toBe(true);
+
+    for (const unknown of [async () => null, async () => Promise.reject(new Error('lost'))]) {
+      const report = await collectorWith(unknown).collect(assignment);
+      expect(report.machine).toMatchObject({ disk_free_bytes: 0, disk_total_bytes: 0 });
+      expect(report.machine.disk_scope).toBe('unknown');
+      expect(statusReportSchema.safeParse({ ...report, seq: 1 }).success).toBe(true);
+    }
+
+    // No reader (not a split box): the data folder's own file system, as before.
+    const own = await collectorWith().collect(assignment);
+    expect(own.machine.disk_total_bytes).toBeGreaterThan(0);
+    // The data folder may be the controller's own volume: never marked as the agents'.
+    expect(own.machine.disk_scope).toBe('unknown');
+  });
+
+  it("reports the box's /proc/meminfo figures when there are some, and leaves them out when not", async () => {
+    const runtime = new FakeRuntime();
+    const providers = new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
+      box: true,
+      locator: new FakeLocator(),
+      runtime,
+      sealed: null,
+      probeCwd: dir,
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    const collectorWith = (meminfo: () => Promise<{ anon: number; cached: number } | null>) =>
+      new StatusCollector({
+        box: true,
+        store,
+        runtime,
+        providers,
+        tools: async () => [],
+        attached: () => true,
+        dataDir: dir,
+        workspacesDir: join(dir, 'workspaces'),
+        deviceId: null,
+        version: '0.1.0',
+        updatedBy: 'self',
+        now: () => NOW,
+        meminfo,
+      });
+    const assignment = { revision: 1, agents: [] };
+    const read = await collectorWith(async () => ({
+      anon: 940_496 * 1024,
+      cached: 571_544 * 1024,
+    })).collect(assignment);
+    expect(read.machine).toMatchObject({
+      mem_anon_bytes: 963_067_904,
+      mem_cached_bytes: 585_261_056,
+    });
+    expect(statusReportSchema.safeParse({ ...read, seq: 1 }).success).toBe(true);
+
+    const none = await collectorWith(async () => null).collect(assignment);
+    expect(none.machine).not.toHaveProperty('mem_anon_bytes');
+    expect(none.machine).not.toHaveProperty('mem_cached_bytes');
+    expect(statusReportSchema.safeParse({ ...none, seq: 1 }).success).toBe(true);
+    // A new reading alone does not count as a change worth reporting early.
+    expect(statusFingerprint(read)).toBe(statusFingerprint(none));
+  });
+
   it('builds a report the protocol accepts, keeping since across reports', async () => {
     let clock = NOW;
     const runtime = new FakeRuntime();
     const providers = new ProviderStatuses({
       providers: REGISTERED_PROVIDERS,
+      box: false,
       locator: new FakeLocator(),
       runtime,
       sealed: null,
@@ -875,6 +1326,7 @@ describe('StatusCollector', () => {
     });
     await providers.check('claude');
     const collector = new StatusCollector({
+      box: false,
       store,
       runtime,
       providers,
@@ -953,6 +1405,255 @@ describe('StatusCollector', () => {
     });
     expect(statusFingerprint(third)).not.toBe(statusFingerprint(resolved));
   });
+
+  it('in box mode, builds a report the protocol accepts, with what only a box reports', async () => {
+    let clock = NOW;
+    const runtime = new FakeRuntime();
+    const providers = new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
+      box: false,
+      locator: new FakeLocator(),
+      runtime,
+      sealed: null,
+      probeCwd: dir,
+      now: () => clock,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    await providers.check('claude');
+    const awakeSeen: [string, number][] = [];
+    const agentsSeen: string[][] = [];
+    const collector = new StatusCollector({
+      box: true,
+      store,
+      runtime,
+      providers,
+      tools: async () => [
+        { tool: 'git', state: 'ok' },
+        { tool: 'gh', state: 'missing' },
+      ],
+      attached: () => true,
+      // The box valve: its cap is reported, and it hears each agent's awake count.
+      onAgentAwake: (agentId, awake) => void awakeSeen.push([agentId, awake]),
+      onAgentsSeen: (ids) => void agentsSeen.push([...ids]),
+      sessionsMax: () => 12,
+      valveHosts: () => ({ joined: 2, hosts: 3 }),
+      valveMemory: () => 'unprotected',
+      gatewayCounts: () => ({ agents: 4, refused: 1, callsToday: 37, capped: false }),
+      // The valve's count is left out while the valve is off.
+      boxCounts: () => ({ valveParks: null }),
+      dataDir: dir,
+      workspacesDir: join(dir, 'workspaces'),
+      deviceId: 'd'.repeat(64),
+      version: '0.1.0',
+      updatedBy: 'self',
+      now: () => clock,
+    });
+    store.recordApplied('agent-1', 2, '2026-01-01T11:00:00Z');
+    store.recordRestart('agent-1', NOW - 60_000);
+    runtime.agents.set('agent-1', observed({ alive: true, health: health('connecting') }));
+    const assignment = { revision: 7, agents: [entry()] };
+    const first = await collector.collect(assignment);
+    expect(statusReportSchema.safeParse({ ...first, seq: 1 }).success).toBe(true);
+    expect(first.controller).toEqual({
+      version: '0.1.0',
+      protocol: 2,
+      assignment_revision: 7,
+      updated_by: 'self',
+      started_at: '2026-01-01T12:00:00.000Z',
+    });
+    expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
+    expect(first.tools).toEqual([
+      { tool: 'git', state: 'ok' },
+      { tool: 'gh', state: 'missing' },
+    ]);
+    expect(first.agents[0]).toMatchObject({
+      agent_id: 'agent-1',
+      applied_revision: 2,
+      process: 'starting',
+      since: '2026-01-01T11:30:00Z',
+      sessions: { active: 2, ids: ['session-a', 'session-b'] },
+      restarts_10m: 1,
+    });
+    expect(first.agents[0]!.directory).toBeNull();
+    expect(first.machine.sessions_running).toBe(2);
+    expect(first.machine.sessions_max).toBe(12);
+    expect(first.machine).toMatchObject({ valve_hosts: 3, valve_hosts_joined: 2 });
+    // A box whose memory the valve has never read is reported, so an operator sees it.
+    expect(first.machine.valve_memory).toBe('unprotected');
+    expect(first.machine).toMatchObject({
+      gateway_agents: 4,
+      gateway_refused: 1,
+      gateway_calls_today: 37,
+      gateway_capped: false,
+    });
+    expect(first.machine).not.toHaveProperty('valve_parks');
+    expect(awakeSeen).toEqual([['agent-1', 2]]);
+    expect(agentsSeen).toEqual([['agent-1']]);
+    expect(first.machine.workspaces_dir).toBe(join(dir, 'workspaces'));
+    expect(first.machine.device_id).toBe('d'.repeat(64));
+    expect(first.machine.disk_total_bytes).toBeGreaterThan(0);
+
+    clock += 1000;
+    runtime.agents.set(
+      'agent-1',
+      observed({ alive: true, health: { ...health('connecting')!, since: 'later' } })
+    );
+    const second = await collector.collect(assignment);
+    // The process start, not the report's time: it only changes on a restart.
+    expect(second.controller.started_at).toBe('2026-01-01T12:00:00.000Z');
+    expect(second.agents[0]!.since).toBe('2026-01-01T11:30:00Z');
+    expect(statusFingerprint(second)).toBe(statusFingerprint(first));
+
+    runtime.agents.set(
+      'agent-1',
+      observed({
+        alive: true,
+        health: health('connecting'),
+        configured: { provider: 'claude', cwd: '/work/scout' },
+      })
+    );
+    const resolved = await collector.collect(assignment);
+    expect(resolved.agents[0]!.directory).toBe('/work/scout');
+    expect(statusFingerprint(resolved)).not.toBe(statusFingerprint(second));
+
+    runtime.agents.set(
+      'agent-1',
+      observed({
+        alive: true,
+        health: {
+          ...health('connected')!,
+          sessions: { 'session-a': 'parked', 'session-b': 'parked' },
+        },
+      })
+    );
+    const parked = await collector.collect(assignment);
+    expect(parked.agents[0]!.sessions).toEqual({ active: 2, ids: ['session-a', 'session-b'] });
+    expect(parked.machine.sessions_running).toBe(0);
+
+    // Messages waiting for room: reported with the oldest, and only while any wait.
+    runtime.agents.set(
+      'agent-1',
+      observed({
+        alive: true,
+        health: {
+          ...health('connected')!,
+          waitingForRoom: { count: 2, oldestSince: '2026-01-01T11:59:00.000Z' },
+        },
+      })
+    );
+    const waiting = await collector.collect(assignment);
+    expect(waiting.agents[0]!.waiting_for_room).toEqual({
+      count: 2,
+      oldest_since: '2026-01-01T11:59:00.000Z',
+    });
+    expect(statusReportSchema.safeParse({ ...waiting, seq: 2 }).success).toBe(true);
+    runtime.agents.set(
+      'agent-1',
+      observed({
+        alive: true,
+        health: { ...health('connected')!, waitingForRoom: { count: 0, oldestSince: null } },
+      })
+    );
+    expect((await collector.collect(assignment)).agents[0]).not.toHaveProperty('waiting_for_room');
+
+    runtime.agents.set('agent-1', observed({ failure: 'boom' }));
+    const third = await collector.collect(assignment);
+    expect(third.agents[0]).toMatchObject({
+      process: 'failed',
+      since: new Date(clock).toISOString(),
+    });
+    expect(statusFingerprint(third)).not.toBe(statusFingerprint(resolved));
+  });
+
+  it('with box mode off, reports exactly as before, whatever box parts it is given', async () => {
+    const runtime = new FakeRuntime();
+    const providers = new ProviderStatuses({
+      providers: REGISTERED_PROVIDERS,
+      box: false,
+      locator: new FakeLocator(),
+      runtime,
+      sealed: null,
+      probeCwd: dir,
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    const called: string[] = [];
+    const collector = new StatusCollector({
+      box: false,
+      store,
+      runtime,
+      providers,
+      tools: async () => [],
+      attached: () => true,
+      rest: () => {
+        called.push('rest');
+        return { kind: 'resting', sessions: ['session-z'] };
+      },
+      streamCarries: () => true,
+      disk: async () => {
+        called.push('disk');
+        return { free: 1, total: 2 };
+      },
+      onAgentAwake: () => void called.push('onAgentAwake'),
+      onAgentsSeen: () => void called.push('onAgentsSeen'),
+      sessionsMax: () => 12,
+      valveHosts: () => ({ joined: 2, hosts: 3 }),
+      valveMemory: () => 'unprotected',
+      gatewayCounts: () => ({ agents: 4, refused: 1, callsToday: 37, capped: false }),
+      boxCounts: () => ({ valveParks: 1 }),
+      operatorExec: true,
+      meminfo: async () => {
+        called.push('meminfo');
+        return { anon: 1, cached: 2 };
+      },
+      dataDir: dir,
+      workspacesDir: join(dir, 'workspaces'),
+      deviceId: null,
+      version: '0.1.0',
+      updatedBy: 'self',
+      now: () => NOW,
+    });
+    store.recordApplied('agent-1', 2, '2026-01-01T11:00:00Z');
+    runtime.agents.set(
+      'agent-1',
+      observed({
+        alive: true,
+        health: {
+          ...health('connected')!,
+          sessions: { 'session-a': 'parked', 'session-b': 'parked' },
+          waitingForRoom: { count: 2, oldestSince: '2026-01-01T11:59:00.000Z' },
+        },
+      })
+    );
+    const report = await collector.collect({ revision: 7, agents: [entry()] });
+    expect(statusReportSchema.safeParse({ ...report, seq: 1 }).success).toBe(true);
+    const agent = report.agents[0]!;
+    // The host's own sessions, not a rest's; no state and no waiting.
+    expect(agent.sessions).toEqual({ active: 2, ids: ['session-a', 'session-b'] });
+    expect(agent).not.toHaveProperty('session');
+    expect(agent).not.toHaveProperty('waiting_for_room');
+    expect(agent.oom_kills).toBe(0);
+    // Every placement counts, as before: parking is a box's.
+    expect(report.machine.sessions_running).toBe(2);
+    expect(report.machine.sessions_max).toBe(0);
+    expect(Object.keys(report.machine).sort()).toEqual(
+      [
+        'disk_free_bytes',
+        'disk_total_bytes',
+        'mem_free_bytes',
+        'mem_total_bytes',
+        'platform',
+        'sessions_max',
+        'sessions_running',
+        'workspaces_dir',
+      ].sort()
+    );
+    // The data folder's own disk, not the agents' measure.
+    expect(report.machine.disk_total_bytes).toBeGreaterThan(2);
+    expect(called).toEqual([]);
+  });
 });
 
 describe('statusFingerprint', () => {
@@ -976,5 +1677,297 @@ describe('statusFingerprint', () => {
       statusFingerprint(report('Not logged in'))
     );
     expect(statusFingerprint(report())).not.toBe(statusFingerprint(report('Invalid API key')));
+  });
+});
+
+describe('reportFingerprint', () => {
+  const report = (session: 'parked' | 'waking' | 'active' | null) =>
+    ({
+      controller: { assignment_revision: 1 },
+      providers: [],
+      tools: [],
+      agents: [
+        {
+          agent_id: 'user-a-lead',
+          applied_revision: 1,
+          process: 'running',
+          attached: true,
+          sessions: { active: 1, ids: ['session-lead'] },
+          session,
+        },
+      ],
+    }) as unknown as Parameters<typeof reportFingerprint>[0];
+
+  it('changes when only where the sessions stand changes, which statusFingerprint does not see', () => {
+    // 26 Oct: parked, then waking, then active, with nothing else changing.
+    const [parked, waking, active] = (['parked', 'waking', 'active'] as const).map(report);
+    expect(new Set([parked, waking, active].map(reportFingerprint)).size).toBe(3);
+    expect(new Set([parked, waking, active].map(statusFingerprint)).size).toBe(1);
+    expect(reportFingerprint(report(null))).not.toBe(reportFingerprint(parked));
+  });
+
+  it('changes when messages start or stop waiting for room, so the card shows within a poll', () => {
+    const idle = report('parked');
+    const waiting = structuredClone(idle);
+    (waiting.agents[0] as { waiting_for_room?: unknown }).waiting_for_room = {
+      count: 1,
+      oldest_since: '2026-10-27T12:00:00Z',
+    };
+    expect(reportFingerprint(waiting)).not.toBe(reportFingerprint(idle));
+    expect(statusFingerprint(waiting)).toBe(statusFingerprint(idle));
+  });
+});
+
+describe('sessionChangeEntries (tail log)', () => {
+  // A rerun on a test box: reply at +3.16 s, 'waking' reached Switch at +3.5 s,
+  // 'active' at +9.0 s. The log must show each move with its times.
+  const t0 = Date.parse('2026-10-27T08:30:00.000Z');
+  const report = (seq: number, session: 'parked' | 'waking' | 'active' | null) =>
+    ({
+      seq,
+      agents: [
+        { agent_id: 'user-a-lead', session },
+        { agent_id: 'user-a-qa', session: 'parked' },
+      ],
+    }) as unknown as Parameters<typeof sessionChangeEntries>[1];
+
+  it('logs one entry per agent whose sessions moved, with ids, states and times only', () => {
+    const before = sessionsSent(report(1, 'parked'));
+    const entries = sessionChangeEntries(before, report(2, 'waking'), {
+      checkedAt: t0 + 3_400,
+      sentAt: t0 + 3_500,
+      skippedAt: null,
+    });
+    expect(entries).toEqual([
+      {
+        message: 'Status report carried a session change',
+        fields: {
+          agent_id: 'user-a-lead',
+          seq: 2,
+          from: 'parked',
+          to: 'waking',
+          checked_at: '2026-10-27T08:30:03.400Z',
+          sent_at: '2026-10-27T08:30:03.500Z',
+          reason: 'seen at this check',
+        },
+      },
+    ]);
+  });
+
+  it('names the skipped check when a change waited behind a report on its way', () => {
+    const before = sessionsSent(report(2, 'waking'));
+    const [entry] = sessionChangeEntries(before, report(3, 'active'), {
+      checkedAt: t0 + 8_900,
+      sentAt: t0 + 9_000,
+      skippedAt: t0 + 3_900,
+    });
+    expect(entry!.fields).toMatchObject({
+      from: 'waking',
+      to: 'active',
+      reason: 'a check was skipped while another report was on its way',
+      skipped_at: '2026-10-27T08:30:03.900Z',
+    });
+  });
+
+  it('logs nothing for the first report or when nothing moved', () => {
+    const times = { checkedAt: t0, sentAt: t0, skippedAt: null };
+    expect(sessionChangeEntries(null, report(1, 'active'), times)).toEqual([]);
+    expect(
+      sessionChangeEntries(sessionsSent(report(1, 'active')), report(2, 'active'), times)
+    ).toEqual([]);
+  });
+});
+
+describe('sessions_running', () => {
+  // Seen on a test box: an agent parked with 6 placements, reported as 6 running,
+  // so a cloud machine that had ever chatted never read as idle to Core's sweep.
+  it('counts only awake sessions, so a parked box reports 0', () => {
+    const placements = { s1: 'r1', s2: 'r2', s3: 'r3' };
+    const at = (sessions: Record<string, 'active' | 'waking' | 'parked'>) =>
+      ({ ...health('connected'), placements, sessions }) as NonNullable<AgentObservation['health']>;
+    expect(awakeSessions(at({ s1: 'parked', s2: 'parked', s3: 'parked' }), 3)).toBe(0);
+    expect(awakeSessions(at({ s1: 'parked', s2: 'active', s3: 'waking' }), 3)).toBe(2);
+  });
+
+  it('counts every placement for a host that does not say where its sessions stand', () => {
+    expect(awakeSessions(health('connected')!, 2)).toBe(2);
+  });
+});
+
+describe('sessionStateOf', () => {
+  const withSessions = (
+    sessions: Record<string, 'active' | 'waking' | 'parked'> | undefined,
+    alive = true
+  ) =>
+    observed({
+      alive,
+      health: {
+        ...health('connected'),
+        ...(sessions ? { sessions } : {}),
+      } as AgentObservation['health'],
+    });
+
+  it('reports the most awake session: waking, then active, then parked', () => {
+    expect(sessionStateOf(withSessions({ a: 'parked', b: 'active', c: 'waking' }))).toBe('waking');
+    expect(sessionStateOf(withSessions({ a: 'parked', b: 'active' }))).toBe('active');
+    expect(sessionStateOf(withSessions({ a: 'parked', b: 'parked' }))).toBe('parked');
+  });
+
+  it('reports nothing when the watcher is not live, has no sessions, or is too old to say', () => {
+    expect(sessionStateOf(withSessions({ a: 'active' }, false))).toBeNull();
+    expect(sessionStateOf(withSessions({}))).toBeNull();
+    expect(sessionStateOf(withSessions(undefined))).toBeNull();
+  });
+});
+
+describe('a resting agent', () => {
+  const resting: RestState = { kind: 'resting', sessions: ['session-a', 'session-b'] };
+  const waking: RestState = { kind: 'waking', sessions: ['session-a', 'session-b'] };
+  const stoppedHost = observed({ alive: false, health: null });
+
+  function mapRest(
+    observation: AgentObservation,
+    rest: Parameters<typeof mapAgentProcess>[0]['rest'],
+    options: {
+      rowValue?: AgentRow | null;
+      assigned?: AgentAssignment;
+      streamCarries?: boolean;
+    } = {}
+  ) {
+    return mapAgentProcess({
+      assignment: options.assigned ?? entry(),
+      row: options.rowValue === undefined ? row() : options.rowValue,
+      observation,
+      relayAttached: false,
+      nowMs: NOW,
+      rest,
+      streamCarries: options.streamCarries ?? true,
+    });
+  }
+
+  it('reports running, never stopped or crashed, attached while Switch has it on the stream', () => {
+    // Without resting, the same stopped host maps to crashed.
+    expect(map(stoppedHost)).toMatchObject({ process: 'crashed' });
+    expect(mapRest(stoppedHost, resting)).toEqual({ process: 'running', attached: true });
+    expect(mapRest(stoppedHost, resting, { streamCarries: false })).toEqual({
+      process: 'running',
+      attached: false,
+    });
+  });
+
+  it('shows a failed start as failed, whatever resting says', () => {
+    const failed = row({
+      failure: { revision: 2, reason: 'internal', detail: 'The shared host launcher failed' },
+    });
+    expect(mapRest(stoppedHost, waking, { rowValue: failed })).toMatchObject({
+      process: 'failed',
+      reason: 'internal',
+    });
+    expect(mapRest(stoppedHost, resting, { rowValue: failed })).toMatchObject({
+      process: 'failed',
+    });
+  });
+
+  it('shows an agent its owner stopped as stopped', () => {
+    expect(
+      mapRest(stoppedHost, resting, { assigned: entry({ desired_state: 'stopped' }) })
+    ).toEqual({ process: 'stopped', attached: false });
+  });
+
+  it('reports running while woken and its host is not connected yet, then the host’s own state', () => {
+    expect(mapRest(stoppedHost, waking)).toEqual({ process: 'running', attached: true });
+    expect(mapRest(observed({ alive: true, health: health('connecting') }), waking)).toEqual({
+      process: 'running',
+      attached: true,
+    });
+    expect(mapRest(observed({ alive: true, health: health('connected') }), waking)).toMatchObject({
+      process: 'running',
+      since: '2026-01-01T11:30:00Z',
+    });
+  });
+
+  it('leaves an agent the memory guard stopped to the guard’s own state', () => {
+    expect(mapRest(stoppedHost, { kind: 'out_of_memory' })).toMatchObject({ process: 'crashed' });
+  });
+
+  describe('in the report', () => {
+    let dir: string;
+    let store: ControllerStore;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'controller-rest-status-'));
+      store = ControllerStore.open(join(dir, 'controller.db'));
+    });
+    afterEach(() => {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    async function collect(
+      rest: Parameters<typeof mapAgentProcess>[0]['rest'],
+      observation: AgentObservation
+    ) {
+      const runtime = new FakeRuntime();
+      const providers = new ProviderStatuses({
+        providers: REGISTERED_PROVIDERS,
+        box: true,
+        locator: new FakeLocator(),
+        runtime,
+        sealed: null,
+        probeCwd: dir,
+        now: () => NOW,
+        log: silentLogger,
+        onChange: () => {},
+      });
+      const collector = new StatusCollector({
+        box: true,
+        store,
+        runtime,
+        providers,
+        tools: async () => [],
+        attached: () => false,
+        rest: () => rest ?? null,
+        streamCarries: () => true,
+        dataDir: dir,
+        workspacesDir: join(dir, 'workspaces'),
+        deviceId: null,
+        version: '0.1.0',
+        updatedBy: 'self',
+        now: () => NOW,
+      });
+      store.recordApplied('agent-1', 2, '2026-01-01T11:00:00Z');
+      runtime.agents.set('agent-1', observation);
+      return collector.collect({ revision: 7, agents: [entry()] });
+    }
+
+    it('reads as parked with its sessions, counts 0 awake, and changes nothing a reconcile is decided on', async () => {
+      const parked = await collect(
+        null,
+        observed({
+          alive: true,
+          health: {
+            ...health('connected')!,
+            sessions: { 'session-a': 'parked', 'session-b': 'parked' },
+          },
+        })
+      );
+      const asleep = await collect(resting, stoppedHost);
+      expect(statusReportSchema.safeParse({ ...asleep, seq: 1 }).success).toBe(true);
+      expect(asleep.agents[0]).toMatchObject({
+        process: 'running',
+        attached: true,
+        session: 'parked',
+        sessions: { active: 2, ids: ['session-a', 'session-b'] },
+      });
+      expect(asleep.machine.sessions_running).toBe(0);
+      expect(asleep.agents[0]!.reason).toBeUndefined();
+      expect(asleep.agents[0]!.process).toBe(parked.agents[0]!.process);
+      expect(asleep.agents[0]!.sessions).toEqual(parked.agents[0]!.sessions);
+    });
+
+    it('reads as waking and counts it awake while its host comes back, so the box is not stopped mid-wake', async () => {
+      const report = await collect(waking, stoppedHost);
+      expect(report.agents[0]).toMatchObject({ process: 'running', session: 'waking' });
+      expect(report.machine.sessions_running).toBe(1);
+    });
   });
 });

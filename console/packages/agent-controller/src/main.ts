@@ -462,7 +462,7 @@ function pathRefresher(log: Logger): () => Promise<void> {
  * writes what it finds to `--out` as each check comes back, for a `run`
  * started later to take (`--provider-seed`).
  */
-async function precheckCommand(args: string[]): Promise<number> {
+async function precheckCommand(args: string[], box: boolean): Promise<number> {
   const { values } = parseArgs({
     args,
     options: {
@@ -485,6 +485,7 @@ async function precheckCommand(args: string[]): Promise<number> {
   const sharedHostBundle = bundlePath(values['shared-host-bundle']);
   const providers = new ProviderStatuses({
     providers: PROVIDERS,
+    box,
     locator: new PathProviderLocator(() => process.env.PATH, join(probeDir, 'version-probe')),
     runtime: {
       probe: (provider, binaryPath, cwd) =>
@@ -1283,7 +1284,7 @@ export async function main(argv: string[], inBox: boolean = insideBox()): Promis
       case 'doctor':
         return await doctorCommand(rest);
       case 'precheck':
-        return await precheckCommand(rest);
+        return await precheckCommand(rest, box);
       case 'update':
         return await updateCommand(rest);
       case undefined:
