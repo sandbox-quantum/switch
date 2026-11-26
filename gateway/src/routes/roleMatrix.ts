@@ -16,7 +16,9 @@
  * assumes the server has `agent_management`, `service_connections`,
  * `organization_connector_apps`, `gateway_chats` and `gateway_onboarding` on,
  * as the harness's stack does, and more than one organization: the server's
- * default one and the harness's own. */
+ * default one and the harness's own. A page that needs a flag beyond those
+ * names it (`MatrixPage.flag`, `MENU_FLAGS`), and is held to the dashboard
+ * with the flag on and off. */
 
 /** The roles, each a real account in the harness:
  *
@@ -48,6 +50,9 @@ export interface MatrixPage {
   path: string;
   /** Who may open it. Everyone else is shown the no-access page. */
   open: readonly Persona[];
+  /** A flag the page needs beyond the ones every page assumes. Where it is
+   * off, whoever `open` admits is told the page is not turned on. */
+  flag?: string;
 }
 
 /** A settings area's own URL, which opens a page of the area. */
@@ -64,8 +69,8 @@ export interface MatrixRedirect {
   to: string;
 }
 
-function page(path: string, open: readonly Persona[]): MatrixPage {
-  return { path, open };
+function page(path: string, open: readonly Persona[], flag?: string): MatrixPage {
+  return flag === undefined ? { path, open } : { path, open, flag };
 }
 
 export const PAGES: readonly MatrixPage[] = [
@@ -76,7 +81,6 @@ export const PAGES: readonly MatrixPage[] = [
   page("/chats/agents/:agentId", EVERYONE),
   page("/chats/rooms/:roomId", EVERYONE),
   page("/chats/:roomId", EVERYONE),
-  page("/rooms/:roomId", EVERYONE),
   page("/rooms/:roomId/manage", EVERYONE),
   page("/rooms/:roomId/documents/:documentId", EVERYONE),
   page("/resources", EVERYONE),
@@ -86,7 +90,6 @@ export const PAGES: readonly MatrixPage[] = [
   page("/templates", EVERYONE),
   page("/templates/:id", EVERYONE),
   page("/agents", EVERYONE),
-  page("/agents/:agentId", EVERYONE),
   page("/agents/:agentId/manage", EVERYONE),
   page("/connectors", EVERYONE),
   page("/connectors/:connectorId", EVERYONE),
@@ -100,7 +103,7 @@ export const PAGES: readonly MatrixPage[] = [
   page("/settings/connectors", EVERYONE),
   page("/settings/api-keys", EVERYONE),
   page("/settings/guardrails", EVERYONE),
-  page("/settings/message-routing", ADMINS),
+  page("/settings/message-routing", ADMINS, "decision_routing"),
   page("/settings/ai-providers", EVERYONE),
   page("/settings/devices", EVERYONE),
   page("/settings/account", EVERYONE),
@@ -135,6 +138,8 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/organization", to: "/settings/org" },
   { from: "/rooms", to: "/chats?tab=rooms" },
   { from: "/rooms/new", to: "/chats?tab=rooms&new=room" },
+  { from: "/rooms/:roomId", to: "/chats/rooms/:roomId" },
+  { from: "/agents/:agentId", to: "/chats/agents/:agentId" },
   { from: "/rooms/groups", to: "/settings/room-groups" },
   { from: "/rooms/graph", to: "/settings/room-graph" },
   { from: "/usage", to: "/settings" },
@@ -188,8 +193,15 @@ const WORKSPACE_MENU_ADMIN = [
   "Your account",
 ];
 
-/** Each settings area's menu, in order: the pages it lists, not the link
- * across to the other area. Null where the role may not
+/** The menu rows that need a flag beyond the ones every page assumes, by
+ * label, and the flag: where it is off, the menu leaves the row out. */
+export const MENU_FLAGS: Record<MatrixSettingsArea, Readonly<Record<string, string>>> = {
+  workspace: { "Message routing": "decision_routing" },
+  organization: {},
+};
+
+/** Each settings area's menu, in order, with every flag on: the pages it
+ * lists, not the link across to the other area. Null where the role may not
  * enter the area. */
 export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly string[] | null>> =
   {
@@ -214,3 +226,32 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
       operator: ["General", "Workspaces", "Users", "Connector apps"],
     },
   };
+
+/** What a role is shown at a page or area: the page, the no-access page, or
+ * the page saying a flag it needs is off, which only someone it would admit
+ * is told. */
+export type MatrixState = "page" | "refused" | "not-enabled";
+
+export function stateAt(
+  row: MatrixPage | MatrixArea,
+  persona: Persona,
+  flags: ReadonlySet<string>,
+): MatrixState {
+  if (!row.open.includes(persona)) return "refused";
+  return "flag" in row && row.flag !== undefined && !flags.has(row.flag) ? "not-enabled" : "page";
+}
+
+/** A role's menu in a settings area on a server with `flags` on, or null
+ * where it may not enter the area. */
+export function settingsMenu(
+  area: MatrixSettingsArea,
+  persona: Persona,
+  flags: ReadonlySet<string>,
+): readonly string[] | null {
+  const menu = SETTINGS_MENUS[area][persona];
+  if (menu === null) return null;
+  return menu.filter((label) => {
+    const flag = MENU_FLAGS[area][label];
+    return flag === undefined || flags.has(flag);
+  });
+}

@@ -115,6 +115,8 @@ if [ "$LANE" = browser ]; then
   # connector apps, chats and getting started on the web, with the buddy and
   # cloud machines it needs (agent management is always on). Not follow-ups,
   # nor their short window: only the fast lane's follow-ups scenario uses them.
+  # Nor message routing: a page that names a flag is checked with the server's
+  # flags as they are, so its "not turned on" page is the one checked here.
   FLAGS=service_connections,organization_connector_apps,gateway_chats,gateway_onboarding,switch_buddy,hosted_agents
   sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=$FLAGS|" "$ENV_FILE"
   rm -f "$ENV_FILE.bak"

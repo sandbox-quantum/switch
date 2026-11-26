@@ -27,7 +27,6 @@ import {
 } from "../data/capabilities";
 import type { SettingsArea } from "../data/settingsLanding";
 import AccountPage from "../pages/account/AccountPage";
-import AgentDetailRedirect from "../pages/agents/AgentDetailRedirect";
 import AgentDetailPage from "../pages/agents/AgentDetailPage";
 import ApiKeysPage from "../pages/api-keys/ApiKeysPage";
 import AgentListPage from "../pages/agents/AgentListPage";
@@ -56,7 +55,6 @@ import DevicesPage from "../pages/devices/DevicesPage";
 import WorkspaceGuardrailsPage from "../pages/guardrails/WorkspaceGuardrailsPage";
 import CreateRoomPage from "../pages/rooms/CreateRoomPage";
 import GroupsPage from "../pages/rooms/GroupsPage";
-import RoomDetailRedirect from "../pages/rooms/RoomDetailRedirect";
 import RoomDetailPage from "../pages/rooms/RoomDetailPage";
 import RoomScopedDocumentView from "../pages/rooms/RoomScopedDocumentView";
 import RoomsGraphPage from "../pages/rooms/RoomsGraphPage";
@@ -204,8 +202,9 @@ export const ROUTES: readonly AppRoute[] = [
   page("/chats/agents/:agentId", gatewayChats, chats),
   page("/chats/rooms/:roomId", gatewayChats, chats),
   page("/chats/:roomId", gatewayChats, chats),
-  // Where there are Chats, rooms are listed there and a new one is made in its
-  // New room dialog; elsewhere the Rooms list and the New room page stay.
+  // Where there are Chats, rooms are listed and opened there and a new one is
+  // made in its New room dialog, and an agent is opened there too; elsewhere
+  // the Rooms list, the New room page and the room and agent pages stay.
   redirect("/rooms", "/chats?tab=rooms", { when: gatewayChats, otherwise: <RoomsPage /> }),
   redirect("/rooms/new", "/chats?tab=rooms&new=room", {
     when: gatewayChats,
@@ -214,7 +213,10 @@ export const ROUTES: readonly AppRoute[] = [
   redirect("/rooms/groups", "/settings/room-groups"),
   redirect("/rooms/graph", "/settings/room-graph"),
   page("/rooms/:roomId/manage", everyone, <RoomDetailPage />),
-  page("/rooms/:roomId", everyone, <RoomDetailRedirect />),
+  redirect("/rooms/:roomId", "/chats/rooms/:roomId", {
+    when: gatewayChats,
+    otherwise: <RoomDetailPage />,
+  }),
   page("/rooms/:roomId/documents/:documentId", everyone, <RoomScopedDocumentView />),
 
   page("/resources", everyone, <ResourcesPage />),
@@ -227,7 +229,10 @@ export const ROUTES: readonly AppRoute[] = [
 
   page("/agents", everyone, <AgentListPage />),
   page("/agents/:agentId/manage", everyone, <AgentDetailPage />),
-  page("/agents/:agentId", everyone, <AgentDetailRedirect />),
+  redirect("/agents/:agentId", "/chats/agents/:agentId", {
+    when: gatewayChats,
+    otherwise: <AgentDetailPage />,
+  }),
 
   // Everyone's connector catalogue. The deployment's connector apps, which
   // this URL once was, are in Organization settings, as Connector apps.

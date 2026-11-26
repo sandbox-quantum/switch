@@ -202,10 +202,13 @@ on the UI.
   entered into that workspace with no role in the organization. Each scenario
   makes its own, signing every account but the operator's up (see "Throwaway
   accounts"), and every name goes through the run's naming helper.
-- **The flags.** Every row assumes agent management, connectors and the
-  organization's connector apps are on, so every page is there to open. The
-  stack script turns them on for the browser lane, and the scenarios refuse to
-  run without them.
+- **The flags.** Every row assumes agent management, connectors, the
+  organization's connector apps, chats and getting started are on, so every
+  page is there to open. The stack script turns them on for the browser lane,
+  and the scenarios refuse to run without them. A row that needs another flag
+  names it (message routing's `decision_routing`), and is checked against the
+  server's flags as they are: off, the page says it is not turned on and the
+  menu leaves it out.
 - **Only on `ephemeral`.** Accounts and organizations are left behind.
   What the accounts own is removed; the operator's choice of
   workspace for its next sign-in is put back, since the other scenarios sign
