@@ -663,6 +663,33 @@ async def test_starting_over_purges_what_the_account_owns_and_keeps_the_login(
         )
 
 
+async def test_starting_over_asks_about_the_team_and_the_license_again(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, email, solo, _ = await _solo_workspace(session_factory)
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        user.team_survey = {"role": "Platform / DevOps"}
+        user.team_survey_answered_at = datetime.now(UTC)
+        user.license_accepted_version = "v1"
+        user.license_accepted_at = datetime.now(UTC)
+        await session.commit()
+
+    app, _, _ = _app(session_factory, enabled=True)
+    async with _client(app, user_id, email, solo) as client:
+        response = await client.post("/auth/me/start-over", json={"email": email})
+
+    assert response.json() == {"finished": True, "waiting": None}
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        assert user.team_survey is None
+        assert user.team_survey_answered_at is None
+        assert user.license_accepted_version is None
+        assert user.license_accepted_at is None
+
+
 async def test_starting_over_waits_for_the_cloud_machine_signing_nobody_out(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

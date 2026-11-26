@@ -1,17 +1,21 @@
 """The license Switch is offered under, and who has accepted it.
 
-The text is the project's LICENSE file, read once at startup from beside
-`pyproject.toml` (`core/LICENSE` links to the repository's; the server image
-copies it in), so a server without it does not start. Its version is a digest
-of that text: a changed license has a new version, and everyone is asked to
-accept it again.
+The text is the copy of the repository's LICENSE shipped inside the
+`switch_core` package (`switch_core/LICENSE`, kept identical by a test), so
+every install has it: a wheel, the server image and an editable checkout
+alike. It is read on first use, and a server missing it still starts: only
+the license routes fail, with a 503 that names the problem. Its version is a
+digest of that text: a changed license has a new version, and everyone is
+asked to accept it again.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime
-from pathlib import Path
+from functools import cache
+from importlib.resources import files
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,15 +27,35 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session, get_user_store
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
 
-LICENSE_TEXT = (Path(__file__).resolve().parents[2] / "LICENSE").read_text()
-LICENSE_VERSION = hashlib.sha256(LICENSE_TEXT.encode()).hexdigest()[:16]
+router = APIRouter()
 
 
 class LicenseView(BaseModel):
     version: str
     text: str
+
+
+@cache
+def _read_license() -> LicenseView:
+    text = files("switch_core").joinpath("LICENSE").read_text(encoding="utf-8")
+    return LicenseView(
+        version=hashlib.sha256(text.encode()).hexdigest()[:16], text=text
+    )
+
+
+def current_license() -> LicenseView:
+    """The license text and its version; 503 when this install lacks it."""
+    try:
+        return _read_license()
+    except OSError as exc:
+        logger.error("The license file shipped with switch_core can't be read: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"This server can't read the license it is offered under ({exc}). "
+            "Its install is missing switch_core/LICENSE.",
+        ) from exc
 
 
 class LicenseAcceptanceView(BaseModel):
@@ -46,7 +70,7 @@ class AcceptLicenseRequest(BaseModel):
 
 def _acceptance(user: User) -> LicenseAcceptanceView:
     return LicenseAcceptanceView(
-        version=LICENSE_VERSION,
+        version=current_license().version,
         accepted_version=user.license_accepted_version,
         accepted_at=user.license_accepted_at,
     )
@@ -55,7 +79,7 @@ def _acceptance(user: User) -> LicenseAcceptanceView:
 @router.get("/license")
 async def get_license() -> LicenseView:
     # Unauthenticated: the sign-up page links to it before any account exists.
-    return LicenseView(version=LICENSE_VERSION, text=LICENSE_TEXT)
+    return current_license()
 
 
 @router.get("/auth/me/license")
@@ -76,11 +100,12 @@ async def accept_license(
 ) -> LicenseAcceptanceView:
     """Record that the signed-in person accepted the license they were shown,
     named by its version, which must be the current one."""
-    if req.version != LICENSE_VERSION:
+    version = current_license().version
+    if req.version != version:
         raise HTTPException(
             status_code=409,
             detail="The license has changed since it was shown. Read it again before accepting.",
         )
-    await user_store.record_license_acceptance(session, user, LICENSE_VERSION)
+    await user_store.record_license_acceptance(session, user, version)
     await session.commit()
     return _acceptance(user)

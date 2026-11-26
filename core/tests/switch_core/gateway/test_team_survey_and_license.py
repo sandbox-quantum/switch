@@ -8,18 +8,23 @@ was never committed cannot pass.
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from importlib.resources import files
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import User
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
+from switch_core.gateway import license_acceptance
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.license_acceptance import router as license_router
 from switch_core.gateway.team_survey import router as team_survey_router
@@ -211,6 +216,43 @@ class TestLicense:
             await _stored(session_factory, user_id)
         ).license_accepted_version is None
 
-    def test_the_server_image_ships_the_license(self) -> None:
-        dockerfile = _REPO / "deploy/shared_resources/images/Dockerfile.switch"
-        assert "\nCOPY LICENSE ./\n" in dockerfile.read_text()
+    def test_the_package_ships_the_repository_license_unchanged(self) -> None:
+        # The copy every install reads; the repository's LICENSE is the source.
+        shipped = files("switch_core").joinpath("LICENSE").read_text(encoding="utf-8")
+        assert shipped == (_REPO / "LICENSE").read_text(encoding="utf-8"), (
+            "core/switch_core/LICENSE differs from the repository's LICENSE: "
+            "copy LICENSE over it."
+        )
+
+
+@pytest.fixture
+def license_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+    """An install whose switch_core package lacks its LICENSE."""
+    license_acceptance._read_license.cache_clear()
+    monkeypatch.setattr(license_acceptance, "files", lambda _package: tmp_path)
+    yield
+    license_acceptance._read_license.cache_clear()
+
+
+class TestLicenseMissing:
+    async def test_the_license_routes_answer_503_and_log_an_error(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        license_missing: None,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        user_id = await _seed_user(session_factory)
+        caplog.set_level(logging.ERROR, logger=license_acceptance.__name__)
+        async with _client(_app(session_factory), user_id) as client:
+            responses = [
+                await client.get("/license"),
+                await client.get("/auth/me/license"),
+                await client.put("/auth/me/license", json={"version": "anything"}),
+            ]
+        for response in responses:
+            assert response.status_code == 503, response.text
+            assert "switch_core/LICENSE" in response.json()["detail"]
+        assert "license file shipped with switch_core" in caplog.text
+        assert (
+            await _stored(session_factory, user_id)
+        ).license_accepted_version is None

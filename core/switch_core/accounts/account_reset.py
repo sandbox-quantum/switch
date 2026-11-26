@@ -18,7 +18,8 @@ are torn down. Every refusal is checked before anything changes.
 Keeping the login (`keep_login`) wipes the same workspaces and cloud
 machines but leaves the account itself, with its sign-in and any workspace
 someone else is in, so the person can run getting started again from
-creating a workspace.
+creating a workspace, with their answers about their team and their
+license acceptance cleared so those steps are asked again.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import null, select, update
 
 from switch_core.accounts.deletion import (
     FORMER_MEMBER,
@@ -46,6 +47,7 @@ from switch_core.db.models import (
     OrganizationMember,
     Tenant,
     TenantMember,
+    User,
 )
 from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.messaging_install_store import INSTALL_ACTIVE
@@ -55,7 +57,6 @@ if TYPE_CHECKING:
 
     from switch_core.accounts.deletion import AccountDeletion
     from switch_core.accounts.organization_purge import OrganizationPurge
-    from switch_core.db.models import User
     from switch_core.organization_admin_notices import AdminChange
 
 
@@ -163,7 +164,22 @@ class AccountReset:
             except PurgeRefused as refused:
                 raise AccountDeletionRefused(str(refused)) from None
             _finished(outcome, user.id)
-        if deleted_by_purge or keep_login:
+        if keep_login:
+            # So the person is asked about their team and the license again.
+            await session.execute(
+                update(User)
+                .where(User.id == user.id)
+                .values(
+                    # SQL NULL; a plain None would store JSON null in the JSONB column.
+                    team_survey=null(),
+                    team_survey_answered_at=None,
+                    license_accepted_version=None,
+                    license_accepted_at=None,
+                )
+            )
+            await session.commit()
+            return []
+        if deleted_by_purge:
             return []
         return await self.deletion.delete(session, user, remaining, actor_id=user.id)
 

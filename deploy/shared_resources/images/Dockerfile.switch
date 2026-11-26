@@ -52,9 +52,6 @@ COPY core/alembic.ini .
 # pyproject's readme field makes hatchling read README.md when it builds the
 # project below, so it must be in the image context.
 COPY core/README.md ./
-# Served to the dashboard for people to accept (`gateway/license_acceptance.py`),
-# which reads it from beside pyproject.toml and refuses to start without it.
-COPY LICENSE ./
 
 RUN uv sync --frozen --no-dev
 

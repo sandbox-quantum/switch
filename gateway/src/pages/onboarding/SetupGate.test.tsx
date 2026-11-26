@@ -117,6 +117,18 @@ describe("SetupGate", () => {
     expect(api.answerTeamSurvey).not.toHaveBeenCalled();
   });
 
+  it("shows why the license can't be shown, and offers nothing to accept", async () => {
+    server({ answered: true, accepted: "v1" });
+    api.fetchLicense.mockRejectedValue(new Error("This server can't read the license it is offered under"));
+    renderGate();
+    expect(
+      await screen.findByText("Couldn't load the license: This server can't read the license it is offered under"),
+    ).toBeTruthy();
+    const accept = screen.getByRole("button", { name: "I have reviewed and accept the license" });
+    expect((accept as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText("The dashboard")).toBeNull();
+  });
+
   it("says so when the answers cannot be saved, and stays on the questions", async () => {
     server({ answered: false, accepted: "v2" });
     api.answerTeamSurvey.mockRejectedValue(new Error("company_size: must be one of: 1-10"));
