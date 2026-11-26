@@ -569,13 +569,43 @@ def _prompt_button(prompt: DirectPrompt, position: int, label: str) -> dict[str,
     return button
 
 
-# Said, to the person alone, when a button press or a slash command reached
-# this app but could not be acted on. It says nothing of why: what went wrong
-# is in the server's log, and a reason shown here could carry what it must not.
-COULD_NOT_PROCESS = (
-    "Switch couldn't process that. Try again in a moment. If you were linking "
-    "your account, type `/link-account` with the code Switch Console shows you."
-)
+#: What the official Switch app's slash commands start with: `/switch-reset`
+#: for `!reset`. Every app in a Slack workspace shares one slash namespace, so
+#: an app installed into other people's workspaces cannot take `/help` or
+#: `/reset` (Slack's Marketplace asks for this too). An app a workspace made
+#: for itself keeps the bare names it was made with. Both forms are accepted
+#: from any app.
+OFFICIAL_COMMAND_PREFIX = "switch-"
+
+
+def slash_command(name: str, connection_config: Mapping[str, object]) -> str:
+    """How `!name` is written as a slash command on this connection's app.
+
+    Only the official app delivers events by webhook (Slack does not let a
+    distributed app use Socket Mode), which is what tells it apart.
+    """
+    if connection_config.get("event_delivery", "socket_mode") == "webhook":
+        return f"/{OFFICIAL_COMMAND_PREFIX}{name}"
+    return f"/{name}"
+
+
+def in_room_command(slash: str) -> str:
+    """The in-room command a slash command names: `/switch-reset` and
+    `/reset` are both `reset`."""
+    name = slash.lstrip("/")
+    return name.removeprefix(OFFICIAL_COMMAND_PREFIX)
+
+
+def could_not_process(connection_config: Mapping[str, object]) -> str:
+    """Said, to the person alone, when a button press or a slash command
+    reached this app but could not be acted on. It says nothing of why: what
+    went wrong is in the server's log, and a reason shown here could carry
+    what it must not."""
+    return (
+        "Switch couldn't process that. Try again in a moment. If you were "
+        f"linking your account, type `{slash_command('link-account', connection_config)}` "
+        "with the code Switch Console shows you."
+    )
 
 
 def _failure_without_message(error: BaseException) -> str:
@@ -2212,7 +2242,7 @@ class SlackAdapter(PlatformAdapter):
     ) -> str:
         # Slack runs a slash command typed or pasted as the whole message, and
         # passes its tail through as free text.
-        return f"/{name} {argument}"
+        return f"{slash_command(name, connection_config)} {argument}"
 
     @classmethod
     def link_code_instructions(
@@ -2221,8 +2251,9 @@ class SlackAdapter(PlatformAdapter):
         # A slash command reaches the app from any conversation, including a
         # person's message to themselves, and is answered only to them. The
         # typed form is for a workspace whose app predates the command.
+        link = slash_command("link-account", connection_config)
         instructions = (
-            f"Type `/link-account {code}` from that account anywhere in Slack: "
+            f"Type `{link} {code}` from that account anywhere in Slack: "
             "a message to yourself works, and only you see the reply. If Slack "
             f"doesn't know the command, post `!link-account {code}` in a "
             "channel Switch is in."
@@ -2244,10 +2275,8 @@ class SlackAdapter(PlatformAdapter):
     def unlink_account_instructions(
         cls, name: str, connection_config: Mapping[str, object]
     ) -> str:
-        return (
-            f"type `/unlink-account {name}` anywhere in Slack (a message to "
-            "yourself works)"
-        )
+        unlink = slash_command("unlink-account", connection_config)
+        return f"type `{unlink} {name}` anywhere in Slack (a message to yourself works)"
 
     def adapt_icon_url(self, icon_url: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
@@ -2258,7 +2287,10 @@ class SlackAdapter(PlatformAdapter):
     def slash_invite_hint(self) -> str:
         # Slack passes a slash command's whole tail through as free text, so the
         # invocation reads exactly like the `!` form.
-        return "`/invite-agent @agent-name` — the Slack slash command"
+        invite = slash_command(
+            "invite-agent", {"event_delivery": self._config.event_delivery}
+        )
+        return f"`{invite} @agent-name` — the Slack slash command"
 
     @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
@@ -4144,7 +4176,11 @@ class SlackAdapter(PlatformAdapter):
                     _failure_without_message(error),
                 )
                 await self.tell_actor(
-                    channel_id, user_id, user.name, thread_ref, COULD_NOT_PROCESS
+                    channel_id,
+                    user_id,
+                    user.name,
+                    thread_ref,
+                    could_not_process({"event_delivery": self._config.event_delivery}),
                 )
             finally:
                 if card_ref is not None:
@@ -4380,7 +4416,8 @@ class SlackAdapter(PlatformAdapter):
         A `/reset @agent` invocation is mapped 1:1 to the in-room `!reset @agent`
         command: the slash name IS the in-room command name, so it flows through
         the same command dispatcher as a typed `!`-command. Slack strips the
-        leading `/`, so `/reset` arrives as `reset`.
+        leading `/`, so `/reset` arrives as `reset`. The official app's
+        `/switch-reset` arrives as `reset` too.
 
         Slash commands are invisible to everyone and produce no channel post of
         their own, so we first post a visible "Running …" message (as the app)
@@ -4389,7 +4426,8 @@ class SlackAdapter(PlatformAdapter):
         back to it and the result threads underneath rather than landing at the
         channel root.
         """
-        command = str(payload.get("command", "")).lstrip("/")
+        typed = str(payload.get("command", "")).lstrip("/")
+        command = in_room_command(typed)
         text = str(payload.get("text", ""))
         channel_id = str(payload.get("channel_id", ""))
         user_id = str(payload.get("user_id", ""))
@@ -4442,14 +4480,19 @@ class SlackAdapter(PlatformAdapter):
                         channel_id,
                         _failure_without_message(error),
                     )
-                    await self.answer_command(inbound, COULD_NOT_PROCESS)
+                    await self.answer_command(
+                        inbound,
+                        could_not_process(
+                            {"event_delivery": self._config.event_delivery}
+                        ),
+                    )
             return
 
         # Post the visible "Running …" message as the app and use it as the
         # thread root for the command's result. If it fails to post, fall back
         # to a root-level result (message_ref=None) rather than dropping the
         # command.
-        shown = f"/{command}" + (f" {text}" if text else "")
+        shown = f"/{typed}" + (f" {text}" if text else "")
         running_ref = await self.admin_message(
             channel_id, f"⚙️ Running `{shown}` — result will appear in this thread."
         )

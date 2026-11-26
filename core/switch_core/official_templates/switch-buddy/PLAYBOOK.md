@@ -249,9 +249,8 @@ Two steps, in this order, one message each:
    the channel to a Switch room and how to add an agent. No such message means it is not
    linked yet: check the app was added to that channel, on the workspace connected to
    Switch.
-2. **Invite the agent** by typing, in the channel, `/invite-agent @agent-name` or
-   `!invite-agent @agent-name`, with the agent's exact name (from `list_agents`, for
-   example `!invite-agent @switch-buddy-max`). The name is part of the command: typing
+2. **Invite the agent** by typing, in the channel, `!invite-agent @agent-name`, with the
+   agent's exact name (from `list_agents`, for example `!invite-agent @switch-buddy-max`). The name is part of the command: typing
    `!invite-agent` alone only gets the usage line back. The `@` suggestion list may not
    offer the agent (on Slack's free plan it does not): type the full name by hand.
 

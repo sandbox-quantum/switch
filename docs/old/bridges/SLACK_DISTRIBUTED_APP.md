@@ -88,11 +88,18 @@ cannot fill in the URL fields until they are live and publicly reachable.
 ## Manifest
 
 Substitute the host in the four `url` fields. The scopes, slash commands and
-bot events are identical to the self-registered app's, because the app does
-the same job once installed — the differences are all in `settings` and
-`oauth_config`.
+bot events are the self-registered app's, because the app does the same job
+once installed. The differences are in `settings` and `oauth_config`, and the
+`switch-` in front of each command.
 
-`/auto-route` belongs only on an app whose server has the `decision_routing`
+Every command starts with `switch-` (`/switch-reset` runs `!reset`): every
+app in a Slack workspace shares one set of slash command names, so an app
+installed into other people's workspaces must not take `/help` or `/reset`,
+and Slack's Marketplace review asks for exactly this. Switch accepts the bare
+names too, from any app, so a self-registered app keeps the names it was made
+with. A test holds this list to the commands the server has.
+
+`/switch-auto-route` belongs only on an app whose server has the `decision_routing`
 feature flag on. A server with it off does not have the command, and answers
 it with "Unknown command", so leave it out of that server's app until
 auto-route is turned on there.
@@ -113,33 +120,38 @@ auto-route is turned on there.
             "always_online": false
         },
         "slash_commands": [
-            { "command": "/help", "url": "https://HOST/messaging/slack/commands", "description": "Show the list of available in-room commands", "should_escape": false },
-            { "command": "/reset", "url": "https://HOST/messaging/slack/commands", "description": "Reset a targeted agent's session (clears context, then reconnects)", "usage_hint": "@agent-name | @role (required)", "should_escape": true },
-            { "command": "/reset-all-agents", "url": "https://HOST/messaging/slack/commands", "description": "Reset EVERY agent's session in this room", "should_escape": false },
-            { "command": "/compact", "url": "https://HOST/messaging/slack/commands", "description": "Compact a targeted agent's session context", "usage_hint": "@agent-name | @role (required)", "should_escape": true },
-            { "command": "/compact-all-agents", "url": "https://HOST/messaging/slack/commands", "description": "Compact EVERY agent's session context in this room", "should_escape": false },
-            { "command": "/interrupt", "url": "https://HOST/messaging/slack/commands", "description": "Interrupt a targeted agent's current turn", "usage_hint": "@agent-name | @role (required)", "should_escape": true },
-            { "command": "/interrupt-all-agents", "url": "https://HOST/messaging/slack/commands", "description": "Interrupt EVERY agent's current turn in this room", "should_escape": false },
-            { "command": "/agents-status", "url": "https://HOST/messaging/slack/commands", "description": "Show each agent's presence and capabilities in this room", "should_escape": false },
-            { "command": "/roles", "url": "https://HOST/messaging/slack/commands", "description": "List this room's roles and who currently holds each", "should_escape": false },
-            { "command": "/list-agents", "url": "https://HOST/messaging/slack/commands", "description": "List the agents available in this room", "should_escape": false },
-            { "command": "/list-switch-agents", "url": "https://HOST/messaging/slack/commands", "description": "List all agents registered on the Switch", "should_escape": false },
-            { "command": "/list-documents", "url": "https://HOST/messaging/slack/commands", "description": "List the room's internal documents", "should_escape": false },
-            { "command": "/list-references", "url": "https://HOST/messaging/slack/commands", "description": "List the room's references", "should_escape": false },
-            { "command": "/list-aliases", "url": "https://HOST/messaging/slack/commands", "description": "List per-room agent aliases (@alias to agent)", "should_escape": false },
-            { "command": "/set-alias", "url": "https://HOST/messaging/slack/commands", "description": "Give an agent a room alias", "usage_hint": "@agent-name @alias", "should_escape": true },
-            { "command": "/remove-alias", "url": "https://HOST/messaging/slack/commands", "description": "Remove a room alias", "usage_hint": "@alias (or @agent-name)", "should_escape": true },
-            { "command": "/invite-agent", "url": "https://HOST/messaging/slack/commands", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
-            { "command": "/link-account", "url": "https://HOST/messaging/slack/commands", "description": "Confirm a link between your chat account and your Switch user", "usage_hint": "CODE", "should_escape": true },
-            { "command": "/unlink-account", "url": "https://HOST/messaging/slack/commands", "description": "List or remove the Switch users this chat account is linked to", "usage_hint": "[name]", "should_escape": true },
-            { "command": "/rename-agent", "url": "https://HOST/messaging/slack/commands", "description": "Rename an agent (owner or admin)", "usage_hint": "@agent-name new-name [Display Name]", "should_escape": true },
-            { "command": "/delete-agent", "url": "https://HOST/messaging/slack/commands", "description": "Delete an agent (owner or admin)", "usage_hint": "@agent-name [confirm]", "should_escape": true },
-            { "command": "/agents-greet", "url": "https://HOST/messaging/slack/commands", "description": "Have agents in the room introduce themselves", "should_escape": false },
-            { "command": "/room-url", "url": "https://HOST/messaging/slack/commands", "description": "Show the frontend URL for this room", "should_escape": false },
-            { "command": "/follow-ups", "url": "https://HOST/messaging/slack/commands", "description": "Turn follow-ups without an @ on or off for this room", "usage_hint": "on | off", "should_escape": false },
-            { "command": "/auto-route", "url": "https://HOST/messaging/slack/commands", "description": "Let Switch pick the agent to answer messages that tag nobody", "usage_hint": "on | off | fallback @agent", "should_escape": true },
-            { "command": "/assign-agent", "url": "https://HOST/messaging/slack/commands", "description": "Send every message in this room to one agent", "usage_hint": "@agent-name", "should_escape": true },
-            { "command": "/unassign-agent", "url": "https://HOST/messaging/slack/commands", "description": "Stop sending every message to the assigned agent", "should_escape": false }
+            { "command": "/switch-help", "url": "https://HOST/messaging/slack/commands", "description": "Show the commands", "should_escape": false },
+            { "command": "/switch-reset", "url": "https://HOST/messaging/slack/commands", "description": "Reset an agent's session", "usage_hint": "<target>", "should_escape": true },
+            { "command": "/switch-reset-all-agents", "url": "https://HOST/messaging/slack/commands", "description": "Reset every agent's session here", "should_escape": false },
+            { "command": "/switch-compact", "url": "https://HOST/messaging/slack/commands", "description": "Compact an agent's context", "usage_hint": "<target>", "should_escape": true },
+            { "command": "/switch-compact-all-agents", "url": "https://HOST/messaging/slack/commands", "description": "Compact every agent's context here", "should_escape": false },
+            { "command": "/switch-interrupt", "url": "https://HOST/messaging/slack/commands", "description": "Stop an agent's current turn", "usage_hint": "<target>", "should_escape": true },
+            { "command": "/switch-interrupt-all-agents", "url": "https://HOST/messaging/slack/commands", "description": "Stop every agent's current turn here", "should_escape": false },
+            { "command": "/switch-list-agents", "url": "https://HOST/messaging/slack/commands", "description": "List the agents here", "should_escape": false },
+            { "command": "/switch-agents-status", "url": "https://HOST/messaging/slack/commands", "description": "Show each agent's status", "should_escape": false },
+            { "command": "/switch-roles", "url": "https://HOST/messaging/slack/commands", "description": "List roles and who holds them", "should_escape": false },
+            { "command": "/switch-list-documents", "url": "https://HOST/messaging/slack/commands", "description": "List the room's documents", "should_escape": false },
+            { "command": "/switch-list-references", "url": "https://HOST/messaging/slack/commands", "description": "List the room's references", "should_escape": false },
+            { "command": "/switch-list-aliases", "url": "https://HOST/messaging/slack/commands", "description": "List agent aliases here", "should_escape": false },
+            { "command": "/switch-follow-ups", "url": "https://HOST/messaging/slack/commands", "description": "Turn follow-ups on or off", "usage_hint": "<state>", "should_escape": true },
+            { "command": "/switch-auto-route", "url": "https://HOST/messaging/slack/commands", "description": "Let Switch pick who answers untagged messages", "usage_hint": "<state>", "should_escape": true },
+            { "command": "/switch-assign-agent", "url": "https://HOST/messaging/slack/commands", "description": "Send every message here to one agent", "usage_hint": "<agent>", "should_escape": true },
+            { "command": "/switch-unassign-agent", "url": "https://HOST/messaging/slack/commands", "description": "Stop sending every message to one agent", "should_escape": false },
+            { "command": "/switch-add-room-admin", "url": "https://HOST/messaging/slack/commands", "description": "Make someone a room admin", "usage_hint": "<person>", "should_escape": true },
+            { "command": "/switch-remove-room-admin", "url": "https://HOST/messaging/slack/commands", "description": "Remove a room admin", "usage_hint": "<person>", "should_escape": true },
+            { "command": "/switch-list-room-admins", "url": "https://HOST/messaging/slack/commands", "description": "Show the room's owner and admins", "should_escape": false },
+            { "command": "/switch-set-alias", "url": "https://HOST/messaging/slack/commands", "description": "Give an agent a room alias", "usage_hint": "<agent> <alias>", "should_escape": true },
+            { "command": "/switch-remove-alias", "url": "https://HOST/messaging/slack/commands", "description": "Remove a room alias", "usage_hint": "<alias>", "should_escape": true },
+            { "command": "/switch-invite-agent", "url": "https://HOST/messaging/slack/commands", "description": "Add an agent to this room", "usage_hint": "<agent>", "should_escape": true },
+            { "command": "/switch-remove-agent", "url": "https://HOST/messaging/slack/commands", "description": "Remove an agent from this room", "usage_hint": "<agent>", "should_escape": true },
+            { "command": "/switch-remove-user", "url": "https://HOST/messaging/slack/commands", "description": "Remove a person from this room", "usage_hint": "<person>", "should_escape": true },
+            { "command": "/switch-link-account", "url": "https://HOST/messaging/slack/commands", "description": "Link this chat account with a code", "usage_hint": "<code>", "should_escape": true },
+            { "command": "/switch-unlink-account", "url": "https://HOST/messaging/slack/commands", "description": "Show or remove your linked Switch users", "usage_hint": "<user>", "should_escape": true },
+            { "command": "/switch-rename-agent", "url": "https://HOST/messaging/slack/commands", "description": "Rename an agent", "usage_hint": "<agent> <new_name> <display_name>", "should_escape": true },
+            { "command": "/switch-delete-agent", "url": "https://HOST/messaging/slack/commands", "description": "Delete an agent everywhere", "usage_hint": "<agent> <confirm>", "should_escape": true },
+            { "command": "/switch-room-url", "url": "https://HOST/messaging/slack/commands", "description": "Show this room's web address", "should_escape": false },
+            { "command": "/switch-list-switch-agents", "url": "https://HOST/messaging/slack/commands", "description": "List every agent on this server", "should_escape": false },
+            { "command": "/switch-agents-greet", "url": "https://HOST/messaging/slack/commands", "description": "Have the agents introduce themselves", "should_escape": false }
         ]
     },
     "oauth_config": {
