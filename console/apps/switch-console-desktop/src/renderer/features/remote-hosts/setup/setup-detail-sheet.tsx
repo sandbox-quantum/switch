@@ -13,9 +13,9 @@ import { useState } from 'react';
  */
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
-import { Button } from '@renderer/lib/ui/button';
-import { Field } from '@renderer/lib/ui/field';
-import { Label } from '@renderer/lib/ui/label';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Field } from '@switch-console/chat-ui/primitives/field';
+import { Label } from '@switch-console/chat-ui/primitives/label';
 import { Sheet, SheetContent, SheetHeader } from '@renderer/lib/ui/sheet';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import { cn } from '@renderer/utils/utils';

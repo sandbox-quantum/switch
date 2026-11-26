@@ -49,7 +49,7 @@ import {
   CreateWorkspaceModal,
 } from '@renderer/features/workspaces/create-workspace-modal';
 import { modalStore } from '@renderer/lib/modal/modal-store';
-import { Dialog } from '@renderer/lib/ui/dialog';
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 let container: HTMLDivElement | null = null;

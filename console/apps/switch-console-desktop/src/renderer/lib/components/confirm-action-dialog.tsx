@@ -1,13 +1,13 @@
 import type { ReactNode } from 'react';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
 
 export type ConfirmActionDialogArgs = {
   title: string;

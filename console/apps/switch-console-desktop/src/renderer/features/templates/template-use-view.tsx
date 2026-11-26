@@ -48,9 +48,9 @@ import {
   useWorkspaceAgents,
   workspaceAgentsQueryKey,
 } from '@renderer/lib/stores/use-workspace-agents';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import { Switch } from '@renderer/lib/ui/switch';
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import { newAgentPermissions } from '@shared/core/agents/agents';

@@ -1,12 +1,10 @@
 import {
-  ChevronDown,
   CircleAlert,
   ClipboardPaste,
   DoorClosed,
   FileText,
   FileUp,
-  Loader2,
-  Plus,
+  Trash2,
   Upload,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -14,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { homeRedirect } from '@renderer/features/switch-servers/home-target';
-import { ServerPage } from '@renderer/features/switch-servers/server-page';
+import { ServerPage } from '@switch-console/chat-ui/components/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -26,27 +24,26 @@ import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
-import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { DropdownMenuItem } from '@switch-console/chat-ui/primitives/dropdown-menu';
 import { SearchInput } from '@renderer/lib/ui/search-input';
-import { cn } from '@renderer/utils/utils';
 import { PROVIDER_NOT_INSTALLED } from '@shared/core/managed-agents/managed-agents';
 import { useRecentTemplateIds } from './recent-templates';
-import { KIND_ICON, TemplateCard } from './template-card';
+import { TemplateCard } from '@switch-console/chat-ui/components/template-card';
+import {
+  CreateTemplateMenu,
+  TemplateFilters,
+  TemplateResults,
+  TemplateScopeTabs,
+} from '@switch-console/chat-ui/components/template-catalogue';
 import {
   matchesFilter,
   scopeCounts,
-  TEMPLATE_SCOPES,
   type TemplateKind,
   type TemplateScope,
   toggleKind,
-} from './template-filters';
+} from '@switch-console/chat-ui/model/template-filters';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;
@@ -55,12 +52,6 @@ function useServerId(): string {
 const TemplatesTitlebar = observer(function TemplatesTitlebar() {
   return <ServerSectionTitlebar serverId={useServerId()} icon={FileText} label="Templates" />;
 });
-
-const KIND_CHIPS: readonly { value: TemplateKind; label: string }[] = [
-  { value: 'agent', label: 'Agents' },
-  { value: 'room', label: 'Rooms' },
-  { value: 'group', label: 'Groups' },
-];
 
 const RECENT_SHOWN = 3;
 
@@ -77,75 +68,7 @@ function hasFiles(e: React.DragEvent): boolean {
   return Array.from(e.dataTransfer.types).includes('Files');
 }
 
-function ScopeTabs({
-  value,
-  onChange,
-  counts,
-  showYours,
-}: {
-  value: TemplateScope;
-  onChange: (scope: TemplateScope) => void;
-  counts: Record<TemplateScope, number>;
-  /** Only someone signed in has templates to call theirs. */
-  showYours: boolean;
-}) {
-  const scopes = TEMPLATE_SCOPES.filter((s) => showYours || s.value !== 'yours');
-  return (
-    <div role="tablist" aria-label="Whose templates" className="flex gap-6 border-b border-border">
-      {scopes.map((scope) => {
-        const active = scope.value === value;
-        return (
-          <button
-            key={scope.value}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(scope.value)}
-            className={cn(
-              '-mb-px flex items-center gap-2 border-b-2 px-1 pb-2.5 text-sm font-medium transition-colors',
-              active
-                ? 'border-foreground text-foreground'
-                : 'border-transparent text-foreground/70 hover:text-foreground'
-            )}
-          >
-            {scope.label}
-            <span className="rounded-md bg-background-2 px-1.5 text-[11px] leading-4 text-foreground">
-              {counts[scope.value]}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function FilterChip({
-  pressed,
-  onClick,
-  children,
-}: {
-  pressed: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={pressed}
-      onClick={onClick}
-      className={cn(
-        'flex h-9 items-center gap-[7px] rounded-lg border px-3 text-sm font-medium transition-colors',
-        pressed
-          ? 'border-foreground/40 bg-background-2 text-foreground'
-          : 'border-border bg-background text-foreground/70 hover:bg-background-1 hover:text-foreground'
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function CreateTemplateMenu({
+function ConsoleCreateTemplateMenu({
   onImportFile,
   onPaste,
   onFromRoom,
@@ -156,40 +79,20 @@ function CreateTemplateMenu({
   onFromRoom: (() => void) | null;
 }) {
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button>
-            <Plus className="size-4" />
-            Create template
-            <ChevronDown className="size-4" />
-          </Button>
-        }
-      />
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onClick={onImportFile}>
-          <FileUp className="size-4" />
-          Import a file…
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={onPaste}>
-          <ClipboardPaste className="size-4" />
-          Paste or write YAML
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={onFromRoom ?? undefined} disabled={onFromRoom === null}>
-          <DoorClosed className="size-4" />
-          From a room…
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="space-y-6">
-      <h3 className="text-sm font-medium text-foreground">{title}</h3>
-      {children}
-    </section>
+    <CreateTemplateMenu>
+      <DropdownMenuItem onClick={onImportFile}>
+        <FileUp className="size-4" />
+        Import a file…
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={onPaste}>
+        <ClipboardPaste className="size-4" />
+        Paste or write YAML
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={onFromRoom ?? undefined} disabled={onFromRoom === null}>
+        <DoorClosed className="size-4" />
+        From a room…
+      </DropdownMenuItem>
+    </CreateTemplateMenu>
   );
 }
 
@@ -366,13 +269,19 @@ const TemplatesPanel = observer(function TemplatesPanel() {
             onSuccess: ({ roomId }) => navigate('templateCapture', { serverId, roomId }),
           });
 
-  const grid = 'grid grid-cols-3 gap-6';
   const card = (item: StoredTemplateSummary) => (
     <TemplateCard
       key={item.id}
       template={item}
       onOpen={() => navigate('templateDetail', { serverId, templateId: item.id })}
-      onDelete={canDelete(item) ? () => deleteTemplate(item) : null}
+      actions={
+        canDelete(item) ? (
+          <DropdownMenuItem variant="destructive" onClick={() => deleteTemplate(item)}>
+            <Trash2 className="size-4" />
+            Delete template…
+          </DropdownMenuItem>
+        ) : null
+      }
     />
   );
 
@@ -383,7 +292,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       term="template"
       description="Templates create a complete room setup - agents, roles, documents - from a single configuration."
       action={
-        <CreateTemplateMenu
+        <ConsoleCreateTemplateMenu
           onImportFile={() => fileInput.current?.click()}
           onPaste={() => navigate('templateImport', { serverId })}
           onFromRoom={captureFromRoom}
@@ -451,79 +360,38 @@ const TemplatesPanel = observer(function TemplatesPanel() {
           </Alert>
         )}
 
-        <ScopeTabs value={scope} onChange={setScope} counts={counts} showYours={meId !== null} />
+        <TemplateScopeTabs
+          value={scope}
+          onChange={setScope}
+          counts={counts}
+          showYours={meId !== null}
+        />
 
-        <div className="space-y-3">
-          <SearchInput
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search templates"
-            aria-label="Search templates by name, description and author"
-            containerClassName="w-full"
-            className="h-9"
-          />
+        <TemplateFilters
+          search={
+            <SearchInput
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search templates"
+              aria-label="Search templates by name, description and author"
+              containerClassName="w-full"
+              className="h-9"
+            />
+          }
+          kinds={kinds}
+          onToggleKind={(kind) => setKinds((current) => toggleKind(current, kind))}
+        />
 
-          <div
-            className="flex flex-wrap items-center gap-2"
-            aria-label="Show templates of these kinds"
-          >
-            {KIND_CHIPS.map(({ value, label }) => {
-              const Icon = KIND_ICON[value];
-              return (
-                <FilterChip
-                  key={value}
-                  pressed={kinds.includes(value)}
-                  onClick={() => setKinds((current) => toggleKind(current, value))}
-                >
-                  <Icon className="size-4" aria-hidden />
-                  {label}
-                </FilterChip>
-              );
-            })}
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="size-5 animate-spin text-foreground-muted" />
-          </div>
-        ) : listError ? (
-          <div className="flex flex-col items-start gap-2 rounded-2xl border border-border px-4 py-4">
-            <p className="text-sm text-foreground-muted">{listError}</p>
-            <Button size="sm" variant="outline" onClick={reload}>
-              Try again
-            </Button>
-          </div>
-        ) : (
-          <div className="space-y-10 pt-2">
-            {recent.length > 0 && (
-              <Section title="Recent">
-                <div className={grid}>{recent.map(card)}</div>
-              </Section>
-            )}
-            {shown.length > 0 ? (
-              recent.length > 0 ? (
-                <Section title="All results">
-                  <div className={grid}>{shown.map(card)}</div>
-                </Section>
-              ) : (
-                <div className={grid}>{shown.map(card)}</div>
-              )
-            ) : filtering || scope !== 'all' ? (
-              <p className="text-sm text-foreground-muted">
-                {scope === 'yours' && !filtering
-                  ? 'None of yours yet. Create a template and it shows up here.'
-                  : 'No template matches.'}
-              </p>
-            ) : (
-              <div className="flex flex-col items-start gap-3 rounded-2xl border border-dashed border-border px-4 py-5">
-                <p className="text-sm text-foreground-muted">
-                  No template here yet. Create one, and everyone on this workspace finds it here.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
+        <TemplateResults
+          loading={loading}
+          error={listError}
+          onRetry={reload}
+          recent={recent}
+          shown={shown}
+          filtering={filtering}
+          scope={scope}
+          card={card}
+        />
       </div>
     </ServerPage>
   );

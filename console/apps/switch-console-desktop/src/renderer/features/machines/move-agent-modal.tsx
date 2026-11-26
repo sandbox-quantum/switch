@@ -1,6 +1,6 @@
+import { Cloud, Laptop, Monitor, Server } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Info } from 'lucide-react';
-import { useState } from 'react';
+import { createElement, useRef, useState } from 'react';
 import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
 import {
   MANAGED_AGENTS_KEY,
@@ -9,29 +9,19 @@ import {
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
-import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
-  DialogContentArea,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Spinner } from '@renderer/lib/ui/spinner';
-import { cn } from '@renderer/utils/utils';
-import type { ManagedAgentView, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
-import { MachineIcon, TonePill } from './machine-marks';
-import { machineKindLabel, type MoveTarget, moveTarget, namesakeLabel } from './machine-state';
+  MoveAgentModal as SharedMoveAgentModal,
+  type MoveAgentMachine,
+} from '@switch-console/chat-ui/components/move-agent-modal';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { machineKindLabel, moveTarget, namesakeLabel } from './machine-state';
+import { useHotkey } from '@tanstack/react-hotkeys';
+import {
+  getEffectiveHotkey,
+  getHotkeyRegistration,
+} from '@renderer/lib/hooks/useKeyboardShortcuts';
 
 type Props = BaseModalProps<void> & { agent: ManagedAgentView };
-
-const LINE_TEXT = {
-  ok: 'text-foreground-muted',
-  warning: 'text-foreground-warning',
-  problem: 'text-foreground-error',
-  idle: 'text-foreground-muted',
-} as const;
 
 /**
  * Moves a managed agent to another of its owner's machines. Each machine says
@@ -39,40 +29,64 @@ const LINE_TEXT = {
  * that cannot are listed but not picked. Its files stay where they are.
  */
 export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
-  const machines = useOwnedMachines(agent.serverId);
+  const machinesQuery = useOwnedMachines(agent.serverId);
   const queryClient = useQueryClient();
-  const [picked, setPicked] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const label = managedAgentLabel(agent);
   const provider = agent.definition.provider;
-  // The ones it can go to first: with fifty machines, the offline ones would bury them.
-  const others = (machines.data ?? [])
-    .filter((machine) => machine.id !== agent.machine?.id && machine.state !== 'revoked')
-    .map((machine) => ({ machine, target: moveTarget(machine, provider) }))
-    .sort(
-      (a, b) =>
-        Number(b.target.selectable) - Number(a.target.selectable) ||
-        Number(b.machine.local?.kind === 'this-computer') -
-          Number(a.machine.local?.kind === 'this-computer') ||
-        a.machine.name.localeCompare(b.machine.name)
-    );
-  const folder = agent.status?.directory ?? agent.definition.directory;
-  // The list refreshes while the dialog is open: a pick whose device went
-  // offline or lost its provider since is no pick, so Move cannot send it.
-  const chosen =
-    others.find(({ machine, target }) => machine.id === picked && target.selectable)?.machine.id ??
-    null;
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const confirmHotkey = getEffectiveHotkey('confirm');
 
-  const move = async () => {
-    if (!chosen) return;
+  useHotkey(getHotkeyRegistration('confirm'), () => confirmButtonRef.current?.click(), {
+    enabled: !moving && confirmHotkey !== null,
+  });
+
+  const adaptedMachines: MoveAgentMachine[] | null = machinesQuery.data
+    ? machinesQuery.data
+        .filter((machine) => machine.id !== agent.machine?.id && machine.state !== 'revoked')
+        .map((machine) => {
+          const target = moveTarget(machine, provider);
+          const Icon =
+            machine.local?.kind === 'this-computer'
+              ? Laptop
+              : machine.cloud
+                ? Cloud
+                : machine.kind === 'console'
+                  ? Monitor
+                  : Server;
+          return {
+            id: machine.id,
+            name: machine.name,
+            kind: machine.kind,
+            kindLabel: machineKindLabel(machine),
+            icon: createElement(Icon, { className: 'size-4 text-foreground-muted' }),
+            state: machine.state,
+            thisComputer: machine.local?.kind === 'this-computer',
+            selectable: target.selectable,
+            selectabilityTone: target.tone,
+            selectabilityLine: target.line,
+            namesake: namesakeLabel(machine, machinesQuery.data ?? [], new Date()),
+          };
+        })
+        .sort(
+          (a, b) =>
+            Number(b.selectable) - Number(a.selectable) ||
+            Number(b.thisComputer) - Number(a.thisComputer) ||
+            a.name.localeCompare(b.name)
+        )
+    : null;
+
+  const folder = agent.status?.directory ?? agent.definition.directory;
+
+  const handleMove = async (machineId: string) => {
     setMoving(true);
     setError(null);
     try {
       await rpc.managedAgents.update({
         serverId: agent.serverId,
         agentId: agent.agentId,
-        changes: { definition: {}, machineId: chosen },
+        changes: { definition: {}, machineId },
       });
       await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, agent.serverId] });
       onSuccess();
@@ -83,123 +97,18 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
   };
 
   return (
-    <>
-      <DialogHeader>
-        <DialogTitle>Move {label} to another device</DialogTitle>
-      </DialogHeader>
-      <DialogContentArea className="space-y-3 pt-0">
-        <DialogDescription>
-          {label} stops on {agent.machine?.name ?? 'its device'} and starts on the device you pick.
-          Its chats, rooms and settings stay the same.
-        </DialogDescription>
-        <p id="move-to-label" className="text-[12px] text-foreground-muted">
-          Move to
-        </p>
-        {machines.error ? (
-          <p role="alert" className="text-sm text-destructive">
-            {failureText(machines.error, 'Could not read your machines.')}
-          </p>
-        ) : machines.data === undefined ? (
-          <Spinner />
-        ) : others.length === 0 ? (
-          <p className="text-sm text-foreground-muted">You have no other device to move it to.</p>
-        ) : (
-          <div
-            role="radiogroup"
-            aria-labelledby="move-to-label"
-            className="max-h-[360px] space-y-2 overflow-y-auto"
-          >
-            {others.map(({ machine, target }) => (
-              <TargetRow
-                key={machine.id}
-                machine={machine}
-                target={target}
-                namesake={namesakeLabel(machine, machines.data ?? [], new Date())}
-                picked={chosen === machine.id}
-                onPick={() => setPicked(machine.id)}
-              />
-            ))}
-          </div>
-        )}
-        <p className="flex gap-2 rounded-md bg-background-tertiary px-3 py-2 text-xs text-foreground-muted">
-          <Info className="mt-px size-3.5 shrink-0" />
-          <span>
-            Files in its working folder{folder ? ` (${folder})` : ''} don&apos;t move. Anything it
-            needs from there must be on the new device.
-          </span>
-        </p>
-        {error && (
-          <p role="alert" className="text-xs text-destructive">
-            {error}
-          </p>
-        )}
-      </DialogContentArea>
-      <DialogFooter>
-        <Button variant="outline" onClick={onClose}>
-          Cancel
-        </Button>
-        <ConfirmButton onClick={() => void move()} disabled={!chosen || moving}>
-          {moving ? 'Moving…' : `Move ${label}`}
-        </ConfirmButton>
-      </DialogFooter>
-    </>
-  );
-}
-
-function TargetRow({
-  machine,
-  target,
-  namesake,
-  picked,
-  onPick,
-}: {
-  machine: OwnedMachine;
-  target: MoveTarget;
-  /** When it was last seen, where another of the owner's devices has its name (`namesakeLabel`). */
-  namesake: string | null;
-  picked: boolean;
-  onPick: () => void;
-}) {
-  const thisComputer = machine.local?.kind === 'this-computer';
-  const online = machine.state === 'online';
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={picked}
-      disabled={!target.selectable}
-      onClick={onPick}
-      className={cn(
-        'flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors',
-        picked ? 'border-foreground' : 'border-border',
-        target.selectable
-          ? 'cursor-pointer hover:bg-[var(--sel-soft)]'
-          : 'cursor-not-allowed opacity-60'
-      )}
-    >
-      <span
-        aria-hidden
-        className={cn(
-          'flex size-4 shrink-0 items-center justify-center rounded-full border',
-          picked ? 'border-foreground' : 'border-border'
-        )}
-      >
-        {picked && <span className="size-2 rounded-full bg-foreground" />}
-      </span>
-      <MachineIcon machine={machine} />
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm text-foreground">
-            {thisComputer ? 'This computer' : machine.name}
-          </span>
-          {!thisComputer && <TonePill tone="idle" dot={false} label={machineKindLabel(machine)} />}
-          <TonePill tone={online ? 'ok' : 'problem'} label={online ? 'Online' : 'Offline'} />
-          {namesake && <span className="shrink-0 text-xs text-foreground-muted">{namesake}</span>}
-        </span>
-        <span className={cn('mt-0.5 block truncate text-xs', LINE_TEXT[target.tone])}>
-          {target.line}
-        </span>
-      </span>
-    </button>
+    <SharedMoveAgentModal
+      agentName={label}
+      currentMachineName={agent.machine?.name ?? null}
+      workingDirectory={folder}
+      machines={adaptedMachines}
+      machinesError={machinesQuery.error ? failureText(machinesQuery.error, 'Could not read your machines.') : null}
+      moving={moving}
+      moveError={error}
+      onMove={handleMove}
+      onClose={onClose}
+      confirmLabel={`Move ${label}`}
+      confirmButtonRef={confirmButtonRef}
+    />
   );
 }

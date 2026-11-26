@@ -4,17 +4,17 @@ import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-manage
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import { Textarea } from '@renderer/lib/ui/textarea';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import {
   MAX_MACHINE_DESCRIPTION,
   MAX_MACHINE_NAME,

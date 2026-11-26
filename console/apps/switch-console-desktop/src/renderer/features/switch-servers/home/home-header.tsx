@@ -18,14 +18,14 @@ import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-b
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
 import { cn } from '@renderer/utils/utils';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { navigateHome } from '../home-target';

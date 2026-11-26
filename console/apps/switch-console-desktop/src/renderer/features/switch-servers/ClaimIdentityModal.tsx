@@ -5,13 +5,13 @@ import { useState } from 'react';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
 import {
   DEFAULT_DIRECTORY_SEARCH_HINT,
   type LinkCode,

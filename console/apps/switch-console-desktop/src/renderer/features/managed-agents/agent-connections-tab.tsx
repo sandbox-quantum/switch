@@ -12,14 +12,14 @@ import {
   OnOffGrant,
 } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { ConnectionIcon } from '@renderer/features/switch-servers/connection-icon';
-import { ServerPage } from '@renderer/features/switch-servers/server-page';
+import { ServerPage } from '@switch-console/chat-ui/components/server-page';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { cn } from '@renderer/utils/utils';
 import {
   type AgentConnectionCard,

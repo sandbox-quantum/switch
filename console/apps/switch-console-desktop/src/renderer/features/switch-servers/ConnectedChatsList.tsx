@@ -3,9 +3,9 @@ import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
-import { RelativeTime } from '@renderer/lib/ui/relative-time';
-import { Spinner } from '@renderer/lib/ui/spinner';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { RelativeTime } from '@switch-console/chat-ui/primitives/relative-time';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import type { ConnectedChat } from '@shared/core/switch-servers/switch-servers';
 
 /**

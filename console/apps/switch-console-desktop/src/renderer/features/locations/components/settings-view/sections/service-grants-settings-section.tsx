@@ -14,11 +14,11 @@ import {
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
-import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
-import { Switch } from '@renderer/lib/ui/switch';
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import {
   type ConnectionCatalogEntry,
   githubThroughApp,

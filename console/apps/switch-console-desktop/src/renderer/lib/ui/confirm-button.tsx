@@ -6,7 +6,7 @@ import {
   getEffectiveHotkey,
   getHotkeyRegistration,
 } from '@renderer/lib/hooks/useKeyboardShortcuts';
-import { Button, type buttonVariants } from './button';
+import { Button, type buttonVariants } from '@switch-console/chat-ui/primitives/button';
 import { BoundShortcut } from './shortcut';
 
 type ConfirmButtonProps = ButtonPrimitive.Props & VariantProps<typeof buttonVariants>;

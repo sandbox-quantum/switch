@@ -15,19 +15,9 @@ const commands = vi.hoisted(() =>
     { name: 'reset-all-agents', description: 'Reset every agent.', usage: '!reset-all-agents' },
   ])
 );
-vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: () => () => {} },
-  rpc: { chats: { commands } },
-}));
-vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
-  useFeatureFlags: () => ({ group_chats: true }),
-}));
-
-import { ChatComposer } from '@renderer/features/chats/components/chat-composer';
-import {
-  ChatTimeline,
-  type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
+import { ChatComposer } from '@switch-console/chat-ui/components/chat-composer';
+import { ChatTimeline, type TimelineApi } from '@switch-console/chat-ui/stores/chat-timeline-store';
+import { withChatHost } from '@switch-console/chat-ui/testing';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -45,19 +35,22 @@ async function render(): Promise<HTMLTextAreaElement> {
   root = createRoot(container);
   await act(async () =>
     root!.render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ChatComposer
-          serverId="s"
-          timeline={new ChatTimeline('room-commands', {} as TimelineApi)}
-          agents={[]}
-          people={[]}
-          groupName="Ship review"
-          activities={[]}
-          replyTo={null}
-          onClearReply={() => {}}
-          disabled={null}
-        />
-      </QueryClientProvider>
+      withChatHost(
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatComposer
+            serverId="s"
+            timeline={new ChatTimeline('room-commands', {} as TimelineApi)}
+            agents={[]}
+            people={[]}
+            groupName="Ship review"
+            activities={[]}
+            replyTo={null}
+            onClearReply={() => {}}
+            disabled={null}
+          />
+        </QueryClientProvider>,
+        { commands }
+      )
     )
   );
   return container.querySelector('textarea')!;

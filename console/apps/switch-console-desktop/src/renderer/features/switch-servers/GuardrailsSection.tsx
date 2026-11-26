@@ -3,11 +3,11 @@ import { useEffect, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
-import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
+import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import { cn } from '@renderer/utils/utils';
 import {
   type ClearTrustSettingsResult,

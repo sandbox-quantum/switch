@@ -13,10 +13,10 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import { cn } from '@renderer/utils/utils';
-import { SidebarItemMiniButton, SidebarMenuRow } from './sidebar-primitives';
+import { SidebarItemMiniButton, SidebarMenuRow } from '@switch-console/chat-ui/primitives/sidebar';
 import { depthIndent, UNASSIGNED_ROOM_KEY } from './sidebar-store';
 
 /** Sidebar placement remembers the last room even after its delivery ownership is lost. */

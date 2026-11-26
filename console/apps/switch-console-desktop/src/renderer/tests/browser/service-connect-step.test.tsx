@@ -32,7 +32,7 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
 
 import { serverServiceCalls } from '@renderer/features/switch-servers/service-calls';
 import { ServiceConnectStep } from '@renderer/features/switch-servers/service-connect-step';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 
 const EXAMPLE: ConnectionCatalogEntry = {
   slug: 'example',

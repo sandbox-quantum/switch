@@ -3,21 +3,21 @@ import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Input } from '@renderer/lib/ui/input';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
+} from '@switch-console/chat-ui/primitives/select';
 import type {
   ConnectionCatalogEntry,
   ServiceKeyField,

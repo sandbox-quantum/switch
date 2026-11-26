@@ -24,16 +24,16 @@ import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import type { Agent } from '@shared/core/agents/agents';
 
 /**

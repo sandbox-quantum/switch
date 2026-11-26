@@ -14,8 +14,8 @@ import {
   operatesServer,
 } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { PageHeader } from '@renderer/lib/components/page-header';
-import { PageContent, PageLayout, PageSidebarSections } from '@renderer/lib/components/page-layout';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
+import { PageContent, PageLayout, PageSidebarSections } from '@switch-console/chat-ui/primitives/page-layout';
 import { useAnyServerFeatureFlag, useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { cn } from '@renderer/utils/utils';
 
 interface LocalDirectorySelectorProps {

@@ -6,7 +6,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
 import { cn } from '@renderer/utils/utils';
 import { sessionActions, type SessionActionsProps } from './session-actions';
 

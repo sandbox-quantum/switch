@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 // Line breaks are the subject, so the real utility classes must be present.
 import '@renderer/index.css';
 import { AgentHeaderLayout } from '@renderer/features/locations/components/main-panel/agent-page-header';
-import { InlineEditableText } from '@renderer/features/managed-agents/inline-editable-text';
+import { InlineEditableText } from '@switch-console/chat-ui/components/inline-editable-text';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;

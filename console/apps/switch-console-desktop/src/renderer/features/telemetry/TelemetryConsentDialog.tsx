@@ -2,10 +2,10 @@ import { ExternalLink } from 'lucide-react';
 import React, { useCallback, useRef, useState } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@renderer/lib/ui/button';
-import { Dialog, DialogContent, DialogContentArea, DialogFooter } from '@renderer/lib/ui/dialog';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Dialog, DialogContent, DialogContentArea, DialogFooter } from '@switch-console/chat-ui/primitives/dialog';
 import { Shortcut } from '@renderer/lib/ui/shortcut';
-import { Switch } from '@renderer/lib/ui/switch';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import {
   TELEMETRY_DETAILS_LABEL,
   TELEMETRY_DETAILS_URL,

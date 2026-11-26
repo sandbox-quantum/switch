@@ -5,8 +5,8 @@ import type {
   SessionChatClient,
 } from '@switch-console/shared/session-v1';
 import { useState } from 'react';
-import { Button } from '@renderer/lib/ui/button';
-import { Textarea } from '@renderer/lib/ui/textarea';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 
 type AnswerBody = Extract<Command['body'], { type: 'request.answer' }>['answer'];
 export function SessionV1Request({

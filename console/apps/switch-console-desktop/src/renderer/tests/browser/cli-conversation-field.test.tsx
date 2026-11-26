@@ -30,7 +30,7 @@ import {
   CliConversationField,
   useCliConversations,
 } from '@renderer/features/sessions/create-session-modal/cli-conversation-field';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;

@@ -1,7 +1,7 @@
 import { ExternalLink } from 'lucide-react';
 import { prefilledAccess } from '@renderer/features/connectors/connect-flow';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import type { ServicePasteMethod } from '@shared/core/switch-servers/connection-catalog';
 
 /**

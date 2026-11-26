@@ -8,8 +8,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
-import { Switch } from '@renderer/lib/ui/switch';
+} from '@switch-console/chat-ui/primitives/select';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import type { RemoteRoomDetail, RoomAutoRoute } from '@shared/core/switch-servers/switch-servers';
 
 /** The value the triage picker uses for "nobody": Select values are strings. */

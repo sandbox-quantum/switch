@@ -3,8 +3,8 @@ import { AgentStatusIndicator } from '@renderer/features/sessions/components/age
 import { sessionAgentStatus } from '@renderer/features/sessions/stores/session-selectors';
 import { type SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { useDelayedBoolean } from '@renderer/lib/hooks/use-delay-boolean';
-import { Spinner } from '@renderer/lib/ui/spinner';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 
 /**
  * Sidebar trailing slot: a spinner while the session is being created, the

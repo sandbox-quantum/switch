@@ -11,11 +11,7 @@ import {
 } from '@renderer/features/workspaces/organization-groups';
 import {
   InvitedBadge,
-  invitationSummary,
-  joinableSummary,
   joinableWorkspacesKey,
-  listedInvitations,
-  listedJoinable,
   pendingInvitationsKey,
   useJoinableWorkspaces,
   usePendingInvitations,
@@ -40,8 +36,14 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Spinner } from '@renderer/lib/ui/spinner';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import {
+  invitationSummary,
+  joinableSummary,
+  listedInvitations,
+  listedJoinable,
+} from '@switch-console/chat-ui/model/workspace-offers';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { cn } from '@renderer/utils/utils';
 import { runsOnThisComputer, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
@@ -815,7 +817,7 @@ function PendingInvitationMenuItem({
 
   return (
     <DropdownMenuItem
-      title={invitationSummary(invitation)}
+      title={invitationSummary(invitation.invitedBy, invitation.role)}
       className={WORKSPACE_ROW}
       data-testid="pending-invitation-item"
       onClick={() => {
@@ -857,7 +859,7 @@ function JoinableWorkspaceMenuItem({
 
   return (
     <DropdownMenuItem
-      title={joinableSummary(offer)}
+      title={joinableSummary(offer.domain)}
       className={WORKSPACE_ROW}
       data-testid="joinable-workspace-item"
       onClick={() => {

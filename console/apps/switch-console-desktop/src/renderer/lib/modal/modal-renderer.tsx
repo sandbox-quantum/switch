@@ -8,7 +8,7 @@ import {
   type ModalRegistryEntry,
   type ModalSize,
 } from '@renderer/app/modal-registry';
-import { Dialog, DialogOverlay, DialogPortal } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogOverlay, DialogPortal } from '@switch-console/chat-ui/primitives/dialog';
 import { cn } from '@renderer/utils/utils';
 import { shouldCloseModalOnDismiss } from './dismissal';
 import { modalStore } from './modal-store';

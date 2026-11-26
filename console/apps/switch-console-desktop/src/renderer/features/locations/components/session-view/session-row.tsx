@@ -11,8 +11,8 @@ import { type SessionStore } from '@renderer/features/sessions/stores/session-st
 import { SessionRoomLabel } from '@renderer/features/switch-rooms/session-room-label';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
-import { RelativeTime } from '@renderer/lib/ui/relative-time';
+import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
+import { RelativeTime } from '@switch-console/chat-ui/primitives/relative-time';
 import { cn } from '@renderer/utils/utils';
 import { type Session } from '@shared/core/sessions/sessions';
 

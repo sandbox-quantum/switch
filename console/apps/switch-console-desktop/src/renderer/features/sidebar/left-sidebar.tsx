@@ -2,7 +2,7 @@ import { FolderInput } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React from 'react';
 import { navigateHome } from '@renderer/features/switch-servers/home-target';
-import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
+import { SwitchConsoleMark } from '@switch-console/chat-ui/primitives/switch-console-mark';
 import { cn } from '@renderer/utils/utils';
 import { FROZEN, isFrozenServer } from '../switch-servers/managed-server-state';
 import { switchServersStore } from '../switch-servers/switch-servers-store';
@@ -17,7 +17,7 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarMenu,
-} from './sidebar-primitives';
+} from '@switch-console/chat-ui/primitives/sidebar';
 import { SidebarSpace } from './sidebar-space';
 import { UpdateSection } from './update-section';
 import { useSidebarDrop } from './use-sidebar-drop';

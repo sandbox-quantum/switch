@@ -3,10 +3,10 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { ConnectorApp, ConnectorApps } from '@shared/core/switch-servers/connector-apps';
 import {

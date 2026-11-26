@@ -4,7 +4,7 @@ import {
   getEffectiveHotkey,
   getHotkeyRegistration,
 } from '@renderer/lib/hooks/useKeyboardShortcuts';
-import { Button } from '@renderer/lib/ui/button';
+import { UnsavedChangesBar } from '@switch-console/chat-ui/components/agent-settings-page';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { useAgentEdits } from './agent-edits';
 
@@ -34,25 +34,12 @@ export function AgentSaveBar() {
   if (!dirty) return null;
 
   return (
-    <div className="flex shrink-0 items-center justify-between gap-4 border-b border-border-warning bg-background-warning px-8 py-2">
-      <span className="text-sm font-medium text-foreground-warning">Unsaved changes</span>
-      <div className="flex items-center gap-2">
-        <Button type="button" size="sm" variant="outline" disabled={saving} onClick={revertAll}>
-          Discard
-        </Button>
-        <Button
-          ref={saveRef}
-          type="button"
-          size="sm"
-          disabled={saving}
-          onClick={() => void saveAll()}
-        >
-          <span className="flex items-center gap-2">
-            {saving ? 'Saving…' : 'Save'}
-            <BoundShortcut settingsKey="saveChanges" />
-          </span>
-        </Button>
-      </div>
-    </div>
+    <UnsavedChangesBar
+      saving={saving}
+      onDiscard={revertAll}
+      onSave={() => void saveAll()}
+      saveRef={saveRef}
+      shortcut={<BoundShortcut settingsKey="saveChanges" />}
+    />
   );
 }

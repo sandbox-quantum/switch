@@ -1,6 +1,6 @@
 import { ChevronDownIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
+import { Popover, PopoverContent, PopoverTrigger } from '@switch-console/chat-ui/primitives/popover';
 
 interface ListFilterButtonProps {
   label: string;

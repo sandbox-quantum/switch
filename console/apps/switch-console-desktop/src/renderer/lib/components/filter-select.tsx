@@ -5,7 +5,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
+} from '@switch-console/chat-ui/primitives/select';
 
 const ANY = '__any__';
 

@@ -1,6 +1,6 @@
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 
 /** Copies `value`, and says so for two seconds. */
 export function CopyButton({ value }: { value: string }) {

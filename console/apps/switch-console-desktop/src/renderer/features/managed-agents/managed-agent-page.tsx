@@ -14,24 +14,12 @@ import {
   useAgentEdit,
   useAgentEdits,
 } from '@renderer/features/locations/components/main-panel/agent-edits';
-import { AgentInstructionsField } from '@renderer/features/locations/components/main-panel/agent-instructions-section';
-import { AgentHeaderLayout } from '@renderer/features/locations/components/main-panel/agent-page-header';
-import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import { AgentSaveBar } from '@renderer/features/locations/components/main-panel/agent-save-bar';
 import { AddressingPolicyRow } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
-import {
-  AdvancedConfigDisclosure,
-  summariseValues,
-} from '@renderer/features/locations/components/settings-view/sections/advanced-config-disclosure';
+import { AdvancedConfigDisclosure } from '@renderer/features/locations/components/settings-view/sections/advanced-config-disclosure';
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
 import { MidTurnDeliveryRow } from '@renderer/features/locations/components/settings-view/sections/mid-turn-delivery-section';
-import {
-  AutoApproveRow,
-  AutoModeRow,
-  PERMISSION_COPY,
-} from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
 import { ServiceGrantsRow } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
-import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -41,11 +29,11 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { workspaceAgentsQueryKey } from '@renderer/lib/stores/use-workspace-agents';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
-import { Input } from '@renderer/lib/ui/input';
-import { Switch } from '@renderer/lib/ui/switch';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { summariseValues } from '@switch-console/chat-ui/components/advanced-config-disclosure';
+import { AgentSettingsPage } from '@switch-console/chat-ui/components/agent-settings-page';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import {
   type AdvancedConfigField,
   isCloudMachine,
@@ -53,12 +41,12 @@ import {
   type OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import {
+  autoModeIsUnreviewed,
   isValidProviderId,
   providerDisplayName,
   providerSupportsAutoMode,
 } from '@shared/core/providers/agent-provider-registry';
 import { catalogueAsReported } from './catalogue-as-reported';
-import { InlineEditableText } from './inline-editable-text';
 import {
   type Draft,
   draftOf,
@@ -129,7 +117,6 @@ function ManagedAgentPageContent({
   const draft: Draft = { ...saved, ...edits.values, form: { ...saved.form, ...edits.form } };
   const edit = editOf(agent, schema, saved, draft);
   const [error, setError] = useState<string | null>(null);
-  const [instructionsExpanded, setInstructionsExpanded] = useState(false);
   const chatsOn = useFeatureFlags(agent.serverId).agent_chats;
   const { busy, remove } = useManagedAgentActions(agent);
 
@@ -198,283 +185,174 @@ function ManagedAgentPageContent({
   const provider = providerDisplayName(agent.definition.provider);
 
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col">
-      <AgentSaveBar />
-      {error && (
-        <p
-          role="alert"
-          className="shrink-0 border-b border-border px-8 py-3 text-sm text-foreground-destructive"
-        >
-          {error}
-        </p>
-      )}
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[900px] flex-col gap-10 px-8 pb-20">
-          <AgentHeaderLayout
-            avatar={
-              <AgentIconPicker
-                serverId={agent.serverId}
-                name={title}
-                iconUrl={draft.iconUrl}
-                onChange={(iconUrl) => setValue('iconUrl', iconUrl)}
-                size={88}
-              />
-            }
-            title={
-              <InlineEditableText
-                value={draft.displayName}
-                placeholder={agent.name}
-                mutedPlaceholder={false}
-                label="Display name"
-                className="text-3xl font-semibold tracking-tight"
-                onChange={(value) => setValue('displayName', value)}
-              />
-            }
-            badges={
-              <>
-                {provider && (
-                  <Badge variant="secondary" className="h-5 shrink-0 px-2 text-[11px]">
-                    {provider}
-                  </Badge>
-                )}
-                <ManagedMachinePill agent={agent} machines={machines} />
-              </>
-            }
-            titleActions={
-              <AgentIdentityActions
-                onRename={() =>
-                  showRename({
-                    workspaceId: agent.workspaceId,
-                    switchAgentId: agent.agentId,
-                    currentName: agent.name,
-                    currentDisplayName: saved.displayName.trim() || null,
-                    // Its machine keeps its files, under its own name for it.
-                    localAgentId: null,
-                    onSuccess: ({ outcome }) => {
-                      void queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY] });
-                      void queryClient.invalidateQueries({
-                        queryKey: workspaceAgentsQueryKey(agent.workspaceId),
-                      });
-                      // The display name now comes from the server, so a
-                      // pending edit of it is dropped rather than re-sent.
-                      setEdits((current) => {
-                        const { displayName: _dropped, ...values } = current.values;
-                        return { ...current, values };
-                      });
-                      toast({
-                        title: `Renamed to ${outcome.agent.displayName ?? outcome.agent.name}`,
-                        description:
-                          outcome.bridgeFailures.length > 0
-                            ? outcome.bridgeFailures
-                                .map((f) => `Not yet updated on ${f}.`)
-                                .join(' ')
-                            : undefined,
-                        variant: outcome.bridgeFailures.length > 0 ? 'destructive' : undefined,
-                      });
-                    },
-                  })
-                }
-                onDelete={remove}
-                disabled={!editIsEmpty(edit)}
-              />
-            }
-            machineName={title !== agent.name ? agent.name : null}
-            description={
-              <InlineEditableText
-                value={draft.description}
-                placeholder="Add a description"
-                mutedPlaceholder
-                label="Description"
-                className="text-sm"
-                onChange={(value) => setValue('description', value)}
-              />
-            }
-            actions={
-              <>
-                {!chatsOn && (
-                  <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
-                    <Button disabled>New Session</Button>
-                  </WithReason>
-                )}
-                <Button
-                  variant="outline"
-                  onClick={() =>
-                    showAddToRoom({
-                      workspaceId: agent.workspaceId,
-                      switchAgentId: agent.agentId,
-                      agentName: managedAgentLabel(agent),
-                    })
-                  }
-                >
-                  <Plus className="size-4" />
-                  Add to room
-                </Button>
-              </>
-            }
+    <AgentSettingsPage
+      saveBar={<AgentSaveBar />}
+      error={error}
+      identity={{
+        avatar: (
+          <AgentIconPicker
+            serverId={agent.serverId}
+            name={title}
+            iconUrl={draft.iconUrl}
+            onChange={(iconUrl) => setValue('iconUrl', iconUrl)}
+            size={88}
           />
-
-          <div className="flex flex-col gap-10">
-            <AgentInstructionsField
-              value={draft.instructions}
-              onChange={(value) => setValue('instructions', value)}
-              expanded={instructionsExpanded}
-              onExpandedChange={setInstructionsExpanded}
-              actions={null}
+        ),
+        name: agent.name,
+        displayName: draft.displayName,
+        description: draft.description,
+        onDisplayNameChange: (value) => setValue('displayName', value),
+        onDescriptionChange: (value) => setValue('description', value),
+        badges: (
+          <>
+            {provider && (
+              <Badge variant="secondary" className="h-5 shrink-0 px-2 text-[11px]">
+                {provider}
+              </Badge>
+            )}
+            <ManagedMachinePill agent={agent} machines={machines} />
+          </>
+        ),
+        titleActions: (
+          <AgentIdentityActions
+            onRename={() =>
+              showRename({
+                workspaceId: agent.workspaceId,
+                switchAgentId: agent.agentId,
+                currentName: agent.name,
+                currentDisplayName: saved.displayName.trim() || null,
+                // Its machine keeps its files, under its own name for it.
+                localAgentId: null,
+                onSuccess: ({ outcome }) => {
+                  void queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY] });
+                  void queryClient.invalidateQueries({
+                    queryKey: workspaceAgentsQueryKey(agent.workspaceId),
+                  });
+                  // The display name now comes from the server, so a
+                  // pending edit of it is dropped rather than re-sent.
+                  setEdits((current) => {
+                    const { displayName: _dropped, ...values } = current.values;
+                    return { ...current, values };
+                  });
+                  toast({
+                    title: `Renamed to ${outcome.agent.displayName ?? outcome.agent.name}`,
+                    description:
+                      outcome.bridgeFailures.length > 0
+                        ? outcome.bridgeFailures.map((f) => `Not yet updated on ${f}.`).join(' ')
+                        : undefined,
+                    variant: outcome.bridgeFailures.length > 0 ? 'destructive' : undefined,
+                  });
+                },
+              })
+            }
+            onDelete={remove}
+            disabled={!editIsEmpty(edit)}
+          />
+        ),
+        actions: (
+          <>
+            {!chatsOn && (
+              <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
+                <Button disabled>New Session</Button>
+              </WithReason>
+            )}
+            <Button
+              variant="outline"
+              onClick={() =>
+                showAddToRoom({
+                  workspaceId: agent.workspaceId,
+                  switchAgentId: agent.agentId,
+                  agentName: managedAgentLabel(agent),
+                })
+              }
+            >
+              <Plus className="size-4" />
+              Add to room
+            </Button>
+          </>
+        ),
+      }}
+      definition={{
+        instructions: draft.instructions,
+        onInstructionsChange: (value) => setValue('instructions', value),
+        autoMode: providerSupportsAutoMode(agent.definition.provider) ? draft.autoMode : null,
+        unreviewedAutoMode: autoModeIsUnreviewed(agent.definition.provider)
+          ? providerDisplayName(agent.definition.provider)
+          : null,
+        onAutoModeChange: (checked) => setValue('autoMode', checked),
+        autoApprove: draft.autoApprove,
+        onAutoApproveChange: (checked) => setValue('autoApprove', checked),
+      }}
+      serverRows={
+        <>
+          <CanManageAgentsRow
+            workspaceId={agent.workspaceId}
+            agentId={agent.agentId}
+            agentName={null}
+          />
+          <MidTurnDeliveryRow workspaceId={agent.workspaceId} agentId={agent.agentId} />
+          <AddressingPolicyRow
+            workspaceId={agent.workspaceId}
+            serverId={agent.serverId}
+            agentId={agent.agentId}
+            agentName={agent.name}
+            showName={false}
+          />
+          {serviceGrants && (
+            <ServiceGrantsRow
+              serverId={agent.serverId}
+              workspaceId={agent.workspaceId}
+              agentId={agent.agentId}
+              agentName={managedAgentLabel(agent)}
+              cloud={agent.machine !== null && isCloudMachine(agent.machine)}
             />
-            <section className="flex flex-col gap-6">
-              <SectionLabel>General</SectionLabel>
-              {providerSupportsAutoMode(agent.definition.provider) && (
-                <AutoModeRow
-                  providerIds={[agent.definition.provider]}
-                  overridden={draft.autoApprove}
-                  control={
-                    <Switch
-                      aria-label={PERMISSION_COPY.autoMode.title}
-                      checked={draft.autoMode}
-                      onCheckedChange={(checked) => setValue('autoMode', checked)}
-                    />
-                  }
-                />
-              )}
-              <AutoApproveRow
-                control={
-                  <Switch
-                    aria-label={PERMISSION_COPY.autoApprove.title}
-                    checked={draft.autoApprove}
-                    onCheckedChange={(checked) => setValue('autoApprove', checked)}
-                  />
-                }
-              />
-              <CanManageAgentsRow
-                workspaceId={agent.workspaceId}
-                agentId={agent.agentId}
-                agentName={null}
-              />
-              <MidTurnDeliveryRow workspaceId={agent.workspaceId} agentId={agent.agentId} />
-              <AddressingPolicyRow
-                workspaceId={agent.workspaceId}
-                serverId={agent.serverId}
-                agentId={agent.agentId}
-                agentName={agent.name}
-                showName={false}
-              />
-              {serviceGrants && (
-                <ServiceGrantsRow
-                  serverId={agent.serverId}
-                  workspaceId={agent.workspaceId}
-                  agentId={agent.agentId}
-                  agentName={managedAgentLabel(agent)}
-                  cloud={agent.machine !== null && isCloudMachine(agent.machine)}
-                />
-              )}
-              <SettingRow
-                title="Device"
-                info={null}
-                description={
-                  agent.machine
-                    ? `Runs on ${agent.machine.name}${machine?.local?.kind === 'this-computer' ? ' (this computer)' : ''}.`
-                    : 'Runs on no device.'
-                }
-                control={
-                  <Button variant="outline" size="sm" onClick={() => showMove({ agent })}>
-                    Change…
-                  </Button>
-                }
-              />
-              <SettingRow
-                title="Directory"
-                info={{
-                  label: 'More info about the directory',
-                  content:
-                    'The working directory, a full path on its machine. Its sessions start there. ' +
-                    'Changing it applies to new sessions only: a room where the agent already has a ' +
-                    'session keeps the directory that session started in, through a reset too, until ' +
-                    'the session is recreated.',
-                }}
-                description={`Where the agent runs on ${agent.machine?.name ?? 'its machine'}.`}
-                control={null}
-              >
-                {machine?.local?.kind === 'this-computer' ? (
-                  <LocalDirectorySelector
-                    title="Choose the agent's working directory"
-                    message="The agent runs its sessions here."
-                    path={draft.directory}
-                    onPathChange={(path) => setValue('directory', path)}
-                    placeholder={DIRECTORY_PLACEHOLDER}
-                  />
-                ) : (
-                  <Input
-                    aria-label="Directory"
-                    value={draft.directory}
-                    placeholder={DIRECTORY_PLACEHOLDER}
-                    onChange={(event) => setValue('directory', event.target.value)}
-                  />
-                )}
-              </SettingRow>
-              {machine?.cloud ? (
-                <SettingRow
-                  title="Runs in its own process"
-                  info={null}
-                  description="Switch Cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
-                  control={null}
-                />
-              ) : (
-                <SettingRow
-                  title="Run in its own process"
-                  info={{
-                    label: 'More info about running in its own process',
-                    content:
-                      'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
-                  }}
-                  description="Keep it apart from the other agents on its machine."
-                  control={
-                    <Switch
-                      aria-label="Run in its own process"
-                      checked={draft.ownProcess}
-                      onCheckedChange={(checked) => setValue('ownProcess', checked)}
-                    />
-                  }
-                />
-              )}
-            </section>
-            <div className="flex flex-col gap-2">
-              <AdvancedConfigDisclosure
-                fields={fields}
-                form={draft.form}
-                summary={summariseValues([MODEL_FIELD, ...schema], saved.form)}
-                catalogue={catalogue}
-                intro="The agent's model and its provider's settings. Its instructions are above, and its name is fixed."
-                onFieldChange={setField}
-              />
-              {schemaQuery.error && (
-                <p role="alert" className="text-xs text-foreground-destructive">
-                  {failureText(
-                    schemaQuery.error,
-                    `The server's settings for ${provider ?? agent.definition.provider} could not be read, so only the model can be changed here.`
-                  )}
-                </p>
-              )}
-            </div>
-          </div>
-
-          {chatsOn && (
-            <section className="flex flex-col gap-6">
-              <SectionLabel>Danger zone</SectionLabel>
-              <SettingRow
-                title="Delete agent"
-                info={null}
-                description="Its machine stops it and it is deleted from Switch, for every room it is in."
-                control={
-                  <Button variant="destructive" disabled={busy} onClick={remove}>
-                    Delete agent…
-                  </Button>
-                }
-              />
-            </section>
           )}
-        </div>
-      </div>
-    </div>
+        </>
+      }
+      machine={{
+        machineName: agent.machine?.name ?? null,
+        thisComputer: machine?.local?.kind === 'this-computer',
+        directory: draft.directory,
+        isolation: draft.ownProcess ? 'isolated' : 'shared',
+        cloud: machine?.cloud ?? false,
+        onDirectoryChange: (value) => setValue('directory', value),
+        onIsolationChange: (value) => setValue('ownProcess', value === 'isolated'),
+        onChangeDevice: () => showMove({ agent }),
+        directorySelector:
+          machine?.local?.kind === 'this-computer' ? (
+            <LocalDirectorySelector
+              title="Choose the agent’s working directory"
+              message="The agent runs its sessions here."
+              path={draft.directory}
+              onPathChange={(path) => setValue('directory', path)}
+              placeholder={DIRECTORY_PLACEHOLDER}
+            />
+          ) : undefined,
+      }}
+      advanced={
+        <>
+          <AdvancedConfigDisclosure
+            fields={fields}
+            form={draft.form}
+            summary={summariseValues([MODEL_FIELD, ...schema], saved.form)}
+            catalogue={catalogue}
+            intro="The agent's model and its provider's settings. Its instructions are above, and its name is fixed."
+            onFieldChange={setField}
+          />
+          {schemaQuery.error && (
+            <p role="alert" className="text-xs text-foreground-destructive">
+              {failureText(
+                schemaQuery.error,
+                `The server's settings for ${provider ?? agent.definition.provider} could not be read, so only the model can be changed here.`
+              )}
+            </p>
+          )}
+        </>
+      }
+      onDelete={chatsOn ? remove : null}
+      deleting={busy}
+      machineWord="machine"
+    />
   );
 }
 

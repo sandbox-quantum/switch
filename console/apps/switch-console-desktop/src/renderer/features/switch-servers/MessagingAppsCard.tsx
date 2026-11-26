@@ -30,9 +30,9 @@ import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl, reportOpenAttempt } from '@renderer/lib/open-external';
-import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,8 +40,8 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Spinner } from '@renderer/lib/ui/spinner';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { log } from '@renderer/utils/logger';
 import type {
   LinkedIdentity,

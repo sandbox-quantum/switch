@@ -1,6 +1,6 @@
 import { Pencil, Trash2 } from 'lucide-react';
-import { Button } from '@renderer/lib/ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 
 /**
  * Rename and Delete, beside the agent's name, as two icons with a tooltip

@@ -14,8 +14,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { log } from '@renderer/utils/logger';
 
 export type AssignServerModalProps = BaseModalProps & {

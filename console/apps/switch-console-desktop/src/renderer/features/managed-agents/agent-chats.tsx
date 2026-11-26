@@ -1,34 +1,31 @@
-import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
+import {
+  ConversationNote as Note,
+  ConversationSection as Section,
+} from '@switch-console/chat-ui/components/agent-page';
+import { ArchivedFold } from '@switch-console/chat-ui/components/archived-fold';
+import { ChatPanel } from '@switch-console/chat-ui/components/chat-panel';
+import { ChatRow, RoomRow, UnsavedChatRow } from '@switch-console/chat-ui/components/chat-row';
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { useChatHost } from '@switch-console/chat-ui/host';
+import { agentConversations } from '@switch-console/chat-ui/model/agent-conversations';
+import { roomActivityAt } from '@switch-console/chat-ui/model/room-order';
 import { observer } from 'mobx-react-lite';
-import { type ReactNode, useEffect, useRef, useState } from 'react';
-import { agentConversations } from '@renderer/features/chats/agent-conversations';
-import { ArchivedFold } from '@renderer/features/chats/components/archived-fold';
-import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
-import { ChatRow, UnsavedChatRow } from '@renderer/features/chats/components/chat-row';
+import { useEffect, useRef } from 'react';
+import { ChatActionItems, chatActions, type ChatRemovalContext } from '@switch-console/chat-ui/components/chat-actions';
 import { useOpenGroupAsRoom } from '@renderer/features/chats/console-chat-redirect';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
-import { RoomListRow } from '@renderer/features/sidebar/main-section';
-import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
 import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { BuddySetupCards } from '@renderer/features/switch-buddy/buddy-setup-cards';
-import { buddySetupCardsEnabled } from '@renderer/features/switch-buddy/buddy-setup-step';
+import { buddySetupCardsEnabled } from '@switch-console/chat-ui/model/buddy-setup-step';
 import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
-import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
-import { roomActivityAt } from '@renderer/features/switch-servers/room-order';
+import { isConsoleDirectChatSummary } from '@switch-console/chat-ui/model/agent-conversations';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { EmptyState } from '@renderer/lib/ui/empty-state';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
 import { AgentProfile, managedAgentMachineLine } from './agent-profile';
@@ -63,65 +60,18 @@ export function useAgentSection(
   return { sections, section: shownAgentSection(chosen, sections) };
 }
 
-function Section({
-  title,
-  addLabel,
-  onAdd,
-  addChoices,
-  children,
-}: {
-  title: string;
-  addLabel: string;
-  onAdd: () => void;
-  /** Ways to add, offered as a menu on the button instead of `onAdd`; null for just `onAdd`. */
-  addChoices: { label: string; onSelect: () => void }[] | null;
-  children: ReactNode;
-}) {
-  const [open, setOpen] = useState(true);
-  const Chevron = open ? ChevronDown : ChevronRight;
-  return (
-    <section aria-label={title} className="flex flex-col gap-[2px] pb-3">
-      <div className="flex items-center justify-between pr-1 pb-1">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-          className="flex items-center gap-1 text-xs font-medium text-foreground-muted hover:text-foreground"
-        >
-          <Chevron className="size-3.5" />
-          {title}
-        </button>
-        {addChoices ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <SidebarItemMiniButton aria-label={addLabel} title={addLabel}>
-                  <Plus className="size-3.5" />
-                </SidebarItemMiniButton>
-              }
-            />
-            <DropdownMenuContent align="end">
-              {addChoices.map((choice) => (
-                <DropdownMenuItem key={choice.label} onClick={choice.onSelect}>
-                  {choice.label}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          <SidebarItemMiniButton aria-label={addLabel} title={addLabel} onClick={onAdd}>
-            <Plus className="size-3.5" />
-          </SidebarItemMiniButton>
-        )}
-      </div>
-      {open && children}
-    </section>
-  );
+/** A chat row's menu: Console's actions on the chat, or none. */
+function RowActions({ serverId, chat, agentId }: { serverId: string; chat: ChatSummary; agentId: string }) {
+  const host = useChatHost();
+  const context: ChatRemovalContext = {
+    currentViewId: 'managedAgent',
+    chatRoomId: undefined,
+    roomRoomId: undefined,
+    agentRoomId: chat.roomId,
+  };
+  const actions = chatActions(serverId, chat, context, host);
+  return actions.length > 0 ? <ChatActionItems actions={actions} /> : null;
 }
-
-const Note = ({ children }: { children: ReactNode }) => (
-  <p className="px-2 py-1 text-xs text-foreground-muted">{children}</p>
-);
 
 function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
   // The chats store follows the window's server; another server's chats are not in it.
@@ -277,6 +227,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               chat={chat}
               isActive={!section && chat.roomId === roomId}
               onOpen={() => open(chat.roomId)}
+              actions={<RowActions serverId={serverId} chat={chat} agentId={agentId} />}
             />
           ))}
           {direct.length === 0 && !unsavedId && !chatsStore.listError && (
@@ -290,6 +241,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
                 chat={chat}
                 isActive={!section && chat.roomId === roomId}
                 onOpen={() => open(chat.roomId)}
+                actions={<RowActions serverId={serverId} chat={chat} agentId={agentId} />}
               />
             ))}
           </ArchivedFold>
@@ -316,7 +268,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
         >
           {roomsError && <Note>{roomsError}</Note>}
           {rooms.map((room) => (
-            <RoomListRow
+            <RoomRow
               key={room.roomId}
               roomId={room.roomId}
               room={{

@@ -54,7 +54,7 @@ vi.mock('@renderer/features/locations/stores/agents-store', () => ({
 }));
 
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;

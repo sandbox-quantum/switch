@@ -4,7 +4,7 @@ import { InstallSection } from '@renderer/features/settings/agents-page/InstallS
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useAgentInstallationStatus } from '@renderer/lib/stores/use-agent-installation-statuses';
 import { useAgent } from '@renderer/lib/stores/use-agents';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   getDescriptionForProvider,
   getDocUrlForProvider,

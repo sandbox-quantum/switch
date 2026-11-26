@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import { serverCompatibility } from '@renderer/features/switch-servers/gateway-compatibility-banner';
 import { ManagedServerPage } from '@renderer/features/switch-servers/managed-server-view';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { PageHeader } from '@renderer/lib/components/page-header';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
 import { type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { UpdateCard } from '../components/UpdateCard';
 import { SectionLabel } from './settings-server';

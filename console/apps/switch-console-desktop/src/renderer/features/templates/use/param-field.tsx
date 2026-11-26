@@ -9,9 +9,9 @@ import {
   UserField,
 } from '@renderer/features/room-templates/entity-fields';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
-import { Input } from '@renderer/lib/ui/input';
-import { Switch } from '@renderer/lib/ui/switch';
-import { Textarea } from '@renderer/lib/ui/textarea';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import { cn } from '@renderer/utils/utils';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';

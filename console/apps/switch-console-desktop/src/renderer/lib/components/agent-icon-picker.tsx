@@ -1,3 +1,7 @@
+import {
+  agentAvatarUrlForNewAgent,
+  isThirdPartyAvatarUrl,
+} from '@switch-console/chat-ui/model/agent-avatar';
 import { useQuery } from '@tanstack/react-query';
 import { Pencil, RotateCw, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -5,11 +9,10 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useAvatarSettings } from '@renderer/lib/stores/use-avatar-settings';
-import { Input } from '@renderer/lib/ui/input';
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Popover, PopoverContent, PopoverTrigger } from '@switch-console/chat-ui/primitives/popover';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import { cn } from '@renderer/utils/utils';
-import { agentAvatarUrlForNewAgent, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 
 type PickerTab = 'generated' | 'url';
 

@@ -1,7 +1,7 @@
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { Brain, ChevronDown, Cpu, Minimize2, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Combobox,
   ComboboxContent,
@@ -17,8 +17,8 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@switch-console/chat-ui/primitives/popover';
 
 const controlClass = 'h-7 gap-1.5 rounded-md px-2 text-xs font-normal text-foreground-muted';
 const optionLabel = (value: string) =>

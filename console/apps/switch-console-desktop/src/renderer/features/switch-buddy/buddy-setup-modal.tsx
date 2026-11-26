@@ -1,11 +1,11 @@
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
 import { ProviderSetup } from './provider-setup';
 import { useThisComputer } from './use-this-computer';
 

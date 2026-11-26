@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useProviderOfferedAnywhere } from '@renderer/lib/hooks/use-provider-offered-anywhere';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
-import { Label } from '@renderer/lib/ui/label';
+import { Label } from '@switch-console/chat-ui/primitives/label';
 import { AgentDetailSheet } from './AgentDetailSheet';
 import { AgentRow } from './AgentRow';
 import { installedHere, reportedProvider } from './this-computer-status';

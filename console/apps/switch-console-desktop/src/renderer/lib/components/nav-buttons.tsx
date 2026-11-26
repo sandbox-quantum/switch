@@ -2,9 +2,9 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { HistoryEntry } from '@renderer/lib/stores/navigation-history-store';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 
 export function applyHistoryEntry(entry: HistoryEntry): void {
   if (entry.kind === 'view') {

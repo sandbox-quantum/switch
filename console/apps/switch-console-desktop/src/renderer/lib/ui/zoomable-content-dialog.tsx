@@ -5,9 +5,9 @@ import {
   TransformWrapper,
   type ReactZoomPanPinchContentRef,
 } from 'react-zoom-pan-pinch';
-import { Button } from '@renderer/lib/ui/button';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 
 interface ZoomableContentDialogProps {
   open: boolean;

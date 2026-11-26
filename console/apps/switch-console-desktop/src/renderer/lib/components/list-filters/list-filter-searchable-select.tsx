@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { ListFilterButton } from '@renderer/lib/components/list-filters/list-filter-button';
 import { ListFilterOptionList } from '@renderer/lib/components/list-filters/list-filter-option-list';
 import type { ListFilterOption } from '@renderer/lib/components/list-filters/types';
-import { Input } from '@renderer/lib/ui/input';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 
 interface ListFilterSearchableSelectProps<T extends string> {
   label: string;

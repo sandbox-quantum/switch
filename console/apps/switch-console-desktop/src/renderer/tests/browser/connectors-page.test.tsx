@@ -153,7 +153,7 @@ import {
 } from '@renderer/features/connectors/connect-service-modal';
 import { connectorsView } from '@renderer/features/connectors/connectors-view';
 import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 
 type DisconnectArgs = {
   workspaceId: string;

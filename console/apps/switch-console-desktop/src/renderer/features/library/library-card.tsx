@@ -1,13 +1,13 @@
 import { DoorOpen, FileText, Link2, MoreVertical, Package, Trash2 } from 'lucide-react';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import type { LibraryItem } from '@shared/core/switch-servers/library';
 import {
   ACCESS_SHORT,

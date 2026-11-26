@@ -12,14 +12,14 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Spinner } from '@renderer/lib/ui/spinner';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
 

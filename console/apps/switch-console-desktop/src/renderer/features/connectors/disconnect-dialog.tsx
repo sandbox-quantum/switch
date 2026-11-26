@@ -3,14 +3,14 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Spinner } from '@renderer/lib/ui/spinner';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { disconnectCopy } from './connector-copy';
 import { useConnectionAgents, useReloadConnectors } from './connectors-queries';

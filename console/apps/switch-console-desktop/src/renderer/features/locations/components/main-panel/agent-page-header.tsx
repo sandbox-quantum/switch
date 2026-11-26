@@ -18,8 +18,8 @@ import {
   workspaceAgentsQueryKey,
   useWorkspaceAgents,
 } from '@renderer/lib/stores/use-workspace-agents';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 
 /**

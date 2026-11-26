@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { ParticipantPicker } from '@renderer/lib/components/participant-picker';
-import type { Participant } from '@renderer/lib/components/participant-search';
+import type { Participant } from '@switch-console/chat-ui/model/participant-search';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { MessagingAppSelector, messagingOptions, SWITCH_CONSOLE } from './messaging-app-selector';
 

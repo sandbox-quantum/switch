@@ -28,7 +28,7 @@ vi.mock('@renderer/lib/ipc', () => ({
 }));
 
 import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/DisconnectMessagingAppModal';
-import { Dialog } from '@renderer/lib/ui/dialog';
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 
 const onSuccess = vi.fn();
 const onClose = vi.fn();

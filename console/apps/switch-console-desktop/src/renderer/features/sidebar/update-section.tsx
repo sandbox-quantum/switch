@@ -10,7 +10,7 @@ import {
 import { observer } from 'mobx-react-lite';
 import React from 'react';
 import { appState } from '@renderer/lib/stores/app-state';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Popover,
   PopoverContent,
@@ -18,7 +18,7 @@ import {
   PopoverHeader,
   PopoverTitle,
   PopoverTrigger,
-} from '@renderer/lib/ui/popover';
+} from '@switch-console/chat-ui/primitives/popover';
 import { Progress } from '@renderer/lib/ui/progress';
 import {
   type UpdateActionKind,

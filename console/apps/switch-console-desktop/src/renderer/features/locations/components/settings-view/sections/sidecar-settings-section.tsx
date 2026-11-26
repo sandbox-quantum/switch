@@ -7,8 +7,8 @@ import {
   roomHealthKey,
 } from '@renderer/features/switch-rooms/connection-health';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
-import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
 import {
   connectionLabels,
   connectionNeedsAttention,

@@ -16,9 +16,9 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { homeRedirect } from './home-target';
 import { AppMark, RoomCard } from './room-card';
@@ -33,7 +33,7 @@ import {
   type RoomsFilter,
   roomCard,
 } from './room-list';
-import { ServerPage, ServerTableEmpty } from './server-page';
+import { ServerPage, ServerTableEmpty } from '@switch-console/chat-ui/components/server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';

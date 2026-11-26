@@ -8,15 +8,15 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
-import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
 import {
   channelCleanupText,
   channelKeptText,

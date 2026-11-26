@@ -22,21 +22,21 @@ import { CreateCredential } from '@renderer/features/connectors/create-credentia
 import { LinkedText } from '@renderer/features/connectors/linked-text';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
-import { Spinner } from '@renderer/lib/ui/spinner';
+} from '@switch-console/chat-ui/primitives/select';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import type {
   ConnectionCatalogEntry,
   PasteMethodName,

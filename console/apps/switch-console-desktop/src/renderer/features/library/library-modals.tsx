@@ -5,14 +5,14 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
 import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 import type { LibraryItem, LibraryKind } from '@shared/core/switch-servers/library';
 import { emptyForm, formProblem, inputOf, type LibraryForm } from './library-form';

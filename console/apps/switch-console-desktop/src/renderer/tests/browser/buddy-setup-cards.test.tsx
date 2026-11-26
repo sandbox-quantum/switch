@@ -81,7 +81,7 @@ vi.mock('@renderer/features/chats/stores/chats', () => ({
   chatTitler: { created: () => {} },
 }));
 vi.mock('@renderer/features/deeplinks/console-link-handler', () => ({ followConsoleLink }));
-vi.mock('@renderer/features/chats/components/chat-composer', () => ({
+vi.mock('@switch-console/chat-ui/components/chat-composer', () => ({
   focusComposerWhenOpened: () => {},
 }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
@@ -98,7 +98,7 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
 import { BuddySetupCards } from '@renderer/features/switch-buddy/buddy-setup-cards';
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
 import { appState } from '@renderer/lib/stores/app-state';
-import { Dialog } from '@renderer/lib/ui/dialog';
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import '@renderer/index.css';
 
 /** Relative to this file; it must stay inside the workspace for Vite to write it. */

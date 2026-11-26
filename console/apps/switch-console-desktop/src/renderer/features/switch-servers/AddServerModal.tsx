@@ -10,12 +10,12 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { report } from '@renderer/lib/telemetry/report';
-import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
+import { Alert, AlertDescription, AlertTitle } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import { Spinner } from '@renderer/lib/ui/spinner';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import {
   lockHolderSentence,

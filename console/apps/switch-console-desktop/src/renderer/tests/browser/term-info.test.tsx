@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { GLOSSARY, TermInfo } from '@renderer/lib/components/term-info';
+import { GLOSSARY, TermInfo } from '@switch-console/chat-ui/primitives/term-info';
 
 describe('TermInfo', () => {
   let container: HTMLDivElement;

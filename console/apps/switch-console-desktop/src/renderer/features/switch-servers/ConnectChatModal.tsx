@@ -1,18 +1,19 @@
+import { ChatClaimDetails } from '@switch-console/chat-ui/components/connect-messaging-app';
 import { useQuery } from '@tanstack/react-query';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useOnUnmount } from '@renderer/lib/hooks/use-on-unmount';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { openExternalUrl } from '@renderer/lib/open-external';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Spinner } from '@renderer/lib/ui/spinner';
-import { ChatClaimDetails } from './ConnectChatPanel';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 
 type ConnectChatModalArgs = {
   workspaceId: string;
@@ -60,7 +61,9 @@ export function ConnectChatModal({ workspaceId, platform, onClosed, onClose }: P
             {failureText(claimQuery.error, `Could not start connecting a ${label} chat.`)}
           </p>
         )}
-        {claimQuery.data && <ChatClaimDetails platform={platform} claim={claimQuery.data} />}
+        {claimQuery.data && (
+          <ChatClaimDetails label={label} claim={claimQuery.data} openExternal={openExternalUrl} />
+        )}
       </DialogContentArea>
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>

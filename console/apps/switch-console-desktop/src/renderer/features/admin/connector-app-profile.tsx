@@ -5,16 +5,16 @@ import { ConnectionIcon } from '@renderer/features/switch-servers/connection-ico
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Spinner } from '@renderer/lib/ui/spinner';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import type { ConnectorApp } from '@shared/core/switch-servers/connector-apps';
 import {
   type DetailRow,

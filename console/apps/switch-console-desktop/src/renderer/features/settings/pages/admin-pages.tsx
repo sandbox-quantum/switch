@@ -17,15 +17,15 @@ import { GuardrailsSection } from '@renderer/features/switch-servers/GuardrailsS
 import { openServerPage } from '@renderer/features/switch-servers/open-server-page';
 import { operatesServer } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { PageHeader } from '@renderer/lib/components/page-header';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Alert, AlertTitle } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
+import { Alert, AlertTitle } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
-import { Spinner } from '@renderer/lib/ui/spinner';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { dashboardPageUrl, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   administersOrganization,

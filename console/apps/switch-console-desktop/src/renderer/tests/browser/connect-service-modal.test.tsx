@@ -33,7 +33,7 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
 }));
 
 import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 
 function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEntry {
   return {

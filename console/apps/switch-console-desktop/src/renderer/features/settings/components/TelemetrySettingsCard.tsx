@@ -7,7 +7,7 @@ import {
   TELEMETRY_SUMMARY,
 } from '@renderer/features/telemetry/telemetry-copy';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Switch } from '@renderer/lib/ui/switch';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { SettingRow } from './SettingRow';
 
 const TelemetrySettingsCard: React.FC = () => {

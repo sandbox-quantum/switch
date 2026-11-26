@@ -10,7 +10,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
+} from '@switch-console/chat-ui/primitives/select';
 import { cn } from '@renderer/utils/utils';
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
 import { switchServersStore } from './switch-servers-store';

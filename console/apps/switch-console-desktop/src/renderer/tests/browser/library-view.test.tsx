@@ -93,7 +93,7 @@ import {
 } from '@renderer/features/library/library-modals';
 import { libraryView } from '@renderer/features/library/library-view';
 import { ReferenceTypeModal } from '@renderer/features/library/reference-types';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 
 function item(over: Partial<LibraryItem>): LibraryItem {
   return {

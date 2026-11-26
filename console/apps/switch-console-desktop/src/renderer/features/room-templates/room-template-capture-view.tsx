@@ -14,9 +14,9 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import { Input } from '@renderer/lib/ui/input';
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 
 type CaptureStep = 'loading' | 'preview' | 'error';
 

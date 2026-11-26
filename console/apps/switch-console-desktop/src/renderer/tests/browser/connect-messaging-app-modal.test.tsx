@@ -80,7 +80,7 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
 
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { Dialog } from '@renderer/lib/ui/dialog';
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 
 const onSuccess = vi.fn();
 const onClose = vi.fn();

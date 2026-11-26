@@ -6,7 +6,7 @@ import {
   policyHasDeadRule,
 } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
-import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
+import { InfoTooltip } from '@switch-console/chat-ui/primitives/info-tooltip';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';

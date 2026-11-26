@@ -1,7 +1,7 @@
 import { Loader2, PlugZap, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { hostReachabilityStore } from './host-reachability-store';
 
 /**

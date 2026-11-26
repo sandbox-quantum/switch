@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AgentIdentityActions } from '@renderer/features/agent-identity/agent-identity-actions';
-import { TooltipProvider } from '@renderer/lib/ui/tooltip';
+import { TooltipProvider } from '@switch-console/chat-ui/primitives/tooltip';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;

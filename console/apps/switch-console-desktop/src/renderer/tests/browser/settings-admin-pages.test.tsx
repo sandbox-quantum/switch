@@ -160,7 +160,7 @@ import {
   DecisionRoutingSettingsPage,
   GuardrailsSettingsPage,
 } from '@renderer/features/settings/pages/admin-pages';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 
 function service(overrides: Partial<WorkspaceService>): WorkspaceService {
   return {

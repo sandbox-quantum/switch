@@ -10,8 +10,8 @@
 import { GitBranch, Package, RefreshCw, Server } from 'lucide-react';
 import { Loader2 } from 'lucide-react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
-import { Button } from '@renderer/lib/ui/button';
-import { Label } from '@renderer/lib/ui/label';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Label } from '@switch-console/chat-ui/primitives/label';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import { cn } from '@renderer/utils/utils';
 import { isStepInFlight, type HostSetupStep } from '@shared/core/remote-hosts/setup';

@@ -1,18 +1,15 @@
 import { useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import { chatsStore } from '../stores/chats';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 
 /** Rename a chat: its room's name, for everyone in it. */
 export function RenameChatModal({
@@ -21,25 +18,13 @@ export function RenameChatModal({
   currentName,
   onSuccess,
   onClose,
-}: BaseModalProps<void> & { serverId: string; roomId: string; currentName: string }) {
+}: BaseModalProps<string> & { serverId: string; roomId: string; currentName: string }) {
   const [name, setName] = useState(currentName);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const trimmed = name.trim();
   const valid = trimmed.length > 0 && trimmed !== currentName;
-  const rename = async () => {
-    if (!valid || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await rpc.chats.rename(serverId, roomId, trimmed);
-      const chat = chatsStore.chat(roomId);
-      if (chat) chatsStore.add(serverId, { ...chat, name: trimmed });
-      onSuccess();
-    } catch (caught) {
-      setError(failureText(caught, 'Could not rename the chat.'));
-      setBusy(false);
-    }
+  const rename = () => {
+    if (!valid) return;
+    onSuccess(trimmed);
   };
   return (
     <>
@@ -61,7 +46,6 @@ export function RenameChatModal({
             <p className="mt-1 text-xs text-foreground-muted">
               The room is renamed for everyone in it.
             </p>
-            {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
           </Field>
         </FieldGroup>
       </DialogContentArea>
@@ -69,8 +53,8 @@ export function RenameChatModal({
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <ConfirmButton onClick={() => void rename()} disabled={!valid || busy}>
-          {busy ? 'Renaming…' : 'Rename'}
+        <ConfirmButton onClick={() => void rename()} disabled={!valid}>
+          Rename
         </ConfirmButton>
       </DialogFooter>
     </>

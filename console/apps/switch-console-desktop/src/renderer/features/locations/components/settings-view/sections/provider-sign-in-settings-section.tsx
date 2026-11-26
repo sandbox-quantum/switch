@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { rpc } from '@renderer/lib/ipc';
-import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
+import { Field, FieldDescription, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 
 /**
  * Whether the agent's provider CLI is signed in on the machine its sessions

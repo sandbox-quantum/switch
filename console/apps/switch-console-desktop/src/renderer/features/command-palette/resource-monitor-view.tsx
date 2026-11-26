@@ -2,7 +2,7 @@ import { Activity, ArrowLeft, Check, Copy } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { appState } from '@renderer/lib/stores/app-state';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import { formatBytes } from '@renderer/utils/formatBytes';
 import type { ResourceAppProcess, ResourceSnapshot } from '@shared/resource-monitor';
 import { appProcessLabel, formatReport, sortAppProcesses } from './resource-monitor-utils';

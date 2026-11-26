@@ -8,7 +8,7 @@ import {
   recheckThisComputer,
   useThisComputerReport,
 } from '@renderer/lib/stores/use-this-computer-report';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { reportedProvider } from './this-computer-status';
 

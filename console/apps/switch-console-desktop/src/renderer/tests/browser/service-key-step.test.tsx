@@ -30,7 +30,7 @@ vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
 
 import { serverServiceCalls } from '@renderer/features/switch-servers/service-calls';
 import { ServiceKeyStep } from '@renderer/features/switch-servers/service-key-step';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 
 const API_KEY = 'synthetic-datadog-api-key';
 const APP_KEY = 'synthetic-datadog-application-key';

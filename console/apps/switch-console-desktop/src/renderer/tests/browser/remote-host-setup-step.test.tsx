@@ -55,7 +55,7 @@ vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
 }));
 
 import { RemoteHostSetupStep } from '@renderer/features/switch-servers/AddServerModal';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import '@renderer/index.css';
 
 const bob = {

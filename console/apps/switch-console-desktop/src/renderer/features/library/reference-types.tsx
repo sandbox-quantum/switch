@@ -6,26 +6,26 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import { ModalLayout } from '@renderer/lib/ui/modal-layout';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { Textarea } from '@renderer/lib/ui/textarea';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import type {
   ManagedReferenceType,
   ReferenceTypeChanges,

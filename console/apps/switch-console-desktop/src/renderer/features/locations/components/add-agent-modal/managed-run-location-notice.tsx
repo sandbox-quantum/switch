@@ -1,3 +1,5 @@
+import { CanManageAgentsToggle } from '@switch-console/chat-ui/components/agent-permissions';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert, Server } from 'lucide-react';
@@ -7,14 +9,10 @@ import {
   MODEL_FIELD,
 } from '@renderer/features/managed-agents/managed-agent-changes';
 import { useAdvancedConfigSchema } from '@renderer/features/managed-agents/use-managed-agents';
-import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { invalidateHostProviderReadiness } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
-import { Field } from '@renderer/lib/ui/field';
-import { Switch } from '@renderer/lib/ui/switch';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
 import { type AgentProviderId, getProvider } from '@shared/core/providers/agent-provider-registry';
@@ -219,28 +217,5 @@ export function CanManageAgentsField({
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
-  return (
-    <Field>
-      <label className="-mx-2 flex cursor-pointer items-start justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--sel-soft)]">
-        <span className="flex flex-col gap-0.5">
-          <span className="flex items-center gap-1.5 text-sm">
-            Can manage agents
-            <InfoTooltip
-              label="More info about managing agents"
-              content="The agent can see your machines and managed agents, and create agents that run on your machines and belong to you. Agents it creates do not get this permission."
-            />
-          </span>
-          <span className="text-xs text-foreground-muted">
-            Let this agent create agents on your machines.
-          </span>
-        </span>
-        <Switch
-          className="mt-0.5"
-          aria-label="Can manage agents"
-          checked={checked}
-          onCheckedChange={onChange}
-        />
-      </label>
-    </Field>
-  );
+  return <CanManageAgentsToggle machineWord="machine" checked={checked} onChange={onChange} />;
 }

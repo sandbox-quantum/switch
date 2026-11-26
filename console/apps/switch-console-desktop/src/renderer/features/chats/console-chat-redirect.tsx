@@ -1,10 +1,8 @@
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
-import {
-  isConsoleDirectChatSummary,
-  isConsoleGroupChatSummary,
-} from '@renderer/features/switch-servers/room-filters';
+import { isConsoleDirectChatSummary } from '@switch-console/chat-ui/model/agent-conversations';
+import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { appState } from '@renderer/lib/stores/app-state';

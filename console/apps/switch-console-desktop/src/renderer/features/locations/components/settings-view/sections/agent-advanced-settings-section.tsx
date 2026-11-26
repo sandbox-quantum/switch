@@ -19,9 +19,10 @@ import { isProvisioned } from '@renderer/features/sessions/stores/session-store'
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { log } from '@renderer/utils/logger';
-import { AdvancedConfigDisclosure, summariseValues } from './advanced-config-disclosure';
+import { summariseValues } from '@switch-console/chat-ui/components/advanced-config-disclosure';
+import { AdvancedConfigDisclosure } from './advanced-config-disclosure';
 
 /**
  * Per-agent "Advanced configuration" in the Settings tab: the model, reasoning

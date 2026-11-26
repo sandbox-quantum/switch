@@ -15,7 +15,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
+} from '@switch-console/chat-ui/primitives/select';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 
 export const LOCAL_RUN_LOCATION = 'local';

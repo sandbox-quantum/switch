@@ -22,13 +22,13 @@ import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { PageHeader } from '@renderer/lib/components/page-header';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import {
   asAgentProviderId,

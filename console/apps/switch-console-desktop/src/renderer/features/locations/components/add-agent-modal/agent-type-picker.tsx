@@ -6,8 +6,8 @@ import { ProviderConnectionStatus } from '@renderer/lib/components/provider-conn
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { useAgents } from '@renderer/lib/stores/use-agents';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
-import { Spinner } from '@renderer/lib/ui/spinner';
+import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { AgentTypeBlockedKind } from '@shared/core/agent-types/agent-type-availability';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';

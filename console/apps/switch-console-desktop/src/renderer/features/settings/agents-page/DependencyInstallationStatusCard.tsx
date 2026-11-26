@@ -18,7 +18,7 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
 import type {
   AgentPayload,
   InstallOption,

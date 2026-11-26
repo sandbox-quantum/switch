@@ -1,6 +1,6 @@
 import type { PopoverRootChangeEventDetails } from '@base-ui/react/popover';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Popover, PopoverContent } from '@renderer/lib/ui/popover';
+import { Popover, PopoverContent } from '@switch-console/chat-ui/primitives/popover';
 import { type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AgentInfoCard } from './agent-info-card';
 

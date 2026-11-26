@@ -1,5 +1,9 @@
 import type { SealedLogin } from '@switch-console/agent-providers';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
+import {
+  type BridgeConfigSchema,
+  bridgeConfigFields,
+} from '@switch-console/chat-ui/model/connect-messaging-app';
 import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
@@ -81,7 +85,6 @@ import {
   type AddressingPolicy,
   type AddTeamsTeamResult,
   type AgentRenameOutcome,
-  type BridgeConfigField,
   type BridgeDirectoryUser,
   type BridgePerson,
   type ChannelRetirement,
@@ -136,9 +139,9 @@ import {
   type RoomResourceKind,
   type NewRoomChannel,
   type RoomAccess,
-  roomAccessForChannel,
   DEFAULT_DIRECTORY_SEARCH_HINT,
 } from '@shared/core/switch-servers/switch-servers';
+import { roomAccessForChannel } from '@switch-console/chat-ui/model/room-access';
 import type {
   Invitation,
   InvitationEmailDelivery,
@@ -2253,61 +2256,6 @@ export async function beginMessagingAppInstall(
   return json.authorize_url;
 }
 
-/** Field names that hold a credential and must be masked on input. Mirrors the
- * operator dashboard's `isSecretField`, widened to catch `*_private_key` (the
- * Teams bridge's Graph encryption key), which its bare `api_key` alternation
- * misses. */
-const SECRET_FIELD_RE = /token|password|secret|api[_-]?key|private[_-]?key|credential/i;
-
-/** JSON Schema as Pydantic's `model_json_schema()` emits it for a bridge config. */
-type BridgeConfigSchemaProperty = {
-  title?: string;
-  description?: string;
-  format?: string;
-  type?: string;
-  default?: unknown;
-  /** Pydantic emits `bool | None` as `anyOf: [{type:"boolean"},{type:"null"}]`
-   * rather than a top-level `type`, so look through it. */
-  anyOf?: Array<{ type?: string }>;
-};
-
-type BridgeConfigSchema = {
-  properties?: Record<string, BridgeConfigSchemaProperty>;
-  required?: string[];
-};
-
-function primitiveType(prop: BridgeConfigSchemaProperty): string | undefined {
-  if (prop.type) return prop.type;
-  return prop.anyOf?.find((variant) => variant.type && variant.type !== 'null')?.type;
-}
-
-function humanizeFieldKey(key: string): string {
-  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function toConfigFields(schema: BridgeConfigSchema): BridgeConfigField[] {
-  const required = new Set(schema.required ?? []);
-  // Object key order follows the Pydantic model's field order, which puts the
-  // required credentials before the optional tuning knobs — worth preserving,
-  // so the form reads the way the platform's setup docs do.
-  return Object.entries(schema.properties ?? {}).map(([key, prop]) => {
-    const kind = primitiveType(prop) === 'boolean' ? 'boolean' : 'string';
-    const fallback = kind === 'boolean' ? false : null;
-    return {
-      key,
-      label: prop.title ?? humanizeFieldKey(key),
-      description: prop.description ?? null,
-      required: required.has(key),
-      secret: prop.format === 'password' || SECRET_FIELD_RE.test(key),
-      kind,
-      default:
-        typeof prop.default === 'string' || typeof prop.default === 'boolean'
-          ? prop.default
-          : fallback,
-    };
-  });
-}
-
 /**
  * The bridge types a server can register, with the credential fields each needs
  * (`GET /collaborations/types`).
@@ -2342,7 +2290,7 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
     docsSlug: t.docs_slug ?? null,
     iconSvg: t.icon_svg ?? null,
     receivesWebhooks: t.receives_webhooks ?? false,
-    fields: toConfigFields(t.config_schema ?? {}),
+    fields: bridgeConfigFields(t.config_schema ?? {}),
     // Absent on a server predating the capability — every platform could be
     // registered to create channels before it existed, so default true.
     channelCreationSupported: t.channel_creation_supported ?? true,

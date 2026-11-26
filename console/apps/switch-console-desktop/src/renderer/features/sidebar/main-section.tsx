@@ -1,7 +1,18 @@
-import { DoorOpen, MessageCircle, X } from 'lucide-react';
+import { RoomRow } from '@switch-console/chat-ui/components/chat-row';
+import { MessagingAppBanner } from '@switch-console/chat-ui/components/messaging-app-banner';
+import { NewRoomRow } from '@switch-console/chat-ui/components/new-room-row';
+import { inAppRooms } from '@switch-console/chat-ui/model/room-apps';
+import {
+  byActivity,
+  holdingOpenRoom,
+  roomActivityAt,
+} from '@switch-console/chat-ui/model/room-order';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import { SidebarMenuRow } from '@switch-console/chat-ui/primitives/sidebar';
+import { MessageCircle, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useRef, useState } from 'react';
-import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
@@ -9,32 +20,19 @@ import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
 import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
 import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
-import { appsOf, inApp } from '@renderer/features/switch-servers/room-apps';
-import {
-  byActivity,
-  holdingOpenRoom,
-  roomActivityAt,
-} from '@renderer/features/switch-servers/room-order';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
-import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useCurrentViewId } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
-import { Badge } from '@renderer/lib/ui/badge';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
-import { NewRoomRow } from './new-room-row';
-import { RoomAppChips } from './room-app-chips';
-import { SidebarMenuRow } from './sidebar-primitives';
 import { isRoomViewActive, openRoomView } from './sidebar-room-grouping';
 
 type MainTab = 'agents' | 'rooms';
 
 const TAB_KEY = 'sidebar.mainTab';
-const ROOM_APP_KEY = 'sidebar.roomApp';
 const CHATS_TEASER_KEY = 'sidebar.chatsTeaserDismissed';
 
 const TABS: { value: MainTab; label: string }[] = [
@@ -59,7 +57,7 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
   const agents = useManagedAgents(switchServersStore.activeServerId);
   const flags = useFeatureFlags(switchServersStore.activeServerId);
   const buddyPending = useBuddyPending(switchServersStore.activeServerId);
-  const rooms = useListedRoomsInActiveScope();
+  const rooms = inAppRooms(useListedRoomsInActiveScope());
   // While the agents are showing, a dot on Rooms says a room has something new.
   const roomsUnread = rooms.some((room) => chatsStore.unread(room.id) > 0);
   // No count until the agents are read: a 0 that turns into the real number
@@ -167,36 +165,27 @@ function useHeldPlace(openId: string | null): {
 }
 
 /**
- * New Room, then one row per room: its messaging app and its name, the rooms
- * with something new first. Nothing is nested under it.
+ * Where to connect a messaging app, New Room, then one row per room, the
+ * rooms with something new first. Nothing is nested under it.
  */
 const RoomList = observer(function RoomList({ rooms: listed }: { rooms: RemoteRoomSummary[] }) {
   const showCreateRoomModal = useShowModal('createRoomModal');
-  const [app, setApp] = useState<string | null>(() => localStorage.getItem(ROOM_APP_KEY));
-  const apps = appsOf(listed);
-  const chosen = app !== null && apps.includes(app) ? app : null;
-  const ordered = sidebarOrder(inApp(listed, chosen));
+  const ordered = sidebarOrder(listed);
   const openId = ordered.find((room) => isRoomViewActive(room.id))?.id ?? null;
   const { place, remember } = useHeldPlace(openId);
   const rooms = holdingOpenRoom(ordered, openId, place);
   remember(rooms.map((room) => room.id));
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Rooms">
-      <NewRoomRow onCreate={() => showCreateRoomModal({})} />
-      <RoomAppChips
-        apps={apps}
-        selected={chosen}
-        onSelect={(next) => {
-          setApp(next);
-          if (next === null) localStorage.removeItem(ROOM_APP_KEY);
-          else localStorage.setItem(ROOM_APP_KEY, next);
-        }}
+      <MessagingAppBanner
+        onConnect={() => appState.navigation.navigate('settings', { tab: 'messaging-apps' })}
       />
+      <NewRoomRow onCreate={() => showCreateRoomModal({})} />
       {rooms.length === 0 && (
-        <p className="px-[9px] py-2 text-xs text-foreground-muted">No rooms on this server.</p>
+        <p className="px-[9px] py-2 text-xs text-foreground-muted">No rooms here yet.</p>
       )}
       {rooms.map((room) => (
-        <RoomListRow
+        <RoomRow
           key={room.id}
           roomId={room.id}
           room={room}
@@ -207,36 +196,6 @@ const RoomList = observer(function RoomList({ rooms: listed }: { rooms: RemoteRo
     </div>
   );
 });
-
-export function RoomListRow({
-  roomId,
-  room,
-  isActive,
-  onOpen,
-}: {
-  roomId: string;
-  room: Pick<RemoteRoomSummary, 'name' | 'bridgeType' | 'bridgeDisplayName'>;
-  isActive: boolean;
-  onOpen: () => void;
-}) {
-  return (
-    <SidebarMenuRow
-      isActive={isActive}
-      title={room.bridgeDisplayName ? `${room.name} · ${room.bridgeDisplayName}` : room.name}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={onOpen}
-      className="h-[30px] py-0 text-[13px]"
-    >
-      {hasBridgeIcon(room.bridgeType) ? (
-        <BridgeIcon bridgeType={room.bridgeType} size={17} className="shrink-0" />
-      ) : (
-        <DoorOpen className="size-[17px] shrink-0 text-[var(--fg-icon)]" />
-      )}
-      <span className="min-w-0 flex-1 truncate">{room.name}</span>
-      <UnreadBadge roomId={roomId} />
-    </SidebarMenuRow>
-  );
-}
 
 /**
  * One sentence about what is coming for these agents, under them, closed for

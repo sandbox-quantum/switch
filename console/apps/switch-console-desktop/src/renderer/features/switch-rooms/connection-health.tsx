@@ -7,7 +7,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import type { Agent } from '@shared/core/agents/agents';
 import {
   connectionLabels,

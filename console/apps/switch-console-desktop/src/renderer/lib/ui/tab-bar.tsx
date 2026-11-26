@@ -3,7 +3,7 @@ import { observer, Observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { ReorderList } from '@renderer/lib/components/reorder-list';
 import { cn } from '@renderer/utils/utils';
-import { Separator } from './separator';
+import { Separator } from '@switch-console/chat-ui/primitives/separator';
 
 function InlineEditInput({
   initialValue,

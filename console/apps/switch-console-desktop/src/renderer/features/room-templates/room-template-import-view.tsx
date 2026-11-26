@@ -4,7 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { homeRedirect } from '@renderer/features/switch-servers/home-target';
-import { ServerPage } from '@renderer/features/switch-servers/server-page';
+import { ServerPage } from '@switch-console/chat-ui/components/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { prefillForSave } from '@renderer/features/templates/agent-template-data';
@@ -12,7 +12,7 @@ import {
   TEMPLATE_ACCESS_OPTIONS,
   type TemplateAccess,
   visibilityOf,
-} from '@renderer/features/templates/template-visibility';
+} from '@switch-console/chat-ui/model/template-visibility';
 import { unsaidMessage } from '@renderer/features/templates/use/use-template-model';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -21,11 +21,11 @@ import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 
 // ── Source step ─────────────────────────────────────────────────────────────
 

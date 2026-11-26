@@ -1,4 +1,4 @@
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useDiscoveryFailures } from './discovery-failure-indicator';
 
 /**

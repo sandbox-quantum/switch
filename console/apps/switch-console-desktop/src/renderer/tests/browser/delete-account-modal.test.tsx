@@ -43,7 +43,7 @@ vi.mock('@renderer/lib/stores/app-state', () => ({
 }));
 
 import { DeleteAccountModal } from '@renderer/features/switch-servers/delete-account-modal';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;

@@ -1,8 +1,10 @@
+import { type ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { useChatHost } from '@switch-console/chat-ui/host';
 import { useQueryClient } from '@tanstack/react-query';
 import { Archive, FileText, Loader2, Lock, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
-import { confirmLeaveChat } from '@renderer/features/chats/components/chat-actions';
+import { confirmLeaveChat, type ChatRemovalContext } from '@switch-console/chat-ui/components/chat-actions';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
@@ -16,12 +18,12 @@ import { describeFailure, failureText } from '@renderer/lib/errors/describe-fail
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { appState } from '@renderer/lib/stores/app-state';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
-import { Button } from '@renderer/lib/ui/button';
-import { Input } from '@renderer/lib/ui/input';
-import { Textarea } from '@renderer/lib/ui/textarea';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import { cn } from '@renderer/utils/utils';
-import { type ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { RoomAutoRouteSection } from './room-auto-route-section';
 import { channelOnDeleteSummary } from './room-delete-wording';
@@ -54,8 +56,16 @@ const ChatConfiguration = observer(function ChatConfiguration({
   serverId: string;
   chat: ChatSummary;
 }) {
+  const host = useChatHost();
   const workspaceId = switchRoomsStore.roomWorkspaceId(chat.roomId) ?? workspacesStore.activeId;
   const detail = useRoomDetail(workspaceId, chat.roomId, chat.canManage);
+  const nav = appState.navigation;
+  const context: ChatRemovalContext = {
+    currentViewId: nav.currentViewId,
+    chatRoomId: nav.viewParamsStore.chat?.roomId,
+    roomRoomId: nav.viewParamsStore.room?.roomId,
+    agentRoomId: nav.viewParamsStore.managedAgent?.roomId,
+  };
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex w-full max-w-[880px] flex-col gap-8 px-10 py-8">
@@ -105,7 +115,7 @@ const ChatConfiguration = observer(function ChatConfiguration({
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() => confirmLeaveChat(serverId, chat)}
+              onClick={() => confirmLeaveChat(serverId, chat, context, host)}
             >
               Leave room…
             </Button>

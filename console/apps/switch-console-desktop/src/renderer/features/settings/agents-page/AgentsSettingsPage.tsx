@@ -2,12 +2,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React, { useCallback, useState } from 'react';
-import { PageHeader } from '@renderer/lib/components/page-header';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
 import { useAgentInstallationStatuses } from '@renderer/lib/stores/use-agent-installation-statuses';
 import { recheckThisComputer } from '@renderer/lib/stores/use-this-computer-report';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
-import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
+import { ToggleGroup, ToggleGroupItem } from '@switch-console/chat-ui/primitives/toggle-group';
 import { settingsServer } from '../pages/settings-server';
 import { CliAgentsList, type AgentFilter } from './CliAgentsList';
 

@@ -1,18 +1,16 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  ChevronDown,
-  ChevronRight,
-  FileText,
-  Loader2,
-  MoreHorizontal,
-  Plus,
-  UserPlus,
-} from 'lucide-react';
+  type RosterAgent,
+  type RosterPerson,
+  RoomRoster,
+} from '@switch-console/chat-ui/components/room-roster';
+import { chatAgentLabel } from '@switch-console/chat-ui/contracts/chats';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FileText } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { type ReactNode, useState } from 'react';
+import { useState } from 'react';
+import { chatFailure } from '@renderer/features/chats/chat-errors';
 import { chatMembersQueryKey } from '@renderer/features/chats/chat-people';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
-import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
@@ -26,23 +24,14 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Dialog,
   DialogContent,
   DialogContentArea,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { cn } from '@renderer/utils/utils';
-import { chatAgentLabel } from '@shared/core/chats/chats';
+} from '@switch-console/chat-ui/primitives/dialog';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import {
   AddAgentPanel,
@@ -51,22 +40,9 @@ import {
   ChatAddParticipantPanel,
 } from './room-add-participants';
 import { roomAdminAction, roomAdminStandingOf } from './room-admins';
-import { roomAgentPresence } from './room-agent-presence';
 import { linkedNamesByUsername } from './room-labels';
 import { roomInviteability } from './room-membership';
-import {
-  AgentMark,
-  agentNameFor,
-  PersonMark,
-  roomDetailKey,
-  useRoomDetail,
-} from './room-participants';
-
-const TONE_CLASS = {
-  live: 'bg-foreground-success',
-  idle: 'bg-foreground-warning',
-  off: 'bg-[var(--fg-passive)]',
-} as const;
+import { AgentMark, agentNameFor, roomDetailKey, useRoomDetail } from './room-participants';
 
 /** What the viewer may change about who is in the room, and how. */
 type RosterControls = {
@@ -117,8 +93,9 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
     switchRoomsStore.roomServerId(roomId) ?? (chat ? chatsStore.serverId : null) ?? null;
   const groupChats = useFeatureFlags(serverId).group_chats;
   const showAddAgentsToRoomModal = useShowModal('addAgentsToRoomModal');
+  const { navigate } = useNavigate();
+  const managed = useManagedAgents(serverId);
   const [adding, setAdding] = useState<'agents' | 'people' | 'admins' | null>(null);
-  const [error, setError] = useState<string | null>(null);
   // Anyone taking part may read the room, so this answers for a chat's members too.
   const detail = useRoomDetail(workspaceId, roomId, true);
   // Whose each agent is, so the viewer is offered taking out their own.
@@ -281,474 +258,213 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
     }
   }
 
-  const act = async (action: () => Promise<void>, fallback: string) => {
-    setError(null);
-    try {
-      await action();
-    } catch (cause) {
-      setError(consoleChat ? chatFailure(cause).message : failureText(cause, fallback));
-    }
-  };
+  const remoteById = new Map((workspaceAgents.data ?? []).map((agent) => [agent.id, agent]));
+  const agentRows: RosterAgent[] = agentIds.map((agentId) => {
+    const own = (managed.data ?? []).find((agent) => agent.agentId === agentId) ?? null;
+    const joinEvents = controls.joinEvents?.canSet(agentId) ? controls.joinEvents : null;
+    return {
+      id: agentId,
+      label: chatNames.get(agentId) ?? agentNameFor(agentId, workspaceId, remoteById),
+      mark: <AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />,
+      status: room?.agentStatuses[agentId],
+      roles: rolesHeldBy(room?.roles ?? [], remoteById.get(agentId)?.name ?? null),
+      open:
+        own && serverId
+          ? () => navigate('managedAgent', { serverId, agentId, name: own.name, room: roomId })
+          : null,
+      joinEvents: joinEvents && {
+        listening: joinEvents.listening(agentId),
+        set: (on) => joinEvents.set(agentId, on),
+      },
+      remove: controls.removeAgent(agentId),
+    };
+  });
+  const personRows: RosterPerson[] = unreadable
+    ? []
+    : people.map((person) => {
+        const standing = room && controls.setRoomAdmin ? roomAdminStandingOf(room, person) : null;
+        const adminAction = standing && roomAdminAction(standing, adminViewer);
+        const setRoomAdmin = controls.setRoomAdmin;
+        const remove = controls.removePerson(person.key);
+        return {
+          key: person.key,
+          name: person.name,
+          userId: person.userIds[0] ?? null,
+          fullName: person.fullName,
+          detail: standing?.isAdmin ? 'room admin' : person.detail,
+          actions: [
+            ...(standing && adminAction && setRoomAdmin
+              ? [
+                  {
+                    label: adminAction.label,
+                    run: () => setRoomAdmin(standing.userId, adminAction.admin),
+                    failure: adminAction.failure,
+                  },
+                ]
+              : []),
+            ...(remove
+              ? [
+                  {
+                    label: 'Remove from room',
+                    run: remove,
+                    failure: `Could not remove ${person.name}.`,
+                    destructive: true,
+                  },
+                ]
+              : []),
+          ],
+        };
+      });
+  const showAdmins =
+    room !== null &&
+    controls.setRoomAdmin !== null &&
+    (room.roomAdmins.length > 0 || adminViewer.canManageAdmins);
+  const adminRows: RosterPerson[] =
+    room && showAdmins
+      ? room.roomAdmins.map((admin) => {
+          const name = admin.name ?? 'Someone';
+          const action = roomAdminAction(
+            { userId: admin.userId, name, isAdmin: true },
+            adminViewer
+          );
+          const setRoomAdmin = controls.setRoomAdmin;
+          return {
+            key: admin.userId,
+            name,
+            userId: admin.userId,
+            fullName: null,
+            detail: admin.userId === viewerId ? 'you' : null,
+            actions:
+              action && setRoomAdmin
+                ? [
+                    {
+                      label: action.label,
+                      run: () => setRoomAdmin(admin.userId, false),
+                      failure: action.failure,
+                    },
+                  ]
+                : [],
+          };
+        })
+      : [];
 
   return (
-    <aside
-      aria-label="Room"
-      className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto border-r border-border p-2"
-    >
-      {/* A Console room takes people as well as agents, so its add is its own
-      button, not the + beside Agents, which reads as agents only. */}
-      {consoleChat && controls.addAgents && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full justify-start"
-          onClick={controls.addAgents}
-        >
-          <UserPlus />
-          Add participants
-        </Button>
-      )}
-      <Fold
-        title="Agents"
-        count={agentIds.length}
-        onAdd={consoleChat ? null : controls.addAgents}
-        addLabel="Add agents"
-      >
-        {unreadable ? (
-          <Note>{failureText(detail.error, 'Could not read who is in this room.')}</Note>
-        ) : agentIds.length === 0 ? (
-          <Note>No agents in this room yet.</Note>
-        ) : (
-          agentIds.map((agentId) => (
-            <AgentRow
-              key={agentId}
-              agentId={agentId}
-              roomId={roomId}
-              workspaceId={workspaceId}
-              serverId={serverId}
-              name={chatNames.get(agentId) ?? null}
-              status={room?.agentStatuses[agentId]}
-              roles={room?.roles ?? []}
-              controls={controls}
-              act={act}
-            />
-          ))
-        )}
-      </Fold>
-
-      <Fold
-        title={consoleChat ? 'People' : 'People seen here'}
-        count={people.length}
-        onAdd={controls.addPeople}
-        addLabel="Add people"
-      >
-        {unreadable ? null : people.length === 0 ? (
-          <Note>{consoleChat ? 'Nobody else is here yet.' : 'Nobody has been seen here yet.'}</Note>
-        ) : (
-          people.map((person) => {
-            const standing =
-              room && controls.setRoomAdmin ? roomAdminStandingOf(room, person) : null;
-            const adminAction = standing && roomAdminAction(standing, adminViewer);
-            const setRoomAdmin = controls.setRoomAdmin;
-            const remove = controls.removePerson(person.key);
-            return (
-              <PersonRow
-                key={person.key}
-                name={person.name}
-                userId={person.userIds[0] ?? null}
-                fullName={person.fullName}
-                detail={standing?.isAdmin ? 'room admin' : person.detail}
-                actions={[
-                  ...(standing && adminAction && setRoomAdmin
-                    ? [
-                        {
-                          label: adminAction.label,
-                          run: () => setRoomAdmin(standing.userId, adminAction.admin),
-                          failure: adminAction.failure,
-                        },
-                      ]
-                    : []),
-                  ...(remove
-                    ? [
-                        {
-                          label: 'Remove from room',
-                          run: remove,
-                          failure: `Could not remove ${person.name}.`,
-                          destructive: true,
-                        },
-                      ]
-                    : []),
-                ]}
-                act={act}
-              />
-            );
-          })
-        )}
-        {!consoleChat && (
+    <RoomRoster
+      addParticipants={consoleChat ? controls.addAgents : null}
+      agents={{
+        title: 'Agents',
+        count: agentIds.length,
+        onAdd: consoleChat ? null : controls.addAgents,
+        addLabel: 'Add agents',
+        rows: unreadable ? [] : agentRows,
+        empty: unreadable
+          ? failureText(detail.error, 'Could not read who is in this room.')
+          : agentIds.length === 0
+            ? 'No agents in this room yet.'
+            : null,
+        notes: [],
+      }}
+      people={{
+        title: consoleChat ? 'People' : 'People seen here',
+        count: people.length,
+        onAdd: controls.addPeople,
+        addLabel: 'Add people',
+        rows: personRows,
+        empty:
+          unreadable || people.length > 0
+            ? null
+            : consoleChat
+              ? 'Nobody else is here yet.'
+              : 'Nobody has been seen here yet.',
+        notes: [
           // Switch only knows the people who posted here or were added through it.
-          <Note>
-            People who posted here or were added through Switch. The channel may have more.
-          </Note>
-        )}
-        {bridgePeople.isError &&
-          people.length > 0 && (
-            // Said, so a lookup that failed does not pass for people nobody linked.
-            <Note>Could not load people’s names, so only their usernames are shown.</Note>
-          )}
-        {controls.peopleNote !== null && <Note>{controls.peopleNote}</Note>}
-      </Fold>
-
-      {room &&
-        controls.setRoomAdmin &&
-        (room.roomAdmins.length > 0 || adminViewer.canManageAdmins) && (
-          <Fold
-            title="Room admins"
-            count={room.roomAdmins.length}
-            onAdd={
-              adminViewer.canManageAdmins && room.roomAdminCandidates.length > 0
-                ? () => setAdding('admins')
-                : null
+          ...(consoleChat
+            ? []
+            : ['People who posted here or were added through Switch. The channel may have more.']),
+          // Said, so a lookup that failed does not pass for people nobody linked.
+          ...(bridgePeople.isError && people.length > 0
+            ? ['Could not load people’s names, so only their usernames are shown.']
+            : []),
+          ...(controls.peopleNote !== null ? [controls.peopleNote] : []),
+        ],
+      }}
+      admins={
+        room && showAdmins
+          ? {
+              title: 'Room admins',
+              count: room.roomAdmins.length,
+              onAdd:
+                adminViewer.canManageAdmins && room.roomAdminCandidates.length > 0
+                  ? () => setAdding('admins')
+                  : null,
+              addLabel: 'Add room admin',
+              rows: adminRows,
+              empty: room.roomAdmins.length === 0 ? 'No room admins yet.' : null,
+              notes: adminViewer.canManageAdmins
+                ? [
+                    'Room admins change the room as its owner does, but cannot delete it, change who can see it or choose room admins.',
+                  ]
+                : [],
             }
-            addLabel="Add room admin"
-          >
-            {room.roomAdmins.length === 0 && <Note>No room admins yet.</Note>}
-            {room.roomAdmins.map((admin) => {
-              const name = admin.name ?? 'Someone';
-              const action = roomAdminAction(
-                { userId: admin.userId, name, isAdmin: true },
-                adminViewer
-              );
-              const setRoomAdmin = controls.setRoomAdmin;
-              return (
-                <PersonRow
-                  key={admin.userId}
-                  name={name}
-                  userId={admin.userId}
-                  fullName={null}
-                  detail={admin.userId === viewerId ? 'you' : null}
-                  actions={
-                    action && setRoomAdmin
-                      ? [
-                          {
-                            label: action.label,
-                            run: () => setRoomAdmin(admin.userId, false),
-                            failure: action.failure,
-                          },
-                        ]
-                      : []
-                  }
-                  act={act}
+          : null
+      }
+      describe={(cause, fallback) =>
+        consoleChat ? chatFailure(cause).message : failureText(cause, fallback)
+      }
+      dialog={
+        <Dialog open={adding !== null} onOpenChange={(open) => !open && setAdding(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {adding === 'admins'
+                  ? 'Add room admin'
+                  : adding === 'people'
+                    ? 'Add people'
+                    : consoleChat
+                      ? 'Add participants'
+                      : 'Add agents'}
+              </DialogTitle>
+            </DialogHeader>
+            <DialogContentArea className="flex flex-col gap-3 pt-0">
+              {adding === 'agents' && consoleChat && chat && serverId && (
+                <ChatAddParticipantPanel
+                  serverId={serverId}
+                  workspaceId={workspaceId}
+                  chat={chat}
+                  memberIds={new Set(people.map((person) => person.key))}
+                  onAddedPeople={(next) => queryClient.setQueryData(membersKey, next)}
                 />
-              );
-            })}
-            {adminViewer.canManageAdmins && (
-              <Note>
-                Room admins change the room as its owner does, but cannot delete it, change who can
-                see it or choose room admins.
-              </Note>
-            )}
-          </Fold>
-        )}
-
-      {error !== null && <p className="px-2 text-xs text-destructive">{error}</p>}
-
-      <Dialog open={adding !== null} onOpenChange={(open) => !open && setAdding(null)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {adding === 'admins'
-                ? 'Add room admin'
-                : adding === 'people'
-                  ? 'Add people'
-                  : consoleChat
-                    ? 'Add participants'
-                    : 'Add agents'}
-            </DialogTitle>
-          </DialogHeader>
-          <DialogContentArea className="flex flex-col gap-3 pt-0">
-            {adding === 'agents' && consoleChat && chat && serverId && (
-              <ChatAddParticipantPanel
-                serverId={serverId}
-                workspaceId={workspaceId}
-                chat={chat}
-                memberIds={new Set(people.map((person) => person.key))}
-                onAddedPeople={(next) => queryClient.setQueryData(membersKey, next)}
-              />
-            )}
-            {adding === 'agents' && !consoleChat && room && workspaceId && (
-              <>
-                <AddAgentPanel workspaceId={workspaceId} room={room} onAdded={refreshRoom} />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="self-start"
-                  onClick={() => {
-                    setAdding(null);
-                    showAddAgentsToRoomModal({ roomId });
-                  }}
-                >
-                  <FileText className="size-3.5" />
-                  From a template
-                </Button>
-              </>
-            )}
-            {adding === 'admins' && room && workspaceId && (
-              <AddRoomAdminPanel workspaceId={workspaceId} room={room} />
-            )}
-            {adding === 'people' && room && workspaceId && room.bridgeId !== null && (
-              <AddPeoplePanel workspaceId={workspaceId} room={room} bridgeId={room.bridgeId} />
-            )}
-          </DialogContentArea>
-        </DialogContent>
-      </Dialog>
-    </aside>
+              )}
+              {adding === 'agents' && !consoleChat && room && workspaceId && (
+                <>
+                  <AddAgentPanel workspaceId={workspaceId} room={room} onAdded={refreshRoom} />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="self-start"
+                    onClick={() => {
+                      setAdding(null);
+                      showAddAgentsToRoomModal({ roomId });
+                    }}
+                  >
+                    <FileText className="size-3.5" />
+                    From a template
+                  </Button>
+                </>
+              )}
+              {adding === 'admins' && room && workspaceId && (
+                <AddRoomAdminPanel workspaceId={workspaceId} room={room} />
+              )}
+              {adding === 'people' && room && workspaceId && room.bridgeId !== null && (
+                <AddPeoplePanel workspaceId={workspaceId} room={room} bridgeId={room.bridgeId} />
+              )}
+            </DialogContentArea>
+          </DialogContent>
+        </Dialog>
+      }
+    />
   );
 });
-
-/**
- * One agent in the room: its name, what it is doing here and the role it holds.
- * The viewer's own agents open their seat in this room on the agent's page;
- * anyone else's are listed only. Whoever may change the room gets a menu for
- * it here.
- */
-const AgentRow = observer(function AgentRow({
-  agentId,
-  roomId,
-  workspaceId,
-  serverId,
-  name,
-  status,
-  roles,
-  controls,
-  act,
-}: {
-  agentId: string;
-  roomId: string;
-  workspaceId: string | null;
-  serverId: string | null;
-  name: string | null;
-  status: string | undefined;
-  /** The room's roles; those this agent holds are shown beside its status. */
-  roles: RemoteRoomDetail['roles'];
-  controls: RosterControls;
-  act: (action: () => Promise<void>, fallback: string) => Promise<void>;
-}) {
-  const { navigate } = useNavigate();
-  const remoteAgents = useWorkspaceAgents(workspaceId);
-  const remoteById = new Map((remoteAgents.data ?? []).map((agent) => [agent.id, agent]));
-  const managed = useManagedAgents(serverId);
-  const own = (managed.data ?? []).find((agent) => agent.agentId === agentId) ?? null;
-  const [busy, setBusy] = useState(false);
-  const label = name ?? agentNameFor(agentId, workspaceId, remoteById);
-  const held = rolesHeldBy(roles, remoteById.get(agentId)?.name ?? null);
-  const presence = roomAgentPresence(status);
-  const detail = [status === undefined ? null : presence.label, ...held]
-    .filter(Boolean)
-    .join(' · ');
-
-  const body = (
-    <>
-      <span className="relative flex shrink-0">
-        <AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />
-        {status !== undefined && (
-          <span
-            aria-hidden
-            className={cn(
-              'absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2 ring-background',
-              TONE_CLASS[presence.tone]
-            )}
-          />
-        )}
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-[13px] text-foreground">{label}</span>
-        {detail && <span className="truncate text-xs text-foreground-muted">{detail}</span>}
-      </span>
-    </>
-  );
-
-  const run = (action: () => Promise<void>, fallback: string) => {
-    setBusy(true);
-    void act(action, fallback).finally(() => setBusy(false));
-  };
-  const joinEvents = controls.joinEvents?.canSet(agentId) ? controls.joinEvents : null;
-  const removeAgent = controls.removeAgent(agentId);
-  const menu =
-    removeAgent || joinEvents ? (
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              aria-label={`${label} in this room`}
-              className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[popup-open]:opacity-100"
-            >
-              {busy ? <Loader2 className="animate-spin" /> : <MoreHorizontal />}
-            </Button>
-          }
-        />
-        <DropdownMenuContent align="end">
-          {joinEvents && (
-            <DropdownMenuCheckboxItem
-              checked={joinEvents.listening(agentId)}
-              onCheckedChange={(next) =>
-                run(() => joinEvents.set(agentId, next), 'Could not change the join notification.')
-              }
-            >
-              Tell it when someone joins
-            </DropdownMenuCheckboxItem>
-          )}
-          {removeAgent && (
-            <DropdownMenuItem
-              variant="destructive"
-              onClick={() => run(removeAgent, `Could not remove ${label}.`)}
-            >
-              Remove from room
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    ) : null;
-
-  return (
-    <div className="group flex items-center gap-1 rounded-md pr-1 hover:bg-[var(--sel-soft)]">
-      {own && serverId ? (
-        <button
-          type="button"
-          title={`Open ${label}’s session in this room`}
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 py-1 text-left"
-          onClick={() =>
-            navigate('managedAgent', { serverId, agentId, name: own.name, room: roomId })
-          }
-        >
-          {body}
-        </button>
-      ) : (
-        <div className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1">{body}</div>
-      )}
-      {menu}
-    </div>
-  );
-});
-
-type PersonAction = {
-  label: string;
-  run: () => Promise<void>;
-  /** What to say when it fails. */
-  failure: string;
-  destructive?: boolean;
-};
-
-function PersonRow({
-  name,
-  userId,
-  fullName,
-  detail,
-  actions,
-  act,
-}: {
-  name: string;
-  /** Their Switch user, when known, for their colour. */
-  userId: string | null;
-  /** For a messaging-app username, the name of the Switch user who linked it, shown in brackets. */
-  fullName: string | null;
-  detail: string | null;
-  /** What the viewer may do about this person; no menu when there is nothing. */
-  actions: PersonAction[];
-  act: (action: () => Promise<void>, fallback: string) => Promise<void>;
-}) {
-  const [busy, setBusy] = useState(false);
-  return (
-    <div className="group flex items-center gap-2 rounded-md py-1 pr-1 pl-2 hover:bg-[var(--sel-soft)]">
-      <PersonMark name={name} userId={userId} size="sm" />
-      <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
-        {name}
-        {fullName !== null && <span className="text-foreground-muted"> ({fullName})</span>}
-      </span>
-      {detail && <span className="shrink-0 text-xs text-foreground-muted">{detail}</span>}
-      {actions.length > 0 && (
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                aria-label={`${name} in this room`}
-                className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[popup-open]:opacity-100"
-              >
-                {busy ? <Loader2 className="animate-spin" /> : <MoreHorizontal />}
-              </Button>
-            }
-          />
-          <DropdownMenuContent align="end">
-            {actions.map((action) => (
-              <DropdownMenuItem
-                key={action.label}
-                variant={action.destructive ? 'destructive' : 'default'}
-                onClick={() => {
-                  setBusy(true);
-                  void act(action.run, action.failure).finally(() => setBusy(false));
-                }}
-              >
-                {action.label}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
-    </div>
-  );
-}
-
-function Fold({
-  title,
-  count,
-  onAdd,
-  addLabel,
-  children,
-}: {
-  title: string;
-  count: number;
-  onAdd: (() => void) | null;
-  addLabel: string;
-  children: ReactNode;
-}) {
-  const [open, setOpen] = useState(true);
-  const Chevron = open ? ChevronDown : ChevronRight;
-  return (
-    <section aria-label={title} className="flex flex-col gap-[2px]">
-      <div className="flex items-center gap-1 px-1 pb-1">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-          className="flex flex-1 items-center gap-1 text-xs font-medium text-foreground-muted hover:text-foreground"
-        >
-          <Chevron className="size-3.5" />
-          <span className="flex-1 text-left">{title}</span>
-          <span className="text-[var(--fg-passive)] tabular-nums">{count}</span>
-        </button>
-        {onAdd && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label={addLabel}
-            title={addLabel}
-            onClick={onAdd}
-          >
-            <Plus />
-          </Button>
-        )}
-      </div>
-      {open && children}
-    </section>
-  );
-}
-
-const Note = ({ children }: { children: ReactNode }) => (
-  <p className="px-2 py-1 text-xs text-foreground-muted">{children}</p>
-);
 
 /**
  * The roles an agent holds. The server names a role's holders by the agent's

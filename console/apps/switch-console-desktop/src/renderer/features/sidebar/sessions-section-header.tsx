@@ -27,10 +27,10 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { SectionLabel } from '@renderer/lib/ui/label';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { SectionLabel } from '@switch-console/chat-ui/primitives/label';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@switch-console/chat-ui/primitives/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import { getProvider } from '@shared/core/providers/agent-provider-registry';

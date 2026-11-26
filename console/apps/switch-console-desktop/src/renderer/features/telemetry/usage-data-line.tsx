@@ -2,7 +2,7 @@ import { ExternalLink } from 'lucide-react';
 import { useEffect } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Switch } from '@renderer/lib/ui/switch';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { TELEMETRY_DETAILS_URL, TELEMETRY_SHORT_SUMMARY } from './telemetry-copy';
 
 /**
