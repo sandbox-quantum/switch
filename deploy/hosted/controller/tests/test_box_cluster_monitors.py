@@ -39,6 +39,8 @@ def test_every_monitor_is_importable_and_names_no_deployment() -> None:
             f"service:{LISTS_SERVICE}",
             "service:switch-hosted-remover",
             "service:switch-hosted-provisioner",
+            "service:switch-hosted-reaper",
+            "service:switch-node-gate",
         } & set(m["tags"])
         # No log text in a notification: the lines carry counts only, but samples aren't needed.
         assert m["options"].get("enable_logs_sample") is False
@@ -136,7 +138,7 @@ def test_the_remover_monitor_matches_its_alert_lines_and_pod_tag() -> None:
 def test_the_operator_removal_monitor_matches_exactly_its_removal_alert_lines() -> None:
     """The operator's removal and retired-name refusals log `Box operator ALERT` with "removal" or "retired"; its
     other alerts (a bound pool box's owner, an image) don't, so this monitor pages on removals only."""
-    (m,) = [m for m in _monitors() if "Box operator ALERT" in m["query"]]
+    (m,) = [m for m in _monitors() if "(removal OR retired)" in m["query"]]
     assert m["query"].startswith('logs("service:switch-hosted-provisioner env:REPLACE-WITH-ENV ')
     assert '\\"Box operator ALERT\\" (removal OR retired)' in m["query"]
     source = (
@@ -150,3 +152,51 @@ def test_the_operator_removal_monitor_matches_exactly_its_removal_alert_lines() 
         "provisioner",
         "switch-hosted-provisioner",
     )
+
+
+SRC = HOSTED / "controller" / "src" / "switch_hosted_controller"
+
+
+def _phrases(m: dict) -> list[str]:
+    return re.findall(r'\\"([^"\\]+)\\"', m["query"])
+
+
+def test_every_alert_line_in_the_code_pages() -> None:
+    """Every `... ALERT:` line the workers log is matched by a monitor on its own service, so a person is told."""
+    services = {
+        "box_operator.py": "switch-hosted-provisioner",
+        "egress_lists.py": LISTS_SERVICE,
+        "remover.py": "switch-hosted-remover",
+        "reaper.py": "switch-hosted-reaper",
+        "node_gate_main.py": "switch-node-gate",
+    }
+    monitors = _monitors()
+    for name, service in services.items():
+        for line in re.findall(r'"([A-Za-z -]+ ALERT: [^"]*)"', (SRC / name).read_text()):
+            hits = [
+                m
+                for m in monitors
+                if m["query"].startswith(f'logs("service:{service} env:REPLACE-WITH-ENV ')
+                and all(p in line for p in _phrases(m))
+                and (
+                    "(removal OR retired)" not in m["query"]
+                    or "removal" in line
+                    or "retired" in line
+                )
+            ]
+            assert hits, f"no monitor pages on {name}: {line}"
+
+
+def test_the_reaper_pod_carries_the_service_its_monitor_uses() -> None:
+    _tags_its_logs(
+        _pod_template(HOSTED / "k8s" / "45-switch-hosted-reaper.yaml", "switch-hosted-reaper"),
+        "reaper",
+        "switch-hosted-reaper",
+    )
+
+
+def test_the_two_security_alerts_have_their_own_monitors() -> None:
+    """An image outside the allow-list, and a spare box bound to a second owner, each page on their own."""
+    queries = [m["query"] for m in _monitors()]
+    assert any('\\"isn\'t pinned or allowed\\"' in q for q in queries)
+    assert any('\\"already has another owner\\"' in q for q in queries)

@@ -62,5 +62,85 @@
       "enable_logs_sample": false,
       "thresholds": {"critical": 0}
     }
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] box egress lists skipped a box's owner",
+    "type": "log alert",
+    "query": "logs(\"service:switch-egress-lists env:REPLACE-WITH-ENV \\\"box-owners ALERT\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}The egress lists skipped a box-owners entry: it isn't a box namespace, or its owner isn't a keyed id. That box gets no web access until it's fixed.\n\n**Check:** the egress lists' `box-owners ALERT` lines give the namespace. See deploy/hosted/DEPLOY.md.{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": ["service:switch-egress-lists", "env:REPLACE-WITH-ENV", "team:switch", "tier:now"],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": false,
+      "thresholds": {"critical": 0}
+    }
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] box operator found an image that isn't pinned or allowed",
+    "type": "log alert",
+    "query": "logs(\"service:switch-hosted-provisioner env:REPLACE-WITH-ENV \\\"Box operator ALERT\\\" \\\"isn't pinned or allowed\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}A running box uses an image the operator doesn't pin or allow. Someone may have run a box outside the image allow-list.\n\n**Check:** the operator's `Box operator ALERT` line gives the namespace; compare its image with the allowed list. See deploy/hosted/DEPLOY.md.{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": ["service:switch-hosted-provisioner", "env:REPLACE-WITH-ENV", "team:switch", "tier:now"],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": false,
+      "thresholds": {"critical": 0}
+    }
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] box operator was asked to bind a pool box that already has an owner",
+    "type": "log alert",
+    "query": "logs(\"service:switch-hosted-provisioner env:REPLACE-WITH-ENV \\\"Box operator ALERT\\\" \\\"already has another owner\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}The operator refused to bind a spare box that already has an owner. That could be an attempt to give one person's box to another.\n\n**Check:** the operator's `Box operator ALERT` lines around the time, and Core's claim records for that spare. See deploy/hosted/DEPLOY.md.{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": ["service:switch-hosted-provisioner", "env:REPLACE-WITH-ENV", "team:switch", "tier:now"],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": false,
+      "thresholds": {"critical": 0}
+    }
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] box reaper couldn't retire a spare box",
+    "type": "log alert",
+    "query": "logs(\"service:switch-hosted-reaper env:REPLACE-WITH-ENV \\\"Reaper ALERT\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}The reaper couldn't delete a spare box, or Core refused it as already gone. The spare keeps its place until it's cleared.\n\n**Check:** the reaper's `Reaper ALERT` lines give the spare and the reason. See deploy/hosted/DEPLOY.md.{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": ["service:switch-hosted-reaper", "env:REPLACE-WITH-ENV", "team:switch", "tier:now"],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": false,
+      "thresholds": {"critical": 0}
+    }
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] node gate: a node is Ready but still held back",
+    "type": "log alert",
+    "query": "logs(\"service:switch-node-gate env:REPLACE-WITH-ENV \\\"Node gate ALERT\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}A new node has been Ready for longer than the gate allows but still carries its gate taint, so no box can land on it.\n\n**Check:** the node gate's `Node gate ALERT` line names the node; look at its checks. See deploy/hosted/DEPLOY.md.{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": ["service:switch-node-gate", "env:REPLACE-WITH-ENV", "team:switch", "tier:now"],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": false,
+      "thresholds": {"critical": 0}
+    }
   }
 ]
