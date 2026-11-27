@@ -113,6 +113,10 @@ type JumpHop = { user?: string; host: string; port?: number };
 
 const UNSAFE_HOP_CHARS = /[\s\x00-\x1f\x7f]/;
 const PORT_DIGITS = /^\d+$/;
+const SSH_URI_PREFIX = 'ssh://';
+// A destination is one argv element of `-W`, so a scoped IPv6 address
+// (`fe80::1%en0`) may keep its `%`.
+const SAFE_DESTINATION_HOST = /^[a-zA-Z0-9._\-[\]:%]+$/;
 
 function parsePort(raw: string, hop: string): number {
   const port = PORT_DIGITS.test(raw) ? Number(raw) : Number.NaN;
@@ -131,7 +135,7 @@ function parseJumpHop(hop: string): JumpHop {
     throw new Error(`Invalid ProxyJump host: ${JSON.stringify(hop)}`);
   }
 
-  let rest = hop;
+  let rest = hop.startsWith(SSH_URI_PREFIX) ? hop.slice(SSH_URI_PREFIX.length) : hop;
   let user: string | undefined;
   const atIndex = rest.lastIndexOf('@');
   if (atIndex !== -1) {
@@ -183,7 +187,7 @@ export function buildProxyJumpArgs(jumpSpec: string, destHost: string, destPort:
     throw new Error('ProxyJump is empty');
   }
   const hops = jumpSpec.split(',').map((hop) => parseJumpHop(hop.trim()));
-  if (!destHost || destHost.startsWith('-') || !SAFE_HOSTNAME.test(destHost)) {
+  if (!destHost || destHost.startsWith('-') || !SAFE_DESTINATION_HOST.test(destHost)) {
     throw new Error(`Invalid ProxyJump destination host: ${destHost}`);
   }
   if (!Number.isInteger(destPort) || destPort <= 0 || destPort > 65_535) {
@@ -200,7 +204,9 @@ export function buildProxyJumpArgs(jumpSpec: string, destHost: string, destPort:
   if (last.port !== undefined) {
     args.push('-p', String(last.port));
   }
-  args.push('-W', `${destHost}:${destPort}`);
+  const bracketed =
+    destHost.includes(':') && !destHost.startsWith('[') ? `[${destHost}]` : destHost;
+  args.push('-W', `${bracketed}:${destPort}`);
   args.push(last.user ? `${last.user}@${last.host}` : last.host);
   return args;
 }
